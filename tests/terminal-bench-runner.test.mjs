@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
+import { cleanupSealedExitedHarborEnvironments, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -95,6 +96,10 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/recoveredByRegrade/);
   assert.match(source,/regradeTrialDir/);
   assert.match(source,/cleanupDockerProject/);
+  assert.match(source,/cleanupSealedExitedHarborEnvironments/);
+  assert.match(source,/isPreAgentDockerSubnetExhaustion/);
+  assert.match(source,/retryReason="docker_subnet_exhaustion"/);
+  assert.match(source,/retryJobName=jobName\+"-retry1"/);
   assert.match(source,/readTrialVerifierSummary/);
   assert.match(source,/recoveredEvidence\?\.inputTokens/);
   assert.match(source,/recoverCodexSessionEvidence/);
@@ -135,6 +140,49 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/const laneFailed=Boolean\(runError\)\|\|Number\(jobs\[laneIndex\]\?\.errors\|\|0\)>0\|\|Number\(jobs\[laneIndex\]\?\.completed\|\|0\)<1/);
   assert.match(source,/laneState\.status=laneFailed\?"failed":"finished"/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
+});
+
+test("Terminal-Bench Docker subnet retry only recognizes pre-agent exhaustion",()=>{
+  const base={exception_info:{exception_message:"Error response from daemon: all predefined address pools have been fully subnetted"},agent_setup:null,agent_execution:null,verifier:null};
+  assert.equal(isPreAgentDockerSubnetExhaustion(base),true);
+  assert.equal(isPreAgentDockerSubnetExhaustion({...base,agent_setup:{started_at:"x"}}),false);
+  assert.equal(isPreAgentDockerSubnetExhaustion({...base,exception_info:{exception_message:"unrelated Docker failure"}}),false);
+});
+
+test("Terminal-Bench Docker cleanup only removes exited environments from sealed verifier trials",async()=>{
+  const entries={
+    "ROOT":[{name:"job-a",isDirectory:()=>true},{name:"job-b",isDirectory:()=>true}],
+    "ROOT/job-a":[{name:"task__Good",isDirectory:()=>true}],
+    "ROOT/job-b":[{name:"task__Ungraded",isDirectory:()=>true}],
+  };
+  const readdirFn=async path=>entries[String(path).replaceAll("\\","/")]||[];
+  const readFileFn=async path=>{
+    const normalized=String(path).replaceAll("\\","/");
+    if(normalized.endsWith("task__Good/result.json"))return JSON.stringify({finished_at:"done",verifier_result:{rewards:{reward:1}}});
+    if(normalized.endsWith("task__Ungraded/result.json"))return JSON.stringify({finished_at:"done",verifier_result:null});
+    throw new Error("missing");
+  };
+  const projects=await sealedHarborEnvironmentProjects("ROOT",{readdirFn,readFileFn});
+  assert.deepEqual([...projects],["task__good__env"]);
+  const captureFn=async(command,args)=>{
+    if(command!=="docker")throw new Error("unexpected command");
+    if(args[0]==="ps")return "good-id\nungraded-id\nrunning-id\n";
+    if(args[0]==="inspect")return JSON.stringify([
+      {Id:"good-id",State:{Status:"exited"},Config:{Labels:{"com.docker.compose.project":"task__good__env"}}},
+      {Id:"ungraded-id",State:{Status:"exited"},Config:{Labels:{"com.docker.compose.project":"task__ungraded__env"}}},
+      {Id:"running-id",State:{Status:"running"},Config:{Labels:{"com.docker.compose.project":"task__good__env"}}},
+    ]);
+    if(args[0]==="network")return "network-good\n";
+    throw new Error("unexpected capture");
+  };
+  const runs=[];
+  const runFn=async(command,args)=>{runs.push([command,args])};
+  const result=await cleanupSealedExitedHarborEnvironments("ROOT",{captureFn,runFn,readdirFn,readFileFn});
+  assert.deepEqual(result,{eligibleProjects:1,removedContainers:1,removedNetworks:1,projects:["task__good__env"]});
+  assert.deepEqual(runs,[
+    ["docker",["rm","-f","good-id"]],
+    ["docker",["network","rm","network-good"]],
+  ]);
 });
 
 test("Terminal-Bench standalone Native rerun lock is shared across worktrees but separate from the pair lock",()=>{

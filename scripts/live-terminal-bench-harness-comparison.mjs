@@ -13,6 +13,7 @@ import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "./terminal-bench-pair-lock.mjs";
 import { estimateGpt6LunaStandardCostFromAggregate, GPT6_LUNA_STANDARD_PRICING } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
+import { cleanupSealedExitedHarborEnvironments, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -226,7 +227,7 @@ try{
   const laneStates=selectedLanes.map(lane=>({
     label:lane.label,harness:lane.harness,authMode:lane.authMode,
     jobName:`tb4-${lane.label}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,
-    status:"pending",startedAt:null,finishedAt:null,runError:null,
+    status:"pending",startedAt:null,finishedAt:null,runError:null,attempts:[],retryReason:null,retryCleanup:null,
   }));
   const reportSnapshot=({complete=false}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,
@@ -252,13 +253,15 @@ try{
     return reportWrite;
   };
   const latestPointerPath=join(validationDir,STANDALONE_NATIVE_RERUN?"terminal-bench-native-rerun-latest.json":"terminal-bench-latest.json");
-  await writeFile(latestPointerPath,JSON.stringify({pairId,reportPath,task:TASK,model:MODEL,reasoningEffort:EFFORT,parallel:PARALLEL,lanes:laneStates.map(lane=>({label:lane.label,jobName:lane.jobName}))},null,2)+"\n","utf8");
+  const persistLatestPointer=()=>writeFile(latestPointerPath,JSON.stringify({pairId,reportPath,task:TASK,model:MODEL,reasoningEffort:EFFORT,parallel:PARALLEL,lanes:laneStates.map(lane=>({label:lane.label,jobName:lane.jobName}))},null,2)+"\n","utf8");
+  await persistLatestPointer();
   await persistReport({complete:false});
   const runLane=async(lane,laneIndex)=>{
     const {label,harness,authMode}=lane;
     const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":CODEX_INSTALL_MODE==="pinned"?"benchmarks.harbor.pinned_codex_agent:PinnedCodexAgent":"codex";
-    const laneState=laneStates[laneIndex],jobName=laneState.jobName;
-    const args=["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",jobName,"-y"];
+    const laneState=laneStates[laneIndex];let jobName=laneState.jobName;
+    const argsForJob=currentJobName=>["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y"];
+    let args=argsForJob(jobName);
     const retainNativeEnvironment=STANDALONE_NATIVE_RERUN&&harness==="native";
     if(retainNativeEnvironment)args.push("--no-delete");
     if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
@@ -278,6 +281,25 @@ try{
     laneState.status="running";laneState.startedAt=new Date().toISOString();await persistReport({complete:false});
     let runError=null,runnerError=null,regradeRecovery=null;
     try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
+    laneState.attempts.push({jobName,status:runnerError?"failed":"finished",runnerError});
+    if(runnerError){
+      const failedTrial=await trialResult(outputRoot,jobName);
+      if(isPreAgentDockerSubnetExhaustion(failedTrial)){
+        const cleanup=await cleanupSealedExitedHarborEnvironments(outputRoot,{
+          captureFn:(command,argv)=>capture(command,argv,{env:harnessEnv}),
+          runFn:(command,argv)=>run(command,argv,{env:harnessEnv}),
+        });
+        const retryJobName=jobName+"-retry1";
+        laneState.retryReason="docker_subnet_exhaustion";laneState.retryCleanup=cleanup;laneState.jobName=retryJobName;jobName=retryJobName;
+        args=argsForJob(jobName);
+        if(retainNativeEnvironment)args.push("--no-delete");
+        if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
+        if(AGENT_TIMEOUT_MULTIPLIER!==1)args.push("--agent-timeout-multiplier",String(AGENT_TIMEOUT_MULTIPLIER));
+        runnerError=null;runError=null;await persistLatestPointer();await persistReport({complete:false});
+        try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
+        laneState.attempts.push({jobName,status:runnerError?"failed":"finished",runnerError});
+      }
+    }
     let drainError=null;
     try{
       const additionalNeedles=await trialProcessDrainNeedles(outputRoot,jobName);
