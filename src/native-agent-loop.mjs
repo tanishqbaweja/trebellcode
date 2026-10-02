@@ -224,7 +224,8 @@ function requestsWorkspaceMutation(messages=[]){
   if(!text||!requestsTaskMutation(messages))return false;
   if(requestsExternalStateMutation(messages))return false;
   const workspaceTarget=/\b(?:workspace|repository|repo|codebase|source|code|implementation|project|package|module|library|app(?:lication)?|service|script|file|folder|directory|path|function|class|method|component|frontend|backend|test(?:s| suite)?|config(?:uration)?\s+file)\b/i.test(text);
-  const fileTarget=/(?:^|[\s\x60"'(])(?:\.?\.?[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_-]{1,16}(?=$|[\s\x60"'),;:.!?])/i.test(text);
+  const filePattern=/(?:^|[\s\x60"'(])((?:\.?\.?[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_-]{1,16})(?=$|[\s\x60"'),;:.!?])/ig;
+  const fileTarget=[...text.matchAll(filePattern)].some(match=>!String(match[1]||"").replace(/\\/g,"/").startsWith("/"));
   if(workspaceTarget||fileTarget)return true;
   const externalOnly=/\b(?:campaign|live\s+config(?:uration)?|remote\s+(?:state|system|host|service)|runtime\s+state|api\s+(?:endpoint|state|resource)|database\s+(?:row|record|state)|cluster\s+state|account\s+setting)\b/i.test(text);
   return !externalOnly;
@@ -237,7 +238,8 @@ function requestsExternalStateMutation(messages=[]){
     ||/\b(?:through|via|using)\s+(?:its|the|an?)\s+api\b/i.test(text);
   if(!externalTarget)return false;
   const workspaceTarget=/\b(?:workspace|repository|repo|codebase|source|code|implementation|project|package|module|library|script|file|folder|directory|path|function|class|method|component|frontend|backend|test(?:s| suite)?|config(?:uration)?\s+file)\b/i.test(text);
-  const fileTarget=/(?:^|[\s`"'(])(?:\.?\.?[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_-]{1,16}(?=$|[\s`"'),;:.!?])/i.test(text);
+  const filePattern=/(?:^|[\s\x60"'(])((?:\.?\.?[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_-]{1,16})(?=$|[\s\x60"'),;:.!?])/ig;
+  const fileTarget=[...text.matchAll(filePattern)].some(match=>!String(match[1]||"").replace(/\\/g,"/").startsWith("/"));
   return !workspaceTarget&&!fileTarget;
 }
 
