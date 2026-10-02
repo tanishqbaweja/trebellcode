@@ -2953,6 +2953,28 @@ test("native completion recovery can repair an external API state without invent
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,1);
 });
 
+test("native external-state tasks do not activate workspace implementation pressure",async()=>{
+  const events=[];let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",maxModelTurns:8,maxToolCalls:12,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the running campaign through its API. Change the live config until the measured acceptance target passes."}],
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async()=>{
+      turns++;
+      if(turns<=4)return {text:"",toolCalls:[{id:"probe-"+turns,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c",`print('probe-${turns}')`]})}],usage:{}};
+      return {text:"Still investigating the live API state.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>({exitCode:0,stdout:String(call.id)}),
+  });
+  assert.equal(result.text,"Still investigating the live API state.");
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_checkpoint").length,0);
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_pressure").length,0);
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_call_blocked").length,0);
+});
+
 test("native external recovery requires restoring a regressed incumbent before final exhaustion",async()=>{
   const events=[],executed=[];let turns=0;
   const writeArgs=mode=>JSON.stringify({command:"python",args:["-c",`import requests; requests.post('http://localhost:5000/api/config', json={'mode':'${mode}'})`]});

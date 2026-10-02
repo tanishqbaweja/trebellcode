@@ -551,6 +551,20 @@ Payload-free per-turn analysis found that Native model turns **5** and **17** al
 
 ---
 
+## 2026-10-02 - Keep external-state tasks out of workspace implementation pressure
+
+**Evidence:** same-task regression rerun `tb4-native-rerun-gpt-6-luna-max-ctr-optimization-20261002T164919Z`, frozen at clean source `75b60ae8`, showed that the first external-state recovery fix was incomplete. Before any semantic recovery epoch, Native still emitted workspace implementation-pressure checkpoints. By turn 8 that controller blocked another evidence call and the next action became `trebell_workspace/write_file`, reproducing the helper-file drift from the failed baseline even though external-state recovery itself had been corrected. The regression run was intentionally stopped and its isolated containers removed rather than spending more paid inference on a controller path already known to be wrong.
+
+**Harness change:** workspace-mutation classification now fails closed when the same request is positively classified as an external-state mutation. External API/service/runtime tasks still retain generic task-mutation semantics and the external-state completion/recovery controller, but they no longer activate coding-specific pre-edit implementation pressure, implementation escalation, or workspace-edit blocking simply because their instruction contains verbs such as `change` or `update`. A dedicated regression test exercises several pre-mutation evidence turns on an API-managed live-state task and requires zero workspace implementation-pressure events.
+
+**Why:** external-state recovery begins only after a candidate completion is judged incomplete. The earlier fix therefore could not prevent a workspace-specific controller from distorting the trajectory *before* recovery. Classifying the task once at the correct mutation surface prevents that early pressure from manufacturing a file deliverable that the user never requested.
+
+**Expected effect:** Native should be free to spend its early turns on bounded measurements/experiments and actual API state changes for live-system tasks, while coding tasks continue to receive the existing implementation-pressure safeguards. This should reduce helper-file detours, blocked evidence calls, and wasted reasoning before the first real external mutation.
+
+**Validation status:** Native loop + Harbor adapter/background-process + Terminal-Bench runner focused regression set passes **220 / 220**. The parent tree had already passed the complete repository suite **1,281 / 1,281** before this narrowly scoped classifier refinement. The stopped same-task rerun is regression evidence only; a clean relaunch on this change is still contaminated same-task validation, not unseen proof.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name
