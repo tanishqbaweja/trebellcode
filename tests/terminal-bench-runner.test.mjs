@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
-import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
+import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -100,13 +100,15 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/cleanupDockerProject/);
   assert.match(source,/cleanupSealedExitedHarborEnvironments/);
   assert.match(source,/isPreAgentDockerSubnetExhaustion/);
+  assert.match(source,/isPreAgentDockerImagePullFailure/);
   assert.match(source,/isDockerExecTransportFailure/);
   assert.match(source,/docker_subnet_exhaustion/);
+  assert.match(source,/docker_image_pull_failure/);
   assert.match(source,/docker_exec_transport_failure/);
   assert.match(source,/infrastructureFailureReason/);
   assert.match(source,/infrastructureInterrupted:/);
   assert.match(source,/infrastructureComparable:/);
-  assert.match(source,/if\(subnetExhaustion\)\{/);
+  assert.match(source,/if\(subnetExhaustion\|\|imagePullFailure\)\{/);
   assert.doesNotMatch(source,/if\(subnetExhaustion\|\|dockerExecTransportFailure\)/);
   assert.match(source,/const failedTrial=await trialResult\(outputRoot,jobName\)/);
   assert.match(source,/trialInfrastructureFailure:/);
@@ -158,6 +160,17 @@ test("Terminal-Bench Docker subnet retry only recognizes pre-agent exhaustion",(
   assert.equal(isPreAgentDockerSubnetExhaustion(base),true);
   assert.equal(isPreAgentDockerSubnetExhaustion({...base,agent_setup:{started_at:"x"}}),false);
   assert.equal(isPreAgentDockerSubnetExhaustion({...base,exception_info:{exception_message:"unrelated Docker failure"}}),false);
+});
+
+test("Terminal-Bench Docker image-pull retry only recognizes pre-agent unexpected EOF",()=>{
+  const base={
+    exception_info:{exception_message:"Docker compose command failed for environment example. Image harborframework/terminal-bench:example Pulling abc Extracting 10B unexpected EOF"},
+    agent_setup:null,agent_execution:null,verifier:null,
+  };
+  assert.equal(isPreAgentDockerImagePullFailure(base),true);
+  assert.equal(isPreAgentDockerImagePullFailure({...base,agent_setup:{started_at:"x"}}),false);
+  assert.equal(isPreAgentDockerImagePullFailure({...base,exception_info:{exception_message:"Docker compose command failed for environment example: permission denied"}}),false);
+  assert.equal(isPreAgentDockerImagePullFailure({...base,exception_info:{exception_message:"download unexpected EOF"}}),false);
 });
 
 test("Terminal-Bench Docker exec transport retry only recognizes Docker Desktop exec 5xx failures",()=>{

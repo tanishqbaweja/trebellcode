@@ -13,7 +13,7 @@ import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "./terminal-bench-pair-lock.mjs";
 import { estimateGpt6LunaStandardCostFromAggregate, GPT6_LUNA_STANDARD_PRICING } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
-import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
+import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -286,10 +286,10 @@ try{
     let runError=null,runnerError=null,regradeRecovery=null;
     try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
     const failedTrial=await trialResult(outputRoot,jobName);
-    const subnetExhaustion=isPreAgentDockerSubnetExhaustion(failedTrial),dockerExecTransportFailure=isDockerExecTransportFailure(failedTrial);
-    laneState.attempts.push({jobName,status:runnerError||subnetExhaustion||dockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:subnetExhaustion?"docker_subnet_exhaustion":dockerExecTransportFailure?"docker_exec_transport_failure":null});
+    const subnetExhaustion=isPreAgentDockerSubnetExhaustion(failedTrial),imagePullFailure=isPreAgentDockerImagePullFailure(failedTrial),dockerExecTransportFailure=isDockerExecTransportFailure(failedTrial);
+    laneState.attempts.push({jobName,status:runnerError||subnetExhaustion||imagePullFailure||dockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:subnetExhaustion?"docker_subnet_exhaustion":imagePullFailure?"docker_image_pull_failure":dockerExecTransportFailure?"docker_exec_transport_failure":null});
     if(dockerExecTransportFailure)laneState.infrastructureFailureReason="docker_exec_transport_failure";
-    if(subnetExhaustion){
+    if(subnetExhaustion||imagePullFailure){
         let cleanup;
         try{
           cleanup=await cleanupSealedExitedHarborEnvironments(outputRoot,{
@@ -300,16 +300,17 @@ try{
           cleanup={eligibleProjects:null,removedContainers:0,removedNetworks:0,projects:[],error:String(error?.message||error)};
         }
         const retryJobName=jobName+"-retry1";
-        laneState.retryReason="docker_subnet_exhaustion";laneState.retryCleanup=cleanup;laneState.jobName=retryJobName;jobName=retryJobName;
+        laneState.retryReason=subnetExhaustion?"docker_subnet_exhaustion":"docker_image_pull_failure";laneState.retryCleanup=cleanup;laneState.jobName=retryJobName;jobName=retryJobName;
         args=argsForJob(jobName);
         if(retainNativeEnvironment)args.push("--no-delete");
         if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
         if(AGENT_TIMEOUT_MULTIPLIER!==1)args.push("--agent-timeout-multiplier",String(AGENT_TIMEOUT_MULTIPLIER));
         runnerError=null;runError=null;await persistLatestPointer();await persistReport({complete:false});
         try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
-        const retryTrial=await trialResult(outputRoot,jobName),retrySubnetExhaustion=isPreAgentDockerSubnetExhaustion(retryTrial),retryDockerExecTransportFailure=isDockerExecTransportFailure(retryTrial);
-        laneState.attempts.push({jobName,status:runnerError||retrySubnetExhaustion||retryDockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:retrySubnetExhaustion?"docker_subnet_exhaustion":retryDockerExecTransportFailure?"docker_exec_transport_failure":null});
+        const retryTrial=await trialResult(outputRoot,jobName),retrySubnetExhaustion=isPreAgentDockerSubnetExhaustion(retryTrial),retryImagePullFailure=isPreAgentDockerImagePullFailure(retryTrial),retryDockerExecTransportFailure=isDockerExecTransportFailure(retryTrial);
+        laneState.attempts.push({jobName,status:runnerError||retrySubnetExhaustion||retryImagePullFailure||retryDockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:retrySubnetExhaustion?"docker_subnet_exhaustion":retryImagePullFailure?"docker_image_pull_failure":retryDockerExecTransportFailure?"docker_exec_transport_failure":null});
         if(retrySubnetExhaustion)laneState.infrastructureFailureReason="docker_subnet_exhaustion";
+        else if(retryImagePullFailure)laneState.infrastructureFailureReason="docker_image_pull_failure";
         else if(retryDockerExecTransportFailure)laneState.infrastructureFailureReason="docker_exec_transport_failure";
     }
     let drainError=null;
@@ -333,7 +334,7 @@ try{
       let result=null;
       try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
       const recordedTrial=await trialResult(outputRoot,jobName),trial=regradeRecovery?.ok&&regradeRecovery.regrade?.result?regradeRecovery.regrade.result:recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
-      const infrastructureFailureReason=isDockerExecTransportFailure(trial)?"docker_exec_transport_failure":isPreAgentDockerSubnetExhaustion(trial)?"docker_subnet_exhaustion":laneState.infrastructureFailureReason;
+      const infrastructureFailureReason=isDockerExecTransportFailure(trial)?"docker_exec_transport_failure":isPreAgentDockerSubnetExhaustion(trial)?"docker_subnet_exhaustion":isPreAgentDockerImagePullFailure(trial)?"docker_image_pull_failure":laneState.infrastructureFailureReason;
       laneState.infrastructureFailureReason=infrastructureFailureReason||null;
       const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName):null;
       const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName):null;

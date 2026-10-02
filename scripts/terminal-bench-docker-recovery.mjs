@@ -13,6 +13,14 @@ export function isPreAgentDockerSubnetExhaustion(trial){
   return /all predefined address pools have been fully subnetted/i.test(message);
 }
 
+export function isPreAgentDockerImagePullFailure(trial){
+  if(!trial||typeof trial!=="object")return false;
+  if(trial.agent_setup||trial.agent_execution||trial.verifier)return false;
+  const message=String(trial?.exception_info?.exception_message||"");
+  if(!/Docker compose command failed for environment/i.test(message))return false;
+  return /(?:Pulling|Downloading|Extracting)/i.test(message)&&/unexpected EOF/i.test(message);
+}
+
 export function isDockerExecTransportFailure(trial){
   if(!trial||typeof trial!=="object")return false;
   const message=String(trial?.exception_info?.exception_message||"");
