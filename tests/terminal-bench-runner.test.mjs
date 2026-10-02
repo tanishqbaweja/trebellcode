@@ -103,6 +103,8 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/isDockerExecTransportFailure/);
   assert.match(source,/docker_subnet_exhaustion/);
   assert.match(source,/docker_exec_transport_failure/);
+  assert.match(source,/const failedTrial=await trialResult\(outputRoot,jobName\)/);
+  assert.match(source,/trialInfrastructureFailure:/);
   assert.match(source,/retryJobName=jobName\+"-retry1"/);
   assert.match(source,/readTrialVerifierSummary/);
   assert.match(source,/recoveredEvidence\?\.inputTokens/);

@@ -283,11 +283,10 @@ try{
     laneState.status="running";laneState.startedAt=new Date().toISOString();await persistReport({complete:false});
     let runError=null,runnerError=null,regradeRecovery=null;
     try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
-    laneState.attempts.push({jobName,status:runnerError?"failed":"finished",runnerError});
-    if(runnerError){
-      const failedTrial=await trialResult(outputRoot,jobName);
-      const subnetExhaustion=isPreAgentDockerSubnetExhaustion(failedTrial),dockerExecTransportFailure=isDockerExecTransportFailure(failedTrial);
-      if(subnetExhaustion||dockerExecTransportFailure){
+    const failedTrial=await trialResult(outputRoot,jobName);
+    const subnetExhaustion=isPreAgentDockerSubnetExhaustion(failedTrial),dockerExecTransportFailure=isDockerExecTransportFailure(failedTrial);
+    laneState.attempts.push({jobName,status:runnerError||subnetExhaustion||dockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:subnetExhaustion?"docker_subnet_exhaustion":dockerExecTransportFailure?"docker_exec_transport_failure":null});
+    if(subnetExhaustion||dockerExecTransportFailure){
         let cleanup;
         try{
           cleanup=await cleanupSealedExitedHarborEnvironments(outputRoot,{
@@ -305,8 +304,8 @@ try{
         if(AGENT_TIMEOUT_MULTIPLIER!==1)args.push("--agent-timeout-multiplier",String(AGENT_TIMEOUT_MULTIPLIER));
         runnerError=null;runError=null;await persistLatestPointer();await persistReport({complete:false});
         try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
-        laneState.attempts.push({jobName,status:runnerError?"failed":"finished",runnerError});
-      }
+        const retryTrial=await trialResult(outputRoot,jobName),retrySubnetExhaustion=isPreAgentDockerSubnetExhaustion(retryTrial),retryDockerExecTransportFailure=isDockerExecTransportFailure(retryTrial);
+        laneState.attempts.push({jobName,status:runnerError||retrySubnetExhaustion||retryDockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:retrySubnetExhaustion?"docker_subnet_exhaustion":retryDockerExecTransportFailure?"docker_exec_transport_failure":null});
     }
     let drainError=null;
     try{
