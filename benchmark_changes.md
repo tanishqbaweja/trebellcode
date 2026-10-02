@@ -509,6 +509,20 @@ Payload-free per-turn analysis found that Native model turns **5** and **17** al
 
 ---
 
+## 2026-10-02 - Prewarm parallel Harbor task cache
+
+**Evidence:** invalid pair `tb4-pair-gpt-6-luna-max-cumulative-layout-shift-20261002T124616Z` exposed a host-side Windows Harbor cache race. Native and Codex OAuth both failed before a trial existed while parallel Harbor processes were mutating the same task package cache, with `WinError 2` and `WinError 145`. Codex API alone entered the task and later consumed **20.894M input / 20.422M cached / 179,797 output / ~$0.35295** before exit 137, work that could never form a valid comparison. The sealed exception later exposed the task instruction, so this task is now contaminated.
+
+**Harness change:** **`a1bf17ba`** prewarms the exact task registry package once before multi-lane parallel launch and records the prewarm in pair provenance. A Harbor runner failure that produces no trial at all also gets one bounded `pre_trial_runner_failure` retry and is marked infrastructure-failed if the retry also fails.
+
+**Why:** agent execution should be parallel, but Harbor's shared package extraction must not race itself on Windows. Prewarming converts shared mutable setup into one serialized prerequisite and fails before paid inference when that prerequisite cannot be established.
+
+**Expected effect:** eliminate same-task cache extraction races, keep three-lane starts comparable, and avoid wasting one surviving paid lane after its peers die before agent execution.
+
+**Validation status:** Terminal-Bench runner **21 / 21**; full repository **1,279 / 1,279**; terminal bundle build and `git diff --check` pass. Native bundle hash remains **`b4e7640eeabcdefa3182868f96cac6a988cbbefd4625022e39eb9486ec5abe98`**. Fresh unseen validation is pending. Do **not** reuse `cumulative-layout-shift` as fresh evidence.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name
