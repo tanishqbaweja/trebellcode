@@ -13,7 +13,7 @@ import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "./terminal-bench-pair-lock.mjs";
 import { estimateGpt6LunaStandardCostFromAggregate, GPT6_LUNA_STANDARD_PRICING } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
-import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
+import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -334,7 +334,7 @@ try{
       let result=null;
       try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
       const recordedTrial=await trialResult(outputRoot,jobName),trial=regradeRecovery?.ok&&regradeRecovery.regrade?.result?regradeRecovery.regrade.result:recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
-      const infrastructureFailureReason=isDockerExecTransportFailure(trial)?"docker_exec_transport_failure":isPreAgentDockerSubnetExhaustion(trial)?"docker_subnet_exhaustion":isPreAgentDockerImagePullFailure(trial)?"docker_image_pull_failure":laneState.infrastructureFailureReason;
+      const infrastructureFailureReason=isDockerExecTransportFailure(trial)?"docker_exec_transport_failure":isPreAgentDockerSubnetExhaustion(trial)?"docker_subnet_exhaustion":isDockerImagePullFailure(trial)?"docker_image_pull_failure":laneState.infrastructureFailureReason;
       laneState.infrastructureFailureReason=infrastructureFailureReason||null;
       const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName):null;
       const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName):null;

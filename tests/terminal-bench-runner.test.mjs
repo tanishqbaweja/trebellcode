@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
-import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
+import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -101,6 +101,7 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/cleanupSealedExitedHarborEnvironments/);
   assert.match(source,/isPreAgentDockerSubnetExhaustion/);
   assert.match(source,/isPreAgentDockerImagePullFailure/);
+  assert.match(source,/isDockerImagePullFailure/);
   assert.match(source,/isDockerExecTransportFailure/);
   assert.match(source,/docker_subnet_exhaustion/);
   assert.match(source,/docker_image_pull_failure/);
@@ -171,6 +172,17 @@ test("Terminal-Bench Docker image-pull retry only recognizes pre-agent unexpecte
   assert.equal(isPreAgentDockerImagePullFailure({...base,agent_setup:{started_at:"x"}}),false);
   assert.equal(isPreAgentDockerImagePullFailure({...base,exception_info:{exception_message:"Docker compose command failed for environment example: permission denied"}}),false);
   assert.equal(isPreAgentDockerImagePullFailure({...base,exception_info:{exception_message:"download unexpected EOF"}}),false);
+});
+
+test("Terminal-Bench Docker image-pull classification also catches post-agent verifier setup EOFs without making them retryable",()=>{
+  const afterAgent={
+    exception_info:{exception_message:"Docker compose command failed for environment verifier. Image example Pulling abc Extracting 10B unexpected EOF"},
+    agent_setup:{started_at:"a",finished_at:"b"},
+    agent_execution:{started_at:"c",finished_at:"d"},
+    verifier:null,
+  };
+  assert.equal(isDockerImagePullFailure(afterAgent),true);
+  assert.equal(isPreAgentDockerImagePullFailure(afterAgent),false);
 });
 
 test("Terminal-Bench Docker exec transport retry only recognizes Docker Desktop exec 5xx failures",()=>{
