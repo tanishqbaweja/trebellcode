@@ -2,6 +2,8 @@
 
 This file is the canonical home for Trebell Code benchmark definitions, commands, methodology, and recorded results. New benchmark work should be documented here rather than living only in terminal output, chat history, or ad-hoc notes.
 
+Benchmark-driven **Trebell Native harness changes** are tracked separately in [`benchmark_changes.md`](benchmark_changes.md), including the observed benchmark failure, the generic harness change, why it was made, the expected effect, and its validation status.
+
 ## Benchmark rules
 
 - Compare harnesses on the same task, starting repository tree, model, and effective write/execute permissions whenever the comparison is intended to measure harness quality.
