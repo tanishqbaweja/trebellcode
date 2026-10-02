@@ -209,9 +209,9 @@ function explicitPersistentArtifactTargets(messages=[]){
     const token=tokens[index];
     if(!/[.][A-Za-z0-9_-]{1,16}$/.test(token))continue;
     const before=tokens.slice(Math.max(0,index-10),index).join(" "),near=tokens.slice(Math.max(0,index-4),index).join(" "),previous=String(tokens[index-1]||"").toLowerCase();
-    const action=/\b(?:create|created|generate|generated|produce|produced|render|rendered|export|exported|save|saved|write|written|output|emit|emitted|place|placed|deliver|delivered|build|built|make|made|store|stored|leave|left)\b/i;
+    const action=/\b(?:creat(?:e|es|ed|ing)|generat(?:e|es|ed|ing)|produc(?:e|es|ed|ing)|render(?:s|ed|ing)?|export(?:s|ed|ing)?|sav(?:e|es|ed|ing)|writ(?:e|es|ten|ing)|output(?:s|ted|ting)?|emit(?:s|ted|ting)?|plac(?:e|es|ed|ing)|deliver(?:s|ed|ing)?|build(?:s|ing)?|built|mak(?:e|es|ing)|made|stor(?:e|es|ed|ing)|leav(?:e|es|ing)|left)\b/i;
     const sourceTail=/(?:from|using|via|based\s+on|read|inspect|load|open)\b(?:\s+\w+){0,4}$/i.test(before);
-    const outputConnector=/^(?:to|as|at|into|in)$/i.test(previous),outputNoun=/\b(?:output|result|artifact|deliverable|submission|file|final)\b/i.test(before);
+    const outputConnector=/^(?:to|as|at|into|in)$/i.test(previous),outputNoun=/\b(?:output|result|artifact|deliverable|submission|files?|final)\b/i.test(before);
     if(sourceTail||!(action.test(near)||(action.test(before)&&(outputConnector||outputNoun))))continue;
     if(/(?:do\s+not|don't|dont|never|without)\s+(?:create|generate|produce|render|export|save|write|output|emit|place|deliver|build|make|store|leave)\b/i.test(before))continue;
     if(!targets.includes(token))targets.push(token);

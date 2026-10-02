@@ -373,7 +373,7 @@ test("native persistent deliverable pressure coexists with workspace mutation in
   const events=[],requests=[];let turn=0;
   const result=await runNativeAgentTurn({
     model:"test-model",
-    messages:[{role:"user",content:"Write a generator script at /app/answer.py that saves two output files next to it: /app/answer_base.bin and /app/answer_edit.bin. The edit changes one parameter; every other parameter stays unchanged."}],
+    messages:[{role:"user",content:"Write a generator script at /app/answer.py that saves two parametric files next to it: /app/answer_base.bin and /app/answer_edit.bin. The edit changes one parameter; every other parameter stays unchanged."}],
     tools:[
       {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
       {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
