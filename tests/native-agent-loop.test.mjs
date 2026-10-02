@@ -319,7 +319,68 @@ test("native implementation pressure does not treat a build-only request as a wo
   assert.equal(events.some(event=>event.name==="native.progress.implementation_checkpoint"),false);
   assert.equal(events.some(event=>event.name==="native.progress.implementation_pressure"),false);
   assert.equal(events.some(event=>event.name==="native.progress.implementation_call_blocked"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.deliverable_checkpoint"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.deliverable_escalation"),false);
   assert.equal(requests.length,5);
+});
+
+test("native persistent artifact request gets bounded deliverable progress checkpoints",async()=>{
+  const requests=[],events=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",
+    messages:[{role:"user",content:"Generate the final model and save the result to /app/out.step."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    maxModelTurns:10,maxToolCalls:20,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn===5){
+        const checkpoint=request.messages.find(message=>message.role==="developer"&&/deliverable checkpoint/i.test(String(message.content||"")));
+        assert.ok(checkpoint);assert.match(String(checkpoint.content),/\/app\/out\.step/);assert.match(String(checkpoint.content),/smallest viable generation or production attempt/i);
+      }
+      if(turn===9){
+        const escalation=request.messages.find(message=>message.role==="developer"&&/deliverable escalation/i.test(String(message.content||"")));
+        assert.ok(escalation);assert.match(String(escalation.content),/stop broad exploratory analysis/i);assert.match(String(escalation.content),/concrete production or toolchain action/i);
+      }
+      return turn<=8?{text:"",toolCalls:[{id:"probe-"+turn,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"echo",args:["evidence"]})}],usage:{}}:{text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({success:true,stdout:"evidence",exitCode:0}),
+  });
+  assert.equal(result.text,"done");assert.equal(requests.length,9);
+  assert.equal(events.filter(event=>event.name==="native.progress.deliverable_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.deliverable_escalation").length,1);
+  assert.equal(events.some(event=>event.name==="native.progress.implementation_checkpoint"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.implementation_call_blocked"),false);
+});
+
+test("native deliverable detector separates a source asset from a passive bare output filename",async()=>{
+  const events=[],requests=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Generate the final model from /app/input.png. The output must be saved to out.step."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],maxModelTurns:6,maxToolCalls:10,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      return turn<=4?{text:"",toolCalls:[{id:"probe-"+turn,namespace:"trebell_terminal",name:"run",arguments:'{"command":"echo","args":["evidence"]}'}],usage:{}}:{text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({success:true,stdout:"evidence",exitCode:0}),
+  });
+  assert.equal(result.text,"done");
+  const checkpoint=events.find(event=>event.name==="native.progress.deliverable_checkpoint");assert.ok(checkpoint);assert.equal(checkpoint.data?.targetCount,1);
+  const prompt=requests[4].messages.find(message=>message.role==="developer"&&/deliverable checkpoint/i.test(String(message.content||"")));assert.ok(prompt);
+  assert.match(String(prompt.content),/out\.step/);assert.doesNotMatch(String(prompt.content),/input\.png/);
+});
+
+test("native input-file inspection is not mistaken for a persistent deliverable",async()=>{
+  const events=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Inspect /app/input.step and report its dimensions. Do not modify anything."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    maxModelTurns:10,maxToolCalls:20,onEvent:event=>events.push(event),
+    providerTurn:async()=>{turn++;return turn<=8?{text:"",toolCalls:[{id:"inspect-"+turn,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"echo",args:["inspection"]})}],usage:{}}:{text:"reported",toolCalls:[],usage:{}}},
+    executeTool:async()=>({success:true,stdout:"inspection",exitCode:0}),
+  });
+  assert.equal(result.text,"reported");
+  assert.equal(events.some(event=>event.name==="native.progress.deliverable_checkpoint"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.deliverable_escalation"),false);
 });
 
 test("native agent warns the model before the hard model-turn budget cliff",async()=>{
