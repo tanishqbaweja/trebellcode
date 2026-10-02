@@ -1251,3 +1251,47 @@ A later **clean replacement** of the same exposed task was allowed only to recov
 Native therefore lost this clean baseline on both measured quality and cost: it spent about **36% more** API-equivalent dollars than Codex API and about **86% more** than Codex OAuth while passing one fewer verifier check. All three produced a watertight STEP model; only the two Codex lanes also passed the topology check. Native used **49 model turns / 56 tool calls** and **70,299 reasoning-output tokens** with **99.713% cache carryover**, so the result is not explained by poor prefix-cache retention. The important interpretation is architectural rather than task-specific: the old Native bundle spent substantially more inference before converging on a persistent deliverable. That clean baseline is the motivation for externally validating the later generic persistent-deliverable controller on a different unseen task.
 
 Do **not** rerun `cad-model` as a fresh benchmark target. The agents have now been exposed to it. The next external validation must use another unseen task after a healthy Docker preflight.
+
+#### Fresh `freecad-spring-clip` follow-up: infrastructure-invalid, but it exposed a deliverable-detector miss
+
+`terminal-bench/freecad-spring-clip` was selected as the next unseen Terminal-Bench 4.0 target specifically to validate the persistent-deliverable controller on a different artifact-producing task. The first launch, pair **`tb4-pair-gpt-6-luna-max-freecad-spring-clip-20261002T060853Z`**, never reached any agent: all three lanes failed while Docker was pulling/extracting the same environment image with **`unexpected EOF`**, producing no model usage. The exact environment digest was then pre-pulled successfully. Commit **`f6e45cf4`** adds a one-shot retry only for this **pre-agent** Docker image-pull EOF class; it does not replay paid work after agent execution has started.
+
+The evidence-bearing follow-up pair was **`tb4-pair-gpt-6-luna-max-freecad-spring-clip-20261002T061633Z`**, launched at the benchmark's base agent timeout from clean source commit **`f6e45cf434ef71927f56a607deed44d6e0e3e91b`**. Native used bundle SHA-256 **`bba6318ad5b78bf5e5ad8296d1454bc27239f51e221284f2b0170d5e2e449d56`**, which contains the original persistent-deliverable controller from `5bc32116`.
+
+This pair is also **not a clean harness comparison**. Native was interrupted mid-agent by the same Docker Desktop **`/exec/<container>/json` 500** transport failure seen earlier, while both Codex lanes completed substantial model work but then failed during a later Docker environment-image extraction with **`unexpected EOF`** before clean verifier grading. Commit **`0f479f49`** now classifies those post-agent/verifier image-pull EOFs as infrastructure failures too, while keeping automatic retry restricted to the zero-model-work pre-agent case. The pair is therefore `infrastructureInterrupted=true` / `infrastructureComparable=false`.
+
+Partial usage before infrastructure failure:
+
+| Lane | API-equivalent cost | Input | Cached input | Output | Valid correctness result? |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Trebell Native API | **$0.07105** | 906,503 | 789,416 | 97,276 | No — Docker exec transport failure mid-agent |
+| Codex API | **$0.10199** | 2,857,908 | 2,723,387 | 115,879 | No — later Docker image extraction EOF prevented clean grading |
+| Codex OAuth | **$0.04747** | 820,133 | 736,256 | 63,431 | No — later Docker image extraction EOF prevented clean grading |
+
+Despite the invalid correctness comparison, the Native event journal exposed a direct generic controller bug. Before Docker failed, Native completed **13 model turns / 21 tool calls** and emitted **zero** `native.progress.deliverable_checkpoint` and **zero** `native.progress.deliverable_escalation` events. Once the task was sealed and safe to inspect, its instruction began:
+
+> “Write a FreeCAD Python script at /app/answer.py that saves two parametric FCStd files next to the script”
+
+and explicitly required `/app/answer_base.FCStd` and `/app/answer_edit.FCStd`. The task also describes “the edit applied” and says “the edit changes” a parameter. The detector itself correctly recognizes file-shaped output targets, but the controller had defined persistent-artifact pressure as **output targets AND not workspace mutation**. Because the instruction also says “Write...” and contains ordinary “edit/changes” wording, `workspaceMutationRequested` was true, which disabled deliverable pressure entirely. That is an architectural mistake: repository/code mutation intent and persistent-output intent can coexist and should not be mutually exclusive.
+
+Commit **`44b9257f`** removes that false exclusivity. Persistent deliverable pressure now activates whenever explicit output targets are detected, independently of whether the same task also requires writing/editing implementation files. A regression modeled on this generic pattern — write a generator script, save base/edit output files, and describe an edit delta — proves the deliverable checkpoint still fires even with mutation wording. Validation passes **182/182** Native-loop tests, **73/73** Native-session tests, **1/1** strategy-metrics test, **19/19** Terminal-Bench runner tests, the Harbor Native bundle build, and `git diff --check`.
+
+Do **not** reuse `freecad-spring-clip` as fresh post-fix evidence. All three agents have now seen the task. The next external validation must use another unseen Terminal-Bench task and should begin only after Docker environment preflight/pull health is clean.
+
+#### `freecad-spring-clip`: fresh validation attempt invalidated by Docker infrastructure
+
+`terminal-bench/freecad-spring-clip` was selected as the next unseen Terminal-Bench 4.0 task. The first launch, pair **`tb4-pair-gpt-6-luna-max-freecad-spring-clip-20261002T060853Z`**, never reached any agent: all three lanes failed while Docker was pulling/extracting the same task environment image and ended with **`unexpected EOF`**, with no model-token usage. Commit **`f6e45cf4`** adds a conservative one-shot retry for that exact pre-agent Docker Compose pull/extract EOF class. The exact environment digest was then pulled successfully once on the host before the next launch.
+
+A second three-lane launch, pair **`tb4-pair-gpt-6-luna-max-freecad-spring-clip-20261002T061633Z`**, did reach real model work at the base agent timeout, but it is also **not clean comparison evidence**. The pair correctly finished with **`infrastructureInterrupted=true`** and **`infrastructureComparable=false`**:
+
+- Native reached **13 completed model turns / 21 tools**, about **906,503 input / 789,416 cached / 97,276 output**, and about **$0.07105** API-equivalent cost before Docker Desktop lost the live exec channel with the known **`dockerDesktopLinuxEngine ... /exec/<container>/json` 500**. No clean verifier result exists.
+- Codex API reached about **2,857,908 input / 2,723,387 cached / 115,879 output** and about **$0.10199** API-equivalent cost before Harbor later failed while Docker was pulling/extracting a post-agent environment with **`unexpected EOF`**. No verifier result exists.
+- Codex OAuth reached about **820,133 input / 736,256 cached / 63,431 output** and about **$0.04747** API-equivalent cost before the same post-agent Docker pull/extract **`unexpected EOF`** class. No verifier result exists.
+
+Because real agents saw this task during the second attempt, **do not reuse `freecad-spring-clip` as a fresh benchmark target** even though correctness was never scored.
+
+The partial Native journal still exposed two generic harness issues. First, the frozen pair source **`f6e45cf4`** still used the old OpenAI WebSocket absolute request deadline: model turn 4 retried at almost exactly **300 seconds** and later completed, showing why commit **`75dd2c60`** changes healthy active WebSocket streaming to use inactivity timeout rather than a fixed whole-turn wall deadline. Second, the task instruction requires a generator script plus persistent FCStd outputs. Trebell detected workspace mutation intent and therefore suppressed the newer persistent-deliverable controller entirely; only `native.progress.implementation_checkpoint` fired. After the task was exposed, inspection of the instruction showed the generic pattern: “Write a ... script at `/app/answer.py` that saves ... output files.” Commit **`44b9257f`** removes the incorrect mutual exclusion, so persistent-deliverable pressure can coexist with workspace-edit pressure. A regression reproducing the mixed “write generator + save outputs + edit applied” structure passes inside the **182/182** Native-loop suite.
+
+Commit **`0f479f49`** also fixes the benchmark reporter’s remaining infrastructure-classification gap. Docker Compose image pull/extraction **`unexpected EOF`** is now classified as infrastructure failure even when it occurs after paid agent work (for example while bringing up a verifier environment), while **automatic retry remains restricted to the pre-agent case** so paid trajectories are never replayed silently. Terminal-Bench runner validation passes **19/19** after the change.
+
+The next clean external comparison must therefore start from **`44b9257f` or later**, use a still-unseen task, and preflight Docker task/verifier environment pulls before starting paid model inference.
