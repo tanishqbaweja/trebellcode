@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { estimateGpt6LunaStandardCostFromRecords } from "./terminal-bench-cost.mjs";
+import { estimateGpt6LunaCostFromRecords } from "./terminal-bench-cost.mjs";
 
 function rows(text){
   const out=[];
@@ -11,16 +11,23 @@ function rows(text){
   return out;
 }
 
-export function summarizeNativeEventEvidence(text){
+export function summarizeNativeEventEvidence(text,{serviceTier="standard"}={}){
   const events=rows(text),models=events.filter(event=>event?.name==="native.model.completed"),tools=events.filter(event=>event?.name==="native.tool.requested");
   if(!models.length&&!tools.length)return null;
+  const unaccountedProviderRequests=models.filter(event=>{
+    const finish=String(event?.data?.finishReason||"").trim().toLowerCase(),turn=event?.data?.usage||{};
+    const accounted=Number(turn?.inputTokens||0)>0||Number(turn?.outputTokens||0)>0||Number(turn?.totalTokens||0)>0;
+    return finish==="incomplete"&&!accounted;
+  }).length;
+  const usageAccountingComplete=unaccountedProviderRequests===0;
   const usage={inputTokens:0,cachedInputTokens:0,outputTokens:0,totalTokens:0,reasoningOutputTokens:0,cacheWriteInputTokens:0};
   for(const event of models){
     const turn=event?.data?.usage||{};
     for(const key of Object.keys(usage))usage[key]+=Number(turn?.[key]||0);
   }
   const uncachedInputTokens=Math.max(0,usage.inputTokens-usage.cachedInputTokens);
-  const requestUsage=models.map(event=>event?.data?.usage||{}),cost=estimateGpt6LunaStandardCostFromRecords(requestUsage);
+  const requestUsage=models.map(event=>event?.data?.usage||{}),rawCost=estimateGpt6LunaCostFromRecords(requestUsage,{serviceTier});
+  const cost={...rawCost,usageAccountingComplete,unaccountedProviderRequests,totalUsdIsLowerBound:!usageAccountingComplete};
   return {
     modelTurns:models.length,
     toolCalls:tools.length,
@@ -31,6 +38,9 @@ export function summarizeNativeEventEvidence(text){
     outputTokens:usage.outputTokens,
     reasoningOutputTokens:usage.reasoningOutputTokens,
     cacheWriteInputTokens:usage.cacheWriteInputTokens,
+    usageAccountingComplete,
+    unaccountedProviderRequests,
+    apiEquivalentCostIsLowerBound:!usageAccountingComplete,
     maxObservedInputTokens:requestUsage.reduce((max,turn)=>Math.max(max,Number(turn?.inputTokens||turn?.input_tokens||0)),0),
     apiEquivalentCostUsd:cost.totalUsd,
     apiEquivalentCostBreakdown:cost,
@@ -48,13 +58,13 @@ export function selectNativeMetric(resultValue,trialValue,recoveredValue){
   return {value:recoveredValue??null,recovered:recoveredValue!=null};
 }
 
-export async function recoverNativeEventEvidence(outputRoot,jobName){
+export async function recoverNativeEventEvidence(outputRoot,jobName,{serviceTier="standard"}={}){
   let entries=[];try{entries=await readdir(join(outputRoot,jobName),{withFileTypes:true})}catch{return null}
   for(const entry of entries){
     if(!entry.isDirectory())continue;
     try{
       const text=await readFile(join(outputRoot,jobName,entry.name,"agent","trebell-native-events.jsonl"),"utf8");
-      const summary=summarizeNativeEventEvidence(text);
+      const summary=summarizeNativeEventEvidence(text,{serviceTier});
       if(summary)return summary;
     }catch{}
   }

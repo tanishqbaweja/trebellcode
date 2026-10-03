@@ -362,7 +362,7 @@ try{
       const recordedTrial=await trialResult(outputRoot,jobName),trial=regradeRecovery?.ok&&regradeRecovery.regrade?.result?regradeRecovery.regrade.result:recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
       const infrastructureFailureReason=isDockerExecTransportFailure(trial)?"docker_exec_transport_failure":isPreAgentDockerSubnetExhaustion(trial)?"docker_subnet_exhaustion":isDockerImagePullFailure(trial)?"docker_image_pull_failure":laneState.infrastructureFailureReason;
       laneState.infrastructureFailureReason=infrastructureFailureReason||null;
-      const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName):null;
+      const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName,{serviceTier:SERVICE_TIER}):null;
       const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName):null;
       const recoveredEvidence=recoveredNative||recoveredCodex;
       const inputMetric=selectNativeMetric(result?.stats?.n_input_tokens,trial?.agent_result?.n_input_tokens,recoveredEvidence?.inputTokens);
@@ -373,11 +373,12 @@ try{
       const cacheHitPercent=inputTokens==null||Number(inputTokens)<=0||cachedTokens==null?null:Number(((Number(cachedTokens)/Number(inputTokens))*100).toFixed(2));
       const trebellNative=trial?.agent_result?.metadata?.trebell_native||null;
       const recoveredFromNativeEvents=Boolean(recoveredNative&&(inputMetric.recovered||cachedMetric.recovered||outputMetric.recovered||!trebellNative));
-      const apiEquivalentCostBreakdown=MODEL==="gpt-6-luna"&&recoveredEvidence?.apiEquivalentCostBreakdown&&SERVICE_TIER!=="fast"
+      let apiEquivalentCostBreakdown=MODEL==="gpt-6-luna"&&recoveredEvidence?.apiEquivalentCostBreakdown
         ?recoveredEvidence.apiEquivalentCostBreakdown
         :MODEL==="gpt-6-luna"&&inputTokens!=null&&cachedTokens!=null
           ?estimateGpt6LunaCostFromAggregate({inputTokens,cachedInputTokens:cachedTokens,cacheWriteInputTokens:trebellNative?.cache_write_input_tokens??recoveredEvidence?.cacheWriteInputTokens??0,outputTokens:outputMetric.value??0},{maxObservedInputTokens:recoveredEvidence?.maxObservedInputTokens??null,serviceTier:SERVICE_TIER})
           :null;
+      if(apiEquivalentCostBreakdown&&recoveredNative)apiEquivalentCostBreakdown={...apiEquivalentCostBreakdown,usageAccountingComplete:recoveredNative.usageAccountingComplete!==false,unaccountedProviderRequests:Number(recoveredNative.unaccountedProviderRequests||0),totalUsdIsLowerBound:recoveredNative.apiEquivalentCostIsLowerBound===true};
       jobs[laneIndex]={
         harness,label,agent,jobName,runError,runnerError,drainError,authMode,serviceTier:SERVICE_TIER,
         infrastructureFailureReason:infrastructureFailureReason||null,
@@ -387,6 +388,9 @@ try{
         costUsd:result?.stats?.cost_usd??trial?.agent_result?.cost_usd??null,
         apiEquivalentCostUsd:apiEquivalentCostBreakdown?.totalUsd??null,
         apiEquivalentCostBreakdown,
+        usageAccountingComplete:harness==="native"?recoveredNative?.usageAccountingComplete!==false:true,
+        unaccountedProviderRequests:harness==="native"?Number(recoveredNative?.unaccountedProviderRequests||0):0,
+        apiEquivalentCostIsLowerBound:harness==="native"&&recoveredNative?.apiEquivalentCostIsLowerBound===true,
         reward:trial?.verifier_result?.rewards?.reward??null,taskChecksum:trial?.task_checksum??null,
         agentVersion:trial?.agent_info?.version??null,
         setupMs:elapsedMs(trial?.agent_setup),agentExecutionMs:elapsedMs(trial?.agent_execution),verifierMs:elapsedMs(trial?.verifier),

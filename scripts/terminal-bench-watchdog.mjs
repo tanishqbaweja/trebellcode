@@ -15,7 +15,7 @@ async function newestTrialDir(jobName){
 async function fileState(path){try{const info=await stat(path);return {bytes:info.size,lastWriteAt:info.mtime.toISOString(),ageSeconds:Math.max(0,Math.round((Date.now()-info.mtimeMs)/1000))}}catch{return null}}
 async function laneState(lane,report,recovered=null){
   const sourceLabel=lane.sourceLabel||lane.label,trialDir=await newestTrialDir(lane.jobName),job=report?.jobs?.find(item=>item.label===sourceLabel)||null;
-  const liveEvidence=job?null:lane.harness==="native"?await recoverNativeEventEvidence(jobsDir,lane.jobName):lane.harness==="codex"?await recoverCodexSessionEvidence(jobsDir,lane.jobName):null;
+  const liveEvidence=job?null:lane.harness==="native"?await recoverNativeEventEvidence(jobsDir,lane.jobName,{serviceTier:report?.serviceTier||"standard"}):lane.harness==="codex"?await recoverCodexSessionEvidence(jobsDir,lane.jobName):null;
   let activity=null;
   if(trialDir){
     const agentDir=join(trialDir,"agent"),candidates=[join(agentDir,"trebell-native-events.jsonl"),join(agentDir,"codex.txt")];
@@ -33,7 +33,7 @@ async function laneState(lane,report,recovered=null){
   }
   return {...lane,activity,job:effectiveJob,liveEvidence:Boolean(liveEvidence&&!job)};
 }
-function money(value){return value==null?"-":`$${Number(value).toFixed(4)}`}
+function money(value,{lowerBound=false}={}){return value==null?"-":`${lowerBound?"≥":""}$${Number(value).toFixed(4)}`}
 function count(value){return value==null?"-":Number(value).toLocaleString("en-US")}
 async function snapshot(){
   const pointer=await json(join(validationDir,"terminal-bench-latest.json"));
@@ -102,9 +102,10 @@ function render(snap,saved){
     const checks=lane.job?.verifierChecks||lane.job?.recoveredVerifierChecks,verify=checks?`${checks.passed}/${checks.tests}${lane.job?.verifierRecovered?"*":""}`:"-";
     const age=lane.activity?.state?.ageSeconds,activity=age==null?"-":age<30?"active":age<180?`${age}s ago`:`${Math.round(age/60)}m ago`;
     const cache=lane.job?.cacheHitPercent==null?"-":`${Number(lane.job.cacheHitPercent).toFixed(1)}%`;
-    lines.push(`${lane.label.padEnd(12)}  ${String(lane.status||"?").padEnd(9)}  ${String(activity).padEnd(9)}  ${verify.padEnd(6)}  ${count(lane.job?.inputTokens).padEnd(11)}  ${count(lane.job?.outputTokens).padEnd(11)}  ${cache.padEnd(9)}  ${money(lane.job?.apiEquivalentCostUsd)}`);
+    lines.push(`${lane.label.padEnd(12)}  ${String(lane.status||"?").padEnd(9)}  ${String(activity).padEnd(9)}  ${verify.padEnd(6)}  ${count(lane.job?.inputTokens).padEnd(11)}  ${count(lane.job?.outputTokens).padEnd(11)}  ${cache.padEnd(9)}  ${money(lane.job?.apiEquivalentCostUsd,{lowerBound:lane.job?.apiEquivalentCostIsLowerBound===true})}`);
     if(lane.runError)lines.push(`  error: ${String(lane.runError).slice(0,180)}`);
   }
+  if(snap.lanes.some(lane=>lane.job?.apiEquivalentCostIsLowerBound===true))lines.push("Cost note: ≥ indicates a lower bound because one or more provider responses omitted token usage.");
   lines.push("");lines.push(`Saved snapshot: ${saved}`);lines.push(`Full report: ${snap.reportPath}`);
   if(snap.nativeRerunReportPath)lines.push(`Native rerun report: ${snap.nativeRerunReportPath}`);
   return lines.join("\n");

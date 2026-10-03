@@ -23,6 +23,7 @@ export function createNativeStrategyMetrics(){
     abstractionRepairVerificationRejected:0,
     residualStructureCheckpoints:0,
     completionGateChecks:0,
+    completionGateInvalidFailClosed:0,
     completionArtifactConstraintAuditBlocks:0,
     completionGateRecoveries:0,
     completionRecoveryEvidenceUses:0,
@@ -79,6 +80,7 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   }
   else if(name==="native.progress.residual_structure_checkpoint")target.residualStructureCheckpoints=Number(target.residualStructureCheckpoints||0)+1;
   else if(name==="native.completion.gate")target.completionGateChecks=Number(target.completionGateChecks||0)+1;
+  else if(name==="native.completion.gate_invalid_fail_closed")target.completionGateInvalidFailClosed=Number(target.completionGateInvalidFailClosed||0)+1;
   else if(name==="native.completion.constraint_audit_blocked")target.completionArtifactConstraintAuditBlocks=Number(target.completionArtifactConstraintAuditBlocks||0)+1;
   else if(name==="native.completion.gate_recovery"){
     target.completionGateRecoveries=Number(target.completionGateRecoveries||0)+1;

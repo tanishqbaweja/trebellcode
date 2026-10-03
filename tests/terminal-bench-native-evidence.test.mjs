@@ -17,7 +17,31 @@ test("Native event evidence recovers failed-lane token metrics without exposing 
   assert.equal(summary.inputTokens,2200);assert.equal(summary.cachedTokens,1900);assert.equal(summary.uncachedInputTokens,300);
   assert.equal(summary.cacheHitPercent,86.36);assert.equal(summary.outputTokens,120);assert.equal(summary.reasoningOutputTokens,50);assert.equal(summary.cacheWriteInputTokens,12);
   assert.equal(summary.maxObservedInputTokens,1200);assert.ok(summary.apiEquivalentCostUsd>0);assert.equal(summary.apiEquivalentCostBreakdown.contextPricingExact,true);
+  assert.equal(summary.usageAccountingComplete,true);assert.equal(summary.unaccountedProviderRequests,0);assert.equal(summary.apiEquivalentCostIsLowerBound,false);
   assert.equal(JSON.stringify(summary).includes(marker),false);
+});
+
+test("Native event evidence marks incomplete zero-usage provider turns as unaccounted cost",()=>{
+  const text=[
+    {name:"native.model.completed",data:{finishReason:"completed",usage:{inputTokens:1000,cachedInputTokens:900,outputTokens:50}}},
+    {name:"native.model.completed",data:{finishReason:"incomplete",usage:{inputTokens:0,cachedInputTokens:0,outputTokens:0,totalTokens:0}}},
+  ].map(JSON.stringify).join("\n");
+  const summary=summarizeNativeEventEvidence(text);
+  assert.equal(summary.usageAccountingComplete,false);
+  assert.equal(summary.unaccountedProviderRequests,1);
+  assert.equal(summary.apiEquivalentCostIsLowerBound,true);
+  assert.equal(summary.apiEquivalentCostBreakdown.totalUsdIsLowerBound,true);
+});
+
+test("Native event evidence prices the configured service tier instead of assuming Standard",()=>{
+  const text=[
+    {name:"native.model.completed",data:{finishReason:"completed",usage:{inputTokens:1000,cachedInputTokens:900,cacheWriteInputTokens:50,outputTokens:100}}},
+  ].map(JSON.stringify).join("\n");
+  const standard=summarizeNativeEventEvidence(text,{serviceTier:"standard"});
+  const fast=summarizeNativeEventEvidence(text,{serviceTier:"fast"});
+  assert.equal(fast.apiEquivalentCostBreakdown.pricing.serviceTier,"fast");
+  assert.equal(standard.apiEquivalentCostBreakdown.pricing.serviceTier,"standard");
+  assert.ok(fast.apiEquivalentCostUsd>standard.apiEquivalentCostUsd);
 });
 
 test("Native event evidence locates a Harbor trial journal",async()=>{

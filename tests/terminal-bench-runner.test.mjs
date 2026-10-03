@@ -514,6 +514,9 @@ test("Terminal-Bench watchdog persists latest and timestamped history snapshots"
   assert.match(source,/serviceTier:report\.serviceTier\?\?pointer\.serviceTier/);
   assert.match(source,/hostedWebSearch:report\.hostedWebSearch\?\?pointer\.hostedWebSearch/);
   assert.match(source,/Tracked dirty:/);
+  assert.match(source,/apiEquivalentCostIsLowerBound/);
+  assert.match(source,/lower bound because one or more provider responses omitted token usage/);
+  assert.match(source,/recoverNativeEventEvidence\(jobsDir,lane\.jobName,\{serviceTier:report\?\.serviceTier\|\|"standard"\}\)/);
 });
 
 test("Pinned Harbor Codex adapter pins the official version and uses Windows-safe persisted sessions",async()=>{
