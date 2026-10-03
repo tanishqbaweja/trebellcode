@@ -35,6 +35,9 @@ export function createNativeStrategyMetrics(){
     completionRecoveryIncumbentRestores:0,
     completionRecoveryIncumbentRestoreFailures:0,
     completionRecoveryExhaustions:0,
+    completionRecoveryTerminalRepairGraces:0,
+    completionRecoveryEvidenceThenEditWindows:0,
+    completionRecoveryDependentEditVerificationBlocks:0,
     completionRecoveryEditsBlocked:0,
     completionRecoveryNonEditCallsBlocked:0,
     postEditEvidenceCheckpoints:0,
@@ -75,7 +78,10 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   }
   else if(name==="native.progress.residual_structure_checkpoint")target.residualStructureCheckpoints=Number(target.residualStructureCheckpoints||0)+1;
   else if(name==="native.completion.gate")target.completionGateChecks=Number(target.completionGateChecks||0)+1;
-  else if(name==="native.completion.gate_recovery")target.completionGateRecoveries=Number(target.completionGateRecoveries||0)+1;
+  else if(name==="native.completion.gate_recovery"){
+    target.completionGateRecoveries=Number(target.completionGateRecoveries||0)+1;
+    if(data?.recoveryMode==="evidence_then_edit"&&data?.recoveryModeProvided===true)target.completionRecoveryEvidenceThenEditWindows=Number(target.completionRecoveryEvidenceThenEditWindows||0)+1;
+  }
   else if(name==="native.completion.recovery_allowance_used"&&data?.kind==="evidence")target.completionRecoveryEvidenceUses=Number(target.completionRecoveryEvidenceUses||0)+1;
   else if(name==="native.completion.recovery_evidence_call_blocked")target.completionRecoveryEvidenceCallsBlocked=Number(target.completionRecoveryEvidenceCallsBlocked||0)+1;
   else if(name==="native.completion.recovery_allowance_used"&&data?.kind==="post_edit_verification")target.completionRecoveryPostEditVerificationUses=Number(target.completionRecoveryPostEditVerificationUses||0)+1;
@@ -89,7 +95,11 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.completion.recovery_incumbent_restored")target.completionRecoveryIncumbentRestores=Number(target.completionRecoveryIncumbentRestores||0)+1;
   else if(name==="native.completion.recovery_incumbent_restore_failed")target.completionRecoveryIncumbentRestoreFailures=Number(target.completionRecoveryIncumbentRestoreFailures||0)+1;
   else if(name==="native.completion.recovery_exhausted")target.completionRecoveryExhaustions=Number(target.completionRecoveryExhaustions||0)+1;
-  else if(name==="native.completion.recovery_edit_call_blocked")target.completionRecoveryEditsBlocked=Number(target.completionRecoveryEditsBlocked||0)+1;
+  else if(name==="native.completion.recovery_terminal_repair_grace")target.completionRecoveryTerminalRepairGraces=Number(target.completionRecoveryTerminalRepairGraces||0)+1;
+  else if(name==="native.completion.recovery_edit_call_blocked"){
+    target.completionRecoveryEditsBlocked=Number(target.completionRecoveryEditsBlocked||0)+1;
+    if(event?.data?.reason==="recovery_dependent_edit_requires_verification")target.completionRecoveryDependentEditVerificationBlocks=Number(target.completionRecoveryDependentEditVerificationBlocks||0)+1;
+  }
   else if(name==="native.completion.recovery_non_edit_call_blocked")target.completionRecoveryNonEditCallsBlocked=Number(target.completionRecoveryNonEditCallsBlocked||0)+1;
   else if(name==="native.progress.post_edit_evidence_checkpoint")target.postEditEvidenceCheckpoints=Number(target.postEditEvidenceCheckpoints||0)+1;
   else if(name==="native.progress.post_edit_evidence_escalation")target.postEditEvidenceEscalations=Number(target.postEditEvidenceEscalations||0)+1;

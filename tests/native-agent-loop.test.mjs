@@ -3011,6 +3011,69 @@ test("native completion recovery edits immediately when the gate already support
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,1);
 });
 
+test("native evidence-then-edit recovery can diagnose, repair analysis, and persist the dependent deliverable",async()=>{
+  const events=[],executed=[];let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:14,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Analyze the supplied data, fix the calculation implementation if needed, and write the verified final values to results.json."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"analysis.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"The candidate analysis exists, but the final result is not independently verified.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["the exact analysis defect must be localized before changing the final values"],"reason":"A repair is likely, but one focused diagnostic is needed to choose the safe correction."}',toolCalls:[],usage:{}};
+      if(turns===4){
+        const recovery=request.messages.findLast(message=>message.role==="developer"&&/evidence-then-edit recovery window/i.test(String(message.content||"")));assert.ok(recovery);
+        return {text:"",toolCalls:[{id:"diagnose",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["diagnose.mjs"]}'}],usage:{}};
+      }
+      if(turns===5)return {text:"",toolCalls:[{id:"repair-analysis",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"analysis.mjs","old_text":"candidate","new_text":"corrected"}'}],usage:{}};
+      if(turns===6)return {text:"",toolCalls:[{id:"verify-analysis",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["analysis.mjs"]}'}],usage:{}};
+      if(turns===7)return {text:"",toolCalls:[{id:"persist-result",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"results.json","old_text":"old","new_text":"verified"}'}],usage:{}};
+      if(turns===8)return {text:"",toolCalls:[{id:"verify-result",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-result.mjs"]}'}],usage:{}};
+      if(turns===9)return {text:"The corrected analysis and dependent final result now pass the independent checks.",toolCalls:[],usage:{}};
+      if(turns===10)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","unresolved":[],"reason":"The analysis repair was independently verified and the dependent final deliverable was then updated and rechecked."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:call.id==="persist-result"?"results.json":"analysis.mjs",replacements:1}:{exitCode:0,stdout:call.id==="diagnose"?"defect=localized":"acceptance=pass"}},
+  });
+  assert.equal(result.text,"The corrected analysis and dependent final result now pass the independent checks.");
+  assert.deepEqual(executed,["initial","diagnose","repair-analysis","verify-analysis","persist-result","verify-result"]);
+  const recovery=events.find(event=>event.name==="native.completion.gate_recovery"&&event.data?.recoveryEpoch===1);assert.ok(recovery);
+  assert.equal(recovery.data?.recoveryMode,"evidence_then_edit");assert.equal(recovery.data?.evidenceRoundsAllowed,1);assert.equal(recovery.data?.editResponsesAllowed,2);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="evidence").length,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,2);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,2);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_edit_call_blocked").length,0);
+});
+
+test("native evidence-then-edit blocks a dependent second edit until verification",async()=>{
+  const events=[],executed=[];let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Repair the analysis and persist the verified dependent result."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"analysis.mjs","old_text":"old","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"The candidate still needs diagnosis.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["verify the analysis before persisting its dependent result"],"reason":"One diagnostic is needed first."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"diagnose",namespace:"trebell_terminal",name:"run",arguments:'{"command":"verify","args":[]}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"analysis.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
+      if(turns===6)return {text:"",toolCalls:[{id:"too-early",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"results.json","old_text":"old","new_text":"unverified"}'}],usage:{}};
+      if(turns===7)return {text:"",toolCalls:[{id:"verify-repair",namespace:"trebell_terminal",name:"run",arguments:'{"command":"verify","args":[]}'}],usage:{}};
+      if(turns===8)return {text:"",toolCalls:[{id:"persist",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"results.json","old_text":"old","new_text":"verified"}'}],usage:{}};
+      if(turns===9)return {text:"",toolCalls:[{id:"verify-final",namespace:"trebell_terminal",name:"run",arguments:'{"command":"verify","args":[]}'}],usage:{}};
+      if(turns===10)return {text:"The verified dependent result is persisted.",toolCalls:[],usage:{}};
+      if(turns===11)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","unresolved":[],"reason":"The repair and dependent result were verified in order."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"artifact",replacements:1}:{exitCode:0,stdout:"pass"}},
+  });
+  assert.match(result.text,/verified dependent result/i);
+  assert.deepEqual(executed,["initial","diagnose","repair","verify-repair","persist","verify-final"]);
+  const blocked=events.filter(event=>event.name==="native.completion.recovery_edit_call_blocked"&&event.data?.reason==="recovery_dependent_edit_requires_verification");assert.equal(blocked.length,1);assert.equal(blocked[0].data?.callId,"too-early");
+});
+
 test("native completion recovery can repair an external API state without inventing a workspace edit",async()=>{
   const events=[],executed=[];let turns=0;
   const result=await runNativeAgentTurn({
@@ -3622,7 +3685,7 @@ test("native keeps the current recovery epoch open while post-edit evidence allo
   assert.match(result.text,/stopped after 1 bounded semantic recovery epoch/i);
 });
 
-test("native completion recovery blocks a second corrective edit response in one epoch",async()=>{
+test("native legacy completion recovery still blocks a second corrective edit response in one epoch",async()=>{
   let turns=0;const executed=[],events=[];
   const result=await runNativeAgentTurn({
     model:"test-model",semanticCompletionGate:true,maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
@@ -3640,7 +3703,7 @@ test("native completion recovery blocks a second corrective edit response in one
       if(turns===8)return {text:"",toolCalls:[{id:"repair-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
       if(turns===9)return {text:"",toolCalls:[{id:"repair-2",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"fixed","new_text":"fixed-again"}'}],usage:{}};
       if(turns===10){
-        assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="repair-2"&&/already consumed its one corrective-edit response/i.test(String(message.content||""))));
+        assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="repair-2"&&/already consumed its bounded corrective-edit response allowance/i.test(String(message.content||""))));
         return {text:"The corrected implementation now satisfies acceptance.",toolCalls:[],usage:{}};
       }
       if(turns===11)return {text:'{"status":"complete","unresolved":[],"reason":"The single corrective edit resolved the remaining requirement."}',toolCalls:[],usage:{}};
@@ -3652,6 +3715,48 @@ test("native completion recovery blocks a second corrective edit response in one
   assert.deepEqual(executed.filter(id=>!String(id).startsWith("native-recovery-snapshot-")),["initial","e1","e2","repair-1"]);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
   const blocked=events.filter(event=>event.name==="native.completion.recovery_edit_call_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0].data?.callId,"repair-2");assert.equal(blocked[0].data?.reason,"recovery_edit_response_budget");
+});
+
+test("native grants one terminal repair when final recovery evidence reveals a concrete stale deliverable",async()=>{
+  let turns=0;const executed=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Analyze the source data, write results.json, and verify the derived values."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[
+        {id:"initial-analysis",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"analysis.mjs","old_text":"legacy parser","new_text":"bad parser"}'},
+        {id:"initial",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"results.json","content":"{\\"value\\":10}"}'},
+      ],usage:{}};
+      if(turns===2)return {text:"The initial result is written but still needs semantic verification.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"allowed","unresolved":["the derived value needs a parser correction"],"reason":"A concrete parser correction is supported by the source evidence."}',toolCalls:[],usage:{}};
+      if(turns===4){
+        assert.equal(request.toolChoice,"required");
+        return {text:"",toolCalls:[{id:"parser-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"analysis.mjs","old_text":"bad parser","new_text":"fixed parser"}'}],usage:{}};
+      }
+      if(turns===5)return {text:"",toolCalls:[{id:"verify-parser",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["analysis.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"The corrected analysis now establishes value=12, but results.json still contains the stale value 10.",toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"incomplete","progress":"improved","edit_support":"supported","mutation_safety":"allowed","unresolved":["results.json is stale: source-of-truth analysis now establishes value 12 rather than 10"],"reason":"Fresh verification established the corrected value, so propagating 12 into the persisted deliverable is a concrete supported repair."}',toolCalls:[],usage:{}};
+      if(turns===8){
+        assert.equal(request.toolChoice,"required");
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/terminal semantic-repair grace/i.test(String(message.content||""))));
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/does not open another recovery epoch/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"propagate",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"results.json","old_text":"10","new_text":"12"}'}],usage:{}};
+      }
+      if(turns===9)return {text:"",toolCalls:[{id:"verify-deliverable",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-results.mjs"]}'}],usage:{}};
+      if(turns===10)return {text:"The corrected source-of-truth value 12 is now persisted and independently verified.",toolCalls:[],usage:{}};
+      if(turns===11)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","unresolved":[],"reason":"The final persisted deliverable now matches the freshly verified source-of-truth value."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);const args=typeof call.arguments==="string"?JSON.parse(call.arguments):(call.arguments||{});return call.namespace==="trebell_workspace"?{success:true,path:args.path,replacements:1,existedBefore:call.name==="replace_text",beforeSha256:"before-"+call.id,afterSha256:"after-"+call.id}:{success:true,exitCode:0,stdout:call.id==="verify-parser"?"value=12":"pass"}},
+  });
+  assert.equal(result.text,"The corrected source-of-truth value 12 is now persisted and independently verified.");
+  assert.deepEqual(executed,["initial-analysis","initial","parser-fix","verify-parser","propagate","verify-deliverable"]);
+  const grace=events.filter(event=>event.name==="native.completion.recovery_terminal_repair_grace");assert.equal(grace.length,1);assert.equal(grace[0].data?.recoveryEpoch,1);assert.equal(grace[0].data?.maxRecoveryEpochs,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_exhausted").length,0);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,2);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,2);
 });
 
 test("native semantic recovery owns later self-admitted acceptance gaps",async()=>{
