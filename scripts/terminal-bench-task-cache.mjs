@@ -72,6 +72,42 @@ export function terminalBenchTaskPackageRef(dataset,task){
   return packageTask&&ref?packageTask+"@"+ref:null;
 }
 
+export function terminalBenchDatasetTaskNamesFromVersionMetadata(value,{namespace=null}={}){
+  const parsed=typeof value==="string"?JSON.parse(value):value;
+  const rows=Array.isArray(parsed?.tasks)?parsed.tasks:[];
+  const names=[];
+  for(const row of rows){
+    if(row?.available===false)continue;
+    const pkg=row?.task_version?.package,org=String(pkg?.org?.name||"").trim(),name=String(pkg?.name||"").trim();
+    if(!name)continue;
+    if(namespace&&org!==namespace)continue;
+    names.push(name);
+  }
+  return [...new Set(names)].sort((a,b)=>a.localeCompare(b));
+}
+
+export async function preflightTerminalBenchDatasetTaskMembership({harbor,dataset,task,env,captureFn}={}){
+  if(typeof captureFn!=="function")throw new TypeError("preflightTerminalBenchDatasetTaskMembership requires captureFn");
+  const qualified=terminalBenchTaskQualifiedName(dataset,task);
+  if(!qualified)throw new Error(`Cannot derive a registry task identity for dataset membership preflight: dataset=${dataset} task=${task}`);
+  const namespace=qualified.split("/")[0],slug=qualified.slice(namespace.length+1);
+  let raw;
+  try{raw=await captureFn(harbor,["version","show",dataset,"--tasks","--json"],{env})}
+  catch(error){throw new Error(`Cannot verify dataset membership for ${qualified} in ${dataset}: ${error?.message||error}`)}
+  let parsed;
+  try{parsed=JSON.parse(String(raw||""))}catch(error){throw new Error(`Cannot parse dataset membership metadata for ${dataset}: ${error?.message||error}`)}
+  const names=terminalBenchDatasetTaskNamesFromVersionMetadata(parsed,{namespace});
+  if(!names.includes(slug))throw new Error(`Task ${qualified} is not a member of dataset ${dataset}. Refusing stale-cache or cross-version benchmark launch.`);
+  return {
+    completed:true,
+    qualifiedTask:qualified,
+    taskCount:names.length,
+    datasetVersion:String(parsed?.version||"").trim()||null,
+    datasetRevision:String(parsed?.revision||"").trim()||null,
+    datasetContentHash:String(parsed?.content_hash||"").trim()||null,
+  };
+}
+
 export async function prewarmTerminalBenchTaskCache({harbor,dataset,task,env,runFn}){
   if(typeof runFn!=="function")throw new TypeError("prewarmTerminalBenchTaskCache requires runFn");
   const packageRef=terminalBenchTaskPackageRef(dataset,task);

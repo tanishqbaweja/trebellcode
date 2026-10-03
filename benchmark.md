@@ -24,11 +24,12 @@ Benchmark-driven **Trebell Native harness changes** are tracked separately in [`
 
 ## Terminal-Bench 4.0 task registry
 
-Reconciled on **2026-10-03** from the local Harbor task cache, `.harbor-validation`, `.harbor-jobs`, and the chronological benchmark record below. This registry exists specifically to stop accidental task repetition.
+Reconciled on **2026-10-03** from authoritative Harbor version metadata for **`terminal-bench/terminal-bench@4.0.0`**, plus the local Harbor task cache, `.harbor-validation`, `.harbor-jobs`, and the chronological benchmark record below. This registry exists specifically to stop accidental task repetition and stale-cache cross-version launches.
 
-- Local cached Terminal-Bench task packages: **55**
-- Already attempted / consumed: **43**
-- Still untouched in the local cache: **12**
+- Authoritative Terminal-Bench 4.0 task packages: **66**
+- Already attempted / consumed **within 4.0**: **41**
+- Still untouched **within 4.0**: **25**
+- The local cache currently contains older task directories too; cache presence alone is **not** proof of 4.0 membership.
 - Next planned fresh task: **`music-harmony`**. `freecad-platform-drawing` remains deferred until the FreeCAD image family has a clean setup path.
 - “Consumed” means the task is no longer eligible as fresh unseen evidence, even if the historical launch was incomplete, setup-invalid, diagnostic, or later contaminated.
 - An incomplete/setup-invalid run remains useful infrastructure evidence but is **not** a harness-quality score.
@@ -40,12 +41,19 @@ These are the current fresh-task pool. Do not inspect their instructions, verifi
 
 | Untouched task | Untouched task |
 | --- | --- |
-| `freecad-platform-drawing` | `music-harmony` |
+| `atrx-vep-crispr` | `formal-crypto` |
+| `freecad-platform-drawing` | `gsea-proteomics` |
+| `heat-pump-warranty` | `intrastat-meldung` |
+| `jax-speedrun-gpu` | `lake-temp-glm` |
+| `layout-config-recreation` | `layout-config-recreation2` |
+| `medical-claims-processing` | `music-harmony` |
 | `ontology-kg-querying` | `photonic-waveguide-routing` |
 | `protein-autointerp-disulfide` | `retro-console-soc` |
-| `roy-polymorph-cn` | `sglang-qwen-burst` |
-| `sound-change-cascade` | `takens-embedding-lean` |
-| `vpp-loss-divergence` | `wdm-design` |
+| `roy-polymorph-cn` | `satb-audio-transcription` |
+| `sglang-qwen-burst` | `sound-change-cascade` |
+| `takens-embedding-lean` | `telecom-entity-resolution` |
+| `uefi-bootkit` | `vpp-loss-divergence` |
+| `wdm-design` |  |
 
 ### Attempted / consumed tasks — do not reuse as fresh evidence
 
@@ -76,11 +84,9 @@ The “local attempts” column indexes every pair-report timestamp currently pr
 | `interleaved-vigenere` | 224703Z, 224904Z | 224904Z: Native **5/6 $0.19114**; API **2/6 $0.62862**; OAuth has no valid sealed verifier result. Run carried errors/incompleteness and is diagnostic only. Consumed. |
 | `ks-solver-cpp` | 082029Z | All three lanes recorded reward 0; legacy report lacks normalized verifier-check counts. Consumed. |
 | `kv-live-surgery` | 000513Z | All three lanes reward 0; legacy report lacks normalized verifier-check counts. Consumed. |
-| `kv-store-grpc` | 073208Z | No graded trial in any lane; setup/infrastructure invalid. Consumed. |
 | `legacy-utility-triage` | 073259Z | Official reward 0 for all; post-seal partial score: **Native 18/19, OAuth 18/19, API 16/19**. Consumed. |
 | `live-database-cutover` | 030925Z, 042217Z, 042550Z | Fresh baseline Native **17/18** at 030925Z; same-task causal rerun later **16/18** at 042550Z after much higher churn. Consumed. |
 | `math-eval-grader` | 094002Z | **Missing from the previous benchmark record.** All three Harbor lanes exited with code 1 before producing a graded trial; no token/reward/verifier result exists. Setup-invalid, not a quality score; consumed/attempted. |
-| `make-mips-interpreter` | 163238Z prewarm | **Registry/setup-invalid / no quality score.** The detached fresh launcher failed before pair creation and before any model usage because Harbor's current `terminal-bench/terminal-bench@4.0.0` registry does not resolve `terminal-bench/make-mips-interpreter@4.0.0`, even though an older package remains in the local Harbor cache. Prewarm correctly failed closed before paid inference. Consumed. |
 | `mp-checkpoint-consolidation` | 094257Z, 132156Z, 132641Z, 080601Z, 081727Z, 101253Z | Best normalized pair at 101253Z: **Native 3/4 $0.13104; API 4/4 $0.58227; OAuth 3/4 $0.50887**. Extensively reused for same-task regression; consumed. |
 | `mvcc-lsm-compaction` | 160804Z, 161444Z | Historical diagnostics; surviving pair JSON has no normalized lane verifier summary. Consumed. |
 | `nextjs-performance` | 171300Z, 081334Z | Historical incomplete/diagnostic runs; no normalized sealed three-lane result. Consumed. |
@@ -96,6 +102,15 @@ The “local attempts” column indexes every pair-report timestamp currently pr
 | `vf2-speedup-networkx` | 035109Z | All three official rewards 0; extensively inspected for convergence/churn. Consumed. |
 | `vllm-deepseek-streaming` | 224202Z | **Missing from the previous benchmark record.** Interrupted Native run reached **17 model turns / 57 tool calls** before stopping; no verifier result was produced and Codex lanes never launched. Task payload has now been inspected, so this remains diagnostic only and is consumed. |
 | `wal-recovery-ordering` | 113546Z | Incomplete historical run stopped by provider/WebSocket transport failure; used to motivate transport recovery. Consumed. |
+
+### Historical stale-cache names that are not Terminal-Bench 4.0 members
+
+These names remain in local historical/cache evidence but are absent from the authoritative **`terminal-bench/terminal-bench@4.0.0`** task-membership manifest. They do not count toward the 66-task 4.0 consumed/untouched totals and must not be selected for a 4.0 comparison.
+
+| Stale/non-4.0 task name | Local record / disposition |
+| --- | --- |
+| `kv-store-grpc` | Historical 073208Z setup-invalid record from an older task set; not present in the current 4.0 manifest. |
+| `make-mips-interpreter` | 163045Z/163238Z metadata-only prewarm attempts failed before pair creation or model usage because `terminal-bench/make-mips-interpreter@4.0.0` does not exist. An older package directory remains in the local Harbor cache. |
 
 ### Standalone Native rerun inventory
 

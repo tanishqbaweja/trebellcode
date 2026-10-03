@@ -10,7 +10,7 @@ import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, pars
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
-import { prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
+import { preflightTerminalBenchDatasetTaskMembership, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -33,6 +33,8 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/const PARALLEL=!sequentialRequested/);
   assert.match(source,/prewarmTerminalBenchTaskCache/);
   assert.match(source,/prewarmTerminalBenchDockerImages/);
+  assert.match(source,/preflightTerminalBenchDatasetTaskMembership/);
+  assert.match(source,/datasetMembershipPreflight/);
   assert.match(source,/PARALLEL&&selectedLanes\.length>1/);
   assert.match(source,/taskCachePrewarm/);
   assert.match(source,/dockerImagePrewarm/);
@@ -204,6 +206,25 @@ test("Terminal-Bench parallel task cache prewarm derives the exact dataset task 
   assert.deepEqual(result,{packageRef:"terminal-bench/example-task@4.0.0",completed:true});
   assert.deepEqual(calls,[{command:"harbor-test",args:["task","download","terminal-bench/example-task@4.0.0","--cache"],options:{env:{SAFE:"1"}}}]);
   await assert.rejects(()=>prewarmTerminalBenchTaskCache({harbor:"h",dataset:"local-dataset",task:"terminal-bench/example-task",runFn:async()=>{}}),/Cannot derive a registry task package ref/);
+});
+
+test("Terminal-Bench paid runner preflights authoritative dataset membership before task download",async()=>{
+  const metadata={version:"4.0.0",revision:"rev-4",content_hash:"dataset-sha",tasks:[
+    {available:true,task_version:{package:{name:"example-task",org:{name:"terminal-bench"}}}},
+    {available:true,task_version:{package:{name:"second-task",org:{name:"terminal-bench"}}}},
+    {available:false,task_version:{package:{name:"withdrawn-task",org:{name:"terminal-bench"}}}},
+    {available:true,task_version:{package:{name:"wrong-org-task",org:{name:"other-org"}}}},
+  ]};
+  assert.deepEqual(terminalBenchDatasetTaskNamesFromVersionMetadata(metadata,{namespace:"terminal-bench"}),["example-task","second-task"]);
+  const calls=[];
+  const result=await preflightTerminalBenchDatasetTaskMembership({
+    harbor:"harbor-test",dataset:"terminal-bench/terminal-bench@4.0.0",task:"example-task",env:{SAFE:"1"},
+    captureFn:async(command,args,options)=>{calls.push({command,args,options});return JSON.stringify(metadata)},
+  });
+  assert.deepEqual(result,{completed:true,qualifiedTask:"terminal-bench/example-task",taskCount:2,datasetVersion:"4.0.0",datasetRevision:"rev-4",datasetContentHash:"dataset-sha"});
+  assert.deepEqual(calls,[{command:"harbor-test",args:["version","show","terminal-bench/terminal-bench@4.0.0","--tasks","--json"],options:{env:{SAFE:"1"}}}]);
+  await assert.rejects(()=>preflightTerminalBenchDatasetTaskMembership({harbor:"harbor-test",dataset:"terminal-bench/terminal-bench@4.0.0",task:"stale-task",captureFn:async()=>JSON.stringify(metadata)}),/not a member of dataset/);
+  await assert.rejects(()=>preflightTerminalBenchDatasetTaskMembership({harbor:"harbor-test",dataset:"terminal-bench/terminal-bench@4.0.0",task:"example-task",captureFn:async()=>"not-json"}),/Cannot parse dataset membership metadata/);
 });
 
 test("Terminal-Bench parallel Docker prewarm pulls declared agent and verifier images once before lane fan-out",async()=>{
