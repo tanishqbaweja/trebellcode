@@ -97,9 +97,18 @@ async function sourceGitProvenance(){
     const sourceGitHead=String(await capture("git",["rev-parse","HEAD"])).trim()||null;
     const trackedStatus=String(await capture("git",["status","--porcelain=v1","--untracked-files=no"]));
     const sourceTrackedDirty=Boolean(trackedStatus.trim());
+    const sourceTrackedChanges=trackedStatus.split(/\r?\n/).map(line=>line.trimEnd()).filter(Boolean).map(line=>line.length>3?line.slice(3).trim():line.trim()).filter(Boolean).slice(0,20);
     const sourceTrackedDiffSha256=sourceTrackedDirty?createHash("sha256").update(await capture("git",["diff","--binary","HEAD","--"])).digest("hex"):null;
-    return {sourceGitHead,sourceTrackedDirty,sourceTrackedDiffSha256};
-  }catch{return {sourceGitHead:null,sourceTrackedDirty:null,sourceTrackedDiffSha256:null}}
+    return {sourceGitHead,sourceTrackedDirty,sourceTrackedChanges,sourceTrackedDiffSha256};
+  }catch{return {sourceGitHead:null,sourceTrackedDirty:null,sourceTrackedChanges:null,sourceTrackedDiffSha256:null}}
+}
+function assertCleanTrackedSource(provenance){
+  if(provenance?.sourceTrackedDirty===false)return;
+  if(provenance?.sourceTrackedDirty===true){
+    const paths=Array.isArray(provenance.sourceTrackedChanges)&&provenance.sourceTrackedChanges.length?" Dirty tracked files: "+provenance.sourceTrackedChanges.join(", "):"";
+    throw new Error("Refusing paid/live Terminal-Bench launch from a tracked-dirty source tree."+paths+" Commit or stash tracked changes before launching.");
+  }
+  throw new Error("Refusing paid/live Terminal-Bench launch because tracked source cleanliness could not be verified.");
 }
 const LANE_DRAIN_TIMEOUT_MS=Math.max(5_000,Math.trunc(Number(process.env.TREBELL_TERMINAL_BENCH_LANE_DRAIN_MS)||300_000));
 
@@ -182,8 +191,10 @@ async function recoverTrialEvidence(outputRoot,jobName){
   return null;
 }
 
+const sourceProvenance=await sourceGitProvenance();
+assertCleanTrackedSource(sourceProvenance);
 const gitCommonDir=String(await capture("git",["rev-parse","--git-common-dir"])).trim(),lockPath=STANDALONE_NATIVE_RERUN?sharedTerminalBenchNativeRerunLockPath(root,gitCommonDir):sharedTerminalBenchLockPath(root,gitCommonDir);
-const releaseLock=await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`${STANDALONE_NATIVE_RERUN?"tb4-native-rerun":"tb4-pair"}-${safeSlug(MODEL)}-${EFFORT}-${SERVICE_TIER}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json"),sourceProvenance=await sourceGitProvenance();let codexApiAuthPath=null;
+const releaseLock=await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`${STANDALONE_NATIVE_RERUN?"tb4-native-rerun":"tb4-pair"}-${safeSlug(MODEL)}-${EFFORT}-${SERVICE_TIER}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json");let codexApiAuthPath=null;
 try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");

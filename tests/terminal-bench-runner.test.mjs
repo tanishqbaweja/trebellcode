@@ -54,7 +54,11 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/sourceGitProvenance/);
   assert.match(source,/git\",\[\"rev-parse\",\"HEAD\"\]/);
   assert.match(source,/--untracked-files=no/);
+  assert.match(source,/sourceTrackedChanges/);
   assert.match(source,/sourceTrackedDiffSha256/);
+  assert.match(source,/assertCleanTrackedSource\(sourceProvenance\)/);
+  assert.match(source,/Refusing paid\/live Terminal-Bench launch from a tracked-dirty source tree/);
+  assert.match(source,/tracked source cleanliness could not be verified/);
   assert.match(source,/nativeBundleSha256/);
   assert.match(source,/nativeAdapterSha256/);
   assert.match(source,/NATIVE_PINNED_NODE_VERSION="22\.23\.3"/);

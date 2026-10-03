@@ -817,6 +817,20 @@ The run also exposed a separate pre-recovery cost defect: Native's advisory turn
 
 ---
 
+## 2026-10-04 - Refuse paid Terminal-Bench launches from tracked-dirty source
+
+**Evidence:** the first `atrx-vep-crispr` attempt was launched while benchmark documentation changes were still tracked but uncommitted. The pair recorded `sourceTrackedDirty=true`, then all three lanes failed pre-inference on Docker exec transport. The transport failure itself is separate, but the dirty source means that even a successful paid run would not have mapped cleanly to one reproducible commit.
+
+**Harness change:** the paid/live Terminal-Bench comparison runner now resolves source Git provenance before acquiring the pair lock or doing benchmark setup and fails closed unless tracked source is exactly clean. Untracked files remain explicitly ignored by using `git status --porcelain=v1 --untracked-files=no`. When tracked files are dirty, the error includes a bounded list of the changed paths; when Git provenance cannot be verified, launch also fails closed.
+
+**Why:** every paid benchmark pair should correspond to one immutable source commit. Recording a dirty bit after launch is observability, not prevention. Failing before setup/model spend removes an avoidable reproducibility ambiguity without making longstanding unrelated untracked scratch files block the benchmark.
+
+**Expected effect:** no new paid/fresh comparison starts from uncommitted tracked code or documentation, no model spend is wasted on a scientifically unusable dirty-tree pair, and source provenance becomes an enforced safety boundary rather than a warning.
+
+**Validation status:** focused Terminal-Bench runner coverage passes **24 / 24**. A direct live-runner invocation from the intentionally dirty validation tree failed in **253 ms** before pair setup/model spend and listed exactly the four dirty tracked paths. The complete repository suite passes **1,308 / 1,308**; `npm run bench:terminal:bundle` succeeds; `git diff --check` is clean; and the Harbor Native bundle SHA-256 remains **`bc60bb5efb7f2b3f1e4ac32d776edc2a33c54b0f1ed0a6f514dc79aa9a318f0d`** because this is host-side benchmark orchestration rather than bundled Native agent behavior. Fresh external validation is the clean ATRX retry.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name
