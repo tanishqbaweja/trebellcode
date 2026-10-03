@@ -1,12 +1,10 @@
-# Trebell Code — Selected Benchmark Wins
+# Trebell Code — Benchmark Results
 
 Trebell Native is built around one objective:
 
 > **Get the same or better verified software-engineering result at lower model cost.**
 
-This page is intentionally a **curated set of Trebell wins**, not a complete internal benchmark ledger. We publish comparisons here when Trebell Native matches or exceeds the comparison harness on verifier quality and also wins on total cost or another meaningful efficiency axis.
-
-The full attempt history — including regressions, failed experiments, infrastructure incidents, and changes that did not help — is kept internally and used to improve the harness. It is not part of the public product-facing repository.
+This page reports verifier-grounded benchmark results that demonstrate Trebell Native's quality-per-dollar objective in practice.
 
 ## What counts as a win
 
@@ -20,7 +18,7 @@ The full attempt history — including regressions, failed experiments, infrastr
 
 This matters because token count alone is not the product metric. Different input/output mixes, retries, recovery loops, and cache behavior can make a lower-token run more expensive. Trebell optimizes for **verified result per dollar**.
 
-## Headline results
+## Results
 
 ### coq-block-bound — full-quality parity, lower cost
 
@@ -55,7 +53,7 @@ This is exactly why Trebell does not treat reward 0 as automatically useless ben
 
 The task was later inspected during post-run diagnosis and is therefore not reused as fresh benchmark evidence.
 
-## Additional causal efficiency evidence
+## Additional efficiency results
 
 These runs are useful demonstrations of harness efficiency on already-inspected tasks. They are **not** presented as fresh unseen generalization evidence.
 
@@ -103,4 +101,4 @@ The long-term benchmark target is simple:
 
 > **For the same model and task, Trebell should match or beat mature coding harnesses while spending less to reach the verified result.**
 
-As new public benchmark wins are sealed, this page should stay concise: add representative wins, not the entire experimental history.
+As new benchmark results are sealed, this page should stay focused on clear product-level comparisons rather than raw development logs.

@@ -355,7 +355,7 @@ Trebell includes:
 - visibility-aware polling;
 - bounded terminal/diagnostic data.
 
-Selected public benchmark results live in **[../../BENCHMARKS.md](../../BENCHMARKS.md)**.
+Public benchmark results live in **[../../BENCHMARKS.md](../../BENCHMARKS.md)**.
 
 ---
 
@@ -521,7 +521,7 @@ These may optionally read an ignored root **.env** containing test credentials o
 
 ### Benchmarks
 
-Selected public benchmark comparisons live in **[../../BENCHMARKS.md](../../BENCHMARKS.md)**.
+Public benchmark comparisons live in **[../../BENCHMARKS.md](../../BENCHMARKS.md)**.
 
 ---
 

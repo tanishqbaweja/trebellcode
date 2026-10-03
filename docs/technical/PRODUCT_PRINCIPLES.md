@@ -17,7 +17,7 @@ That distinction matters:
 - fewer tokens are not automatically better if the output-token mix costs more;
 - lower cost is not better if the task result is worse;
 - a fast first attempt is not better if recovery and retries erase the savings;
-- benchmark wins must compare equivalent model/reasoning settings and comparable task quality.
+- benchmark claims must compare equivalent model/reasoning settings and comparable task quality.
 
 The goal can be written compactly as:
 

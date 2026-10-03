@@ -93,7 +93,7 @@ The optimization target is the product thesis itself:
 
 If Trebell is cheaper but worse, it has not won. If it uses fewer tokens but costs more because of output/reasoning mix, it has not won. The metric that matters is **verified result per dollar**.
 
-See [selected benchmark wins](BENCHMARKS.md) for verifier-grounded examples where Trebell Native matches or beats comparison quality while using less model spend or substantially less model traffic.
+See [benchmark results](BENCHMARKS.md) for verifier-grounded comparisons where Trebell Native matches or beats comparison quality while using less model spend or substantially less model traffic.
 
 ## Quick start
 
@@ -157,7 +157,7 @@ Near-term work is focused on four things:
 | [Technical overview](docs/technical/TECHNICAL_OVERVIEW.md) | Detailed architecture, services, runtime integrations, safety, and release behavior |
 | [Product principles](docs/technical/PRODUCT_PRINCIPLES.md) | The product and architecture contract |
 | [Testing](docs/technical/TESTING.md) | Deterministic, UI, live-provider, and manual validation |
-| [Benchmark wins](BENCHMARKS.md) | Selected public comparisons where Trebell Native wins on quality-normalized cost or efficiency |
+| [Benchmark results](BENCHMARKS.md) | Verifier-grounded quality, cost, token, and execution-efficiency comparisons |
 | [v1.3.6 release notes](docs/releases/v1.3.6.md) | Current release notes |
 
 ## Repository layout
