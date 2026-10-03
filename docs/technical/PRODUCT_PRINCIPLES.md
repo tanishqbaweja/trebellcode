@@ -8,7 +8,26 @@
 
 ## 1. North Star
 
-Trebell Code should become a **fast, trustworthy, provider-independent agentic software-engineering platform**.
+Trebell Code should become the **highest-value coding harness for a given model budget**: a fast, trustworthy agentic software-engineering system that produces the same or better verified result than competing harnesses at a lower total model cost.
+
+The primary optimization target is **verified engineering quality per dollar**.
+
+That distinction matters:
+
+- fewer tokens are not automatically better if the output-token mix costs more;
+- lower cost is not better if the task result is worse;
+- a fast first attempt is not better if recovery and retries erase the savings;
+- benchmark wins must compare equivalent model/reasoning settings and comparable task quality.
+
+The goal can be written compactly as:
+
+```text
+maximize   verified software-engineering result
+           ------------------------------------
+                    total model cost
+```
+
+Trebell Native is the main vehicle for this optimization because Trebell owns its complete model/tool loop. Context selection, cache behavior, tool schemas, compaction, verification, recovery, retries, and turn policy are therefore product-level optimization surfaces rather than fixed behavior inherited from another harness.
 
 It should not be merely:
 
@@ -46,13 +65,15 @@ External harnesses should retain the things they do well while gaining Trebell-o
 
 Trebell Native should eventually use the same shared platform while owning the complete model/tool loop.
 
+Support for Codex, Claude Code, OpenCode, ACP-compatible runtimes, and other harnesses is valuable for convenience, interoperability, and controlled comparison. **It is not Trebell's core differentiation.**
+
 The strongest version of Trebell is therefore not:
 
 > one more coding agent.
 
 It is:
 
-> a durable engineering platform whose intelligence, tools, safety, persistence, observability and verification improve whichever capable model or harness is running inside it.
+> a coding harness that extracts more verified engineering value from model spend through better context, caching, tools, verification, recovery, and control.
 
 ---
 

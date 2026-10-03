@@ -1,6 +1,10 @@
 # Trebell Code
 
-> **A desktop coding harness that gives AI agents a real engineering workspace — projects, terminals, Git/worktrees, browser verification, durable context, source control, recovery, and multiple agent runtimes in one place.**
+> **A coding harness optimized for verified software-engineering quality per dollar.**
+
+Trebell's primary goal is to make a capable model **more economically effective as a coding agent**: match or beat the result produced by mature coding harnesses while reducing the total model cost required to get there.
+
+The desktop workspace, runtime adapters, terminals, Git/worktrees, browser verification, durable context, source control, and recovery systems all support that goal. Multiple agent runtimes are an interoperability and convenience feature; they are not the core product thesis.
 
 **Version:** 1.3.6 · **Runtime:** Node.js 22+ · **License:** Apache-2.0 · **Desktop:** Windows / macOS / Linux packaging targets
 

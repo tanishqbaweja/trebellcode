@@ -1,8 +1,12 @@
 # Trebell Code
 
-> **A desktop engineering harness for AI coding agents.**
+> **A coding harness built to get more engineering done per dollar.**
 
-Trebell Code gives coding agents a real software-engineering workspace instead of a chat box with a terminal attached. It keeps projects, source control, verification, context, permissions, recovery, and runtime state in one desktop product while letting developers choose the agent runtime and model provider that fit the job.
+Trebell Code is an agentic software-engineering harness optimized for **quality per dollar**: reach the same or better verified result as leading coding harnesses while spending less to get there.
+
+The core product is **Trebell Native**, where Trebell controls the model/tool loop and can optimize the parts that determine real agent cost: context growth, prompt caching, tool selection, retries, verification, recovery, compaction, and unnecessary model turns.
+
+Support for Codex, Claude Code, OpenCode, and other runtimes is useful for convenience and side-by-side comparison, but **runtime switching is not the product thesis**.
 
 **Working desktop MVP · Apache-2.0 · Node.js 22+ · Windows release + macOS/Linux packaging**
 
@@ -10,35 +14,46 @@ Trebell Code gives coding agents a real software-engineering workspace instead o
 
 ## Why Trebell
 
-Coding models are getting better quickly, but the surrounding engineering workflow is still fragmented. Different agents own different conversations, tools, permission models, terminals, browser flows, and project state.
+The price of an agentic coding task is not just the model's list price. It is also determined by how much context the harness repeatedly sends, how well it preserves cacheable prefixes, how many unnecessary turns it takes, which tools it exposes, when it verifies work, and how efficiently it recovers from mistakes.
 
 Trebell's core idea is simple:
 
-**the model and agent runtime should be replaceable; the engineering workspace should not be.**
+**A better harness should get more useful software engineering out of the same model and the same dollar.**
 
-That means a developer can use Trebell Native, Codex, Claude Code, OpenCode, or another supported runtime without rebuilding the surrounding workflow every time.
+Trebell therefore treats cost as an engineering metric, not a billing afterthought. The goal is not to minimize tokens blindly. A run that uses fewer input tokens but produces much more expensive output, retries more often, or fails the task is not more efficient.
+
+The target is:
+
+**same or better verified quality → lower total model cost.**
+
+Public benchmark work compares Trebell Native against mature harnesses using the **same model and reasoning settings**, then measures the quality-normalized cost required to finish the task.
 
 ## What works today
 
-- **Multi-runtime coding workspace** with Trebell Native, Codex, Claude Code, OpenCode, and capability-gated external runtimes.
+- **Trebell Native agent harness** with a Trebell-owned model/tool loop, context management, reasoning controls, verification, recovery, and detailed usage telemetry.
+- **Cost-aware benchmark instrumentation** for input tokens, cached input, output tokens, total API-equivalent cost, model turns, tool calls, retries, cache behavior, and task quality.
+- **Public harness comparisons** against Codex API and Codex OAuth using controlled model/reasoning configurations on software-engineering benchmarks.
+- **Context and cache optimization** including lazy tool exposure, bounded context growth, compaction, cache-aware continuation, and evidence-driven recovery.
+- **Multi-runtime access** to Codex, Claude Code, OpenCode, and capability-gated external runtimes as a convenience and comparison surface.
 - **Provider-independent projects and threads** so workspace identity is not owned by one model vendor.
 - **Real engineering tools** for files, terminals, Git, branches, worktrees, source control, background processes, and repository search.
 - **Local and remote environments**, including local Windows, WSL, SSH, and environment-aware execution paths.
 - **Browser and desktop verification** with Playwright-backed browser workflows, screenshots, runtime checks, and evidence-aware verification.
 - **MCP, skills, plugins, and lazy tool exposure** so specialized capabilities do not have to inflate every prompt.
 - **Durable context and recovery** through persisted thread state, event history, checkpoints, verification records, and bounded recovery flows.
-- **Trebell Native**: a Trebell-owned agent loop with tool policy, context management, reasoning controls, usage telemetry, and direct provider support.
 - **Official provider support** for OpenAI, Anthropic, and Gemini, plus compatible third-party routes.
 
 ## What makes it different
 
 | Problem | Trebell approach |
 | --- | --- |
-| Every coding agent becomes its own silo | Projects, threads, repository state, and engineering services live above the model/provider layer |
+| Strong models can still be expensive inside inefficient harnesses | Optimize the harness for verified engineering output per dollar, not raw token minimization |
+| Context and tool overhead compounds over long tasks | Measure cache behavior and context growth; keep expensive schemas and stale control context out of hot paths |
+| Recovery can cost more than the original mistake | Bound repair loops, preserve evidence, and fix upstream failures before spending on downstream retries |
 | A model says "done" without proving it | Verification uses tests, commands, browser evidence, screenshots, Git state, and persisted checks |
-| Tool schemas and old context become expensive | Heavy namespaces are lazy, tool/context growth is measured, and Native is benchmarked for cost as well as quality |
+| Cost comparisons are meaningless if quality differs | Compare harnesses with the same model/settings and evaluate cost only alongside verifier/task quality |
+| Every coding agent becomes its own silo | Shared projects and runtime adapters make other harnesses easy to access without making runtime switching the core product |
 | Different runtimes pretend to have feature parity | Capabilities are detected and surfaced honestly instead of creating fake toggles |
-| Recovery means starting over | Trebell persists task state, checkpoints, evidence, and bounded repair/recovery paths |
 
 ## Product architecture
 
@@ -60,7 +75,7 @@ flowchart LR
     POLICY <--> TOOLS
 ```
 
-The important separation is between **agent runtime** and **inference provider**. Trebell Native can use different model providers, while external harnesses keep their own native authentication and protocol behavior.
+The optimization work happens primarily inside **Trebell Native**, where Trebell owns the agent loop. Runtime adapters for Codex, Claude Code, OpenCode, and others are useful product integrations and controlled comparison surfaces, but they are secondary to the quality-per-dollar goal.
 
 ## Engineering proof
 
@@ -72,7 +87,11 @@ Trebell is developed as a harness, not as a prompt demo.
 - Benchmark accounting tracks **verifier quality, input/output tokens, cache use, cost, tool calls, turns, and runtime behavior** instead of treating token count alone as efficiency.
 - Benchmark failures are kept as engineering evidence and converted into generic harness changes rather than task-specific prompt patches.
 
-The current optimization target is straightforward: **match or beat mature coding harnesses on real public software-engineering tasks while reducing the cost required to reach the same quality.**
+The optimization target is the product thesis itself:
+
+> **For the same model and task, Trebell should match or beat the result of mature coding harnesses at a lower total cost.**
+
+If Trebell is cheaper but worse, it has not won. If it uses fewer tokens but costs more because of output/reasoning mix, it has not won. The metric that matters is **verified result per dollar**.
 
 See [Benchmarking](docs/benchmarks/HISTORY.md) for the methodology and full evidence ledger.
 
@@ -126,10 +145,10 @@ Live-provider and external-runtime checks are opt-in because they depend on cred
 
 Near-term work is focused on four things:
 
-1. **Harness efficiency** — improve Trebell Native against public coding benchmarks on quality, cost, cache behavior, and tool use.
-2. **Runtime interoperability** — make switching between coding runtimes feel like changing an engine, not changing products.
-3. **Evidence-first autonomy** — make verification, repair, checkpoints, and recovery normal parts of an agent turn.
-4. **Product polish** — keep reducing setup friction, UI noise, fake capability parity, and operational failure modes.
+1. **Quality per dollar** — make Trebell Native produce the same or better verified result at lower total model cost.
+2. **Harness efficiency** — improve caching, context selection, tool use, turn count, recovery behavior, and output discipline based on public benchmark evidence.
+3. **Evidence-first autonomy** — make verification, repair, checkpoints, and recovery improve correctness without wasting model spend.
+4. **Product usability** — keep the desktop workspace, provider support, and runtime integrations convenient without letting those features obscure the core optimization goal.
 
 ## Documentation
 
