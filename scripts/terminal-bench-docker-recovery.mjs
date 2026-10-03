@@ -27,8 +27,17 @@ export function isPreAgentDockerImagePullFailure(trial){
 
 export function isDockerExecTransportFailure(trial){
   if(!trial||typeof trial!=="object")return false;
+  const type=String(trial?.exception_info?.exception_type||"");
   const message=String(trial?.exception_info?.exception_message||"");
   if(!message)return false;
+  // A Linux command executed through Docker cannot normally return the
+  // Windows DWORD sentinel 0xFFFFFFFF (4294967295). Harbor receives that
+  // value from the host-side `docker compose exec` process when the Desktop /
+  // WSL exec transport is severed. Treat it as infrastructure, not as an
+  // agent-selected non-zero exit. Some subprocess layers render the same
+  // sentinel as signed -1, so accept both spellings when Harbor classified
+  // the failure as a non-zero agent exit.
+  if(type==="NonZeroAgentExitCodeError"&&/Command failed \(exit (?:4294967295|-1)\):/i.test(message))return true;
   return /request returned 5\d\d Internal Server Error/i.test(message)
     && /dockerDesktopLinuxEngine/i.test(message)
     && /\/exec\/[a-f0-9]+\/json/i.test(message);

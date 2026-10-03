@@ -280,7 +280,7 @@ test("Terminal-Bench Docker image-pull classification also catches post-agent ve
   assert.equal(isPreAgentDockerImagePullFailure(afterAgent),false);
 });
 
-test("Terminal-Bench Docker exec transport retry only recognizes Docker Desktop exec 5xx failures",()=>{
+test("Terminal-Bench Docker exec transport classification recognizes Docker Desktop exec failures",()=>{
   const transport={
     exception_info:{
       exception_message:"request returned 500 Internal Server Error for API route and version http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.55/exec/634775e6da59e7512b241b62453a3d4b3ea3611e302c7b7495850770d8dd8041/json, check if the server supports the requested API version",
@@ -289,6 +289,25 @@ test("Terminal-Bench Docker exec transport retry only recognizes Docker Desktop 
     verifier:{started_at:"z",finished_at:"w"},
   };
   assert.equal(isDockerExecTransportFailure(transport),true);
+  assert.equal(isDockerExecTransportFailure({
+    exception_info:{
+      exception_type:"NonZeroAgentExitCodeError",
+      exception_message:"Command failed (exit 4294967295): codex exec --json\\nstdout: partial\\nstderr: None",
+    },
+    agent_execution:{started_at:"x",finished_at:"y"},
+  }),true);
+  assert.equal(isDockerExecTransportFailure({
+    exception_info:{
+      exception_type:"NonZeroAgentExitCodeError",
+      exception_message:"Command failed (exit -1): node /installed-agent/agent.mjs\\nstdout: partial\\nstderr: None",
+    },
+  }),true);
+  assert.equal(isDockerExecTransportFailure({
+    exception_info:{
+      exception_type:"NonZeroAgentExitCodeError",
+      exception_message:"Command failed (exit 1): codex exec --json\\nstdout: ordinary agent failure",
+    },
+  }),false);
   assert.equal(isDockerExecTransportFailure({...transport,exception_info:{exception_message:"request returned 500 Internal Server Error from some unrelated service"}}),false);
   assert.equal(isDockerExecTransportFailure({...transport,exception_info:{exception_message:"dockerDesktopLinuxEngine /exec/not-a-container-id/json returned 500"}}),false);
   assert.equal(isDockerExecTransportFailure(null),false);
