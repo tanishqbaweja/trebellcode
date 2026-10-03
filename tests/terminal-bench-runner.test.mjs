@@ -326,6 +326,12 @@ test("Terminal-Bench Docker exec transport classification recognizes Docker Desk
   assert.equal(isDockerExecTransportFailure({
     exception_info:{
       exception_type:"NonZeroAgentExitCodeError",
+      exception_message:"Command failed (exit 1): codex exec --json\\nstdout: Error response from daemon: No such exec instance: d3572e40ca8156d2ac5b34dd602dc627b096218b381dcc11768f252c1d77206f\\nstderr: None",
+    },
+  }),true);
+  assert.equal(isDockerExecTransportFailure({
+    exception_info:{
+      exception_type:"NonZeroAgentExitCodeError",
       exception_message:"Command failed (exit 1): codex exec --json\\nstdout: ordinary agent failure",
     },
   }),false);

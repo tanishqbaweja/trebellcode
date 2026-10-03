@@ -38,6 +38,7 @@ export function isDockerExecTransportFailure(trial){
   // sentinel as signed -1, so accept both spellings when Harbor classified
   // the failure as a non-zero agent exit.
   if(type==="NonZeroAgentExitCodeError"&&/Command failed \(exit (?:4294967295|-1)\):/i.test(message))return true;
+  if(type==="NonZeroAgentExitCodeError"&&/Error response from daemon:\s*No such exec instance:\s*[a-f0-9]+/i.test(message))return true;
   return /request returned 5\d\d Internal Server Error/i.test(message)
     && /dockerDesktopLinuxEngine/i.test(message)
     && /\/exec\/[a-f0-9]+\/json/i.test(message);
