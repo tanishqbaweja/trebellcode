@@ -1561,4 +1561,14 @@ The generic follow-up changes the convergence checkpoint from advisory-only to *
 
 Internal validation for the new stopping policy passes the dedicated convergence-finalization regression **1/1**, the full Native agent-loop suite **197/197**, the combined Native/background/Harbor/Terminal-Bench gate **223/223**, and the complete repository suite **1,285/1,285**. The Harbor Native bundle rebuild succeeds with SHA-256 **`3a0180d105ed024c3bb7ff4f681d4e7018a3643fa02f44b08bb7a0d031326ecf`**, and `git diff --check` is clean. These are implementation checks only; the convergence-finalization change requires a **different untouched task** for external validation.
 
-Do **not** rerun `coq-block-bound` as fresh evidence. Its task instruction and trajectories have now been inspected. The next planned fresh task remains **`fin-saccr-rwa`**.
+Do **not** rerun `coq-block-bound` as fresh evidence. Its task instruction and trajectories have now been inspected. `fin-saccr-rwa` was subsequently consumed by a contaminated capability-parity run; the next planned fresh task is now **`foodstuff-beta-activity`**.
+
+#### Contaminated `fin-saccr-rwa` Fast comparison: Codex hosted web search violated capability parity
+
+Fresh task `fin-saccr-rwa` completed as pair **`tb4-pair-gpt-6-luna-max-fast-fin-saccr-rwa-20261003T141254Z`** from tracked-clean source **`5b81513a3b2cab7d8cd7637aed7edaa299bc92aa`**, using the same `gpt-6-luna` model, `max` reasoning effort, and `fast` service tier across Native API, Codex API, and Codex OAuth. The sealed raw results were Native reward **0** at **$0.14266146**, Codex API reward **0** at **$0.29755783**, and Codex OAuth reward **1** at **$0.123881**. These numbers are retained only for audit and **must not be used as a harness-quality comparison**.
+
+After the pair sealed, the otherwise-unused OpenAI benchmark API project showed **22 hosted web-search operations for the same day**. The sealed Native path contains no OpenAI built-in `web_search` tool, and its runtime implementation does not add that provider-hosted tool. The Codex API lane, however, was launched in full-access mode without an explicit `web_search=disabled` override. That means the comparison did not hold external-information capability constant. The Codex rollout itself did not surface `web_search` rows, so rollout text alone is not a sufficient audit for hosted-search usage.
+
+This is a benchmark-infrastructure fairness defect, not evidence that one harness solved the task better. Commit **`6bd09f5e`** pins `web_search=disabled` in the pinned Harbor Codex adapter, passes the same explicit setting to both Codex API and OAuth lanes, applies it to the older direct Native-vs-Codex benchmark, and marks the task contaminated/consumed in the registry. A follow-up provenance field now records `hostedWebSearch: "disabled"` plus `sameHostedWebSearchPolicy: true` in every new pair so future audits do not rely on implicit Codex defaults.
+
+The next fresh task is **`foodstuff-beta-activity`**. Do not reuse `fin-saccr-rwa` as fresh evidence.

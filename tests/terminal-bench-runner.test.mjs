@@ -66,6 +66,8 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/TREBELL_TERMINAL_BENCH_SERVICE_TIER\|\|"fast"/);
   assert.match(source,/Terminal-Bench service tier must be default or fast/);
   assert.match(source,/sameServiceTier:true/);
+  assert.match(source,/sameHostedWebSearchPolicy:true/);
+  assert.match(source,/hostedWebSearch:"disabled"/);
   assert.match(source,/serviceTier:SERVICE_TIER/);
   assert.match(source,/service_tier=fast/);
   assert.match(source,/web_search=disabled/);

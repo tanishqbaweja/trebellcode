@@ -253,10 +253,10 @@ try{
     status:"pending",startedAt:null,finishedAt:null,runError:null,attempts:[],retryReason:null,retryCleanup:null,infrastructureFailureReason:null,
   }));
   const reportSnapshot=({complete=false}={})=>({
-    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,taskCachePrewarm,
+    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,hostedWebSearch:"disabled",setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,taskCachePrewarm,
     usesBaseAgentTimeout:AGENT_TIMEOUT_MULTIPLIER===1,
     timeoutComparability:AGENT_TIMEOUT_MULTIPLIER===1?"benchmark-base":"extended-agent-timeout",
-    sameModel:true,sameReasoningEffort:true,sameServiceTier:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
+    sameModel:true,sameReasoningEffort:true,sameServiceTier:true,sameHostedWebSearchPolicy:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
     nativeEnvironmentRetention:STANDALONE_NATIVE_RERUN?"retain-until-sealed-or-regraded":"harbor-default",
     nativeContextPolicy:{operatingContextWindow:NATIVE_CONTEXT_WINDOW,serverCompactionThreshold:NATIVE_COMPACT_THRESHOLD,retroactiveOpenAiReadCooling:false},
     ...sourceProvenance,
@@ -280,7 +280,7 @@ try{
     return reportWrite;
   };
   const latestPointerPath=join(validationDir,STANDALONE_NATIVE_RERUN?"terminal-bench-native-rerun-latest.json":"terminal-bench-latest.json");
-  const persistLatestPointer=()=>writeFile(latestPointerPath,JSON.stringify({pairId,reportPath,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,parallel:PARALLEL,lanes:laneStates.map(lane=>({label:lane.label,jobName:lane.jobName}))},null,2)+"\n","utf8");
+  const persistLatestPointer=()=>writeFile(latestPointerPath,JSON.stringify({pairId,reportPath,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,hostedWebSearch:"disabled",parallel:PARALLEL,lanes:laneStates.map(lane=>({label:lane.label,jobName:lane.jobName}))},null,2)+"\n","utf8");
   await persistLatestPointer();
   await persistReport({complete:false});
   const runLane=async(lane,laneIndex)=>{
