@@ -52,7 +52,26 @@ async function snapshot(){
       nativeRerun.sourceReportPath=rerunPointer.reportPath;
     }
   }
-  return {capturedAt:new Date().toISOString(),pairId:pointer.pairId,task:pointer.task,model:pointer.model,parallel:pointer.parallel,complete:Boolean(report.complete),infrastructureInterrupted:Boolean(report.infrastructureInterrupted),infrastructureComparable:report.infrastructureComparable??null,reportPath:pointer.reportPath,nativeRerunReportPath:nativeRerun?.sourceReportPath||null,lanes:nativeRerun?[lanes[0],nativeRerun,...lanes.slice(1)]:lanes};
+  return {
+    capturedAt:new Date().toISOString(),
+    pairId:pointer.pairId,
+    task:pointer.task,
+    model:report.model??pointer.model??null,
+    reasoningEffort:report.reasoningEffort??pointer.reasoningEffort??null,
+    serviceTier:report.serviceTier??pointer.serviceTier??null,
+    hostedWebSearch:report.hostedWebSearch??pointer.hostedWebSearch??null,
+    sameHostedWebSearchPolicy:report.sameHostedWebSearchPolicy??null,
+    sameServiceTier:report.sameServiceTier??null,
+    sourceGitHead:report.sourceGitHead??pointer.sourceGitHead??null,
+    sourceTrackedDirty:report.sourceTrackedDirty??pointer.sourceTrackedDirty??null,
+    parallel:pointer.parallel,
+    complete:Boolean(report.complete),
+    infrastructureInterrupted:Boolean(report.infrastructureInterrupted),
+    infrastructureComparable:report.infrastructureComparable??null,
+    reportPath:pointer.reportPath,
+    nativeRerunReportPath:nativeRerun?.sourceReportPath||null,
+    lanes:nativeRerun?[lanes[0],nativeRerun,...lanes.slice(1)]:lanes,
+  };
 }
 async function persist(snap){
   const dir=join(validationDir,"watchdog",snap.pairId);await mkdir(dir,{recursive:true});
@@ -70,7 +89,11 @@ function render(snap,saved){
   lines.push(`Trebell benchmark watchdog  ${snap.capturedAt}`);
   lines.push(`Pair: ${snap.pairId}`);
   lines.push(`Task: ${snap.task}`);
+  lines.push(`Model: ${snap.model||"-"}   Reasoning: ${snap.reasoningEffort||"-"}   Tier: ${snap.serviceTier||"-"}   Hosted web search: ${snap.hostedWebSearch||"-"}`);
+  if(snap.sourceGitHead||snap.sourceTrackedDirty!=null)lines.push(`Source: ${snap.sourceGitHead||"-"}   Tracked dirty: ${snap.sourceTrackedDirty==null?"-":snap.sourceTrackedDirty?"YES":"NO"}`);
   lines.push(`Mode: ${snap.parallel?"PARALLEL":"SEQUENTIAL"}   Complete: ${snap.complete?"YES":"NO"}`);
+  if(snap.sameServiceTier===false)lines.push("Fairness warning: service tier differs across lanes");
+  if(snap.sameHostedWebSearchPolicy===false)lines.push("Fairness warning: hosted web-search policy differs across lanes");
   if(snap.infrastructureInterrupted)lines.push("Infrastructure: INTERRUPTED — partial evidence only; do not treat as a clean harness comparison");
   lines.push("");
   lines.push("LANE          STATUS     ACTIVITY   VERIFY  INPUT        OUTPUT       CACHE      API-EQ COST");
