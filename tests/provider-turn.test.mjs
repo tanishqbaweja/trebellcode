@@ -72,6 +72,14 @@ test("provider turn maps explicit reasoning effort onto Chat and Responses wire 
   assert.deepEqual(responses.reasoning,{effort:"max"});
 });
 
+test("provider turn maps strict JSON schemas onto Chat and Responses structured-output formats",()=>{
+  const schema={type:"object",additionalProperties:false,properties:{status:{type:"string"}},required:["status"]};
+  const chat=providerTurnToChat({model:"chat-model",messages:[{role:"user",content:"judge"}],responseJsonSchema:{name:"gate",strict:true,schema}});
+  assert.deepEqual(chat.response_format,{type:"json_schema",json_schema:{name:"gate",strict:true,schema}});
+  const responses=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"judge"}],responseJsonSchema:{name:"gate",strict:true,schema}});
+  assert.deepEqual(responses.text,{format:{type:"json_schema",name:"gate",strict:true,schema}});
+});
+
 test("provider turn keeps Fast as a service tier instead of changing the model",()=>{
   const responses=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],reasoningEffort:"max",serviceTier:"fast"});
   assert.equal(responses.model,"gpt-6-luna");assert.deepEqual(responses.reasoning,{effort:"max"});assert.equal(responses.service_tier,"fast");

@@ -1,9 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import { compactCompletionGateProviderMessages, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
+
+test("completion gate provider view drops superseded Trebell control messages but preserves evidence",()=>{
+  const original=[
+    {role:"developer",content:"caller policy"},{role:"user",content:"task"},
+    {role:"developer",content:"old Trebell checkpoint"},{role:"assistant",content:"candidate evidence"},{role:"tool",content:"tool evidence"},
+    {role:"developer",content:"older recovery instruction"},{role:"assistant",content:"candidate answer"},{role:"developer",content:"Trebell semantic completion gate. current audit"},{role:"developer",content:"Trebell turn-budget checkpoint: later but irrelevant to the gate"},
+  ];
+  const compacted=compactCompletionGateProviderMessages(original,2);
+  assert.deepEqual(compacted.messages,[original[0],original[1],original[3],original[4],original[6],original[7]]);
+  assert.equal(compacted.count,3);
+  assert.equal(compacted.savedChars,"old Trebell checkpoint".length+"older recovery instruction".length+"Trebell turn-budget checkpoint: later but irrelevant to the gate".length);
+  assert.equal(original.length,9);
+});
 
 test("native terminal audit metadata records network intent while redacting secrets",()=>{
   const secret="sk-1234567890abcdef";
@@ -570,6 +583,12 @@ test("native structured artifact semantics require direct coverage beyond struct
         assert.match(String(gate.content),/Structural validity is necessary but is not sufficient semantic evidence/i);
         assert.match(String(gate.content),/selection boundary as part of the acceptance contract/i);
         assert.match(String(gate.content),/unrelated neighboring files must not silently become authoritative inputs/i);
+        assert.match(String(gate.content),/coordinates, indices, positions, offsets, ranges/i);
+        assert.match(String(gate.content),/valid domain/i);
+        assert.match(String(gate.content),/coordinate-system transform is applied exactly once/i);
+        assert.match(String(gate.content),/derive-then-annotate or derive-then-enrich workflows/i);
+        assert.match(String(gate.content),/secondary annotator's duplicate identity-like fields are cross-check evidence/i);
+        assert.match(String(gate.content),/unresolved provenance\/mapping defect/i);
         assert.match(String(gate.content),/constraint_audit/i);
         expectedIds=[...String(gate.content).matchAll(/\b(A\d+)=/g)].map(match=>match[1]);assert.ok(expectedIds.length>=2);
         return {text:JSON.stringify({status:"complete",progress:"improved",edit_support:"unsupported",mutation_safety:"allowed",recovery_mode:"none",constraint_audit:[{id:expectedIds[0],status:"met",evidence:"file exists and parses"}],unresolved:[],reason:"Only parseability and counts are evidenced."}),toolCalls:[],usage:{}};
@@ -636,7 +655,7 @@ test("native report-to-file quantitative deliverables enter semantic completion 
 test("native persistent deliverable pressure coexists with workspace mutation intent",async()=>{
   const events=[],requests=[];let turn=0;
   const result=await runNativeAgentTurn({
-    model:"test-model",
+    model:"test-model",provider:"openai",
     messages:[{role:"user",content:"Implement a generator script at /app/answer.py that saves two parametric files next to it: /app/answer_base.bin and /app/answer_edit.bin. The edit changes one parameter; every other parameter stays unchanged."}],
     tools:[
       {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
@@ -795,7 +814,7 @@ test("native agent fails visibly when the bounded empty-completion recovery is a
 test("native empty control-gate response uses the gate retry instead of final-answer recovery",async()=>{
   let turns=0;const events=[];
   const result=await runNativeAgentTurn({
-    model:"test-model",
+    model:"test-model",provider:"openai",
     messages:[{role:"user",content:"Fix the implementation and verify it."}],
     semanticCompletionGate:true,
     maxModelTurns:8,
@@ -808,12 +827,15 @@ test("native empty control-gate response uses the gate retry instead of final-an
       if(turns===2)return {text:"Done.",toolCalls:[],usage:{}};
       if(turns===3){
         assert.equal(request.toolChoice,"none");
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,16384);
+        assert.equal(request.responseJsonSchema?.name,"trebell_completion_gate");
+        assert.equal(request.responseJsonSchema?.strict,true);
+        assert.deepEqual(request.responseJsonSchema?.schema?.required,["status","progress","edit_support","mutation_safety","recovery_mode","constraint_audit","unresolved","reason"]);
         assert.ok(request.messages.some(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||""))));
         return {text:"",toolCalls:[],usage:{}};
       }
       if(turns===4){
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,16384);
         const retry=request.messages.findLast(message=>message.role==="developer"&&/previous control response was incomplete or could not be parsed/i.test(String(message.content||"")));assert.ok(retry);
         assert.match(String(retry.content),/semantic completion gate/i);
         assert.match(String(retry.content),/requirement-led audit/i);
@@ -2954,7 +2976,7 @@ test("native localizes residual structure after an abstraction repair before reo
     {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
   ];
   const result=await runNativeAgentTurn({
-    model:"test-model",messages:[{role:"user",content:"Fix the binary decoder and verify the exact reconstructed output."}],maxOutputTokens:32000,reasoningEffort:"max",maxModelTurns:20,maxToolCalls:50,abstractionRepairVerification:true,onEvent:event=>events.push(event),
+    model:"test-model",provider:"openai",messages:[{role:"user",content:"Fix the binary decoder and verify the exact reconstructed output."}],maxOutputTokens:32000,reasoningEffort:"max",maxModelTurns:20,maxToolCalls:50,abstractionRepairVerification:true,onEvent:event=>events.push(event),
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
       turns++;
@@ -2979,7 +3001,8 @@ test("native localizes residual structure after an abstraction repair before reo
       if(turns===11){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,16384);
+        assert.equal(request.responseJsonSchema?.name,"trebell_abstraction_verification_gate");
         assert.equal(request.reasoningEffort,"max");
         assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification gate/i.test(String(message.content||""))));
         return {text:'{"status":"failed","reason":"The independent replica invariant still disagrees after the repair."}',toolCalls:[],usage:{}};
@@ -2997,7 +3020,7 @@ test("native localizes residual structure after an abstraction repair before reo
       if(turns===14){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,16384);
         assert.equal(request.reasoningEffort,"max");
         return {text:'{"status":"verified","reason":"The independent replica invariant now matches the raw source on every checked rank."}',toolCalls:[],usage:{}};
       }
@@ -3044,7 +3067,7 @@ test("native localizes residual structure after an abstraction repair before reo
 test("native semantic completion gate rejects unsupported completion without task-specific wording",async()=>{
   const requests=[],events=[],executed=[];let providerCalls=0;
   const result=await runNativeAgentTurn({
-    model:"test-model",
+    model:"test-model",provider:"openai",
     messages:[{role:"user",content:"Modify src/worker.mjs to reduce the worker's p95 latency below 100 ms and leave the implementation in the workspace."}],
     maxOutputTokens:32000,reasoningEffort:"max",maxModelTurns:10,maxToolCalls:12,semanticCompletionGate:true,onEvent:event=>events.push(event),
     tools:[
@@ -3058,7 +3081,7 @@ test("native semantic completion gate rejects unsupported completion without tas
       if(providerCalls===3){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,16384);
         assert.equal(request.reasoningEffort,"max");
         const gate=request.messages.find(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));
         assert.ok(gate);
@@ -3078,7 +3101,7 @@ test("native semantic completion gate rejects unsupported completion without tas
       }
       if(providerCalls===5)return {text:"The implementation is updated and the latest measured p95 is 84 ms, below the requested 100 ms ceiling.",toolCalls:[],usage:{}};
       if(providerCalls===6){
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,16384);
         assert.equal(request.reasoningEffort,"max");
         return {text:'{"status":"complete","unresolved":[],"reason":"The requested workspace change exists and the latest measured p95 is 84 ms, satisfying the stated ceiling."}',toolCalls:[],usage:{}};
       }

@@ -112,7 +112,14 @@ export function providerToolsToChat(tools=[]){
   return out;
 }
 
-export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,serviceTier=null,parallelToolCalls=true}={}, {preparedTools=null,messageCache=null}={}){
+function normalizedResponseJsonSchema(value){
+  if(!value||typeof value!=="object"||Array.isArray(value))return null;
+  const name=String(value.name||"").trim(),schema=value.schema;
+  if(!name||!schema||typeof schema!=="object"||Array.isArray(schema))return null;
+  return {name,schema,strict:value.strict!==false};
+}
+
+export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,serviceTier=null,parallelToolCalls=true,responseJsonSchema=null}={}, {preparedTools=null,messageCache=null}={}){
   const chatMessages=[];
   for(const message of Array.isArray(messages)?messages:[]){
     if(!message||typeof message!=="object")continue;
@@ -130,6 +137,8 @@ export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto"
   if(maxOutputTokens!=null&&Number.isFinite(Number(maxOutputTokens)))result.max_tokens=Math.max(1,Math.trunc(Number(maxOutputTokens)));
   if(temperature!=null&&Number.isFinite(Number(temperature)))result.temperature=Number(temperature);
   if(reasoningEffort!=null&&String(reasoningEffort).trim())result.reasoning_effort=String(reasoningEffort).trim();
+  const structured=normalizedResponseJsonSchema(responseJsonSchema);
+  if(structured)result.response_format={type:"json_schema",json_schema:{name:structured.name,strict:structured.strict,schema:structured.schema}};
   const normalizedTier=normalizedServiceTier(serviceTier);if(normalizedTier)result.service_tier=normalizedTier;
   return result;
 }
@@ -162,7 +171,7 @@ function responseToolOutput(content,{cacheBreakpoint=false}={}){
   return output;
 }
 
-export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,reasoningContext=null,serviceTier=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
+export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,reasoningContext=null,serviceTier=null,parallelToolCalls=true,responseJsonSchema=null}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
   const instructions=[],input=[];let instructionPrefixOpen=true;
   const sourceMessages=Array.isArray(messages)?messages:[],inputStart=Math.max(0,Math.trunc(Number(inputStartMessageIndex)||0));
   for(let messageIndex=0;messageIndex<sourceMessages.length;messageIndex++){
@@ -207,6 +216,8 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
   const normalizedReasoningContext=String(reasoningContext||"").trim().toLowerCase();
   if(["auto","current_turn","all_turns"].includes(normalizedReasoningContext))reasoning.context=normalizedReasoningContext;
   if(Object.keys(reasoning).length)result.reasoning=reasoning;
+  const structured=normalizedResponseJsonSchema(responseJsonSchema);
+  if(structured)result.text={format:{type:"json_schema",name:structured.name,strict:structured.strict,schema:structured.schema}};
   const normalizedTier=normalizedServiceTier(serviceTier);if(normalizedTier)result.service_tier=normalizedTier;
   return result;
 }

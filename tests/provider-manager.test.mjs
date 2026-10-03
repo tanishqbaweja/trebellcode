@@ -253,6 +253,21 @@ test("official OpenAI Responses forwards bounded server-side compaction policy",
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("official OpenAI Responses forwards strict structured-output schemas for control turns",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-structured-"));let seen=null;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+      seen=JSON.parse(init.body||"{}");
+      return Response.json({id:"resp-structured",model:seen.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:'{"status":"complete"}'}]}],usage:{input_tokens:5,output_tokens:2,total_tokens:7}});
+    }});
+    manager.setKey("openai","oa-key");
+    const schema={type:"object",additionalProperties:false,properties:{status:{type:"string",enum:["complete","incomplete"]}},required:["status"]};
+    await manager.turn("openai",{model:"gpt-6-luna",messages:[{role:"user",content:"judge"}],tools:[],reasoningEffort:"max",responseJsonSchema:{name:"trebell_gate",strict:true,schema}});
+    assert.deepEqual(seen.text,{format:{type:"json_schema",name:"trebell_gate",strict:true,schema}});
+    assert.deepEqual(seen.reasoning,{effort:"max",context:"current_turn"});
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI Responses sends only strict appended input when the previous response prefix is proven",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-continuation-")),bodies=[];let calls=0;
   try{
