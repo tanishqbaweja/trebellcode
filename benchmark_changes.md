@@ -693,6 +693,20 @@ Codex OAuth was still running after more than two hours and had already exceeded
 
 ---
 
+## 2026-10-03 - Serialize Docker image prewarming before parallel Terminal-Bench lanes
+
+**Evidence:** `freecad-impeller` never reached agent execution. Native, Codex API, and Codex OAuth each tried to pull the exact same immutable task environment image in parallel. The initial attempts spent about 9.5 minutes in Docker setup and ended with `unexpected EOF`; the automatic retries repeated the same three concurrent pulls and failed identically. No lane produced model tokens or verifier output, so this is infrastructure evidence only.
+
+**Harness change:** after Harbor task-package prewarm and before parallel lane fan-out, the benchmark runner now reads the cached task `task.toml`, extracts the declared immutable **agent** and **verifier** `docker_image` references, and prewarms them sequentially. It first checks `docker image inspect`; missing images are pulled one at a time with up to three bounded attempts. The prewarm result is persisted as `dockerImagePrewarm` in pair provenance alongside `taskCachePrewarm`.
+
+**Why:** parallel lanes should compare harnesses, not compete for the same registry download. Concurrent first-use pulls multiplied network/extraction pressure and created identical setup failures across all lanes. Prewarming the verifier image too avoids moving the same failure later into the grading phase.
+
+**Expected effect:** fewer setup-invalid pairs, less redundant registry traffic, faster parallel startup after the first successful pull, and unchanged model/task semantics.
+
+**Validation status:** focused Terminal-Bench runner/cache coverage passes **23 / 23**, including task-TOML image extraction, already-present detection, serialized agent/verifier pulls, and bounded transient-pull retry. The complete repository suite passes **1,295 / 1,295**; Node syntax checks pass; `npm run bench:terminal:bundle` succeeds; `git diff --check` is clean; and the rebuilt Native Harbor bundle SHA-256 is **`55cdb31a726cfe685828a6e5e1768bd3ad455d522413952394848d364a5e02d4`**. `freecad-impeller` is consumed; `glycan-ms2-elucidation` was subsequently operator-contaminated and consumed; the next planned untouched task is `hof-topology-interpenetration`.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name

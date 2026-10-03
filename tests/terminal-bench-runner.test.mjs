@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, parseWindowsProcessRows, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
-import { prewarmTerminalBenchTaskCache, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
+import { prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -32,8 +32,10 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/timeoutComparability:AGENT_TIMEOUT_MULTIPLIER===1\?"benchmark-base":"extended-agent-timeout"/);
   assert.match(source,/const PARALLEL=!sequentialRequested/);
   assert.match(source,/prewarmTerminalBenchTaskCache/);
+  assert.match(source,/prewarmTerminalBenchDockerImages/);
   assert.match(source,/PARALLEL&&selectedLanes\.length>1/);
   assert.match(source,/taskCachePrewarm/);
+  assert.match(source,/dockerImagePrewarm/);
   assert.match(source,/--sequential/);
   assert.match(source,/cannot be both --parallel and --sequential/);
   assert.match(nativeRunnerSource,/semanticCompletionGate:true/);
@@ -202,6 +204,51 @@ test("Terminal-Bench parallel task cache prewarm derives the exact dataset task 
   assert.deepEqual(result,{packageRef:"terminal-bench/example-task@4.0.0",completed:true});
   assert.deepEqual(calls,[{command:"harbor-test",args:["task","download","terminal-bench/example-task@4.0.0","--cache"],options:{env:{SAFE:"1"}}}]);
   await assert.rejects(()=>prewarmTerminalBenchTaskCache({harbor:"h",dataset:"local-dataset",task:"terminal-bench/example-task",runFn:async()=>{}}),/Cannot derive a registry task package ref/);
+});
+
+test("Terminal-Bench parallel Docker prewarm pulls declared agent and verifier images once before lane fan-out",async()=>{
+  const parsed=terminalBenchTaskDockerImagesFromToml(`
+[environment]
+docker_image = "registry.example/task-env@sha256:abc"
+[verifier.environment]
+docker_image = "registry.example/task-verifier@sha256:def"
+`);
+  assert.deepEqual(parsed,[
+    {role:"agent",image:"registry.example/task-env@sha256:abc"},
+    {role:"verifier",image:"registry.example/task-verifier@sha256:def"},
+  ]);
+  const root=await mkdtemp(join(tmpdir(),"trebell-tb-image-prewarm-"));
+  try{
+    const versionDir=join(root,"content-hash");await mkdir(versionDir,{recursive:true});
+    await writeFile(join(versionDir,"task.toml"),`[task]\nname = "terminal-bench/example-task"\n[environment]\ndocker_image = "registry.example/task-env@sha256:abc"\n[verifier.environment]\ndocker_image = "registry.example/task-verifier@sha256:def"\n`);
+    const pulls=[],inspects=[];
+    const result=await prewarmTerminalBenchDockerImages({
+      dataset:"terminal-bench/terminal-bench@4.0.0",task:"terminal-bench/example-task",cacheRoot:root,env:{SAFE:"1"},
+      captureFn:async(command,args,options)=>{inspects.push({command,args,options});if(args.at(-1).includes("task-env"))return "present";throw new Error("missing")},
+      runFn:async(command,args,options)=>{pulls.push({command,args,options})},
+    });
+    assert.equal(result.completed,true);assert.equal(result.taskTomlFound,true);
+    assert.deepEqual(inspects.map(call=>call.args),[
+      ["image","inspect","registry.example/task-env@sha256:abc"],
+      ["image","inspect","registry.example/task-verifier@sha256:def"],
+    ]);
+    assert.deepEqual(pulls,[{command:"docker",args:["pull","registry.example/task-verifier@sha256:def"],options:{env:{SAFE:"1"}}}]);
+    assert.deepEqual(result.attempts.map(item=>({role:item.role,status:item.status,attempt:item.attempt})),[
+      {role:"agent",status:"already-present",attempt:0},
+      {role:"verifier",status:"pulled",attempt:1},
+    ]);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Terminal-Bench Docker prewarm retries one transient pull serially and then stops",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-tb-image-retry-"));
+  try{
+    const versionDir=join(root,"content-hash");await mkdir(versionDir,{recursive:true});
+    await writeFile(join(versionDir,"task.toml"),`[environment]\ndocker_image = "registry.example/task-env@sha256:abc"\n`);
+    let calls=0;
+    const result=await prewarmTerminalBenchDockerImages({dataset:"terminal-bench/terminal-bench@4.0.0",task:"example-task",cacheRoot:root,maxAttempts:3,captureFn:async()=>{throw new Error("missing")},runFn:async()=>{calls++;if(calls<2)throw new Error("unexpected EOF")}});
+    assert.equal(calls,2);assert.deepEqual(result.attempts.map(item=>item.status),["failed","pulled"]);
+  }finally{await rm(root,{recursive:true,force:true})}
 });
 
 test("Terminal-Bench Docker subnet retry only recognizes pre-agent exhaustion",()=>{
