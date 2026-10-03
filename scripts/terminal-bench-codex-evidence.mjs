@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { estimateGpt6LunaStandardCostFromRecords } from "./terminal-bench-cost.mjs";
+import { estimateGpt6LunaCostFromRecords } from "./terminal-bench-cost.mjs";
 
 async function walkJsonl(root){
   const out=[];let entries=[];try{entries=await readdir(root,{withFileTypes:true})}catch{return out}
@@ -22,10 +22,10 @@ function tokenUsageRows(text){
   return out;
 }
 
-export function summarizeCodexSessionEvidence(texts=[]){
+export function summarizeCodexSessionEvidence(texts=[],{serviceTier="standard"}={}){
   const rows=(Array.isArray(texts)?texts:[texts]).flatMap(tokenUsageRows);
   if(!rows.length)return null;
-  const requestUsage=rows.map(row=>row.payload.usage),cost=estimateGpt6LunaStandardCostFromRecords(requestUsage);
+  const requestUsage=rows.map(row=>row.payload.usage),cost=estimateGpt6LunaCostFromRecords(requestUsage,{serviceTier});
   const requestMetricRows=requestUsage.map((usage,index)=>({
     request:index+1,
     inputTokens:Number(usage?.input_tokens||usage?.inputTokens||0),
@@ -57,7 +57,7 @@ export function summarizeCodexSessionEvidence(texts=[]){
   };
 }
 
-export async function recoverCodexSessionEvidence(outputRoot,jobName){
+export async function recoverCodexSessionEvidence(outputRoot,jobName,{serviceTier="standard"}={}){
   let trials=[];try{trials=await readdir(join(outputRoot,jobName),{withFileTypes:true})}catch{return null}
   const texts=[];
   for(const trial of trials){
@@ -65,7 +65,7 @@ export async function recoverCodexSessionEvidence(outputRoot,jobName){
     const files=await walkJsonl(join(outputRoot,jobName,trial.name,"agent","codex-sessions"));
     for(const file of files)try{texts.push(await readFile(file,"utf8"))}catch{}
   }
-  return summarizeCodexSessionEvidence(texts);
+  return summarizeCodexSessionEvidence(texts,{serviceTier});
 }
 
 async function main(){

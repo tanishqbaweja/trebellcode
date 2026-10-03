@@ -17,3 +17,14 @@ test("Codex session evidence recovers exact per-request token and cost metrics",
     request:2,inputTokens:2000,cachedInputTokens:1800,cacheWriteInputTokens:100,outputTokens:200,reasoningOutputTokens:120,
   });
 });
+
+test("Codex session evidence prices the configured service tier",()=>{
+  const rows=[
+    {type:"token_usage_record",payload:{usage:{input_tokens:1000,cached_input_tokens:900,cache_write_input_tokens:50,output_tokens:100}}},
+  ].map(JSON.stringify).join("\n");
+  const standard=summarizeCodexSessionEvidence([rows],{serviceTier:"standard"});
+  const fast=summarizeCodexSessionEvidence([rows],{serviceTier:"fast"});
+  assert.equal(standard.apiEquivalentCostBreakdown.pricing.serviceTier,"standard");
+  assert.equal(fast.apiEquivalentCostBreakdown.pricing.serviceTier,"fast");
+  assert.ok(fast.apiEquivalentCostUsd>standard.apiEquivalentCostUsd);
+});

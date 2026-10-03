@@ -5,6 +5,7 @@ export function createNativeStrategyMetrics(){
     convergenceCheckpoints:0,
     deliverableCheckpoints:0,
     deliverableEscalations:0,
+    persistentArtifactSemanticAudits:0,
     globalConstraintPlanningCheckpoints:0,
     globalConstraintCommitBlocks:0,
     globalConstraintCommitAudits:0,
@@ -60,6 +61,7 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   }else if(name==="native.progress.convergence_checkpoint")target.convergenceCheckpoints=Number(target.convergenceCheckpoints||0)+1;
   else if(name==="native.progress.deliverable_checkpoint")target.deliverableCheckpoints=Number(target.deliverableCheckpoints||0)+1;
   else if(name==="native.progress.deliverable_escalation")target.deliverableEscalations=Number(target.deliverableEscalations||0)+1;
+  else if(name==="native.progress.persistent_artifact_semantic_audit")target.persistentArtifactSemanticAudits=Number(target.persistentArtifactSemanticAudits||0)+1;
   else if(name==="native.progress.global_constraint_planning_checkpoint")target.globalConstraintPlanningCheckpoints=Number(target.globalConstraintPlanningCheckpoints||0)+1;
   else if(name==="native.progress.global_constraint_commit_blocked")target.globalConstraintCommitBlocks=Number(target.globalConstraintCommitBlocks||0)+1;
   else if(name==="native.progress.global_constraint_commit_audited")target.globalConstraintCommitAudits=Number(target.globalConstraintCommitAudits||0)+1;

@@ -785,6 +785,22 @@ The same sealed artifact exposed an acceptance-scope error. Native's pipeline in
 
 ---
 
+## 2026-10-04 - Preserve ordinary semantic-recovery incumbents and price Codex evidence on the actual tier
+
+**Evidence:** clean fresh `photonic-waveguide-routing` completed with **Native 12/14**, **Codex API 13/14**, and **OAuth 12/14**. Native used **148 model turns / 146 tools / 40 edits** and recorded **≥$1.28718** of Fast-tier API-equivalent usage. The Native semantic gate established a strong incumbent at turn 108/edit 32 with only one remaining crossing, then later gates explicitly classified new candidates as regressed—first reaching 408 errors and finally 60 errors. Ordinary recovery had no candidate snapshot or restore event, so the final exhausted workspace was materially worse than the known incumbent.
+
+**Harness change:** ordinary workspace semantic recovery now snapshots evidence-backed incumbents before corrective edits, not only the specialized residual-after-abstraction path. Snapshot transactions accumulate across multiple edit responses: the first pre-edit bytes are retained per path while the expected candidate hash advances with later edits. When a semantic gate explicitly reports `progress=regressed`, Trebell restores the stronger incumbent before continuing or exhausting recovery. Automatic rollback for ordinary recovery is intentionally limited to proven regression; unchanged/uncertain candidates retain the existing conservative behavior.
+
+**Benchmark accounting change:** recovered Codex session evidence now accepts the configured service tier, and both the live watchdog and final pair runner pass the pair's actual tier. The motivating report had reconstructed Fast Codex sessions with Standard rates, underpricing API-equivalent cost. Corrected Fast-tier values are **$1.06735445** for Codex API and **$0.38333500** for OAuth, versus Native's **≥$1.28718393**. This changes the Native/API ratio from a misleading ~2.4x to the correct lower-bound ~1.21x, while Native remains ~3.36x OAuth.
+
+**Why:** a bounded optimizer should never knowingly finish from a state that its own evidence ranks below an earlier restorable workspace state. Recovery budgets are useful only if experimentation cannot destroy the strongest known candidate. Separately, cross-harness dollar comparisons are invalid when one lane is priced on a different service tier.
+
+**Expected effect:** better final correctness under bounded recovery, fewer wasted later epochs repairing damage introduced by a regressing candidate, and accurate Fast-vs-Standard cost comparisons for recovered Codex sessions. This does not claim the restored routing incumbent would have passed the benchmark—the incumbent still had one crossing—but it would have been strictly better than the final 60-error artifact and a safer base for later recovery.
+
+**Validation status:** focused Native controller + strategy metrics + Terminal-Bench evidence/runner coverage passes **238 / 238**; the complete repository suite passes **1,308 / 1,308**; `npm run bench:terminal:bundle` succeeds; `git diff --check` is clean; and the rebuilt Harbor Native bundle SHA-256 is **`a96b5fc770aae96df18feed173a734e5ee46dac9ad7f0bea0e56201465b6ad58`**. `photonic-waveguide-routing` is consumed.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name

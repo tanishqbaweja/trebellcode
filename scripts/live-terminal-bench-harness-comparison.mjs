@@ -363,7 +363,7 @@ try{
       const infrastructureFailureReason=isDockerExecTransportFailure(trial)?"docker_exec_transport_failure":isPreAgentDockerSubnetExhaustion(trial)?"docker_subnet_exhaustion":isDockerImagePullFailure(trial)?"docker_image_pull_failure":laneState.infrastructureFailureReason;
       laneState.infrastructureFailureReason=infrastructureFailureReason||null;
       const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName,{serviceTier:SERVICE_TIER}):null;
-      const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName):null;
+      const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName,{serviceTier:SERVICE_TIER}):null;
       const recoveredEvidence=recoveredNative||recoveredCodex;
       const inputMetric=selectNativeMetric(result?.stats?.n_input_tokens,trial?.agent_result?.n_input_tokens,recoveredEvidence?.inputTokens);
       const cachedMetric=selectNativeMetric(result?.stats?.n_cache_tokens,trial?.agent_result?.n_cache_tokens,recoveredEvidence?.cachedTokens);

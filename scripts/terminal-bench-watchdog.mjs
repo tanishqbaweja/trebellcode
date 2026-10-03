@@ -15,7 +15,7 @@ async function newestTrialDir(jobName){
 async function fileState(path){try{const info=await stat(path);return {bytes:info.size,lastWriteAt:info.mtime.toISOString(),ageSeconds:Math.max(0,Math.round((Date.now()-info.mtimeMs)/1000))}}catch{return null}}
 async function laneState(lane,report,recovered=null){
   const sourceLabel=lane.sourceLabel||lane.label,trialDir=await newestTrialDir(lane.jobName),job=report?.jobs?.find(item=>item.label===sourceLabel)||null;
-  const liveEvidence=job?null:lane.harness==="native"?await recoverNativeEventEvidence(jobsDir,lane.jobName,{serviceTier:report?.serviceTier||"standard"}):lane.harness==="codex"?await recoverCodexSessionEvidence(jobsDir,lane.jobName):null;
+  const liveEvidence=job?null:lane.harness==="native"?await recoverNativeEventEvidence(jobsDir,lane.jobName,{serviceTier:report?.serviceTier||"standard"}):lane.harness==="codex"?await recoverCodexSessionEvidence(jobsDir,lane.jobName,{serviceTier:report?.serviceTier||"standard"}):null;
   let activity=null;
   if(trialDir){
     const agentDir=join(trialDir,"agent"),candidates=[join(agentDir,"trebell-native-events.jsonl"),join(agentDir,"codex.txt")];
