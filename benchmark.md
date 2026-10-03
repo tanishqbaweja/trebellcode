@@ -27,9 +27,9 @@ Benchmark-driven **Trebell Native harness changes** are tracked separately in [`
 Reconciled on **2026-10-03** from the local Harbor task cache, `.harbor-validation`, `.harbor-jobs`, and the chronological benchmark record below. This registry exists specifically to stop accidental task repetition.
 
 - Local cached Terminal-Bench task packages: **55**
-- Already attempted / consumed: **42**
-- Still untouched in the local cache: **13**
-- Next planned fresh task: **`make-mips-interpreter`**. `freecad-platform-drawing` remains deferred until the FreeCAD image family has a clean setup path.
+- Already attempted / consumed: **43**
+- Still untouched in the local cache: **12**
+- Next planned fresh task: **`music-harmony`**. `freecad-platform-drawing` remains deferred until the FreeCAD image family has a clean setup path.
 - “Consumed” means the task is no longer eligible as fresh unseen evidence, even if the historical launch was incomplete, setup-invalid, diagnostic, or later contaminated.
 - An incomplete/setup-invalid run remains useful infrastructure evidence but is **not** a harness-quality score.
 - Move a task from “untouched” to “consumed” as soon as a real run starts or task-specific payload/verifier content is exposed.
@@ -40,13 +40,12 @@ These are the current fresh-task pool. Do not inspect their instructions, verifi
 
 | Untouched task | Untouched task |
 | --- | --- |
-| `freecad-platform-drawing` | `make-mips-interpreter` |
-| `music-harmony` | `ontology-kg-querying` |
-| `photonic-waveguide-routing` | `protein-autointerp-disulfide` |
-| `retro-console-soc` | `roy-polymorph-cn` |
-| `sglang-qwen-burst` | `sound-change-cascade` |
-| `takens-embedding-lean` | `vpp-loss-divergence` |
-| `wdm-design` |  |
+| `freecad-platform-drawing` | `music-harmony` |
+| `ontology-kg-querying` | `photonic-waveguide-routing` |
+| `protein-autointerp-disulfide` | `retro-console-soc` |
+| `roy-polymorph-cn` | `sglang-qwen-burst` |
+| `sound-change-cascade` | `takens-embedding-lean` |
+| `vpp-loss-divergence` | `wdm-design` |
 
 ### Attempted / consumed tasks — do not reuse as fresh evidence
 
@@ -81,6 +80,7 @@ The “local attempts” column indexes every pair-report timestamp currently pr
 | `legacy-utility-triage` | 073259Z | Official reward 0 for all; post-seal partial score: **Native 18/19, OAuth 18/19, API 16/19**. Consumed. |
 | `live-database-cutover` | 030925Z, 042217Z, 042550Z | Fresh baseline Native **17/18** at 030925Z; same-task causal rerun later **16/18** at 042550Z after much higher churn. Consumed. |
 | `math-eval-grader` | 094002Z | **Missing from the previous benchmark record.** All three Harbor lanes exited with code 1 before producing a graded trial; no token/reward/verifier result exists. Setup-invalid, not a quality score; consumed/attempted. |
+| `make-mips-interpreter` | 163238Z prewarm | **Registry/setup-invalid / no quality score.** The detached fresh launcher failed before pair creation and before any model usage because Harbor's current `terminal-bench/terminal-bench@4.0.0` registry does not resolve `terminal-bench/make-mips-interpreter@4.0.0`, even though an older package remains in the local Harbor cache. Prewarm correctly failed closed before paid inference. Consumed. |
 | `mp-checkpoint-consolidation` | 094257Z, 132156Z, 132641Z, 080601Z, 081727Z, 101253Z | Best normalized pair at 101253Z: **Native 3/4 $0.13104; API 4/4 $0.58227; OAuth 3/4 $0.50887**. Extensively reused for same-task regression; consumed. |
 | `mvcc-lsm-compaction` | 160804Z, 161444Z | Historical diagnostics; surviving pair JSON has no normalized lane verifier summary. Consumed. |
 | `nextjs-performance` | 171300Z, 081334Z | Historical incomplete/diagnostic runs; no normalized sealed three-lane result. Consumed. |
@@ -1611,4 +1611,4 @@ The generic repair is deliberately narrower than increasing the recovery budget.
 
 There is also a last-boundary fallback: when the **final** bounded recovery gate produces newly improved evidence, explicitly supports a concrete corrective edit, allows mutation, and the evidence-backed incumbent is still aligned with the workspace, Trebell may use exactly **one terminal repair-only response plus one focused verification response**. This does **not** create another recovery epoch, evidence sweep, or hypothesis search; it exists only to propagate a correction already established by the just-completed bounded evidence work into the real implementation/deliverable and verify it once. Benchmark strategy telemetry records terminal grace, evidence-led windows, and blocked premature dependent edits separately.
 
-`hof-topology-interpenetration` is consumed and must not be rerun as fresh evidence. `freecad-platform-drawing` remains deferred; the next planned untouched task is **`make-mips-interpreter`**.
+`hof-topology-interpenetration` is consumed and must not be rerun as fresh evidence. `make-mips-interpreter` was attempted next, but current Terminal-Bench 4.0 registry prewarm rejected the stale locally cached task before pair creation or model usage; it is setup-invalid and consumed. `freecad-platform-drawing` remains deferred; the next planned untouched task is **`music-harmony`**.
