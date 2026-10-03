@@ -781,7 +781,7 @@ The same sealed artifact exposed an acceptance-scope error. Native's pipeline in
 
 **Expected effect:** eliminate recovery-epoch escape tails, reduce repeated control retries/truncation, preserve the intended hard stopping boundary, prevent self-validation against over-broad auxiliary inputs, and keep live cost comparisons on the same pricing tier as the final sealed report. On the motivating run the fail-closed boundary would have prevented the 55-turn post-82 escape; this does **not** imply that the turn-82 artifact would have matched Codex quality, so fresh unseen validation is still required.
 
-**Validation status:** focused Native recovery/strategy/session coverage passes **205 / 205**; the complete repository suite passes **1,303 / 1,303**; `npm run bench:terminal:bundle` succeeds; `git diff --check` is clean; and the rebuilt Harbor Native bundle SHA-256 is **`810d46cffac503bf4cc64ea8bdc8a35b5f101dc7034d27155bc023d68e708692`**. `ontology-kg-querying` is consumed; the next untouched target is `photonic-waveguide-routing`.
+**Validation status:** the combined Native loop/strategy/Terminal-Bench accounting and runner gate passes **234 / 234**; the complete repository suite passes **1,304 / 1,304**; `npm run bench:terminal:bundle` succeeds; `git diff --check` is clean; and the rebuilt Harbor Native bundle SHA-256 is **`810d46cffac503bf4cc64ea8bdc8a35b5f101dc7034d27155bc023d68e708692`**. `ontology-kg-querying` is consumed; the next untouched target is `photonic-waveguide-routing`.
 
 ---
 
