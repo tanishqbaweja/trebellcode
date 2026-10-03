@@ -1,7 +1,25 @@
 {
   "name": "trebell-code",
   "version": "1.3.6",
-  "description": "Trebell Code Desktop - a multi-harness coding workspace with repository intelligence, browser verification, Git/worktree workflows, remote environments, and runtime-aware agent capabilities.",
+  "description": "A desktop engineering harness for AI coding agents with multi-runtime workflows, repository intelligence, verification, Git/worktrees, remote environments, and cost-aware agent infrastructure.",
+  "homepage": "https://trebell.dev/code",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tanishqbaweja/trebellcode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tanishqbaweja/trebellcode/issues"
+  },
+  "keywords": [
+    "ai-coding",
+    "coding-agent",
+    "agent-harness",
+    "developer-tools",
+    "codex",
+    "claude-code",
+    "mcp",
+    "electron"
+  ],
   "type": "module",
   "license": "Apache-2.0",
   "bin": {

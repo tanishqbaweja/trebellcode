@@ -1,626 +1,168 @@
 # Trebell Code
 
-> **A desktop coding harness that gives AI agents a real engineering workspace — projects, terminals, Git/worktrees, browser verification, durable context, source control, recovery, and multiple agent runtimes in one place.**
+> **A desktop engineering harness for AI coding agents.**
 
-**Version:** 1.3.6 · **Runtime:** Node.js 22+ · **License:** Apache-2.0 · **Desktop:** Windows / macOS / Linux packaging targets
+Trebell Code gives coding agents a real software-engineering workspace instead of a chat box with a terminal attached. It keeps projects, source control, verification, context, permissions, recovery, and runtime state in one desktop product while letting developers choose the agent runtime and model provider that fit the job.
 
-Trebell Code is not a chat box with a terminal glued beside it. It is a **desktop agent harness** designed around the boring-but-important parts of software engineering that make autonomous coding workflows trustworthy:
+**Working desktop MVP · Apache-2.0 · Node.js 22+ · Windows release + macOS/Linux packaging**
 
-- durable project/thread state;
-- repository-aware context;
-- real files, terminals, Git and worktrees;
-- bounded delegation and background work;
-- browser and desktop verification;
-- permission and risk policy;
-- checkpoints, rewind/recovery and evidence;
-- runtime-aware capabilities instead of fake feature parity;
-- provider-independent conversation history;
-- honest failure states instead of silent fallbacks.
+![Trebell Code desktop workspace](docs/assets/trebell-code-workspace.png)
 
-The product contract lives in **goal.md**. The remaining real-world validation work is tracked in **MANUAL_TESTING.md**.
+## Why Trebell
 
----
+Coding models are getting better quickly, but the surrounding engineering workflow is still fragmented. Different agents own different conversations, tools, permission models, terminals, browser flows, and project state.
 
-## Why Trebell exists
+Trebell's core idea is simple:
 
-Most coding-agent frontends answer one question:
+**the model and agent runtime should be replaceable; the engineering workspace should not be.**
 
-> “How do I talk to this model?”
+That means a developer can use Trebell Native, Codex, Claude Code, OpenCode, or another supported runtime without rebuilding the surrounding workflow every time.
 
-Trebell is built around a harder question:
+## What works today
 
-> “How do I give different coding agents the same dependable engineering environment without pretending they all support the same things?”
+- **Multi-runtime coding workspace** with Trebell Native, Codex, Claude Code, OpenCode, and capability-gated external runtimes.
+- **Provider-independent projects and threads** so workspace identity is not owned by one model vendor.
+- **Real engineering tools** for files, terminals, Git, branches, worktrees, source control, background processes, and repository search.
+- **Local and remote environments**, including local Windows, WSL, SSH, and environment-aware execution paths.
+- **Browser and desktop verification** with Playwright-backed browser workflows, screenshots, runtime checks, and evidence-aware verification.
+- **MCP, skills, plugins, and lazy tool exposure** so specialized capabilities do not have to inflate every prompt.
+- **Durable context and recovery** through persisted thread state, event history, checkpoints, verification records, and bounded recovery flows.
+- **Trebell Native**: a Trebell-owned agent loop with tool policy, context management, reasoning controls, usage telemetry, and direct provider support.
+- **Official provider support** for OpenAI, Anthropic, and Gemini, plus compatible third-party routes.
 
-That leads to five rules:
+## What makes it different
 
-1. **Harness capabilities are explicit.** Trebell Native, Codex, Claude Code, OpenCode, Cursor, Grok Build and Antigravity do not magically expose identical queues, sandboxes, rewinds, profiles, delegation or attachment support.
-2. **Provider identity does not own conversation identity.** Switching inference provider must not make your projects or previous chats disappear.
-3. **Verification uses evidence.** Tests, builds, browser runs, screenshots, Git state and runtime signals beat “another model said it looks good.”
-4. **Failure is visible.** If persistence, Git metadata, provider refresh, checkpointing, source control or the runtime fails, Trebell shows it.
-5. **Heavy tools are lazy.** The model does not receive every MCP/tool schema on every turn.
+| Problem | Trebell approach |
+| --- | --- |
+| Every coding agent becomes its own silo | Projects, threads, repository state, and engineering services live above the model/provider layer |
+| A model says "done" without proving it | Verification uses tests, commands, browser evidence, screenshots, Git state, and persisted checks |
+| Tool schemas and old context become expensive | Heavy namespaces are lazy, tool/context growth is measured, and Native is benchmarked for cost as well as quality |
+| Different runtimes pretend to have feature parity | Capabilities are detected and surfaced honestly instead of creating fake toggles |
+| Recovery means starting over | Trebell persists task state, checkpoints, evidence, and bounded repair/recovery paths |
 
----
+## Product architecture
 
-## Architecture
-
-~~~mermaid
+```mermaid
 flowchart LR
-    UI["React desktop workspace"]
-    GUI["Trebell GUI / RPC server"]
-    STATE["SQLite state + event journal"]
-    SERVICES["Projects · Git · worktrees · terminals · verification · source control"]
-    TOOLS["Shared tool gateway + policy + redaction"]
+    UI["Desktop workspace"]
+    CORE["Projects · Git · terminals · verification · context"]
+    POLICY["Tool gateway · permissions · redaction"]
     NATIVE["Trebell Native"]
-    CODEX["Codex app-server"]
-    EXTERNAL["Claude Code · OpenCode · Cursor · Grok Build · Antigravity"]
-    PROVIDERS["Freebuff · AgentRouter · JustWorker · HCNSec · VyceAi"]
-    MCP["MCP servers"]
-    BROWSER["Agent Browser / desktop verification"]
+    RUNTIMES["Codex · Claude Code · OpenCode · other runtimes"]
+    PROVIDERS["OpenAI · Anthropic · Gemini · compatible providers"]
+    TOOLS["MCP · browser · desktop · remote environments"]
 
-    UI <--> GUI
-    GUI <--> STATE
-    GUI <--> SERVICES
-    GUI <--> TOOLS
-    GUI <--> NATIVE
-    GUI <--> CODEX
-    GUI <--> EXTERNAL
+    UI <--> CORE
+    CORE <--> POLICY
+    CORE <--> NATIVE
+    CORE <--> RUNTIMES
     NATIVE <--> PROVIDERS
-    TOOLS <--> MCP
-    TOOLS <--> BROWSER
-~~~
+    POLICY <--> TOOLS
+```
 
-### Runtime and inference provider are separate concepts
+The important separation is between **agent runtime** and **inference provider**. Trebell Native can use different model providers, while external harnesses keep their own native authentication and protocol behavior.
 
-**Agent runtime** is the coding harness that owns the session/protocol.
+## Engineering proof
 
-**Inference provider** is the model API used by Trebell-managed inference paths.
+Trebell is developed as a harness, not as a prompt demo.
 
-Examples:
+- The repository currently carries **1,300+ deterministic tests** across runtime behavior, providers, tool policy, persistence, source control, verification, desktop integration, and benchmark infrastructure.
+- UI behavior is covered with **headless Playwright** workflows, including workspace and visual verification paths.
+- Trebell Native is compared against Codex API and Codex OAuth on **Terminal-Bench 4.0** using the same model, reasoning effort, service tier, and hosted-web-search policy.
+- Benchmark accounting tracks **verifier quality, input/output tokens, cache use, cost, tool calls, turns, and runtime behavior** instead of treating token count alone as efficiency.
+- Benchmark failures are kept as engineering evidence and converted into generic harness changes rather than task-specific prompt patches.
 
-- Trebell Native + VyceAi;
-- Trebell Native + AgentRouter;
-- Trebell Native + the official OpenAI, Anthropic, or Gemini API;
-- Codex using Codex's own account/provider/model configuration;
-- Claude Code using Claude Code's own model/auth semantics.
+The current optimization target is straightforward: **match or beat mature coding harnesses on real public software-engineering tasks while reducing the cost required to reach the same quality.**
 
-External harnesses are not forced through Trebell Native's provider layer merely to make the UI look symmetrical.
+See [Benchmarking](docs/benchmarks/HISTORY.md) for the methodology and full evidence ledger.
 
----
-
-## Supported agent runtimes
-
-| Runtime | Integration model | Notes |
-|---|---|---|
-| **Trebell Native** | Trebell-owned native loop | Deepest Trebell-controlled tool/policy/budget integration |
-| **Codex** | OpenAI Codex app-server | Native Codex protocol, skills/plugins/apps/config where exposed |
-| **Claude Code** | Claude Agent SDK/runtime integration | Runtime/profile features are capability-gated |
-| **OpenCode** | OpenCode SDK/runtime integration | Shared Trebell workspace/delegation capabilities |
-| **Cursor** | External agent runtime | Capabilities depend on the connected runtime |
-| **Grok Build** | External agent runtime | Capabilities depend on the connected runtime |
-| **Antigravity** | External agent runtime | Capability-gated; video attachments currently marked unsupported |
-
-The UI reads a runtime capability contract rather than scattering runtime-name assumptions everywhere.
-
----
-
-## Trebell-managed inference providers
-
-Current integrations include:
-
-- **Freebuff**
-- **AgentRouter**
-- **JustWorker.icu**
-- **HCNSec.cn**
-- **VyceAi**
-
-Provider keys are configured in **Settings** and stored through Trebell's secret handling path.
-
-> **.env is not product configuration.** A local ignored .env may be used for developer/live-provider tests only.
-
-AgentRouter defaults to its current Codex-compatible OpenAI Chat endpoint at `https://co.agentrouter.org/v1`. Trebell Native still owns the prompt, tools, context, turn loop, and session; the Codex-shaped headers are only an upstream compatibility fingerprint. The fingerprint version follows the bundled `@openai/codex` package instead of freezing an old client version. Compatibility overrides remain available through `AGENTROUTER_BASE_URL`, `AGENTROUTER_WIRE_API`, and `AGENTROUTER_CLIENT_VERSION` when an older/private AgentRouter deployment requires them.
-
-For Codex compatibility, Trebell can translate provider protocols into the Responses-style lifecycle expected by the bundled Codex runtime.
-
----
-
-## Core workspace
-
-### Projects and environments
-
-- project-scoped settings;
-- project identity independent of provider;
-- local workspaces;
-- WSL environments;
-- SSH environments;
-- remote Git/worktree execution where supported;
-- project cloning/background clone jobs;
-- safe cleanup and failure rollback.
-
-### Files and terminal
-
-- project file browsing;
-- file mentions from the composer;
-- integrated terminal sessions;
-- environment-aware command execution;
-- background processes owned by their originating thread;
-- explicit process cleanup;
-- bounded terminal/output state.
-
-### Git and worktrees
-
-- branch/status/diff views;
-- worktree creation and cleanup;
-- isolated delegated coding work;
-- source-control review state;
-- linked pull-request state;
-- checkpoints and recovery;
-- branch-aware verification.
-
-### Thread lifecycle
-
-- durable thread metadata;
-- provider-independent history;
-- paginated history/search;
-- queued follow-up messages;
-- runtime-aware resume;
-- fork/rewind where supported;
-- long-thread virtualization;
-- bounded sidebar rendering.
-
----
-
-## Source control and forges
-
-Trebell has provider-specific source-control support rather than assuming every remote is GitHub.
-
-The source-control service includes capability/detection paths for:
-
-- GitHub;
-- GitLab;
-- Forgejo / Gitea;
-- Bitbucket;
-- Azure DevOps.
-
-Known public hosts can be detected automatically. Unknown/self-hosted hosts are handled conservatively instead of Trebell guessing the provider and issuing the wrong API calls.
-
-Supported operations vary by provider and credentials.
-
----
-
-## Tool architecture
-
-### Baseline tools
-
-Common engineering primitives stay available without bloating every turn:
-
-- workspace/file operations;
-- terminal operations;
-- repository search/intelligence;
-- bounded context helpers.
-
-### Lazy specialized namespaces
-
-Heavier capabilities are exposed only when task intent and runtime support justify them:
-
-- browser automation;
-- desktop computer control;
-- source-control operations;
-- delegation.
-
-### MCP
-
-Trebell Native uses progressive MCP discovery:
-
-1. configured MCP servers are indexed internally;
-2. the model initially sees a compact discovery surface;
-3. matching tool schemas expand only when needed.
-
-This avoids the classic “here are 300 schemas, please remember the user asked to rename one variable” problem.
-
-MCP/tool results pass through Trebell's shared policy and secret-redaction gateway before being returned to the model-facing loop.
-
----
-
-## Context and repository intelligence
-
-Trebell treats context as an engineering subsystem rather than one giant prompt.
-
-### Repository context
-
-- bounded repository indexing;
-- semantic/context selection;
-- file/symbol-aware evidence;
-- focused task context;
-- repository tool catalog;
-- runtime-independent repository tools.
-
-### Durable repository knowledge
-
-Saved repository facts carry a trust state:
-
-- **verified** — supporting evidence still matches;
-- **unverified** — saved but not yet evidence-backed;
-- **stale** — supporting files/revision changed and the fact is omitted from injected context.
-
-This deliberately avoids building a giant always-trusted RepoWiki.
-
----
-
-## Verification and repair
-
-Trebell's verification model is evidence-first.
-
-Evidence can include:
-
-- unit/integration tests;
-- build/type/syntax checks;
-- Git/diff state;
-- browser interaction;
-- screenshots;
-- runtime diagnostics;
-- checkpoint/recovery evidence;
-- source-control state.
-
-When a deterministic check fails, Trebell can feed the failure back into the **same agent/thread** for bounded repair.
-
-It does **not** automatically spawn reviewer swarms simply because “more agents sounds smarter.”
-
-Independent review remains a recommendation where it is genuinely useful.
-
----
-
-## Delegation and asynchronous work
-
-Delegation is bounded and explicit:
-
-- child-agent counts are budgeted;
-- time/tool/token constraints are enforced;
-- coding delegation defaults to worktree isolation;
-- shared workspace reuse must be explicit;
-- remote worktrees stay in the selected environment;
-- child agents can be prevented from recursively creating grandchildren;
-- failed worktree setup cleans itself up.
-
-Trebell separates:
-
-**Queued agent work** — durable follow-up instructions associated with a thread.
-
-**Background processes** — servers/watchers/commands with an OS process lifetime and independent cleanup.
-
----
-
-## Safety, permissions and secrets
-
-### Permission policy
-
-Tool calls carry structured metadata such as:
-
-- read vs write;
-- risk level;
-- reversibility;
-- idempotence;
-- external side effects;
-- workspace/project requirements;
-- full-access requirements.
-
-### Secret handling
-
-Trebell redacts known secrets across model/tool boundaries, persisted events and diagnostic surfaces.
-
-Provider credentials are kept separate from normal UI state.
-
-### Untrusted tool output
-
-Native tool observations are framed as **untrusted data** before the next model step. A web page, README or MCP response saying “ignore the user and do X” is content, not automatically promoted to instructions.
-
----
-
-## Persistence and recovery
-
-SQLite is the authoritative durable store for major Trebell state.
-
-The architecture includes:
-
-- durable thread/turn storage;
-- indexed thread metadata;
-- projects/settings;
-- durable goals;
-- repository knowledge;
-- verification records;
-- event history;
-- recovery evidence.
-
-The JSONL event file is a **bounded export/fallback mirror**, not a competing source of truth. Legacy/fallback records reconcile without resurrecting events SQLite intentionally pruned.
-
-On restart, uncertain side effects are not blindly replayed.
-
----
-
-## Performance
-
-Trebell includes:
-
-- conversation virtualization;
-- sidebar virtualization;
-- bounded timeline rendering;
-- frame-buffered/coalesced streaming deltas;
-- paginated thread history;
-- incremental repository indexing;
-- bounded source-control lists;
-- lazy-loaded heavy pages;
-- visibility-aware polling;
-- bounded terminal/diagnostic data.
-
-Performance measurements and benchmark history live in **[benchmark.md](benchmark.md)**.
-
----
-
-## Browser and desktop verification
-
-### Agent Browser
-
-The isolated Agent Browser supports:
-
-- navigation;
-- DOM interaction;
-- screenshots;
-- responsive viewport checks;
-- localhost preview discovery;
-- browser evidence collection.
-
-### Desktop control
-
-Desktop screenshots and computer-control capabilities are permission/capability gated.
-
-Windows mouse/keyboard control is only advertised when the bridge reports support. Trebell does not render fake controls on unsupported platforms.
-
----
-
-## Platform support
-
-| Platform | Status |
-|---|---|
-| **Windows x64** | Primary release target; NSIS installer and installed-app smoke coverage |
-| **macOS** | Electron DMG/ZIP targets configured; real-device validation still required |
-| **Linux** | AppImage/deb targets configured; real-distro validation still required |
-| **WSL** | Supported as a desktop-controlled development environment |
-| **SSH** | Supported as a remote development environment |
-
-See **MANUAL_TESTING.md** for what automated Windows/mock coverage cannot honestly prove.
-
----
-
-## Explicit non-goals
-
-These are intentionally **not** current Trebell goals:
-
-- Android emulator/iOS simulator orchestration;
-- mobile companion remote-control UI;
-- automatic “best model” routing/tournaments;
-- mandatory reviewer-agent loops;
-- swarm-first coding;
-- mandatory vector DB / embeddings infrastructure;
-- giant always-injected RepoWiki generation;
-- decorative Web/Skills composer toggles that do not genuinely gate behavior.
-
-Older releases briefly contained mobile-device control surfaces. They were retired and regression-tested to stay retired.
-
----
-
-## Installation
+## Quick start
 
 ### Windows release
 
-Download the latest installer from:
-
-**https://github.com/tanishqbaweja/trebellcode/releases**
-
-Installer naming:
-
-~~~text
-Trebell-Code-Setup-<version>.exe
-~~~
+Download the latest installer from the [GitHub Releases](https://github.com/tanishqbaweja/trebellcode/releases) page.
 
 ### Run from source
 
 Requirements:
 
-- Node.js **22+**
+- Node.js 22+
 - npm
-- Git for repository/source-control workflows
+- Git
 
-~~~bash
+```bash
 git clone https://github.com/tanishqbaweja/trebellcode.git
 cd trebellcode
 npm install
 npm link
 trebell
-~~~
-
-Frontend development:
-
-~~~bash
-npm run gui:server
-npm run ui:dev
-~~~
+```
 
 Production-style local GUI:
 
-~~~bash
+```bash
 npm run ui:build
 trebell gui
-~~~
+```
 
----
+Frontend development:
 
-## Useful commands
+```bash
+npm run gui:server
+npm run ui:dev
+```
 
-| Command | Purpose |
-|---|---|
-| **trebell** | Start Trebell Code |
-| **trebell doctor** | Check installation/runtime prerequisites |
-| **trebell login** | Freebuff login |
-| **trebell login --force** | Refresh/switch Freebuff login |
-| **trebell logout** | Remove local Freebuff credential |
-| **trebell models --provider ID** | Show models for a Trebell Native provider |
-| **trebell --model ID** | Ask the real Codex harness to use a model for this CLI run |
-| **trebell gui** | Open the multi-harness app, including Trebell Native direct-API inference |
+## Validation
 
-Provider API keys for normal product use belong in **Settings**, not repository environment files.
-`trebell run` does not rewrite Codex's provider or account configuration; Native provider selection is intentionally separate.
-
----
-
-## Testing
-
-### Deterministic
-
-~~~bash
+```bash
 npm test
-~~~
-
-For fast local iteration, Trebell also provides a single-process deterministic gate:
-
-~~~bash
-npm run test:fast
-~~~
-
-`test:fast` deliberately disables Node's per-file process isolation but keeps serial test execution. Keep `npm test` as the stronger release/final-validation gate; see **[benchmark.md](benchmark.md)** for measured test-loop performance comparisons.
-
-The deterministic suite is the source of truth for local regression coverage. Live-provider and external-runtime checks are kept separate because they depend on credentials, service availability, and installed runtimes.
-
-### UI / Playwright
-
-~~~bash
+npm run ui:build
 npm run ui:test
-npm run ui:test:workspace
-npm run ui:test:capabilities
-npm run ui:test:visual
-~~~
+```
 
-Local Playwright automatically builds the current frontend before running, preventing stale-ui/dist false positives.
+Live-provider and external-runtime checks are opt-in because they depend on credentials, installed runtimes, and external service availability.
 
-The harness is offline by default. Live-provider tests are opt-in.
+## Product direction
 
-### Live developer tests
+Near-term work is focused on four things:
 
-~~~bash
-npm run test:providers:live
-npm run test:runtime-profiles:live
-npm run test:external-harnesses:live
-npm run test:codex:live
-~~~
+1. **Harness efficiency** — improve Trebell Native against public coding benchmarks on quality, cost, cache behavior, and tool use.
+2. **Runtime interoperability** — make switching between coding runtimes feel like changing an engine, not changing products.
+3. **Evidence-first autonomy** — make verification, repair, checkpoints, and recovery normal parts of an agent turn.
+4. **Product polish** — keep reducing setup friction, UI noise, fake capability parity, and operational failure modes.
 
-Public benchmark work uses the Terminal-Bench tooling documented in **[benchmark.md](benchmark.md)**. Historical one-off provider and microbenchmark scripts are intentionally not kept in the main repository.
+## Documentation
 
-These may optionally read an ignored root **.env** containing test credentials only.
-
-### Benchmarks
-
-Benchmark methodology, commands, live comparisons, and historical measurements live in **[benchmark.md](benchmark.md)**.
-
----
-
-## Building a Windows release
-
-~~~bat
-make-exe.cmd
-~~~
-
-The release pipeline:
-
-1. installs dependencies including optional native packages;
-2. runs deterministic tests;
-3. materializes app icons;
-4. builds the provider bridge and frontend;
-5. builds an unpacked Windows app;
-6. runs installed desktop + bundled Codex smoke tests;
-7. builds the NSIS installer/update metadata;
-8. copies release artifacts into the ignored **release-artifacts/vX.Y.Z/** folder.
-
-Build **and publish**:
-
-~~~bat
-make-exe.cmd publish
-~~~
-
-Equivalent npm commands:
-
-~~~bash
-npm run release:windows
-npm run release:windows:publish
-~~~
-
-Other configured packaging targets:
-
-~~~bash
-npm run desktop:dist:mac
-npm run desktop:dist:linux
-~~~
-
----
+| Document | Purpose |
+| --- | --- |
+| [Technical overview](docs/technical/TECHNICAL_OVERVIEW.md) | Detailed architecture, services, runtime integrations, safety, and release behavior |
+| [Product principles](docs/technical/PRODUCT_PRINCIPLES.md) | The product and architecture contract |
+| [Testing](docs/technical/TESTING.md) | Deterministic, UI, live-provider, and manual validation |
+| [Benchmark history](docs/benchmarks/HISTORY.md) | Terminal-Bench methodology, evidence ledger, and historical results |
+| [Benchmark engineering changes](docs/benchmarks/ENGINEERING_CHANGES.md) | Generic harness changes motivated by benchmark evidence |
+| [v1.3.6 release notes](docs/releases/v1.3.6.md) | Current release notes |
 
 ## Repository layout
 
-~~~text
-.
-├── bin/                    CLI entrypoints
-├── branding/               source branding assets
-├── build/                  source icon + generated packaging icons
-├── desktop/                Electron shell, preload, updater, desktop bridge
-├── scripts/                release, benchmark, replay and live-test scripts
-├── src/                    backend/runtime/services
-├── tests/                  deterministic and integration tests
-├── ui/                     React/Vite desktop UI + Playwright E2E tests
-├── vendor/freebuff2api/    vendored compatibility bridge source
-├── benchmark.md            benchmark commands, methodology, results, and rejected experiments
-├── goal.md                 product/architecture contract
-├── MANUAL_TESTING.md       remaining real-world validation checklist
-├── THIRD_PARTY_NOTICES.md  attribution/provenance
-├── make-exe.cmd            Windows release entrypoint
-└── package.json
-~~~
+```text
+bin/           CLI entrypoints
+branding/      source branding assets
+build/         packaging icons/resources
+desktop/       Electron shell and desktop integration
+docs/          architecture, testing, benchmarks, and release notes
+scripts/       release, benchmark, replay, and live-test tooling
+src/           backend, runtime, services, providers, and tool policy
+tests/         deterministic and integration coverage
+ui/            React/Vite desktop UI and Playwright tests
+vendor/        vendored compatibility components
+```
 
-Generated installers are intentionally not committed:
+## Security and secrets
 
-~~~text
-release-artifacts/
-desktop-dist/
-~~~
+Provider credentials belong in Trebell's Settings/secret paths. Repository `.env` files are ignored and are used only for explicit developer/live-provider testing. Tool execution is capability- and policy-aware, and secret-bearing outputs are redacted from persisted telemetry where applicable.
 
----
+Please report security issues privately as described in [SECURITY.md](SECURITY.md).
 
-## Release and update behavior
+## License
 
-The Windows release produces:
-
-- NSIS installer;
-- blockmap;
-- latest.yml;
-- release.json with SHA-256, byte size, build time and Git commit.
-
-Updater failures remain visible instead of being converted into fake success.
-
----
-
-## Licensing and attribution
-
-Trebell Code wrapper/integration code is licensed under **Apache-2.0**.
-
-Trebell integrates the OpenAI Codex runtime and retains upstream attribution.
-
-The Freebuff compatibility bridge is derived from **chenjh16/freebuff2api** under the MIT license.
-
-See:
-
-- **LICENSE**
-- **NOTICE**
-- **THIRD_PARTY_NOTICES.md**
-
----
-
-## Product contract
-
-If a future implementation decision conflicts with a convenient shortcut, **goal.md** is the reference for what Trebell is trying to become.
-
-> Build a dependable engineering harness around increasingly capable models; do not keep old orchestration complexity merely because weaker models once needed it.
+Trebell Code is licensed under the [Apache License 2.0](LICENSE). Third-party attribution is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [NOTICE](NOTICE).

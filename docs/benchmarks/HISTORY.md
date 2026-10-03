@@ -2,7 +2,7 @@
 
 This file is the canonical home for Trebell Code benchmark definitions, commands, methodology, and recorded results. New benchmark work should be documented here rather than living only in terminal output, chat history, or ad-hoc notes.
 
-Benchmark-driven **Trebell Native harness changes** are tracked separately in [`benchmark_changes.md`](benchmark_changes.md), including the observed benchmark failure, the generic harness change, why it was made, the expected effect, and its validation status.
+Benchmark-driven **Trebell Native harness changes** are tracked separately in **[ENGINEERING_CHANGES.md](ENGINEERING_CHANGES.md)**, including the observed benchmark failure, the generic harness change, why it was made, the expected effect, and its validation status.
 
 ## Benchmark rules
 
@@ -1121,7 +1121,7 @@ The recovered API trajectory exposed a second, deeper strategy difference. Nativ
 
 The Windows-safe pinned Codex adapter also now reads only the real persisted `codex-sessions` directory instead of falling back to the Windows-inaccessible synced `sessions` reparse point, preventing a completed Codex solve from failing before Harbor can invoke its verifier.
 
-Durable evidence for this pair is stored under `.harbor-validation/tb4-pair-gpt-6-luna-max-mp-checkpoint-consolidation-20261001T081727Z*`, with raw Harbor jobs under `.harbor-jobs/`. The one-click `benchmark-watchdog.cmd` displays recovered verifier scores with a trailing `*` when Harbor itself could not seal that verifier result.
+Durable evidence for this pair is stored under `.harbor-validation/tb4-pair-gpt-6-luna-max-mp-checkpoint-consolidation-20261001T081727Z*`, with raw Harbor jobs under `.harbor-jobs/`. The one-click `scripts/benchmark-watchdog.cmd` displays recovered verifier scores with a trailing `*` when Harbor itself could not seal that verifier result.
 
 #### Follow-up sealed run and Native recovery deadlock
 

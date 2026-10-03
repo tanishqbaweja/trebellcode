@@ -2,7 +2,7 @@
 
 This file is the canonical change log for **Trebell Native harness changes that were motivated by benchmark evidence**.
 
-Use `benchmark.md` for benchmark methodology, raw results, lane metrics, verifier outcomes, contamination rules, and chronological evidence. Use this file for the engineering question:
+Use **[HISTORY.md](HISTORY.md)** for benchmark methodology, raw results, lane metrics, verifier outcomes, contamination rules, and chronological evidence. Use this file for the engineering question:
 
 > **What did we change in the harness because a benchmark exposed a weakness, why did we change it, and what do we expect the change to improve?**
 
@@ -15,7 +15,7 @@ Use `benchmark.md` for benchmark methodology, raw results, lane metrics, verifie
 - Record the **expected effect** before using another benchmark to judge it. Expected effects are hypotheses, not claimed wins.
 - Keep regression validation separate from external benchmark validation. Unit/full-suite success proves the change is internally sound; only a fresh unseen task can show that the behavior generalizes.
 - Do not rewrite history after a later benchmark. If a hypothesis is wrong, append the new evidence and the follow-up change.
-- Benchmark-runner-only infrastructure changes belong primarily in `benchmark.md`. They are included here only when they materially change Trebell Native runtime behavior itself.
+- Benchmark-runner-only infrastructure changes belong primarily in **[HISTORY.md](HISTORY.md)**. They are included here only when they materially change Trebell Native runtime behavior itself.
 
 ## Current optimization objective
 
