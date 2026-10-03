@@ -39,9 +39,11 @@ build/icon.png
 
 # Logs and caches
 *.log
+*.exit
 npm-debug.log*
 .cache/
 .tmp/
+.validation/
 
 # OS / editor noise
 .DS_Store

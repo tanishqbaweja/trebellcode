@@ -80,34 +80,13 @@ Failure checks:
 
 ## 3. Trebell Native with a real provider
 
-Automated baseline already proven for **VyceAi + deepseek-v4.1**:
+Use the provider-wide live smoke instead of keeping provider-specific one-off scripts:
 
-- Native provider path without Codex app-server;
-- Trebell Native system prompt delivered to the real model;
-- real repository/workspace/terminal tool calls;
-- real source edit;
-- real terminal verification;
-- independent post-turn verification.
-- stable progressive repository/MCP discovery keeps advanced schemas out of the baseline request;
-- large tool-output virtualization and repeated source-observation deduplication are covered by automated tests;
-- request-level telemetry records prompt/schema/history/tool-result estimates, provider bytes/latency, stable hashes, and cache usage;
-- the latest small live coding fixture completed in 4 model turns / 11,997 input tokens with no failed tool calls.
+```bash
+npm run test:providers:live
+```
 
-Command: `npm run test:vyce:native`
-
-Additional live engineering checks:
-
-- `npm run test:vyce:cache` — repeated-prefix cache experiment for the current Vyce route;
-- `npm run bench:vyce:native` — multi-file refactor, failure-repair, and large-output benchmark scenarios.
-
-Final v1.3.3 benchmark baseline on VyceAi + `deepseek-v4.1`:
-
-- multi-file refactor: 5 model turns / 16,349 input tokens;
-- failure-driven repair: 4 model turns / 13,148 input tokens;
-- 92 KB noisy-output repair: 7 model turns / 37,526 input tokens;
-- all three scenarios total: 16 model turns / 67,023 input tokens;
-- all three scenarios independently verified after the Native turn;
-- Vyce reported 0 cached input tokens.
+For harness quality/cost work, use the current public Terminal-Bench comparison flow documented in `benchmark.md`. Historical provider-specific microbenchmarks remain available through Git history if they are ever needed for archaeology.
 
 The checklist below is still required for broader real-world confidence:
 

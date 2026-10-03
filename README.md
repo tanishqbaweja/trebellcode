@@ -487,12 +487,7 @@ npm run test:fast
 
 `test:fast` deliberately disables Node's per-file process isolation but keeps serial test execution. Keep `npm test` as the stronger release/final-validation gate; see **[benchmark.md](benchmark.md)** for measured test-loop performance comparisons.
 
-At the v1.3.3 Native-harness release checkpoint:
-
-- **808 / 808 deterministic tests passed**
-- **138 / 138** full visual/screenshot tests passed
-- **2 / 2** targeted Native UI E2E tests passed (compact context seed + thread-owned background process/runtime UI)
-- the real `test:vyce:native` coding gate passed with VyceAi + `deepseek-v4.1`
+The deterministic suite is the source of truth for local regression coverage. Live-provider and external-runtime checks are kept separate because they depend on credentials, service availability, and installed runtimes.
 
 ### UI / Playwright
 
@@ -510,19 +505,13 @@ The harness is offline by default. Live-provider tests are opt-in.
 ### Live developer tests
 
 ~~~bash
-npm run test:vyce
-npm run test:vyce:native
-npm run test:vyce:codex
-npm run test:vyce:cache
-npm run test:vyce:background
-npm run test:vyce:fanout
 npm run test:providers:live
 npm run test:runtime-profiles:live
 npm run test:external-harnesses:live
 npm run test:codex:live
 ~~~
 
-Benchmark commands are catalogued in **[benchmark.md](benchmark.md)**.
+Public benchmark work uses the Terminal-Bench tooling documented in **[benchmark.md](benchmark.md)**. Historical one-off provider and microbenchmark scripts are intentionally not kept in the main repository.
 
 These may optionally read an ignored root **.env** containing test credentials only.
 
