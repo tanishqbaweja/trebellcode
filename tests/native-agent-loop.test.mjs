@@ -543,9 +543,10 @@ test("native report-to-file quantitative deliverables enter semantic completion 
       if(turns===2)return {text:"Created results.txt. The derived activity concentration is negative, so I preserved the signed result.",toolCalls:[],usage:{}};
       assert.equal(request.metadata?.completionGate,true);
       const gate=request.messages.findLast(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));assert.ok(gate);
-      assert.match(String(gate.content),/units\/dimensions, sign, basic domain bounds, and order of magnitude/i);
-      assert.match(String(gate.content),/physically impossible, unphysical, nonsensical/i);
-      assert.match(String(gate.content),/own chosen numbers, labels, or formatting is not independent validation/i);
+      assert.match(String(gate.content),/units\/dimensional consistency/i);
+      assert.match(String(gate.content),/sign or physical interpretation/i);
+      assert.match(String(gate.content),/formula\/convention/i);
+      assert.match(String(gate.content),/independent recomputation/i);
       return {text:'{"status":"complete","progress":"uncertain","edit_support":"unsupported","mutation_safety":"allowed","unresolved":[],"reason":"test gate exercised"}',toolCalls:[],usage:{}};
     },
     executeTool:async()=>({path:"results.txt",bytes:52}),
