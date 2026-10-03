@@ -2975,6 +2975,60 @@ test("native external-state tasks do not activate workspace implementation press
   assert.equal(events.filter(event=>event.name==="native.progress.implementation_call_blocked").length,0);
 });
 
+test("native external-state convergence bounds repeated quick polling but permits one consolidated wait",async()=>{
+  const events=[],executed=[];let turns=0;
+  const quick=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; print(requests.get('http://localhost:5000/api/status').status_code)"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the running campaign through its API. Change the live config as needed and wait for the external evaluation to finish."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial-write",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/config', json={'mode':'candidate'})"]})}],usage:{}};
+      if(turns>=2&&turns<=9)return {text:"",toolCalls:[quick("poll-"+turns)],usage:{}};
+      if(turns===10)return {text:"",toolCalls:[quick("blocked-poll")],usage:{}};
+      if(turns===11)return {text:"",toolCalls:[{id:"wait-and-check",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"bash",args:["-lc","sleep 5; curl -s http://localhost:5000/api/status"]})}],usage:{}};
+      if(turns===12)return {text:"The external evaluation reached its terminal state; no further action is needed.",toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return {exitCode:0,stdout:"ok"}},
+  });
+  assert.match(result.text,/terminal state/i);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_escalation").length,1);
+  const blocked=events.filter(event=>event.name==="native.progress.external_observation_call_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0].data?.callId,"blocked-poll");
+  assert.equal(executed.includes("blocked-poll"),false);
+  assert.equal(executed.includes("wait-and-check"),true);
+});
+
+test("native completion recovery preserves a protected external phase instead of forcing a mutation",async()=>{
+  const events=[],executed=[];let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:2,maxModelTurns:12,maxToolCalls:16,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the live campaign through its API. Update the live configuration to improve the metric before the protected evaluation window, then do not change configuration during the evaluation window."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"legal-write",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/config', json={'mode':'best'})"]})}],usage:{}};
+      if(turns===2)return {text:"The protected evaluation phase has started. The configuration is locked, but the primary metric is still below target.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"forbidden","unresolved":["primary metric remains below target"],"reason":"The objective is unresolved, but the protected evaluation phase explicitly forbids any further configuration attempt, including reasserting the same values."}',toolCalls:[],usage:{}};
+      if(turns===4){
+        assert.notEqual(request.toolChoice,"required");
+        return {text:"",toolCalls:[{id:"read-only-check",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; print(requests.get('http://localhost:5000/api/status').json())"]})}],usage:{}};
+      }
+      if(turns===5)return {text:"The protected phase remains active. I will not mutate the configuration because that would violate an already-satisfied constraint.",toolCalls:[],usage:{}};
+      if(turns===6)return {text:'{"status":"blocked","progress":"unchanged","edit_support":"unsupported","mutation_safety":"forbidden","unresolved":["primary metric remains below target"],"reason":"No legal state-changing action remains during the protected phase."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return {exitCode:0,stdout:"ok"}},
+  });
+  assert.match(result.text,/protected (?:evaluation )?phase/i);
+  assert.deepEqual(executed,["legal-write","read-only-check"]);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_mutation_support_normalized").length,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,0);
+  const firstGate=events.find(event=>event.name==="native.completion.gate"&&event.data?.verdict==="incomplete");assert.equal(firstGate?.data?.mutationSafety,"forbidden");assert.equal(firstGate?.data?.editSupport,"unsupported");
+});
+
 test("native external recovery requires restoring a regressed incumbent before final exhaustion",async()=>{
   const events=[],executed=[];let turns=0;
   const writeArgs=mode=>JSON.stringify({command:"python",args:["-c",`import requests; requests.post('http://localhost:5000/api/config', json={'mode':'${mode}'})`]});
