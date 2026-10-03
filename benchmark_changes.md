@@ -749,6 +749,22 @@ The configured recovery epoch limit is still unchanged, but exhaustion now also 
 
 ---
 
+## 2026-10-03 - Require semantic evidence for structured domain artifacts
+
+**Evidence:** clean fresh task `music-harmony` ran under `gpt-6-luna` + `max` + `fast` with hosted web search disabled and no infrastructure failures. All official rewards were 0. Native produced the closest substantive artifact: its MusicXML parsed and the independent checker reported **16 domain-rule violations**, while Codex API's artifact failed normalization entirely and Codex OAuth's parsed artifact had **64 violations**. Native cost **$0.15731**, versus **$0.15053** for Codex API and **$0.08612** for OAuth, so correctness proximity did not come with a cost advantage.
+
+The Native trace exposed a generic completion-evidence defect rather than a file-format problem. Native's final semantic gate accepted completion because the artifact existed, opened, had four parts, had the expected note/annotation counts, and included one specifically corrected chord. Those facts established structural validity but did not establish the user's substantive domain/style contract. The independent verifier then found remaining chord-spelling, diatonicity, progression, range, leading-tone, and doubling violations. The new HOF `evidence_then_edit` recovery mode itself activated twice and behaved as intended; the failure was what the completion judge considered sufficient evidence at the end.
+
+**Harness change:** Native now detects persistent structured-artifact requests that explicitly state semantic, style, validity, preservation, or domain constraints. For those tasks the semantic completion gate requires **content-level evidence** for those obligations. Existence, parseability, archive integrity, schema/metadata, and expected counts of parts/rows/elements are explicitly structural evidence only. The gate extracts the request's explicit acceptance clauses into bounded IDs (A1, A2, …) and asks for a structured `constraint_audit` with `met`, `unmet`, or `uncertain` plus direct evidence. A proposed `complete` verdict is deterministically normalized back to `incomplete` when any required clause is missing, non-passing, or lacks evidence. A self-authored checker that merely repeats the generator's unverified assumptions counts as self-consistency, not independent acceptance evidence. The rule is injected only into qualifying completion-gate turns instead of every Native system prompt, avoiding a permanent token/cache-prefix tax on unrelated work. Strategy telemetry records these deterministic rejections as `completionArtifactConstraintAuditBlocks`.
+
+**Why:** structured artifacts can be perfectly well-formed while being semantically wrong. This applies beyond music to CAD/design files, generated configuration, schemas with cross-field invariants, route/layout artifacts, documents with style constraints, domain-specific XML/JSON, and other deliverables where “opens/parses/has N elements” is not the acceptance contract. The rule is intentionally domain-neutral and does not encode hidden benchmark answers.
+
+**Expected effect:** fewer false-complete structured deliverables, earlier use of available local semantic validators, and better correctness on domain artifacts without adding broad evidence loops to ordinary file-writing tasks. Because the trigger requires both a persistent artifact and explicit semantic/style/validity language, ordinary coding/file output should retain its existing completion policy.
+
+**Validation status:** focused Native agent-loop + system-prompt + strategy-metrics coverage passes **206 / 206**; Node syntax checks pass; the complete repository suite passes **1,300 / 1,300**; `npm run bench:terminal:bundle` succeeds; `git diff --check` is clean; and the rebuilt Native Harbor bundle SHA-256 is **`a3f2081b2f0020965ad396771d6f5149c4bc3833d20cbd3dd6474976584dfb1d`**. The regression proves that a structurally valid artifact cannot complete with only partial clause evidence, then permits completion after a direct semantic validator covers every extracted clause. The global Native system prompt deliberately remains unchanged for this task class. `music-harmony` is consumed; the next authoritative untouched task is `ontology-kg-querying` while `freecad-platform-drawing` remains deferred.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name

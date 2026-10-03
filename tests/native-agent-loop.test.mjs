@@ -514,6 +514,46 @@ test("native report-to-file quantitative deliverable receives a semantic calcula
   assert.equal(events.filter(event=>event.name==="native.completion.gate_recovery").length,1);
 });
 
+test("native structured artifact semantics require direct coverage beyond structural validity",async()=>{
+  const requests=[],events=[],executed=[];let turn=0,expectedIds=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:12,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Create /app/layout.json in the style of the strict routing specification. Maintain orthogonal links, and no overlapping nodes are accepted."}],
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn===1)return {text:"",toolCalls:[{id:"write-layout",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"/app/layout.json",content:'{"nodes":[1,2],"links":[[1,2]]}'})}],usage:{}};
+      if(turn===2)return {text:"Created a parseable layout with two nodes and one link.",toolCalls:[],usage:{}};
+      if(turn===3){
+        const gate=request.messages.find(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));assert.ok(gate);
+        assert.match(String(gate.content),/persistent structured artifact/i);
+        assert.match(String(gate.content),/content-level evidence/i);
+        assert.match(String(gate.content),/file exists, parses, opens/i);
+        assert.match(String(gate.content),/Structural validity is necessary but is not sufficient semantic evidence/i);
+        assert.match(String(gate.content),/constraint_audit/i);
+        expectedIds=[...String(gate.content).matchAll(/\b(A\d+)=/g)].map(match=>match[1]);assert.ok(expectedIds.length>=2);
+        return {text:JSON.stringify({status:"complete",progress:"improved",edit_support:"unsupported",mutation_safety:"allowed",recovery_mode:"none",constraint_audit:[{id:expectedIds[0],status:"met",evidence:"file exists and parses"}],unresolved:[],reason:"Only parseability and counts are evidenced."}),toolCalls:[],usage:{}};
+      }
+      if(turn===4){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/evidence-only recovery window/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"semantic-check",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["validate-layout.mjs","/app/layout.json"]})}],usage:{}};
+      }
+      if(turn===5)return {text:"The layout is present and its orthogonality and overlap constraints pass the semantic validator.",toolCalls:[],usage:{}};
+      if(turn===6)return {text:JSON.stringify({status:"complete",progress:"improved",edit_support:"unsupported",mutation_safety:"allowed",recovery_mode:"none",constraint_audit:expectedIds.map(id=>({id,status:"met",evidence:"direct semantic validator evidence"})),unresolved:[],reason:"The persisted structured artifact now has direct content-level evidence for every explicit clause."}),toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turn);
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{success:true,path:"/app/layout.json",existedBefore:false,beforeSha256:null,afterSha256:"layout"}:{success:true,exitCode:0,stdout:"orthogonal=pass overlaps=0"}},
+  });
+  assert.match(result.text,/semantic validator/i);
+  assert.deepEqual(executed,["write-layout","semantic-check"]);
+  assert.equal(events.filter(event=>event.name==="native.completion.constraint_audit_blocked").length,1);
+  const recovery=events.find(event=>event.name==="native.completion.gate_recovery");assert.ok(recovery);assert.equal(recovery.data?.recoveryMode,"evidence_only");
+  assert.equal(events.filter(event=>event.name==="native.completion.gate").length,2);
+});
+
 test("native deliverable detector separates a source asset from a passive bare output filename",async()=>{
   const events=[],requests=[];let turn=0;
   const result=await runNativeAgentTurn({
