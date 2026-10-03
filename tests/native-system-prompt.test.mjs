@@ -36,6 +36,14 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/one bounded local solver\/search\/check/i);
   assert.match(prompt,/global feasibility plus any priority\/optimality objective/i);
   assert.match(prompt,/persistent state untouched until the strongest available pre-commit check passes/i);
+  assert.match(prompt,/scientific, quantitative, or data-analysis tasks/i);
+  assert.match(prompt,/units\/dimensions/i);
+  assert.match(prompt,/sign or physical interpretation/i);
+  assert.match(prompt,/selected formula\/convention/i);
+  assert.match(prompt,/basic domain bounds and order of magnitude/i);
+  assert.match(prompt,/physically impossible, unphysical, nonsensical/i);
+  assert.match(prompt,/independently recompute the final values/i);
+  assert.match(prompt,/self-authored assertion of the chosen numbers/i);
   assert.match(prompt,/unexpected universal failure, infeasible, empty, or no-solution outcome/i);
   assert.match(prompt,/constraints shape construction\/selection itself rather than only reject the result afterward/i);
   assert.match(prompt,/make that conclusion evidence-based/i);

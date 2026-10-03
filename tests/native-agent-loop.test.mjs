@@ -472,8 +472,46 @@ test("native persistent artifact request gets bounded deliverable progress check
   assert.equal(result.text,"done");assert.equal(requests.length,9);
   assert.equal(events.filter(event=>event.name==="native.progress.deliverable_checkpoint").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.deliverable_escalation").length,1);
-  assert.equal(events.some(event=>event.name==="native.progress.implementation_checkpoint"),false);
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_checkpoint").length,0);
   assert.equal(events.some(event=>event.name==="native.progress.implementation_call_blocked"),false);
+});
+
+test("native report-to-file quantitative deliverable receives a semantic calculation audit",async()=>{
+  const requests=[],events=[],executed=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:12,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Using the attached measurement data, determine the efficiency and sample activity concentration in Bq/kg. Report the results in a file named results.txt at /app/results.txt, rounded to four significant figures."}],
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn===1)return {text:"",toolCalls:[{id:"write-results",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"/app/results.txt",content:"Efficiency: 0.97\nSample activity concentration (Bq/kg): -20.0\n"})}],usage:{}};
+      if(turn===2)return {text:"Created the requested results file from the supplied measurements.",toolCalls:[],usage:{}};
+      if(turn===3){
+        const gate=request.messages.find(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));assert.ok(gate);
+        assert.match(String(gate.content),/derived numerical\/scientific task/i);
+        assert.match(String(gate.content),/units\/dimensional consistency/i);
+        assert.match(String(gate.content),/sign or physical interpretation/i);
+        assert.match(String(gate.content),/formula\/convention/i);
+        assert.match(String(gate.content),/independent recomputation/i);
+        return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"uncertain","unresolved":["final derived values lack an independent calculation cross-check"],"reason":"Only one calculation path is evidenced."}',toolCalls:[],usage:{}};
+      }
+      if(turn===4){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/bounded semantic-recovery window/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"recompute",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","print('units=ok sign=checked independent=ok')"]})}],usage:{}};
+      }
+      if(turn===5)return {text:"The requested file is present and the final values were independently recomputed with units and sign interpretation checked.",toolCalls:[],usage:{}};
+      if(turn===6)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","unresolved":[],"reason":"The persisted numeric deliverable now has an independent units/sign/convention cross-check."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turn);
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{success:true,path:"/app/results.txt",existedBefore:false,beforeSha256:null,afterSha256:"after"}:{success:true,exitCode:0,stdout:"units=ok sign=checked independent=ok"}},
+  });
+  assert.equal(result.text,"The requested file is present and the final values were independently recomputed with units and sign interpretation checked.");
+  assert.deepEqual(executed,["write-results","recompute"]);
+  assert.equal(events.filter(event=>event.name==="native.completion.gate").length,2);
+  assert.equal(events.filter(event=>event.name==="native.completion.gate_recovery").length,1);
 });
 
 test("native deliverable detector separates a source asset from a passive bare output filename",async()=>{
@@ -491,6 +529,30 @@ test("native deliverable detector separates a source asset from a passive bare o
   const checkpoint=events.find(event=>event.name==="native.progress.deliverable_checkpoint");assert.ok(checkpoint);assert.equal(checkpoint.data?.targetCount,1);
   const prompt=requests[4].messages.find(message=>message.role==="developer"&&/deliverable checkpoint/i.test(String(message.content||"")));assert.ok(prompt);
   assert.match(String(prompt.content),/out\.step/);assert.doesNotMatch(String(prompt.content),/input\.png/);
+});
+
+test("native report-to-file quantitative deliverables enter semantic completion gating",async()=>{
+  const requests=[],events=[];let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:6,maxToolCalls:8,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Using the supplied measurements, determine the activity concentration. Report the results in a file named results.txt."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"write-results",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"results.txt",content:"Sample activity concentration (Bq/kg): -20.02\n"})}],usage:{}};
+      if(turns===2)return {text:"Created results.txt. The derived activity concentration is negative, so I preserved the signed result.",toolCalls:[],usage:{}};
+      assert.equal(request.metadata?.completionGate,true);
+      const gate=request.messages.findLast(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));assert.ok(gate);
+      assert.match(String(gate.content),/units\/dimensions, sign, basic domain bounds, and order of magnitude/i);
+      assert.match(String(gate.content),/physically impossible, unphysical, nonsensical/i);
+      assert.match(String(gate.content),/own chosen numbers, labels, or formatting is not independent validation/i);
+      return {text:'{"status":"complete","progress":"uncertain","edit_support":"unsupported","mutation_safety":"allowed","unresolved":[],"reason":"test gate exercised"}',toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({path:"results.txt",bytes:52}),
+  });
+  assert.match(result.text,/negative/i);assert.equal(turns,3);
+  assert.ok(events.some(event=>event.name==="native.completion.gate_requested"));
+  assert.equal(events.find(event=>event.name==="native.completion.gate")?.data?.verdict,"complete");
 });
 
 test("native persistent deliverable pressure coexists with workspace mutation intent",async()=>{
