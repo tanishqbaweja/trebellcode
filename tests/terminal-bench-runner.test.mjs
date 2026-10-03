@@ -10,7 +10,7 @@ import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, pars
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
-import { prewarmTerminalBenchTaskCache, terminalBenchTaskPackageRef } from "../scripts/terminal-bench-task-cache.mjs";
+import { prewarmTerminalBenchTaskCache, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -164,6 +164,9 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
 });
 
 test("Terminal-Bench parallel task cache prewarm derives the exact dataset task version",async()=>{
+  assert.equal(terminalBenchTaskQualifiedName("terminal-bench/terminal-bench@4.0.0","example-task"),"terminal-bench/example-task");
+  assert.equal(terminalBenchTaskQualifiedName("terminal-bench/terminal-bench@4.0.0","terminal-bench/example-task"),"terminal-bench/example-task");
+  assert.equal(terminalBenchTaskQualifiedName("other-org/dataset@v2","terminal-bench/example-task"),null);
   assert.equal(terminalBenchTaskPackageRef("terminal-bench/terminal-bench@4.0.0","terminal-bench/example-task"),"terminal-bench/example-task@4.0.0");
   assert.equal(terminalBenchTaskPackageRef("terminal-bench/terminal-bench@4.0.0","example-task"),"terminal-bench/example-task@4.0.0");
   assert.equal(terminalBenchTaskPackageRef("other-org/dataset@v2","terminal-bench/example-task"),null);

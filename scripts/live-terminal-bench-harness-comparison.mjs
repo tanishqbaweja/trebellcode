@@ -14,7 +14,7 @@ import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTermin
 import { estimateGpt6LunaStandardCostFromAggregate, GPT6_LUNA_STANDARD_PRICING } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
 import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
-import { prewarmTerminalBenchTaskCache } from "./terminal-bench-task-cache.mjs";
+import { prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName } from "./terminal-bench-task-cache.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -35,6 +35,8 @@ const MODEL=String(process.env.TREBELL_TERMINAL_BENCH_MODEL||"gpt-6-luna").trim(
 const EFFORT=String(process.env.TREBELL_TERMINAL_BENCH_REASONING_EFFORT||"max").trim().toLowerCase();
 const taskArg=process.argv.find(arg=>arg.startsWith("--task="));
 const TASK=String(taskArg?.slice("--task=".length)||process.env.TREBELL_TERMINAL_BENCH_TASK||"terminal-bench/session-window-debug").trim();
+const HARBOR_TASK=terminalBenchTaskQualifiedName(DATASET,TASK);
+if(!HARBOR_TASK)throw new Error(`Cannot derive Harbor task identity from dataset=${DATASET} task=${TASK}`);
 const setupTimeoutArg=process.argv.find(arg=>arg.startsWith("--agent-setup-timeout-multiplier="));
 const SETUP_TIMEOUT_MULTIPLIER=Number(setupTimeoutArg?.slice("--agent-setup-timeout-multiplier=".length)||process.env.TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER||3);
 if(!Number.isFinite(SETUP_TIMEOUT_MULTIPLIER)||SETUP_TIMEOUT_MULTIPLIER<1)throw new Error("Terminal-Bench setup timeout multiplier must be >= 1.");
@@ -269,7 +271,7 @@ try{
     const {label,harness,authMode}=lane;
     const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":CODEX_INSTALL_MODE==="pinned"?"benchmarks.harbor.pinned_codex_agent:PinnedCodexAgent":"codex";
     const laneState=laneStates[laneIndex];let jobName=laneState.jobName;
-    const argsForJob=currentJobName=>["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y"];
+    const argsForJob=currentJobName=>["run","-d",DATASET,"-i",HARBOR_TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y"];
     let args=argsForJob(jobName);
     const retainNativeEnvironment=STANDALONE_NATIVE_RERUN&&harness==="native";
     if(retainNativeEnvironment)args.push("--no-delete");

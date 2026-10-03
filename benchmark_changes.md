@@ -623,6 +623,20 @@ The generic external-state fixes themselves behaved as intended in one important
 
 ---
 
+## 2026-10-03 - Qualify bare task names for Harbor dataset filtering
+
+**Evidence:** after Docker was restored and the prewarm fix succeeded, the next fresh `coq-block-bound` launch still stopped before trial creation. Harbor's package dataset contains namespace-qualified task identities such as `terminal-bench/<task>`, but the live comparison runner passed the bare CLI value directly to Harbor's `-i` filter. Harbor therefore reported that no task matched the bare name. All three lanes remained pre-trial infrastructure failures with null reward/token/cost fields; no model inference or task execution occurred.
+
+**Harness change:** task identity normalization is now shared. `terminalBenchTaskQualifiedName()` derives the namespace-qualified task identity from the versioned dataset while failing closed on mismatched namespaces or already-versioned task strings. The package prewarmer builds its versioned package reference from that normalized identity, and the live comparison runner now passes the normalized task to Harbor while keeping the original user-facing task string in pair IDs and reports.
+
+**Why:** the benchmark CLI intentionally accepts convenient bare task names, but Harbor's registry/package filter operates on canonical namespace-qualified identities. The launcher must translate between those two representations consistently instead of asking the user to know Harbor's internal spelling.
+
+**Expected effect:** a valid bare `--task=<name>` launch should prewarm and then resolve the same exact Harbor task in every parallel lane, eliminating this second pre-inference setup abort without touching task contents.
+
+**Validation status:** `tests/terminal-bench-runner.test.mjs` passes **21 / 21** with bare/qualified normalization, namespace rejection, package-ref derivation, and the existing runner/lifecycle coverage. `node --check` passes for both modified scripts and `git diff --check` is clean. The failed pair remains setup-invalid with no paid inference.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name
