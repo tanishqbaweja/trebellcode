@@ -165,6 +165,7 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
 
 test("Terminal-Bench parallel task cache prewarm derives the exact dataset task version",async()=>{
   assert.equal(terminalBenchTaskPackageRef("terminal-bench/terminal-bench@4.0.0","terminal-bench/example-task"),"terminal-bench/example-task@4.0.0");
+  assert.equal(terminalBenchTaskPackageRef("terminal-bench/terminal-bench@4.0.0","example-task"),"terminal-bench/example-task@4.0.0");
   assert.equal(terminalBenchTaskPackageRef("other-org/dataset@v2","terminal-bench/example-task"),null);
   assert.equal(terminalBenchTaskPackageRef("terminal-bench/terminal-bench","terminal-bench/example-task"),null);
   const calls=[];

@@ -3,8 +3,10 @@ export function terminalBenchTaskPackageRef(dataset,task){
   const at=datasetText.lastIndexOf("@"),slash=datasetText.indexOf("/");
   if(at<=slash+1||slash<=0||at>=datasetText.length-1||!taskText)return null;
   const namespace=datasetText.slice(0,slash),ref=datasetText.slice(at+1);
-  if(!taskText.startsWith(namespace+"/")||taskText.includes("@"))return null;
-  return `${taskText}@${ref}`;
+  if(taskText.includes("@"))return null;
+  const packageTask=taskText.includes("/")?taskText:namespace+"/"+taskText;
+  if(!packageTask.startsWith(namespace+"/"))return null;
+  return packageTask+"@"+ref;
 }
 
 export async function prewarmTerminalBenchTaskCache({harbor,dataset,task,env,runFn}){

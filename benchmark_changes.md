@@ -609,6 +609,20 @@ The generic external-state fixes themselves behaved as intended in one important
 
 ---
 
+## 2026-10-03 - Accept bare task names in parallel Harbor prewarm
+
+**Evidence:** the first fresh `coq-block-bound` launch stopped before Harbor started any lane or paid inference. The launcher passes the selected task as the bare task name, while `terminalBenchTaskPackageRef` only accepted an already namespace-qualified task such as `terminal-bench/example-task`. The prewarm therefore rejected the perfectly valid `terminal-bench/terminal-bench@4.0.0` + bare-task combination before task execution.
+
+**Harness change:** the task-cache prewarmer now derives the package namespace from the dataset when the task is bare, while preserving the existing fail-closed behavior for explicitly qualified tasks from the wrong namespace or task strings that already contain a version. No task payload, verifier source, or hidden test content is required for this derivation.
+
+**Why:** the live comparison CLI itself accepts bare `--task=<name>` values. Parallel cache prewarm must resolve the same user-facing task identity instead of requiring a different hidden spelling.
+
+**Expected effect:** valid fresh three-lane launches can prewarm one exact Terminal-Bench package before parallel lanes start, preserving the cache-race protection without a pre-inference setup abort.
+
+**Validation status:** `tests/terminal-bench-runner.test.mjs` passes **21 / 21**, including both qualified and bare task-name package derivation, and `git diff --check` is clean. The failed launch performed no paid inference and is setup-invalid rather than a benchmark result.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name
