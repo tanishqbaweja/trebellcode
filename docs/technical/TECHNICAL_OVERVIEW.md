@@ -355,7 +355,7 @@ Trebell includes:
 - visibility-aware polling;
 - bounded terminal/diagnostic data.
 
-Performance measurements and benchmark history live in **[../benchmarks/HISTORY.md](../benchmarks/HISTORY.md)**.
+Selected public benchmark results live in **[../../BENCHMARKS.md](../../BENCHMARKS.md)**.
 
 ---
 
@@ -489,7 +489,7 @@ For fast local iteration, Trebell also provides a single-process deterministic g
 npm run test:fast
 ~~~
 
-`test:fast` deliberately disables Node's per-file process isolation but keeps serial test execution. Keep `npm test` as the stronger release/final-validation gate; see **[../benchmarks/HISTORY.md](../benchmarks/HISTORY.md)** for measured test-loop performance comparisons.
+`test:fast` deliberately disables Node's per-file process isolation but keeps serial test execution. Keep `npm test` as the stronger release/final-validation gate.
 
 The deterministic suite is the source of truth for local regression coverage. Live-provider and external-runtime checks are kept separate because they depend on credentials, service availability, and installed runtimes.
 
@@ -515,13 +515,13 @@ npm run test:external-harnesses:live
 npm run test:codex:live
 ~~~
 
-Public benchmark work uses the Terminal-Bench tooling documented in **[../benchmarks/HISTORY.md](../benchmarks/HISTORY.md)**. Historical one-off provider and microbenchmark scripts are intentionally not kept in the main repository.
+Public benchmark results are summarized in **[../../BENCHMARKS.md](../../BENCHMARKS.md)**. Historical one-off provider and microbenchmark scripts are intentionally not kept in the main repository.
 
 These may optionally read an ignored root **.env** containing test credentials only.
 
 ### Benchmarks
 
-Benchmark methodology, commands, live comparisons, and historical measurements live in **[../benchmarks/HISTORY.md](../benchmarks/HISTORY.md)**.
+Selected public benchmark comparisons live in **[../../BENCHMARKS.md](../../BENCHMARKS.md)**.
 
 ---
 

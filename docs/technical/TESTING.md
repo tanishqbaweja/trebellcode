@@ -86,7 +86,7 @@ Use the provider-wide live smoke instead of keeping provider-specific one-off sc
 npm run test:providers:live
 ```
 
-For harness quality/cost work, use the current public Terminal-Bench comparison flow documented in **[../benchmarks/HISTORY.md](../benchmarks/HISTORY.md)**. Historical provider-specific microbenchmarks remain available through Git history if they are ever needed for archaeology.
+For public harness quality/cost evidence, see **[../../BENCHMARKS.md](../../BENCHMARKS.md)**. Internal benchmark operations and the complete attempt ledger are intentionally kept out of the product-facing repository.
 
 The checklist below is still required for broader real-world confidence:
 

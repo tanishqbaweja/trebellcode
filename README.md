@@ -85,7 +85,7 @@ Trebell is developed as a harness, not as a prompt demo.
 - UI behavior is covered with **headless Playwright** workflows, including workspace and visual verification paths.
 - Trebell Native is compared against Codex API and Codex OAuth on **Terminal-Bench 4.0** using the same model, reasoning effort, service tier, and hosted-web-search policy.
 - Benchmark accounting tracks **verifier quality, input/output tokens, cache use, cost, tool calls, turns, and runtime behavior** instead of treating token count alone as efficiency.
-- Benchmark failures are kept as engineering evidence and converted into generic harness changes rather than task-specific prompt patches.
+- Benchmark evidence is converted into generic harness improvements rather than task-specific prompt patches.
 
 The optimization target is the product thesis itself:
 
@@ -93,7 +93,7 @@ The optimization target is the product thesis itself:
 
 If Trebell is cheaper but worse, it has not won. If it uses fewer tokens but costs more because of output/reasoning mix, it has not won. The metric that matters is **verified result per dollar**.
 
-See [Benchmarking](docs/benchmarks/HISTORY.md) for the methodology and full evidence ledger.
+See [selected benchmark wins](BENCHMARKS.md) for verifier-grounded examples where Trebell Native matches or beats comparison quality while using less model spend or substantially less model traffic.
 
 ## Quick start
 
@@ -157,8 +157,7 @@ Near-term work is focused on four things:
 | [Technical overview](docs/technical/TECHNICAL_OVERVIEW.md) | Detailed architecture, services, runtime integrations, safety, and release behavior |
 | [Product principles](docs/technical/PRODUCT_PRINCIPLES.md) | The product and architecture contract |
 | [Testing](docs/technical/TESTING.md) | Deterministic, UI, live-provider, and manual validation |
-| [Benchmark history](docs/benchmarks/HISTORY.md) | Terminal-Bench methodology, evidence ledger, and historical results |
-| [Benchmark engineering changes](docs/benchmarks/ENGINEERING_CHANGES.md) | Generic harness changes motivated by benchmark evidence |
+| [Benchmark wins](BENCHMARKS.md) | Selected public comparisons where Trebell Native wins on quality-normalized cost or efficiency |
 | [v1.3.6 release notes](docs/releases/v1.3.6.md) | Current release notes |
 
 ## Repository layout
