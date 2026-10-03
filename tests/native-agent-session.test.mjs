@@ -97,6 +97,18 @@ test("Native session forwards the selected reasoning effort to provider turns",a
   session.setReasoningEffort("high");await session.prompt([{type:"text",text:"Try again"}]);assert.equal(seen,"high");
 });
 
+test("Native session forwards Fast independently from model and reasoning effort",async()=>{
+  const seen=[];
+  const session=new NativeAgentSession({
+    provider:"openai",model:"gpt-6-luna",reasoningEffort:"max",serviceTier:"fast",
+    providerTurn:async request=>{seen.push({model:request.model,reasoningEffort:request.reasoningEffort,serviceTier:request.serviceTier});return{id:"resp-tier",provider:"openai",model:"gpt-6-luna",text:"done",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({providerSessionId:"fast-tier",model:"gpt-6-luna"});await session.prompt([{type:"text",text:"Solve this"}]);
+  assert.deepEqual(seen.at(-1),{model:"gpt-6-luna",reasoningEffort:"max",serviceTier:"fast"});
+  session.setServiceTier(null);await session.prompt([{type:"text",text:"Solve again"}]);assert.equal(seen.at(-1).serviceTier,null);assert.equal(seen.at(-1).model,"gpt-6-luna");
+});
+
 test("Native session uses deterministic command-only reporting when no richer work is requested",async()=>{
   let providerCalls=0;const updates=[],events=[];
   const session=new NativeAgentSession({

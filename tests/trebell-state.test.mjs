@@ -170,6 +170,7 @@ test("project actions persist, sanitize, inherit preference, and allow clearing 
     assert.equal(state.updateSettings({panelAnimationMs:999}).panelAnimationMs,400);
     assert.equal(state.updateSettings({panelAnimationMs:-50}).panelAnimationMs,0);
     assert.deepEqual(state.updateSettings({modelReasoningEfforts:{"native:openai:gpt-6-luna":"MAX","native:gemini:gemini-3.8-flash":"high","bad":"turbo"}}).modelReasoningEfforts,{"native:openai:gpt-6-luna":"max","native:gemini:gemini-3.8-flash":"high"});
+    assert.deepEqual(state.updateSettings({modelServiceTiers:{"native:openai:gpt-6-luna":"FAST","native:openai:gpt-6-sol":"priority","bad":"ultrafast"}}).modelServiceTiers,{"native:openai:gpt-6-luna":"fast","native:openai:gpt-6-sol":"fast"});
     const marks={"gitlab:42":{headSha:"abc",files:{"src/a.js":{revision:"abc",viewedAt:123}},updatedAt:123}};
     assert.deepEqual(state.touchProject(projectPath,{pullRequestViewedFiles:marks}).pullRequestViewedFiles,marks);
   }finally{await rm(home,{recursive:true,force:true});}

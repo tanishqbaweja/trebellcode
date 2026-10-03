@@ -11,7 +11,7 @@ import { readJobVerifierSummary, readTrialVerifierSummary } from "./terminal-ben
 import { recoverNativeEventEvidence, selectNativeMetric } from "./terminal-bench-native-evidence.mjs";
 import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "./terminal-bench-pair-lock.mjs";
-import { estimateGpt6LunaStandardCostFromAggregate, GPT6_LUNA_STANDARD_PRICING } from "./terminal-bench-cost.mjs";
+import { estimateGpt6LunaCostFromAggregate, gpt6LunaPricingForServiceTier } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
 import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
 import { prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName } from "./terminal-bench-task-cache.mjs";
@@ -33,6 +33,9 @@ if(!localEnvLoaded&&repositoryRoot!==root)try{loadEnvFile(join(repositoryRoot,".
 const DATASET=String(process.env.TREBELL_TERMINAL_BENCH_DATASET||"terminal-bench/terminal-bench@4.0.0").trim();
 const MODEL=String(process.env.TREBELL_TERMINAL_BENCH_MODEL||"gpt-6-luna").trim();
 const EFFORT=String(process.env.TREBELL_TERMINAL_BENCH_REASONING_EFFORT||"max").trim().toLowerCase();
+const serviceTierArg=process.argv.find(arg=>arg.startsWith("--service-tier="));
+const SERVICE_TIER=String(serviceTierArg?.slice("--service-tier=".length)||process.env.TREBELL_TERMINAL_BENCH_SERVICE_TIER||"fast").trim().toLowerCase();
+if(!["default","fast"].includes(SERVICE_TIER))throw new Error("Terminal-Bench service tier must be default or fast.");
 const taskArg=process.argv.find(arg=>arg.startsWith("--task="));
 const TASK=String(taskArg?.slice("--task=".length)||process.env.TREBELL_TERMINAL_BENCH_TASK||"terminal-bench/session-window-debug").trim();
 const HARBOR_TASK=terminalBenchTaskQualifiedName(DATASET,TASK);
@@ -180,7 +183,7 @@ async function recoverTrialEvidence(outputRoot,jobName){
 }
 
 const gitCommonDir=String(await capture("git",["rev-parse","--git-common-dir"])).trim(),lockPath=STANDALONE_NATIVE_RERUN?sharedTerminalBenchNativeRerunLockPath(root,gitCommonDir):sharedTerminalBenchLockPath(root,gitCommonDir);
-const releaseLock=await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`${STANDALONE_NATIVE_RERUN?"tb4-native-rerun":"tb4-pair"}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json"),sourceProvenance=await sourceGitProvenance();let codexApiAuthPath=null;
+const releaseLock=await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`${STANDALONE_NATIVE_RERUN?"tb4-native-rerun":"tb4-pair"}-${safeSlug(MODEL)}-${EFFORT}-${SERVICE_TIER}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json"),sourceProvenance=await sourceGitProvenance();let codexApiAuthPath=null;
 try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");
@@ -201,6 +204,7 @@ try{
     if(nativePinnedNodeTarballSha256!==NATIVE_PINNED_NODE_TARBALL_SHA256)throw new Error(`Pinned Node tarball SHA-256 mismatch: expected ${NATIVE_PINNED_NODE_TARBALL_SHA256}, got ${nativePinnedNodeTarballSha256}`);
   }
   const codexPinnedAdapterPath=join(root,"benchmarks","harbor","pinned_codex_agent.py"),codexPinnedAdapterSha256=await sha256File(codexPinnedAdapterPath);
+  if(SERVICE_TIER==="fast"&&CODEX_INSTALL_MODE!=="pinned")throw new Error("Fast comparison requires the pinned Codex adapter so service_tier=fast is applied identically to Codex API and OAuth lanes.");
   let codexPinnedTarballPath=null,codexPinnedTarballSha256=null;
   if(CODEX_INSTALL_MODE==="pinned"){
     const configuredTarball=String(process.env.TREBELL_CODEX_PINNED_TARBALL||"").trim();
@@ -224,7 +228,18 @@ try{
     taskCachePrewarm={startedAt:new Date().toISOString(),...(await prewarmTerminalBenchTaskCache({harbor,dataset:DATASET,task:TASK,env:sharedEnv,runFn:run})),finishedAt:new Date().toISOString()};
   }
   const willRunCodexApi=selectedLanes.some(lane=>lane.label==="codex-api"),willRunCodexOauth=selectedLanes.some(lane=>lane.label==="codex-oauth");
-  if(willRunCodexOauth)await access(join(homedir(),".codex","auth.json"));
+  let codexOauthAuthPath=null;
+  if(willRunCodexOauth){
+    const explicit=String(process.env.TREBELL_CODEX_OAUTH_AUTH_JSON||"").trim();
+    const configuredHome=String(process.env.CODEX_HOME||"").trim();
+    const candidates=[
+      explicit?resolve(explicit):null,
+      join(root,".trebell-codex-oauth","auth.json"),
+      configuredHome?join(resolve(configuredHome),"auth.json"):null,
+    ].filter(Boolean);
+    for(const candidate of candidates){try{await access(candidate);codexOauthAuthPath=candidate;break}catch{}}
+    if(!codexOauthAuthPath)throw new Error("Trebell-pinned Codex OAuth credentials are unavailable. Copy the intended account auth.json to .trebell-codex-oauth/auth.json, set CODEX_HOME to a Trebell-owned profile, or set TREBELL_CODEX_OAUTH_AUTH_JSON.");
+  }
   if(willRunCodexApi){
     const apiKey=String(sharedEnv.OPENAI_API_KEY||"").trim();
     if(!apiKey)throw new Error("OPENAI_API_KEY is required for the Codex API benchmark lane.");
@@ -233,21 +248,22 @@ try{
   }
   const laneStates=selectedLanes.map(lane=>({
     label:lane.label,harness:lane.harness,authMode:lane.authMode,
+    serviceTier:SERVICE_TIER,
     jobName:`tb4-${lane.label}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,
     status:"pending",startedAt:null,finishedAt:null,runError:null,attempts:[],retryReason:null,retryCleanup:null,infrastructureFailureReason:null,
   }));
   const reportSnapshot=({complete=false}={})=>({
-    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,taskCachePrewarm,
+    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,taskCachePrewarm,
     usesBaseAgentTimeout:AGENT_TIMEOUT_MULTIPLIER===1,
     timeoutComparability:AGENT_TIMEOUT_MULTIPLIER===1?"benchmark-base":"extended-agent-timeout",
-    sameModel:true,sameReasoningEffort:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
+    sameModel:true,sameReasoningEffort:true,sameServiceTier:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
     nativeEnvironmentRetention:STANDALONE_NATIVE_RERUN?"retain-until-sealed-or-regraded":"harbor-default",
     nativeContextPolicy:{operatingContextWindow:NATIVE_CONTEXT_WINDOW,serverCompactionThreshold:NATIVE_COMPACT_THRESHOLD,retroactiveOpenAiReadCooling:false},
     ...sourceProvenance,
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
     ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),
     comparisonLanes:selectedLanes.map(lane=>lane.label),configuredComparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,
-    pricingSnapshot:MODEL==="gpt-6-luna"?GPT6_LUNA_STANDARD_PRICING:null,
+    pricingSnapshot:MODEL==="gpt-6-luna"?gpt6LunaPricingForServiceTier(SERVICE_TIER):null,
     complete,
     infrastructureInterrupted:jobs.filter(Boolean).some(job=>Boolean(job.infrastructureFailureReason)),
     infrastructureComparable:complete?!jobs.filter(Boolean).some(job=>Boolean(job.infrastructureFailureReason)):null,
@@ -264,14 +280,14 @@ try{
     return reportWrite;
   };
   const latestPointerPath=join(validationDir,STANDALONE_NATIVE_RERUN?"terminal-bench-native-rerun-latest.json":"terminal-bench-latest.json");
-  const persistLatestPointer=()=>writeFile(latestPointerPath,JSON.stringify({pairId,reportPath,task:TASK,model:MODEL,reasoningEffort:EFFORT,parallel:PARALLEL,lanes:laneStates.map(lane=>({label:lane.label,jobName:lane.jobName}))},null,2)+"\n","utf8");
+  const persistLatestPointer=()=>writeFile(latestPointerPath,JSON.stringify({pairId,reportPath,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,parallel:PARALLEL,lanes:laneStates.map(lane=>({label:lane.label,jobName:lane.jobName}))},null,2)+"\n","utf8");
   await persistLatestPointer();
   await persistReport({complete:false});
   const runLane=async(lane,laneIndex)=>{
     const {label,harness,authMode}=lane;
     const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":CODEX_INSTALL_MODE==="pinned"?"benchmarks.harbor.pinned_codex_agent:PinnedCodexAgent":"codex";
     const laneState=laneStates[laneIndex];let jobName=laneState.jobName;
-    const argsForJob=currentJobName=>["run","-d",DATASET,"-i",HARBOR_TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y"];
+    const argsForJob=currentJobName=>["run","-d",DATASET,"-i",HARBOR_TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,...(SERVICE_TIER==="fast"?["--ak","service_tier=fast"]:[]),"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y"];
     let args=argsForJob(jobName);
     const retainNativeEnvironment=STANDALONE_NATIVE_RERUN&&harness==="native";
     if(retainNativeEnvironment)args.push("--no-delete");
@@ -286,7 +302,7 @@ try{
       delete harnessEnv.CODEX_AUTH_JSON_PATH;
       delete harnessEnv.CODEX_FORCE_AUTH_JSON;
       delete harnessEnv.OPENAI_API_KEY;
-      if(authMode==="oauth")harnessEnv.CODEX_FORCE_AUTH_JSON="1";
+      if(authMode==="oauth")harnessEnv.CODEX_AUTH_JSON_PATH=codexOauthAuthPath;
       else harnessEnv.CODEX_AUTH_JSON_PATH=codexApiAuthPath;
     }
     laneState.status="running";laneState.startedAt=new Date().toISOString();await persistReport({complete:false});
@@ -355,13 +371,13 @@ try{
       const cacheHitPercent=inputTokens==null||Number(inputTokens)<=0||cachedTokens==null?null:Number(((Number(cachedTokens)/Number(inputTokens))*100).toFixed(2));
       const trebellNative=trial?.agent_result?.metadata?.trebell_native||null;
       const recoveredFromNativeEvents=Boolean(recoveredNative&&(inputMetric.recovered||cachedMetric.recovered||outputMetric.recovered||!trebellNative));
-      const apiEquivalentCostBreakdown=MODEL==="gpt-6-luna"&&recoveredEvidence?.apiEquivalentCostBreakdown
+      const apiEquivalentCostBreakdown=MODEL==="gpt-6-luna"&&recoveredEvidence?.apiEquivalentCostBreakdown&&SERVICE_TIER!=="fast"
         ?recoveredEvidence.apiEquivalentCostBreakdown
         :MODEL==="gpt-6-luna"&&inputTokens!=null&&cachedTokens!=null
-          ?estimateGpt6LunaStandardCostFromAggregate({inputTokens,cachedInputTokens:cachedTokens,cacheWriteInputTokens:trebellNative?.cache_write_input_tokens??recoveredEvidence?.cacheWriteInputTokens??0,outputTokens:outputMetric.value??0},{maxObservedInputTokens:recoveredEvidence?.maxObservedInputTokens??null})
+          ?estimateGpt6LunaCostFromAggregate({inputTokens,cachedInputTokens:cachedTokens,cacheWriteInputTokens:trebellNative?.cache_write_input_tokens??recoveredEvidence?.cacheWriteInputTokens??0,outputTokens:outputMetric.value??0},{maxObservedInputTokens:recoveredEvidence?.maxObservedInputTokens??null,serviceTier:SERVICE_TIER})
           :null;
       jobs[laneIndex]={
-        harness,label,agent,jobName,runError,runnerError,drainError,authMode,
+        harness,label,agent,jobName,runError,runnerError,drainError,authMode,serviceTier:SERVICE_TIER,
         infrastructureFailureReason:infrastructureFailureReason||null,
         completed:regradeRecovery?.ok?1:Number(result?.stats?.n_completed_trials||0),errors:regradeRecovery?.ok?0:Number(result?.stats?.n_errored_trials||0),
         inputTokens,cachedTokens,uncachedInputTokens,cacheHitPercent,
@@ -372,7 +388,7 @@ try{
         reward:trial?.verifier_result?.rewards?.reward??null,taskChecksum:trial?.task_checksum??null,
         agentVersion:trial?.agent_info?.version??null,
         setupMs:elapsedMs(trial?.agent_setup),agentExecutionMs:elapsedMs(trial?.agent_execution),verifierMs:elapsedMs(trial?.verifier),
-        ...(trebellNative?{modelTurns:trebellNative.model_turns??recoveredNative?.modelTurns??null,toolCalls:trebellNative.tool_calls??recoveredNative?.toolCalls??null,providerRequests:trebellNative.provider_requests??null,reasoningContext:trebellNative.reasoning_context??null,effectiveReasoningContexts:trebellNative.effective_reasoning_contexts??[],reasoningOutputTokens:trebellNative.reasoning_output_tokens??recoveredNative?.reasoningOutputTokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??recoveredNative?.cacheWriteInputTokens??null,cacheCarryover:trebellNative.cache_carryover??null,strategy:trebellNative.strategy??null,budgets:trebellNative.budgets??null,contextPolicy:trebellNative.context_policy??null}:recoveredNative?{modelTurns:recoveredNative.modelTurns,toolCalls:recoveredNative.toolCalls,reasoningOutputTokens:recoveredNative.reasoningOutputTokens,cacheWriteInputTokens:recoveredNative.cacheWriteInputTokens}:{}),
+        ...(trebellNative?{modelTurns:trebellNative.model_turns??recoveredNative?.modelTurns??null,toolCalls:trebellNative.tool_calls??recoveredNative?.toolCalls??null,providerRequests:trebellNative.provider_requests??null,effectiveServiceTiers:trebellNative.effective_service_tiers??[],reasoningContext:trebellNative.reasoning_context??null,effectiveReasoningContexts:trebellNative.effective_reasoning_contexts??[],reasoningOutputTokens:trebellNative.reasoning_output_tokens??recoveredNative?.reasoningOutputTokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??recoveredNative?.cacheWriteInputTokens??null,cacheCarryover:trebellNative.cache_carryover??null,strategy:trebellNative.strategy??null,budgets:trebellNative.budgets??null,contextPolicy:trebellNative.context_policy??null}:recoveredNative?{modelTurns:recoveredNative.modelTurns,toolCalls:recoveredNative.toolCalls,reasoningOutputTokens:recoveredNative.reasoningOutputTokens,cacheWriteInputTokens:recoveredNative.cacheWriteInputTokens}:{}),
         exceptionType:trial?.exception_info?.exception_type??null,exceptionMessage:trial?.exception_info?.exception_message??null,
         recoveredFromTrialFiles:trial?.recovered_from_trial_files===true,
         recoveredFromNativeEvents,

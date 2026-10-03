@@ -2505,6 +2505,37 @@ test("native agent nudges convergence after multiple distinct successful post-ed
   const checkpoint=events.find(event=>event.name==="native.progress.convergence_checkpoint");assert.ok(checkpoint);assert.equal(checkpoint.data.editRevision,1);assert.equal(checkpoint.data.passedRuns,3);assert.equal(checkpoint.data.distinctPassedRuns,2);
 });
 
+test("native semantic completion gate finalizes a strongly converged revision before speculative polishing",async()=>{
+  let turns=0;const requests=[],events=[],executed=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation and verify the result."}],maxModelTurns:12,maxToolCalls:20,semanticCompletionGate:true,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[
+        {id:"check-a",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-a.mjs"]}'},
+        {id:"check-b",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-b.mjs"]}'},
+        {id:"check-c",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-c.mjs"]}'},
+      ],usage:{}};
+      if(turns===3){
+        assert.equal(request.toolChoice,"none");
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/convergence finalization/i.test(String(message.content||""))));
+        return {text:"Implemented the fix and all focused verification checks pass.",toolCalls:[],usage:{}};
+      }
+      assert.equal(request.metadata?.completionGate,true);
+      return {text:'{"status":"complete","progress":"uncertain","edit_support":"unsupported","mutation_safety":"allowed","unresolved":[],"reason":"The requested implementation change is present and three distinct post-edit checks passed with no failure."}',toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0}},
+  });
+  assert.match(result.text,/all focused verification checks pass/i);
+  assert.equal(turns,4);
+  assert.deepEqual(executed,["edit","check-a","check-b","check-c"]);
+  assert.equal(events.filter(event=>event.name==="native.progress.convergence_finalization").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.convergence_finalization_candidate").length,1);
+  const gate=events.find(event=>event.name==="native.completion.gate");assert.equal(gate?.data?.verdict,"complete");
+});
+
 test("native convergence guard blocks singleton terminal polishing after strong post-edit evidence",async()=>{
   let turns=0;const events=[],executed=[];
   const result=await runNativeAgentTurn({

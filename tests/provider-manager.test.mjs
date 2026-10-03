@@ -902,7 +902,7 @@ test("direct OpenAI Native streaming assembles the completed Responses result an
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-stream-"));let seen=null;
   try{
     const encoder=new TextEncoder(),event=value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`;
-    const completed={id:"resp-stream",model:"gpt-5.6",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"hello world"}]}],usage:{input_tokens:8,output_tokens:2,total_tokens:10},reasoning:{context:"current_turn"},prompt_cache_diagnostics:{type:"cache_hit",comparison_reusable_tokens:2048}};
+    const completed={id:"resp-stream",model:"gpt-6-luna",service_tier:"fast",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"hello world"}]}],usage:{input_tokens:8,output_tokens:2,total_tokens:10},reasoning:{context:"current_turn"},prompt_cache_diagnostics:{type:"cache_hit",comparison_reusable_tokens:2048}};
     const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(url,init={})=>{
       seen={url,headers:init.headers,body:JSON.parse(init.body||"{}")};
       const stream=new ReadableStream({start(controller){
@@ -914,9 +914,10 @@ test("direct OpenAI Native streaming assembles the completed Responses result an
       return new Response(stream,{status:200,headers:{"content-type":"text/event-stream","x-request-id":"req-stream"}});
     }});
     manager.setKey("openai","oa-stream-key");
-    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true});
-    assert.equal(seen.url,"https://api.openai.com/v1/responses");assert.equal(seen.body.stream,true);assert.match(seen.headers.Accept,/text\/event-stream/);
+    const result=await manager.turn("openai",{model:"gpt-6-luna",reasoningEffort:"max",serviceTier:"fast",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true});
+    assert.equal(seen.url,"https://api.openai.com/v1/responses");assert.equal(seen.body.stream,true);assert.equal(seen.body.model,"gpt-6-luna");assert.equal(seen.body.service_tier,"fast");assert.equal(seen.body.reasoning.effort,"max");assert.match(seen.headers.Accept,/text\/event-stream/);
     assert.equal(result.text,"hello world");assert.equal(result.usage.inputTokens,8);assert.equal(result.telemetry.streaming,true);assert.equal(result.telemetry.providerRequestId,"req-stream");
+    assert.equal(result.serviceTier,"fast");assert.equal(result.telemetry.requestedServiceTier,"fast");assert.equal(result.telemetry.serviceTier,"fast");
     assert.equal(result.telemetry.reasoningContext,"current_turn");
     assert.deepEqual(result.telemetry.promptCacheDiagnostics,{type:"cache_hit",reason:null,comparisonReusableTokens:2048,cacheMissedTokens:null});
     assert.ok(result.telemetry.timeToFirstTokenMs>=0);assert.ok(result.telemetry.responseBytes>0);assert.ok(result.telemetry.totalLatencyMs>=result.telemetry.timeToFirstTokenMs);

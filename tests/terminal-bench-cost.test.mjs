@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { estimateGpt6LunaStandardCostFromAggregate, estimateGpt6LunaStandardCostFromRecords } from "../scripts/terminal-bench-cost.mjs";
+import { estimateGpt6LunaCostFromRecords, estimateGpt6LunaStandardCostFromAggregate, estimateGpt6LunaStandardCostFromRecords, GPT6_LUNA_FAST_PRICING } from "../scripts/terminal-bench-cost.mjs";
 
 test("gpt-6-luna cost calculation splits cached, cache-write, uncached, and output tokens",()=>{
   const result=estimateGpt6LunaStandardCostFromRecords([{inputTokens:100_000,cachedInputTokens:80_000,cacheWriteInputTokens:10_000,outputTokens:20_000}]);
@@ -26,4 +26,10 @@ test("aggregate cost marks short-context pricing as an assumption when request l
   const result=estimateGpt6LunaStandardCostFromAggregate({inputTokens:1000,cachedInputTokens:900,outputTokens:100});
   assert.equal(result.contextPricingExact,false);
   assert.match(result.contextPricingAssumption,/short-context rates assumed/i);
+});
+
+test("gpt-6-luna Fast pricing doubles the same model's Standard token rates",()=>{
+  const standard=estimateGpt6LunaStandardCostFromRecords([{inputTokens:100_000,cachedInputTokens:80_000,cacheWriteInputTokens:10_000,outputTokens:20_000}]);
+  const fast=estimateGpt6LunaCostFromRecords([{inputTokens:100_000,cachedInputTokens:80_000,cacheWriteInputTokens:10_000,outputTokens:20_000}],{serviceTier:"fast"});
+  assert.equal(fast.pricing.serviceTier,"fast");assert.equal(GPT6_LUNA_FAST_PRICING.shortContext.output,1);assert.ok(Math.abs(fast.totalUsd-standard.totalUsd*2)<1e-12);
 });

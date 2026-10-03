@@ -72,6 +72,18 @@ test("provider turn maps explicit reasoning effort onto Chat and Responses wire 
   assert.deepEqual(responses.reasoning,{effort:"max"});
 });
 
+test("provider turn keeps Fast as a service tier instead of changing the model",()=>{
+  const responses=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],reasoningEffort:"max",serviceTier:"fast"});
+  assert.equal(responses.model,"gpt-6-luna");assert.deepEqual(responses.reasoning,{effort:"max"});assert.equal(responses.service_tier,"fast");
+  const alias=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],serviceTier:"priority"});assert.equal(alias.service_tier,"fast");
+  const chat=providerTurnToChat({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],serviceTier:"fast"});assert.equal(chat.model,"gpt-6-luna");assert.equal(chat.service_tier,"fast");
+});
+
+test("normalized provider responses retain the actual service tier",()=>{
+  assert.equal(normalizeResponsesTurnResponse({id:"r",model:"gpt-6-luna",status:"completed",service_tier:"fast",output:[],usage:{}}).serviceTier,"fast");
+  assert.equal(normalizeChatTurnResponse({id:"c",model:"gpt-6-luna",service_tier:"fast",choices:[{message:{content:"ok"}}],usage:{}}).serviceTier,"fast");
+});
+
 test("Responses can select which prior reasoning turns are rendered into the next sample",()=>{
   const current=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],reasoningEffort:"max",reasoningContext:"current_turn"});
   assert.deepEqual(current.reasoning,{effort:"max",context:"current_turn"});

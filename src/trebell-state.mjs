@@ -8,6 +8,7 @@ import { normalizeRecipes } from "./recipes.mjs";
 import { normalizeProjectHooks } from "./project-hooks.mjs";
 import { SqliteStateCollections,threadMetaCatalogProjection } from "./sqlite-state-collections.mjs";
 import { normalizeReasoningEffort } from "./model-reasoning-effort.mjs";
+import { normalizeModelServiceTier } from "./model-service-tier.mjs";
 
 const DEFAULT_STATE = Object.freeze({
   version: 2,
@@ -49,6 +50,7 @@ const DEFAULT_STATE = Object.freeze({
     agentRuntimeInstances: [],
     customModels: [],
     modelReasoningEfforts: {},
+    modelServiceTiers: {},
     modelPrices: {},
     mcpServers: [],
     modelProvider: "freebuff",
@@ -303,6 +305,11 @@ export class TrebellStateStore {
       const source=patch.modelReasoningEfforts&&typeof patch.modelReasoningEfforts==="object"&&!Array.isArray(patch.modelReasoningEfforts)?patch.modelReasoningEfforts:{},normalized={};
       for(const [key,value] of Object.entries(source).slice(-500)){const k=String(key||"").slice(0,500),v=normalizeReasoningEffort(value);if(k&&v)normalized[k]=v}
       patch={...patch,modelReasoningEfforts:normalized};
+    }
+    if("modelServiceTiers" in patch){
+      const source=patch.modelServiceTiers&&typeof patch.modelServiceTiers==="object"&&!Array.isArray(patch.modelServiceTiers)?patch.modelServiceTiers:{},normalized={};
+      for(const [key,value] of Object.entries(source).slice(-500)){const k=String(key||"").slice(0,500),v=normalizeModelServiceTier(value);if(k&&v)normalized[k]=v}
+      patch={...patch,modelServiceTiers:normalized};
     }
     if("panelAnimationMs" in patch){const value=Math.round(Number(patch.panelAnimationMs)||0);patch={...patch,panelAnimationMs:Math.max(0,Math.min(400,value))}}
     this.state.settings={...this.state.settings,...patch};

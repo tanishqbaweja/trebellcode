@@ -2,16 +2,31 @@ import hashlib
 import os
 import shlex
 from pathlib import Path
-from typing import override
+from typing import Annotated, Literal, override
+
+from pydantic import Field
 
 from harbor.agents.installed.codex import Codex
+from harbor.agents.installed.codex import CodexOptions
+from harbor.agents.options import Cli
 from harbor.environments.base import BaseEnvironment
+
+
+class PinnedCodexOptions(CodexOptions):
+    service_tier: Annotated[
+        Literal["fast"] | None,
+        Cli("-c", format="-c service_tier={value}"),
+    ] = Field(
+        default=None,
+        description="OpenAI processing tier. Fast changes serving speed, not the model.",
+    )
 
 
 class PinnedCodexAgent(Codex):
     """Pinned stock Harbor Codex with Windows-safe persisted-session lookup."""
 
     _PINNED_VERSION = "0.158.0"
+    options_model = PinnedCodexOptions
     _PINNED_TARBALL_SHA256 = (
         "3fe84106aaf2fbfc13299068510d34b3d0157eeb9af4b37be8cf5416f485a6bb"
     )

@@ -270,10 +270,10 @@ function coolRestartProviderHistory(messages=[],provider=null){
 }
 
 export class NativeAgentSession{
-  constructor({cwd=process.cwd(),providerTurn,executeTool,toolOutputStore=null,provider=null,model=null,contextWindow=null,openAiServerCompactionThreshold=null,semanticCompletionGate=true,reasoningEffort=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
+  constructor({cwd=process.cwd(),providerTurn,executeTool,toolOutputStore=null,provider=null,model=null,contextWindow=null,openAiServerCompactionThreshold=null,semanticCompletionGate=true,reasoningEffort=null,serviceTier=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.reasoningEffort=reasoningEffort?String(reasoningEffort):null;this.semanticCompletionGate=semanticCompletionGate!==false;this.contextWindow=null;this.setContextWindow(contextWindow);const compactThreshold=Math.trunc(Number(openAiServerCompactionThreshold));this.openAiServerCompactionThreshold=Number.isFinite(compactThreshold)&&compactThreshold>0?compactThreshold:null;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;const reconstructed=[...(Array.isArray(initialMessages)?initialMessages:[])],restartCooling=coolRestartProviderHistory(reconstructed,provider);this.messages=restartCooling.messages;this.restartHistoryCooling=restartCooling.count?restartCooling:null;this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.reasoningEffort=reasoningEffort?String(reasoningEffort):null;this.serviceTier=serviceTier?String(serviceTier):null;this.semanticCompletionGate=semanticCompletionGate!==false;this.contextWindow=null;this.setContextWindow(contextWindow);const compactThreshold=Math.trunc(Number(openAiServerCompactionThreshold));this.openAiServerCompactionThreshold=Number.isFinite(compactThreshold)&&compactThreshold>0?compactThreshold:null;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;const reconstructed=[...(Array.isArray(initialMessages)?initialMessages:[])],restartCooling=coolRestartProviderHistory(reconstructed,provider);this.messages=restartCooling.messages;this.restartHistoryCooling=restartCooling.count?restartCooling:null;this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
@@ -284,6 +284,7 @@ export class NativeAgentSession{
   setProvider(provider){const next=provider?String(provider):null;if(next!==this.provider)this.lastProviderResponseId=null;this.provider=next}
   async setModel(model){const next=String(model||"")||null;if(next!==this.model)this.lastProviderResponseId=null;this.model=next;return {model:this.model}}
   setReasoningEffort(value){const next=value==null||String(value).trim()===""?null:String(value).trim();if(next!==this.reasoningEffort)this.lastProviderResponseId=null;this.reasoningEffort=next;return {reasoningEffort:this.reasoningEffort}}
+  setServiceTier(value){const next=value==null||String(value).trim()===""?null:String(value).trim().toLowerCase();if(next!==this.serviceTier)this.lastProviderResponseId=null;this.serviceTier=next;return {serviceTier:this.serviceTier}}
   setContextWindow(value){const number=Number(value);this.contextWindow=Number.isFinite(number)&&number>0?Math.trunc(number):null;return {contextWindow:this.contextWindow}}
   setPermissionMode(mode){this.permissionMode=String(mode||"supervised")||"supervised";return {permissionMode:this.permissionMode}}
   steer(prompt){
@@ -316,7 +317,7 @@ export class NativeAgentSession{
         provider:this.provider,model:this.model,messages:requestMessages,tools:[],toolChoice:"none",reasoningEffort:this.reasoningEffort,maxModelTurns:1,maxToolCalls:0,
         maxOutputTokens:Math.max(256,Math.min(8192,Math.trunc(Number(maxOutputTokens)||4096))),signal:this.controller.signal,onEvent:this.onEvent,
         metadata:{contextWindow:this.contextWindow,sessionId:this.sessionId,compaction:true},
-        providerTurn:request=>this.providerTurn({...request,provider:this.provider}),executeTool:async()=>{throw new Error("Native compaction does not execute tools")},
+        providerTurn:request=>this.providerTurn({...request,provider:this.provider,serviceTier:this.serviceTier}),executeTool:async()=>{throw new Error("Native compaction does not execute tools")},
       });
       const modelSummary=String(result.text||"").trim();if(!modelSummary)throw new Error("Native context compaction returned an empty continuation brief.");
       const summary=[modelSummary,continuity&&("Deterministic Trebell state:\n"+continuity)].filter(Boolean).join("\n\n").slice(0,32_000);
@@ -446,7 +447,7 @@ export class NativeAgentSession{
           const signals=[request.signal,modelController.signal].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
           try{
             const comparisonResponseId=this.provider==="openai"?String(this.lastProviderResponseId||"").trim():"",completionGate=request?.metadata?.completionGate===true;
-            const response=await this.providerTurn({...request,provider:this.provider,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{}),...(this.provider==="openai"?{openAiContinuationResponseId:completionGate?"":comparisonResponseId,openAiDisableWebSocket:completionGate}:{}),...(this.provider==="openai"&&this.openAiServerCompactionThreshold?{contextManagement:[{type:"compaction",compactThreshold:this.openAiServerCompactionThreshold}]}:{})});
+            const response=await this.providerTurn({...request,provider:this.provider,serviceTier:this.serviceTier,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{}),...(this.provider==="openai"?{openAiContinuationResponseId:completionGate?"":comparisonResponseId,openAiDisableWebSocket:completionGate}:{}),...(this.provider==="openai"&&this.openAiServerCompactionThreshold?{contextManagement:[{type:"compaction",compactThreshold:this.openAiServerCompactionThreshold}]}:{})});
             if(this.provider==="openai"){
               if(!completionGate)lastOpenAiInputTokens=Math.max(0,Math.trunc(Number(response?.usage?.inputTokens)||0));
               const responseId=String(response?.telemetry?.providerResponseId||response?.id||"").trim();if(responseId&&!completionGate)this.lastProviderResponseId=responseId;

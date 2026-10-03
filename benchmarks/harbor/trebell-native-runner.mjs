@@ -36,6 +36,8 @@ const root=process.cwd();
 const provider="openai";
 const model=String(process.env.TREBELL_MODEL||"gpt-6-luna").trim();
 const reasoningEffort=String(process.env.TREBELL_REASONING_EFFORT||"max").trim().toLowerCase();
+const serviceTier=String(process.env.TREBELL_SERVICE_TIER||"fast").trim().toLowerCase();
+if(!new Set(["default","fast"]).has(serviceTier))throw new Error("TREBELL_SERVICE_TIER must be default or fast.");
 const reasoningContext=String(process.env.TREBELL_OPENAI_REASONING_CONTEXT||"").trim().toLowerCase()||null;
 if(reasoningContext&&!new Set(["auto","current_turn","all_turns"]).has(reasoningContext))throw new Error("TREBELL_OPENAI_REASONING_CONTEXT must be auto, current_turn, or all_turns.");
 const contextWindow=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_CONTEXT_WINDOW)||272_000));
@@ -122,6 +124,7 @@ const session=new NativeAgentSession({
   contextWindow,
   openAiServerCompactionThreshold:compactionThreshold,
   reasoningEffort,
+  serviceTier:serviceTier==="default"?null:serviceTier,
   tools,
   permissionMode:"full",
   toolOutputStore:outputStore,
@@ -133,7 +136,7 @@ const session=new NativeAgentSession({
     if(probeOnly){
       const wire=providerTurnToResponses({...request,model,reasoningContext},{flattenToolCallNames:true,preserveInstructionOrder:true});
       const probe={
-        model,reasoningEffort,reasoningContext,
+        model,reasoningEffort,serviceTier,reasoningContext,
         messageCount:request.messages?.length||0,
         toolNamespaceCount:request.tools?.length||0,
         messageBytes:Buffer.byteLength(JSON.stringify(request.messages||[]),"utf8"),
@@ -193,7 +196,9 @@ const metrics={
   version:VERSION,
   model,
   reasoningEffort,
+  serviceTier,
   reasoningContext,
+  effectiveServiceTiers:[...new Set(requests.map(item=>String(item?.telemetry?.serviceTier||"").trim()).filter(Boolean))],
   contextPolicy:{operatingContextWindow:contextWindow,serverCompactionThreshold:compactionThreshold,retroactiveOpenAiReadCooling:false},
   effectiveReasoningContexts:[...new Set(requests.map(item=>String(item?.telemetry?.reasoningContext||"").trim()).filter(Boolean))],
   budgets:{maxModelTurns,maxToolCalls,maxWallTimeMs},

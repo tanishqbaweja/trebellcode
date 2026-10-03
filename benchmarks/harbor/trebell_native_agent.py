@@ -20,6 +20,10 @@ class TrebellNativeOptions(InstalledAgentOptions):
     reasoning_effort: Literal[
         "none", "minimal", "low", "medium", "high", "xhigh", "max"
     ] = Field(default="max", description="OpenAI reasoning effort.")
+    service_tier: Literal["default", "fast"] = Field(
+        default="default",
+        description="OpenAI processing tier. Fast changes serving speed, not the model or reasoning effort.",
+    )
     live_probe: bool = Field(
         default=False,
         description="Diagnostic only: stop after the first provider response and log its latency/usage.",
@@ -218,6 +222,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
         env = {
             "TREBELL_MODEL": model,
             "TREBELL_REASONING_EFFORT": self.options.reasoning_effort,
+            "TREBELL_SERVICE_TIER": self.options.service_tier,
             "TREBELL_HOME": "/tmp/trebell-home",
             "TREBELL_METRICS_PATH": self._METRICS,
             "TREBELL_HARBOR_CONTEXT_WINDOW": os.environ.get(
@@ -295,6 +300,8 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 "tool_calls": int(metrics.get("toolCalls") or 0),
                 "provider_requests": int(metrics.get("providerRequests") or 0),
                 "reasoning_effort": metrics.get("reasoningEffort"),
+                "service_tier": metrics.get("serviceTier"),
+                "effective_service_tiers": metrics.get("effectiveServiceTiers") or [],
                 "reasoning_context": metrics.get("reasoningContext"),
                 "effective_reasoning_contexts": metrics.get("effectiveReasoningContexts") or [],
                 "reasoning_output_tokens": int(

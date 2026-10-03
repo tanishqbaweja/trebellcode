@@ -13,6 +13,12 @@ function jsonArguments(value){
   try{return JSON.stringify(value??{})}catch{return "{}"}
 }
 
+function normalizedServiceTier(value){
+  const tier=String(value??"").trim().toLowerCase();
+  if(!tier)return null;
+  return tier==="priority"?"fast":tier;
+}
+
 function splitToolName(value){
   const raw=String(value||"tool"),marker=raw.indexOf("__");
   if(marker<=0||marker>=raw.length-2)return {namespace:null,name:raw};
@@ -106,7 +112,7 @@ export function providerToolsToChat(tools=[]){
   return out;
 }
 
-export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,parallelToolCalls=true}={}, {preparedTools=null,messageCache=null}={}){
+export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,serviceTier=null,parallelToolCalls=true}={}, {preparedTools=null,messageCache=null}={}){
   const chatMessages=[];
   for(const message of Array.isArray(messages)?messages:[]){
     if(!message||typeof message!=="object")continue;
@@ -124,6 +130,7 @@ export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto"
   if(maxOutputTokens!=null&&Number.isFinite(Number(maxOutputTokens)))result.max_tokens=Math.max(1,Math.trunc(Number(maxOutputTokens)));
   if(temperature!=null&&Number.isFinite(Number(temperature)))result.temperature=Number(temperature);
   if(reasoningEffort!=null&&String(reasoningEffort).trim())result.reasoning_effort=String(reasoningEffort).trim();
+  const normalizedTier=normalizedServiceTier(serviceTier);if(normalizedTier)result.service_tier=normalizedTier;
   return result;
 }
 
@@ -155,7 +162,7 @@ function responseToolOutput(content,{cacheBreakpoint=false}={}){
   return output;
 }
 
-export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,reasoningContext=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
+export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,reasoningContext=null,serviceTier=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
   const instructions=[],input=[];let instructionPrefixOpen=true;
   const sourceMessages=Array.isArray(messages)?messages:[],inputStart=Math.max(0,Math.trunc(Number(inputStartMessageIndex)||0));
   for(let messageIndex=0;messageIndex<sourceMessages.length;messageIndex++){
@@ -200,6 +207,7 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
   const normalizedReasoningContext=String(reasoningContext||"").trim().toLowerCase();
   if(["auto","current_turn","all_turns"].includes(normalizedReasoningContext))reasoning.context=normalizedReasoningContext;
   if(Object.keys(reasoning).length)result.reasoning=reasoning;
+  const normalizedTier=normalizedServiceTier(serviceTier);if(normalizedTier)result.service_tier=normalizedTier;
   return result;
 }
 
@@ -207,7 +215,7 @@ export function normalizeChatTurnResponse(body={},provider=null,fallbackModel=""
   const choice=body?.choices?.[0]||{},message=choice.message||{},toolCalls=(message.tool_calls||[]).filter(call=>call?.type==="function").map(normalizeToolCall);
   return {
     id:String(body.id||""),provider:provider?String(provider):null,model:String(body.model||fallbackModel||""),text:textContent(message.content),toolCalls,
-    finishReason:String(choice.finish_reason||"")||null,status:"completed",usage:normalizeUsage(body.usage||{}),raw:body,
+    serviceTier:normalizedServiceTier(body.service_tier??body.serviceTier),finishReason:String(choice.finish_reason||"")||null,status:"completed",usage:normalizeUsage(body.usage||{}),raw:body,
   };
 }
 
@@ -220,6 +228,6 @@ export function normalizeResponsesTurnResponse(body={},provider=null,fallbackMod
   }
   return {
     id:String(body.id||""),provider:provider?String(provider):null,model:String(body.model||fallbackModel||""),text:text.join(""),toolCalls,
-    finishReason:toolCalls.length?"tool_calls":String(body.status||"completed"),status:String(body.status||"completed"),usage:normalizeUsage(body.usage||{}),raw:body,
+    serviceTier:normalizedServiceTier(body.service_tier??body.serviceTier),finishReason:toolCalls.length?"tool_calls":String(body.status||"completed"),status:String(body.status||"completed"),usage:normalizeUsage(body.usage||{}),raw:body,
   };
 }

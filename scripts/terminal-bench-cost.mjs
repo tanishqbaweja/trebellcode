@@ -10,6 +10,19 @@ export const GPT6_LUNA_STANDARD_PRICING=Object.freeze({
   verifiedAt:"2026-10-01",
 });
 
+export const GPT6_LUNA_FAST_PRICING=Object.freeze({
+  ...GPT6_LUNA_STANDARD_PRICING,
+  serviceTier:"fast",
+  shortContext:Object.freeze({input:0.20,cachedInput:0.02,cacheWriteInput:0.25,output:1.00}),
+  longContext:Object.freeze({input:0.40,cachedInput:0.04,cacheWriteInput:0.50,output:1.50}),
+  source:"https://developers.openai.com/api/docs/models/gpt-6-luna",
+  verifiedAt:"2026-10-03",
+});
+
+export function gpt6LunaPricingForServiceTier(value){
+  return String(value||"").trim().toLowerCase()==="fast"?GPT6_LUNA_FAST_PRICING:GPT6_LUNA_STANDARD_PRICING;
+}
+
 function number(value){const parsed=Number(value);return Number.isFinite(parsed)&&parsed>=0?parsed:0}
 
 export function normalizeOpenAIUsage(record={}){
@@ -22,8 +35,8 @@ export function normalizeOpenAIUsage(record={}){
   return {inputTokens,cachedInputTokens,cacheWriteInputTokens,uncachedInputTokens,outputTokens};
 }
 
-function costForUsage(usage,rates){
-  const per=GPT6_LUNA_STANDARD_PRICING.perTokens;
+function costForUsage(usage,rates,pricing=GPT6_LUNA_STANDARD_PRICING){
+  const per=pricing.perTokens;
   return {
     uncachedInputUsd:usage.uncachedInputTokens*Number(rates.input)/per,
     cachedInputUsd:usage.cachedInputTokens*Number(rates.cachedInput)/per,
@@ -39,40 +52,51 @@ function totalBreakdown(parts){
   return {...out,totalUsd};
 }
 
-export function estimateGpt6LunaStandardCostFromRecords(records=[]){
+export function estimateGpt6LunaCostFromRecords(records=[],{serviceTier="standard"}={}){
+  const pricing=gpt6LunaPricingForServiceTier(serviceTier);
   const normalized=(Array.isArray(records)?records:[]).map(normalizeOpenAIUsage);
   const parts=normalized.map(usage=>costForUsage(
     usage,
-    usage.inputTokens>GPT6_LUNA_STANDARD_PRICING.longContextThresholdInputTokens?GPT6_LUNA_STANDARD_PRICING.longContext:GPT6_LUNA_STANDARD_PRICING.shortContext,
+    usage.inputTokens>pricing.longContextThresholdInputTokens?pricing.longContext:pricing.shortContext,
+    pricing,
   ));
   const usageTotals=normalized.reduce((acc,usage)=>{
     for(const key of Object.keys(acc))acc[key]+=Number(usage[key]||0);
     return acc;
   },{inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,uncachedInputTokens:0,outputTokens:0});
   return {
-    model:GPT6_LUNA_STANDARD_PRICING.model,
-    pricing:GPT6_LUNA_STANDARD_PRICING,
+    model:pricing.model,
+    pricing,
     usage:usageTotals,
     requestCount:normalized.length,
-    longContextRequestCount:normalized.filter(usage=>usage.inputTokens>GPT6_LUNA_STANDARD_PRICING.longContextThresholdInputTokens).length,
+    longContextRequestCount:normalized.filter(usage=>usage.inputTokens>pricing.longContextThresholdInputTokens).length,
     contextPricingExact:true,
     ...totalBreakdown(parts),
   };
 }
 
-export function estimateGpt6LunaStandardCostFromAggregate(record={}, {maxObservedInputTokens=null}={}){
+export function estimateGpt6LunaCostFromAggregate(record={}, {maxObservedInputTokens=null,serviceTier="standard"}={}){
+  const pricing=gpt6LunaPricingForServiceTier(serviceTier);
   const usage=normalizeOpenAIUsage(record);
-  const knownShortContext=maxObservedInputTokens!=null&&Number(maxObservedInputTokens)<=GPT6_LUNA_STANDARD_PRICING.longContextThresholdInputTokens;
-  const knownLongContext=maxObservedInputTokens!=null&&Number(maxObservedInputTokens)>GPT6_LUNA_STANDARD_PRICING.longContextThresholdInputTokens;
-  const rates=knownLongContext?GPT6_LUNA_STANDARD_PRICING.longContext:GPT6_LUNA_STANDARD_PRICING.shortContext;
+  const knownShortContext=maxObservedInputTokens!=null&&Number(maxObservedInputTokens)<=pricing.longContextThresholdInputTokens;
+  const knownLongContext=maxObservedInputTokens!=null&&Number(maxObservedInputTokens)>pricing.longContextThresholdInputTokens;
+  const rates=knownLongContext?pricing.longContext:pricing.shortContext;
   return {
-    model:GPT6_LUNA_STANDARD_PRICING.model,
-    pricing:GPT6_LUNA_STANDARD_PRICING,
+    model:pricing.model,
+    pricing,
     usage,
     requestCount:null,
     longContextRequestCount:knownLongContext?null:knownShortContext?0:null,
     contextPricingExact:knownShortContext,
     contextPricingAssumption:knownShortContext?null:knownLongContext?"aggregate priced at long-context rates; per-request split unavailable":"short-context rates assumed because per-request context lengths are unavailable",
-    ...totalBreakdown([costForUsage(usage,rates)]),
+    ...totalBreakdown([costForUsage(usage,rates,pricing)]),
   };
+}
+
+export function estimateGpt6LunaStandardCostFromRecords(records=[]){
+  return estimateGpt6LunaCostFromRecords(records,{serviceTier:"standard"});
+}
+
+export function estimateGpt6LunaStandardCostFromAggregate(record={},options={}){
+  return estimateGpt6LunaCostFromAggregate(record,{...options,serviceTier:"standard"});
 }
