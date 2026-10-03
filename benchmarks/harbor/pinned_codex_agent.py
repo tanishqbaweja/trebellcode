@@ -20,6 +20,13 @@ class PinnedCodexOptions(CodexOptions):
         default=None,
         description="OpenAI processing tier. Fast changes serving speed, not the model.",
     )
+    web_search: Annotated[
+        Literal["disabled"],
+        Cli("-c", format="-c web_search={value}"),
+    ] = Field(
+        default="disabled",
+        description="Hosted Codex web search is disabled for benchmark fairness.",
+    )
 
 
 class PinnedCodexAgent(Codex):

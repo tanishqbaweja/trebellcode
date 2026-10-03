@@ -667,6 +667,16 @@ Codex OAuth was still running after more than two hours and had already exceeded
 
 ---
 
+## 2026-10-03 - Disable Codex hosted web search in harness comparisons
+
+**Observed benchmark contamination:** the sealed `fin-saccr-rwa` Fast comparison coincided with **22 OpenAI API web-search operations** on the otherwise-unused benchmark API project. The Native request path does not include OpenAI's built-in `web_search` tool. Codex was launched with full-access sandbox bypass and no explicit web-search setting; current Codex behavior enables web search by default and switches the default to live search under full-access / yolo-style execution. This creates an external-information capability asymmetry and invalidates the run as clean harness-quality evidence even though the task had already completed.
+
+**Fairness fix:** the pinned Harbor Codex adapter now has a benchmark-only `web_search` option fixed to `disabled`, and the three-lane runner explicitly passes `web_search=disabled` for both Codex API and Codex OAuth. The older direct Native-vs-Codex benchmark also pins `web_search="disabled"`. Native continues to omit OpenAI built-in web search entirely.
+
+**Benchmark disposition:** `fin-saccr-rwa` is marked contaminated and consumed. Its sealed raw results are retained for audit, but they must not be used to claim relative harness quality. The next fresh task is `foodstuff-beta-activity`.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name

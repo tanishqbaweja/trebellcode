@@ -68,6 +68,7 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/sameServiceTier:true/);
   assert.match(source,/serviceTier:SERVICE_TIER/);
   assert.match(source,/service_tier=fast/);
+  assert.match(source,/web_search=disabled/);
   assert.match(source,/Fast comparison requires the pinned Codex adapter/);
   assert.match(nativeRunnerSource,/TREBELL_SERVICE_TIER\|\|"fast"/);
   assert.match(nativeRunnerSource,/serviceTier:serviceTier==="default"\?null:serviceTier/);
@@ -75,6 +76,8 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(nativeAdapterSource,/"TREBELL_SERVICE_TIER": self\.options\.service_tier/);
   assert.match(pinnedCodexAdapterSource,/class PinnedCodexOptions\(CodexOptions\)/);
   assert.match(pinnedCodexAdapterSource,/service_tier=\{value\}/);
+  assert.match(pinnedCodexAdapterSource,/web_search=\{value\}/);
+  assert.match(pinnedCodexAdapterSource,/default="disabled"/);
   assert.match(source,/--native-reasoning-context=/);
   assert.match(source,/nativeReasoningContext:NATIVE_REASONING_CONTEXT/);
   assert.match(source,/harnessEnv\.TREBELL_OPENAI_REASONING_CONTEXT=NATIVE_REASONING_CONTEXT/);

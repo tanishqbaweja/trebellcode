@@ -9,6 +9,7 @@ Benchmark-driven **Trebell Native harness changes** are tracked separately in [`
 - Compare harnesses on the same task, starting repository tree, model, and effective write/execute permissions whenever the comparison is intended to measure harness quality.
 - Pin the same reasoning/thinking effort on both harnesses whenever the model exposes that control. Provider defaults are not sufficient evidence of parity.
 - Pin the same provider processing/service tier on every lane when that control is part of the comparison. Beginning with the next fresh task after `coq-block-bound`, the default comparison is **`gpt-6-luna` + `max` reasoning + `fast` service tier** for Native, Codex API, and Codex OAuth. Fast is a serving tier, not a different model; do not relabel the model or change reasoning effort when enabling it.
+- Disable provider-hosted web search for harness-quality comparisons unless the benchmark explicitly requires and symmetrically provisions it. Trebell Native omits OpenAI built-in web search; Codex API and OAuth benchmark lanes must pin `web_search=disabled` so full-access Codex defaults cannot add an external-information advantage.
 - Price each run using the tier actually requested/observed for that run. Historical results through `coq-block-bound` used Standard pricing; Fast results use the Fast price snapshot and their absolute dollar totals must not be compared to historical Standard totals without accounting for the tier difference.
 - Use an independent verifier after the harness finishes. A harness does not get credit merely for claiming success.
 - Do not weaken or edit the verifier during a run.
@@ -25,9 +26,9 @@ Benchmark-driven **Trebell Native harness changes** are tracked separately in [`
 Reconciled on **2026-10-03** from the local Harbor task cache, `.harbor-validation`, `.harbor-jobs`, and the chronological benchmark record below. This registry exists specifically to stop accidental task repetition.
 
 - Local cached Terminal-Bench task packages: **55**
-- Already attempted / consumed: **36**
-- Still untouched in the local cache: **19**
-- Next planned fresh task: **`fin-saccr-rwa`**.
+- Already attempted / consumed: **37**
+- Still untouched in the local cache: **18**
+- Next planned fresh task: **`foodstuff-beta-activity`**.
 - “Consumed” means the task is no longer eligible as fresh unseen evidence, even if the historical launch was incomplete, setup-invalid, diagnostic, or later contaminated.
 - An incomplete/setup-invalid run remains useful infrastructure evidence but is **not** a harness-quality score.
 - Move a task from “untouched” to “consumed” as soon as a real run starts or task-specific payload/verifier content is exposed.
@@ -38,16 +39,15 @@ These are the current fresh-task pool. Do not inspect their instructions, verifi
 
 | Untouched task | Untouched task |
 | --- | --- |
-| `fin-saccr-rwa` | `foodstuff-beta-activity` |
-| `fp8-rmsnorm-gemm` | `freecad-impeller` |
-| `freecad-platform-drawing` | `glycan-ms2-elucidation` |
-| `hof-topology-interpenetration` | `make-mips-interpreter` |
-| `music-harmony` | `ontology-kg-querying` |
-| `photonic-waveguide-routing` | `protein-autointerp-disulfide` |
-| `retro-console-soc` | `roy-polymorph-cn` |
-| `sglang-qwen-burst` | `sound-change-cascade` |
-| `takens-embedding-lean` | `vpp-loss-divergence` |
-| `wdm-design` |  |
+| `foodstuff-beta-activity` | `fp8-rmsnorm-gemm` |
+| `freecad-impeller` | `freecad-platform-drawing` |
+| `glycan-ms2-elucidation` | `hof-topology-interpenetration` |
+| `make-mips-interpreter` | `music-harmony` |
+| `ontology-kg-querying` | `photonic-waveguide-routing` |
+| `protein-autointerp-disulfide` | `retro-console-soc` |
+| `roy-polymorph-cn` | `sglang-qwen-burst` |
+| `sound-change-cascade` | `takens-embedding-lean` |
+| `vpp-loss-divergence` | `wdm-design` |
 
 ### Attempted / consumed tasks — do not reuse as fresh evidence
 
@@ -67,6 +67,7 @@ The “local attempts” column indexes every pair-report timestamp currently pr
 | `distributed-dedup` | 211154Z, 214947Z, 220901Z, 222420Z, 222959Z, 223312Z | Multiple historical diagnostics; surviving legacy reports do not contain a normalized three-lane verifier summary. Consumed. |
 | `embedding-drift-monitor` | 145503Z, 223938Z, 103445Z | Clean 103445Z pair: **2/11 for all three**, Native **$0.13563**, API **$0.05741**, OAuth **$0.02704**, reward 0. Consumed. |
 | `freecad-spring-clip` | 060853Z, 061633Z | Infrastructure-incomparable diagnostics. 061633Z reports Native reward 0 at **$0.07105**; API/OAuth did not retain a valid comparable verifier score. Consumed. |
+| `fin-saccr-rwa` | 141254Z | **Contaminated capability-parity run; do not count for harness quality.** Native reward 0 at **$0.14266**; Codex API reward 0 at **$0.29756**; Codex OAuth reward 1 at **$0.12388**. After sealing, OpenAI API usage showed 22 web searches on the otherwise-unused benchmark API project. Trebell Native does not expose OpenAI built-in web search, while Codex was run in full-access mode without `web_search=disabled`, and current Codex defaults full-access web search to live. The task is consumed; future Codex benchmark lanes explicitly disable hosted web search. |
 | `freight-dispatch-shift` | 090308Z | All official rewards 0. Regraded sealed artifacts: Native **110/232** diagnostic points, OAuth **72/232**, API exposed only **12/24** early points before its generated CLI failed. Consumed. |
 | `html-js-filter` | 223148Z, 101959Z | 101959Z: **1/2 for all three**, Native **$0.04045**, API **$0.04535**, OAuth **$0.01417**, reward 0. Pair was contaminated by live process-topology inspection. Consumed. |
 | `interleaved-vigenere` | 224703Z, 224904Z | 224904Z: Native **5/6 $0.19114**; API **2/6 $0.62862**; OAuth has no valid sealed verifier result. Run carried errors/incompleteness and is diagnostic only. Consumed. |
