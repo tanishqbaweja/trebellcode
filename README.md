@@ -141,6 +141,8 @@ npm run ui:test
 
 Live-provider and external-runtime checks are opt-in because they depend on credentials, installed runtimes, and external service availability.
 
+This project is tested with BrowserStack.
+
 ## Product direction
 
 Near-term work is focused on four things:
