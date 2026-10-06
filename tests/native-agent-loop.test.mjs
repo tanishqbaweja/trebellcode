@@ -283,25 +283,25 @@ test("native stages and audits multi-record evidence batches before persistent s
       requests.push(structuredClone(request));turn++;
       if(turn<=3)return {text:"",toolCalls:[{id:`probe-${turn}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`probe-${turn}.mjs`]})}],usage:{}};
       if(turn===4){
-        const checkpoint=request.messages.find(message=>message.role==="developer"&&/evidence-adjudication planning checkpoint/i.test(String(message.content||"")));assert.ok(checkpoint);
-        assert.match(String(checkpoint.content),/authority, specificity, and chronology/i);assert.match(String(checkpoint.content),/evidence or citation references/i);
-        return {text:"",toolCalls:[{id:"submit-too-early",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})}],usage:{}};
+        const checkpoint=request.messages.find(message=>message.role==="developer"&&/batch-evidence commit checkpoint/i.test(String(message.content||"")));assert.ok(checkpoint);
+        assert.match(String(checkpoint.content),/authority, specificity, and chronology/i);assert.match(String(checkpoint.content),/source\/citation references/i);
+        return {text:"",toolCalls:[{id:"submit-too-early",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})}],usage:{}};
       }
       if(turn===5){
-        const blocked=request.messages.find(message=>message.role==="tool"&&message.toolCallId==="submit-too-early");assert.ok(blocked);assert.match(String(blocked.content),/evidence-adjudication commit guard/i);assert.match(String(blocked.content),/source authority, specificity, and chronology/i);
-        return {text:"",toolCalls:[{id:"audit-all-decisions",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["audit-all-decisions.mjs"]})}],usage:{}};
+        const blocked=request.messages.find(message=>message.role==="tool"&&message.toolCallId==="submit-too-early");assert.ok(blocked);assert.match(String(blocked.content),/batch-evidence commit guard/i);assert.match(String(blocked.content),/source authority, specificity, and chronology/i);
+        return {text:"",toolCalls:[{id:"audit-all-outputs",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["audit-all-outputs.mjs"]})}],usage:{}};
       }
-      if(turn===6)return {text:"",toolCalls:[{id:"submit-after-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})}],usage:{}};
-      return {text:"all decisions audited and submitted",toolCalls:[],usage:{}};
+      if(turn===6)return {text:"",toolCalls:[{id:"submit-after-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})}],usage:{}};
+      return {text:"all outputs audited and submitted",toolCalls:[],usage:{}};
     },
-    executeTool:async call=>{executed.push(call.id);return {success:true,exitCode:0,stdout:call.id==="audit-all-decisions"?"all staged decisions pass precedence and reference audit":"ok"}},
+    executeTool:async call=>{executed.push(call.id);return {success:true,exitCode:0,stdout:call.id==="audit-all-outputs"?"all staged outputs pass precedence and reference audit":"ok"}},
   });
-  assert.equal(result.text,"all decisions audited and submitted");assert.equal(executed.includes("submit-too-early"),false);assert.deepEqual(executed,["probe-1","probe-2","probe-3","audit-all-decisions","submit-after-audit"]);
-  const checkpoint=events.find(event=>event.name==="native.progress.global_constraint_planning_checkpoint");assert.ok(checkpoint);assert.equal(checkpoint.data?.mode,"evidence_adjudication");
+  assert.equal(result.text,"all outputs audited and submitted");assert.equal(executed.includes("submit-too-early"),false);assert.deepEqual(executed,["probe-1","probe-2","probe-3","audit-all-outputs","submit-after-audit"]);
+  const checkpoint=events.find(event=>event.name==="native.progress.global_constraint_planning_checkpoint");assert.ok(checkpoint);assert.equal(checkpoint.data?.mode,"batch_evidence_commit");
   assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_blocked").length,1);assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_audited").length,1);
 });
 
-test("native evidence-adjudication trigger requires both a batch and external persistence",async()=>{
+test("native batch evidence commit audit requires both multiple records and external persistence",async()=>{
   const runCase=async prompt=>{
     const events=[];let turn=0;
     const result=await runNativeAgentTurn({
@@ -315,9 +315,9 @@ test("native evidence-adjudication trigger requires both a batch and external pe
     return events;
   };
   const localBatch=await runCase("For every queued item, use the authoritative rules and evidence logs to produce a local summary report file.");
-  assert.equal(localBatch.some(event=>event.name==="native.progress.global_constraint_planning_checkpoint"&&event.data?.mode==="evidence_adjudication"),false,"a local batch analysis is not an irreversible external adjudication");
+  assert.equal(localBatch.some(event=>event.name==="native.progress.global_constraint_planning_checkpoint"&&event.data?.mode==="batch_evidence_commit"),false,"a local batch analysis is not an irreversible external batch commit");
   const singleRemote=await runCase("Use the policy and evidence log to update one item in the remote portal.");
-  assert.equal(singleRemote.some(event=>event.name==="native.progress.global_constraint_planning_checkpoint"&&event.data?.mode==="evidence_adjudication"),false,"a single remote mutation should not pay for a whole-batch adjudication audit");
+  assert.equal(singleRemote.some(event=>event.name==="native.progress.global_constraint_planning_checkpoint"&&event.data?.mode==="batch_evidence_commit"),false,"a single remote mutation should not pay for a whole-batch evidence audit");
 });
 
 test("native does not inject the global-constraint planning checkpoint for ordinary performance optimization",async()=>{
@@ -3144,22 +3144,22 @@ test("native localizes residual structure after an abstraction repair before reo
   const residualCheckpoints=events.filter(event=>event.name==="native.progress.residual_structure_checkpoint");assert.equal(residualCheckpoints.length,2);assert.equal(residualCheckpoints[0].data?.descendantRevision,false);assert.equal(residualCheckpoints[1].data?.descendantRevision,true);
 });
 
-test("native semantic completion gate audits multi-record evidence authority and references only for adjudication tasks",async()=>{
+test("native semantic completion gate audits evidence-derived batch outputs only for external multi-record commits",async()=>{
   let turns=0;
   const result=await runNativeAgentTurn({
     model:"test-model",provider:"openai",reasoningEffort:"max",semanticCompletionGate:true,maxModelTurns:4,maxToolCalls:4,
-    messages:[{role:"user",content:"Review every claim using policy records and evidence history, decide approve or deny for each claim, then update the remote system through the API with all decisions."}],tools:[],
+    messages:[{role:"user",content:"For every queued record, use the authoritative rules and evidence history to derive the required output, then submit the complete batch to the remote API."}],tools:[],
     providerTurn:async request=>{
       turns++;
-      if(turns===1)return {text:"All record-level decisions have been prepared and submitted.",toolCalls:[],usage:{}};
+      if(turns===1)return {text:"All record-level outputs have been prepared and submitted.",toolCalls:[],usage:{}};
       assert.equal(request.toolChoice,"none");assert.equal(request.maxOutputTokens,12288);assert.equal(request.reasoningEffort,"max");
       const gate=request.messages.find(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));assert.ok(gate);
-      assert.match(String(gate.content),/multiple record-level decisions/i);assert.match(String(gate.content),/source authority, specificity, and chronology/i);assert.match(String(gate.content),/action\/outcome, the controlling reason or basis, and any required evidence\/citation references/i);assert.match(String(gate.content),/successful submission, receipt, persistence, or row count/i);
+      assert.match(String(gate.content),/multiple record-level outputs/i);assert.match(String(gate.content),/source authority, specificity, and chronology/i);assert.match(String(gate.content),/persisted value\/action, its controlling basis, dependencies, and any required source\/citation references/i);assert.match(String(gate.content),/successful submission, receipt, persistence, or row count/i);
       return {text:'{"status":"complete","unresolved":[],"reason":"Every record was audited against the controlling evidence."}',toolCalls:[],usage:{}};
     },
     executeTool:async()=>({success:true}),
   });
-  assert.equal(turns,2);assert.equal(result.text,"All record-level decisions have been prepared and submitted.");
+  assert.equal(turns,2);assert.equal(result.text,"All record-level outputs have been prepared and submitted.");
 });
 
 test("native semantic completion gate rejects unsupported completion without task-specific wording",async()=>{
@@ -3187,7 +3187,7 @@ test("native semantic completion gate rejects unsupported completion without tas
         assert.match(String(gate.content),/optimization or priority objectives/i);
         assert.match(String(gate.content),/pre-existing public symbols/i);
         assert.match(String(gate.content),/cleaner replacement abstraction is not by itself evidence of compatibility/i);
-        assert.doesNotMatch(String(gate.content),/multiple record-level decisions/i,"unrelated latency tasks should not pay for the evidence-adjudication audit");
+        assert.doesNotMatch(String(gate.content),/multiple record-level outputs/i,"unrelated latency tasks should not pay for the batch evidence commit audit");
         return {text:'{"status":"incomplete","unresolved":["p95 latency is still above the requested ceiling"],"reason":"The latest measured p95 is 141 ms, so the requested performance target is not satisfied."}',toolCalls:[],usage:{}};
       }
       if(providerCalls===4){
