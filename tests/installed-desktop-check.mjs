@@ -1,8 +1,15 @@
 import { chromium } from "@playwright/test";
+import { execFile } from "node:child_process";
+import { mkdir,mkdtemp,rm,stat,writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 
 const cdpUrl = process.env.TREBELL_CDP_URL || "http://127.0.0.1:9333";
 const fixturePort = Number(process.env.TREBELL_BROWSER_FIXTURE_PORT || 33333);
+const visualDir = String(process.env.TREBELL_RELEASE_VISUAL_DIR||"").trim();
+const execFileAsync=promisify(execFile);
 
 const fixture = createServer((req,res)=>{
   res.writeHead(200,{"content-type":"text/html; charset=utf-8"});
@@ -25,7 +32,7 @@ await new Promise((resolve,reject)=>{
   fixture.listen(fixturePort,"127.0.0.1",resolve);
 });
 
-let browser;
+let browser,visualProjectRoot=null;
 try {
   let lastError;
   for(let attempt=0;attempt<40;attempt++){
@@ -130,6 +137,10 @@ try {
 
   const screenshot=await mainPage.evaluate(()=>window.trebellDesktop.browser.screenshot());
   if(!screenshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Agent browser screenshot is not a PNG data URL.");
+  if(visualDir){
+    await mkdir(visualDir,{recursive:true});
+    await writeFile(join(visualDir,"09-agent-browser-page.png"),Buffer.from(screenshot.dataUrl.split(",",2)[1],"base64"));
+  }
 
   const viewportState=await mainPage.evaluate(()=>window.trebellDesktop.browser.setViewport(390,844));
   if(viewportState?.width!==390||viewportState?.height!==844) throw new Error(`Agent browser viewport resize failed: ${viewportState?.width}x${viewportState?.height}`);
@@ -203,6 +214,109 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
   if(voice.disabled===null) throw new Error("Voice dictation control was not rendered.");
   if(voice.supported===voice.disabled) throw new Error("Voice dictation availability is not reflected by the UI.");
 
+  const visualAudit=[];
+  if(visualDir){
+    const captureVisual=async(name)=>{
+      await mkdir(visualDir,{recursive:true});
+      const path=join(visualDir,name+".png");
+      await mainPage.screenshot({path,fullPage:true});
+      const info=await stat(path);
+      if(info.size<8000)throw new Error(`Packaged visual screenshot ${name} is unexpectedly small (${info.size} bytes).`);
+      visualAudit.push({name,path,bytes:info.size});
+    };
+    const assertNoActionError=async(label)=>{
+      const errors=await mainPage.locator('[data-testid="app-action-error"]:visible,.app-action-error:visible,.sidebar-action-error:visible').allTextContents();
+      if(errors.length)throw new Error(`Packaged visual audit surfaced an app error on ${label}: ${errors.join(" · ")}`);
+    };
+    const openUtility=async(label,name,waitFor=null)=>{
+      const control=mainPage.getByRole("button",{name:label,exact:true});
+      if(await control.count()===0)throw new Error(`Packaged visual audit could not find the ${label} navigation control.`);
+      await control.click();
+      if(waitFor)await waitFor();
+      else await mainPage.waitForTimeout(400);
+      await assertNoActionError(label);
+      await captureVisual(name);
+    };
+
+    visualProjectRoot=await mkdtemp(join(tmpdir(),"trebell-release-visual-"));
+    await mkdir(join(visualProjectRoot,"src"),{recursive:true});
+    await writeFile(join(visualProjectRoot,"README.md"),"# Trebell release visual fixture\n");
+    await writeFile(join(visualProjectRoot,"src","app.js"),'export const releaseVisual = "baseline";\n');
+    await execFileAsync("git",["init","-q"],{cwd:visualProjectRoot});
+    await execFileAsync("git",["config","user.email","release-visual@trebell.invalid"],{cwd:visualProjectRoot});
+    await execFileAsync("git",["config","user.name","Trebell Release Visual"],{cwd:visualProjectRoot});
+    await execFileAsync("git",["add","."],{cwd:visualProjectRoot});
+    await execFileAsync("git",["commit","-q","-m","Visual fixture"],{cwd:visualProjectRoot});
+    await writeFile(join(visualProjectRoot,"src","app.js"),'export const releaseVisual = "changed";\n');
+    const addedProject=await mainPage.evaluate(async path=>{
+      const response=await fetch("/api/projects",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path,name:"Release visual fixture",activate:true,environmentId:null})});
+      return await response.json();
+    },visualProjectRoot);
+    if(!addedProject?.project?.id)throw new Error("Packaged visual audit could not register its temporary Git project.");
+
+    await mainPage.reload({waitUntil:"domcontentloaded"});
+    await mainPage.getByRole("button",{name:"Projects",exact:true}).waitFor({state:"visible",timeout:15000});
+    await mainPage.waitForTimeout(800);
+    await assertNoActionError("Chat");
+    await captureVisual("01-chat-workspace");
+
+    await mainPage.getByTestId("terminal-toggle").click();
+    await mainPage.getByTestId("drawer").waitFor({state:"visible",timeout:10000});
+    const createTerminal=mainPage.getByRole("button",{name:"Create terminal",exact:true});
+    if(await createTerminal.count())await createTerminal.click();
+    await mainPage.waitForTimeout(800);
+    await assertNoActionError("Terminal");
+    await captureVisual("02-terminal");
+    await mainPage.getByTestId("terminal-toggle").click();
+
+    await mainPage.getByTestId("right-panel-toggle").click();
+    await mainPage.locator(".right-panel").waitFor({state:"visible",timeout:10000});
+    await mainPage.waitForTimeout(500);
+    await assertNoActionError("Workspace panel");
+    await captureVisual("03-workspace-files");
+
+    const sourceControl=mainPage.locator(".branch-control");
+    if(await sourceControl.count()===0)throw new Error("Packaged visual audit did not detect Git source control for its fixture project.");
+    await sourceControl.click();
+    await mainPage.waitForTimeout(700);
+    await assertNoActionError("Source control");
+    await captureVisual("04-source-control");
+
+    await openUtility("Projects","05-projects",()=>mainPage.getByRole("heading",{name:"Projects",exact:true}).waitFor({state:"visible",timeout:10000}));
+    await openUtility("History","06-history",()=>mainPage.getByRole("heading",{name:"Thread history",exact:true}).waitFor({state:"visible",timeout:10000}));
+    await openUtility("Usage","07-usage",()=>mainPage.getByRole("heading",{name:"Usage",exact:true}).waitFor({state:"visible",timeout:10000}));
+    await openUtility("Environments","08-environments",()=>mainPage.getByText("Environments",{exact:true}).first().waitFor({state:"visible",timeout:10000}));
+    await openUtility("Browser","10-browser-panel");
+
+    for(const [label,name] of [["Agents","11-agents"],["Tools","12-tools"]]){
+      const control=mainPage.getByRole("button",{name:label,exact:true});
+      if(await control.count())await openUtility(label,name);
+    }
+
+    await openUtility("Settings","13-settings-general",()=>mainPage.getByRole("heading",{name:"Settings",exact:true}).waitFor({state:"visible",timeout:10000}));
+    const settingsNav=mainPage.getByRole("navigation",{name:"Settings categories"});
+    for(const [label,name] of [
+      ["Agents & models","14-settings-agents-models"],
+      ["Workspace","15-settings-workspace"],
+      ["Appearance","16-settings-appearance"],
+      ["Desktop","17-settings-desktop"],
+      ["Shortcuts","18-settings-shortcuts"],
+      ["Diagnostics","19-settings-diagnostics"],
+    ]){
+      const control=settingsNav.getByRole("button",{name:new RegExp("^"+label)});
+      if(await control.count()===0)throw new Error(`Packaged Settings is missing the ${label} category.`);
+      await control.click();
+      await mainPage.locator(".settings-section-head h2").filter({hasText:label}).waitFor({state:"visible",timeout:10000});
+      await mainPage.waitForTimeout(250);
+      await assertNoActionError("Settings / "+label);
+      await captureVisual(name);
+    }
+
+    await mainPage.setViewportSize({width:1280,height:800}).catch(()=>{});
+    await mainPage.waitForTimeout(250);
+    await captureVisual("20-settings-responsive-1280x800");
+  }
+
   const disabled=await mainPage.evaluate(()=>window.trebellDesktop.background.set(false));
   if(disabled?.enabled!==false) throw new Error("Background mode did not disable after validation.");
   const afterDisable=await mainPage.evaluate(()=>window.trebellDesktop.background.get());
@@ -221,8 +335,10 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     zoom:{before:zoomBefore,afterCtrlWheelUp:zoomAfter,reset:zoomReset},
     voice,
     providerCompatibility,
+    visualAudit,
   },null,2));
 } finally {
   try{await browser?.close();}catch{}
+  if(visualProjectRoot)await rm(visualProjectRoot,{recursive:true,force:true,maxRetries:8,retryDelay:100}).catch(()=>{});
   await new Promise(resolve=>fixture.close(()=>resolve()));
 }

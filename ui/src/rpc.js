@@ -11,6 +11,10 @@ export class CodexRpcClient {
     this.pending = new Map();
   }
 
+  isConnected() {
+    return Boolean(this.socket && this.socket.readyState === WebSocket.OPEN);
+  }
+
   async connect() {
     if (!this.url) throw new Error("No app-server websocket URL was provided");
     this.onStatus?.("connecting");

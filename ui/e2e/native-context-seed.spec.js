@@ -37,6 +37,9 @@ test("Native UI sends a compact repository seed instead of replaying source exce
   const providerRequests=[];
   const nativeProviderTurn=async request=>{
     providerRequests.push(structuredClone({...request,signal:undefined}));
+    if(request.metadata?.completionGate||request.responseJsonSchema?.name==="trebell_completion_gate"){
+      return{id:"native-context-seed-gate",provider:request.provider,model:request.model,text:JSON.stringify({status:"complete",progress:"uncertain",edit_support:"unsupported",mutation_safety:"allowed",recovery_mode:"none",constraint_audit:[],unresolved:[],reason:"The fixture response satisfies the requested context-projection check."}),toolCalls:[],finishReason:"stop",usage:{}};
+    }
     return{id:"native-context-seed-reply",provider:request.provider,model:request.model,text:"Native context seed received.",toolCalls:[],finishReason:"stop",usage:{}};
   };
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
@@ -89,8 +92,8 @@ test("Native UI sends a compact repository seed instead of replaying source exce
     await page.getByTestId("composer").fill("Fix refresh token session bug");
     await page.getByTestId("send").click();
     await expect(page.getByText("Native context seed received.",{exact:true})).toBeVisible({timeout:10_000});
-    await expect.poll(()=>providerRequests.length).toBe(1);
-    const request=providerRequests[0],user=request.messages.find(item=>item.role==="user"),userText=JSON.stringify(user?.content||"");
+    await expect.poll(()=>providerRequests.filter(request=>!request.metadata?.completionGate).length).toBe(1);
+    const request=providerRequests.find(request=>!request.metadata?.completionGate),user=request.messages.find(item=>item.role==="user"),userText=JSON.stringify(user?.content||"");
     expect(request.messages[0]?.role).toBe("system");
     expect(String(request.messages[0]?.content||"")).toContain("You are Trebell Native");
     expect(userText).toContain(instructionInjection);

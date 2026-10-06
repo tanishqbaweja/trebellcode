@@ -1237,7 +1237,7 @@ export default function App(){
     }finally{setCollaborationModeBusy(false)}
   }
   async function loadThreadRuntimeProfiles(client=rpc,threadId=activeThreadRef.current?.id){
-    if(!runtimeCapabilities.runtimeProfileSwitching||!client||rpcStatus!=="connected"||!threadId){
+    if(!runtimeCapabilities.runtimeProfileSwitching||!client||rpcStatus!=="connected"||client?.isConnected?.()===false||!threadId){
       setThreadRuntimeProfiles({threadId:null,supported:false,currentInstanceId:null,items:[]});return {threadId:null,supported:false,currentInstanceId:null,items:[]};
     }
     try{
@@ -1246,7 +1246,7 @@ export default function App(){
       const next={...(result||{supported:false,currentInstanceId:null,items:[]}),threadId};
       setThreadRuntimeProfiles(next);return next;
     }catch(error){
-      if(client!==rpcRef.current)return null;
+      if(client!==rpcRef.current||rpcStatus!=="connected"||client?.isConnected?.()===false)return null;
       const detail=error?.message||String(error);
       setThreadRuntimeProfiles(current=>current.threadId===threadId?current:{threadId,supported:false,currentInstanceId:null,items:[],reason:detail});
       showActionError(error,"Could not refresh runtime profiles");

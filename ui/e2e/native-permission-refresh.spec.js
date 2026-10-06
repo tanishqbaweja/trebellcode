@@ -22,6 +22,9 @@ test("Native permission picker updates the policy of an already-open thread",asy
   const thread=threadStore.create({runtime:"native",cwd:repo,providerSessionId:"native-permission-ui",model,name:"Native permission refresh",preview:"Permission refresh fixture",providerMeta:{runtimeInstanceId:"native-default",modelProvider:"agentrouter",permissionProfile:"auto",projectless:false,environmentId:null}});
   let providerCall=0;
   const nativeProviderTurn=async request=>{
+    if(request.metadata?.completionGate||request.responseJsonSchema?.name==="trebell_completion_gate"){
+      return{id:"ui-permission-gate",provider:request.provider,model:request.model,text:JSON.stringify({status:"complete",progress:"uncertain",edit_support:"unsupported",mutation_safety:"allowed",recovery_mode:"none",constraint_audit:[],unresolved:[],reason:"The fixture turn reached its expected permission-policy outcome."}),toolCalls:[],finishReason:"stop",usage:{}};
+    }
     providerCall++;
     if(providerCall===1)return{id:"ui-permission-write-1",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"ui-permission-tool-1",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"allowed.txt",content:"allowed"})}],finishReason:"tool_calls",usage:{}};
     if(providerCall===2)return{id:"ui-permission-done-1",provider:request.provider,model:request.model,text:"Auto mode allowed the first write.",toolCalls:[],finishReason:"stop",usage:{}};

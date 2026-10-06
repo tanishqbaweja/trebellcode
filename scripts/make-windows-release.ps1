@@ -231,6 +231,10 @@ $OldCdpUrl = $env:TREBELL_CDP_URL
 $OldFixturePort = $env:TREBELL_BROWSER_FIXTURE_PORT
 $OldTestHidden = $env:TREBELL_TEST_HIDDEN
 $OldTrebellHome = $env:TREBELL_HOME
+$OldVisualDir = $env:TREBELL_RELEASE_VISUAL_DIR
+$VisualDir = Join-Path $Root ("release-artifacts\" + $Tag + "\visual")
+if (Test-Path $VisualDir) { Remove-Item $VisualDir -Recurse -Force }
+New-Item -ItemType Directory -Path $VisualDir -Force | Out-Null
 $SmokeHome = Join-Path ([IO.Path]::GetTempPath()) ("trebell-release-smoke-" + [Guid]::NewGuid().ToString("N"))
 $DesktopProcess = $null
 try {
@@ -255,6 +259,7 @@ try {
   $env:TREBELL_CDP_URL = "http://127.0.0.1:$CdpPort"
   $env:TREBELL_BROWSER_FIXTURE_PORT = [string]$FixturePort
   $env:TREBELL_TEST_HIDDEN = "1"
+  $env:TREBELL_RELEASE_VISUAL_DIR = $VisualDir
 
   if (-not ($env:TREBELL_TEST_VYCE_API_KEY -or $env:VYCEAI_API_KEY -or $env:VYCE_API_KEY)) {
     Write-Host "No Vyce key is set locally; desktop smoke will test native features and bundled Codex, while Vyce compatibility remains covered by Railway." -ForegroundColor DarkGray
@@ -320,6 +325,7 @@ try {
   $env:TREBELL_BROWSER_FIXTURE_PORT = $OldFixturePort
   $env:TREBELL_TEST_HIDDEN = $OldTestHidden
   $env:TREBELL_HOME = $OldTrebellHome
+  $env:TREBELL_RELEASE_VISUAL_DIR = $OldVisualDir
   if (Test-Path $SmokeHome) {
     Remove-Item $SmokeHome -Recurse -Force -ErrorAction SilentlyContinue
   }
@@ -392,7 +398,8 @@ if ($Publish) {
     $ReleaseViewExitCode = $LASTEXITCODE
     $ErrorActionPreference = $PreviousErrorActionPreference
     if ($ReleaseViewExitCode -eq 0) { $Existing = $true }
-    $Notes = Join-Path $Root "RELEASE_NOTES_v$Version.md"
+    $Notes = Join-Path $Root "docs\releases\v$Version.md"
+    if (-not (Test-Path $Notes)) { $Notes = Join-Path $Root "RELEASE_NOTES_v$Version.md" }
     if ($Existing) {
       Write-Host "Release $Tag already exists; replacing installer asset."
       $UploadArgs = @("release","upload",$Tag,$Installer,$MetaPath,$LatestYml)

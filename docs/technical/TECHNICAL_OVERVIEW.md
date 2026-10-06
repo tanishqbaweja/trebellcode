@@ -6,7 +6,7 @@ Trebell's primary goal is to make a capable model **more economically effective 
 
 The desktop workspace, runtime adapters, terminals, Git/worktrees, browser verification, durable context, source control, and recovery systems all support that goal. Multiple agent runtimes are an interoperability and convenience feature; they are not the core product thesis.
 
-**Version:** 1.3.6 · **Runtime:** Node.js 22+ · **License:** Apache-2.0 · **Desktop:** Windows / macOS / Linux packaging targets
+**Version:** 1.6.0 · **Runtime:** Node.js 22+ · **License:** Apache-2.0 · **Desktop:** Windows / macOS / Linux packaging targets
 
 Trebell Code is not a chat box with a terminal glued beside it. It is a **desktop agent harness** designed around the boring-but-important parts of software engineering that make autonomous coding workflows trustworthy:
 
