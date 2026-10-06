@@ -56,6 +56,16 @@ test("Chat conversion can reuse a prepared tool manifest without changing wire J
   assert.equal(JSON.stringify(prepared),JSON.stringify(ordinary));
 });
 
+test("provider turn serializes allowed_tools without changing the full tool manifest",()=>{
+  const toolChoice={type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_repo",name:"search_symbols"}]};
+  const responses=providerTurnToResponses({model:"gpt-6-luna",tools,messages:[{role:"user",content:"search"}],toolChoice});
+  assert.deepEqual(responses.tools,tools);
+  assert.deepEqual(responses.tool_choice,{type:"allowed_tools",mode:"required",tools:[{type:"function",name:"trebell_repo__search_symbols"}]});
+  const chat=providerTurnToChat({model:"chat-model",tools,messages:[{role:"user",content:"search"}],toolChoice});
+  assert.equal(chat.tools.length,1);assert.equal(chat.tools[0].function.name,"trebell_repo__search_symbols");
+  assert.deepEqual(chat.tool_choice,{type:"allowed_tools",allowed_tools:{mode:"required",tools:[{type:"function",function:{name:"trebell_repo__search_symbols"}}]}});
+});
+
 test("provider turn omits unset output-token and temperature fields instead of coercing null to zero",()=>{
   const chat=providerTurnToChat({model:"chat-model",messages:[{role:"user",content:"hello"}]});
   assert.equal(Object.prototype.hasOwnProperty.call(chat,"max_tokens"),false);

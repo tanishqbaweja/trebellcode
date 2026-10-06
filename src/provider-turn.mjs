@@ -19,6 +19,23 @@ function normalizedServiceTier(value){
   return tier==="priority"?"fast":tier;
 }
 
+function normalizedAllowedToolChoice(value,{chat=false}={}){
+  if(String(value?.type||"").trim().toLowerCase()!=="allowed_tools")return null;
+  const mode=String(value?.mode||value?.allowed_tools?.mode||"auto").trim().toLowerCase()==="required"?"required":"auto";
+  const source=Array.isArray(value?.tools)?value.tools:Array.isArray(value?.allowed_tools?.tools)?value.allowed_tools.tools:[];
+  const tools=[];
+  for(const item of source){
+    if(!item||typeof item!=="object")continue;
+    const fn=item.function&&typeof item.function==="object"?item.function:item;
+    const split=splitToolName(fn.name||item.name||""),namespace=item.namespace||fn.namespace||split.namespace,name=split.name;
+    if(!name)continue;
+    const flat=flatToolName(namespace,name);
+    tools.push(chat?{type:"function",function:{name:flat}}:{type:"function",name:flat});
+  }
+  if(!tools.length)return null;
+  return chat?{type:"allowed_tools",allowed_tools:{mode,tools}}:{type:"allowed_tools",mode,tools};
+}
+
 function splitToolName(value){
   const raw=String(value||"tool"),marker=raw.indexOf("__");
   if(marker<=0||marker>=raw.length-2)return {namespace:null,name:raw};
@@ -130,7 +147,9 @@ export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto"
   const result={model:String(model||""),messages:chatMessages,stream:false,parallel_tool_calls:Boolean(parallelToolCalls)};
   const chatTools=Array.isArray(preparedTools)?preparedTools:providerToolsToChat(tools);if(chatTools.length)result.tools=chatTools;
   if(toolChoice&&chatTools.length){
-    if(typeof toolChoice==="string")result.tool_choice=toolChoice;
+    const allowed=normalizedAllowedToolChoice(toolChoice,{chat:true});
+    if(allowed)result.tool_choice=allowed;
+    else if(typeof toolChoice==="string")result.tool_choice=toolChoice;
     else if(toolChoice.name)result.tool_choice={type:"function",function:{name:flatToolName(toolChoice.namespace,toolChoice.name)}};
     else result.tool_choice=toolChoice;
   }
@@ -205,7 +224,9 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
   const result={model:String(model||""),input,tools:Array.isArray(tools)?tools:[],stream:false,parallel_tool_calls:Boolean(parallelToolCalls)};
   if(instructions.length)result.instructions=instructions.join("\n\n");
   if(toolChoice&&result.tools.length){
-    if(typeof toolChoice==="string")result.tool_choice=toolChoice;
+    const allowed=normalizedAllowedToolChoice(toolChoice);
+    if(allowed)result.tool_choice=allowed;
+    else if(typeof toolChoice==="string")result.tool_choice=toolChoice;
     else if(toolChoice.name)result.tool_choice={type:"function",name:flatToolName(toolChoice.namespace,toolChoice.name)};
     else result.tool_choice=toolChoice;
   }

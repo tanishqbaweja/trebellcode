@@ -3154,7 +3154,7 @@ test("native completion recovery edits immediately when the gate already support
 test("native evidence-then-edit recovery can diagnose, repair analysis, and persist the dependent deliverable",async()=>{
   const events=[],executed=[];let turns=0;
   const result=await runNativeAgentTurn({
-    model:"test-model",semanticCompletionGate:true,maxModelTurns:14,maxToolCalls:20,onEvent:event=>events.push(event),
+    model:"test-model",provider:"openai",semanticCompletionGate:true,maxModelTurns:14,maxToolCalls:20,onEvent:event=>events.push(event),
     messages:[{role:"user",content:"Analyze the supplied data, fix the calculation implementation if needed, and write the verified final values to results.json."}],
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
@@ -3168,17 +3168,17 @@ test("native evidence-then-edit recovery can diagnose, repair analysis, and pers
       }
       if(turns===5)return {text:"",toolCalls:[{id:"repair-analysis",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"analysis.mjs","old_text":"candidate","new_text":"corrected"}'}],usage:{}};
       if(turns===6){
-        assert.equal(request.toolChoice,"required");
+        assert.deepEqual(request.toolChoice,{type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_terminal",name:"run"}]});
         const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
-        assert.deepEqual(pairs,["trebell_terminal/run"]);
+        assert.deepEqual(pairs,["trebell_workspace/replace_text","trebell_terminal/run"]);
         assert.ok(request.messages.some(message=>message.role==="developer"&&/reserved post-edit verification/i.test(String(message.content||""))));
         return {text:"",toolCalls:[{id:"verify-analysis",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["analysis.mjs"]}'}],usage:{}};
       }
       if(turns===7)return {text:"",toolCalls:[{id:"persist-result",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"results.json","old_text":"old","new_text":"verified"}'}],usage:{}};
       if(turns===8){
-        assert.equal(request.toolChoice,"required");
+        assert.deepEqual(request.toolChoice,{type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_terminal",name:"run"}]});
         const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
-        assert.deepEqual(pairs,["trebell_terminal/run"]);
+        assert.deepEqual(pairs,["trebell_workspace/replace_text","trebell_terminal/run"]);
         return {text:"",toolCalls:[{id:"verify-result",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-result.mjs"]}'}],usage:{}};
       }
       if(turns===9)return {text:"The corrected analysis and dependent final result now pass the independent checks.",toolCalls:[],usage:{}};

@@ -240,6 +240,24 @@ test("official OpenAI Responses flattens Trebell namespaces into standard functi
   assert.deepEqual(result.toolCalls,[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);
 });
 
+test("official OpenAI Responses keeps the full tool manifest while restricting calls with allowed_tools",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-allowed-tools-"));let seen=null;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+      seen=JSON.parse(init.body||"{}");
+      return Response.json({id:"resp-allowed-tools",model:seen.model,status:"completed",output:[{type:"function_call",call_id:"call-verify",name:"trebell_terminal__run",arguments:'{"command":"verify"}'}],usage:{input_tokens:5,output_tokens:2,total_tokens:7}});
+    }});
+    manager.setKey("openai","oa-key");
+    const tools=[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text",description:"Edit",inputSchema:{type:"object",properties:{path:{type:"string"}}}}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run",description:"Run",inputSchema:{type:"object",properties:{command:{type:"string"}}}}]},
+    ];
+    await manager.turn("openai",{model:"gpt-6-luna",messages:[{role:"user",content:"verify"}],tools,toolChoice:{type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_terminal",name:"run"}]}});
+    assert.deepEqual(seen.tools.map(tool=>tool.name),["trebell_workspace__replace_text","trebell_terminal__run"]);
+    assert.deepEqual(seen.tool_choice,{type:"allowed_tools",mode:"required",tools:[{type:"function",name:"trebell_terminal__run"}]});
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI Responses forwards bounded server-side compaction policy",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-compaction-"));let seen=null;
   try{

@@ -1527,9 +1527,11 @@ export async function runNativeAgentTurn({
     const postEditRecoveryVerificationMode=workspaceMutationRequested&&completionRecoveryEpoch>0&&completionRecoveryEditConsumedEpoch===completionRecoveryEpoch&&completionRecoveryPostEditEvidenceResponsesRemaining>0&&!controlGateMode&&!finalAnswerOnly;
     const postEditRecoveryVerificationAllowlist=postEditRecoveryVerificationMode?exposedToolPairs(visibleTools).filter(item=>!(item.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(item.name))).map(item=>item.namespace+"/"+item.name):[];
     const postEditRecoveryVerificationTools=postEditRecoveryVerificationAllowlist.length?providerVisibleTools(visibleTools,postEditRecoveryVerificationAllowlist):[];
-    const forcePostEditRecoveryVerification=postEditRecoveryVerificationMode&&exposedToolPairs(postEditRecoveryVerificationTools).length>0;
-    const requestTools=controlGateMode?(preserveToolSchemasOnFinalization?visibleTools:[]):finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):forcePostEditRecoveryVerification?postEditRecoveryVerificationTools:visibleTools;
-    const requestToolChoice=finalAnswerOnly?"none":recoveryEditMode||forcePostEditRecoveryVerification?"required":forcedToolChoice||toolChoice;
+    const postEditRecoveryVerificationPairs=exposedToolPairs(postEditRecoveryVerificationTools);
+    const forcePostEditRecoveryVerification=postEditRecoveryVerificationMode&&postEditRecoveryVerificationPairs.length>0;
+    const openAiStableAllowedTools=forcePostEditRecoveryVerification&&String(provider||"").trim().toLowerCase()==="openai";
+    const requestTools=controlGateMode?(preserveToolSchemasOnFinalization?visibleTools:[]):finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):forcePostEditRecoveryVerification&&!openAiStableAllowedTools?postEditRecoveryVerificationTools:visibleTools;
+    const requestToolChoice=finalAnswerOnly?"none":recoveryEditMode?"required":forcePostEditRecoveryVerification?(openAiStableAllowedTools?{type:"allowed_tools",mode:"required",tools:postEditRecoveryVerificationPairs.map(item=>({namespace:item.namespace,name:item.name}))}:"required"):forcedToolChoice||toolChoice;
     const configuredMaxOutputTokens=maxOutputTokens!=null&&Number.isFinite(Number(maxOutputTokens))?Math.max(1,Math.trunc(Number(maxOutputTokens))):null;
     const pressureActionTurn=(implementationPressure||postEditEvidenceEscalated)&&!controlGateMode&&!finalAnswerOnly;
     const relaxActionCap=actionOutputCapRelaxOnce;actionOutputCapRelaxOnce=false;
