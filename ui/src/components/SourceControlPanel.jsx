@@ -19,6 +19,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const [viewed,setViewed]=useState({prNumber:null,store:null,files:[],loading:false});
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
+  const [diagnosticsLoading,setDiagnosticsLoading]=useState(false);
   const [statusLimit,setStatusLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [prLimit,setPrLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [fileLimit,setFileLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
@@ -38,10 +39,11 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       return false;
     }
     let d=null;
+    setDiagnosticsLoading(true);
     try{d=await api("/api/source-control/diagnostics?"+query({path:projectPath,...(providerOverride?{provider:providerOverride}:{})}))}
     catch(error){
       if(reportErrors)setError(error.message||String(error)||"Could not refresh source-control diagnostics.");
-    }
+    }finally{setDiagnosticsLoading(false)}
     setInfo(i);if(d)setDiagnostics(d);
     const chosen=providerOverride||d?.selectedProvider||(d?.detectedProvider&&d.detectedProvider!=="unknown"?d.detectedProvider:"");
     if(chosen&&!sourceProvider)setSourceProvider(chosen);
@@ -257,7 +259,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
         {statusWindow.hasMore&&<div className="source-window-footer"><button onClick={()=>setStatusLimit(limit=>limit+SOURCE_CONTROL_PAGE_SIZE)}>Show {statusWindow.nextCount} more changes</button><span>{statusWindow.shown} of {statusWindow.total} mounted</span></div>}
         <div className="commit-box"><textarea value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder="Commit message"/><button onClick={generate} disabled={busy==="generate"}><WandSparkles size={13}/> Generate with {{freebuff:"Freebuff",openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Gemini API",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider}</button><button className="primary" onClick={()=>action("commit",{message:commitMessage})} disabled={!commitMessage.trim()||!!busy}><GitCommit size={13}/> Commit</button></div>
       </section>
-      <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?.root}</code></p><p>Upstream: <code>{info?.upstream||"none"}</code></p><p>Git: {diagnostics?.git?.version||"not found"}</p><label className="source-provider-field"><span>Code host</span><select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});refresh(e.target.value,{reportErrors:true})}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?diagnostics?.providers?.[sourceProvider]?.label||sourceProvider:"Detected: "+(diagnostics?.detectedProvider||"unknown")} · {sourceProvider?(diagnostics?.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics?.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):"choose a provider if auto-detection is ambiguous"}</p>
+      <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?.root}</code></p><p>Upstream: <code>{info?.upstream||"none"}</code></p><p>Git: {diagnosticsLoading?"checking…":diagnostics?.git?.version||"not found"}</p><label className="source-provider-field"><span>Code host</span><select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});refresh(e.target.value,{reportErrors:true})}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?diagnostics?.providers?.[sourceProvider]?.label||sourceProvider:"Detected: "+(diagnostics?.detectedProvider||"unknown")} · {sourceProvider?(diagnostics?.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics?.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):"choose a provider if auto-detection is ambiguous"}</p>
         {!info?.remotes?.some(remote=>remote.name==="origin")&&sourceProvider&&diagnostics?.capabilities?.[sourceProvider]?.publish&&<button onClick={publishRepository} disabled={!!busy||!diagnostics?.providers?.[sourceProvider]?.authenticated}><Upload size={13}/> Publish repository</button>}
         <h4>Worktrees</h4>{(info?.worktrees||[]).map(w=><div className="worktree-row" key={w.path}><span>{w.branch||"detached"}</span><code>{w.path}</code>{w.path!==info?.root&&<button onClick={()=>openProjectPath(w.path)} disabled={busy==="open-project"}>Open</button>}</div>)}
         {(remote||window.trebellDesktop?.pickDirectory)&&<button onClick={addWorktree} disabled={!!busy}><Plus size={13}/> Add worktree</button>}

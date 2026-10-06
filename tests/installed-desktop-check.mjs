@@ -325,7 +325,7 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     await sourceControl.click();
     const sourcePanel=mainPage.getByTestId("right-panel");
     await sourcePanel.getByText("src/app.js",{exact:true}).first().waitFor({state:"visible",timeout:10000});
-    await mainPage.waitForFunction(()=>{const text=document.querySelector('[data-testid="right-panel"]')?.textContent||"";return /Git:\s*git version/i.test(text)},null,{timeout:15000});
+    await sourcePanel.getByText(/Git:\s*git version/i).waitFor({state:"visible",timeout:30000});
     await assertNoActionError("Source control");
     await captureVisual("04-source-control");
 
