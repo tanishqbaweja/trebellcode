@@ -9,6 +9,7 @@ export function createNativeStrategyMetrics(){
     globalConstraintPlanningCheckpoints:0,
     globalConstraintCommitBlocks:0,
     globalConstraintCommitAudits:0,
+    batchEvidenceCommitValidationCarryovers:0,
     implementationPressureEvents:0,
     actionOutputCaps:0,
     actionOutputCapRelaxations:0,
@@ -75,6 +76,7 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.progress.global_constraint_planning_checkpoint")target.globalConstraintPlanningCheckpoints=Number(target.globalConstraintPlanningCheckpoints||0)+1;
   else if(name==="native.progress.global_constraint_commit_blocked")target.globalConstraintCommitBlocks=Number(target.globalConstraintCommitBlocks||0)+1;
   else if(name==="native.progress.global_constraint_commit_audited")target.globalConstraintCommitAudits=Number(target.globalConstraintCommitAudits||0)+1;
+  else if(name==="native.progress.batch_evidence_commit_validation_carried")target.batchEvidenceCommitValidationCarryovers=Number(target.batchEvidenceCommitValidationCarryovers||0)+1;
   else if(name==="native.progress.implementation_pressure")target.implementationPressureEvents=Number(target.implementationPressureEvents||0)+1;
   else if(name==="native.model.action_output_cap")target.actionOutputCaps=Number(target.actionOutputCaps||0)+1;
   else if(name==="native.model.action_output_cap_relaxed")target.actionOutputCapRelaxations=Number(target.actionOutputCapRelaxations||0)+1;

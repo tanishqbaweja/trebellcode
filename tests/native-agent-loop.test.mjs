@@ -291,14 +291,47 @@ test("native stages and audits multi-record evidence batches before persistent s
         const blocked=request.messages.find(message=>message.role==="tool"&&message.toolCallId==="submit-too-early");assert.ok(blocked);assert.match(String(blocked.content),/batch-evidence commit guard/i);assert.match(String(blocked.content),/source authority, specificity, and chronology/i);
         return {text:"",toolCalls:[{id:"audit-all-outputs",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["audit-all-outputs.mjs"]})}],usage:{}};
       }
-      if(turn===6)return {text:"",toolCalls:[{id:"submit-after-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})}],usage:{}};
+      if(turn===6)return {text:"",toolCalls:[{id:"submit-after-audit-1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})}],usage:{}};
+      if(turn===7)return {text:"",toolCalls:[{id:"submit-after-audit-2",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (2)"]})}],usage:{}};
       return {text:"all outputs audited and submitted",toolCalls:[],usage:{}};
     },
     executeTool:async call=>{executed.push(call.id);return {success:true,exitCode:0,stdout:call.id==="audit-all-outputs"?"all staged outputs pass precedence and reference audit":"ok"}},
   });
-  assert.equal(result.text,"all outputs audited and submitted");assert.equal(executed.includes("submit-too-early"),false);assert.deepEqual(executed,["probe-1","probe-2","probe-3","audit-all-outputs","submit-after-audit"]);
+  assert.equal(result.text,"all outputs audited and submitted");assert.equal(executed.includes("submit-too-early"),false);assert.deepEqual(executed,["probe-1","probe-2","probe-3","audit-all-outputs","submit-after-audit-1","submit-after-audit-2"]);
   const checkpoint=events.find(event=>event.name==="native.progress.global_constraint_planning_checkpoint");assert.ok(checkpoint);assert.equal(checkpoint.data?.mode,"batch_evidence_commit");
   assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_blocked").length,1);assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_audited").length,1);
+  const carries=events.filter(event=>event.name==="native.progress.batch_evidence_commit_validation_carried");assert.equal(carries.length,2);assert.deepEqual(carries.map(event=>[event.data?.fromEditRevision,event.data?.toEditRevision]),[[0,1],[1,2]]);
+});
+
+test("native batch evidence commit validation is invalidated by a staged workspace change",async()=>{
+  const events=[],executed=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:12,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued item, use authoritative rules and evidence logs, stage the batch locally, then submit the complete batch to the remote portal."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],
+    providerTurn:async request=>{
+      turn++;
+      if(turn<=3)return {text:"",toolCalls:[{id:`probe-${turn}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`probe-${turn}.mjs`]})}],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[{id:"commit-before-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})}],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[{id:"audit-v1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["audit-v1.mjs"]})}],usage:{}};
+      if(turn===6)return {text:"",toolCalls:[{id:"commit-v1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})}],usage:{}};
+      if(turn===7)return {text:"",toolCalls:[{id:"change-stage",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"stage.json",old_text:"v1",new_text:"v2"})}],usage:{}};
+      if(turn===8)return {text:"",toolCalls:[{id:"commit-stale-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (2)"]})}],usage:{}};
+      if(turn===9)return {text:"",toolCalls:[{id:"audit-v2",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["audit-v2.mjs"]})}],usage:{}};
+      if(turn===10)return {text:"",toolCalls:[{id:"commit-v2",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (2)"]})}],usage:{}};
+      return {text:"revised batch audited and submitted",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      if(call.id==="change-stage")return {success:true,path:"stage.json",replacements:1,beforeSha256:"before",afterSha256:"after"};
+      return {success:true,exitCode:0,stdout:String(call.id).startsWith("audit-")?"audit passed":"ok"};
+    },
+  });
+  assert.equal(result.text,"revised batch audited and submitted");
+  assert.equal(executed.includes("commit-before-audit"),false);assert.equal(executed.includes("commit-stale-audit"),false);
+  assert.deepEqual(executed,["probe-1","probe-2","probe-3","audit-v1","commit-v1","change-stage","audit-v2","commit-v2"]);
+  assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_blocked").length,2);assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_audited").length,2);
+  const carries=events.filter(event=>event.name==="native.progress.batch_evidence_commit_validation_carried");assert.deepEqual(carries.map(event=>[event.data?.fromEditRevision,event.data?.toEditRevision]),[[0,1],[2,3]]);
 });
 
 test("native batch evidence commit audit requires both multiple records and external persistence",async()=>{

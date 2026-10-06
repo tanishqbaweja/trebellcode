@@ -1170,11 +1170,21 @@ export async function runNativeAgentTurn({
       }
     }
     if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_terminal"&&name==="run"&&externalStateMutationRequested&&terminalAudit?.persistentMutationLike===true){
+      const priorEditRevision=editRevision,auditedBatchWrite=batchEvidenceCommitAuditRequested&&constraintCommitValidatedRevision===priorEditRevision;
       editRevision++;
+      if(auditedBatchWrite){
+        constraintCommitValidatedRevision=editRevision;
+        emit(onEvent,{name:"native.progress.batch_evidence_commit_validation_carried",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,fromEditRevision:priorEditRevision,toEditRevision:editRevision,mutationKind:terminalAudit.persistentMutationKind||null}});
+      }
       emit(onEvent,{name:"native.progress.external_mutation_applied",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,mutationKind:terminalAudit.persistentMutationKind||null}});
     }
     if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_process"&&name==="start"&&externalStateMutationRequested&&processMutationAudit?.persistentMutationLike===true){
+      const priorEditRevision=editRevision,auditedBatchWrite=batchEvidenceCommitAuditRequested&&constraintCommitValidatedRevision===priorEditRevision;
       editRevision++;
+      if(auditedBatchWrite){
+        constraintCommitValidatedRevision=editRevision;
+        emit(onEvent,{name:"native.progress.batch_evidence_commit_validation_carried",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,fromEditRevision:priorEditRevision,toEditRevision:editRevision,mutationKind:processMutationAudit.persistentMutationKind||"background_process_write"}});
+      }
       emit(onEvent,{name:"native.progress.external_mutation_applied",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,mutationKind:processMutationAudit.persistentMutationKind||"background_process_write"}});
     }
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"){
