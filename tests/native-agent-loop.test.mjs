@@ -492,7 +492,7 @@ test("native persistent artifact request gets bounded deliverable progress check
 test("native long-budget persistent artifact work is forced through semantic audit before open-ended refinement",async()=>{
   const events=[],requests=[];let turn=0,expectedIds=[];
   const result=await runNativeAgentTurn({
-    model:"test-model",semanticCompletionGate:true,maxModelTurns:64,maxToolCalls:80,onEvent:event=>events.push(event),
+    model:"test-model",provider:"openai",semanticCompletionGate:true,maxModelTurns:64,maxToolCalls:80,onEvent:event=>events.push(event),
     messages:[{role:"user",content:"Create the final result and save it to result.json. The saved artifact must satisfy the requested acceptance condition."}],
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]}],
     providerTurn:async request=>{
@@ -507,7 +507,9 @@ test("native long-budget persistent artifact work is forced through semantic aud
       }
       if(turn===26){
         assert.equal(request.toolChoice,"none");
+        const audit=request.messages.find(message=>message.role==="developer"&&/persistent-artifact strategic audit/i.test(String(message.content||"")));assert.ok(audit,"OpenAI gate should retain the historical controller prefix for cache reuse");
         const gate=request.messages.findLast(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));assert.ok(gate);
+        assert.match(String(gate.content),/latest gate instruction supersedes earlier Trebell developer control/i);
         expectedIds=[...String(gate.content).matchAll(/\b(A\d+)=/g)].map(match=>match[1]);
         return {text:JSON.stringify({status:"complete",progress:"uncertain",edit_support:"unsupported",mutation_safety:"allowed",recovery_mode:"none",constraint_audit:expectedIds.map(id=>({id,status:"met",evidence:"direct acceptance evidence"})),unresolved:[],reason:"The strategic audit has enough acceptance evidence to stop broad refinement."}),toolCalls:[],usage:{}};
       }

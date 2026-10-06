@@ -27,6 +27,9 @@ export function createNativeStrategyMetrics(){
     completionGateContextCompactions:0,
     completionGateControlMessagesDropped:0,
     completionGateControlCharsDropped:0,
+    completionGateCachePrefixPreservations:0,
+    completionGateControlMessagesPreservedForCache:0,
+    completionGateControlCharsPreservedForCache:0,
     completionGateInvalidFailClosed:0,
     completionArtifactConstraintAuditBlocks:0,
     completionGateRecoveries:0,
@@ -89,6 +92,11 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
     target.completionGateContextCompactions=Number(target.completionGateContextCompactions||0)+1;
     target.completionGateControlMessagesDropped=Number(target.completionGateControlMessagesDropped||0)+Number(data?.removedDeveloperMessages||0);
     target.completionGateControlCharsDropped=Number(target.completionGateControlCharsDropped||0)+Number(data?.savedChars||0);
+  }
+  else if(name==="native.completion.gate_context_preserved_for_cache"){
+    target.completionGateCachePrefixPreservations=Number(target.completionGateCachePrefixPreservations||0)+1;
+    target.completionGateControlMessagesPreservedForCache=Number(target.completionGateControlMessagesPreservedForCache||0)+Number(data?.preservedDeveloperMessages||0);
+    target.completionGateControlCharsPreservedForCache=Number(target.completionGateControlCharsPreservedForCache||0)+Number(data?.preservedChars||0);
   }
   else if(name==="native.completion.gate_invalid_fail_closed")target.completionGateInvalidFailClosed=Number(target.completionGateInvalidFailClosed||0)+1;
   else if(name==="native.completion.constraint_audit_blocked")target.completionArtifactConstraintAuditBlocks=Number(target.completionArtifactConstraintAuditBlocks||0)+1;
