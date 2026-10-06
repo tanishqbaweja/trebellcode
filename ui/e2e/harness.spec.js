@@ -140,7 +140,12 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   const stackSummary={number:42,size:2,position:2,baseRefName:"main",baseSha:"base0"};
   const prItems=stackLayers.map(layer=>({provider:"github",number:layer.number,title:layer.title,state:layer.state,isDraft:false,url:layer.url,headRefName:layer.headRefName,baseRefName:layer.baseRefName,stack:{...stackSummary,position:layer.position}}));
   const stackActions=[];
-  await page.route("**/api/source-control/diagnostics?**",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedProvider:"github",detectedProvider:"github",git:{version:"git version test"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,edit:true,comment:true,editComments:true,review:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,viewedFiles:"host",approveWorkflows:true,revert:true,stacks:true}}})}));
+  let diagnosticsCalls=0,releaseDiagnosticsRefresh=null;
+  await page.route("**/api/source-control/diagnostics?**",async route=>{
+    diagnosticsCalls++;
+    if(diagnosticsCalls===2)await new Promise(resolve=>{releaseDiagnosticsRefresh=resolve});
+    await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedProvider:"github",detectedProvider:"github",git:{version:"git version test"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,edit:true,comment:true,editComments:true,review:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,viewedFiles:"host",approveWorkflows:true,revert:true,stacks:true}}})});
+  });
   await page.route("**/api/source-control/prs?**",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,provider:"github",capabilities:{create:true,edit:true,comment:true,editComments:true,review:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,viewedFiles:"host",approveWorkflows:true,revert:true,stacks:true},items:prItems})}));
   await page.route("**/api/source-control/pr-detail?**",route=>{
     const url=new URL(route.request().url());const number=Number(url.searchParams.get("number"))||2;const layer=stackLayers.find(item=>item.number===number)||stackLayers[1];
@@ -149,6 +154,14 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await page.route("**/api/source-control/pr-viewed?**",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,provider:"github",store:"host",files:[],headSha:"old2"})}));
   await page.route("**/api/source-control/pr-action",async route=>{stackActions.push(route.request().postDataJSON());await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,provider:"github"})})});
   await page.getByTestId("right-panel").locator('.context-panel-tab-scroll button[aria-label="Git"]').click();
+  const sourcePanel=page.getByTestId("right-panel");
+  await expect(sourcePanel.getByText("Git: git version test",{exact:true})).toBeVisible();
+  const refreshClick=sourcePanel.getByRole("button",{name:"Refresh pull requests",exact:true}).click();
+  await expect.poll(()=>diagnosticsCalls).toBe(2);
+  await expect(sourcePanel.getByText("Git: git version test",{exact:true})).toBeVisible();
+  await expect(sourcePanel.getByText("Git: checking…",{exact:true})).toHaveCount(0);
+  releaseDiagnosticsRefresh?.();
+  await refreshClick;
   await expect(page.getByText("stack 2/2",{exact:false})).toBeVisible();
   await page.getByRole("button",{name:/#2 Layer two/}).click();
   await expect(page.getByText("GitHub stack #42")).toBeVisible();

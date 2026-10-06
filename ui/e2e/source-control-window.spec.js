@@ -62,6 +62,45 @@ test("large source control collections mount bounded windows",async({page,reques
   await page.screenshot({path:auditDir+"source-control-windowing-dark-1280x800.png",fullPage:true});
 });
 
+test("source control keeps the last-known Git version visible during diagnostics refresh",async({page,request})=>{
+  test.setTimeout(35_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Source control refresh state"}});
+
+  const gitInfo={isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:"origin/main",status:[],worktrees:[{path:boot.cwd,branch:"main"}],remotes:[{name:"origin",url:"https://github.com/owner/repo.git"}]};
+  const diagnostics={selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,comment:true,review:true,merge:true}}};
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  let diagnosticsCalls=0,resolveSecondStarted,resolveSecondRelease;
+  const secondStarted=new Promise(resolve=>{resolveSecondStarted=resolve});
+  const secondRelease=new Promise(resolve=>{resolveSecondRelease=resolve});
+  await page.route("**/api/git/info?**",route=>json(route,gitInfo));
+  await page.route("**/api/source-control/diagnostics?**",async route=>{
+    diagnosticsCalls++;
+    if(diagnosticsCalls===2){resolveSecondStarted();await secondRelease}
+    return json(route,diagnostics);
+  });
+  await page.route("**/api/source-control/prs?**",route=>json(route,{provider:"github",capabilities:diagnostics.capabilities.github,items:[]}));
+  await page.route("**/api/git/action",route=>json(route,{ok:true,result:{info:gitInfo}}));
+
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const project=page.locator(".project-card").filter({hasText:"Source control refresh state"});
+  await expect(project).toBeVisible();await project.locator(".project-open").click();
+  await expect(page.getByRole("heading",{name:"What do you want to build?"})).toBeVisible();
+  await page.getByTestId("right-panel-toggle").click();
+  const right=page.getByTestId("right-panel");await right.getByRole("button",{name:"Git",exact:true}).click();
+  await expect(right.getByText("Git: git version fixture",{exact:true})).toBeVisible();
+
+  await right.getByRole("button",{name:"Fetch",exact:true}).click();
+  await secondStarted;
+  await expect(right.getByText("Git: git version fixture",{exact:true})).toBeVisible();
+  await expect(right.getByText("Git: checking…",{exact:true})).toHaveCount(0);
+  resolveSecondRelease();
+  await expect(right.getByRole("button",{name:"Fetch",exact:true})).toBeEnabled();
+  expect(diagnosticsCalls).toBe(2);
+});
+
 test("linked thread refresh failures retain last-known-good data for the same pull request",async({page,request})=>{
   test.setTimeout(35_000);
   await request.post("/api/settings",{data:{onboardingComplete:true}});

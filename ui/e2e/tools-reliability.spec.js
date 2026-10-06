@@ -63,7 +63,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
       else if(message.method==="account/read")result={account:{type:"chatgpt",email:"fixture@example.com",planType:"plus"},requiresOpenaiAuth:false};
       else if(message.method==="account/rateLimits/read")result={rateLimits:{}};
       else if(message.method==="account/usage/read")result={summary:{}};
-      else if(message.method==="config/read")result={config:{},layers:[]};
+      else if(message.method==="config/read")result={config:{},layers:[{name:{type:"user",file:"C:\\fixture\\config.toml"},version:"sha256:0123456789abcdef0123456789abcdef",disabledReason:null}]};
       else if(message.method==="configRequirements/read")result={requirements:null};
       else if(message.method==="memory/status")result={v2ConsolidatedThreads:23,v2Ready:true};
       else if(message.method==="server/diagnostics")result={process:{id:123,residentMemoryBytes:4096},gauges:[]};
@@ -84,6 +84,10 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     await page.goto("/");
     await page.getByRole("button",{name:"Tools",exact:true}).click();
     await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible({timeout:10_000});
+    const configLayers=page.locator(".capability-card").filter({hasText:"Configuration layers"}).first();
+    await expect(configLayers).toContainText("User config");
+    await expect(configLayers).toContainText("config.toml");
+    await expect(configLayers).not.toContainText("[object Object]");
     const plugins=page.locator(".capability-card").filter({hasText:"Plugins"}).first();
     await expect(plugins).toContainText("Known Good Plugin");
     failPlugins=true;

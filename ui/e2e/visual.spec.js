@@ -6656,7 +6656,10 @@ test("Codex thread can switch compatible account profiles from the model picker"
       else if(message.method==="plugin/list")result={marketplaces:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
       else if(message.method==="account/read")result={account:{type:"chatgpt",email:"fixture@example.com",planType:"plus"},requiresOpenaiAuth:false};
-      else if(message.method==="config/read")result={config:{},layers:[]};
+      else if(message.method==="config/read")result={config:{},layers:[
+        {name:{type:"user",file:"C:\\Users\\fixture\\.codex\\config.toml",profile:null},version:"sha256:e3dd657637611554b0edf28bc6bba830ddc6bbf6354d5a78724b776a85b06e10",config:{}},
+        {name:{type:"system",file:"C:\\ProgramData\\OpenAI\\Codex\\config.toml"},version:"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",config:{}},
+      ]};
       ws.send(JSON.stringify({id:message.id,result}));
     });
   });
@@ -6751,6 +6754,11 @@ test("Codex thread can switch compatible account profiles from the model picker"
     await page.setViewportSize({width:1600,height:980});
     await page.getByRole("button",{name:"Tools",exact:true}).click();
     await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible();
+    const configCard=page.locator(".capability-card").filter({hasText:"Configuration layers"});
+    await expect(configCard).toContainText("User config");
+    await expect(configCard).toContainText("System config");
+    await expect(configCard).toContainText("config.toml");
+    await expect(configCard).not.toContainText("[object Object]");
     const memoryCard=page.locator(".capability-card").filter({hasText:"Codex memory"});
     await expect(memoryCard).toContainText("23");
     await expect(memoryCard).toContainText("Ready");

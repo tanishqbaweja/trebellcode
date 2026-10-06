@@ -14,6 +14,28 @@ function formatBytes(value){
   do{scaled/=1024;index++}while(scaled>=1024&&index<units.length-1);
   return (scaled>=100?Math.round(scaled):scaled.toFixed(1))+" "+units[index];
 }
+function titleCaseWords(value){
+  return String(value||"").trim().split(/[-_\s]+/).filter(Boolean).map(part=>part.slice(0,1).toUpperCase()+part.slice(1)).join(" ");
+}
+function shortConfigVersion(value){
+  const version=String(value||"").trim();
+  return version.startsWith("sha256:")&&version.length>24?version.slice(0,20)+"…":version;
+}
+function configLayerPresentation(layer,index){
+  const rawName=layer?.name;
+  let label="",file="",profile="";
+  if(typeof rawName==="string")label=rawName.trim();
+  else if(rawName&&typeof rawName==="object"){
+    const type=titleCaseWords(rawName.type);
+    label=type?type+" config":"";
+    file=String(rawName.file||"").trim().replace(/\\/g,"/").split("/").filter(Boolean).at(-1)||"";
+    profile=String(rawName.profile||"").trim();
+  }
+  if(!label)label="Configuration layer "+(index+1);
+  const version=shortConfigVersion(layer?.version);
+  const detail=[profile?"profile "+profile:"",file,version?"version "+version:""].filter(Boolean).join(" · ");
+  return {label,detail:String(layer?.disabledReason||detail||"Loaded")};
+}
 function importResultSummary(results=[],prefix="Importing"){
   let successes=0,failures=0;const types=[];
   for(const result of results||[]){
@@ -524,7 +546,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>}
 
       <Section title="Configuration layers" icon={ShieldCheck} count={data.config?.layers?.length||0}>
-        <div className="capability-list">{(data.config?.layers||[]).map((layer,index)=><div key={String(layer.name)+index}><div><strong>{String(layer.name)}</strong><span>{layer.disabledReason||`version ${layer.version}`}</span></div><em className={layer.disabledReason?"":"ok"}>{layer.disabledReason?"disabled":"active"}</em></div>)}</div>
+        <div className="capability-list">{(data.config?.layers||[]).map((layer,index)=>{const presentation=configLayerPresentation(layer,index);return <div key={presentation.label+":"+String(layer.version||index)}><div><strong>{presentation.label}</strong><span>{presentation.detail}</span></div><em className={layer.disabledReason?"":"ok"}>{layer.disabledReason?"disabled":"active"}</em></div>})}</div>
         {configWarnings.length>0&&<div className="capability-list config-warning-list">{configWarnings.map((warning,index)=><div key={(warning.path||"global")+":"+(warning.summary||index)}><div><strong>{warning.summary||"Configuration warning"}</strong><span>{warning.details||warning.path||"Codex reported a configuration warning."}</span></div><em>warning</em></div>)}</div>}
         {runtimeNotices.length>0&&<div className="capability-list runtime-notice-list">{runtimeNotices.map(notice=><div key={notice.id}><div><strong>{notice.summary}</strong><span>{notice.details||"Reported by the Codex runtime."}</span></div><em>{notice.kind}</em></div>)}</div>}
         {data.config&&<details className="capability-details"><summary>Effective config</summary><pre>{JSON.stringify(data.config.config,null,2)}</pre></details>}

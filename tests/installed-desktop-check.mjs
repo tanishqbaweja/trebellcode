@@ -238,6 +238,7 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
   if(visualDir){
     const captureVisual=async(name)=>{
       await mkdir(visualDir,{recursive:true});
+      await mainPage.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
       const path=join(visualDir,name+".png");
       const capture=await Promise.race([
         mainPage.evaluate(()=>window.trebellDesktop.captureWindow()),
@@ -316,7 +317,10 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     const readmeEntry=workspacePanel.locator("[data-workspace-entry]").filter({hasText:"README.md"}).first();
     await readmeEntry.waitFor({state:"visible",timeout:10000});
     await readmeEntry.click();
-    await workspacePanel.locator(".markdown-preview").filter({hasText:"Trebell release visual fixture"}).waitFor({state:"visible",timeout:10000});
+    const readmePreview=workspacePanel.locator(".markdown-preview").filter({hasText:"Trebell release visual fixture"});
+    await readmePreview.waitFor({state:"visible",timeout:10000});
+    await mainPage.waitForTimeout(300);
+    await readmePreview.waitFor({state:"visible",timeout:10000});
     await assertNoActionError("Workspace panel");
     await captureVisual("03-workspace-files");
 
@@ -325,7 +329,10 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     await sourceControl.click();
     const sourcePanel=mainPage.getByTestId("right-panel");
     await sourcePanel.getByText("src/app.js",{exact:true}).first().waitFor({state:"visible",timeout:10000});
-    await sourcePanel.getByText(/Git:\s*git version/i).waitFor({state:"visible",timeout:30000});
+    const gitVersion=sourcePanel.getByText(/Git:\s*git version/i);
+    await gitVersion.waitFor({state:"visible",timeout:30000});
+    await mainPage.waitForTimeout(300);
+    await gitVersion.waitFor({state:"visible",timeout:10000});
     await assertNoActionError("Source control");
     await captureVisual("04-source-control");
 
@@ -362,6 +369,11 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
       const toolsPage=mainPage.locator(".capabilities-page");
       await toolsPage.getByRole("heading",{name:"Harness capabilities",exact:true}).waitFor({state:"visible",timeout:10000});
       await toolsPage.getByRole("button",{name:"Refresh",exact:true}).first().waitFor({state:"visible",timeout:30000});
+      const configLayers=toolsPage.locator(".capability-card").filter({hasText:"Configuration layers"}).first();
+      await configLayers.waitFor({state:"visible",timeout:30000});
+      await mainPage.waitForTimeout(300);
+      const configLayerText=await configLayers.textContent();
+      if(String(configLayerText||"").includes("[object Object]"))throw new Error("Packaged Tools rendered an object-valued configuration layer name as [object Object].");
     });
 
     await openUtility("Settings","13-settings-general",async()=>{
