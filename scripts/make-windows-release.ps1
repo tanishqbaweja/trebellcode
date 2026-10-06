@@ -146,7 +146,7 @@ function Invoke-UnpackedWindowsBuild([string]$ElectronDist) {
     $UnpackedExe = Join-Path $Output "win-unpacked\Trebell Code.exe"
     try {
       Invoke-Native "npx" @(
-        "electron-builder","--dir","--win","--x64",
+        "electron-builder","--dir","--win","--x64","--publish","never",
         "--config.electronDist=$ElectronDist",
         "--config.directories.output=$Output"
       ) | Out-Host
@@ -166,7 +166,7 @@ function Invoke-WindowsInstallerBuild([string]$ElectronDist) {
     $Output = New-IsolatedPackagingOutput "trebell-release-installer-"
     try {
       Invoke-Native "npx" @(
-        "electron-builder","--win","nsis","--x64",
+        "electron-builder","--win","nsis","--x64","--publish","never",
         "--config.electronDist=$ElectronDist",
         "--config.directories.output=$Output"
       ) | Out-Host

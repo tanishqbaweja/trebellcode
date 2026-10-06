@@ -323,7 +323,12 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     await assertNoActionError("Source control");
     await captureVisual("04-source-control");
 
-    await openUtility("Projects","05-projects",()=>mainPage.getByRole("heading",{name:"Projects",exact:true}).waitFor({state:"visible",timeout:10000}));
+    await openUtility("Projects","05-projects",async()=>{
+      await mainPage.getByRole("heading",{name:"Projects",exact:true}).waitFor({state:"visible",timeout:10000});
+      const projectsPage=mainPage.locator(".projects-page");
+      await projectsPage.waitFor({state:"visible",timeout:10000});
+      await projectsPage.getByText("Release visual fixture",{exact:true}).first().waitFor({state:"visible",timeout:10000});
+    });
     await openUtility("History","06-history",()=>mainPage.getByRole("heading",{name:"Thread history",exact:true}).waitFor({state:"visible",timeout:10000}));
     await openUtility("Usage","07-usage",()=>mainPage.getByRole("heading",{name:"Usage",exact:true}).waitFor({state:"visible",timeout:10000}));
     await openUtility("Environments","08-environments",()=>mainPage.locator(".environments-page h2").filter({hasText:"Environments"}).waitFor({state:"visible",timeout:10000}));
@@ -331,6 +336,8 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
       const panel=mainPage.getByTestId("right-panel");
       await panel.waitFor({state:"visible",timeout:10000});
       await panel.getByRole("button",{name:"Browser",exact:true}).waitFor({state:"visible",timeout:10000});
+      await panel.locator(".preview-page").waitFor({state:"visible",timeout:10000});
+      await panel.getByRole("button",{name:"Open agent browser",exact:true}).waitFor({state:"visible",timeout:10000});
     });
 
     for(const [label,name] of [["Agents","11-agents"],["Tools","12-tools"]]){
@@ -340,7 +347,13 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
         :()=>mainPage.getByRole("heading",{name:"Harness capabilities",exact:true}).waitFor({state:"visible",timeout:10000}));
     }
 
-    await openUtility("Settings","13-settings-general",()=>mainPage.getByRole("heading",{name:"Settings",exact:true}).waitFor({state:"visible",timeout:10000}));
+    await openUtility("Settings","13-settings-general",async()=>{
+      await mainPage.getByRole("heading",{name:"Settings",exact:true}).waitFor({state:"visible",timeout:10000});
+      const settingsPage=mainPage.locator(".settings-page.redesigned-settings");
+      await settingsPage.waitFor({state:"visible",timeout:10000});
+      await settingsPage.locator(".settings-section-head h2").filter({hasText:"General"}).waitFor({state:"visible",timeout:10000});
+      await settingsPage.locator(".about-card").waitFor({state:"visible",timeout:10000});
+    });
     const settingsNav=mainPage.getByRole("navigation",{name:"Settings categories"});
     for(const [label,name] of [
       ["Agents & models","14-settings-agents-models"],
