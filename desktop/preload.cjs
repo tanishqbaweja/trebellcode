@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
   },
   notify: (payload) => ipcRenderer.send("desktop:notify", payload),
   captureScreen: () => ipcRenderer.invoke("desktop:screenshot"),
+  captureWindow: () => ipcRenderer.invoke("desktop:window:screenshot"),
   computer: {
     screenshot: () => ipcRenderer.invoke("computer:screenshot"),
     move: (x,y) => ipcRenderer.invoke("computer:move", {x,y}),

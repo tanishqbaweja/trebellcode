@@ -453,6 +453,14 @@ async function browserScreenshot(){
   return {dataUrl:"data:image/png;base64,"+image.toPNG().toString("base64"),url:browser.webContents.getURL(),title:browser.webContents.getTitle(),width,height};
 }
 
+async function mainWindowScreenshot(){
+  if(!windowRef||windowRef.isDestroyed())throw new Error("Trebell desktop window is unavailable.");
+  const image=await windowRef.capturePage();
+  if(!image||image.isEmpty())throw new Error("Trebell desktop window screenshot is unavailable.");
+  const size=image.getSize();
+  return {dataUrl:"data:image/png;base64,"+image.toPNG().toString("base64"),width:size.width,height:size.height};
+}
+
 async function desktopScreenshot(){
   const display=screen.getPrimaryDisplay();
   const scale=Math.max(1,Number(display.scaleFactor)||1);
@@ -891,6 +899,7 @@ if(!lock){
     return {ok:true,expiresAt:browserRecordingGrantUntil,sourceId:browser.getMediaSourceId()};
   });
   ipcMain.handle("desktop:screenshot",async()=>desktopScreenshot());
+  ipcMain.handle("desktop:window:screenshot",async()=>mainWindowScreenshot());
   ipcMain.handle("computer:screenshot",async()=>desktopScreenshot());
   ipcMain.handle("computer:move",async(_event,payload={})=>computerMove(payload.x,payload.y));
   ipcMain.handle("computer:click",async(_event,payload={})=>computerClick(payload));

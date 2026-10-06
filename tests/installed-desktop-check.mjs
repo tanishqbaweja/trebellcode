@@ -236,23 +236,28 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
 
   const visualAudit=[];
   if(visualDir){
-    const visualCdp=await mainPage.context().newCDPSession(mainPage);
     const captureVisual=async(name)=>{
       await mkdir(visualDir,{recursive:true});
       const path=join(visualDir,name+".png");
-      const capture=await visualCdp.send("Page.captureScreenshot",{format:"png",fromSurface:true,captureBeyondViewport:false});
-      await writeFile(path,Buffer.from(capture.data,"base64"));
+      const capture=await Promise.race([
+        mainPage.evaluate(()=>window.trebellDesktop.captureWindow()),
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error(`Packaged visual screenshot ${name} timed out after 12s.`)),12_000)),
+      ]);
+      if(!capture?.dataUrl?.startsWith("data:image/png;base64,")||!(capture.width>0&&capture.height>0))throw new Error(`Packaged visual screenshot ${name} did not return a valid window PNG.`);
+      await writeFile(path,Buffer.from(capture.dataUrl.split(",",2)[1],"base64"));
       const info=await stat(path);
       if(info.size<8000)throw new Error(`Packaged visual screenshot ${name} is unexpectedly small (${info.size} bytes).`);
-      visualAudit.push({name,path,bytes:info.size});
+      visualAudit.push({name,path,bytes:info.size,width:capture.width,height:capture.height});
+      console.log(`[packaged-visual] ${name} ${info.size} bytes ${capture.width}x${capture.height}`);
     };
     const assertNoActionError=async(label)=>{
       const errors=await mainPage.locator('[data-testid="app-action-error"]:visible,.app-action-error:visible,.sidebar-action-error:visible').allTextContents();
       if(errors.length)throw new Error(`Packaged visual audit surfaced an app error on ${label}: ${errors.join(" · ")}`);
     };
     const openUtility=async(label,name,waitFor=null)=>{
-      const control=mainPage.getByRole("button",{name:label,exact:true});
-      if(await control.count()===0)throw new Error(`Packaged visual audit could not find the ${label} navigation control.`);
+      const control=mainPage.locator(`button.sidebar-utility[aria-label="${label}"]`);
+      const count=await control.count();
+      if(count!==1)throw new Error(`Packaged visual audit expected one ${label} sidebar navigation control, found ${count}.`);
       await control.click();
       if(waitFor)await waitFor();
       else await mainPage.waitForTimeout(400);
@@ -284,9 +289,23 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
 
     await mainPage.getByTestId("terminal-toggle").click();
     await mainPage.getByTestId("drawer").waitFor({state:"visible",timeout:10000});
-    const createTerminal=mainPage.getByRole("button",{name:"Create terminal",exact:true});
-    if(await createTerminal.count())await createTerminal.click();
-    await mainPage.waitForTimeout(800);
+    const releaseTerminal=await mainPage.evaluate(async cwd=>{
+      const response=await fetch("/api/terminal/sessions",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cwd,environmentId:null,cols:120,rows:32,name:"Release terminal"})});
+      const payload=await response.json();
+      if(!response.ok)throw new Error(payload?.error||`Terminal create failed with HTTP ${response.status}`);
+      return payload.session;
+    },visualProjectRoot);
+    if(!releaseTerminal?.id||!releaseTerminal?.running)throw new Error("Packaged terminal API did not create a running PTY session.");
+    await mainPage.evaluate(id=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:id})),releaseTerminal.id);
+    await mainPage.locator(".terminal-pane").waitFor({state:"visible",timeout:10000});
+    const terminalInput=mainPage.locator('.terminal-pane input[placeholder="Type a command…"]');
+    await terminalInput.fill("echo TREBELL_RELEASE_TERMINAL_OK");
+    await mainPage.locator(".terminal-pane").getByRole("button",{name:"Send",exact:true}).click();
+    await mainPage.locator(".terminal-screen").filter({hasText:"TREBELL_RELEASE_TERMINAL_OK"}).waitFor({state:"visible",timeout:10000});
+    await terminalInput.fill("exit");
+    await mainPage.locator(".terminal-pane").getByRole("button",{name:"Send",exact:true}).click();
+    await terminalInput.waitFor({state:"visible",timeout:10000});
+    await mainPage.waitForFunction(()=>document.querySelector('.terminal-pane input')?.disabled===true,null,{timeout:10000});
     await assertNoActionError("Terminal");
     await captureVisual("02-terminal");
     await mainPage.getByTestId("terminal-toggle").click();
@@ -307,12 +326,18 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     await openUtility("Projects","05-projects",()=>mainPage.getByRole("heading",{name:"Projects",exact:true}).waitFor({state:"visible",timeout:10000}));
     await openUtility("History","06-history",()=>mainPage.getByRole("heading",{name:"Thread history",exact:true}).waitFor({state:"visible",timeout:10000}));
     await openUtility("Usage","07-usage",()=>mainPage.getByRole("heading",{name:"Usage",exact:true}).waitFor({state:"visible",timeout:10000}));
-    await openUtility("Environments","08-environments",()=>mainPage.getByText("Environments",{exact:true}).first().waitFor({state:"visible",timeout:10000}));
-    await openUtility("Browser","10-browser-panel");
+    await openUtility("Environments","08-environments",()=>mainPage.locator(".environments-page h2").filter({hasText:"Environments"}).waitFor({state:"visible",timeout:10000}));
+    await openUtility("Browser","10-browser-panel",async()=>{
+      const panel=mainPage.getByTestId("right-panel");
+      await panel.waitFor({state:"visible",timeout:10000});
+      await panel.getByRole("button",{name:"Browser",exact:true}).waitFor({state:"visible",timeout:10000});
+    });
 
     for(const [label,name] of [["Agents","11-agents"],["Tools","12-tools"]]){
       const control=mainPage.getByRole("button",{name:label,exact:true});
-      if(await control.count())await openUtility(label,name);
+      if(await control.count())await openUtility(label,name,label==="Agents"
+        ?()=>mainPage.getByTestId("right-panel").getByRole("button",{name:"Agents",exact:true}).waitFor({state:"visible",timeout:10000})
+        :()=>mainPage.getByRole("heading",{name:"Harness capabilities",exact:true}).waitFor({state:"visible",timeout:10000}));
     }
 
     await openUtility("Settings","13-settings-general",()=>mainPage.getByRole("heading",{name:"Settings",exact:true}).waitFor({state:"visible",timeout:10000}));
