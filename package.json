@@ -51,7 +51,7 @@
     "test:external-harnesses:live": "node --env-file-if-exists=.env scripts/live-external-harness-smoke.mjs --live",
     "test:codex:live": "node --env-file-if-exists=.env scripts/live-codex-harness-smoke.mjs --live",
     "bench:terminal:bundle": "node scripts/build-harbor-native-agent.mjs",
-    "bench:terminal:health": "node scripts/terminal-bench-event-health.mjs",
+    "bench:terminal:health": "node scripts/terminal-bench-watchdog.mjs",
     "bench:terminal:tb4:live": "node --env-file-if-exists=.env scripts/live-terminal-bench-harness-comparison.mjs --live",
     "bench:terminal:run": "node --env-file-if-exists=.env scripts/run-terminal-bench.mjs --live",
     "bench:terminal:summarize": "node scripts/summarize-harbor-native-run.mjs",

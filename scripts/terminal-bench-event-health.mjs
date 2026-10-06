@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -169,20 +169,13 @@ async function stdinText(){
 
 async function main(){
   const pairArg=process.argv.find(value=>value.startsWith("--pair="));
-  const sampleArg=process.argv.find(value=>value.startsWith("--sample-ms="));
-  const sampleMs=Math.max(0,Math.min(60_000,Number(sampleArg?.slice(12)||5000)));
   if(pairArg){
+    const sampleArg=process.argv.find(value=>value.startsWith("--sample-ms="));
+    const sampleMs=Math.max(0,Math.min(60_000,Number(sampleArg?.slice(12)||5000)));
     process.stdout.write(JSON.stringify(await pairHealth(pairArg.slice(7),sampleMs),null,2)+"\n");
     return;
   }
   const kindArg=process.argv.find(value=>value.startsWith("--kind=")),fileArg=process.argv.find(value=>value.startsWith("--file="));
-  if(!kindArg&&!fileArg){
-    const root=resolve(fileURLToPath(new URL("..",import.meta.url))),pointerPath=join(root,".harbor-validation","terminal-bench-latest.json");
-    const pointer=JSON.parse(String(await readFile(pointerPath,"utf8")).replace(/^\uFEFF/,""));
-    if(!pointer?.reportPath)throw new Error("Latest Terminal-Bench pointer has no reportPath.");
-    process.stdout.write(JSON.stringify(await pairHealth(pointer.reportPath,sampleMs),null,2)+"\n");
-    return;
-  }
   const kind=String(kindArg?.slice(7)||"").trim().toLowerCase();
   if(!["native","codex"].includes(kind))throw new Error("--kind must be native or codex");
   const text=fileArg?await readFile(resolve(fileArg.slice(7)),"utf8"):await stdinText();
