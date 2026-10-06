@@ -9,6 +9,14 @@ export function createNativeStrategyMetrics(){
     globalConstraintPlanningCheckpoints:0,
     globalConstraintCommitBlocks:0,
     globalConstraintCommitAudits:0,
+    batchEvidencePrecommitGateRequests:0,
+    batchEvidencePrecommitGateChecks:0,
+    batchEvidencePrecommitGateBlocks:0,
+    batchEvidencePrecommitGateRetries:0,
+    batchEvidencePrecommitGateOutputCapEvents:0,
+    batchEvidencePrecommitGateOutputCapRetries:0,
+    batchEvidencePrecommitGateOutputTokenBudget:0,
+    batchEvidencePostcommitGateSkips:0,
     batchEvidenceCommitValidationCarryovers:0,
     implementationPressureEvents:0,
     actionOutputCaps:0,
@@ -76,6 +84,18 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.progress.global_constraint_planning_checkpoint")target.globalConstraintPlanningCheckpoints=Number(target.globalConstraintPlanningCheckpoints||0)+1;
   else if(name==="native.progress.global_constraint_commit_blocked")target.globalConstraintCommitBlocks=Number(target.globalConstraintCommitBlocks||0)+1;
   else if(name==="native.progress.global_constraint_commit_audited")target.globalConstraintCommitAudits=Number(target.globalConstraintCommitAudits||0)+1;
+  else if(name==="native.progress.batch_evidence_precommit_gate_requested")target.batchEvidencePrecommitGateRequests=Number(target.batchEvidencePrecommitGateRequests||0)+1;
+  else if(name==="native.progress.batch_evidence_precommit_gate"){
+    target.batchEvidencePrecommitGateChecks=Number(target.batchEvidencePrecommitGateChecks||0)+1;
+    if(event?.status!=="completed")target.batchEvidencePrecommitGateBlocks=Number(target.batchEvidencePrecommitGateBlocks||0)+1;
+  }
+  else if(name==="native.progress.batch_evidence_precommit_gate_retry")target.batchEvidencePrecommitGateRetries=Number(target.batchEvidencePrecommitGateRetries||0)+1;
+  else if(name==="native.progress.batch_evidence_precommit_gate_output_cap"){
+    target.batchEvidencePrecommitGateOutputCapEvents=Number(target.batchEvidencePrecommitGateOutputCapEvents||0)+1;
+    if(data?.retry===true)target.batchEvidencePrecommitGateOutputCapRetries=Number(target.batchEvidencePrecommitGateOutputCapRetries||0)+1;
+    target.batchEvidencePrecommitGateOutputTokenBudget=Number(target.batchEvidencePrecommitGateOutputTokenBudget||0)+Math.max(0,Number(data?.maxOutputTokens||0));
+  }
+  else if(name==="native.completion.batch_evidence_gate_skipped")target.batchEvidencePostcommitGateSkips=Number(target.batchEvidencePostcommitGateSkips||0)+1;
   else if(name==="native.progress.batch_evidence_commit_validation_carried")target.batchEvidenceCommitValidationCarryovers=Number(target.batchEvidenceCommitValidationCarryovers||0)+1;
   else if(name==="native.progress.implementation_pressure")target.implementationPressureEvents=Number(target.implementationPressureEvents||0)+1;
   else if(name==="native.model.action_output_cap")target.actionOutputCaps=Number(target.actionOutputCaps||0)+1;
