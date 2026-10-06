@@ -66,15 +66,26 @@ function Stop-GeneratedDesktopProcesses {
 }
 
 function Stop-DesktopProcessTree($Process) {
-  if ($Process -and -not $Process.HasExited) {
-    if ($env:OS -eq "Windows_NT") {
-      & taskkill.exe /PID $Process.Id /T /F *> $null
-    } else {
-      Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
-    }
-  }
   if ($Process) {
+    try {
+      if (-not $Process.HasExited) {
+        if ($env:OS -eq "Windows_NT") {
+          # The CDP client can close Electron just before taskkill reaches a
+          # child. Treat "already gone" as successful cleanup, not a release
+          # failure, then fall back to the parent handle if anything remains.
+          try { & taskkill.exe /PID $Process.Id /T /F *> $null } catch {}
+        } else {
+          Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        }
+      }
+    } catch {}
     try { $null = $Process.WaitForExit(5000) } catch {}
+    try {
+      if (-not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        $null = $Process.WaitForExit(2000)
+      }
+    } catch {}
   }
   # Electron may release its single-instance lock and listener handles just
   # after the parent reports exit. Keep this teardown bounded but explicit.
@@ -290,29 +301,41 @@ try {
     Stop-DesktopProcessTree $DesktopProcess
     Stop-GeneratedDesktopProcesses
     # The second packaged smoke gets fresh listeners so a late-closing socket
-    # from the first instance cannot masquerade as a runtime-start failure.
-    $GuiPort = Get-FreeTcpPort
-    $AppPort = Get-FreeTcpPort
-    $CdpPort = Get-FreeTcpPort
-    $FixturePort = Get-FreeTcpPort
-    $env:TREBELL_GUI_PORT = [string]$GuiPort
-    $env:TREBELL_APP_SERVER_PORT = [string]$AppPort
-    $env:TREBELL_CDP_URL = "http://127.0.0.1:$CdpPort"
-    $env:TREBELL_BROWSER_FIXTURE_PORT = [string]$FixturePort
-    $DesktopProcess = Start-Process -FilePath $UnpackedExe -ArgumentList "--remote-debugging-port=$CdpPort" -PassThru
+    # from the first instance cannot masquerade as a runtime-start failure. A
+    # Windows single-instance lock can outlive the first process by a fraction
+    # of a second, so allow one completely fresh relaunch before failing closed.
     $AgentRuntimeReady = $false
-    for ($Attempt = 0; $Attempt -lt 120; $Attempt++) {
-      if ($DesktopProcess.HasExited) { throw "Fresh packaged Trebell Code exited before model-driven validation could connect." }
-      try {
-        $Boot = Invoke-RestMethod -Uri "http://127.0.0.1:$GuiPort/api/bootstrap" -TimeoutSec 1
-        if ($Boot.appServerReady -eq $true) {
-          $AgentRuntimeReady = $true
-          break
+    for ($LaunchAttempt = 1; $LaunchAttempt -le 2 -and -not $AgentRuntimeReady; $LaunchAttempt++) {
+      $GuiPort = Get-FreeTcpPort
+      $AppPort = Get-FreeTcpPort
+      $CdpPort = Get-FreeTcpPort
+      $FixturePort = Get-FreeTcpPort
+      $env:TREBELL_GUI_PORT = [string]$GuiPort
+      $env:TREBELL_APP_SERVER_PORT = [string]$AppPort
+      $env:TREBELL_CDP_URL = "http://127.0.0.1:$CdpPort"
+      $env:TREBELL_BROWSER_FIXTURE_PORT = [string]$FixturePort
+      $DesktopProcess = Start-Process -FilePath $UnpackedExe -ArgumentList "--remote-debugging-port=$CdpPort" -PassThru
+      for ($Attempt = 0; $Attempt -lt 120; $Attempt++) {
+        if ($DesktopProcess.HasExited) { break }
+        try {
+          $Boot = Invoke-RestMethod -Uri "http://127.0.0.1:$GuiPort/api/bootstrap" -TimeoutSec 1
+          if ($Boot.appServerReady -eq $true) {
+            $AgentRuntimeReady = $true
+            break
+          }
+        } catch {}
+        Start-Sleep -Milliseconds 250
+      }
+      if (-not $AgentRuntimeReady) {
+        Stop-DesktopProcessTree $DesktopProcess
+        Stop-GeneratedDesktopProcesses
+        if ($LaunchAttempt -lt 2) {
+          Write-Warning "Fresh packaged Trebell launch attempt $LaunchAttempt did not become ready; retrying once with new ports."
+          Start-Sleep -Seconds 1
         }
-      } catch {}
-      Start-Sleep -Milliseconds 250
+      }
     }
-    if (-not $AgentRuntimeReady) { throw "Fresh packaged Trebell runtime did not become ready for model-driven validation." }
+    if (-not $AgentRuntimeReady) { throw "Fresh packaged Trebell runtime did not become ready for model-driven validation after two launch attempts." }
     Write-Host "Running packaged model-driven harness validation..." -ForegroundColor Cyan
     Invoke-Native "node" @("tests/installed-agent-check.mjs","http://127.0.0.1:$GuiPort")
   }
