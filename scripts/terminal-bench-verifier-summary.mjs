@@ -19,15 +19,31 @@ export function normalizeCtrfVerifierSummary(value={}){
   };
 }
 
+export function normalizeTraceResultsVerifierSummary(value={}){
+  const tests=nonnegativeInteger(value?.total_cases),passed=nonnegativeInteger(value?.passed_cases);
+  if(tests<=0||passed>tests)return null;
+  return {tests,passed,failed:tests-passed,pending:0,skipped:0,other:0};
+}
+
+async function readVerifierSummary(trialDir){
+  try{
+    const parsed=JSON.parse(await readFile(join(trialDir,"verifier","ctrf.json"),"utf8")),summary=normalizeCtrfVerifierSummary(parsed);
+    if(summary)return summary;
+  }catch{}
+  try{
+    const parsed=JSON.parse(await readFile(join(trialDir,"verifier","trace_results.json"),"utf8")),summary=normalizeTraceResultsVerifierSummary(parsed);
+    if(summary)return summary;
+  }catch{}
+  return null;
+}
+
 export async function readJobVerifierSummary(outputRoot,jobName){
   let entries=[];try{entries=await readdir(join(outputRoot,jobName),{withFileTypes:true})}catch{return null}
   const summaries=[];
   for(const entry of entries){
     if(!entry.isDirectory())continue;
-    try{
-      const parsed=JSON.parse(await readFile(join(outputRoot,jobName,entry.name,"verifier","ctrf.json"),"utf8")),summary=normalizeCtrfVerifierSummary(parsed);
-      if(summary)summaries.push(summary);
-    }catch{}
+    const summary=await readVerifierSummary(join(outputRoot,jobName,entry.name));
+    if(summary)summaries.push(summary);
   }
   if(!summaries.length)return null;
   const total={trials:summaries.length,tests:0,passed:0,failed:0,pending:0,skipped:0,other:0};
@@ -36,8 +52,6 @@ export async function readJobVerifierSummary(outputRoot,jobName){
 }
 
 export async function readTrialVerifierSummary(trialDir){
-  try{
-    const parsed=JSON.parse(await readFile(join(trialDir,"verifier","ctrf.json"),"utf8")),summary=normalizeCtrfVerifierSummary(parsed);
-    return summary?{trials:1,...summary}:null;
-  }catch{return null}
+  const summary=await readVerifierSummary(trialDir);
+  return summary?{trials:1,...summary}:null;
 }

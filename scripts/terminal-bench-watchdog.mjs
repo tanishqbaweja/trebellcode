@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recoverNativeEventEvidence } from "./terminal-bench-native-evidence.mjs";
 import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs";
+import { readJobVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
 
 const root=resolve(fileURLToPath(new URL("..",import.meta.url))),validationDir=join(root,".harbor-validation"),jobsDir=join(root,".harbor-jobs");
 const watch=process.argv.includes("--watch"),intervalMs=Math.max(2000,Number(process.env.TREBELL_WATCHDOG_INTERVAL_MS||5000));
@@ -30,6 +31,10 @@ async function laneState(lane,report,recovered=null){
   if(effectiveJob&&recoveredLane?.checks){
     effectiveJob.recoveredVerifierChecks=recoveredLane.checks;
     effectiveJob.verifierRecovered=true;
+  }
+  if(effectiveJob&&!effectiveJob.verifierChecks&&!effectiveJob.recoveredVerifierChecks){
+    const checks=await readJobVerifierSummary(jobsDir,lane.jobName);
+    if(checks)effectiveJob.verifierChecks=checks;
   }
   return {...lane,activity,job:effectiveJob,liveEvidence:Boolean(liveEvidence&&!job)};
 }

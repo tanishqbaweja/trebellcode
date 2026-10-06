@@ -43,7 +43,8 @@ test("native agent completes a plain model turn without inventing tool work",asy
   });
   assert.equal(requests.length,1);assert.equal(result.text,"hello back");assert.equal(result.modelTurns,1);assert.equal(result.toolCalls,0);
   assert.deepEqual(result.usage,{inputTokens:3,outputTokens:2,totalTokens:5,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0});
-  assert.deepEqual(events.map(event=>event.name),["native.turn.started","native.model.requested","native.model.completed","native.turn.completed"]);
+  assert.deepEqual(events.map(event=>event.name),["native.turn.started","native.model.action_output_cap","native.model.requested","native.model.completed","native.turn.completed"]);
+  const cap=events.find(event=>event.name==="native.model.action_output_cap");assert.equal(cap.data?.reason,"ordinary_action_ceiling");assert.equal(cap.data?.maxOutputTokens,32768);
   const requested=events.find(event=>event.name==="native.model.requested"),completed=events.find(event=>event.name==="native.model.completed");
   assert.equal(requested.data.inferenceId,"native:inference:1");assert.equal(completed.data.inferenceId,requested.data.inferenceId);
   assert.equal(typeof requested.data.requestMetrics.toolSchemaHash,"string");assert.equal(typeof requested.data.requestMetrics.stablePrefixHash,"string");
@@ -110,6 +111,32 @@ test("native agent injects one implementation checkpoint after prolonged read-on
   assert.equal(events.filter(event=>event.name==="native.progress.implementation_call_blocked").length,1);
 });
 
+test("native bounds ordinary action output and relaxes once only when the cap prevents action",async()=>{
+  const requests=[],events=[],executed=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",reasoningEffort:"max",messages:[{role:"user",content:"Inspect the current service status using the terminal and report what you find."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],maxModelTurns:5,maxToolCalls:10,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn===1){
+        assert.equal(request.maxOutputTokens,32768);assert.equal(request.reasoningEffort,"max");
+        return {text:"",toolCalls:[],finishReason:"incomplete",raw:{incomplete_details:{reason:"max_output_tokens"}},usage:{outputTokens:32768,reasoningOutputTokens:32768}};
+      }
+      if(turn===2){
+        assert.equal(request.maxOutputTokens,null);assert.equal(request.reasoningEffort,"max");
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/bounded action-turn output allowance was reached/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"status",namespace:"trebell_terminal",name:"run",arguments:'{"command":"status"}'}],finishReason:"tool_calls",usage:{}};
+      }
+      assert.equal(request.maxOutputTokens,32768);assert.equal(request.reasoningEffort,"max");
+      return {text:"service is healthy",toolCalls:[],finishReason:"completed",usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return {success:true,exitCode:0,stdout:"healthy"}},
+  });
+  assert.equal(result.text,"service is healthy");assert.deepEqual(executed,["status"]);
+  const ordinaryCaps=events.filter(event=>event.name==="native.model.action_output_cap"&&event.data?.reason==="ordinary_action_ceiling");assert.equal(ordinaryCaps.length,2);assert.deepEqual(ordinaryCaps.map(event=>event.data?.modelTurn),[1,3]);
+  const relaxed=events.filter(event=>event.name==="native.model.action_output_cap_relaxed");assert.equal(relaxed.length,1);assert.equal(relaxed[0].data?.reason,"ordinary_action_ceiling");
+});
+
 test("native bounds implementation-pressure output while preserving max reasoning",async()=>{
   const requests=[],events=[];let turn=0;
   const result=await runNativeAgentTurn({
@@ -133,7 +160,7 @@ test("native bounds implementation-pressure output while preserving max reasonin
   });
   assert.equal(result.text,"implemented");
   assert.equal(requests[4].messages.some(message=>message.role==="developer"&&/progress checkpoint/i.test(String(message.content||""))),true);
-  assert.equal(events.filter(event=>event.name==="native.model.action_output_cap").length,1);
+  assert.equal(events.filter(event=>event.name==="native.model.action_output_cap"&&event.data?.reason==="implementation_pressure").length,1);
   assert.equal(events.filter(event=>event.name==="native.model.action_output_cap_relaxed").length,0);
 });
 
@@ -164,8 +191,8 @@ test("native relaxes an action output cap once when the provider hits the limit 
     executeTool:async call=>call.namespace==="trebell_workspace"?{success:true,path:"src/feature.mjs",size:27}:{success:true,matches:["evidence"]},
   });
   assert.equal(result.text,"implemented");
-  assert.equal(events.filter(event=>event.name==="native.model.action_output_cap").length,1);
-  assert.equal(events.filter(event=>event.name==="native.model.action_output_cap_relaxed").length,1);
+  assert.equal(events.filter(event=>event.name==="native.model.action_output_cap"&&event.data?.reason==="implementation_pressure").length,1);
+  assert.equal(events.filter(event=>event.name==="native.model.action_output_cap_relaxed"&&event.data?.reason==="implementation_pressure").length,1);
   assert.equal(requests.length,7);
 });
 
@@ -244,6 +271,34 @@ test("native injects an early global-constraint checkpoint for solver-style plan
   assert.equal(requests[3].messages.some(message=>message.role==="developer"&&/global-constraint planning checkpoint/i.test(String(message.content||""))),true);
   assert.match(String(requests[3].messages.find(message=>message.role==="developer"&&/global-constraint planning checkpoint/i.test(String(message.content||"")))?.content||""),/before any persistent writeback or hard-to-reverse side effect/i);
   assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_planning_checkpoint").length,1);
+});
+
+test("native stages and audits multi-record evidence decisions before persistent submission",async()=>{
+  const events=[],executed=[],requests=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:9,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Review every claim using the policy records and evidence history, decide approve or deny for each claim, then update the remote system through the API with all decisions."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn<=3)return {text:"",toolCalls:[{id:`probe-${turn}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`probe-${turn}.mjs`]})}],usage:{}};
+      if(turn===4){
+        const checkpoint=request.messages.find(message=>message.role==="developer"&&/evidence-adjudication planning checkpoint/i.test(String(message.content||"")));assert.ok(checkpoint);
+        assert.match(String(checkpoint.content),/authority, specificity, and chronology/i);assert.match(String(checkpoint.content),/evidence or citation references/i);
+        return {text:"",toolCalls:[{id:"submit-too-early",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})}],usage:{}};
+      }
+      if(turn===5){
+        const blocked=request.messages.find(message=>message.role==="tool"&&message.toolCallId==="submit-too-early");assert.ok(blocked);assert.match(String(blocked.content),/evidence-adjudication commit guard/i);assert.match(String(blocked.content),/source authority, specificity, and chronology/i);
+        return {text:"",toolCalls:[{id:"audit-all-decisions",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["audit-all-decisions.mjs"]})}],usage:{}};
+      }
+      if(turn===6)return {text:"",toolCalls:[{id:"submit-after-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})}],usage:{}};
+      return {text:"all decisions audited and submitted",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return {success:true,exitCode:0,stdout:call.id==="audit-all-decisions"?"all staged decisions pass precedence and reference audit":"ok"}},
+  });
+  assert.equal(result.text,"all decisions audited and submitted");assert.equal(executed.includes("submit-too-early"),false);assert.deepEqual(executed,["probe-1","probe-2","probe-3","audit-all-decisions","submit-after-audit"]);
+  const checkpoint=events.find(event=>event.name==="native.progress.global_constraint_planning_checkpoint");assert.ok(checkpoint);assert.equal(checkpoint.data?.mode,"evidence_adjudication");
+  assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_blocked").length,1);assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_audited").length,1);
 });
 
 test("native does not inject the global-constraint planning checkpoint for ordinary performance optimization",async()=>{
@@ -830,7 +885,7 @@ test("native empty control-gate response uses the gate retry instead of final-an
       if(turns===2)return {text:"Done.",toolCalls:[],usage:{}};
       if(turns===3){
         assert.equal(request.toolChoice,"none");
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,12288);
         assert.equal(request.reasoningEffort,"max");
         assert.equal(request.responseJsonSchema?.name,"trebell_completion_gate");
         assert.equal(request.responseJsonSchema?.strict,true);
@@ -853,7 +908,7 @@ test("native empty control-gate response uses the gate retry instead of final-an
   assert.equal(result.text,"Done.");
   assert.equal(turns,4);
   assert.equal(events.filter(event=>event.name==="native.completion.gate_retry").length,1);
-  const gateCaps=events.filter(event=>event.name==="native.completion.gate_output_cap");assert.deepEqual(gateCaps.map(event=>[event.data?.maxOutputTokens,event.data?.retry,event.data?.reasoningEffort]),[[8192,false,"max"],[16384,true,"max"]]);
+  const gateCaps=events.filter(event=>event.name==="native.completion.gate_output_cap");assert.deepEqual(gateCaps.map(event=>[event.data?.maxOutputTokens,event.data?.retry,event.data?.reasoningEffort]),[[12288,false,"max"],[16384,true,"max"]]);
   assert.equal(events.some(event=>event.name==="native.model.empty_completion"),false);
   assert.equal(events.some(event=>event.name==="native.turn.blocked"&&event.data?.reason==="native_empty_completion"),false);
 });
@@ -3007,7 +3062,7 @@ test("native localizes residual structure after an abstraction repair before reo
       if(turns===11){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,12288);
         assert.equal(request.responseJsonSchema?.name,"trebell_abstraction_verification_gate");
         assert.equal(request.reasoningEffort,"max");
         assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification gate/i.test(String(message.content||""))));
@@ -3026,7 +3081,7 @@ test("native localizes residual structure after an abstraction repair before reo
       if(turns===14){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,12288);
         assert.equal(request.reasoningEffort,"max");
         return {text:'{"status":"verified","reason":"The independent replica invariant now matches the raw source on every checked rank."}',toolCalls:[],usage:{}};
       }
@@ -3070,6 +3125,24 @@ test("native localizes residual structure after an abstraction repair before reo
   const residualCheckpoints=events.filter(event=>event.name==="native.progress.residual_structure_checkpoint");assert.equal(residualCheckpoints.length,2);assert.equal(residualCheckpoints[0].data?.descendantRevision,false);assert.equal(residualCheckpoints[1].data?.descendantRevision,true);
 });
 
+test("native semantic completion gate audits multi-record evidence authority and references only for adjudication tasks",async()=>{
+  let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"openai",reasoningEffort:"max",semanticCompletionGate:true,maxModelTurns:4,maxToolCalls:4,
+    messages:[{role:"user",content:"Review every claim using policy records and evidence history, decide approve or deny for each claim, then update the remote system through the API with all decisions."}],tools:[],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"All record-level decisions have been prepared and submitted.",toolCalls:[],usage:{}};
+      assert.equal(request.toolChoice,"none");assert.equal(request.maxOutputTokens,12288);assert.equal(request.reasoningEffort,"max");
+      const gate=request.messages.find(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));assert.ok(gate);
+      assert.match(String(gate.content),/multiple record-level decisions/i);assert.match(String(gate.content),/source authority, specificity, and chronology/i);assert.match(String(gate.content),/action\/outcome, the controlling reason or basis, and any required evidence\/citation references/i);assert.match(String(gate.content),/successful submission, receipt, persistence, or row count/i);
+      return {text:'{"status":"complete","unresolved":[],"reason":"Every record was audited against the controlling evidence."}',toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({success:true}),
+  });
+  assert.equal(turns,2);assert.equal(result.text,"All record-level decisions have been prepared and submitted.");
+});
+
 test("native semantic completion gate rejects unsupported completion without task-specific wording",async()=>{
   const requests=[],events=[],executed=[];let providerCalls=0;
   const result=await runNativeAgentTurn({
@@ -3087,7 +3160,7 @@ test("native semantic completion gate rejects unsupported completion without tas
       if(providerCalls===3){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,12288);
         assert.equal(request.reasoningEffort,"max");
         const gate=request.messages.find(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));
         assert.ok(gate);
@@ -3095,6 +3168,7 @@ test("native semantic completion gate rejects unsupported completion without tas
         assert.match(String(gate.content),/optimization or priority objectives/i);
         assert.match(String(gate.content),/pre-existing public symbols/i);
         assert.match(String(gate.content),/cleaner replacement abstraction is not by itself evidence of compatibility/i);
+        assert.doesNotMatch(String(gate.content),/multiple record-level decisions/i,"unrelated latency tasks should not pay for the evidence-adjudication audit");
         return {text:'{"status":"incomplete","unresolved":["p95 latency is still above the requested ceiling"],"reason":"The latest measured p95 is 141 ms, so the requested performance target is not satisfied."}',toolCalls:[],usage:{}};
       }
       if(providerCalls===4){
@@ -3107,7 +3181,7 @@ test("native semantic completion gate rejects unsupported completion without tas
       }
       if(providerCalls===5)return {text:"The implementation is updated and the latest measured p95 is 84 ms, below the requested 100 ms ceiling.",toolCalls:[],usage:{}};
       if(providerCalls===6){
-        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.maxOutputTokens,12288);
         assert.equal(request.reasoningEffort,"max");
         return {text:'{"status":"complete","unresolved":[],"reason":"The requested workspace change exists and the latest measured p95 is 84 ms, satisfying the stated ceiling."}',toolCalls:[],usage:{}};
       }

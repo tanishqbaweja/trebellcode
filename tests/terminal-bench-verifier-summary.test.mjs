@@ -3,11 +3,17 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeCtrfVerifierSummary, readJobVerifierSummary, readTrialVerifierSummary } from "../scripts/terminal-bench-verifier-summary.mjs";
+import { normalizeCtrfVerifierSummary, normalizeTraceResultsVerifierSummary, readJobVerifierSummary, readTrialVerifierSummary } from "../scripts/terminal-bench-verifier-summary.mjs";
 
 test("Terminal-Bench verifier summary normalizes CTRF counts",()=>{
   assert.deepEqual(normalizeCtrfVerifierSummary({results:{summary:{tests:6,passed:5,failed:1,pending:0,skipped:0,other:0}}}),{tests:6,passed:5,failed:1,pending:0,skipped:0,other:0});
   assert.equal(normalizeCtrfVerifierSummary({results:{}}),null);
+});
+
+test("Terminal-Bench verifier summary normalizes trace-results counts",()=>{
+  assert.deepEqual(normalizeTraceResultsVerifierSummary({total_cases:20,passed_cases:15,partial_score:.75}),{tests:20,passed:15,failed:5,pending:0,skipped:0,other:0});
+  assert.equal(normalizeTraceResultsVerifierSummary({total_cases:0,passed_cases:0}),null);
+  assert.equal(normalizeTraceResultsVerifierSummary({total_cases:3,passed_cases:4}),null);
 });
 
 test("Terminal-Bench verifier summary aggregates completed trial CTRF files",async()=>{
@@ -16,8 +22,18 @@ test("Terminal-Bench verifier summary aggregates completed trial CTRF files",asy
     for(const [trial,summary] of [["trial-a",{tests:6,passed:5,failed:1,pending:0,skipped:0,other:0}],["trial-b",{tests:4,passed:3,failed:0,pending:1,skipped:0,other:0}]]){
       const verifier=join(root,job,trial,"verifier");await mkdir(verifier,{recursive:true});await writeFile(join(verifier,"ctrf.json"),JSON.stringify({results:{summary}}));
     }
-    await mkdir(join(root,job,"trial-without-ctrf"),{recursive:true});
-    assert.deepEqual(await readJobVerifierSummary(root,job),{trials:2,tests:10,passed:8,failed:1,pending:1,skipped:0,other:0});
+    const traceVerifier=join(root,job,"trial-trace","verifier");await mkdir(traceVerifier,{recursive:true});await writeFile(join(traceVerifier,"trace_results.json"),JSON.stringify({total_cases:20,passed_cases:15,partial_score:.75}));
+    await mkdir(join(root,job,"trial-without-verifier-summary"),{recursive:true});
+    assert.deepEqual(await readJobVerifierSummary(root,job),{trials:3,tests:30,passed:23,failed:6,pending:1,skipped:0,other:0});
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Terminal-Bench verifier summary reads a trace-results trial directly when CTRF is absent",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-trace-trial-"));
+  try{
+    const verifier=join(root,"verifier");await mkdir(verifier,{recursive:true});
+    await writeFile(join(verifier,"trace_results.json"),JSON.stringify({total_cases:20,passed_cases:19,partial_score:.95}));
+    assert.deepEqual(await readTrialVerifierSummary(root),{trials:1,tests:20,passed:19,failed:1,pending:0,skipped:0,other:0});
   }finally{await rm(root,{recursive:true,force:true})}
 });
 

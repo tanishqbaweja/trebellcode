@@ -527,6 +527,8 @@ test("Terminal-Bench watchdog persists latest and timestamped history snapshots"
   assert.match(source,/apiEquivalentCostIsLowerBound/);
   assert.match(source,/lower bound because one or more provider responses omitted token usage/);
   assert.match(source,/recoverNativeEventEvidence\(jobsDir,lane\.jobName,\{serviceTier:report\?\.serviceTier\|\|"standard"\}\)/);
+  assert.match(source,/readJobVerifierSummary\(jobsDir,lane\.jobName\)/);
+  assert.match(source,/!effectiveJob\.verifierChecks&&!effectiveJob\.recoveredVerifierChecks/);
 });
 
 test("Pinned Harbor Codex adapter pins the official version and uses Windows-safe persisted sessions",async()=>{
