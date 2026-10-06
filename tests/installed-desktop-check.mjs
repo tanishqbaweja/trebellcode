@@ -292,7 +292,7 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     await mainPage.getByTestId("terminal-toggle").click();
 
     await mainPage.getByTestId("right-panel-toggle").click();
-    await mainPage.locator(".right-panel").waitFor({state:"visible",timeout:10000});
+    await mainPage.getByTestId("right-panel").waitFor({state:"visible",timeout:10000});
     await mainPage.waitForTimeout(500);
     await assertNoActionError("Workspace panel");
     await captureVisual("03-workspace-files");
