@@ -3167,9 +3167,20 @@ test("native evidence-then-edit recovery can diagnose, repair analysis, and pers
         return {text:"",toolCalls:[{id:"diagnose",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["diagnose.mjs"]}'}],usage:{}};
       }
       if(turns===5)return {text:"",toolCalls:[{id:"repair-analysis",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"analysis.mjs","old_text":"candidate","new_text":"corrected"}'}],usage:{}};
-      if(turns===6)return {text:"",toolCalls:[{id:"verify-analysis",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["analysis.mjs"]}'}],usage:{}};
+      if(turns===6){
+        assert.equal(request.toolChoice,"required");
+        const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
+        assert.deepEqual(pairs,["trebell_terminal/run"]);
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/reserved post-edit verification/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"verify-analysis",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["analysis.mjs"]}'}],usage:{}};
+      }
       if(turns===7)return {text:"",toolCalls:[{id:"persist-result",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"results.json","old_text":"old","new_text":"verified"}'}],usage:{}};
-      if(turns===8)return {text:"",toolCalls:[{id:"verify-result",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-result.mjs"]}'}],usage:{}};
+      if(turns===8){
+        assert.equal(request.toolChoice,"required");
+        const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
+        assert.deepEqual(pairs,["trebell_terminal/run"]);
+        return {text:"",toolCalls:[{id:"verify-result",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-result.mjs"]}'}],usage:{}};
+      }
       if(turns===9)return {text:"The corrected analysis and dependent final result now pass the independent checks.",toolCalls:[],usage:{}};
       if(turns===10)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","unresolved":[],"reason":"The analysis repair was independently verified and the dependent final deliverable was then updated and rechecked."}',toolCalls:[],usage:{}};
       throw new Error("unexpected provider call "+turns);
@@ -3199,7 +3210,12 @@ test("native evidence-then-edit blocks a dependent second edit until verificatio
       if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["verify the analysis before persisting its dependent result"],"reason":"One diagnostic is needed first."}',toolCalls:[],usage:{}};
       if(turns===4)return {text:"",toolCalls:[{id:"diagnose",namespace:"trebell_terminal",name:"run",arguments:'{"command":"verify","args":[]}'}],usage:{}};
       if(turns===5)return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"analysis.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
-      if(turns===6)return {text:"",toolCalls:[{id:"too-early",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"results.json","old_text":"old","new_text":"unverified"}'}],usage:{}};
+      if(turns===6){
+        assert.equal(request.toolChoice,"required");
+        const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
+        assert.deepEqual(pairs,["trebell_terminal/run"]);
+        return {text:"",toolCalls:[{id:"too-early",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"results.json","old_text":"old","new_text":"unverified"}'}],usage:{}};
+      }
       if(turns===7)return {text:"",toolCalls:[{id:"verify-repair",namespace:"trebell_terminal",name:"run",arguments:'{"command":"verify","args":[]}'}],usage:{}};
       if(turns===8)return {text:"",toolCalls:[{id:"persist",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"results.json","old_text":"old","new_text":"verified"}'}],usage:{}};
       if(turns===9)return {text:"",toolCalls:[{id:"verify-final",namespace:"trebell_terminal",name:"run",arguments:'{"command":"verify","args":[]}'}],usage:{}};
