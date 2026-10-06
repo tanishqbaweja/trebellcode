@@ -30,6 +30,9 @@ export function createNativeStrategyMetrics(){
     completionGateCachePrefixPreservations:0,
     completionGateControlMessagesPreservedForCache:0,
     completionGateControlCharsPreservedForCache:0,
+    completionGateOutputCapEvents:0,
+    completionGateOutputCapRetries:0,
+    completionGateOutputTokenBudget:0,
     completionGateInvalidFailClosed:0,
     completionArtifactConstraintAuditBlocks:0,
     completionGateRecoveries:0,
@@ -41,6 +44,7 @@ export function createNativeStrategyMetrics(){
     completionRecoveryEditUses:0,
     completionRecoveryUnsupportedEditsSkipped:0,
     completionRecoveryCandidateSnapshots:0,
+    completionRecoverySnapshotAbsentPaths:0,
     completionRecoveryIncumbentRestores:0,
     completionRecoveryIncumbentRestoreFailures:0,
     completionRecoveryExhaustions:0,
@@ -98,6 +102,11 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
     target.completionGateControlMessagesPreservedForCache=Number(target.completionGateControlMessagesPreservedForCache||0)+Number(data?.preservedDeveloperMessages||0);
     target.completionGateControlCharsPreservedForCache=Number(target.completionGateControlCharsPreservedForCache||0)+Number(data?.preservedChars||0);
   }
+  else if(name==="native.completion.gate_output_cap"){
+    target.completionGateOutputCapEvents=Number(target.completionGateOutputCapEvents||0)+1;
+    if(data?.retry===true)target.completionGateOutputCapRetries=Number(target.completionGateOutputCapRetries||0)+1;
+    target.completionGateOutputTokenBudget=Number(target.completionGateOutputTokenBudget||0)+Math.max(0,Number(data?.maxOutputTokens||0));
+  }
   else if(name==="native.completion.gate_invalid_fail_closed")target.completionGateInvalidFailClosed=Number(target.completionGateInvalidFailClosed||0)+1;
   else if(name==="native.completion.constraint_audit_blocked")target.completionArtifactConstraintAuditBlocks=Number(target.completionArtifactConstraintAuditBlocks||0)+1;
   else if(name==="native.completion.gate_recovery"){
@@ -113,7 +122,10 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   }
   else if(name==="native.completion.recovery_allowance_used"&&data?.kind==="edit")target.completionRecoveryEditUses=Number(target.completionRecoveryEditUses||0)+1;
   else if(name==="native.completion.recovery_edit_skipped"&&data?.reason==="unsupported_by_evidence")target.completionRecoveryUnsupportedEditsSkipped=Number(target.completionRecoveryUnsupportedEditsSkipped||0)+1;
-  else if(name==="native.completion.recovery_candidate_snapshot")target.completionRecoveryCandidateSnapshots=Number(target.completionRecoveryCandidateSnapshots||0)+1;
+  else if(name==="native.completion.recovery_candidate_snapshot"){
+    target.completionRecoveryCandidateSnapshots=Number(target.completionRecoveryCandidateSnapshots||0)+1;
+    target.completionRecoverySnapshotAbsentPaths=Number(target.completionRecoverySnapshotAbsentPaths||0)+Math.max(0,Number(data?.absentPathCount||0));
+  }
   else if(name==="native.completion.recovery_incumbent_restored")target.completionRecoveryIncumbentRestores=Number(target.completionRecoveryIncumbentRestores||0)+1;
   else if(name==="native.completion.recovery_incumbent_restore_failed")target.completionRecoveryIncumbentRestoreFailures=Number(target.completionRecoveryIncumbentRestoreFailures||0)+1;
   else if(name==="native.completion.recovery_exhausted")target.completionRecoveryExhaustions=Number(target.completionRecoveryExhaustions||0)+1;

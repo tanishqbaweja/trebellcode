@@ -18,7 +18,8 @@ const TERMINAL_TOOL_WATCHDOG_ABORT_GRACE_MS=500;
 const TERMINAL_TOOL_WATCHDOG_SETTLE_GRACE_MS=3_500;
 const ACTION_TURN_MAX_OUTPUT_TOKENS=32_768;
 const CONTROL_GATE_MAX_OUTPUT_TOKENS=8_192;
-const OPENAI_CONTROL_GATE_MAX_OUTPUT_TOKENS=16_384;
+const OPENAI_CONTROL_GATE_INITIAL_MAX_OUTPUT_TOKENS=8_192;
+const OPENAI_CONTROL_GATE_RETRY_MAX_OUTPUT_TOKENS=16_384;
 
 const COMPLETION_GATE_RESPONSE_SCHEMA=Object.freeze({
   type:"object",
@@ -1008,13 +1009,16 @@ export async function runNativeAgentTurn({
   const turnSignal=wallController?(signal?AbortSignal.any([signal,wallController.signal]):wallController.signal):signal;
   const parallelLimit=boundedInteger(maxParallelToolCalls,8,{min:1,max:32});
   const canRunParallel=call=>parallelToolCalls===true&&typeof isToolParallelSafe==="function"&&isToolParallelSafe(call)===true;
+  const recoverySnapshotMissing=output=>output?.success===false&&/(?:\benoent\b|\bmissing\b|no such file|not found|does not exist|cannot find (?:the )?(?:file|path))/i.test(String(output?.error||output?.message||""));
+  const recoverySnapshotFailureReason=(output,fallback)=>String(output?.error||output?.message||fallback).slice(0,240);
   const captureRecoveryWorkspacePathSnapshot=async(path,{candidateSha256=null}={})=>{
     path=String(path||"").trim();if(!path)return null;
     try{
       const output=await executeControllerTool({id:`native-recovery-snapshot-${modelTurns}-${editRevision}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
-      if(output?.success===false||typeof output?.content!=="string")return {path,restorable:false,reason:"workspace snapshot was unavailable"};
+      if(recoverySnapshotMissing(output))return {path,restorable:true,absentBefore:true,candidateAbsent:null,content:null,beforeSha256:null,candidateSha256:null};
+      if(output?.success===false||typeof output?.content!=="string")return {path,restorable:false,reason:recoverySnapshotFailureReason(output,"workspace snapshot was unavailable")};
       const content=output.content,resolvedPath=String(output?.path||path).trim()||path,beforeSha256=sha256Text(content);
-      return {path:resolvedPath,restorable:true,content,beforeSha256,candidateSha256};
+      return {path:resolvedPath,restorable:true,absentBefore:false,content,beforeSha256,candidateSha256};
     }catch(error){return {path,restorable:false,reason:String(error?.message||error||"workspace snapshot failed").slice(0,240)}}
   };
   const captureRecoveryWorkspaceSnapshot=async(call)=>{
@@ -1022,7 +1026,7 @@ export async function runNativeAgentTurn({
     const args=safeArguments(call?.arguments),path=String(args.path||"").trim();if(!path)return null;
     try{
       const output=await executeControllerTool({id:`native-recovery-snapshot-${modelTurns}-${editRevision}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
-      if(output?.success===false||typeof output?.content!=="string")return {path,restorable:false,reason:"workspace snapshot was unavailable"};
+      if(output?.success===false||typeof output?.content!=="string")return {path,restorable:false,reason:recoverySnapshotFailureReason(output,"workspace snapshot was unavailable")};
       const content=output.content,resolvedPath=String(output?.path||path).trim()||path,kind=String(call?.name||""),beforeSha256=sha256Text(content);
       let candidateContent=null;
       if(kind==="write_file")candidateContent=String(args.content??"");
@@ -1036,12 +1040,19 @@ export async function runNativeAgentTurn({
   const sealRecoveryEditTransaction=async transaction=>{
     const snapshots=Array.isArray(transaction?.snapshots)?transaction.snapshots:[];
     for(let index=0;index<snapshots.length;index++){
-      const snapshot=snapshots[index];if(!snapshot?.restorable||snapshot.candidateSha256||!String(snapshot.path||"").trim())continue;
+      const snapshot=snapshots[index];if(!snapshot?.restorable||snapshot.candidateSha256||snapshot.candidateAbsent===true||!String(snapshot.path||"").trim())continue;
       const path=String(snapshot.path).trim();
       try{
         const current=await executeControllerTool({id:`native-recovery-snapshot-seal-${modelTurns}-${index+1}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+        if(snapshot.absentBefore===true){
+          if(recoverySnapshotMissing(current)){snapshot.candidateAbsent=true;continue}
+          if(current?.success!==false&&typeof current?.content==="string"){
+            snapshot.restorable=false;snapshot.reason="recovery candidate created a previously absent artifact and safe deletion restore is unavailable";continue;
+          }
+          snapshot.restorable=false;snapshot.reason=recoverySnapshotFailureReason(current,"candidate absent workspace state could not be sealed before semantic comparison");continue;
+        }
         if(current?.success===false||typeof current?.content!=="string"){
-          snapshot.restorable=false;snapshot.reason="candidate workspace state could not be sealed before semantic comparison";continue;
+          snapshot.restorable=false;snapshot.reason=recoverySnapshotFailureReason(current,"candidate workspace state could not be sealed before semantic comparison");continue;
         }
         snapshot.candidateSha256=sha256Text(current.content);
       }catch(error){
@@ -1052,13 +1063,18 @@ export async function runNativeAgentTurn({
   };
   const restoreRecoveryEditTransaction=async transaction=>{
     const snapshots=Array.isArray(transaction?.snapshots)?transaction.snapshots:[];
-    if(!snapshots.length||snapshots.some(item=>!item?.restorable||typeof item?.content!=="string"))return {restored:false,paths:[],reason:"one or more edited files did not have a restorable pre-edit snapshot"};
+    const unrestorable=snapshots.find(item=>!item?.restorable||(item?.absentBefore===true?item?.candidateAbsent!==true:typeof item?.content!=="string"));
+    if(!snapshots.length||unrestorable)return {restored:false,paths:[],reason:String(unrestorable?.reason||"one or more edited files did not have a restorable pre-edit snapshot").slice(0,240)};
     const restored=[];
     for(const snapshot of snapshots){
       const path=String(snapshot.path||"").trim();if(!path)return {restored:false,paths:restored,reason:"snapshot path was unavailable"};
       try{
         const current=await executeControllerTool({id:`native-recovery-restore-check-${modelTurns}-${restored.length+1}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
-        if(current?.success===false||typeof current?.content!=="string")return {restored:false,paths:restored,reason:"current workspace state could not be checked before restore"};
+        if(snapshot.absentBefore===true){
+          if(recoverySnapshotMissing(current)){restored.push(path);continue}
+          return {restored:false,paths:restored,reason:"a previously absent artifact changed after the recovery candidate was sealed"};
+        }
+        if(current?.success===false||typeof current?.content!=="string")return {restored:false,paths:restored,reason:recoverySnapshotFailureReason(current,"current workspace state could not be checked before restore")};
         const currentSha256=sha256Text(current.content);
         if(snapshot.candidateSha256&&currentSha256!==snapshot.candidateSha256)return {restored:false,paths:restored,reason:"workspace changed after the recovery candidate was written"};
         if(current.content===snapshot.content){restored.push(path);continue}
@@ -1538,12 +1554,14 @@ export async function runNativeAgentTurn({
     const actionOutputCapActive=pressureActionTurn&&!relaxActionCap&&(configuredMaxOutputTokens==null||configuredMaxOutputTokens>ACTION_TURN_MAX_OUTPUT_TOKENS);
     const actionOutputCap=actionOutputCapActive?ACTION_TURN_MAX_OUTPUT_TOKENS:null;
     const officialOpenAiControlGate=controlGateMode&&String(provider||"").trim().toLowerCase()==="openai";
-    const controlGateMaxOutputTokens=officialOpenAiControlGate?OPENAI_CONTROL_GATE_MAX_OUTPUT_TOKENS:CONTROL_GATE_MAX_OUTPUT_TOKENS;
+    const controlGateRetry=completionGateMode?completionGateInvalidResponses>0:abstractionRepairVerificationGateMode?abstractionRepairVerificationGateInvalidResponses>0:false;
+    const controlGateMaxOutputTokens=officialOpenAiControlGate?(controlGateRetry?OPENAI_CONTROL_GATE_RETRY_MAX_OUTPUT_TOKENS:OPENAI_CONTROL_GATE_INITIAL_MAX_OUTPUT_TOKENS):CONTROL_GATE_MAX_OUTPUT_TOKENS;
     const requestMaxOutputTokens=controlGateMode?(configuredMaxOutputTokens==null?controlGateMaxOutputTokens:Math.min(configuredMaxOutputTokens,controlGateMaxOutputTokens)):actionOutputCapActive?Math.min(configuredMaxOutputTokens??ACTION_TURN_MAX_OUTPUT_TOKENS,ACTION_TURN_MAX_OUTPUT_TOKENS):configuredMaxOutputTokens;
     const requestReasoningEffort=reasoningEffort;
     if(recoveryEditMode)emit(onEvent,{name:"native.completion.recovery_edit_required",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,visibleEditToolCount:exposedToolPairs(providerVisibleTools(visibleTools,recoveryEditAllowlist)).length,visibleToolCount:exposedToolPairs(requestTools).length,toolSchemaStable:true}});
     if(implementationPressure)emit(onEvent,{name:"native.progress.implementation_pressure",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,visibleToolCount:exposedToolPairs(requestTools).length,blockedUntilFirstEdit:Math.max(0,exposedToolPairs(requestTools).filter(item=>!(item.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(item.name))).length),toolSchemaStable:true}});
     if(actionOutputCapActive)emit(onEvent,{name:"native.model.action_output_cap",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,maxOutputTokens:actionOutputCap,reason:implementationPressure?"implementation_pressure":"post_edit_evidence_escalation"}});
+    if(controlGateMode)emit(onEvent,{name:"native.completion.gate_output_cap",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,maxOutputTokens:requestMaxOutputTokens,retry:controlGateRetry,openAi:officialOpenAiControlGate,reasoningEffort:requestReasoningEffort||null}});
     let providerMessages=conversation,providerView=null,completionGateProviderView=null;
     if(completionGateMode){
       completionGateProviderView=compactCompletionGateProviderMessages(providerMessages,initialConversationLength);
@@ -2211,7 +2229,7 @@ export async function runNativeAgentTurn({
       }:null;
       if(mergedSnapshots.length){
         const failedSnapshot=mergedSnapshots.find(item=>!item?.restorable);
-        emit(onEvent,{name:"native.completion.recovery_candidate_snapshot",status:mergedSnapshots.every(item=>item?.restorable)?"completed":"uncertain",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,pathCount:mergedSnapshots.length,restorable:mergedSnapshots.every(item=>item?.restorable),incumbentEditRevision:completionRecoveryIncumbent?.editRevision??null,...(failedSnapshot?.reason?{reason:String(failedSnapshot.reason).slice(0,240)}:{})}});
+        emit(onEvent,{name:"native.completion.recovery_candidate_snapshot",status:mergedSnapshots.every(item=>item?.restorable)?"completed":"uncertain",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,pathCount:mergedSnapshots.length,absentPathCount:mergedSnapshots.filter(item=>item?.absentBefore===true).length,restorable:mergedSnapshots.every(item=>item?.restorable),incumbentEditRevision:completionRecoveryIncumbent?.editRevision??null,...(failedSnapshot?.reason?{reason:String(failedSnapshot.reason).slice(0,240)}:{})}});
       }
       completionRecoveryEditResponsesRemaining=Math.max(0,completionRecoveryEditResponsesRemaining-1);
       completionRecoveryEditConsumedEpoch=completionRecoveryEpoch;

@@ -819,6 +819,7 @@ test("native empty control-gate response uses the gate retry instead of final-an
     model:"test-model",provider:"openai",
     messages:[{role:"user",content:"Fix the implementation and verify it."}],
     semanticCompletionGate:true,
+    reasoningEffort:"max",
     maxModelTurns:8,
     maxToolCalls:8,
     onEvent:event=>events.push(event),
@@ -829,7 +830,8 @@ test("native empty control-gate response uses the gate retry instead of final-an
       if(turns===2)return {text:"Done.",toolCalls:[],usage:{}};
       if(turns===3){
         assert.equal(request.toolChoice,"none");
-        assert.equal(request.maxOutputTokens,16384);
+        assert.equal(request.maxOutputTokens,8192);
+        assert.equal(request.reasoningEffort,"max");
         assert.equal(request.responseJsonSchema?.name,"trebell_completion_gate");
         assert.equal(request.responseJsonSchema?.strict,true);
         assert.deepEqual(request.responseJsonSchema?.schema?.required,["status","progress","edit_support","mutation_safety","recovery_mode","constraint_audit","unresolved","reason"]);
@@ -838,6 +840,7 @@ test("native empty control-gate response uses the gate retry instead of final-an
       }
       if(turns===4){
         assert.equal(request.maxOutputTokens,16384);
+        assert.equal(request.reasoningEffort,"max");
         const retry=request.messages.findLast(message=>message.role==="developer"&&/previous control response was incomplete or could not be parsed/i.test(String(message.content||"")));assert.ok(retry);
         assert.match(String(retry.content),/semantic completion gate/i);
         assert.match(String(retry.content),/requirement-led audit/i);
@@ -850,6 +853,7 @@ test("native empty control-gate response uses the gate retry instead of final-an
   assert.equal(result.text,"Done.");
   assert.equal(turns,4);
   assert.equal(events.filter(event=>event.name==="native.completion.gate_retry").length,1);
+  const gateCaps=events.filter(event=>event.name==="native.completion.gate_output_cap");assert.deepEqual(gateCaps.map(event=>[event.data?.maxOutputTokens,event.data?.retry,event.data?.reasoningEffort]),[[8192,false,"max"],[16384,true,"max"]]);
   assert.equal(events.some(event=>event.name==="native.model.empty_completion"),false);
   assert.equal(events.some(event=>event.name==="native.turn.blocked"&&event.data?.reason==="native_empty_completion"),false);
 });
@@ -3003,7 +3007,7 @@ test("native localizes residual structure after an abstraction repair before reo
       if(turns===11){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
-        assert.equal(request.maxOutputTokens,16384);
+        assert.equal(request.maxOutputTokens,8192);
         assert.equal(request.responseJsonSchema?.name,"trebell_abstraction_verification_gate");
         assert.equal(request.reasoningEffort,"max");
         assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification gate/i.test(String(message.content||""))));
@@ -3022,7 +3026,7 @@ test("native localizes residual structure after an abstraction repair before reo
       if(turns===14){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
-        assert.equal(request.maxOutputTokens,16384);
+        assert.equal(request.maxOutputTokens,8192);
         assert.equal(request.reasoningEffort,"max");
         return {text:'{"status":"verified","reason":"The independent replica invariant now matches the raw source on every checked rank."}',toolCalls:[],usage:{}};
       }
@@ -3083,7 +3087,7 @@ test("native semantic completion gate rejects unsupported completion without tas
       if(providerCalls===3){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
-        assert.equal(request.maxOutputTokens,16384);
+        assert.equal(request.maxOutputTokens,8192);
         assert.equal(request.reasoningEffort,"max");
         const gate=request.messages.find(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));
         assert.ok(gate);
@@ -3103,7 +3107,7 @@ test("native semantic completion gate rejects unsupported completion without tas
       }
       if(providerCalls===5)return {text:"The implementation is updated and the latest measured p95 is 84 ms, below the requested 100 ms ceiling.",toolCalls:[],usage:{}};
       if(providerCalls===6){
-        assert.equal(request.maxOutputTokens,16384);
+        assert.equal(request.maxOutputTokens,8192);
         assert.equal(request.reasoningEffort,"max");
         return {text:'{"status":"complete","unresolved":[],"reason":"The requested workspace change exists and the latest measured p95 is 84 ms, satisfying the stated ceiling."}',toolCalls:[],usage:{}};
       }
@@ -3826,7 +3830,7 @@ test("native restores the requested generated artifact when a recovery source ed
   };
   const result=await runNativeAgentTurn({
     model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
-    messages:[{role:"user",content:"Fix solver.py and write the final generated result to output.json. Preserve the strongest validated output while improving the remaining acceptance gap."}],
+    messages:[{role:"user",content:"Fix solver.py and write the final generated result to output.json. Save the requested audit to audit.txt. Preserve the strongest validated output while improving the remaining acceptance gap."}],
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async()=>{
       turns++;
@@ -3847,12 +3851,56 @@ test("native restores the requested generated artifact when a recovery source ed
   assert.equal(turns,9);
   assert.equal(sourceContent,"incumbent-source");
   assert.equal(artifactContent,"incumbent-artifact");
-  const snapshots=events.filter(event=>event.name==="native.completion.recovery_candidate_snapshot");assert.equal(snapshots.length,2);assert.ok(snapshots.every(event=>event.data?.restorable===true));
-  const restored=events.filter(event=>event.name==="native.completion.recovery_incumbent_restored");assert.equal(restored.length,1);assert.equal(restored[0].data?.progress,"regressed");assert.equal(restored[0].data?.pathCount,2);
+  const snapshots=events.filter(event=>event.name==="native.completion.recovery_candidate_snapshot");assert.equal(snapshots.length,2);assert.ok(snapshots.every(event=>event.data?.restorable===true));assert.ok(snapshots.every(event=>event.data?.absentPathCount===1));
+  const restored=events.filter(event=>event.name==="native.completion.recovery_incumbent_restored");assert.equal(restored.length,1);assert.equal(restored[0].data?.progress,"regressed");assert.equal(restored[0].data?.pathCount,3);
   assert.ok(internalRecoveryCalls.some(id=>id.startsWith("native-recovery-snapshot-")));
   assert.ok(internalRecoveryCalls.some(id=>id.startsWith("native-recovery-snapshot-seal-")));
   assert.ok(internalRecoveryCalls.some(id=>id.startsWith("native-recovery-restore-")));
   assert.match(result.text,/strongest evidence-backed workspace state has been preserved or restored/i);
+});
+
+test("native fails closed when recovery creates a requested artifact that was absent in the incumbent",async()=>{
+  let turns=0,sourceContent="incumbent-source",artifactContent="incumbent-artifact",auditContent=null;const events=[];
+  const rawTool=async call=>{
+    const path=String(call.arguments?.path||"").replace(/^\/app\//,"");
+    if(call.namespace==="trebell_workspace"&&call.name==="read_file"){
+      const content=path==="solver.py"?sourceContent:path==="output.json"?artifactContent:path==="audit.txt"?auditContent:null;
+      if(content==null)return {success:false,error:"missing"};
+      return {path,content,size:content.length};
+    }
+    if(call.namespace==="trebell_workspace"&&call.name==="replace_text"){
+      const oldText=String(call.arguments?.old_text??""),newText=String(call.arguments?.new_text??"");
+      assert.equal(path,"solver.py");assert.ok(sourceContent.includes(oldText));sourceContent=sourceContent.replace(oldText,newText);return {path,replacements:1};
+    }
+    if(call.namespace==="trebell_terminal"&&call.name==="run"){
+      if(String(call.id||"")==="verify-candidate"){artifactContent="worse-artifact";auditContent="new-audit"}
+      return {exitCode:0,stdout:"focused evidence"};
+    }
+    return {success:false,error:"unsupported"};
+  };
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:12,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix solver.py and write the final generated result to output.json. Save the requested audit to audit.txt. Preserve the strongest validated output while improving the remaining acceptance gap."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"The current generated output is the strongest candidate so far, with one localized issue.",toolCalls:[],usage:{}};
+      if(turns===2)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"uncertain","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["one localized issue remains"],"reason":"The current output is the recovery incumbent."}',toolCalls:[],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"evidence",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["inspect.mjs"]}'}],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"solver.py","old_text":"incumbent-source","new_text":"candidate-source"}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"verify-candidate",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"The candidate regressed the generated output while also creating a new audit artifact.",toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"incomplete","progress":"regressed","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","unresolved":["the localized issue remains"],"reason":"The latest candidate regressed relative to the incumbent."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:rawTool,
+    executeInternalTool:rawTool,
+  });
+  assert.equal(turns,7);assert.equal(sourceContent,"candidate-source");assert.equal(artifactContent,"worse-artifact");assert.equal(auditContent,"new-audit");
+  const snapshots=events.filter(event=>event.name==="native.completion.recovery_candidate_snapshot");assert.equal(snapshots.length,1);assert.equal(snapshots[0].data?.restorable,true);assert.equal(snapshots[0].data?.absentPathCount,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_incumbent_restored").length,0);
+  const failed=events.find(event=>event.name==="native.completion.recovery_incumbent_restore_failed");assert.ok(failed);assert.match(String(failed.data?.reason||""),/safe deletion restore is unavailable/i);
+  assert.match(result.text,/could not be proven equivalent to the strongest evidence-backed recovery incumbent/i);
 });
 
 test("native completion recovery stops after the configured number of incomplete epochs",async()=>{
