@@ -162,11 +162,12 @@ try{
     },null,2));
     throw error;
   }
-  async function runCapabilityTurn(label,text,{requiredCalls=[],timeoutMs=90000,retries=1}={}){
+  async function runCapabilityTurn(label,text,{requiredCalls=[],timeoutMs=90000,retries=2}={}){
     let lastError=null;
     for(let attempt=0;attempt<=retries;attempt++){
       const callsBefore=toolCalls.length;
-      const turn=await rpc.request("turn/start",{threadId:thread.thread.id,model,modelProvider:"vyceai",permissionProfile:"full",cwd:workspace,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text,textElements:[]}]});
+      const retryInstruction=attempt?`\nThis is retry ${attempt+1}. The previous attempt failed because the required tool call was not completed. Call the requested tool now; do not answer from memory or substitute another tool.`:"";
+      const turn=await rpc.request("turn/start",{threadId:thread.thread.id,model,modelProvider:"vyceai",permissionProfile:"full",cwd:workspace,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text:text+retryInstruction,textElements:[]}]});
       const turnId=turn.turn?.id;assert.ok(turnId,`${label}: turn/start did not return a turn id`);
       try{
         const completed=await rpc.waitFor(msg=>msg.method==="turn/completed"&&(msg.params?.turn?.id===turnId||msg.params?.turnId===turnId),timeoutMs);
