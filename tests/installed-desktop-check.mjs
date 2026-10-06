@@ -219,7 +219,7 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     const captureVisual=async(name)=>{
       await mkdir(visualDir,{recursive:true});
       const path=join(visualDir,name+".png");
-      await mainPage.screenshot({path,fullPage:true});
+      await mainPage.screenshot({path});
       const info=await stat(path);
       if(info.size<8000)throw new Error(`Packaged visual screenshot ${name} is unexpectedly small (${info.size} bytes).`);
       visualAudit.push({name,path,bytes:info.size});
