@@ -155,19 +155,26 @@ try {
   navigationState=await mainPage.evaluate(()=>window.trebellDesktop.browser.reload());
   if(!navigationState.url.endsWith("/second")) throw new Error("Agent browser reload changed the active URL.");
 
-  const browserRecording=await mainPage.evaluate(async()=>{
+  const browserRecording=await mainPage.evaluate(async fixtureUrl=>{
     await window.trebellDesktop.browser.armRecording();
     const stream=await navigator.mediaDevices.getDisplayMedia({audio:false,video:{frameRate:{ideal:15,max:15}}});
     const types=["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm","video/mp4;codecs=avc1"];
     const mimeType=types.find(type=>MediaRecorder.isTypeSupported(type))||"";
     const chunks=[];const recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined);recorder.ondataavailable=event=>{if(event.data?.size)chunks.push(event.data)};recorder.start(250);
-    await new Promise(resolve=>setTimeout(resolve,1400));
-    try{recorder.requestData()}catch{}
-    await new Promise(resolve=>setTimeout(resolve,100));
+    await window.trebellDesktop.browser.setViewport(844,390);
+    await new Promise(resolve=>setTimeout(resolve,450));
+    await window.trebellDesktop.browser.navigate(fixtureUrl+"/recording-frame");
+    await new Promise(resolve=>setTimeout(resolve,450));
+    await window.trebellDesktop.browser.setViewport(390,844);
+    const deadline=Date.now()+5000;
+    while(!chunks.some(chunk=>chunk.size>0)&&Date.now()<deadline){
+      try{recorder.requestData()}catch{}
+      await new Promise(resolve=>setTimeout(resolve,250));
+    }
     await new Promise(resolve=>{recorder.addEventListener("stop",()=>setTimeout(resolve,50),{once:true});recorder.stop()});
     const settings=stream.getVideoTracks()[0]?.getSettings?.()||{};for(const track of stream.getTracks())track.stop();const blob=new Blob(chunks,{type:recorder.mimeType||chunks[0]?.type||"video/webm"});
     return {bytes:blob.size,type:blob.type,width:settings.width||null,height:settings.height||null};
-  });
+  },fixtureUrl);
   if(!(browserRecording.bytes>1000)||!browserRecording.type.startsWith("video/")) throw new Error(`Agent browser recording did not produce encoded video (${browserRecording.bytes} bytes, ${browserRecording.type}).`);
 
 const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureScreen());
