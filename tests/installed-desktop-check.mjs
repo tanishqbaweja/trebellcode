@@ -15,15 +15,15 @@ const fixture = createServer((req,res)=>{
   res.writeHead(200,{"content-type":"text/html; charset=utf-8"});
   res.end(`<!doctype html>
 <html>
-<head><title>Trebell Browser Fixture</title></head>
-<body>
+<head><title>Trebell Browser Fixture</title><style>body{margin:0;padding:28px;background:#f7f7f8;color:#17171b;font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:560px;padding:24px;background:white;border:1px solid #d8d8df;border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.08)}h1{margin:0 0 18px;font-size:28px}input,button{font:inherit;padding:9px 12px}input{width:260px;border:1px solid #b8bac4;border-radius:8px}button{margin-left:8px;border:1px solid #7c4dff;background:#7c4dff;color:white;border-radius:8px;font-weight:600}p{margin:14px 0 0}</style></head>
+<body><main>
   <h1>Agent Browser Fixture</h1>
   <input name="q" placeholder="Type here" />
   <button id="go" onclick="document.querySelector('#result').textContent='clicked:'+document.querySelector('input[name=q]').value">Commit</button>
   <p id="result">idle</p>
   <p id="cookie">cookie:none</p>
   <script>document.querySelector('#cookie').textContent='cookie:'+(document.cookie.match(/(?:^|; )trebell_test=([^;]*)/)?.[1]||'none')</script>
-</body>
+</main></body>
 </html>`);
 });
 
@@ -311,15 +311,21 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     await mainPage.getByTestId("terminal-toggle").click();
 
     await mainPage.getByTestId("right-panel-toggle").click();
-    await mainPage.getByTestId("right-panel").waitFor({state:"visible",timeout:10000});
-    await mainPage.waitForTimeout(500);
+    const workspacePanel=mainPage.getByTestId("right-panel").locator(".workspace-panel");
+    await workspacePanel.waitFor({state:"visible",timeout:10000});
+    const readmeEntry=workspacePanel.locator("[data-workspace-entry]").filter({hasText:"README.md"}).first();
+    await readmeEntry.waitFor({state:"visible",timeout:10000});
+    await readmeEntry.click();
+    await workspacePanel.locator(".markdown-preview").filter({hasText:"Trebell release visual fixture"}).waitFor({state:"visible",timeout:10000});
     await assertNoActionError("Workspace panel");
     await captureVisual("03-workspace-files");
 
     const sourceControl=mainPage.locator(".branch-control");
     if(await sourceControl.count()===0)throw new Error("Packaged visual audit did not detect Git source control for its fixture project.");
     await sourceControl.click();
-    await mainPage.waitForTimeout(700);
+    const sourcePanel=mainPage.getByTestId("right-panel");
+    await sourcePanel.getByText("src/app.js",{exact:true}).first().waitFor({state:"visible",timeout:10000});
+    await mainPage.waitForFunction(()=>{const text=document.querySelector('[data-testid="right-panel"]')?.textContent||"";return /Git:\s*git version/i.test(text)},null,{timeout:15000});
     await assertNoActionError("Source control");
     await captureVisual("04-source-control");
 
@@ -330,7 +336,12 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
       await projectsPage.getByText("Release visual fixture",{exact:true}).first().waitFor({state:"visible",timeout:10000});
     });
     await openUtility("History","06-history",()=>mainPage.getByRole("heading",{name:"Thread history",exact:true}).waitFor({state:"visible",timeout:10000}));
-    await openUtility("Usage","07-usage",()=>mainPage.getByRole("heading",{name:"Usage",exact:true}).waitFor({state:"visible",timeout:10000}));
+    await openUtility("Usage","07-usage",async()=>{
+      const usagePage=mainPage.locator(".usage-page");
+      await usagePage.getByRole("heading",{name:"Usage",exact:true}).waitFor({state:"visible",timeout:10000});
+      await usagePage.getByRole("button",{name:"Refresh",exact:true}).waitFor({state:"visible",timeout:20000});
+      await usagePage.getByText("Loading live Codex account limits…",{exact:true}).waitFor({state:"hidden",timeout:20000});
+    });
     await openUtility("Environments","08-environments",()=>mainPage.locator(".environments-page h2").filter({hasText:"Environments"}).waitFor({state:"visible",timeout:10000}));
     await openUtility("Browser","10-browser-panel",async()=>{
       const panel=mainPage.getByTestId("right-panel");
@@ -340,12 +351,18 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
       await panel.getByRole("button",{name:"Open agent browser",exact:true}).waitFor({state:"visible",timeout:10000});
     });
 
-    for(const [label,name] of [["Agents","11-agents"],["Tools","12-tools"]]){
-      const control=mainPage.getByRole("button",{name:label,exact:true});
-      if(await control.count())await openUtility(label,name,label==="Agents"
-        ?()=>mainPage.getByTestId("right-panel").getByRole("button",{name:"Agents",exact:true}).waitFor({state:"visible",timeout:10000})
-        :()=>mainPage.getByRole("heading",{name:"Harness capabilities",exact:true}).waitFor({state:"visible",timeout:10000}));
-    }
+    const agentsControl=mainPage.getByRole("button",{name:"Agents",exact:true});
+    if(await agentsControl.count())await openUtility("Agents","11-agents",async()=>{
+      const panel=mainPage.getByTestId("right-panel");
+      await panel.getByText("Delegated agents",{exact:true}).waitFor({state:"visible",timeout:15000});
+      await panel.getByText("Loading panel…",{exact:true}).waitFor({state:"hidden",timeout:15000});
+    });
+    const toolsControl=mainPage.getByRole("button",{name:"Tools",exact:true});
+    if(await toolsControl.count())await openUtility("Tools","12-tools",async()=>{
+      const toolsPage=mainPage.locator(".capabilities-page");
+      await toolsPage.getByRole("heading",{name:"Harness capabilities",exact:true}).waitFor({state:"visible",timeout:10000});
+      await toolsPage.getByRole("button",{name:"Refresh",exact:true}).first().waitFor({state:"visible",timeout:30000});
+    });
 
     await openUtility("Settings","13-settings-general",async()=>{
       await mainPage.getByRole("heading",{name:"Settings",exact:true}).waitFor({state:"visible",timeout:10000});
@@ -367,7 +384,12 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
       if(await control.count()===0)throw new Error(`Packaged Settings is missing the ${label} category.`);
       await control.click();
       await mainPage.locator(".settings-section-head h2").filter({hasText:label}).waitFor({state:"visible",timeout:10000});
-      await mainPage.waitForTimeout(250);
+      if(label==="Agents & models"){
+        const settingsPage=mainPage.locator(".settings-page.redesigned-settings");
+        await settingsPage.locator("p.provider-note").filter({hasText:/Codex\s*·\s*ready/i}).waitFor({state:"visible",timeout:20000});
+      }else{
+        await mainPage.waitForTimeout(250);
+      }
       await assertNoActionError("Settings / "+label);
       await captureVisual(name);
     }
