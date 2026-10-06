@@ -171,11 +171,24 @@ try {
       try{recorder.requestData()}catch{}
       await new Promise(resolve=>setTimeout(resolve,250));
     }
-    await new Promise(resolve=>{recorder.addEventListener("stop",()=>setTimeout(resolve,50),{once:true});recorder.stop()});
-    const settings=stream.getVideoTracks()[0]?.getSettings?.()||{};for(const track of stream.getTracks())track.stop();const blob=new Blob(chunks,{type:recorder.mimeType||chunks[0]?.type||"video/webm"});
-    return {bytes:blob.size,type:blob.type,width:settings.width||null,height:settings.height||null};
+    const track=stream.getVideoTracks()[0]||null;
+    let stopTimedOut=false;
+    await Promise.race([
+      new Promise(resolve=>{
+        recorder.addEventListener("stop",()=>setTimeout(resolve,50),{once:true});
+        if(recorder.state!=="inactive")try{recorder.stop()}catch{resolve()}
+        else resolve();
+      }),
+      new Promise(resolve=>setTimeout(()=>{stopTimedOut=true;resolve()},3000)),
+    ]);
+    const settings=track?.getSettings?.()||{};
+    const trackState={readyState:track?.readyState||null,muted:Boolean(track?.muted),enabled:Boolean(track?.enabled)};
+    for(const item of stream.getTracks())try{item.stop()}catch{}
+    const blob=new Blob(chunks,{type:recorder.mimeType||chunks[0]?.type||"video/webm"});
+    return {bytes:blob.size,type:blob.type,width:settings.width||null,height:settings.height||null,chunks:chunks.length,stopTimedOut,trackState};
   },fixtureUrl);
-  if(!(browserRecording.bytes>1000)||!browserRecording.type.startsWith("video/")) throw new Error(`Agent browser recording did not produce encoded video (${browserRecording.bytes} bytes, ${browserRecording.type}).`);
+  if(browserRecording.stopTimedOut)throw new Error(`Agent browser recording did not stop within 3s (chunks=${browserRecording.chunks}, track=${JSON.stringify(browserRecording.trackState)}).`);
+  if(!(browserRecording.bytes>1000)||!browserRecording.type.startsWith("video/")) throw new Error(`Agent browser recording did not produce encoded video (${browserRecording.bytes} bytes, ${browserRecording.type}, chunks=${browserRecording.chunks}, track=${JSON.stringify(browserRecording.trackState)}).`);
 
 const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureScreen());
   if(!desktopSnapshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Desktop snapshot is not a PNG data URL.");

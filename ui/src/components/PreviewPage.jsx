@@ -159,12 +159,24 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   async function stopRecording(){
     const recorder=recorderRef.current;if(!recorder)return;setBusy("recording-stop");
     try{
-      const stopped=new Promise(resolve=>{recorder.addEventListener("stop",()=>setTimeout(resolve,50),{once:true});if(recorder.state!=="inactive"){try{recorder.requestData()}catch{};setTimeout(()=>{if(recorder.state!=="inactive")recorder.stop()},60)}else resolve()});await stopped;
-      for(const track of streamRef.current?.getTracks?.()||[])track.stop();
+      const stopped=new Promise((resolve,reject)=>{
+        let settled=false;
+        const finish=callback=>{if(settled)return;settled=true;clearTimeout(timeout);callback()};
+        const timeout=setTimeout(()=>finish(()=>reject(new Error("Browser recording did not stop in time. Try recording again."))),3000);
+        recorder.addEventListener("stop",()=>setTimeout(()=>finish(resolve),50),{once:true});
+        if(recorder.state!=="inactive"){
+          try{recorder.requestData()}catch{}
+          setTimeout(()=>{if(recorder.state!=="inactive")try{recorder.stop()}catch(error){finish(()=>reject(error))}},60);
+        }else finish(resolve);
+      });
+      await stopped;
       const type=recorder.mimeType||chunksRef.current[0]?.type||"video/webm";const blob=new Blob(chunksRef.current,{type});
       if(!blob.size)throw new Error("Browser recording produced no encoded video. Record for a little longer and try again.");
       if(onAttachFile){const ext=type.includes("mp4")?"mp4":"webm";await onAttachFile(new File([blob],`browser-recording-${Date.now()}.${ext}`,{type}),{kind:"browser",label:"Browser recording",detail:`${recordingSeconds}s · ${(blob.size/1024/1024).toFixed(1)} MB`})}
-    }finally{recorderRef.current=null;streamRef.current=null;chunksRef.current=[];setRecording(false);setBusy("")}
+    }finally{
+      for(const track of streamRef.current?.getTracks?.()||[])try{track.stop()}catch{}
+      recorderRef.current=null;streamRef.current=null;chunksRef.current=[];setRecording(false);setBusy("");
+    }
   }
   async function attachElement(element,note=""){
     const cleanNote=String(note||"").trim();

@@ -16,3 +16,14 @@ export function decodePowerShellStderr(value){
     .filter(Boolean);
   return errors.length?errors.join("\n"):text;
 }
+
+export function decodePowerShellJsonBase64(value){
+  const lines=String(value||"")
+    .split(/\r?\n/)
+    .map(line=>line.trim())
+    .filter(Boolean);
+  const encoded=[...lines].reverse().find(line=>/^[A-Za-z0-9+/]+={0,2}$/.test(line));
+  if(!encoded)throw new Error("PowerShell JSON payload was not returned.");
+  const json=Buffer.from(encoded,"base64").toString("utf8");
+  return JSON.parse(json);
+}

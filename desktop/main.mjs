@@ -10,7 +10,7 @@ import { DEFAULT_SNAPSHOT_CONFIG, normalizeSnapshotConfig } from "./snapshot-con
 import { discoverEditors } from "./editor-discovery.mjs";
 import { createUpdaterController } from "./updater-controller.mjs";
 import { bundledCodexPath } from "./bundled-codex.mjs";
-import { decodePowerShellStderr } from "./powershell-output.mjs";
+import { decodePowerShellJsonBase64, decodePowerShellStderr } from "./powershell-output.mjs";
 
 const require=createRequire(import.meta.url);
 const { autoUpdater }=require("electron-updater");
@@ -533,10 +533,11 @@ try {
   }
 } catch {}
 `:""}
-$result | ConvertTo-Json -Depth 6 -Compress
+$json=$result | ConvertTo-Json -Depth 6 -Compress
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
 `;
   const raw=await powershell(script,{timeout:includeText?3500:1800});
-  return JSON.parse(raw);
+  return decodePowerShellJsonBase64(raw);
 }
 
 function snapshotSourceScore(source,info){
