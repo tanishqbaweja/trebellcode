@@ -25,6 +25,7 @@ import {
   sourceControlPullRequestTemplate,
   sourceControlRecentCommitSubjects,
   sourceControlReviewRangeContext,
+  sourceControlDiagnostics,
   withSourceControlExecutor,
 } from "../src/source-control-service.mjs";
 import { git } from "../src/git-service.mjs";
@@ -94,6 +95,19 @@ function sourceFixtureExecutor(remoteUrl,{extraRun=null,extraStdin=null,onTempJs
   };
   return executor;
 }
+
+test("source-control diagnostics tolerate Git probe without an auth command",async()=>{
+  const executor=sourceFixtureExecutor("https://github.com/acme/widget.git",{
+    extraRun:async(command,args)=>{
+      if(command==="git"&&args[0]==="--version")return {ok:true,code:0,stdout:"git version 2.51.0.windows.1\n",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"not installed"};
+    },
+  });
+  executor.secretValues=async()=>({});
+  const diagnostics=await withSourceControlExecutor(executor,()=>sourceControlDiagnostics("/srv/app"));
+  assert.deepEqual(diagnostics.git,{installed:true,authenticated:true,version:"git version 2.51.0.windows.1",detail:""});
+  assert.equal(diagnostics.selectedProvider,"github");
+});
 
 test("GitLab reviewer requests preserve existing reviewers and add the resolved username",async()=>{
   const calls=[];

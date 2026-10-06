@@ -668,7 +668,7 @@ async function cliProbe(command,versionArgs,authArgs,cwd,installHint){
   const version=await run(command,versionArgs,{cwd,allowFailure:true,timeout:20000});
   if(!version.ok)return {installed:false,authenticated:false,version:null,detail:installHint};
   const auth=authArgs?await run(command,authArgs,{cwd,allowFailure:true,timeout:20000}):{ok:true,stdout:""};
-  return {installed:true,authenticated:auth.ok,version:(version.stdout||version.stderr).split(/\r?\n/)[0]||command,detail:(auth.stdout||auth.stderr).trim()};
+  return {installed:true,authenticated:auth.ok,version:String(version.stdout||version.stderr||"").split(/\r?\n/)[0]||command,detail:String(auth.stdout||auth.stderr||"").trim()};
 }
 
 export async function sourceControlDiagnostics(cwd,preferred=null){
