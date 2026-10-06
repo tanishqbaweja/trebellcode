@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 title Trebell Benchmark Watchdog
 set "TREBELL_WATCHDOG_INTERVAL_MS=5000"
 echo Starting payload-free benchmark monitor...
