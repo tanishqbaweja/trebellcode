@@ -223,10 +223,12 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
 
   const visualAudit=[];
   if(visualDir){
+    const visualCdp=await mainPage.context().newCDPSession(mainPage);
     const captureVisual=async(name)=>{
       await mkdir(visualDir,{recursive:true});
       const path=join(visualDir,name+".png");
-      await mainPage.screenshot({path});
+      const capture=await visualCdp.send("Page.captureScreenshot",{format:"png",fromSurface:true,captureBeyondViewport:false});
+      await writeFile(path,Buffer.from(capture.data,"base64"));
       const info=await stat(path);
       if(info.size<8000)throw new Error(`Packaged visual screenshot ${name} is unexpectedly small (${info.size} bytes).`);
       visualAudit.push({name,path,bytes:info.size});
