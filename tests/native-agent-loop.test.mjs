@@ -273,11 +273,11 @@ test("native injects an early global-constraint checkpoint for solver-style plan
   assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_planning_checkpoint").length,1);
 });
 
-test("native stages and audits multi-record evidence decisions before persistent submission",async()=>{
+test("native stages and audits multi-record evidence batches before persistent submission",async()=>{
   const events=[],executed=[],requests=[];let turn=0;
   const result=await runNativeAgentTurn({
     model:"test-model",provider:"fixture",maxModelTurns:9,maxToolCalls:20,onEvent:event=>events.push(event),
-    messages:[{role:"user",content:"Review every claim using the policy records and evidence history, decide approve or deny for each claim, then update the remote system through the API with all decisions."}],
+    messages:[{role:"user",content:"For every queued item, use the authoritative rules and evidence logs to derive the correct result, then submit the complete batch to the remote portal."}],
     tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
       requests.push(structuredClone(request));turn++;
@@ -299,6 +299,25 @@ test("native stages and audits multi-record evidence decisions before persistent
   assert.equal(result.text,"all decisions audited and submitted");assert.equal(executed.includes("submit-too-early"),false);assert.deepEqual(executed,["probe-1","probe-2","probe-3","audit-all-decisions","submit-after-audit"]);
   const checkpoint=events.find(event=>event.name==="native.progress.global_constraint_planning_checkpoint");assert.ok(checkpoint);assert.equal(checkpoint.data?.mode,"evidence_adjudication");
   assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_blocked").length,1);assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_audited").length,1);
+});
+
+test("native evidence-adjudication trigger requires both a batch and external persistence",async()=>{
+  const runCase=async prompt=>{
+    const events=[];let turn=0;
+    const result=await runNativeAgentTurn({
+      model:"test-model",provider:"fixture",maxModelTurns:5,maxToolCalls:12,onEvent:event=>events.push(event),
+      messages:[{role:"user",content:prompt}],
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+      providerTurn:async()=>{turn++;return turn<=3?{text:"",toolCalls:[{id:`probe-${turn}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`probe-${turn}.mjs`]})}],usage:{}}:{text:"done",toolCalls:[],usage:{}}},
+      executeTool:async()=>({success:true,exitCode:0,stdout:"evidence"}),
+    });
+    assert.equal(result.text,"done");
+    return events;
+  };
+  const localBatch=await runCase("For every queued item, use the authoritative rules and evidence logs to produce a local summary report file.");
+  assert.equal(localBatch.some(event=>event.name==="native.progress.global_constraint_planning_checkpoint"&&event.data?.mode==="evidence_adjudication"),false,"a local batch analysis is not an irreversible external adjudication");
+  const singleRemote=await runCase("Use the policy and evidence log to update one item in the remote portal.");
+  assert.equal(singleRemote.some(event=>event.name==="native.progress.global_constraint_planning_checkpoint"&&event.data?.mode==="evidence_adjudication"),false,"a single remote mutation should not pay for a whole-batch adjudication audit");
 });
 
 test("native does not inject the global-constraint planning checkpoint for ordinary performance optimization",async()=>{
@@ -4167,6 +4186,7 @@ test("native grants one terminal repair when final recovery evidence reveals a c
   assert.equal(result.text,"The corrected source-of-truth value 12 is now persisted and independently verified.");
   assert.deepEqual(executed.filter(id=>!String(id).startsWith("native-recovery-snapshot-")),["initial-analysis","initial","parser-fix","verify-parser","propagate","verify-deliverable"]);
   const grace=events.filter(event=>event.name==="native.completion.recovery_terminal_repair_grace");assert.equal(grace.length,1);assert.equal(grace[0].data?.recoveryEpoch,1);assert.equal(grace[0].data?.maxRecoveryEpochs,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_edit_call_blocked"&&event.data?.callId==="propagate").length,0,"fresh terminal-grace repair must not inherit the prior edit's verification lock");
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_exhausted").length,0);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,2);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,2);
