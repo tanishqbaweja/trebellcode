@@ -57,6 +57,41 @@ test("native designated batch closure audit bypasses the external observation ca
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate_requested").length,1);assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate"&&event.status==="completed").length,1);
 });
 
+test("external-state batch evidence budget counts local read-only analysis rounds without blocking staged progress or closure audit",async()=>{
+  const events=[],executed=[];let turn=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","from pathlib import Path; print(Path('/tmp/evidence.json').exists())"]})});
+  const stage=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","from pathlib import Path; Path('/tmp/staged.json').write_text('[]')"]})});
+  const submit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/batch', json={'items':[1,2]})"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxModelTurns:18,maxToolCalls:32,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued claim, reconcile the authoritative evidence by source precedence and chronology, then submit the complete batch to the remote portal API."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turn++;
+      if(turn<=8)return {text:"",toolCalls:[read("local-read-"+turn)],usage:{}};
+      if(turn===9)return {text:"",toolCalls:[read("blocked-local-read")],usage:{}};
+      if(turn===10)return {text:"",toolCalls:[stage("stage-after-cap")],usage:{}};
+      if(turn===11)return {text:"",toolCalls:[submit("submit-too-early")],usage:{}};
+      if(turn===12){
+        assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});
+        return {text:"",toolCalls:[read("closure-audit-after-local-cap")],usage:{}};
+      }
+      if(turn===13)return {text:batchEvidencePrecommitVerdict(),toolCalls:[],usage:{}};
+      if(turn===14)return {text:"",toolCalls:[submit("submit-after-audit")],usage:{}};
+      return {text:"batch submitted after bounded local evidence and certified closure",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(result.text,"batch submitted after bounded local evidence and certified closure");
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_escalation").length,1);
+  const blocks=events.filter(event=>event.name==="native.progress.external_observation_call_blocked");assert.equal(blocks.length,1);assert.equal(blocks[0]?.data?.callId,"blocked-local-read");
+  assert.equal(executed.includes("blocked-local-read"),false);
+  assert.equal(executed.includes("stage-after-cap"),true,"reversible scratch staging remains available after the read-only evidence budget is exhausted");
+  assert.equal(executed.includes("closure-audit-after-local-cap"),true,"the designated fresh closure audit bypass remains available");
+  assert.equal(executed.includes("submit-after-audit"),true);
+});
+
 test("completion gate provider view drops superseded Trebell control messages but preserves evidence",()=>{
   const original=[
     {role:"developer",content:"caller policy"},{role:"user",content:"task"},

@@ -427,6 +427,21 @@ function externalObservationCall(call={}){
   return audit?.networkLike===true&&audit?.persistentMutationLike!==true;
 }
 
+function externalStateEvidenceCall(call={}){
+  const key=String(call?.namespace||"")+"/"+String(call?.name||"");
+  if(key==="trebell_process/status")return true;
+  if(key==="trebell_terminal/run"){
+    const audit=nativeTerminalAuditMetadata(call?.namespace,call?.name,safeArguments(call?.arguments));
+    return audit?.persistentMutationLike!==true&&audit?.localFileMutationLike!==true;
+  }
+  return key==="trebell_workspace/read_file"
+    ||key==="trebell_workspace/list"
+    ||key==="trebell_repo/search_files"
+    ||key==="trebell_repo/search_code"
+    ||key==="trebell_repo/read_source"
+    ||key==="trebell_output/inspect";
+}
+
 function consolidatedExternalWaitCall(call={}){
   if(call?.namespace!=="trebell_terminal"||call?.name!=="run")return false;
   const audit=nativeTerminalAuditMetadata(call?.namespace,call?.name,safeArguments(call?.arguments)),command=String(audit?.redactedCommand||"");
@@ -1514,12 +1529,12 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.progress.probe_batch_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,singletonTerminalProbeStreak}});
     }
     if(externalStateMutationRequested&&externalObservationCheckpointRevision!==editRevision&&externalObservationRounds>=6){
-      conversation.push({role:"developer",content:"Trebell external-state convergence checkpoint: "+externalObservationRounds+" separate quick observation rounds have run since the latest persistent external-state change without another state change. Stop paying one model decision per status/query. Batch related reads into one bounded script. If the task is waiting for a time/state condition, prefer one consolidated wait-and-check command or a background monitor rather than repeated immediate status polls. Continue observation only when it can change the next action; otherwise make the next evidence-supported legal state change, propose completion, or state the concrete blocker."});
+      conversation.push({role:"developer",content:"Trebell external-state convergence checkpoint: "+externalObservationRounds+" separate read-only evidence rounds have run since the latest persistent external-state change without another state change. Local terminal analysis, repository/source reads, output inspection, and status/API checks all consume a full model decision even when each individual command is internally batched. Stop serial investigation. Use at most the remaining bounded evidence rounds to run one decisive grouped analysis, then stage/perform the next evidence-supported legal mutation, propose completion, or state the concrete blocker. If the only useful action is waiting for an external condition, prefer one consolidated wait-and-check command or a background monitor rather than repeated immediate polls."});
       externalObservationCheckpointRevision=editRevision;
       emit(onEvent,{name:"native.progress.external_observation_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,observationRounds:externalObservationRounds}});
     }
     if(externalStateMutationRequested&&externalObservationCheckpointRevision===editRevision&&!externalObservationEscalated&&externalObservationRounds>=8){
-      conversation.push({role:"developer",content:"Trebell external-state convergence escalation: the current external-state revision has already consumed the bounded quick-observation allowance. Further immediate API/status polling is blocked until the external state changes or a later bounded recovery window explicitly reopens evidence. A genuinely consolidated wait-and-check command remains available when the only useful action is to wait for an external condition. Otherwise synthesize the evidence and finish or explain the blocker."});
+      conversation.push({role:"developer",content:"Trebell external-state convergence escalation: the current external-state revision has already consumed its bounded read-only evidence allowance. Further read-only terminal/repository/output/status investigation is blocked until the external state changes or a later bounded recovery window explicitly reopens evidence. Local staging or repair work that actually changes reversible scratch state remains available, as does the protected persistent action once its prerequisites are satisfied. A genuinely consolidated wait-and-check command also remains available when the only useful action is to wait for an external condition. Otherwise synthesize the evidence and act, finish, or explain the blocker."});
       externalObservationEscalated=true;
       emit(onEvent,{name:"native.progress.external_observation_escalation",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,observationRounds:externalObservationRounds}});
     }
@@ -2261,9 +2276,9 @@ export async function runNativeAgentTurn({
         emit(onEvent,{name:"native.completion.recovery_edit_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"mutation_forbidden"}});
         callIndex++;continue;
       }
-      if(externalStateMutationRequested&&externalObservationEscalated&&!completionRecoveryEvidenceBypass&&!designatedBatchEvidenceClosureAuditCall&&externalObservationCall(call)&&!consolidatedExternalWaitCall(call)){
+      if(externalStateMutationRequested&&externalObservationEscalated&&!completionRecoveryEvidenceBypass&&!designatedBatchEvidenceClosureAuditCall&&externalStateEvidenceCall(call)&&!consolidatedExternalWaitCall(call)){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
-        conversation.push({role:"tool",toolCallId:callId,content:"Trebell external-state convergence guard: this immediate status/API observation was not executed because the current external-state revision already consumed its bounded quick-observation allowance. If the only useful next step is waiting for an external condition, combine the wait and decisive recheck into one bounded terminal command or use a background monitor. Otherwise act on the evidence already gathered or finish."});
+        conversation.push({role:"tool",toolCallId:callId,content:"Trebell external-state convergence guard: this read-only evidence call was not executed because the current external-state revision already consumed its bounded evidence allowance. Do not keep paying one model round for more local analysis, repository/source reads, output inspection, or immediate API/status checks. If the only useful next step is waiting for an external condition, combine the wait and decisive recheck into one bounded terminal command or use a background monitor. Otherwise use the evidence already gathered to stage/perform the next legal mutation, finish, or state the concrete blocker."});
         blockedExternalObservation=true;
         emit(onEvent,{name:"native.progress.external_observation_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,reason:"external_observation_round_budget"}});
         callIndex++;continue;
@@ -2422,7 +2437,7 @@ export async function runNativeAgentTurn({
       }
       if(editRevision===0&&implementationPressure&&!responseHasEditCall&&prepared.some(item=>!implementationPressureEditCall(item.call)))executedPreEditEvidence=true;
       if(editRevisionBeforeCalls>0&&(!responseHasEditCall||editRevision>editRevisionBeforeCalls)&&prepared.some(item=>!implementationPressureEditCall(item.call)))executedPostEditEvidence=true;
-      if(externalStateMutationRequested&&prepared.some(item=>externalObservationCall(item.call)))executedExternalObservation=true;
+      if(externalStateMutationRequested&&prepared.some(item=>externalStateEvidenceCall(item.call)))executedExternalObservation=true;
       toolCalls+=prepared.length;
       const observations=prepared.length>1
         ?await Promise.all(prepared.map(item=>executeOneTool(item.call,item.toolCallNumber)))
