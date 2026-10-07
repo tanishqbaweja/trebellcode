@@ -4330,6 +4330,43 @@ test("native revision-zero external recovery consumes evidence before requiring 
   assert.equal(blocked.length,1);assert.equal(blocked[0].data?.editRequiredAfterBlock,true);
 });
 
+test("native semantic recovery exhaustion outranks the external observation cap",async()=>{
+  const events=[],executed=[];let turns=0;
+  const observe=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"curl",args:["-s","http://workspace:18073/api/status?probe="+id]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:18,maxToolCalls:28,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the running campaign through its API. Inspect the live state, then change the live config until the measured acceptance target passes."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_process",tools:[{name:"start"},{name:"status"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns<=8)return {text:"",toolCalls:[observe("pre-"+turns)],usage:{}};
+      if(turns===9)return {text:"The live state appears ready.",toolCalls:[],usage:{}};
+      if(turns===10)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"uncertain","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["one focused live check must identify the safe correction"],"reason":"A bounded diagnostic should determine the corrective live mutation."}',toolCalls:[],usage:{}};
+      if(turns===11)return {text:"",toolCalls:[observe("recovery-allowed")],usage:{}};
+      if(turns===12)return {text:"",toolCalls:[observe("recovery-surplus")],usage:{}};
+      if(turns===13){
+        assert.equal(request.toolChoice,"required");
+        return {text:"",toolCalls:[{id:"repair-live",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://workspace:18073/api/config', json={'mode':'fixed'})"]})}],usage:{}};
+      }
+      if(turns===14)return {text:"",toolCalls:[{id:"verify-live",namespace:"trebell_process",name:"status",arguments:JSON.stringify({process_id:"proc-fixed"})}],usage:{}};
+      if(turns===15)return {text:"The corrected live state now passes acceptance.",toolCalls:[],usage:{}};
+      if(turns===16)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","unresolved":[],"reason":"The bounded recovery mutation passed live verification."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      if(call.id==="repair-live")return {success:true,exitCode:0,stdout:"updated"};
+      if(call.id==="verify-live")return {processId:"proc-fixed",running:false,exitCode:0,stdout:"acceptance=pass"};
+      return {success:true,exitCode:0,stdout:"live evidence"};
+    },
+  });
+  assert.match(result.text,/passes acceptance/i);
+  assert.equal(executed.includes("recovery-surplus"),false);
+  const recoveryBlock=events.find(event=>event.name==="native.completion.recovery_evidence_call_blocked"&&event.data?.callId==="recovery-surplus");
+  assert.ok(recoveryBlock);assert.equal(recoveryBlock.data?.editRequiredAfterBlock,true);
+  assert.equal(events.some(event=>event.name==="native.progress.external_observation_call_blocked"&&event.data?.callId==="recovery-surplus"),false);
+});
+
 test("native revision-zero external evidence-only recovery blocks diagnostics after its bounded allowance",async()=>{
   const events=[],executed=[];let turns=0;
   const local=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
@@ -4715,6 +4752,48 @@ test("native OpenAI recovery keeps stable tool schemas while requiring only lega
   });
   assert.match(result.text,/satisfies exact acceptance/i);
   const editRequired=events.filter(event=>event.name==="native.completion.recovery_edit_required");assert.equal(editRequired.length,1);assert.equal(editRequired[0].data?.selectionConstrained,true);assert.equal(editRequired[0].data?.toolSchemaStable,true);assert.equal(editRequired[0].data?.visibleToolCount,3);assert.equal(editRequired[0].data?.visibleEditToolCount,2);
+});
+
+test("native OpenAI recovery lets a designated closure audit override required-edit tool selection",async()=>{
+  let turns=0;const events=[],executed=[],requests=[];
+  const audit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"openai",semanticCompletionGate:true,maxModelTurns:12,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued item, reconcile authoritative evidence and submit the complete batch to the remote portal."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_process",tools:[{name:"start"},{name:"status"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"The staged batch is ready for the required submission.",toolCalls:[],usage:{}};
+      if(turns===2)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"allowed","recovery_mode":"edit","unresolved":["submit the audited staged batch"],"reason":"Existing evidence supports the exact retained batch write."}',toolCalls:[],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[commit("recovery-submit")],usage:{}};
+      if(turns===4){
+        const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
+        assert.deepEqual(pairs,["trebell_terminal/run"]);
+        assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});
+        return {text:"",toolCalls:[audit("closure-audit")],usage:{}};
+      }
+      if(turns===5){
+        assert.equal(request.metadata?.batchEvidencePrecommitGate,true);
+        return {text:batchEvidencePrecommitVerdict({reason:"The fresh closure audit supports the exact retained staged batch."}),toolCalls:[],usage:{}};
+      }
+      if(turns===6)return {text:"The audited staged batch was submitted successfully.",toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","unresolved":[],"reason":"The audited retained batch write was applied successfully."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call);},
+  });
+  assert.match(result.text,/submitted successfully/i);
+  assert.equal(executed.includes("recovery-submit"),false);
+  assert.equal(executed.includes("closure-audit"),true);
+  assert.equal(executed.filter(id=>/^native-precommit-authorized-/.test(id)).length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_completed").length,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
+  for(const request of requests){
+    if(request.toolChoice?.type!=="allowed_tools")continue;
+    const visible=new Set(request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]));
+    for(const item of request.toolChoice.tools||[])assert.equal(visible.has(item.namespace+"/"+item.name),true,`allowed_tools referenced hidden tool ${item.namespace}/${item.name}`);
+  }
 });
 
 test("native external-state recovery fails closed after two non-mutating required-edit responses",async()=>{
