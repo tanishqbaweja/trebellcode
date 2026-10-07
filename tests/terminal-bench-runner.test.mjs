@@ -520,6 +520,15 @@ test("Terminal-Bench watchdog persists latest and timestamped history snapshots"
   assert.match(source,/snapshot-\$\{stamp\}\.json/);
   assert.match(source,/appendFile\(history,JSON\.stringify\(snap\)/);
   assert.match(source,/terminal-bench-latest\.json/);
+  assert.match(source,/terminal-bench-native-rerun-latest\.json/);
+  assert.match(source,/--target=/);
+  assert.match(source,/native-rerun/);
+  assert.match(source,/reportTimeMs/);
+  assert.match(source,/sameRunConfiguration/);
+  assert.match(source,/rerunTime>pairTime/);
+  assert.match(source,/rerunTime>=pairTime/);
+  assert.match(source,/ranked\.sort\(\(a,b\)=>b\.createdMs-a\.createdMs/);
+  assert.match(source,/Target:.*STANDALONE NATIVE RERUN/);
   assert.match(source,/reasoningEffort:report\.reasoningEffort\?\?pointer\.reasoningEffort/);
   assert.match(source,/serviceTier:report\.serviceTier\?\?pointer\.serviceTier/);
   assert.match(source,/hostedWebSearch:report\.hostedWebSearch\?\?pointer\.hostedWebSearch/);

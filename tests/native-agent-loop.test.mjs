@@ -4,7 +4,7 @@ import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommi
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
-const batchEvidenceRecordAudit=(ids=["record-1","record-2"])=>ids.map(id=>({id,status:"closed",source_precedence_checked:true,chronology_checked:true,blocker_resolution_checked:true,later_contrary_checked:true,controlling_evidence:`authoritative-${id}`}));
+const batchEvidenceRecordAudit=(ids=["record-1","record-2"])=>ids.map(id=>({id,status:"closed",source_precedence_checked:true,chronology_checked:true,blocker_resolution_checked:true,later_contrary_checked:true,staged_value:`apply-${id}`,controlling_evidence:`authoritative-${id}`,contrary_evidence:`later and contrary authority checked for ${id}; none remains controlling`,dependency_record_id:"",dependency_necessity_checked:false,dependency_justification:"none",closure_reason:`authoritative evidence controls apply-${id}`}));
 const batchEvidencePrecommitVerdict=(overrides={})=>{
   const ids=Array.isArray(overrides.ids)?overrides.ids:["record-1","record-2"],recordAudit=overrides.record_audit??batchEvidenceRecordAudit(ids);
   return JSON.stringify({status:"complete",progress:"uncertain",edit_support:"unsupported",mutation_safety:"allowed",recovery_mode:"none",constraint_audit:[],unresolved:[],reason:"Every staged record is supported after the authority, chronology, and blocker-closure audit.",staged_record_count:ids.length,audited_record_count:ids.length,record_audit:recordAudit,...overrides,ids:undefined});
@@ -12,10 +12,12 @@ const batchEvidencePrecommitVerdict=(overrides={})=>{
 const closureAwareTerminalOutput=(_call,stdout="fresh per-record authority chronology closure evidence")=>({success:true,exitCode:0,stdout});
 
 test("batch evidence precommit record audit requires complete unique per-record closure",()=>{
-  const valid={stagedRecordCount:2,auditedRecordCount:2,recordAudit:batchEvidenceRecordAudit().map(item=>({id:item.id,status:item.status,sourcePrecedenceChecked:true,chronologyChecked:true,blockerResolutionChecked:true,laterContraryChecked:true,controllingEvidence:item.controlling_evidence}))};
+  const valid={stagedRecordCount:2,auditedRecordCount:2,recordAudit:batchEvidenceRecordAudit().map(item=>({id:item.id,status:item.status,sourcePrecedenceChecked:true,chronologyChecked:true,blockerResolutionChecked:true,laterContraryChecked:true,stagedValue:item.staged_value,controllingEvidence:item.controlling_evidence,contraryEvidence:item.contrary_evidence,dependencyRecordId:item.dependency_record_id,dependencyNecessityChecked:item.dependency_necessity_checked,dependencyJustification:item.dependency_justification,closureReason:item.closure_reason}))};
   assert.equal(batchEvidencePrecommitRecordAuditCoverage(valid).valid,true);
   assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,auditedRecordCount:1}).reason,"record_count_mismatch");
   assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,recordAudit:valid.recordAudit.map((item,index)=>index?item:{...item,chronologyChecked:false})}).reason,"record_closure_incomplete");
+  assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,recordAudit:valid.recordAudit.map((item,index)=>index?item:{...item,stagedValue:""})}).reason,"record_closure_incomplete");
+  assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,recordAudit:valid.recordAudit.map((item,index)=>index?item:{...item,dependencyRecordId:"record-2",dependencyNecessityChecked:false,dependencyJustification:""})}).reason,"record_dependency_unverified");
   assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,recordAudit:[valid.recordAudit[0],{...valid.recordAudit[1],id:valid.recordAudit[0].id}]}).reason,"invalid_record_identity");
 });
 
@@ -101,6 +103,8 @@ test("native terminal audit metadata records network intent while redacting secr
   const audit=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"curl",args:["https://example.com/data","--api-key",secret]});
   assert.equal(audit.networkLike,true);assert.equal(audit.packageManager,false);assert.deepEqual(audit.hosts,["example.com"]);
   assert.equal(audit.redactedCommand.includes(secret),false);assert.match(audit.redactedCommand,/\[redacted\]/);assert.equal(audit.commandHash.length,64);
+  const longPrefix="x".repeat(1500),longA=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"python",args:["-c",longPrefix+"A"]}),longB=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"python",args:["-c",longPrefix+"B"]});
+  assert.equal(longA.redactedCommand,longB.redactedCommand,"the bounded display preview is intentionally identical");assert.notEqual(longA.commandHash,longB.commandHash,"candidate hashes must include command content beyond the display preview");
   const local=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"python",args:["verify.py"]});
   assert.equal(local.networkLike,false);assert.equal(local.packageManager,false);assert.equal(local.localFileMutationLike,false);assert.equal(local.persistentMutationLike,false);assert.deepEqual(local.hosts,[]);
   const localWrite=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"python",args:["-c","p='/tmp/stage.json'; open(p,'w').write('v2')"]});
@@ -365,7 +369,7 @@ test("native stages and semantically audits multi-record evidence batches before
       if(turn===4){
         const checkpoint=request.messages.find(message=>message.role==="developer"&&/batch-evidence commit checkpoint/i.test(String(message.content||"")));assert.ok(checkpoint);
         assert.match(String(checkpoint.content),/authority, specificity, and chronology/i);assert.match(String(checkpoint.content),/source\/citation references/i);
-        return {text:"",toolCalls:[{id:"submit-too-early",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})}],usage:{}};
+        return {text:"",toolCalls:[{id:"submit-too-early",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1),(2)"]})}],usage:{}};
       }
       if(turn===5){
         const blocked=request.messages.find(message=>message.role==="tool"&&message.toolCallId==="submit-too-early");assert.ok(blocked);assert.match(String(blocked.content),/batch-evidence commit guard/i);
@@ -379,17 +383,17 @@ test("native stages and semantically audits multi-record evidence batches before
         assert.equal(request.toolChoice,"none");assert.deepEqual(request.tools,[]);
         return {text:batchEvidencePrecommitVerdict(),toolCalls:[],usage:{}};
       }
-      if(turn===7)return {text:"",toolCalls:[{id:"submit-after-audit-1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})}],usage:{}};
-      if(turn===8)return {text:"",toolCalls:[{id:"submit-after-audit-2",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (2)"]})}],usage:{}};
+      if(turn===7)return {text:"",toolCalls:[{id:"submit-after-audit-1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1),(2)"]})}],usage:{}};
+      if(turn===8)return {text:"all outputs audited and submitted",toolCalls:[],usage:{}};
       return {text:"all outputs audited and submitted",toolCalls:[],usage:{}};
     },
     executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
   });
-  assert.equal(result.text,"all outputs audited and submitted");assert.equal(executed.includes("submit-too-early"),false);assert.deepEqual(executed,["probe-1","probe-2","probe-3","closure-audit","submit-after-audit-1","submit-after-audit-2"]);
+  assert.equal(result.text,"all outputs audited and submitted");assert.equal(executed.includes("submit-too-early"),false);assert.deepEqual(executed,["probe-1","probe-2","probe-3","closure-audit","submit-after-audit-1"]);
   const checkpoint=events.find(event=>event.name==="native.progress.global_constraint_planning_checkpoint");assert.ok(checkpoint);assert.equal(checkpoint.data?.mode,"batch_evidence_commit");
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_requested").length,1);assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_completed").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_blocked").length,1);assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate_requested").length,1);assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate"&&event.status==="completed").length,1);assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_audited").length,1);
-  const carries=events.filter(event=>event.name==="native.progress.batch_evidence_commit_validation_carried");assert.equal(carries.length,2);assert.deepEqual(carries.map(event=>[event.data?.fromEditRevision,event.data?.toEditRevision]),[[0,1],[1,2]]);
+  const carries=events.filter(event=>event.name==="native.progress.batch_evidence_commit_validation_carried");assert.equal(carries.length,1);assert.deepEqual(carries.map(event=>[event.data?.fromEditRevision,event.data?.toEditRevision]),[[0,1]]);
   assert.equal(events.filter(event=>event.name==="native.completion.batch_evidence_gate_skipped").length,1);assert.equal(events.filter(event=>event.name==="native.completion.gate").length,0);
 });
 
@@ -503,6 +507,64 @@ test("native batch evidence precommit validation is invalidated by a staged work
   assert.equal(events.filter(event=>event.name==="native.completion.batch_evidence_gate_skipped").length,1);
 });
 
+test("native batch evidence precommit authorization is bound to the exact staged mutation candidate",async()=>{
+  const events=[],executed=[];let turn=0;
+  const commit=(id,value)=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c",`INSERT INTO decisions(id) VALUES (${value})`]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:12,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued record, reconcile the authoritative evidence and submit the complete decision batch to the remote portal."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turn++;
+      if(turn<=3)return {text:"",toolCalls:[{id:`probe-${turn}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`probe-${turn}.mjs`]})}],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[commit("candidate-a",1)],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[{id:"closure-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["closure-audit.mjs"]})}],usage:{}};
+      if(turn===6){
+        const gate=request.messages.findLast(message=>message.role==="developer"&&/staged-mutation binding/i.test(String(message.content||"")));assert.ok(gate);assert.match(String(gate.content),/VALUES \(1\)/);assert.match(String(gate.content),/candidate_sha256=[a-f0-9]{64}/i);
+        return {text:batchEvidencePrecommitVerdict({reason:"Candidate A is semantically supported."}),toolCalls:[],usage:{}};
+      }
+      if(turn===7)return {text:"",toolCalls:[commit("candidate-b-before-reaudit",2)],usage:{}};
+      if(turn===8){
+        const gate=request.messages.findLast(message=>message.role==="developer"&&/staged-mutation binding/i.test(String(message.content||"")));assert.ok(gate);assert.match(String(gate.content),/VALUES \(2\)/);assert.doesNotMatch(String(gate.content),/VALUES \(1\)/);
+        return {text:batchEvidencePrecommitVerdict({reason:"Candidate B is independently audited and semantically supported."}),toolCalls:[],usage:{}};
+      }
+      if(turn===9)return {text:"",toolCalls:[commit("candidate-b-after-reaudit",2)],usage:{}};
+      return {text:"batch submitted",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(result.text,"batch submitted");
+  assert.deepEqual(executed,["probe-1","probe-2","probe-3","closure-audit","candidate-b-after-reaudit"]);
+  const invalidations=events.filter(event=>event.name==="native.progress.batch_evidence_precommit_validation_invalidated"&&event.data?.reason==="staged_mutation_candidate_changed");assert.equal(invalidations.length,1);assert.ok(invalidations[0].data?.previousCandidateHash);assert.ok(invalidations[0].data?.currentCandidateHash);assert.notEqual(invalidations[0].data?.previousCandidateHash,invalidations[0].data?.currentCandidateHash);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_completed").length,1,"candidate drift reuses the still-fresh evidence closure but must rerun the exact-candidate semantic gate");
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate"&&event.status==="completed").length,2);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_commit_validation_carried").length,1);
+});
+
+test("native audited batch commit preserves a self-admitted postcommit gap without automatic corrective mutation",async()=>{
+  const events=[],executed=[];let turn=0;
+  const commit={id:"commit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})};
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxModelTurns:12,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued record, reconcile the authoritative evidence and submit the complete decision batch to the remote portal."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turn++;
+      if(turn<=3)return {text:"",toolCalls:[{id:`probe-${turn}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`probe-${turn}.mjs`]})}],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[commit],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[{id:"closure-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["closure-audit.mjs"]})}],usage:{}};
+      if(turn===6)return {text:batchEvidencePrecommitVerdict({reason:"The exact staged mutation is safe to persist."}),toolCalls:[],usage:{}};
+      if(turn===7)return {text:"",toolCalls:[commit],usage:{}};
+      return {text:"Partial analysis; required data not recovered. I could not establish the missing value, so the final output was not created.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.match(result.text,/required data not recovered/i);assert.equal(turn,8,"postcommit self-admission must return instead of opening another provider recovery turn");
+  assert.deepEqual(executed,["probe-1","probe-2","probe-3","closure-audit","commit"]);
+  assert.equal(events.filter(event=>event.name==="native.completion.self_admitted_gap").length,0);
+  const preserved=events.filter(event=>event.name==="native.completion.batch_evidence_postcommit_gap_preserved");assert.equal(preserved.length,1);assert.equal(preserved[0].data?.reason,"semantic_repair_requires_new_precommit_audit");
+});
+
 test("native batch evidence precommit validation is invalidated by a local staged terminal file mutation",async()=>{
   const events=[],executed=[];let turn=0;
   const gateVerdict={text:batchEvidencePrecommitVerdict({reason:"The current staged revision passes the complete semantic precommit audit."}),toolCalls:[],usage:{}};
@@ -567,7 +629,7 @@ test("native incomplete batch evidence precommit verdict keeps persistence locke
   assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_audited").length,1);assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_commit_validation_carried").length,1);
 });
 
-test("native batch evidence precommit keeps mutation-generated outputs post-write and avoids zero-write completion recovery",async()=>{
+test("native batch evidence precommit requires generated dependencies inside the audited mutation and avoids zero-write completion recovery",async()=>{
   const events=[],executed=[];let turn=0;
   const result=await runNativeAgentTurn({
     model:"test-model",provider:"fixture",semanticCompletionGate:true,maxModelTurns:14,maxToolCalls:24,onEvent:event=>events.push(event),
@@ -582,20 +644,22 @@ test("native batch evidence precommit keeps mutation-generated outputs post-writ
         const gate=request.messages.findLast(message=>message.role==="developer"&&/batch-evidence precommit audit/i.test(String(message.content||"")));assert.ok(gate);
         assert.match(String(gate.content),/facts and constraints that can exist before the first persistent write/i);
         assert.match(String(gate.content),/generated identifier\/reference/i);
-        assert.match(String(gate.content),/post-write obligation/i);
+        assert.match(String(gate.content),/same tool execution/i);
+        assert.match(String(gate.content),/future model turn/i);
         return {text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["one staged record still needs a pre-write policy cross-check"],reason:"A focused pre-write semantic check is still missing."}),toolCalls:[],usage:{}};
       }
       if(turn===7)return {text:"I cannot complete the batch yet.",toolCalls:[],usage:{}};
       if(turn===8){
         const guard=request.messages.findLast(message=>message.role==="developer"&&/batch-evidence initial-commit guard/i.test(String(message.content||"")));assert.ok(guard);
         assert.match(String(guard.content),/generic completion recovery is not applicable/i);
-        assert.match(String(guard.content),/generated identifiers\/references/i);
+        assert.match(String(guard.content),/same audited persistent tool execution/i);
+        assert.match(String(guard.content),/Do not defer dependent records/i);
         return {text:"",toolCalls:[{id:"focused-prewrite-check",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["focused-prewrite-check.mjs"]})}],usage:{}};
       }
       if(turn===9)return {text:"",toolCalls:[{id:"commit-after-focused-check-before-gate",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})}],usage:{}};
       if(turn===10){
         const gate=request.messages.findLast(message=>message.role==="developer"&&/batch-evidence precommit audit/i.test(String(message.content||"")));assert.ok(gate);
-        return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"All pre-write semantic decisions and dependency ordering are supported; generated references and final readback remain post-write verification obligations."}),toolCalls:[],usage:{}};
+        return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"All pre-write semantic decisions are supported; any necessary generated-reference dependency is performed transactionally inside the exact audited mutation, with final readback left to post-write verification."}),toolCalls:[],usage:{}};
       }
       if(turn===11)return {text:"",toolCalls:[{id:"commit-after-complete-gate",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})}],usage:{}};
       return {text:"batch submitted",toolCalls:[],usage:{}};

@@ -7,13 +7,28 @@ import { readJobVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
 
 const root=resolve(fileURLToPath(new URL("..",import.meta.url))),validationDir=join(root,".harbor-validation"),jobsDir=join(root,".harbor-jobs");
 const watch=process.argv.includes("--watch"),intervalMs=Math.max(2000,Number(process.env.TREBELL_WATCHDOG_INTERVAL_MS||5000));
+const explicitTarget=process.argv.find(arg=>arg.startsWith("--target="))?.slice("--target=".length)||null;
+if(explicitTarget&&!['auto','pair','native-rerun'].includes(explicitTarget))throw new Error(`Invalid watchdog --target=${explicitTarget}; expected auto, pair, or native-rerun.`);
+const targetMode=explicitTarget||"auto";
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function json(path){try{return JSON.parse(String(await readFile(path,"utf8")).replace(/^\uFEFF/,""))}catch{return null}}
 async function newestTrialDir(jobName){
   let entries=[];try{entries=await readdir(join(jobsDir,jobName),{withFileTypes:true})}catch{return null}
-  const dirs=entries.filter(entry=>entry.isDirectory());return dirs[0]?join(jobsDir,jobName,dirs[0].name):null;
+  const dirs=entries.filter(entry=>entry.isDirectory());
+  const ranked=await Promise.all(dirs.map(async entry=>{const path=join(jobsDir,jobName,entry.name);try{const info=await stat(path);return {path,createdMs:Number(info.birthtimeMs||info.ctimeMs||info.mtimeMs||0)}}catch{return {path,createdMs:0}}}));
+  ranked.sort((a,b)=>b.createdMs-a.createdMs||b.path.localeCompare(a.path));return ranked[0]?.path||null;
 }
 async function fileState(path){try{const info=await stat(path);return {bytes:info.size,lastWriteAt:info.mtime.toISOString(),ageSeconds:Math.max(0,Math.round((Date.now()-info.mtimeMs)/1000))}}catch{return null}}
+function runStampMs(value){
+  const stamp=String(value||"").match(/(\d{8}T\d{6}Z)(?:$|[^0-9])/i)?.[1];if(!stamp)return 0;
+  const iso=`${stamp.slice(0,4)}-${stamp.slice(4,6)}-${stamp.slice(6,8)}T${stamp.slice(9,11)}:${stamp.slice(11,13)}:${stamp.slice(13,15)}Z`,ms=Date.parse(iso);return Number.isFinite(ms)?ms:0;
+}
+function reportTimeMs(pointer,report={}){const parsed=Date.parse(String(report?.updatedAt||""));return Number.isFinite(parsed)?parsed:runStampMs(pointer?.pairId)}
+function sameRunConfiguration(pairPointer,pairReport,rerunPointer,rerunReport){
+  const left={task:pairReport?.task??pairPointer?.task,model:pairReport?.model??pairPointer?.model,reasoningEffort:pairReport?.reasoningEffort??pairPointer?.reasoningEffort,serviceTier:pairReport?.serviceTier??pairPointer?.serviceTier,hostedWebSearch:pairReport?.hostedWebSearch??pairPointer?.hostedWebSearch};
+  const right={task:rerunReport?.task??rerunPointer?.task,model:rerunReport?.model??rerunPointer?.model,reasoningEffort:rerunReport?.reasoningEffort??rerunPointer?.reasoningEffort,serviceTier:rerunReport?.serviceTier??rerunPointer?.serviceTier,hostedWebSearch:rerunReport?.hostedWebSearch??rerunPointer?.hostedWebSearch};
+  return Object.keys(left).every(key=>left[key]!=null&&right[key]!=null&&left[key]===right[key]);
+}
 async function laneState(lane,report,recovered=null){
   const sourceLabel=lane.sourceLabel||lane.label,trialDir=await newestTrialDir(lane.jobName),job=report?.jobs?.find(item=>item.label===sourceLabel)||null;
   const liveEvidence=job?null:lane.harness==="native"?await recoverNativeEventEvidence(jobsDir,lane.jobName,{serviceTier:report?.serviceTier||"standard"}):lane.harness==="codex"?await recoverCodexSessionEvidence(jobsDir,lane.jobName,{serviceTier:report?.serviceTier||"standard"}):null;
@@ -41,15 +56,21 @@ async function laneState(lane,report,recovered=null){
 function money(value,{lowerBound=false}={}){return value==null?"-":`${lowerBound?"≥":""}$${Number(value).toFixed(4)}`}
 function count(value){return value==null?"-":Number(value).toLocaleString("en-US")}
 async function snapshot(){
-  const pointer=await json(join(validationDir,"terminal-bench-latest.json"));
+  const pairPointer=await json(join(validationDir,"terminal-bench-latest.json")),rerunPointer=await json(join(validationDir,"terminal-bench-native-rerun-latest.json"));
+  const pairReport=pairPointer?.reportPath?await json(pairPointer.reportPath)||{}:{},rerunReport=rerunPointer?.reportPath?await json(rerunPointer.reportPath)||{}:{};
+  const pairTime=reportTimeMs(pairPointer,pairReport),rerunTime=reportTimeMs(rerunPointer,rerunReport);
+  const selectRerun=targetMode==="native-rerun"||(targetMode==="auto"&&Boolean(rerunPointer)&&(!pairPointer||rerunTime>pairTime));
+  if(targetMode==="pair"&&!pairPointer)throw new Error("No saved Terminal-Bench pair pointer found yet.");
+  if(selectRerun&&!rerunPointer)throw new Error("No saved standalone Native rerun pointer found yet.");
+  const pointer=selectRerun?rerunPointer:pairPointer;
   if(!pointer)throw new Error("No saved Terminal-Bench run pointer found yet.");
-  const report=await json(pointer.reportPath)||{};
+  const report=selectRerun?rerunReport:pairReport;
   const recovered=await json(String(pointer.reportPath||"").replace(/\.json$/,".recovered-verifier.json"));
-  const lanes=await Promise.all((report.lanes||pointer.lanes||[]).map(lane=>laneState(lane,report,recovered)));
-  const rerunPointer=await json(join(validationDir,"terminal-bench-native-rerun-latest.json"));
+  let lanes=await Promise.all((report.lanes||pointer.lanes||[]).map(lane=>laneState(selectRerun?{...lane,label:"native-rerun",sourceLabel:"native"}:lane,report,recovered)));
   let nativeRerun=null;
-  if(rerunPointer?.reportPath&&rerunPointer?.task===pointer.task&&rerunPointer?.model===pointer.model){
-    const rerunReport=await json(rerunPointer.reportPath)||{},rerunRecovered=await json(String(rerunPointer.reportPath||"").replace(/\.json$/,".recovered-verifier.json"));
+  const overlayRerun=!selectRerun&&rerunPointer?.reportPath&&sameRunConfiguration(pairPointer,pairReport,rerunPointer,rerunReport)&&rerunTime>=pairTime;
+  if(overlayRerun){
+    const rerunRecovered=await json(String(rerunPointer.reportPath||"").replace(/\.json$/,".recovered-verifier.json"));
     const sourceLane=(rerunReport.lanes||rerunPointer.lanes||[]).find(lane=>lane.label==="native");
     if(sourceLane){
       nativeRerun=await laneState({...sourceLane,label:"native-rerun",sourceLabel:"native"},rerunReport,rerunRecovered);
@@ -59,6 +80,7 @@ async function snapshot(){
   }
   return {
     capturedAt:new Date().toISOString(),
+    targetMode:selectRerun?"native-rerun":"pair",
     pairId:pointer.pairId,
     task:pointer.task,
     model:report.model??pointer.model??null,
@@ -69,12 +91,12 @@ async function snapshot(){
     sameServiceTier:report.sameServiceTier??null,
     sourceGitHead:report.sourceGitHead??pointer.sourceGitHead??null,
     sourceTrackedDirty:report.sourceTrackedDirty??pointer.sourceTrackedDirty??null,
-    parallel:pointer.parallel,
+    parallel:report.parallel??pointer.parallel,
     complete:Boolean(report.complete),
     infrastructureInterrupted:Boolean(report.infrastructureInterrupted),
     infrastructureComparable:report.infrastructureComparable??null,
     reportPath:pointer.reportPath,
-    nativeRerunReportPath:nativeRerun?.sourceReportPath||null,
+    nativeRerunReportPath:selectRerun?pointer.reportPath:nativeRerun?.sourceReportPath||null,
     lanes:nativeRerun?[lanes[0],nativeRerun,...lanes.slice(1)]:lanes,
   };
 }
@@ -93,6 +115,7 @@ function render(snap,saved){
   const lines=[];
   lines.push(`Trebell benchmark watchdog  ${snap.capturedAt}`);
   lines.push(`Pair: ${snap.pairId}`);
+  lines.push(`Target: ${snap.targetMode==="native-rerun"?"STANDALONE NATIVE RERUN":"PAIR"}`);
   lines.push(`Task: ${snap.task}`);
   lines.push(`Model: ${snap.model||"-"}   Reasoning: ${snap.reasoningEffort||"-"}   Tier: ${snap.serviceTier||"-"}   Hosted web search: ${snap.hostedWebSearch||"-"}`);
   if(snap.sourceGitHead||snap.sourceTrackedDirty!=null)lines.push(`Source: ${snap.sourceGitHead||"-"}   Tracked dirty: ${snap.sourceTrackedDirty==null?"-":snap.sourceTrackedDirty?"YES":"NO"}`);
