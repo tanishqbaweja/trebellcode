@@ -2604,8 +2604,14 @@ export async function runNativeAgentTurn({
       const exhaustedBatchEvidencePersistentCandidate=batchEvidencePersistentCandidate&&batchEvidencePrecommitRepairWindows>=2&&batchEvidencePrecommitTerminalBlockerRevision===editRevision;
       if(exhaustedBatchEvidencePersistentCandidate){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
+        const blockedRecoveryMutation=completionRecoveryEpoch>0&&completionRecoveryEditRequired&&recoveryCorrectiveEditCall(call);
+        if(blockedRecoveryMutation){
+          completionRecoveryEditResponsesRemaining=0;completionRecoveryEditRequired=false;completionRecoveryEditRequiredMisses=0;completionRecoverySupportWritesRemaining=0;
+          conversation.push({role:"developer",content:"Trebell closed the current semantic-recovery edit debt because precommit safety has already exhausted the persistent mutation allowance for this external-state revision. The requested corrective action was attempted but deliberately refused by the stricter precommit guard. Do not retry that mutation merely to satisfy recovery bookkeeping; propose the best supported completion candidate so the semantic gate can judge the blocked state."});
+          emit(onEvent,{name:"native.completion.recovery_edit_skipped",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"precommit_repair_exhausted"}});
+        }
         conversation.push({role:"tool",toolCallId:callId,content:"Trebell precommit repair allowance is exhausted for this external-state revision, so this persistent retry was not executed or re-audited. Persistence remains locked. State the concrete unresolved blocker and finish with the best supported result; do not retry this candidate again unless a genuinely new external-state revision becomes available."});
-        emit(onEvent,{name:"native.progress.batch_evidence_precommit_exhausted_candidate_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,editRevision,repairWindows:batchEvidencePrecommitRepairWindows,reason:"repair_exhausted"}});
+        emit(onEvent,{name:"native.progress.batch_evidence_precommit_exhausted_candidate_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,editRevision,repairWindows:batchEvidencePrecommitRepairWindows,reason:"repair_exhausted",recoveryEditDebtClosed:blockedRecoveryMutation}});
         callIndex++;continue;
       }
       const batchEvidenceCandidateLeaseMismatch=batchEvidencePersistentCandidate&&constraintCommitValidatedRevision===editRevision&&(!batchEvidenceValidatedMutationHash||batchEvidenceValidatedMutationHash!==currentPersistentCandidateHash);

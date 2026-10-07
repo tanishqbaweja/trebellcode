@@ -1162,6 +1162,48 @@ test("native precommit repair windows exhaust after two rejected audits and bloc
   assert.equal(result.text,"precommit blocker remains after bounded repair");
 });
 
+test("native recovery closes an active edit debt when its batch precommit repair later exhausts",async()=>{
+  const events=[],executed=[];let ordinary=0,precommitGates=0,semanticGates=0;
+  const audit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})});
+  const incompletePrecommit=()=>({text:batchEvidencePrecommitVerdict({status:"incomplete",progress:"uncertain",edit_support:"supported",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["candidate-local precommit safety is still unresolved"],reason:"The bounded precommit repair has not established safe persistence."}),toolCalls:[],usage:{}});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxCompletionRecoveryEpochs:2,maxModelTurns:20,maxToolCalls:32,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued case, reconcile the authoritative evidence, then submit the complete decision batch to the remote system."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_process",tools:[{name:"start"},{name:"status"}]}],
+    providerTurn:async request=>{
+      if(request.metadata?.batchEvidencePostcommitGate)throw new Error("postcommit gate should be unreachable because no persistent write is authorized");
+      if(request.metadata?.batchEvidencePrecommitGate){precommitGates++;return incompletePrecommit()}
+      if(request.metadata?.completionGate){
+        semanticGates++;
+        if(semanticGates===1)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"allowed","recovery_mode":"edit","constraint_audit":[],"unresolved":["submit the audited staged batch"],"reason":"Existing evidence supports the retained state-changing action."}',toolCalls:[],usage:{}};
+        return {text:'{"status":"blocked","progress":"unchanged","edit_support":"unsupported","mutation_safety":"forbidden","recovery_mode":"none","constraint_audit":[],"unresolved":["precommit safety budget is exhausted for this external-state revision"],"reason":"Persistence is currently safety-blocked; no legal corrective mutation remains on this revision."}',toolCalls:[],usage:{}};
+      }
+      ordinary++;
+      if(ordinary===1)return {text:"The staged batch is ready for the required submission.",toolCalls:[],usage:{}};
+      if(ordinary===2)return {text:"",toolCalls:[commit("recovery-submit-1")],usage:{}};
+      if(ordinary===3){
+        assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});
+        return {text:"",toolCalls:[audit("closure-audit")],usage:{}};
+      }
+      if(ordinary===4)return {text:"",toolCalls:[commit("recovery-submit-2")],usage:{}};
+      if(ordinary===5)return {text:"",toolCalls:[commit("recovery-submit-3")],usage:{}};
+      if(ordinary===6)return {text:"",toolCalls:[commit("recovery-submit-after-exhaustion")],usage:{}};
+      if(ordinary===7)return {text:"The required persistence was attempted but Trebell safety refused it; completion is blocked.",toolCalls:[],usage:{}};
+      throw new Error("unexpected ordinary provider call "+ordinary);
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call);},
+  });
+  assert.equal(precommitGates,3);
+  assert.equal(semanticGates,2);
+  assert.match(result.text,/safety refused/i);
+  assert.equal(executed.includes("recovery-submit-1"),false);assert.equal(executed.includes("recovery-submit-2"),false);assert.equal(executed.includes("recovery-submit-3"),false);assert.equal(executed.includes("recovery-submit-after-exhaustion"),false);
+  assert.equal(executed.includes("closure-audit"),true);
+  const exhausted=events.find(event=>event.name==="native.progress.batch_evidence_precommit_exhausted_candidate_blocked"&&event.data?.callId==="recovery-submit-after-exhaustion");assert.ok(exhausted);assert.equal(exhausted.data?.recoveryEditDebtClosed,true);
+  const skipped=events.find(event=>event.name==="native.completion.recovery_edit_skipped"&&event.data?.reason==="precommit_repair_exhausted");assert.ok(skipped);
+  assert.equal(events.filter(event=>event.name==="native.turn.blocked"&&event.data?.reason==="native_recovery_edit_not_called").length,0);
+});
+
 test("native batch evidence precommit requires generated dependencies inside the audited mutation and avoids zero-write completion recovery",async()=>{
   const events=[],executed=[];let turn=0;
   const result=await runNativeAgentTurn({
