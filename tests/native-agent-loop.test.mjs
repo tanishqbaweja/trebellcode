@@ -1094,6 +1094,7 @@ test("native precommit repair windows exhaust after two rejected audits and bloc
   });
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_repair_window").length,2);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_repair_exhausted").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_action_required"&&event.data?.persistentRetry===true).length,0);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate").length,3);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_exhausted_candidate_blocked").length,1);
   assert.equal(executed.includes("commit-4-after-exhaustion"),false);
