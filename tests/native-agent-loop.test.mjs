@@ -37,7 +37,13 @@ test("native precommit repair gives a multi-gap audit at most two focused mutati
       if(turn===5)return {text:"",toolCalls:[read("initial-closure-audit")],usage:{}};
       if(turn===6)return {text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["repair staged engine parity","stage the missing decision batch"],reason:"Two independent pre-write gaps remain."}),toolCalls:[],usage:{}};
       if(turn===7)return {text:"",toolCalls:[stage("repair-part-a","part-a.json")],usage:{}};
-      if(turn===8)return {text:"",toolCalls:[read("focused-between-repairs")],usage:{}};
+      if(turn===8){
+        const continuation=request.messages.findLast(message=>message.role==="developer"&&/precommit repair convergence/i.test(String(message.content||"")));assert.ok(continuation);
+        assert.match(String(continuation.content),/Remote\/read-only external evidence remains closed/i);
+        assert.match(String(continuation.content),/local cached or staged artifacts/i);
+        assert.doesNotMatch(String(continuation.content),/another focused read or reversible staged change/i);
+        return {text:"",toolCalls:[read("focused-between-repairs")],usage:{}};
+      }
       if(turn===9)return {text:"",toolCalls:[stage("repair-part-b","part-b.json")],usage:{}};
       if(turn===10)return {text:"",toolCalls:[stage("repair-part-c-too-late","part-c.json")],usage:{}};
       if(turn===11)return {text:"",toolCalls:[commit("commit-after-multipart-repair")],usage:{}};
@@ -95,7 +101,7 @@ test("native precommit repair reopens only two focused read-only evidence respon
   assert.equal(result.text,"batch submitted after focused repair evidence");
   assert.ok(executed.includes("repair-evidence-1"));assert.ok(executed.includes("repair-evidence-2"));assert.equal(executed.includes("repair-evidence-3-blocked"),false);assert.ok(executed.includes("repair-stage"));
   const windows=events.filter(event=>event.name==="native.progress.batch_evidence_precommit_repair_window");assert.equal(windows.length,1);assert.equal(windows[0]?.data?.maxObservationResponses,2);
-  const escalations=events.filter(event=>event.name==="native.progress.external_observation_escalation");assert.equal(escalations.length,1);assert.equal(escalations[0]?.data?.observationRounds,8);
+  const escalations=events.filter(event=>event.name==="native.progress.external_observation_escalation");assert.equal(escalations.length,1);assert.equal(escalations[0]?.data?.mode,"precommit_repair");assert.equal(escalations[0]?.data?.observationRounds,2);assert.equal(escalations[0]?.data?.maxRepairObservationResponses,2);
   const blocked=events.filter(event=>event.name==="native.progress.external_observation_call_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.callId,"repair-evidence-3-blocked");
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_turn").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
