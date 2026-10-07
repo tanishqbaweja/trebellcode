@@ -57,6 +57,40 @@ test("native designated batch closure audit bypasses the external observation ca
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
 });
 
+test("native exhausted precommit repair evidence permits one batched staging turn then requires persistence retry",async()=>{
+  const events=[],executed=[];let turn=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const stage=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c",`from pathlib import Path; Path('/tmp/${id}.json').write_text('repaired')`]})});
+  const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:24,maxToolCalls:48,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued case, reconcile authoritative evidence and submit the complete decision batch to the remote system."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turn++;
+      if(turn<=3)return {text:"",toolCalls:[read("probe-"+turn)],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[commit("commit-before-repair")],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[read("initial-closure-audit")],usage:{}};
+      if(turn===6)return {text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["one focused repair remains"],reason:"The staged batch needs bounded repair evidence."}),toolCalls:[],usage:{}};
+      if(turn>=7&&turn<=14)return {text:"",toolCalls:[read("repair-read-"+turn)],usage:{}};
+      if(turn===15)return {text:"",toolCalls:[stage("stage-a"),stage("stage-b")],usage:{}};
+      if(turn===16)return {text:"",toolCalls:[stage("late-stage")],usage:{}};
+      if(turn===17)return {text:"",toolCalls:[commit("commit-after-repair")],usage:{}};
+      if(turn===18){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("repair-closure-audit")],usage:{}}}
+      if(turn===19)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"The batched staged repair resolves the remaining pre-write condition."}),toolCalls:[],usage:{}};
+      return {text:"batch submitted after converged repair",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(result.text,"batch submitted after converged repair");
+  assert.ok(executed.includes("stage-a"));assert.ok(executed.includes("stage-b"));assert.equal(executed.includes("late-stage"),false);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_turn").length,1);
+  const blocked=events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.callId,"late-stage");
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_retry_required").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_mutation_applied").length,1);
+});
+
 test("external-state batch evidence budget counts local read-only analysis rounds without blocking staged progress or closure audit",async()=>{
   const events=[],executed=[];let turn=0;
   const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","from pathlib import Path; print(Path('/tmp/evidence.json').exists())"]})});

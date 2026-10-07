@@ -1099,7 +1099,7 @@ export async function runNativeAgentTurn({
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,constraintPlanningCheckpointInjected=false,constraintCommitCheckpointRevision=-1,constraintCommitValidatedRevision=-1,batchEvidenceCommittedWrites=0,batchEvidenceClosureAuditRequestedRevision=-1,batchEvidenceClosureAuditValidatedRevision=-1,batchEvidenceClosureAuditAutoGateRevision=-1,batchEvidenceClosureAuditMutationKind=null,batchEvidenceClosureAuditExpectedTurn=-1,batchEvidenceClosureAuditCallId=null,batchEvidencePrecommitResolutionPendingRevision=-1,batchEvidencePrecommitTerminalBlockerRevision=-1,batchEvidencePrecommitRepairWindows=0,deliverableCheckpointInjected=false,deliverableEscalationInjected=false,persistentArtifactAuditInjected=false,persistentArtifactAuditPending=false,persistentArtifactAuditRevision=0,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditAssumptionAuditRevision=0,postEditAbstractionEscalationRevision=0,pendingAbstractionRepair=false,abstractionRepairRevision=0,abstractionRepairVerificationPending=false,abstractionRepairVerificationPromptRevision=0,abstractionRepairVerificationGateCandidate=null,abstractionRepairVerificationGateInvalidResponses=0,postEditResidualStructureRevision=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,externalObservationRounds=0,externalObservationCheckpointRevision=-1,externalObservationEscalated=false,actionOutputCapRelaxOnce=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,convergenceFinalizationPending=false,convergenceFinalizationRevision=0,completionGateCandidate=null,completionGateInvalidResponses=0,completionGateChecks=0,completionGateRecoveries=0,completionRecoveryEpoch=0,completionRecoveryMode=null,completionRecoveryEvidenceRoundsRemaining=0,completionRecoveryEditResponsesRemaining=0,completionRecoveryEditConsumedEpoch=0,completionRecoveryPostEditEvidenceResponsesRemaining=0,completionRecoveryEditRequired=false,completionRecoveryEditRequiredMisses=0,completionRecoveryMutationForbidden=false,completionRecoverySupportWritesRemaining=0,completionRecoverySupportVerificationRemaining=0,completionRecoveryImplementationPaths=new Set(),completionRecoverySupportPaths=new Set(),completionRecoveryIncumbent=null,completionRecoveryEditTransaction=null,completionRecoveryIncumbentRestores=0,completionRecoveryIncumbentWorkspaceAligned=true,completionRecoveryTerminalRepairGraceUsed=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
-  let batchEvidencePendingMutationAudit=null,batchEvidencePendingMutationCall=null,batchEvidenceValidatedMutationHash=null;
+  let batchEvidencePendingMutationAudit=null,batchEvidencePendingMutationCall=null,batchEvidenceValidatedMutationHash=null,batchEvidencePostEscalationRepairTurn=-1,batchEvidencePostEscalationRepairPromptTurn=-1;
   const normalizedEditPath=call=>String(safeArguments(call?.arguments).path||"").trim().replace(/\\/g,"/");
   const userRequestedEditPath=path=>{
     const value=String(path||"").trim();if(!value)return false;
@@ -1129,7 +1129,7 @@ export async function runNativeAgentTurn({
       return false;
     }
     batchEvidencePrecommitRepairWindows++;
-    externalObservationRounds=0;externalObservationCheckpointRevision=-1;externalObservationEscalated=false;
+    externalObservationRounds=0;externalObservationCheckpointRevision=-1;externalObservationEscalated=false;batchEvidencePostEscalationRepairTurn=-1;batchEvidencePostEscalationRepairPromptTurn=-1;
     conversation.push({role:"developer",content:"Trebell batch-evidence precommit repair window: the structured precommit audit identified a concrete unresolved semantic condition, so the external-state read-only evidence budget is reopened for one bounded repair cycle. Use this window only on the named precommit gap, batch related checks, repair reversible staged state when evidence supports it, and retry persistence promptly. This does not reopen unrestricted exploration."});
     emit(onEvent,{name:"native.progress.batch_evidence_precommit_repair_window",status:"running",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,repairWindow:batchEvidencePrecommitRepairWindows,maxRepairWindows,reason}});
     return true;
@@ -1323,6 +1323,10 @@ export async function runNativeAgentTurn({
       constraintCommitValidatedRevision=-1;batchEvidenceValidatedMutationHash=null;batchEvidencePendingMutationAudit=null;batchEvidencePendingMutationCall=null;batchEvidenceClosureAuditRequestedRevision=-1;batchEvidenceClosureAuditValidatedRevision=-1;batchEvidenceClosureAuditAutoGateRevision=-1;batchEvidenceClosureAuditMutationKind=null;batchEvidenceClosureAuditExpectedTurn=-1;batchEvidenceClosureAuditCallId=null;batchEvidencePrecommitResolutionPendingRevision=editRevision;batchEvidencePrecommitTerminalBlockerRevision=-1;
       emit(onEvent,{name:"native.progress.batch_evidence_precommit_validation_invalidated",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,reason:"local_staged_payload_mutation",commandHash:terminalAudit.commandHash||null}});
     }
+    if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_terminal"&&name==="run"&&batchEvidenceCommitAuditRequested&&batchEvidencePrecommitResolutionPendingRevision===editRevision&&batchEvidencePrecommitRepairWindows>0&&externalObservationEscalated&&terminalAudit?.localFileMutationLike===true&&terminalAudit?.persistentMutationLike!==true&&batchEvidencePostEscalationRepairTurn<0){
+      batchEvidencePostEscalationRepairTurn=modelTurns;
+      emit(onEvent,{name:"native.progress.batch_evidence_repair_mutation_turn",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,repairWindow:batchEvidencePrecommitRepairWindows}});
+    }
     if(success&&output?.success!==false&&output?.uncertain!==true&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"&&batchEvidenceCommitAuditRequested&&batchEvidenceClosureAuditRequestedRevision===editRevision&&batchEvidenceClosureAuditValidatedRevision!==editRevision&&modelTurns===batchEvidenceClosureAuditExpectedTurn&&callId===batchEvidenceClosureAuditCallId&&terminalAudit?.persistentMutationLike!==true&&terminalAudit?.localFileMutationLike!==true){
       batchEvidenceClosureAuditValidatedRevision=editRevision;batchEvidenceClosureAuditAutoGateRevision=editRevision;batchEvidenceClosureAuditExpectedTurn=-1;batchEvidenceClosureAuditCallId=null;
       emit(onEvent,{name:"native.progress.batch_evidence_closure_audit_completed",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,commandHash:terminalAudit?.commandHash||null,mode:"designated_fresh_read_only_audit"}});
@@ -1330,7 +1334,7 @@ export async function runNativeAgentTurn({
     if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_terminal"&&name==="run"&&externalStateMutationRequested&&terminalAudit?.persistentMutationLike===true){
       const priorEditRevision=editRevision,auditedBatchWrite=batchEvidenceCommitAuditRequested&&constraintCommitValidatedRevision===priorEditRevision&&Boolean(batchEvidenceValidatedMutationHash)&&terminalAudit?.commandHash===batchEvidenceValidatedMutationHash;
       editRevision++;
-      batchEvidencePrecommitRepairWindows=0;
+      batchEvidencePrecommitRepairWindows=0;batchEvidencePostEscalationRepairTurn=-1;batchEvidencePostEscalationRepairPromptTurn=-1;
       if(auditedBatchWrite){
         constraintCommitValidatedRevision=editRevision;batchEvidenceCommittedWrites++;batchEvidenceValidatedMutationHash=null;batchEvidencePendingMutationAudit=null;batchEvidencePendingMutationCall=null;
         emit(onEvent,{name:"native.progress.batch_evidence_commit_validation_carried",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,fromEditRevision:priorEditRevision,toEditRevision:editRevision,mutationKind:terminalAudit.persistentMutationKind||null}});
@@ -1340,7 +1344,7 @@ export async function runNativeAgentTurn({
     if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_process"&&name==="start"&&externalStateMutationRequested&&processMutationAudit?.persistentMutationLike===true){
       const priorEditRevision=editRevision,auditedBatchWrite=batchEvidenceCommitAuditRequested&&constraintCommitValidatedRevision===priorEditRevision&&Boolean(batchEvidenceValidatedMutationHash)&&processMutationAudit?.commandHash===batchEvidenceValidatedMutationHash;
       editRevision++;
-      batchEvidencePrecommitRepairWindows=0;
+      batchEvidencePrecommitRepairWindows=0;batchEvidencePostEscalationRepairTurn=-1;batchEvidencePostEscalationRepairPromptTurn=-1;
       if(auditedBatchWrite){
         constraintCommitValidatedRevision=editRevision;batchEvidenceCommittedWrites++;batchEvidenceValidatedMutationHash=null;batchEvidencePendingMutationAudit=null;batchEvidencePendingMutationCall=null;
         emit(onEvent,{name:"native.progress.batch_evidence_commit_validation_carried",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,fromEditRevision:priorEditRevision,toEditRevision:editRevision,mutationKind:processMutationAudit.persistentMutationKind||"background_process_write"}});
@@ -2319,6 +2323,13 @@ export async function runNativeAgentTurn({
         emit(onEvent,{name:"native.completion.recovery_edit_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"mutation_forbidden"}});
         callIndex++;continue;
       }
+      const postEscalationRepairStagingCall=batchEvidenceCommitAuditRequested&&batchEvidencePrecommitResolutionPendingRevision===editRevision&&batchEvidencePrecommitRepairWindows>0&&externalObservationEscalated&&call?.namespace==="trebell_terminal"&&call?.name==="run"&&terminalAuditForGuard?.localFileMutationLike===true&&terminalAuditForGuard?.persistentMutationLike!==true;
+      if(postEscalationRepairStagingCall&&batchEvidencePostEscalationRepairTurn>=0&&modelTurns>batchEvidencePostEscalationRepairTurn){
+        const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
+        conversation.push({role:"tool",toolCallId:callId,content:"Trebell precommit repair convergence: this additional staged-file mutation was not executed because the exhausted repair-evidence window already used its one cohesive staging-repair model turn. Retry the protected persistent candidate now so the repaired batch can receive a fresh closure/precommit audit, or state the concrete blocker. If that audit still rejects the candidate, a later bounded repair window can reopen focused work. Do not continue an edit-think-edit loop in this repair window."});
+        emit(onEvent,{name:"native.progress.batch_evidence_repair_mutation_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,editRevision,repairWindow:batchEvidencePrecommitRepairWindows,repairTurn:batchEvidencePostEscalationRepairTurn,reason:"post_escalation_repair_turn_used"}});
+        callIndex++;continue;
+      }
       if(externalStateMutationRequested&&externalObservationEscalated&&!completionRecoveryEvidenceBypass&&!designatedBatchEvidenceClosureAuditCall&&externalStateEvidenceCall(call)&&!consolidatedExternalWaitCall(call)){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
         conversation.push({role:"tool",toolCallId:callId,content:"Trebell external-state convergence guard: this read-only evidence call was not executed because the current external-state revision already consumed its bounded evidence allowance. Do not keep paying one model round for more local analysis, repository/source reads, output inspection, or immediate API/status checks. If the only useful next step is waiting for an external condition, combine the wait and decisive recheck into one bounded terminal command or use a background monitor. Otherwise use the evidence already gathered to stage/perform the next legal mutation, finish, or state the concrete blocker."});
@@ -2506,6 +2517,11 @@ export async function runNativeAgentTurn({
         redirected=true;break;
       }
     }
+    if(!redirected&&batchEvidencePostEscalationRepairTurn===modelTurns&&batchEvidencePostEscalationRepairPromptTurn!==modelTurns){
+      batchEvidencePostEscalationRepairPromptTurn=modelTurns;
+      conversation.push({role:"developer",content:"Trebell precommit repair convergence: the read-only repair allowance is exhausted and this response used the one cohesive reversible staging-repair turn. Any additional independent staged edits that belong to this repair should have been batched into this response. On the next model turn, retry the protected persistent candidate so it can receive a fresh closure/precommit audit, or state the concrete unresolved blocker. Do not begin another staged-edit turn in the same repair window."});
+      emit(onEvent,{name:"native.progress.batch_evidence_repair_retry_required",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,repairWindow:batchEvidencePrecommitRepairWindows}});
+    }
     if(redirected)continue;
     if(editRevision>editRevisionBeforeCalls&&completionRecoveryEditResponsesRemaining>0){
       const implementationEdits=verifiedEdits.slice(verifiedEditsBeforeCalls).filter(item=>item&&!item.supportOnly),transactionSnapshots=[];
@@ -2553,6 +2569,8 @@ export async function runNativeAgentTurn({
       externalObservationRounds=0;
       externalObservationCheckpointRevision=-1;
       externalObservationEscalated=false;
+      batchEvidencePostEscalationRepairTurn=-1;
+      batchEvidencePostEscalationRepairPromptTurn=-1;
       completionRecoveryMutationForbidden=false;
     }else if(executedExternalObservation&&!blockedExternalObservation){
       externalObservationRounds++;
