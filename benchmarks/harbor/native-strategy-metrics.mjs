@@ -9,6 +9,9 @@ export function createNativeStrategyMetrics(){
     globalConstraintPlanningCheckpoints:0,
     globalConstraintCommitBlocks:0,
     globalConstraintCommitAudits:0,
+    batchEvidenceClosureAuditRequests:0,
+    batchEvidenceClosureAuditCompletions:0,
+    batchEvidenceClosureAuditBlocks:0,
     batchEvidencePrecommitGateRequests:0,
     batchEvidencePrecommitGateChecks:0,
     batchEvidencePrecommitGateBlocks:0,
@@ -84,6 +87,9 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.progress.global_constraint_planning_checkpoint")target.globalConstraintPlanningCheckpoints=Number(target.globalConstraintPlanningCheckpoints||0)+1;
   else if(name==="native.progress.global_constraint_commit_blocked")target.globalConstraintCommitBlocks=Number(target.globalConstraintCommitBlocks||0)+1;
   else if(name==="native.progress.global_constraint_commit_audited")target.globalConstraintCommitAudits=Number(target.globalConstraintCommitAudits||0)+1;
+  else if(name==="native.progress.batch_evidence_closure_audit_requested")target.batchEvidenceClosureAuditRequests=Number(target.batchEvidenceClosureAuditRequests||0)+1;
+  else if(name==="native.progress.batch_evidence_closure_audit_completed")target.batchEvidenceClosureAuditCompletions=Number(target.batchEvidenceClosureAuditCompletions||0)+1;
+  else if(name==="native.progress.batch_evidence_closure_audit_blocked")target.batchEvidenceClosureAuditBlocks=Number(target.batchEvidenceClosureAuditBlocks||0)+1;
   else if(name==="native.progress.batch_evidence_precommit_gate_requested")target.batchEvidencePrecommitGateRequests=Number(target.batchEvidencePrecommitGateRequests||0)+1;
   else if(name==="native.progress.batch_evidence_precommit_gate"){
     target.batchEvidencePrecommitGateChecks=Number(target.batchEvidencePrecommitGateChecks||0)+1;
