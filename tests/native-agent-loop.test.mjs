@@ -4434,10 +4434,14 @@ test("native completion-gate recovery reopens a bounded post-edit evidence windo
       if(turns===15){
         assert.equal(request.toolChoice,"required");
         const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
-        assert.deepEqual(pairs.sort(),["trebell_terminal/run","trebell_workspace/replace_text"]);
+        assert.deepEqual(pairs.sort(),["trebell_workspace/replace_text"]);
         return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
       }
-      if(turns===16)return {text:"The acceptance condition is now satisfied.",toolCalls:[],usage:{}};
+      if(turns===16){
+        const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
+        assert.deepEqual(pairs.sort(),["trebell_terminal/run"]);
+        return {text:"The acceptance condition is now satisfied.",toolCalls:[],usage:{}};
+      }
       if(turns===17)return {text:'{"status":"complete","unresolved":[],"reason":"The focused recovery produced and verified the required repair."}',toolCalls:[],usage:{}};
       throw new Error("unexpected provider call "+turns);
     },
@@ -4508,17 +4512,12 @@ test("native requires the owed corrective edit before reopening recovery evidenc
       if(turns===8){
         assert.equal(request.toolChoice,"required");
         const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
-        assert.deepEqual(pairs.sort(),["trebell_terminal/run","trebell_workspace/replace_text","trebell_workspace/write_file"]);
+        assert.deepEqual(pairs.sort(),["trebell_workspace/replace_text","trebell_workspace/write_file"]);
         assert.ok(request.messages.some(message=>message.role==="developer"&&/still owes one corrective implementation edit/i.test(String(message.content||""))));
-        return {text:"",toolCalls:[{id:"wrong-evidence",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["too-late.mjs"]}'}],usage:{}};
-      }
-      if(turns===9){
-        assert.equal(request.toolChoice,"required");
-        assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="wrong-evidence"&&/requires the reserved corrective implementation edit/i.test(String(message.content||""))));
         return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
       }
-      if(turns===10)return {text:"The corrected implementation now satisfies acceptance.",toolCalls:[],usage:{}};
-      if(turns===11)return {text:'{"status":"complete","unresolved":[],"reason":"The corrective implementation edit resolved the acceptance failure."}',toolCalls:[],usage:{}};
+      if(turns===9)return {text:"The corrected implementation now satisfies acceptance.",toolCalls:[],usage:{}};
+      if(turns===10)return {text:'{"status":"complete","unresolved":[],"reason":"The corrective implementation edit resolved the acceptance failure."}',toolCalls:[],usage:{}};
       throw new Error("unexpected provider call "+turns);
     },
     executeTool:async call=>{
@@ -4526,7 +4525,7 @@ test("native requires the owed corrective edit before reopening recovery evidenc
       return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0,stdout:"same failure"};
     },
   });
-  assert.equal(turns,11);
+  assert.equal(turns,10);
   assert.deepEqual(executed.filter(id=>!String(id).startsWith("native-recovery-snapshot-")),["initial","evidence-1","evidence-2","repair"]);
   assert.match(result.text,/now satisfies acceptance/i);
   const recoveries=events.filter(event=>event.name==="native.completion.gate_recovery");
@@ -4535,8 +4534,68 @@ test("native requires the owed corrective edit before reopening recovery evidenc
   assert.equal(recoveries[1].data?.evidenceRoundsAllowed,0);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="evidence").length,2);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
-  const nonEditBlocked=events.filter(event=>event.name==="native.completion.recovery_non_edit_call_blocked");assert.equal(nonEditBlocked.length,1);assert.equal(nonEditBlocked[0].data?.callId,"wrong-evidence");
-  const editRequired=events.filter(event=>event.name==="native.completion.recovery_edit_required");assert.ok(editRequired.length>=2);assert.ok(editRequired.every(event=>event.data?.toolSchemaStable===true&&event.data?.visibleToolCount===3&&event.data?.visibleEditToolCount===2));
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_non_edit_call_blocked").length,0);
+  const editRequired=events.filter(event=>event.name==="native.completion.recovery_edit_required");assert.equal(editRequired.length,1);assert.equal(editRequired[0].data?.selectionConstrained,true);assert.equal(editRequired[0].data?.toolSchemaStable,false);assert.equal(editRequired[0].data?.visibleToolCount,2);assert.equal(editRequired[0].data?.visibleEditToolCount,2);
+});
+
+test("native OpenAI recovery keeps stable tool schemas while requiring only legal edit tools",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"openai",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:16,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until the exact acceptance condition passes."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"The current candidate still misses exact acceptance.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"allowed","unresolved":["the implementation still needs a corrective change"],"reason":"Existing evidence supports one concrete implementation repair."}',toolCalls:[],usage:{}};
+      if(turns===4){
+        const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
+        assert.deepEqual(pairs.sort(),["trebell_terminal/run","trebell_workspace/replace_text","trebell_workspace/write_file"]);
+        assert.deepEqual(request.toolChoice,{type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_workspace",name:"replace_text"},{namespace:"trebell_workspace",name:"write_file"}]});
+        return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
+      }
+      if(turns===5)return {text:"The corrected implementation now satisfies exact acceptance.",toolCalls:[],usage:{}};
+      if(turns===6)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","unresolved":[],"reason":"The corrective implementation edit resolved the acceptance failure."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0,stdout:"verified"},
+  });
+  assert.match(result.text,/satisfies exact acceptance/i);
+  const editRequired=events.filter(event=>event.name==="native.completion.recovery_edit_required");assert.equal(editRequired.length,1);assert.equal(editRequired[0].data?.selectionConstrained,true);assert.equal(editRequired[0].data?.toolSchemaStable,true);assert.equal(editRequired[0].data?.visibleToolCount,3);assert.equal(editRequired[0].data?.visibleEditToolCount,2);
+});
+
+test("native external-state recovery fails closed after two non-mutating required-edit responses",async()=>{
+  let turns=0;const events=[],executed=[];
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:16,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the running campaign through its API. The OpenAPI spec is served at the server's /openapi.json path. Change the live config until the measured acceptance target passes."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_process",tools:[{name:"start"},{name:"status"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial-api-write",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/config', json={'mode':'candidate'})"]})}],usage:{}};
+      if(turns===2)return {text:"The live target is still below acceptance.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","unresolved":["live acceptance target still fails"],"reason":"The measured runtime state still misses the target and supports another config mutation."}',toolCalls:[],usage:{}};
+      if(turns===4){
+        assert.equal(request.toolChoice,"required");
+        const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
+        assert.deepEqual(pairs.sort(),["trebell_process/start","trebell_terminal/run"]);
+        return {text:"",toolCalls:[read("wrong-read-1")],usage:{}};
+      }
+      if(turns===5){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/one retry/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[read("wrong-read-2")],usage:{}};
+      }
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return {exitCode:0,stdout:"updated"};},
+  }),error=>error?.code==="native_recovery_edit_not_called");
+  assert.equal(turns,5);
+  assert.deepEqual(executed,["initial-api-write"]);
+  const blocked=events.filter(event=>event.name==="native.completion.recovery_non_edit_call_blocked");assert.equal(blocked.length,2);assert.deepEqual(blocked.map(event=>event.data?.callId),["wrong-read-1","wrong-read-2"]);
+  const retries=events.filter(event=>event.name==="native.completion.recovery_edit_retry"&&event.data?.reason==="non_edit_tool_response");assert.equal(retries.length,1);assert.equal(retries[0].data?.misses,1);
+  const terminalBlock=events.find(event=>event.name==="native.turn.blocked"&&event.data?.reason==="native_recovery_edit_not_called");assert.ok(terminalBlock);assert.equal(terminalBlock.data?.misses,2);
 });
 
 test("native advances recovery without forcing an edit when exhausted evidence explicitly supports no correction",async()=>{
