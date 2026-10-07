@@ -926,6 +926,7 @@ test("native batch evidence precommit authorization is bound to the exact staged
       if(turn===5)return {text:"",toolCalls:[{id:"closure-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["closure-audit.mjs"]})}],usage:{}};
       if(turn===6){
         const gate=request.messages.findLast(message=>message.role==="developer"&&/staged-mutation binding/i.test(String(message.content||"")));assert.ok(gate);assert.match(String(gate.content),/VALUES \(1\)/);assert.match(String(gate.content),/candidate_sha256=[a-f0-9]{64}/i);
+        const scope=request.messages.findLast(message=>message.role==="developer"&&/authorization of this candidate is not a declaration/i.test(String(message.content||"")));assert.ok(scope);assert.match(String(scope.content),/independent downstream task work/i);assert.match(String(scope.content),/semantic precondition/i);assert.match(String(scope.content),/fresh precommit audit/i);
         return {text:batchEvidencePrecommitVerdict({reason:"Candidate A is semantically supported."}),toolCalls:[],usage:{}};
       }
       if(turn===7)return {text:"",toolCalls:[commit("candidate-b",2)],usage:{}};
