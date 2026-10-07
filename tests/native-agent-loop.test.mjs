@@ -110,7 +110,7 @@ test("native precommit repair constrains OpenAI to the owed repair action and fa
   const events=[];let turn=0;
   const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
   const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})});
-  const expectedRepairChoice={type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_workspace",name:"replace_text"}]};
+  const expectedRepairChoice={type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_terminal",name:"run"},{namespace:"trebell_workspace",name:"replace_text"}]};
   await assert.rejects(runNativeAgentTurn({
     model:"test-model",provider:"openai",maxModelTurns:16,maxToolCalls:32,onEvent:event=>events.push(event),
     messages:[{role:"user",content:"For every queued case, reconcile authoritative evidence and submit the complete decision batch to the remote system."}],
@@ -162,7 +162,7 @@ test("native precommit repair does not penalize a mixed response that contains t
       if(turn===7)return {text:"",toolCalls:[read("repair-evidence-1")],usage:{}};
       if(turn===8)return {text:"",toolCalls:[read("repair-evidence-2")],usage:{}};
       if(turn===9){
-        assert.deepEqual(request.toolChoice,{type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_workspace",name:"replace_text"}]});
+        assert.deepEqual(request.toolChoice,{type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_terminal",name:"run"},{namespace:"trebell_workspace",name:"replace_text"}]});
         return {text:"",toolCalls:[read("bad-read-in-mixed-response"),stage("owed-repair")],usage:{}};
       }
       if(turn===10){
@@ -374,7 +374,7 @@ test("native precommit repair re-arms the retained candidate after the first bou
       if(turn===4)return {text:"",toolCalls:[commit("commit-before-repair")],usage:{}};
       if(turn===5)return {text:"",toolCalls:[read("initial-closure-audit")],usage:{}};
       if(turn===6)return {text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["one focused repair remains"],reason:"The staged batch needs bounded repair evidence."}),toolCalls:[],usage:{}};
-      if(turn===7)return {text:"",toolCalls:[stage("workspace-stage-a","stage-a.json","old-a","new-a"),stage("workspace-stage-b","stage-b.json","old-b","new-b")],usage:{}};
+      if(turn===7){assert.ok(request.messages.some(message=>message.role==="developer"&&String(message.content||"").includes("same response after the final repair mutation")));return {text:"",toolCalls:[stage("workspace-stage-a","stage-a.json","old-a","new-a"),stage("workspace-stage-b","stage-b.json","old-b","new-b"),read("post-repair-local-verifier")],usage:{}}}
       if(turn===8){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("repair-closure-audit")],usage:{}}}
       if(turn===9)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"The batched staged repair resolves the remaining pre-write condition."}),toolCalls:[],usage:{}};
       return {text:"batch submitted after converged workspace repair",toolCalls:[],usage:{}};
@@ -386,7 +386,7 @@ test("native precommit repair re-arms the retained candidate after the first bou
     },
   });
   assert.equal(result.text,"batch submitted after converged workspace repair");
-  assert.ok(executed.includes("workspace-stage-a"));assert.ok(executed.includes("workspace-stage-b"));assert.equal(executed.includes("commit-after-repair"),false);
+  assert.ok(executed.includes("workspace-stage-a"));assert.ok(executed.includes("workspace-stage-b"));assert.ok(executed.includes("post-repair-local-verifier"));assert.equal(executed.includes("commit-after-repair"),false);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_turn").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_continuation_allowed").length,0);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_action_retry").length,0);
