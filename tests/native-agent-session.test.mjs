@@ -54,7 +54,7 @@ test("Native session semantic completion gate only streams the accepted answer w
   assert.equal(visible.some(text=>text.includes('"status"')),false);
 });
 
-test("Native OpenAI completion gate preserves tool-schema cache shape and keeps the candidate continuation parent",async()=>{
+test("Native OpenAI completion gate isolates the initial judge and resumes only its bounded retry",async()=>{
   const requests=[],updates=[];let calls=0;
   const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
   const session=new NativeAgentSession({
@@ -65,12 +65,23 @@ test("Native OpenAI completion gate preserves tool-schema cache shape and keeps 
       if(calls===2)return {id:"resp-candidate",provider:"openai",model:"gpt-6-luna",text:"Implemented the requested change.",toolCalls:[],usage:{},telemetry:{providerResponseId:"resp-candidate"}};
       if(calls===3){
         assert.equal(request.metadata?.completionGate,true);
+        assert.equal(request.metadata?.controlGateRetry,false);
         assert.equal(request.promptCacheComparisonResponseId,"resp-candidate");
         assert.equal(request.openAiContinuationResponseId,"");
         assert.equal(request.openAiDisableWebSocket,true);
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,tools);
-        return {id:"resp-gate",provider:"openai",model:"gpt-6-luna",text:'{"status":"complete","unresolved":[],"reason":"The requested workspace edit is present."}',toolCalls:[],usage:{},telemetry:{providerResponseId:"resp-gate"}};
+        return {id:"resp-gate-incomplete",provider:"openai",model:"gpt-6-luna",text:"",toolCalls:[],finishReason:"incomplete",usage:{},telemetry:{providerResponseId:"resp-gate-incomplete"}};
+      }
+      if(calls===4){
+        assert.equal(request.metadata?.completionGate,true);
+        assert.equal(request.metadata?.controlGateRetry,true);
+        assert.equal(request.promptCacheComparisonResponseId,"resp-candidate");
+        assert.equal(request.openAiContinuationResponseId,"resp-gate-incomplete");
+        assert.equal(request.openAiDisableWebSocket,true);
+        assert.equal(request.toolChoice,"none");
+        assert.deepEqual(request.tools,tools);
+        return {id:"resp-gate-complete",provider:"openai",model:"gpt-6-luna",text:'{"status":"complete","unresolved":[],"reason":"The requested workspace edit is present."}',toolCalls:[],usage:{},telemetry:{providerResponseId:"resp-gate-complete"}};
       }
       throw new Error("unexpected provider call");
     },
@@ -78,7 +89,7 @@ test("Native OpenAI completion gate preserves tool-schema cache shape and keeps 
   });
   await session.start({providerSessionId:"openai-semantic-gate",model:"gpt-6-luna"});
   const result=await session.prompt([{type:"text",text:"Modify src/a.mjs to apply the requested change."}]);
-  assert.equal(calls,3);
+  assert.equal(calls,4);
   assert.equal(session.lastProviderResponseId,"resp-candidate");
   assert.equal(result.providerMessageId,"resp-candidate");
   assert.deepEqual(updates.filter(item=>item.update?.sessionUpdate==="agent_message_chunk").map(item=>item.update.content.text),["Implemented the requested change."]);

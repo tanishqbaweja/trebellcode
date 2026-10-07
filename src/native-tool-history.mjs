@@ -185,7 +185,7 @@ function toolCallIdentity(call={}){
 }
 
 function eligibleHistoricalRead(namespace,name){
-  return namespace==="trebell_repo"||ELIGIBLE_READ_RESULTS.has(namespace+"/"+name);
+  return namespace==="trebell_repo"||ELIGIBLE_READ_RESULTS.has(namespace+"/"+name)||(namespace==="trebell_output"&&["inspect","read","search"].includes(name));
 }
 
 function reusableHistoricalReadResult(message={}){

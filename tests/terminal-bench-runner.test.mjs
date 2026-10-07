@@ -577,6 +577,9 @@ test("Terminal-Bench single runner uses an absolute output path and the same saf
   const source=await readFile(new URL("../scripts/run-terminal-bench.mjs",import.meta.url),"utf8");
   assert.match(source,/TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER\|\|3/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER\|\|1/);
+  assert.match(source,/TREBELL_TERMINAL_BENCH_SERVICE_TIER\|\|"fast"/);
+  assert.match(source,/serviceTier==="fast"\?\["--ak","service_tier=fast"\]/);
+  assert.match(source,/Terminal-Bench service tier must be default or fast/);
   assert.match(source,/const output=resolve\(root,/);
   assert.match(source,/--agent-setup-timeout-multiplier/);
   assert.match(source,/--agent-timeout-multiplier/);

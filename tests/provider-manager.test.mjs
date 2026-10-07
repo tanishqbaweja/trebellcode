@@ -325,6 +325,33 @@ test("official OpenAI can compare against a cached response without branching th
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("official OpenAI control-gate retry continues only from the incomplete judge response",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-control-retry-")),bodies=[];let calls=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+      const body=JSON.parse(init.body||"{}");bodies.push(body);calls++;
+      if(calls===1)return Response.json({id:"resp-gate-incomplete",model:body.model,status:"incomplete",incomplete_details:{reason:"max_output_tokens"},output:[],usage:{input_tokens:100,output_tokens:12288,total_tokens:12388}});
+      return Response.json({id:"resp-gate-complete",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:'{"status":"complete"}'}]}],usage:{input_tokens:4,output_tokens:2,total_tokens:6}});
+    }});
+    manager.setKey("openai","oa-key");
+    const token={},schema={type:"object",additionalProperties:false,properties:{status:{type:"string",enum:["complete","incomplete"]}},required:["status"]};
+    const user={role:"user",content:"Implement the change"},candidate={role:"assistant",content:"candidate"},gate={role:"developer",content:"Judge completion"};
+    const gateMessages=[user,candidate,gate];
+    const first=await manager.turn("openai",{model:"gpt-6-luna",messages:gateMessages,tools:[],reasoningEffort:"max",serviceTier:"fast",maxOutputTokens:12288,responseJsonSchema:{name:"trebell_gate",strict:true,schema},promptCacheComparisonResponseId:"resp-candidate",openAiContinuationResponseId:"",[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+    assert.equal(first.finishReason,"incomplete");assert.equal(Object.prototype.hasOwnProperty.call(bodies[0],"previous_response_id"),false);
+    const retryMessages=[...gateMessages,{role:"assistant",content:""},{role:"developer",content:"Return only the required JSON."}];
+    const second=await manager.turn("openai",{model:"gpt-6-luna",messages:retryMessages,tools:[],reasoningEffort:"max",serviceTier:"fast",maxOutputTokens:32768,responseJsonSchema:{name:"trebell_gate",strict:true,schema},promptCacheComparisonResponseId:"resp-candidate",openAiContinuationResponseId:"resp-gate-incomplete",[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+    assert.equal(bodies[1].previous_response_id,"resp-gate-incomplete");
+    assert.equal(bodies[1].max_output_tokens,32768);
+    assert.equal(bodies[1].input.length,1);assert.equal(bodies[1].input[0].role,"developer");
+    assert.deepEqual(bodies[1].text,{format:{type:"json_schema",name:"trebell_gate",strict:true,schema}});
+    assert.deepEqual(bodies[1].reasoning,{effort:"max",context:"current_turn"});
+    assert.equal(bodies[1].service_tier,"fast");
+    assert.deepEqual(bodies[1].prompt_cache_options,{mode:"implicit",comparison_response_id:"resp-candidate"});
+    assert.equal(second.telemetry.responseContinuation.used,true);assert.equal(second.telemetry.responseContinuation.parentId,"resp-gate-incomplete");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI skips an aged continuation parent before it can fail on the wire",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-aged-continuation-")),bodies=[];let calls=0;
   try{

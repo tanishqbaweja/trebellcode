@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compactCompletionGateProviderMessages, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import { compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
@@ -16,6 +16,34 @@ test("completion gate provider view drops superseded Trebell control messages bu
   assert.equal(compacted.count,3);
   assert.equal(compacted.savedChars,"old Trebell checkpoint".length+"older recovery instruction".length+"Trebell turn-budget checkpoint: later but irrelevant to the gate".length);
   assert.equal(original.length,9);
+});
+
+test("batch precommit provider view cools old output evidence but keeps recent evidence and retry control exact",()=>{
+  const original=[{role:"developer",content:"caller policy"},{role:"user",content:"derive and persist all decisions"},{role:"developer",content:"old Trebell checkpoint"}];
+  const toolResults=[];
+  for(let index=0;index<5;index++){
+    const id="inspect-"+index,content=("record-"+index+" authoritative evidence ").repeat(180);
+    original.push({role:"assistant",content:"",toolCalls:[{id,namespace:"trebell_output",name:"inspect",arguments:{handle:"out_fixture",start_line:index+1}}]});
+    const tool={role:"tool",toolCallId:id,content};toolResults.push(tool);original.push(tool);
+  }
+  original.push({role:"assistant",content:"staged batch ready"});
+  original.push({role:"developer",content:"Trebell semantic completion gate — batch-evidence precommit audit. current audit"});
+  original.push({role:"assistant",content:""});
+  original.push({role:"developer",content:"Trebell batch-evidence precommit gate parser could not read the previous control response. Continue the same precommit semantic audit and return only one valid JSON object."});
+  const compacted=compactBatchEvidencePrecommitProviderMessages(original,2);
+  assert.ok(compacted.savedChars>4_000);
+  assert.ok(compacted.cooledToolResults>=2);
+  assert.equal(compacted.removedDeveloperMessages,1);
+  assert.equal(compacted.messages.some(message=>message?.content==="old Trebell checkpoint"),false);
+  assert.equal(compacted.messages.some(message=>String(message?.content||"").includes("batch-evidence precommit audit. current audit")),true);
+  assert.equal(compacted.messages.some(message=>String(message?.content||"").includes("precommit gate parser could not read")),true);
+  const compactedTools=compacted.messages.filter(message=>message?.role==="tool");
+  assert.equal(compactedTools.length,5);
+  assert.match(compactedTools[0].content,/_trebell_cold_read/);
+  assert.match(compactedTools[1].content,/_trebell_cold_read/);
+  assert.equal(compactedTools[2].content,toolResults[2].content);
+  assert.equal(compactedTools[3].content,toolResults[3].content);
+  assert.equal(compactedTools[4].content,toolResults[4].content);
 });
 
 test("native terminal audit metadata records network intent while redacting secrets",()=>{
@@ -436,6 +464,43 @@ test("native malformed batch evidence precommit gate retries once and never unlo
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate_retry").length,1);
   const gates=events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate");assert.deepEqual(gates.map(event=>[event.status,event.data?.verdict]),[["blocked","invalid"],["completed","complete"]]);
   assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_audited").length,1);assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_commit_validation_carried").length,1);
+});
+
+test("native OpenAI batch precommit sends a cooled evidence view and preserves the retry control",async()=>{
+  const events=[],requests=[],executed=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",reasoningEffort:"max",maxModelTurns:10,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued record, reconcile the authoritative evidence and submit the complete decision batch to the remote portal."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(request);turn++;
+      if(turn<=4)return {id:`resp-probe-${turn}`,text:"",toolCalls:[{id:`probe-${turn}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`probe-${turn}.mjs`]})}],usage:{},telemetry:{providerResponseId:`resp-probe-${turn}`}};
+      if(turn===5)return {id:"resp-staged-commit",text:"",toolCalls:[{id:"commit-before-gate",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})}],usage:{},telemetry:{providerResponseId:"resp-staged-commit"}};
+      if(turn===6){
+        assert.equal(request.metadata?.batchEvidencePrecommitGate,true);assert.equal(request.metadata?.controlGateRetry,false);assert.equal(request.reasoningEffort,"max");assert.equal(request.maxOutputTokens,12288);
+        assert.equal(request.responseJsonSchema?.name,"trebell_batch_evidence_precommit_gate");assert.equal(request.responseJsonSchema?.strict,true);
+        const probe1=request.messages.find(message=>message.role==="tool"&&message.toolCallId==="probe-1"),probe4=request.messages.find(message=>message.role==="tool"&&message.toolCallId==="probe-4");
+        assert.ok(probe1);assert.ok(probe4);assert.match(String(probe1.content),/_trebell_output/);assert.doesNotMatch(String(probe1.content),/x{2500}/);assert.match(String(probe4.content),/x{2500}/);
+        return {id:"resp-gate-incomplete",text:"",toolCalls:[],finishReason:"incomplete",usage:{},telemetry:{providerResponseId:"resp-gate-incomplete"}};
+      }
+      if(turn===7){
+        assert.equal(request.metadata?.batchEvidencePrecommitGate,true);assert.equal(request.metadata?.controlGateRetry,true);assert.equal(request.reasoningEffort,"max");assert.equal(request.maxOutputTokens,32768);
+        const retry=request.messages.findLast(message=>message.role==="developer"&&/precommit gate parser could not read/i.test(String(message.content||"")));assert.ok(retry);assert.match(String(retry.content),/continue the same precommit semantic audit/i);
+        const probe1=request.messages.find(message=>message.role==="tool"&&message.toolCallId==="probe-1");assert.ok(probe1);assert.doesNotMatch(String(probe1.content),/x{2500}/);
+        return {id:"resp-gate-complete",text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","constraint_audit":[],"unresolved":[],"reason":"The staged batch is semantically supported and safe to persist."}',toolCalls:[],usage:{},telemetry:{providerResponseId:"resp-gate-complete"}};
+      }
+      if(turn===8)return {id:"resp-commit",text:"",toolCalls:[{id:"commit-after-gate",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})}],usage:{},telemetry:{providerResponseId:"resp-commit"}};
+      return {id:"resp-final",text:"batch submitted",toolCalls:[],usage:{},telemetry:{providerResponseId:"resp-final"}};
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      if(/^probe-/.test(call.id))return {success:true,exitCode:0,preview:`${call.id} `+"x".repeat(5200),_trebell_output:{handle:`out_${call.id}-evidence`,totalBytes:88000,totalLines:1200}};
+      return {success:true,exitCode:0,stdout:"committed"};
+    },
+  });
+  assert.equal(result.text,"batch submitted");assert.equal(executed.includes("commit-before-gate"),false);assert.ok(executed.includes("commit-after-gate"));
+  const compacted=events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate_context_compacted");assert.equal(compacted.length,2);assert.ok(compacted.every(event=>event.data?.cooledToolResults>=1&&event.data?.toolResultSavedChars>1000));
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate_retry").length,1);
 });
 
 test("native batch evidence commit audit requires both multiple records and external persistence",async()=>{
@@ -1043,6 +1108,7 @@ test("native empty control-gate response uses the gate retry instead of final-an
         assert.equal(request.toolChoice,"none");
         assert.equal(request.maxOutputTokens,12288);
         assert.equal(request.reasoningEffort,"max");
+        assert.equal(request.metadata?.controlGateRetry,false);
         assert.equal(request.responseJsonSchema?.name,"trebell_completion_gate");
         assert.equal(request.responseJsonSchema?.strict,true);
         assert.deepEqual(request.responseJsonSchema?.schema?.required,["status","progress","edit_support","mutation_safety","recovery_mode","constraint_audit","unresolved","reason"]);
@@ -1050,11 +1116,12 @@ test("native empty control-gate response uses the gate retry instead of final-an
         return {text:"",toolCalls:[],usage:{}};
       }
       if(turns===4){
-        assert.equal(request.maxOutputTokens,16384);
+        assert.equal(request.maxOutputTokens,32768);
         assert.equal(request.reasoningEffort,"max");
+        assert.equal(request.metadata?.controlGateRetry,true);
+        const originalGate=request.messages.find(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));assert.ok(originalGate);assert.match(String(originalGate.content),/requirement-led audit/i);
         const retry=request.messages.findLast(message=>message.role==="developer"&&/previous control response was incomplete or could not be parsed/i.test(String(message.content||"")));assert.ok(retry);
-        assert.match(String(retry.content),/semantic completion gate/i);
-        assert.match(String(retry.content),/requirement-led audit/i);
+        assert.match(String(retry.content),/continue the same semantic audit/i);
         return {text:'{"status":"complete","progress":"uncertain","edit_support":"uncertain","unresolved":[],"reason":"The requested implementation edit is present."}',toolCalls:[],usage:{}};
       }
       throw new Error("unexpected provider call "+turns);
@@ -1064,7 +1131,7 @@ test("native empty control-gate response uses the gate retry instead of final-an
   assert.equal(result.text,"Done.");
   assert.equal(turns,4);
   assert.equal(events.filter(event=>event.name==="native.completion.gate_retry").length,1);
-  const gateCaps=events.filter(event=>event.name==="native.completion.gate_output_cap");assert.deepEqual(gateCaps.map(event=>[event.data?.maxOutputTokens,event.data?.retry,event.data?.reasoningEffort]),[[12288,false,"max"],[16384,true,"max"]]);
+  const gateCaps=events.filter(event=>event.name==="native.completion.gate_output_cap");assert.deepEqual(gateCaps.map(event=>[event.data?.maxOutputTokens,event.data?.retry,event.data?.reasoningEffort]),[[12288,false,"max"],[32768,true,"max"]]);
   assert.equal(events.some(event=>event.name==="native.model.empty_completion"),false);
   assert.equal(events.some(event=>event.name==="native.turn.blocked"&&event.data?.reason==="native_empty_completion"),false);
 });

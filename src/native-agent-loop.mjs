@@ -4,7 +4,7 @@ import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE, NATIVE_TOOL_SCHEMA_FING
 import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
 import { nativeCommandSemanticError, normalizeNativeCommandArguments } from "./native-command-argv.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
-import { coolVirtualizedToolContent } from "./native-tool-history.mjs";
+import { coolHistoricalReadToolResults, coolVirtualizedToolContent } from "./native-tool-history.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "./openai-response-continuation.mjs";
 import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "./provider-turn.mjs";
 
@@ -19,7 +19,7 @@ const TERMINAL_TOOL_WATCHDOG_SETTLE_GRACE_MS=3_500;
 const ACTION_TURN_MAX_OUTPUT_TOKENS=32_768;
 const CONTROL_GATE_MAX_OUTPUT_TOKENS=8_192;
 const OPENAI_CONTROL_GATE_INITIAL_MAX_OUTPUT_TOKENS=12_288;
-const OPENAI_CONTROL_GATE_RETRY_MAX_OUTPUT_TOKENS=16_384;
+const OPENAI_CONTROL_GATE_RETRY_MAX_OUTPUT_TOKENS=32_768;
 
 const COMPLETION_GATE_RESPONSE_SCHEMA=Object.freeze({
   type:"object",
@@ -948,13 +948,53 @@ export function compactCompletionGateProviderMessages(messages,initialConversati
   }
   if(currentGateIndex<0)for(let index=list.length-1;index>=initial;index--){if(list[index]?.role==="developer"){currentGateIndex=index;break}}
   if(currentGateIndex<0)return {messages:list,count:0,savedChars:0};
+  const activeDeveloperIndexes=new Set([currentGateIndex]);
+  for(let index=currentGateIndex+1;index<list.length;index++){
+    if(list[index]?.role!=="developer")continue;
+    const content=String(list[index]?.content||"");
+    if(/previous control response|batch-evidence precommit gate parser|abstraction-verification audit/i.test(content))activeDeveloperIndexes.add(index);
+  }
   const projected=[];let count=0,savedChars=0;
   for(let index=0;index<list.length;index++){
-    const message=list[index],drop=index>=initial&&index!==currentGateIndex&&message?.role==="developer";
+    const message=list[index],drop=index>=initial&&!activeDeveloperIndexes.has(index)&&message?.role==="developer";
     if(drop){count++;savedChars+=String(message?.content||"").length;continue}
     projected.push(message);
   }
   return {messages:count?projected:list,count,savedChars};
+}
+
+function compactPrecommitVirtualizedToolResults(messages,{retainRecent=3,maxPreviewChars=1200}={}){
+  const source=Array.isArray(messages)?messages:[],candidates=[];
+  for(let index=0;index<source.length;index++){
+    const message=source[index],content=typeof message?.content==="string"?message.content:"";
+    if(message?.role!=="tool"||!content.includes('"_trebell_output"'))continue;
+    if(/"success"\s*:\s*false|"timedOut"\s*:\s*true|"status"\s*:\s*"failed"/i.test(content))continue;
+    candidates.push(index);
+  }
+  const keep=Math.max(0,Math.min(12,Math.trunc(Number(retainRecent)||0))),toCompact=new Set(candidates.slice(0,Math.max(0,candidates.length-keep)));
+  if(!toCompact.size)return {messages:source,count:0,savedChars:0,toolResultCount:0,toolResultSavedChars:0};
+  let out=null,count=0,savedChars=0;
+  for(const index of toCompact){
+    const before=source[index].content,after=coolVirtualizedToolContent(before,{maxPreviewChars,includePreview:true}),saved=Math.max(0,before.length-after.length);
+    if(saved<256)continue;
+    if(!out)out=source.slice();
+    out[index]={...source[index],content:after};count++;savedChars+=saved;
+  }
+  return {messages:out||source,count,savedChars,toolResultCount:count,toolResultSavedChars:savedChars};
+}
+
+export function compactBatchEvidencePrecommitProviderMessages(messages,initialConversationLength=0){
+  const controls=compactCompletionGateProviderMessages(messages,initialConversationLength);
+  const virtualized=compactPrecommitVirtualizedToolResults(controls.messages,{retainRecent:3,maxPreviewChars:1200});
+  const reads=coolHistoricalReadToolResults(virtualized.messages,{thresholdChars:4_000,maxPreviewChars:1200,retainRecent:3});
+  return {
+    messages:reads.messages,
+    count:Number(controls.count||0)+Number(virtualized.count||0)+Number(reads.count||0),
+    savedChars:Number(controls.savedChars||0)+Number(virtualized.savedChars||0)+Number(reads.savedChars||0),
+    removedDeveloperMessages:Number(controls.count||0),
+    cooledToolResults:Number(virtualized.toolResultCount||0)+Number(reads.toolResultCount||0),
+    toolResultSavedChars:Number(virtualized.toolResultSavedChars||0)+Number(reads.toolResultSavedChars||0),
+  };
 }
 
 export async function runNativeAgentTurn({
@@ -1587,13 +1627,14 @@ export async function runNativeAgentTurn({
     if(controlGateMode)emit(onEvent,{name:completionGateCandidate?.phase==="precommit"?"native.progress.batch_evidence_precommit_gate_output_cap":"native.completion.gate_output_cap",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,maxOutputTokens:requestMaxOutputTokens,retry:controlGateRetry,openAi:officialOpenAiControlGate,reasoningEffort:requestReasoningEffort||null}});
     let providerMessages=conversation,providerView=null,completionGateProviderView=null;
     if(completionGateMode){
-      completionGateProviderView=compactCompletionGateProviderMessages(providerMessages,initialConversationLength);
-      const preserveOpenAiGatePrefix=String(provider||"").trim().toLowerCase()==="openai";
+      const precommitGate=completionGateCandidate?.phase==="precommit";
+      completionGateProviderView=precommitGate?compactBatchEvidencePrecommitProviderMessages(providerMessages,initialConversationLength):compactCompletionGateProviderMessages(providerMessages,initialConversationLength);
+      const preserveOpenAiGatePrefix=String(provider||"").trim().toLowerCase()==="openai"&&!precommitGate;
       if(preserveOpenAiGatePrefix){
-        if(completionGateProviderView.count>0)emit(onEvent,{name:completionGateCandidate?.phase==="precommit"?"native.progress.batch_evidence_precommit_gate_context_preserved_for_cache":"native.completion.gate_context_preserved_for_cache",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,preservedDeveloperMessages:completionGateProviderView.count,preservedChars:completionGateProviderView.savedChars}});
+        if(completionGateProviderView.count>0)emit(onEvent,{name:"native.completion.gate_context_preserved_for_cache",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,preservedDeveloperMessages:completionGateProviderView.count,preservedChars:completionGateProviderView.savedChars}});
       }else{
         providerMessages=completionGateProviderView.messages;
-        if(completionGateProviderView.count>0)emit(onEvent,{name:completionGateCandidate?.phase==="precommit"?"native.progress.batch_evidence_precommit_gate_context_compacted":"native.completion.gate_context_compacted",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,removedDeveloperMessages:completionGateProviderView.count,savedChars:completionGateProviderView.savedChars}});
+        if(completionGateProviderView.count>0)emit(onEvent,{name:precommitGate?"native.progress.batch_evidence_precommit_gate_context_compacted":"native.completion.gate_context_compacted",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,removedDeveloperMessages:Number(completionGateProviderView.removedDeveloperMessages??completionGateProviderView.count??0),cooledToolResults:Number(completionGateProviderView.cooledToolResults||0),toolResultSavedChars:Number(completionGateProviderView.toolResultSavedChars||0),savedChars:completionGateProviderView.savedChars}});
       }
     }
     if(typeof prepareProviderMessages==="function"){
@@ -1608,7 +1649,7 @@ export async function runNativeAgentTurn({
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens:requestMaxOutputTokens,temperature,reasoningEffort:requestReasoningEffort,parallelToolCalls,responseJsonSchema:officialOpenAiControlGate?{name:abstractionRepairVerificationGateMode?"trebell_abstraction_verification_gate":completionGateCandidate?.phase==="precommit"?"trebell_batch_evidence_precommit_gate":"trebell_completion_gate",strict:true,schema:abstractionRepairVerificationGateMode?ABSTRACTION_GATE_RESPONSE_SCHEMA:COMPLETION_GATE_RESPONSE_SCHEMA}:null,signal:turnSignal,metadata:controlGateMode?{...(metadata&&typeof metadata==="object"?metadata:{}),completionGate:true,batchEvidencePrecommitGate:completionGateCandidate?.phase==="precommit",abstractionRepairVerificationGate:abstractionRepairVerificationGateMode}:metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
+        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens:requestMaxOutputTokens,temperature,reasoningEffort:requestReasoningEffort,parallelToolCalls,responseJsonSchema:officialOpenAiControlGate?{name:abstractionRepairVerificationGateMode?"trebell_abstraction_verification_gate":completionGateCandidate?.phase==="precommit"?"trebell_batch_evidence_precommit_gate":"trebell_completion_gate",strict:true,schema:abstractionRepairVerificationGateMode?ABSTRACTION_GATE_RESPONSE_SCHEMA:COMPLETION_GATE_RESPONSE_SCHEMA}:null,signal:turnSignal,metadata:controlGateMode?{...(metadata&&typeof metadata==="object"?metadata:{}),completionGate:true,batchEvidencePrecommitGate:completionGateCandidate?.phase==="precommit",abstractionRepairVerificationGate:abstractionRepairVerificationGateMode,controlGateRetry}:metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){
@@ -1693,9 +1734,10 @@ export async function runNativeAgentTurn({
         if(!verdict){
           if(abstractionRepairVerificationGateInvalidResponses<1&&modelTurns<budget.maxModelTurns){
             abstractionRepairVerificationGateInvalidResponses++;
-            conversation.length=candidate.conversationLength;
+            const continueOpenAiControlGate=String(provider||"").trim().toLowerCase()==="openai";
+            if(!continueOpenAiControlGate)conversation.length=candidate.conversationLength;
             const fullGatePrompt=String(candidate.controlPrompt||"").trim();
-            conversation.push({role:"developer",content:(fullGatePrompt?fullGatePrompt+"\\n\\n":"")+"The previous control response was incomplete or could not be parsed. Keep the same full abstraction-verification audit above and return only one valid JSON object in the required schema. Do not weaken or omit the verification criteria merely to make the JSON parse. Do not call tools and do not address the user."});
+            conversation.push({role:"developer",content:(continueOpenAiControlGate?"":fullGatePrompt?fullGatePrompt+"\\n\\n":"")+"The previous control response was incomplete or could not be parsed. Continue the same abstraction-verification audit and return only one valid JSON object in the required schema. Do not weaken or omit the verification criteria merely to make the JSON parse. Do not call tools and do not address the user."});
             emit(onEvent,{name:"native.progress.abstraction_repair_verification_gate_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,abstractionRepairRevision,invalidResponses:abstractionRepairVerificationGateInvalidResponses}});
             continue;
           }
@@ -1720,9 +1762,10 @@ export async function runNativeAgentTurn({
         if(!verdict){
           if(completionGateInvalidResponses<1&&modelTurns<budget.maxModelTurns){
             completionGateInvalidResponses++;
-            conversation.length=candidate.conversationLength;
+            const continueOpenAiControlGate=String(provider||"").trim().toLowerCase()==="openai";
+            if(!continueOpenAiControlGate)conversation.length=candidate.conversationLength;
             const fullGatePrompt=String(candidate.controlPrompt||"").trim();
-            conversation.push({role:"developer",content:(fullGatePrompt?fullGatePrompt+"\\n\\n":"")+(precommitGate?"Trebell batch-evidence precommit gate parser could not read the previous control response. Keep the same full precommit semantic audit above and return only one valid JSON object in the required schema. Do not weaken, omit, or replace the audit requirements merely to make the JSON parse. Do not call tools and do not address the user.":"Trebell completion gate parser could not read the previous control response; the previous control response was incomplete or could not be parsed. Keep the same full semantic audit above and return only one valid JSON object in the required schema. Do not weaken, omit, or replace the audit requirements merely to make the JSON parse. Do not call tools and do not address the user.")});
+            conversation.push({role:"developer",content:(continueOpenAiControlGate?"":fullGatePrompt?fullGatePrompt+"\\n\\n":"")+(precommitGate?"Trebell batch-evidence precommit gate parser could not read the previous control response. Continue the same precommit semantic audit and return only one valid JSON object in the required schema. Do not weaken, omit, or replace the audit requirements merely to make the JSON parse. Do not call tools and do not address the user.":"Trebell completion gate parser could not read the previous control response; the previous control response was incomplete or could not be parsed. Continue the same semantic audit and return only one valid JSON object in the required schema. Do not weaken, omit, or replace the audit requirements merely to make the JSON parse. Do not call tools and do not address the user.")});
             emit(onEvent,{name:precommitGate?"native.progress.batch_evidence_precommit_gate_retry":"native.completion.gate_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,invalidResponses:completionGateInvalidResponses}});
             continue;
           }

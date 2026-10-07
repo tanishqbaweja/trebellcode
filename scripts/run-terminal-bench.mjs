@@ -13,6 +13,8 @@ const dataset=String(values.dataset||"terminal-bench/terminal-bench@4.0.0").trim
 const task=String(values.task||"terminal-bench/session-window-debug").trim();
 const model=String(values.model||"gpt-6-luna").trim();
 const effort=String(values.effort||"max").trim();
+const serviceTier=String(values["service-tier"]||process.env.TREBELL_TERMINAL_BENCH_SERVICE_TIER||"fast").trim().toLowerCase();
+if(!new Set(["default","fast"]).has(serviceTier))throw new Error("Terminal-Bench service tier must be default or fast.");
 const setupTimeoutMultiplier=Number(values["agent-setup-timeout-multiplier"]||process.env.TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER||3);
 if(!Number.isFinite(setupTimeoutMultiplier)||setupTimeoutMultiplier<1)throw new Error("Terminal-Bench setup timeout multiplier must be >= 1.");
 const agentTimeoutMultiplier=Number(values["agent-timeout-multiplier"]||process.env.TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER||1);
@@ -35,6 +37,7 @@ const harborAgent=agent==="native"?"benchmarks.harbor.trebell_native_agent:Trebe
 const args=[
   "run","-d",dataset,"-i",task,"-a",harborAgent,"-m","openai/"+model,
   "--ak","reasoning_effort="+effort,
+  ...(serviceTier==="fast"?["--ak","service_tier=fast"]:[]),
 ];
 if(Number.isFinite(setupTimeoutMultiplier)&&setupTimeoutMultiplier>1)args.push("--agent-setup-timeout-multiplier",String(setupTimeoutMultiplier));
 if(agentTimeoutMultiplier!==1)args.push("--agent-timeout-multiplier",String(agentTimeoutMultiplier));

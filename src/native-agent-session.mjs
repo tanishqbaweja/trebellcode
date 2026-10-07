@@ -431,6 +431,7 @@ export class NativeAgentSession{
       this.onUpdate({update:{sessionUpdate:"tool_call_update",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,rawOutput:uiOutput,content:contentItems(uiOutput),status:failed?"failed":"completed"}});
       return modelToolResult(modelOutput);
     };
+    let openAiControlGateResponseId="";
     try{
       const result=await runNativeAgentTurn({
         provider:this.provider,model:this.model,messages:base,tools:this.tools,reasoningEffort:this.reasoningEffort,maxModelTurns,maxToolCalls,maxOutputTokens,maxWallTimeMs,signal:this.controller.signal,onEvent:this.onEvent,
@@ -446,11 +447,13 @@ export class NativeAgentSession{
           const modelController=new AbortController();this.modelController=modelController;
           const signals=[request.signal,modelController.signal].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
           try{
-            const comparisonResponseId=this.provider==="openai"?String(this.lastProviderResponseId||"").trim():"",completionGate=request?.metadata?.completionGate===true;
-            const response=await this.providerTurn({...request,provider:this.provider,serviceTier:this.serviceTier,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{}),...(this.provider==="openai"?{openAiContinuationResponseId:completionGate?"":comparisonResponseId,openAiDisableWebSocket:completionGate}:{}),...(this.provider==="openai"&&this.openAiServerCompactionThreshold?{contextManagement:[{type:"compaction",compactThreshold:this.openAiServerCompactionThreshold}]}:{})});
+            const comparisonResponseId=this.provider==="openai"?String(this.lastProviderResponseId||"").trim():"",completionGate=request?.metadata?.completionGate===true,controlGateRetry=completionGate&&request?.metadata?.controlGateRetry===true,controlGateContinuationId=controlGateRetry?String(openAiControlGateResponseId||"").trim():"";
+            const response=await this.providerTurn({...request,provider:this.provider,serviceTier:this.serviceTier,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{}),...(this.provider==="openai"?{openAiContinuationResponseId:completionGate?controlGateContinuationId:comparisonResponseId,openAiDisableWebSocket:completionGate}:{}),...(this.provider==="openai"&&this.openAiServerCompactionThreshold?{contextManagement:[{type:"compaction",compactThreshold:this.openAiServerCompactionThreshold}]}:{})});
             if(this.provider==="openai"){
               if(!completionGate)lastOpenAiInputTokens=Math.max(0,Math.trunc(Number(response?.usage?.inputTokens)||0));
-              const responseId=String(response?.telemetry?.providerResponseId||response?.id||"").trim();if(responseId&&!completionGate)this.lastProviderResponseId=responseId;
+              const responseId=String(response?.telemetry?.providerResponseId||response?.id||"").trim();
+              if(completionGate){openAiControlGateResponseId=responseId||openAiControlGateResponseId}
+              else{openAiControlGateResponseId="";if(responseId)this.lastProviderResponseId=responseId}
             }
             return response;
           }
