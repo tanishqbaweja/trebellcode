@@ -419,6 +419,14 @@ function evidenceProbeCall(call={}){
     ||key==="trebell_output/inspect";
 }
 
+function batchEvidenceRepairLocalInspectionCall(call={}){
+  const key=String(call?.namespace||"")+"/"+String(call?.name||"");
+  if(key==="trebell_output/inspect"||key==="trebell_workspace/read_file")return true;
+  if(key!=="trebell_terminal/run")return false;
+  const audit=nativeTerminalAuditMetadata(call?.namespace,call?.name,safeArguments(call?.arguments));
+  return audit?.networkLike!==true&&audit?.persistentMutationLike!==true&&audit?.localFileMutationLike!==true;
+}
+
 function externalObservationCall(call={}){
   const key=String(call?.namespace||"")+"/"+String(call?.name||"");
   if(key==="trebell_process/status")return true;
@@ -1099,7 +1107,7 @@ export async function runNativeAgentTurn({
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[],maxBatchEvidenceRepairMutationResponses=2,maxBatchEvidenceRepairObservationResponses=2,maxExternalStagingMutationResponses=2;
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,constraintPlanningCheckpointInjected=false,constraintCommitCheckpointRevision=-1,constraintCommitValidatedRevision=-1,batchEvidenceCommittedWrites=0,batchEvidenceClosureAuditRequestedRevision=-1,batchEvidenceClosureAuditValidatedRevision=-1,batchEvidenceClosureAuditAutoGateRevision=-1,batchEvidenceClosureAuditMutationKind=null,batchEvidenceClosureAuditExpectedTurn=-1,batchEvidenceClosureAuditCallId=null,batchEvidencePrecommitResolutionPendingRevision=-1,batchEvidencePrecommitTerminalBlockerRevision=-1,batchEvidencePrecommitRepairWindows=0,deliverableCheckpointInjected=false,deliverableEscalationInjected=false,persistentArtifactAuditInjected=false,persistentArtifactAuditPending=false,persistentArtifactAuditRevision=0,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditAssumptionAuditRevision=0,postEditAbstractionEscalationRevision=0,pendingAbstractionRepair=false,abstractionRepairRevision=0,abstractionRepairVerificationPending=false,abstractionRepairVerificationPromptRevision=0,abstractionRepairVerificationGateCandidate=null,abstractionRepairVerificationGateInvalidResponses=0,postEditResidualStructureRevision=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,externalStateRevision=0,externalObservationRounds=0,externalObservationCheckpointRevision=-1,externalObservationEscalated=false,actionOutputCapRelaxOnce=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,convergenceFinalizationPending=false,convergenceFinalizationRevision=0,completionGateCandidate=null,completionGateInvalidResponses=0,completionGateChecks=0,completionGateRecoveries=0,completionRecoveryEpoch=0,completionRecoveryMode=null,completionRecoveryEvidenceRoundsRemaining=0,completionRecoveryEditResponsesRemaining=0,completionRecoveryEditConsumedEpoch=0,completionRecoveryPostEditEvidenceResponsesRemaining=0,completionRecoveryEditRequired=false,completionRecoveryEditRequiredMisses=0,completionRecoveryMutationForbidden=false,completionRecoverySupportWritesRemaining=0,completionRecoverySupportVerificationRemaining=0,completionRecoveryImplementationPaths=new Set(),completionRecoverySupportPaths=new Set(),completionRecoveryIncumbent=null,completionRecoveryEditTransaction=null,completionRecoveryIncumbentRestores=0,completionRecoveryIncumbentWorkspaceAligned=true,completionRecoveryTerminalRepairGraceUsed=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
-  let batchEvidencePendingMutationAudit=null,batchEvidencePendingMutationCall=null,batchEvidenceValidatedMutationHash=null,batchEvidencePostEscalationRepairTurn=-1,batchEvidencePostEscalationRepairPromptTurn=-1,batchEvidenceRepairMutationResponsesUsed=0,batchEvidenceRepairMutationResponseLimit=1,batchEvidenceRepairLastMutationTurn=-1,batchEvidenceClosureAuditMalformedTurn=-1,batchEvidenceClosureAuditRetryRevision=-1;
+  let batchEvidencePendingMutationAudit=null,batchEvidencePendingMutationCall=null,batchEvidenceValidatedMutationHash=null,batchEvidencePostEscalationRepairTurn=-1,batchEvidencePostEscalationRepairPromptTurn=-1,batchEvidenceRepairMutationResponsesUsed=0,batchEvidenceRepairMutationResponseLimit=1,batchEvidenceRepairLastMutationTurn=-1,batchEvidenceRepairLocalInspectionResponsesRemaining=0,batchEvidenceRepairLocalInspectionTurn=-1,batchEvidenceClosureAuditMalformedTurn=-1,batchEvidenceClosureAuditRetryRevision=-1;
   let externalStagingMutationResponsesUsed=0,externalStagingLastMutationTurn=-1,externalStagingPromptTurn=-1;
   const normalizedEditPath=call=>String(safeArguments(call?.arguments).path||"").trim().replace(/\\/g,"/");
   const userRequestedEditPath=path=>{
@@ -1131,7 +1139,7 @@ export async function runNativeAgentTurn({
     }
     batchEvidencePrecommitRepairWindows++;
     batchEvidenceRepairMutationResponseLimit=Math.min(maxBatchEvidenceRepairMutationResponses,Math.max(1,Math.trunc(Number(unresolvedCount)||1)));
-    externalObservationRounds=0;externalObservationCheckpointRevision=externalStateRevision;externalObservationEscalated=false;batchEvidencePostEscalationRepairTurn=-1;batchEvidencePostEscalationRepairPromptTurn=-1;batchEvidenceRepairMutationResponsesUsed=0;batchEvidenceRepairLastMutationTurn=-1;
+    externalObservationRounds=0;externalObservationCheckpointRevision=externalStateRevision;externalObservationEscalated=false;batchEvidencePostEscalationRepairTurn=-1;batchEvidencePostEscalationRepairPromptTurn=-1;batchEvidenceRepairMutationResponsesUsed=0;batchEvidenceRepairLastMutationTurn=-1;batchEvidenceRepairLocalInspectionResponsesRemaining=0;batchEvidenceRepairLocalInspectionTurn=-1;
     const repairCapacity=batchEvidenceRepairMutationResponseLimit===1
       ?"one mutation-bearing model response"
       :"up to two focused mutation-bearing model responses";
@@ -1144,6 +1152,11 @@ export async function runNativeAgentTurn({
     batchEvidenceRepairLastMutationTurn=modelTurns;
     batchEvidenceRepairMutationResponsesUsed++;
     if(batchEvidencePostEscalationRepairTurn<0)batchEvidencePostEscalationRepairTurn=modelTurns;
+    if(externalObservationEscalated&&batchEvidenceRepairMutationResponsesUsed<batchEvidenceRepairMutationResponseLimit){
+      batchEvidenceRepairLocalInspectionResponsesRemaining=1;batchEvidenceRepairLocalInspectionTurn=-1;
+    }else{
+      batchEvidenceRepairLocalInspectionResponsesRemaining=0;batchEvidenceRepairLocalInspectionTurn=-1;
+    }
     if(batchEvidenceRepairMutationResponsesUsed>=batchEvidenceRepairMutationResponseLimit){
       externalObservationCheckpointRevision=externalStateRevision;
       externalObservationEscalated=true;
@@ -1366,7 +1379,7 @@ export async function runNativeAgentTurn({
     if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_terminal"&&name==="run"&&externalStateMutationRequested&&terminalAudit?.persistentMutationLike===true){
       const priorEditRevision=editRevision,auditedBatchWrite=batchEvidenceCommitAuditRequested&&constraintCommitValidatedRevision===priorEditRevision&&Boolean(batchEvidenceValidatedMutationHash)&&terminalAudit?.commandHash===batchEvidenceValidatedMutationHash;
       editRevision++;externalStateRevision++;
-      batchEvidencePrecommitRepairWindows=0;batchEvidencePostEscalationRepairTurn=-1;batchEvidencePostEscalationRepairPromptTurn=-1;batchEvidenceRepairMutationResponsesUsed=0;batchEvidenceRepairMutationResponseLimit=1;batchEvidenceRepairLastMutationTurn=-1;batchEvidenceClosureAuditMalformedTurn=-1;batchEvidenceClosureAuditRetryRevision=-1;externalStagingMutationResponsesUsed=0;externalStagingLastMutationTurn=-1;externalStagingPromptTurn=-1;
+      batchEvidencePrecommitRepairWindows=0;batchEvidencePostEscalationRepairTurn=-1;batchEvidencePostEscalationRepairPromptTurn=-1;batchEvidenceRepairMutationResponsesUsed=0;batchEvidenceRepairMutationResponseLimit=1;batchEvidenceRepairLastMutationTurn=-1;batchEvidenceRepairLocalInspectionResponsesRemaining=0;batchEvidenceRepairLocalInspectionTurn=-1;batchEvidenceClosureAuditMalformedTurn=-1;batchEvidenceClosureAuditRetryRevision=-1;externalStagingMutationResponsesUsed=0;externalStagingLastMutationTurn=-1;externalStagingPromptTurn=-1;
       if(auditedBatchWrite){
         constraintCommitValidatedRevision=editRevision;batchEvidenceCommittedWrites++;batchEvidenceValidatedMutationHash=null;batchEvidencePendingMutationAudit=null;batchEvidencePendingMutationCall=null;
         emit(onEvent,{name:"native.progress.batch_evidence_commit_validation_carried",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,fromEditRevision:priorEditRevision,toEditRevision:editRevision,mutationKind:terminalAudit.persistentMutationKind||null}});
@@ -1376,7 +1389,7 @@ export async function runNativeAgentTurn({
     if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_process"&&name==="start"&&externalStateMutationRequested&&processMutationAudit?.persistentMutationLike===true){
       const priorEditRevision=editRevision,auditedBatchWrite=batchEvidenceCommitAuditRequested&&constraintCommitValidatedRevision===priorEditRevision&&Boolean(batchEvidenceValidatedMutationHash)&&processMutationAudit?.commandHash===batchEvidenceValidatedMutationHash;
       editRevision++;externalStateRevision++;
-      batchEvidencePrecommitRepairWindows=0;batchEvidencePostEscalationRepairTurn=-1;batchEvidencePostEscalationRepairPromptTurn=-1;batchEvidenceRepairMutationResponsesUsed=0;batchEvidenceRepairMutationResponseLimit=1;batchEvidenceRepairLastMutationTurn=-1;batchEvidenceClosureAuditMalformedTurn=-1;batchEvidenceClosureAuditRetryRevision=-1;externalStagingMutationResponsesUsed=0;externalStagingLastMutationTurn=-1;externalStagingPromptTurn=-1;
+      batchEvidencePrecommitRepairWindows=0;batchEvidencePostEscalationRepairTurn=-1;batchEvidencePostEscalationRepairPromptTurn=-1;batchEvidenceRepairMutationResponsesUsed=0;batchEvidenceRepairMutationResponseLimit=1;batchEvidenceRepairLastMutationTurn=-1;batchEvidenceRepairLocalInspectionResponsesRemaining=0;batchEvidenceRepairLocalInspectionTurn=-1;batchEvidenceClosureAuditMalformedTurn=-1;batchEvidenceClosureAuditRetryRevision=-1;externalStagingMutationResponsesUsed=0;externalStagingLastMutationTurn=-1;externalStagingPromptTurn=-1;
       if(auditedBatchWrite){
         constraintCommitValidatedRevision=editRevision;batchEvidenceCommittedWrites++;batchEvidenceValidatedMutationHash=null;batchEvidencePendingMutationAudit=null;batchEvidencePendingMutationCall=null;
         emit(onEvent,{name:"native.progress.batch_evidence_commit_validation_carried",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,fromEditRevision:priorEditRevision,toEditRevision:editRevision,mutationKind:processMutationAudit.persistentMutationKind||"background_process_write"}});
@@ -2398,7 +2411,12 @@ export async function runNativeAgentTurn({
         emit(onEvent,{name:"native.progress.external_staging_mutation_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,editRevision,externalStateRevision,stagingResponsesUsed:externalStagingMutationResponsesUsed,maxMutationResponses:maxExternalStagingMutationResponses,reason:"staging_response_budget"}});
         callIndex++;continue;
       }
-      if(externalStateMutationRequested&&externalObservationEscalated&&!completionRecoveryEvidenceBypass&&!designatedBatchEvidenceClosureAuditCall&&externalStateEvidenceCall(call)&&!consolidatedExternalWaitCall(call)){
+      const repairLocalInspectionCall=batchEvidencePrecommitRepairWindows>0&&batchEvidencePrecommitResolutionPendingRevision===editRevision&&batchEvidenceRepairMutationResponsesUsed>0&&batchEvidenceRepairMutationResponsesUsed<batchEvidenceRepairMutationResponseLimit&&batchEvidenceRepairLocalInspectionCall(call)&&(batchEvidenceRepairLocalInspectionResponsesRemaining>0||batchEvidenceRepairLocalInspectionTurn===modelTurns);
+      if(repairLocalInspectionCall&&batchEvidenceRepairLocalInspectionTurn!==modelTurns){
+        batchEvidenceRepairLocalInspectionTurn=modelTurns;batchEvidenceRepairLocalInspectionResponsesRemaining=Math.max(0,batchEvidenceRepairLocalInspectionResponsesRemaining-1);
+        emit(onEvent,{name:"native.progress.batch_evidence_repair_local_inspection_turn",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,repairWindow:batchEvidencePrecommitRepairWindows,repairResponsesUsed:batchEvidenceRepairMutationResponsesUsed,maxMutationResponses:batchEvidenceRepairMutationResponseLimit,remainingLocalInspectionResponses:batchEvidenceRepairLocalInspectionResponsesRemaining}});
+      }
+      if(externalStateMutationRequested&&externalObservationEscalated&&!completionRecoveryEvidenceBypass&&!designatedBatchEvidenceClosureAuditCall&&!repairLocalInspectionCall&&externalStateEvidenceCall(call)&&!consolidatedExternalWaitCall(call)){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
         conversation.push({role:"tool",toolCallId:callId,content:"Trebell external-state convergence guard: this read-only evidence call was not executed because the current external-state revision already consumed its bounded evidence allowance. Do not keep paying one model round for more local analysis, repository/source reads, output inspection, or immediate API/status checks. If the only useful next step is waiting for an external condition, combine the wait and decisive recheck into one bounded terminal command or use a background monitor. Otherwise use the evidence already gathered to stage/perform the next legal mutation, finish, or state the concrete blocker."});
         blockedExternalObservation=true;

@@ -107,6 +107,49 @@ test("native precommit repair reopens only two focused read-only evidence respon
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
 });
 
+test("native escalated precommit repair allows one local inspection response between repair mutations",async()=>{
+  const events=[],executed=[];let turn=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const inspect=id=>({id,namespace:"trebell_output",name:"inspect",arguments:JSON.stringify({id})});
+  const stage=(id,path)=>({id,namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path,old_text:"old",new_text:"new"})});
+  const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:20,maxToolCalls:40,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued case, reconcile authoritative evidence and submit the complete decision batch to the remote system."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]}],
+    providerTurn:async request=>{
+      turn++;
+      if(turn<=3)return {text:"",toolCalls:[read("probe-"+turn)],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[commit("commit-before-repair")],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[read("initial-closure-audit")],usage:{}};
+      if(turn===6)return {text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["repair staged engine parity","stage the missing decision batch"],reason:"Two independent pre-write gaps remain."}),toolCalls:[],usage:{}};
+      if(turn===7)return {text:"",toolCalls:[read("repair-evidence-1")],usage:{}};
+      if(turn===8)return {text:"",toolCalls:[read("repair-evidence-2")],usage:{}};
+      if(turn===9)return {text:"",toolCalls:[stage("repair-part-a","part-a.json")],usage:{}};
+      if(turn===10)return {text:"",toolCalls:[inspect("cached-repair-output")],usage:{}};
+      if(turn===11)return {text:"",toolCalls:[read("second-local-inspection-blocked")],usage:{}};
+      if(turn===12)return {text:"",toolCalls:[stage("repair-part-b","part-b.json")],usage:{}};
+      if(turn===13)return {text:"",toolCalls:[commit("commit-after-local-inspection")],usage:{}};
+      if(turn===14){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("repair-closure-audit")],usage:{}}}
+      if(turn===15)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"Both named pre-write gaps are resolved after the bounded local inspection."}),toolCalls:[],usage:{}};
+      return {text:"batch submitted after bounded local repair inspection",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      if(call.namespace==="trebell_workspace")return {success:true,path:call.arguments.path,replacements:1,beforeSha256:"before",afterSha256:"after"};
+      if(call.namespace==="trebell_output")return {success:true,text:"cached staged repair output"};
+      return closureAwareTerminalOutput(call);
+    },
+  });
+  assert.equal(result.text,"batch submitted after bounded local repair inspection");
+  assert.ok(executed.includes("repair-part-a"));assert.ok(executed.includes("cached-repair-output"));assert.equal(executed.includes("second-local-inspection-blocked"),false);assert.ok(executed.includes("repair-part-b"));
+  const escalations=events.filter(event=>event.name==="native.progress.external_observation_escalation");assert.equal(escalations.length,1);assert.equal(escalations[0]?.data?.mode,"precommit_repair");assert.equal(escalations[0]?.data?.observationRounds,2);
+  const localInspection=events.filter(event=>event.name==="native.progress.batch_evidence_repair_local_inspection_turn");assert.equal(localInspection.length,1);assert.equal(localInspection[0]?.data?.modelTurn,10);assert.equal(localInspection[0]?.data?.remainingLocalInspectionResponses,0);
+  const blocked=events.filter(event=>event.name==="native.progress.external_observation_call_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.callId,"second-local-inspection-blocked");
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_turn").length,2);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
+});
+
 test("native designated batch closure audit bypasses the external observation cap without reopening ordinary polling",async()=>{
   const events=[],executed=[];let turn=0;
   const quick=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; print(requests.get('http://localhost:5000/api/status').status_code)"]})});
