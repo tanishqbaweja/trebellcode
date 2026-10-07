@@ -4290,6 +4290,76 @@ test("native completion recovery can repair an external API state without invent
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,1);
 });
 
+test("native revision-zero external recovery consumes evidence before requiring the real state mutation",async()=>{
+  const events=[],executed=[];let turns=0;
+  const local=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:12,maxToolCalls:16,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the running campaign through its API. Inspect local evidence as needed, then change the live config until the measured acceptance target passes."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_process",tools:[{name:"start"},{name:"status"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[local("pre-gate-local")],usage:{}};
+      if(turns===2)return {text:"The staged diagnosis appears sufficient; the live target should be complete.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"uncertain","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["one focused diagnostic must identify the safe live correction"],"reason":"The live target is not yet proven and one bounded diagnostic should determine the correction."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[local("recovery-evidence-1")],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[local("recovery-evidence-2-blocked")],usage:{}};
+      if(turns===6){
+        assert.equal(request.toolChoice,"required");
+        return {text:"",toolCalls:[{id:"repair-api-write",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/config', json={'mode':'fixed'})"]})}],usage:{}};
+      }
+      if(turns===7)return {text:"",toolCalls:[{id:"verify-live",namespace:"trebell_process",name:"status",arguments:JSON.stringify({process_id:"proc-fixed"})}],usage:{}};
+      if(turns===8)return {text:"The corrected live state now satisfies acceptance.",toolCalls:[],usage:{}};
+      if(turns===9)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","unresolved":[],"reason":"The corrected external state passed the focused live verification."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      if(call.id==="repair-api-write")return {exitCode:0,stdout:"updated"};
+      if(call.id==="verify-live")return {processId:"proc-fixed",running:false,exitCode:0,stdout:"acceptance=pass"};
+      return {exitCode:0,stdout:"local evidence"};
+    },
+  });
+  assert.equal(result.text,"The corrected live state now satisfies acceptance.");
+  assert.deepEqual(executed,["pre-gate-local","recovery-evidence-1","repair-api-write","verify-live"]);
+  const allowance=events.filter(event=>event.name==="native.completion.recovery_allowance_used");
+  assert.equal(allowance.filter(event=>event.data?.kind==="evidence").length,1);
+  assert.equal(allowance.filter(event=>event.data?.kind==="edit").length,1);
+  assert.equal(allowance.filter(event=>event.data?.kind==="post_edit_verification").length,1);
+  const blocked=events.filter(event=>event.name==="native.completion.recovery_evidence_call_blocked"&&event.data?.callId==="recovery-evidence-2-blocked");
+  assert.equal(blocked.length,1);assert.equal(blocked[0].data?.editRequiredAfterBlock,true);
+});
+
+test("native revision-zero external evidence-only recovery blocks diagnostics after its bounded allowance",async()=>{
+  const events=[],executed=[];let turns=0;
+  const local=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:14,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the running campaign through its API. Inspect the evidence and change live state only when a safe correction is actually supported."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_process",tools:[{name:"start"},{name:"status"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[local("pre-gate-local")],usage:{}};
+      if(turns===2)return {text:"The current live state appears acceptable.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"evidence_only","unresolved":["two focused diagnostics must establish whether any correction is needed"],"reason":"Do not mutate yet; gather bounded evidence first."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[local("evidence-only-1")],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[local("evidence-only-2")],usage:{}};
+      if(turns===6)return {text:"",toolCalls:[local("evidence-only-3-blocked")],usage:{}};
+      if(turns===7)return {text:"The bounded diagnostics now establish that the current live state satisfies acceptance without another mutation.",toolCalls:[],usage:{}};
+      if(turns===8)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","unresolved":[],"reason":"The bounded diagnostics directly established acceptance."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return {exitCode:0,stdout:"local evidence"};},
+  });
+  assert.match(result.text,/satisfies acceptance/i);
+  assert.deepEqual(executed,["pre-gate-local","evidence-only-1","evidence-only-2"]);
+  const allowance=events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="evidence");
+  assert.equal(allowance.length,2);
+  const blocked=events.filter(event=>event.name==="native.completion.recovery_evidence_call_blocked"&&event.data?.callId==="evidence-only-3-blocked");
+  assert.equal(blocked.length,1);assert.equal(blocked[0].data?.editRequiredAfterBlock,false);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_edit_required").length,0);
+});
+
 test("native external-state tasks do not activate workspace implementation pressure",async()=>{
   const events=[];let turns=0;
   const result=await runNativeAgentTurn({

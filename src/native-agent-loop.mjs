@@ -2493,11 +2493,11 @@ export async function runNativeAgentTurn({
         emit(onEvent,{name:"native.completion.recovery_non_edit_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"recovery_edit_required",misses:completionRecoveryEditRequiredMisses}});
         callIndex++;continue;
       }
-      const recoveryEvidenceExhausted=completionRecoveryEpoch>0&&completionRecoveryEvidenceRoundsRemaining<=0&&completionRecoveryPostEditEvidenceResponsesRemaining<=0&&completionRecoveryEditResponsesRemaining>0&&!recoveryEditAppliedInCurrentResponse;
+      const recoveryEvidenceExhausted=completionRecoveryEpoch>0&&completionRecoveryEvidenceRoundsRemaining<=0&&completionRecoveryPostEditEvidenceResponsesRemaining<=0&&!completionRecoveryEditAllowanceConsumed&&!recoveryEditAppliedInCurrentResponse;
       const reservedSupportVerification=completionRecoverySupportVerificationRemaining>0&&call?.namespace==="trebell_terminal"&&call?.name==="run";
       if(recoveryEvidenceExhausted&&!recoveryCorrectiveEditCall(call)&&!recoverySupportWriteCandidate(call)&&!reservedSupportVerification){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
-        const editRequiredAfterBlock=completionRecoverySupportVerificationRemaining<=0;
+        const editRequiredAfterBlock=completionRecoveryEditResponsesRemaining>0&&completionRecoverySupportVerificationRemaining<=0;
         if(editRequiredAfterBlock){completionRecoveryEditRequired=true;completionRecoveryEditRequiredMisses=0}
         conversation.push({role:"tool",toolCallId:callId,content:workspaceMutationRequested
           ?"Trebell semantic recovery: this evidence tool call was not executed because the current recovery epoch has already consumed its bounded evidence responses. Use the reserved corrective implementation edit if the gathered evidence supports one, or submit the best current completion candidate so the semantic gate can judge it and, if needed, open a new bounded recovery epoch. Do not spend another evidence-only tool call in this epoch."
@@ -2633,7 +2633,7 @@ export async function runNativeAgentTurn({
         }
       }
       if(editRevision===0&&implementationPressure&&!responseHasEditCall&&prepared.some(item=>!implementationPressureEditCall(item.call)))executedPreEditEvidence=true;
-      if(editRevisionBeforeCalls>0&&(!responseHasEditCall||editRevision>editRevisionBeforeCalls)&&prepared.some(item=>!implementationPressureEditCall(item.call)))executedPostEditEvidence=true;
+      if((editRevisionBeforeCalls>0||completionRecoveryEpoch>0)&&(!responseHasEditCall||editRevision>editRevisionBeforeCalls)&&prepared.some(item=>!implementationPressureEditCall(item.call)&&!recoveryCorrectiveEditCall(item.call)))executedPostEditEvidence=true;
       if(externalStateMutationRequested&&prepared.some(item=>externalStateEvidenceCall(item.call)))executedExternalObservation=true;
       toolCalls+=prepared.length;
       const observations=prepared.length>1
