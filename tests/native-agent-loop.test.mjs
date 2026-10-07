@@ -57,6 +57,61 @@ test("native designated batch closure audit bypasses the external observation ca
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
 });
 
+test("native closure-audit auto-retry exhausts after one malformed retry and later probes stay ineligible",async()=>{
+  const events=[],executed=[];let turn=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})});
+  const pending=runNativeAgentTurn({
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxModelTurns:9,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued item, reconcile authoritative evidence and submit the complete batch to the remote portal."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turn++;
+      if(turn<=3)return {text:"",toolCalls:[read("probe-"+turn)],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[commit("submit-too-early")],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[read("bad-a"),read("bad-b")],usage:{}};
+      if(turn===6){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("retry-bad-a"),read("retry-bad-b")],usage:{}}}
+      if(turn===7){assert.equal(request.metadata?.batchEvidencePrecommitGate,undefined);return {text:"",toolCalls:[read("later-probe")],usage:{}}}
+      return {text:"stopped without explicitly re-arming persistence",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  await assert.rejects(pending,error=>error?.code==="native_model_turn_budget");
+  assert.equal(executed.includes("submit-too-early"),false);assert.deepEqual(executed,["probe-1","probe-2","probe-3","later-probe"]);
+  const blocked=events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_blocked");assert.equal(blocked.length,2);assert.equal(blocked[0]?.data?.retryTurn,6);assert.equal(blocked[0]?.data?.retryExhausted,false);assert.equal(blocked[1]?.data?.retryTurn,null);assert.equal(blocked[1]?.data?.retryExhausted,true);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_call_blocked").length,4);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_completed").length,0);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate_requested").length,0);
+});
+
+test("native retries a designated closure audit that returns no tool call instead of entering empty completion recovery",async()=>{
+  const events=[],executed=[];let turn=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued item, reconcile authoritative evidence and submit the complete batch to the remote portal."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turn++;
+      if(turn<=3)return {text:"",toolCalls:[read("probe-"+turn)],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[commit("submit-too-early")],usage:{}};
+      if(turn===5){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[],usage:{}}}
+      if(turn===6){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("retry-audit")],usage:{}}}
+      if(turn===7)return {text:batchEvidencePrecommitVerdict({reason:"The retried closure audit supports the staged batch."}),toolCalls:[],usage:{}};
+      return {text:"batch submitted after silent-audit retry",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(result.text,"batch submitted after silent-audit retry");
+  assert.equal(events.filter(event=>event.name==="native.model.empty_completion").length,0);
+  const blocked=events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.returnedToolCalls,0);assert.equal(blocked[0]?.data?.retryTurn,6);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_retry").length,1);
+  assert.ok(executed.includes("retry-audit"));assert.equal(executed.includes("submit-too-early"),false);assert.equal(executed.filter(id=>/^native-precommit-authorized-/.test(id)).length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_completed").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
+});
+
 test("native exhausted precommit repair evidence permits one batched staging turn then requires persistence retry",async()=>{
   const events=[],executed=[];let turn=0;
   const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
@@ -505,10 +560,10 @@ test("native accepts the designated fresh closure read but rejects incomplete pe
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
 });
 
-test("native does not reinterpret later terminal probes as closure audits after an invalid designated audit turn",async()=>{
+test("native reschedules a malformed designated closure audit to the next turn without executing malformed calls",async()=>{
   const events=[],executed=[];let turn=0;
   const pending=runNativeAgentTurn({
-    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxModelTurns:8,maxToolCalls:20,onEvent:event=>events.push(event),
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:24,onEvent:event=>events.push(event),
     messages:[{role:"user",content:"For every queued item, reconcile authoritative evidence and submit the complete batch to the remote portal."}],
     tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
@@ -524,19 +579,51 @@ test("native does not reinterpret later terminal probes as closure audits after 
       }
       if(turn===6){
         assert.equal(request.metadata?.batchEvidencePrecommitGate,undefined);
-        return {text:"",toolCalls:[{id:"later-probe",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["later-probe.mjs"]})}],usage:{}};
+        assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});
+        return {text:"",toolCalls:[{id:"retry-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["retry-audit.mjs"]})}],usage:{}};
       }
-      return {text:"stopped without retrying persistence",toolCalls:[],usage:{}};
+      if(turn===7)return {text:batchEvidencePrecommitVerdict({reason:"The rescheduled closure audit supports the staged batch."}),toolCalls:[],usage:{}};
+      return {text:"batch submitted after closure-audit retry",toolCalls:[],usage:{}};
     },
     executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
   });
-  await assert.rejects(pending,error=>error?.code==="native_model_turn_budget");
+  const result=await pending;assert.equal(result.text,"batch submitted after closure-audit retry");
   assert.equal(executed.includes("submit-too-early"),false);
-  assert.deepEqual(executed,["probe-1","probe-2","probe-3","audit-read-a","audit-read-b","later-probe"]);
+  assert.deepEqual(executed.slice(0,4),["probe-1","probe-2","probe-3","retry-audit"]);assert.equal(executed.filter(id=>/^native-precommit-authorized-/.test(id)).length,1);
   const blocked=events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_blocked");
-  assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.reason,"designated_audit_turn_missing_single_read_only_terminal_call");
-  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_completed").length,0);
-  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate_requested").length,0);
+  assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.reason,"designated_audit_turn_missing_single_read_only_terminal_call");assert.equal(blocked[0]?.data?.retryTurn,6);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_call_blocked").length,2);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_completed").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate_requested").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
+});
+
+test("native blocks a staged-file mutation returned on the designated closure-audit turn and retries read-only",async()=>{
+  const events=[],executed=[];let turn=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const stage=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c",`from pathlib import Path; Path('/tmp/${id}.json').write_text('staged')`]})});
+  const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO outputs(id) VALUES (1)"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued item, reconcile authoritative evidence and submit the complete batch to the remote portal."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turn++;
+      if(turn<=3)return {text:"",toolCalls:[read("probe-"+turn)],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[commit("submit-too-early")],usage:{}};
+      if(turn===5){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[stage("stage-instead-of-audit")],usage:{}}}
+      if(turn===6){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("retry-read-only-audit")],usage:{}}}
+      if(turn===7)return {text:batchEvidencePrecommitVerdict({reason:"The retried read-only closure audit supports the staged batch."}),toolCalls:[],usage:{}};
+      return {text:"batch submitted after enforced read-only closure audit",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(result.text,"batch submitted after enforced read-only closure audit");
+  assert.equal(executed.includes("submit-too-early"),false);assert.equal(executed.includes("stage-instead-of-audit"),false);assert.ok(executed.includes("retry-read-only-audit"));
+  const malformed=events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_blocked");assert.equal(malformed.length,1);assert.equal(malformed[0]?.data?.retryTurn,6);
+  const blocked=events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_call_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.callId,"stage-instead-of-audit");
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_completed").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
 });
 
 test("native batch evidence precommit validation is invalidated by a staged workspace change",async()=>{
