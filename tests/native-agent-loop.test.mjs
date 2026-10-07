@@ -21,6 +21,47 @@ test("batch evidence precommit record audit requires complete unique per-record 
   assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,recordAudit:[valid.recordAudit[0],{...valid.recordAudit[1],id:valid.recordAudit[0].id}]}).reason,"invalid_record_identity");
 });
 
+test("native precommit repair gives a multi-gap audit at most two focused mutation responses before retry",async()=>{
+  const events=[],executed=[];let turn=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const stage=(id,path)=>({id,namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path,old_text:"old",new_text:"new"})});
+  const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:18,maxToolCalls:40,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued case, reconcile authoritative evidence and submit the complete decision batch to the remote system."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],
+    providerTurn:async request=>{
+      turn++;
+      if(turn<=3)return {text:"",toolCalls:[read("probe-"+turn)],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[commit("commit-before-repair")],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[read("initial-closure-audit")],usage:{}};
+      if(turn===6)return {text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["repair staged engine parity","stage the missing decision batch"],reason:"Two independent pre-write gaps remain."}),toolCalls:[],usage:{}};
+      if(turn===7)return {text:"",toolCalls:[stage("repair-part-a","part-a.json")],usage:{}};
+      if(turn===8)return {text:"",toolCalls:[read("focused-between-repairs")],usage:{}};
+      if(turn===9)return {text:"",toolCalls:[stage("repair-part-b","part-b.json")],usage:{}};
+      if(turn===10)return {text:"",toolCalls:[stage("repair-part-c-too-late","part-c.json")],usage:{}};
+      if(turn===11)return {text:"",toolCalls:[commit("commit-after-multipart-repair")],usage:{}};
+      if(turn===12){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("repair-closure-audit")],usage:{}}}
+      if(turn===13)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"Both named pre-write gaps are now resolved."}),toolCalls:[],usage:{}};
+      return {text:"batch submitted after bounded multi-gap repair",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      if(call.namespace==="trebell_workspace")return {success:true,path:call.arguments.path,replacements:1,beforeSha256:"before",afterSha256:"after"};
+      return closureAwareTerminalOutput(call);
+    },
+  });
+  assert.equal(result.text,"batch submitted after bounded multi-gap repair");
+  assert.ok(executed.includes("repair-part-a"));assert.ok(executed.includes("focused-between-repairs"));assert.ok(executed.includes("repair-part-b"));assert.equal(executed.includes("repair-part-c-too-late"),false);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_turn").length,2);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_continuation_allowed").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_retry_required").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_call_blocked"&&event.data?.callId==="focused-between-repairs").length,0);
+  const blocked=events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.callId,"repair-part-c-too-late");
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_mutation_applied").length,1);
+});
+
 test("native designated batch closure audit bypasses the external observation cap without reopening ordinary polling",async()=>{
   const events=[],executed=[];let turn=0;
   const quick=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; print(requests.get('http://localhost:5000/api/status').status_code)"]})});
@@ -140,6 +181,7 @@ test("native exhausted precommit repair evidence permits one batched staging tur
   assert.equal(result.text,"batch submitted after converged repair");
   assert.ok(executed.includes("stage-a"));assert.ok(executed.includes("stage-b"));assert.equal(executed.includes("late-stage"),false);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_turn").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_continuation_allowed").length,0);
   const blocked=events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.callId,"late-stage");
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_retry_required").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
@@ -178,6 +220,7 @@ test("native precommit repair bounds workspace staging from the first repair mut
   assert.equal(result.text,"batch submitted after converged workspace repair");
   assert.ok(executed.includes("workspace-stage-a"));assert.ok(executed.includes("workspace-stage-b"));assert.equal(executed.includes("late-repair-read"),false);assert.equal(executed.includes("late-workspace-stage"),false);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_turn").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_continuation_allowed").length,0);
   const blocked=events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.callId,"late-workspace-stage");
   assert.ok(events.some(event=>event.name==="native.progress.external_observation_call_blocked"&&event.data?.callId==="late-repair-read"));
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_retry_required").length,1);
@@ -854,8 +897,8 @@ test("native incomplete precommit audit reopens bounded external evidence after 
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
 });
 
-test("native precommit repair windows exhaust after two rejected audits instead of reopening evidence forever",async()=>{
-  const events=[];let turn=0;
+test("native precommit repair windows exhaust after two rejected audits and block later persistent retries before another gate",async()=>{
+  const events=[],executed=[];let turn=0;
   const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
   const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})});
   const incomplete=()=>({text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["pre-write evidence remains insufficient"],reason:"A focused source-of-truth check is still missing."}),toolCalls:[],usage:{}});
@@ -875,12 +918,16 @@ test("native precommit repair windows exhaust after two rejected audits instead 
       if(turn===10)return {text:"",toolCalls:[read("repair-evidence-2")],usage:{}};
       if(turn===11)return {text:"",toolCalls:[commit("commit-3")],usage:{}};
       if(turn===12)return incomplete();
+      if(turn===13)return {text:"",toolCalls:[commit("commit-4-after-exhaustion")],usage:{}};
       return {text:"precommit blocker remains after bounded repair",toolCalls:[],usage:{}};
     },
-    executeTool:async call=>closureAwareTerminalOutput(call),
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
   });
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_repair_window").length,2);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_repair_exhausted").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate").length,3);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_exhausted_candidate_blocked").length,1);
+  assert.equal(executed.includes("commit-4-after-exhaustion"),false);
   assert.equal(events.filter(event=>event.name==="native.completion.batch_evidence_initial_commit_required").length,0);
   assert.equal(result.text,"precommit blocker remains after bounded repair");
 });
