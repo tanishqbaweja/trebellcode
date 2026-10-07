@@ -573,8 +573,15 @@ test("Trebell Native Harbor runtime marker is written as root after agent runtim
   assert.doesNotMatch(source,/printf '%s\\n' (?:bun|node) > \{self\._REMOTE_RUNTIME\}/);
 });
 
-test("Terminal-Bench single runner uses an absolute output path and the same safer setup-timeout default",async()=>{
+test("Terminal-Bench single runner uses pinned Node staging, an absolute output path, and the safer timeout/tier defaults",async()=>{
   const source=await readFile(new URL("../scripts/run-terminal-bench.mjs",import.meta.url),"utf8");
+  assert.match(source,/NATIVE_PINNED_NODE_VERSION="22\.23\.3"/);
+  assert.match(source,/NATIVE_PINNED_NODE_TARBALL_SHA256="1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af"/);
+  assert.match(source,/\.harbor-validation/);
+  assert.match(source,/node-stage/);
+  assert.match(source,/async function ensurePinnedNodeTarball/);
+  assert.match(source,/Pinned Node tarball SHA-256 mismatch/);
+  assert.match(source,/TREBELL_NODE_PINNED_TARBALL:nativePinnedNodeTarballPath/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER\|\|3/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER\|\|1/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_SERVICE_TIER\|\|"fast"/);
