@@ -2216,6 +2216,7 @@ export async function runNativeAgentTurn({
       }
       const terminalAuditForGuard=nativeTerminalAuditMetadata(call?.namespace,call?.name,safeArguments(call?.arguments));
       const persistentConstraintCommitCall=constraintPlanningRequested&&terminalAuditForGuard?.persistentMutationLike===true;
+      const designatedBatchEvidenceClosureAuditCall=batchEvidenceCommitAuditRequested&&batchEvidenceClosureAuditRequestedRevision===editRevision&&batchEvidenceClosureAuditValidatedRevision!==editRevision&&modelTurns===batchEvidenceClosureAuditExpectedTurn&&Boolean(batchEvidenceClosureAuditCallId)&&String(call?.id||"")===batchEvidenceClosureAuditCallId;
       const escalatedPreEditEvidenceBlocked=editRevision===0&&!preEditBlockerChallengeBypass&&!persistentConstraintCommitCall&&implementationPressureEscalated&&!responseHasEditCall&&!implementationPressureEditCall(call);
       const singletonPreEditEvidenceBlocked=editRevision===0&&!preEditBlockerChallengeBypass&&!persistentConstraintCommitCall&&calls.length===1&&!implementationPressureEditCall(call)&&!implementationPressureBatchCall(call)&&(implementationPressure||probeBatchingRequired);
       const escalatedPostEditEvidenceBlocked=editRevision>0&&postEditEvidenceEscalated&&!completionRecoveryEvidenceBypass&&!responseHasEditCall&&!implementationPressureEditCall(call);
@@ -2228,7 +2229,7 @@ export async function runNativeAgentTurn({
         emit(onEvent,{name:"native.completion.recovery_edit_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"mutation_forbidden"}});
         callIndex++;continue;
       }
-      if(externalStateMutationRequested&&externalObservationEscalated&&!completionRecoveryEvidenceBypass&&externalObservationCall(call)&&!consolidatedExternalWaitCall(call)){
+      if(externalStateMutationRequested&&externalObservationEscalated&&!completionRecoveryEvidenceBypass&&!designatedBatchEvidenceClosureAuditCall&&externalObservationCall(call)&&!consolidatedExternalWaitCall(call)){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
         conversation.push({role:"tool",toolCallId:callId,content:"Trebell external-state convergence guard: this immediate status/API observation was not executed because the current external-state revision already consumed its bounded quick-observation allowance. If the only useful next step is waiting for an external condition, combine the wait and decisive recheck into one bounded terminal command or use a background monitor. Otherwise act on the evidence already gathered or finish."});
         blockedExternalObservation=true;

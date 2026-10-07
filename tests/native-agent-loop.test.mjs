@@ -19,6 +19,42 @@ test("batch evidence precommit record audit requires complete unique per-record 
   assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,recordAudit:[valid.recordAudit[0],{...valid.recordAudit[1],id:valid.recordAudit[0].id}]}).reason,"invalid_record_identity");
 });
 
+test("native designated batch closure audit bypasses the external observation cap without reopening ordinary polling",async()=>{
+  const events=[],executed=[];let turn=0;
+  const quick=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; print(requests.get('http://localhost:5000/api/status').status_code)"]})});
+  const submit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/batch', json={'items':[1,2]})"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued item, reconcile the authoritative evidence by source precedence and chronology, then submit the complete batch to the remote portal API."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turn++;
+      if(turn<=8)return {text:"",toolCalls:[quick("poll-"+turn)],usage:{}};
+      if(turn===9)return {text:"",toolCalls:[quick("blocked-poll")],usage:{}};
+      if(turn===10)return {text:"",toolCalls:[submit("submit-too-early")],usage:{}};
+      if(turn===11){
+        assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});
+        const closure=request.messages.findLast(message=>message.role==="developer"&&/batch-evidence closure audit/i.test(String(message.content||"")));assert.ok(closure);
+        return {text:"",toolCalls:[quick("closure-audit-after-cap")],usage:{}};
+      }
+      if(turn===12){
+        assert.equal(request.metadata?.batchEvidencePrecommitGate,true);assert.equal(request.toolChoice,"none");assert.deepEqual(request.tools,[]);
+        return {text:batchEvidencePrecommitVerdict(),toolCalls:[],usage:{}};
+      }
+      if(turn===13)return {text:"",toolCalls:[submit("submit-after-audit")],usage:{}};
+      return {text:"batch submitted after capped observations and certified closure",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(result.text,"batch submitted after capped observations and certified closure");
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_escalation").length,1);
+  const observationBlocks=events.filter(event=>event.name==="native.progress.external_observation_call_blocked");assert.equal(observationBlocks.length,1);assert.equal(observationBlocks[0]?.data?.callId,"blocked-poll");
+  assert.equal(executed.includes("blocked-poll"),false);assert.equal(executed.includes("submit-too-early"),false);assert.equal(executed.includes("closure-audit-after-cap"),true);assert.equal(executed.includes("submit-after-audit"),true);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_requested").length,1);assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_closure_audit_completed").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate_requested").length,1);assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate"&&event.status==="completed").length,1);
+});
+
 test("completion gate provider view drops superseded Trebell control messages but preserves evidence",()=>{
   const original=[
     {role:"developer",content:"caller policy"},{role:"user",content:"task"},
