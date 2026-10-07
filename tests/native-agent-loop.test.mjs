@@ -4204,6 +4204,41 @@ test("native external-state observation budget survives reversible workspace sta
   assert.equal(events.filter(event=>event.name==="native.progress.external_mutation_applied").length,1);
 });
 
+test("native external-state staging is bounded to two mutation-bearing responses after evidence escalation",async()=>{
+  const events=[],executed=[];let turns=0;
+  const quick=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; print(requests.get('http://localhost:5000/api/status').status_code)"]})});
+  const stage=(id,value)=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","p='/tmp/stage.json'; open(p,'w').write('"+value+"')"]})});
+  const mutate={id:"persistent-write",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/config', json={'mode':'next'})"]})};
+  const result=await runNativeAgentTurn({
+    model:"test-model",maxModelTurns:18,maxToolCalls:32,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the running campaign through its API. Reconcile the current evidence, stage the complete reversible candidate locally, then change the live config when justified."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns<=8)return {text:"",toolCalls:[quick("poll-"+turns)],usage:{}};
+      if(turns===9)return {text:"",toolCalls:[stage("stage-a","a"),stage("stage-a2","a2")],usage:{}};
+      if(turns===10)return {text:"",toolCalls:[quick("blocked-read-after-stage")],usage:{}};
+      if(turns===11)return {text:"",toolCalls:[stage("stage-b","b")],usage:{}};
+      if(turns===12)return {text:"",toolCalls:[stage("stage-c-blocked","c")],usage:{}};
+      if(turns===13)return {text:"",toolCalls:[mutate],usage:{}};
+      if(turns===14)return {text:"",toolCalls:[quick("post-mutation-read")],usage:{}};
+      if(turns===15)return {text:"External state updated after the bounded staged candidate.",toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return {success:true,exitCode:0,stdout:"ok"}},
+  });
+  assert.match(result.text,/bounded staged candidate/i);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_escalation").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_staging_mutation_turn").length,2);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_staging_continuation_allowed").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_staging_action_required").length,1);
+  const stagingBlocked=events.filter(event=>event.name==="native.progress.external_staging_mutation_blocked");assert.equal(stagingBlocked.length,1);assert.equal(stagingBlocked[0]?.data?.callId,"stage-c-blocked");
+  const evidenceBlocked=events.filter(event=>event.name==="native.progress.external_observation_call_blocked");assert.equal(evidenceBlocked.length,1);assert.equal(evidenceBlocked[0]?.data?.callId,"blocked-read-after-stage");
+  assert.equal(executed.includes("stage-a"),true);assert.equal(executed.includes("stage-a2"),true);assert.equal(executed.includes("stage-b"),true);assert.equal(executed.includes("stage-c-blocked"),false);
+  assert.equal(executed.includes("persistent-write"),true);assert.equal(executed.includes("post-mutation-read"),true);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_mutation_applied").length,1);
+});
+
 test("native completion recovery preserves a protected external phase instead of forcing a mutation",async()=>{
   const events=[],executed=[];let turns=0;
   const result=await runNativeAgentTurn({
