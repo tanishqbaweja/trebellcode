@@ -664,6 +664,67 @@ test("native incomplete batch evidence precommit verdict keeps persistence locke
   assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_audited").length,1);assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_commit_validation_carried").length,1);
 });
 
+test("native incomplete precommit audit reopens bounded external evidence after observation escalation",async()=>{
+  const events=[],executed=[];let turn=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:18,maxToolCalls:30,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued case, reconcile authoritative evidence and submit the complete decision batch to the remote system."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turn++;
+      if(turn<=8)return {text:"",toolCalls:[read("probe-"+turn)],usage:{}};
+      if(turn===9)return {text:"",toolCalls:[commit("commit-before-repair")],usage:{}};
+      if(turn===10)return {text:"",toolCalls:[read("closure-audit")],usage:{}};
+      if(turn===11)return {text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["one exact pre-write source-of-truth check is still missing"],reason:"The staged batch needs one focused non-mutating verification."}),toolCalls:[],usage:{}};
+      if(turn===12)return {text:"",toolCalls:[read("focused-repair-evidence")],usage:{}};
+      if(turn===13)return {text:"",toolCalls:[commit("commit-after-repair-before-gate")],usage:{}};
+      if(turn===14)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"The focused repair evidence resolves the remaining pre-write condition."}),toolCalls:[],usage:{}};
+      if(turn===15)return {text:"",toolCalls:[commit("commit-after-complete-gate")],usage:{}};
+      return {text:"batch submitted after bounded precommit repair",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(result.text,"batch submitted after bounded precommit repair");
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_escalation").length,1);
+  const windows=events.filter(event=>event.name==="native.progress.batch_evidence_precommit_repair_window");assert.equal(windows.length,1);assert.equal(windows[0]?.data?.repairWindow,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_call_blocked").length,0);
+  assert.ok(executed.includes("focused-repair-evidence"));assert.equal(executed.includes("commit-before-repair"),false);assert.equal(executed.includes("commit-after-repair-before-gate"),false);assert.ok(executed.includes("commit-after-complete-gate"));
+  const gates=events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate");assert.deepEqual(gates.map(event=>[event.status,event.data?.verdict]),[["blocked","incomplete"],["completed","complete"]]);
+});
+
+test("native precommit repair windows exhaust after two rejected audits instead of reopening evidence forever",async()=>{
+  const events=[];let turn=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const commit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})});
+  const incomplete=()=>({text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["pre-write evidence remains insufficient"],reason:"A focused source-of-truth check is still missing."}),toolCalls:[],usage:{}});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:18,maxToolCalls:30,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued case, reconcile the authoritative policy and evidence history, then submit all record decisions as one complete batch to the remote system."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turn++;
+      if(turn<=3)return {text:"",toolCalls:[read("probe-"+turn)],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[commit("commit-1")],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[read("closure-audit")],usage:{}};
+      if(turn===6)return incomplete();
+      if(turn===7)return {text:"",toolCalls:[read("repair-evidence-1")],usage:{}};
+      if(turn===8)return {text:"",toolCalls:[commit("commit-2")],usage:{}};
+      if(turn===9)return incomplete();
+      if(turn===10)return {text:"",toolCalls:[read("repair-evidence-2")],usage:{}};
+      if(turn===11)return {text:"",toolCalls:[commit("commit-3")],usage:{}};
+      if(turn===12)return incomplete();
+      return {text:"precommit blocker remains after bounded repair",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>closureAwareTerminalOutput(call),
+  });
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_repair_window").length,2);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_repair_exhausted").length,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.batch_evidence_initial_commit_required").length,0);
+  assert.equal(result.text,"precommit blocker remains after bounded repair");
+});
+
 test("native batch evidence precommit requires generated dependencies inside the audited mutation and avoids zero-write completion recovery",async()=>{
   const events=[],executed=[];let turn=0;
   const result=await runNativeAgentTurn({
