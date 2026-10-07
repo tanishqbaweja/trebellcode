@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, parseWindowsProcessRows, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
-import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
+import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
 import { preflightTerminalBenchDatasetTaskMembership, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
@@ -342,6 +342,26 @@ test("Terminal-Bench Docker exec transport classification recognizes Docker Desk
   assert.equal(isDockerExecTransportFailure({...transport,exception_info:{exception_message:"request returned 500 Internal Server Error from some unrelated service"}}),false);
   assert.equal(isDockerExecTransportFailure({...transport,exception_info:{exception_message:"dockerDesktopLinuxEngine /exec/not-a-container-id/json returned 500"}}),false);
   assert.equal(isDockerExecTransportFailure(null),false);
+});
+
+test("Terminal-Bench classifies externally SIGTERM'd Trebell Native agents as infrastructure without hiding ordinary agent failures",()=>{
+  const terminated={
+    exception_info:{
+      exception_type:"NonZeroAgentExitCodeError",
+      exception_message:"Command failed (exit 143): node /installed-agent/trebell-native-agent.mjs /installed-agent/instruction.txt\nstdout: Terminated\n\nstderr: None",
+    },
+    agent_execution:{started_at:"a",finished_at:"b"},
+  };
+  assert.equal(isNativeAgentExternalTermination(terminated),true);
+  assert.equal(isNativeAgentExternalTermination({
+    ...terminated,
+    exception_info:{...terminated.exception_info,exception_message:"Command failed (exit 143): node /installed-agent/other-agent.mjs\nstdout: Terminated"},
+  }),false);
+  assert.equal(isNativeAgentExternalTermination({
+    ...terminated,
+    exception_info:{...terminated.exception_info,exception_message:"Command failed (exit 1): node /installed-agent/trebell-native-agent.mjs\nstdout: ordinary agent failure"},
+  }),false);
+  assert.equal(isNativeAgentExternalTermination(null),false);
 });
 
 test("Terminal-Bench Docker cleanup only removes exited environments from sealed verifier trials",async()=>{

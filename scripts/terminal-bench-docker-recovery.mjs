@@ -6,6 +6,16 @@ function composeProjectForTrialName(trialName){
   return name?name.toLowerCase()+"__env":null;
 }
 
+export function isNativeAgentExternalTermination(trial){
+  if(!trial||typeof trial!=="object")return false;
+  const type=String(trial?.exception_info?.exception_type||"");
+  const message=String(trial?.exception_info?.exception_message||"");
+  if(type!=="NonZeroAgentExitCodeError"||!message)return false;
+  return /Command failed \(exit 143\):/i.test(message)
+    && /(?:node|bun) \/installed-agent\/trebell-native-agent\.mjs/i.test(message)
+    && /stdout:\s*Terminated(?:\r?\n|$)/i.test(message);
+}
+
 export function isPreAgentDockerSubnetExhaustion(trial){
   if(!trial||typeof trial!=="object")return false;
   if(trial.agent_setup||trial.agent_execution||trial.verifier)return false;
