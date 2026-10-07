@@ -21,7 +21,7 @@ test("batch evidence precommit record audit requires complete unique per-record 
   assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,recordAudit:[valid.recordAudit[0],{...valid.recordAudit[1],id:valid.recordAudit[0].id}]}).reason,"invalid_record_identity");
 });
 
-test("native precommit repair gives a multi-gap audit at most two focused mutation responses before retry",async()=>{
+test("native precommit repair gives a multi-gap audit at most two focused mutation responses before retained-candidate re-audit",async()=>{
   const events=[],executed=[];let turn=0;
   const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
   const stage=(id,path)=>({id,namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path,old_text:"old",new_text:"new"})});
@@ -45,10 +45,8 @@ test("native precommit repair gives a multi-gap audit at most two focused mutati
         return {text:"",toolCalls:[read("focused-between-repairs")],usage:{}};
       }
       if(turn===9)return {text:"",toolCalls:[stage("repair-part-b","part-b.json")],usage:{}};
-      if(turn===10)return {text:"",toolCalls:[stage("repair-part-c-too-late","part-c.json")],usage:{}};
-      if(turn===11)return {text:"",toolCalls:[commit("commit-after-multipart-repair")],usage:{}};
-      if(turn===12){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("repair-closure-audit")],usage:{}}}
-      if(turn===13)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"Both named pre-write gaps are now resolved."}),toolCalls:[],usage:{}};
+      if(turn===10){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("repair-closure-audit")],usage:{}}}
+      if(turn===11)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"Both named pre-write gaps are now resolved."}),toolCalls:[],usage:{}};
       return {text:"batch submitted after bounded multi-gap repair",toolCalls:[],usage:{}};
     },
     executeTool:async call=>{
@@ -58,12 +56,13 @@ test("native precommit repair gives a multi-gap audit at most two focused mutati
     },
   });
   assert.equal(result.text,"batch submitted after bounded multi-gap repair");
-  assert.ok(executed.includes("repair-part-a"));assert.ok(executed.includes("focused-between-repairs"));assert.ok(executed.includes("repair-part-b"));assert.equal(executed.includes("repair-part-c-too-late"),false);
+  assert.ok(executed.includes("repair-part-a"));assert.ok(executed.includes("focused-between-repairs"));assert.ok(executed.includes("repair-part-b"));assert.equal(executed.includes("commit-after-multipart-repair"),false);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_turn").length,2);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_continuation_allowed").length,1);
-  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_retry_required").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_retry_required").length,0);
+  const rearmed=events.filter(event=>event.name==="native.progress.batch_evidence_repair_persistent_candidate_rearmed");assert.equal(rearmed.length,1);assert.equal(rearmed[0]?.data?.repairResponsesUsed,2);
   assert.equal(events.filter(event=>event.name==="native.progress.external_observation_call_blocked"&&event.data?.callId==="focused-between-repairs").length,0);
-  const blocked=events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.callId,"repair-part-c-too-late");
+  assert.equal(executed.filter(id=>/^native-precommit-authorized-/.test(id)).length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.external_mutation_applied").length,1);
 });
@@ -167,11 +166,10 @@ test("native precommit repair does not penalize a mixed response that contains t
         return {text:"",toolCalls:[read("bad-read-in-mixed-response"),stage("owed-repair")],usage:{}};
       }
       if(turn===10){
-        assert.deepEqual(request.toolChoice,{type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_terminal",name:"run"}]});
-        return {text:"",toolCalls:[commit("commit-after-repair")],usage:{}};
+        assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});
+        return {text:"",toolCalls:[read("repair-closure-audit")],usage:{}};
       }
-      if(turn===11){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("repair-closure-audit")],usage:{}}}
-      if(turn===12)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"The staged repair resolves the remaining pre-write condition."}),toolCalls:[],usage:{}};
+      if(turn===11)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"The staged repair resolves the remaining pre-write condition."}),toolCalls:[],usage:{}};
       return {text:"batch submitted after mixed repair response",toolCalls:[],usage:{}};
     },
     executeTool:async call=>{
@@ -184,6 +182,8 @@ test("native precommit repair does not penalize a mixed response that contains t
   assert.equal(executed.includes("bad-read-in-mixed-response"),false);assert.equal(executed.includes("owed-repair"),true);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_action_retry").length,0);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_turn").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_persistent_candidate_rearmed").length,1);
+  assert.equal(executed.filter(id=>/^native-precommit-authorized-/.test(id)).length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.external_mutation_applied").length,1);
 });
 
@@ -359,7 +359,7 @@ test("native exhausted precommit repair evidence permits one batched staging tur
   assert.equal(events.filter(event=>event.name==="native.progress.external_mutation_applied").length,1);
 });
 
-test("native precommit repair bounds workspace staging from the first repair mutation turn",async()=>{
+test("native precommit repair re-arms the retained candidate after the first bounded workspace staging response",async()=>{
   const events=[],executed=[];let turn=0;
   const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
   const stage=(id,path,oldText,newText)=>({id,namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path,old_text:oldText,new_text:newText})});
@@ -375,10 +375,8 @@ test("native precommit repair bounds workspace staging from the first repair mut
       if(turn===5)return {text:"",toolCalls:[read("initial-closure-audit")],usage:{}};
       if(turn===6)return {text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["one focused repair remains"],reason:"The staged batch needs bounded repair evidence."}),toolCalls:[],usage:{}};
       if(turn===7)return {text:"",toolCalls:[stage("workspace-stage-a","stage-a.json","old-a","new-a"),stage("workspace-stage-b","stage-b.json","old-b","new-b")],usage:{}};
-      if(turn===8)return {text:"",toolCalls:[stage("late-workspace-stage","stage-c.json","old-c","new-c")],usage:{}};
-      if(turn===9)return {text:"",toolCalls:[commit("commit-after-repair")],usage:{}};
-      if(turn===10){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("repair-closure-audit")],usage:{}}}
-      if(turn===11)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"The batched staged repair resolves the remaining pre-write condition."}),toolCalls:[],usage:{}};
+      if(turn===8){assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});return {text:"",toolCalls:[read("repair-closure-audit")],usage:{}}}
+      if(turn===9)return {text:batchEvidencePrecommitVerdict({progress:"improved",reason:"The batched staged repair resolves the remaining pre-write condition."}),toolCalls:[],usage:{}};
       return {text:"batch submitted after converged workspace repair",toolCalls:[],usage:{}};
     },
     executeTool:async call=>{
@@ -388,12 +386,13 @@ test("native precommit repair bounds workspace staging from the first repair mut
     },
   });
   assert.equal(result.text,"batch submitted after converged workspace repair");
-  assert.ok(executed.includes("workspace-stage-a"));assert.ok(executed.includes("workspace-stage-b"));assert.equal(executed.includes("late-workspace-stage"),false);
+  assert.ok(executed.includes("workspace-stage-a"));assert.ok(executed.includes("workspace-stage-b"));assert.equal(executed.includes("commit-after-repair"),false);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_turn").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_continuation_allowed").length,0);
-  const blocked=events.filter(event=>event.name==="native.progress.batch_evidence_repair_mutation_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.callId,"late-workspace-stage");
-  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_action_retry").length,1);
-  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_retry_required").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_action_retry").length,0);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_retry_required").length,0);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_repair_persistent_candidate_rearmed").length,1);
+  assert.equal(executed.filter(id=>/^native-precommit-authorized-/.test(id)).length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.external_mutation_applied").length,1);
 });
