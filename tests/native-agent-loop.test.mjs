@@ -4121,6 +4121,42 @@ test("native external-state convergence bounds repeated quick polling but permit
   assert.equal(executed.includes("wait-and-check"),true);
 });
 
+test("native external-state observation budget survives reversible workspace staging and resets only after persistent mutation",async()=>{
+  const events=[],executed=[];let turns=0;
+  const quick=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; print(requests.get('http://localhost:5000/api/status').status_code)"]})});
+  const stage={id:"local-stage",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"staged.json",old_text:"old",new_text:"new"})};
+  const mutate={id:"persistent-write",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/config', json={'mode':'next'})"]})};
+  const result=await runNativeAgentTurn({
+    model:"test-model",maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the running campaign through its API. Reconcile the current evidence, stage any reversible local working data you need, and change the live config when justified."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns<=8)return {text:"",toolCalls:[quick("poll-"+turns)],usage:{}};
+      if(turns===9)return {text:"",toolCalls:[stage],usage:{}};
+      if(turns===10)return {text:"",toolCalls:[quick("blocked-after-stage")],usage:{}};
+      if(turns===11)return {text:"",toolCalls:[mutate],usage:{}};
+      if(turns===12)return {text:"",toolCalls:[quick("post-mutation-poll")],usage:{}};
+      if(turns===13)return {text:"External state updated and the fresh post-mutation observation completed.",toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      if(call.namespace==="trebell_workspace")return {success:true,path:"staged.json",replacements:1,beforeSha256:"before",afterSha256:"after"};
+      return {success:true,exitCode:0,stdout:"ok"};
+    },
+  });
+  assert.match(result.text,/fresh post-mutation observation/i);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_observation_escalation").length,1);
+  const blocked=events.filter(event=>event.name==="native.progress.external_observation_call_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0]?.data?.callId,"blocked-after-stage");
+  assert.equal(executed.includes("local-stage"),true);
+  assert.equal(executed.includes("blocked-after-stage"),false);
+  assert.equal(executed.includes("persistent-write"),true);
+  assert.equal(executed.includes("post-mutation-poll"),true);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_mutation_applied").length,1);
+});
+
 test("native completion recovery preserves a protected external phase instead of forcing a mutation",async()=>{
   const events=[],executed=[];let turns=0;
   const result=await runNativeAgentTurn({
