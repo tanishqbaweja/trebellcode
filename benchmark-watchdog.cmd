@@ -1,5 +1,6 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-start "Trebell Benchmark Health" /D "%~dp0" cmd /k "npm run bench:terminal:health"
+set "TREBELL_WATCHDOG_INTERVAL_MS=5000"
+start "Trebell Benchmark Watchdog" /D "%~dp0" cmd /k "node scripts\terminal-bench-watchdog.mjs --watch"
 endlocal
