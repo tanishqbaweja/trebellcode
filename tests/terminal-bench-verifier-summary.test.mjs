@@ -3,11 +3,26 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeCtrfVerifierSummary, normalizeTraceResultsVerifierSummary, readJobVerifierSummary, readTrialVerifierSummary } from "../scripts/terminal-bench-verifier-summary.mjs";
+import { normalizeCtrfVerifierSummary, normalizeTraceResultsVerifierSummary, normalizeVerifierDiagnosticText, readJobVerifierSummary, readTrialVerifierSummary } from "../scripts/terminal-bench-verifier-summary.mjs";
 
 test("Terminal-Bench verifier summary normalizes CTRF counts",()=>{
   assert.deepEqual(normalizeCtrfVerifierSummary({results:{summary:{tests:6,passed:5,failed:1,pending:0,skipped:0,other:0}}}),{tests:6,passed:5,failed:1,pending:0,skipped:0,other:0});
   assert.equal(normalizeCtrfVerifierSummary({results:{}}),null);
+});
+
+test("Terminal-Bench verifier summary separates task diagnostics from pytest execution",()=>{
+  assert.deepEqual(normalizeVerifierDiagnosticText("Scoring: 115/116 lines correct = 99.14%\nCases:   9/10 perfect = 90.00%\nPASSED"),{diagnostic:{correct:115,total:116,percent:99.14},cases:{correct:9,total:10,percent:90}});
+});
+
+test("Terminal-Bench verifier summary reads official reward and scorer diagnostics beside CTRF",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-scored-trial-"));
+  try{
+    const verifier=join(root,"verifier");await mkdir(verifier,{recursive:true});
+    await writeFile(join(verifier,"ctrf.json"),JSON.stringify({results:{summary:{tests:1,passed:1,failed:0,pending:0,skipped:0,other:0}}}));
+    await writeFile(join(verifier,"reward.json"),JSON.stringify({reward:0}));
+    await writeFile(join(verifier,"test-stdout.txt"),"Scoring: 60/116 lines correct = 51.72%\nCases: 6/10 perfect = 60.00%\nPASSED\n");
+    assert.deepEqual(await readTrialVerifierSummary(root),{trials:1,tests:1,passed:1,failed:0,pending:0,skipped:0,other:0,officialReward:0,diagnostic:{correct:60,total:116,percent:51.72},cases:{correct:6,total:10,percent:60}});
+  }finally{await rm(root,{recursive:true,force:true})}
 });
 
 test("Terminal-Bench verifier summary normalizes trace-results counts",()=>{

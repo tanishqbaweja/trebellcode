@@ -47,9 +47,9 @@ async function laneState(lane,report,recovered=null){
     effectiveJob.recoveredVerifierChecks=recoveredLane.checks;
     effectiveJob.verifierRecovered=true;
   }
-  if(effectiveJob&&!effectiveJob.verifierChecks&&!effectiveJob.recoveredVerifierChecks){
+  if(effectiveJob){
     const checks=await readJobVerifierSummary(jobsDir,lane.jobName);
-    if(checks)effectiveJob.verifierChecks=checks;
+    if(checks)effectiveJob.verifierChecks={...(effectiveJob.verifierChecks||{}),...checks};
   }
   return {...lane,activity,job:effectiveJob,liveEvidence:Boolean(liveEvidence&&!job)};
 }
@@ -124,16 +124,17 @@ function render(snap,saved){
   if(snap.sameHostedWebSearchPolicy===false)lines.push("Fairness warning: hosted web-search policy differs across lanes");
   if(snap.infrastructureInterrupted)lines.push("Infrastructure: INTERRUPTED — partial evidence only; do not treat as a clean harness comparison");
   lines.push("");
-  lines.push("LANE          STATUS     ACTIVITY   VERIFY  INPUT        OUTPUT       CACHE      API-EQ COST");
-  lines.push("------------  ---------  ---------  ------  -----------  -----------  ---------  -----------");
+  lines.push("LANE          STATUS     ACTIVITY   REWARD   DIAG       PYTEST  INPUT        OUTPUT       CACHE      API-EQ COST");
+  lines.push("------------  ---------  ---------  -------  ---------  ------  -----------  -----------  ---------  -----------");
   for(const lane of snap.lanes){
-    const checks=lane.job?.verifierChecks||lane.job?.recoveredVerifierChecks,verify=checks?`${checks.passed}/${checks.tests}${lane.job?.verifierRecovered?"*":""}`:"-";
+    const checks=lane.job?.verifierChecks||lane.job?.recoveredVerifierChecks,reward=checks?.officialReward==null?"-":Number(checks.officialReward).toFixed(3),diag=checks?.diagnostic?`${checks.diagnostic.correct}/${checks.diagnostic.total}`:"-",pytest=checks?.tests?`${checks.passed}/${checks.tests}${lane.job?.verifierRecovered?"*":""}`:"-";
     const age=lane.activity?.state?.ageSeconds,activity=age==null?"-":age<30?"active":age<180?`${age}s ago`:`${Math.round(age/60)}m ago`;
     const cache=lane.job?.cacheHitPercent==null?"-":`${Number(lane.job.cacheHitPercent).toFixed(1)}%`;
-    lines.push(`${lane.label.padEnd(12)}  ${String(lane.status||"?").padEnd(9)}  ${String(activity).padEnd(9)}  ${verify.padEnd(6)}  ${count(lane.job?.inputTokens).padEnd(11)}  ${count(lane.job?.outputTokens).padEnd(11)}  ${cache.padEnd(9)}  ${money(lane.job?.apiEquivalentCostUsd,{lowerBound:lane.job?.apiEquivalentCostIsLowerBound===true})}`);
+    lines.push(`${lane.label.padEnd(12)}  ${String(lane.status||"?").padEnd(9)}  ${String(activity).padEnd(9)}  ${reward.padEnd(7)}  ${diag.padEnd(9)}  ${pytest.padEnd(6)}  ${count(lane.job?.inputTokens).padEnd(11)}  ${count(lane.job?.outputTokens).padEnd(11)}  ${cache.padEnd(9)}  ${money(lane.job?.apiEquivalentCostUsd,{lowerBound:lane.job?.apiEquivalentCostIsLowerBound===true})}`);
     if(lane.runError)lines.push(`  error: ${String(lane.runError).slice(0,180)}`);
   }
   if(snap.lanes.some(lane=>lane.job?.apiEquivalentCostIsLowerBound===true))lines.push("Cost note: ≥ indicates a lower bound because one or more provider responses omitted token usage.");
+  if(snap.lanes.some(lane=>lane.job?.verifierChecks?.tests))lines.push("Verifier note: REWARD is Harbor's official task reward; DIAG is a task scorer diagnostic when exposed; PYTEST only says the verifier test harness executed/passed.");
   lines.push("");lines.push(`Saved snapshot: ${saved}`);lines.push(`Full report: ${snap.reportPath}`);
   if(snap.nativeRerunReportPath)lines.push(`Native rerun report: ${snap.nativeRerunReportPath}`);
   return lines.join("\n");

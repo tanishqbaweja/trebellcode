@@ -537,7 +537,9 @@ test("Terminal-Bench watchdog persists latest and timestamped history snapshots"
   assert.match(source,/lower bound because one or more provider responses omitted token usage/);
   assert.match(source,/recoverNativeEventEvidence\(jobsDir,lane\.jobName,\{serviceTier:report\?\.serviceTier\|\|"standard"\}\)/);
   assert.match(source,/readJobVerifierSummary\(jobsDir,lane\.jobName\)/);
-  assert.match(source,/!effectiveJob\.verifierChecks&&!effectiveJob\.recoveredVerifierChecks/);
+  assert.match(source,/effectiveJob\.verifierChecks=\{\.\.\.\(effectiveJob\.verifierChecks\|\|\{\}\),\.\.\.checks\}/);
+  assert.match(source,/REWARD\s+DIAG\s+PYTEST/);
+  assert.match(source,/Verifier note: REWARD is Harbor's official task reward/);
 });
 
 test("Pinned Harbor Codex adapter pins the official version and uses Windows-safe persisted sessions",async()=>{
