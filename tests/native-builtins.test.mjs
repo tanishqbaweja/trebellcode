@@ -46,6 +46,8 @@ test("Native workspace image reads use remote binary streams without decoding by
     },
   };
   const execute=createNativeBuiltins({root:"/workspace",environments,environmentId:"test-remote"});
+  const guarded=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"layout.png"}});
+  assert.equal(guarded.imageModeRequired,true);assert.equal(guarded.mimeType,"image/png");assert.deepEqual(calls,[]);
   const image=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"layout.png",as_image:true}});
   assert.equal(image.mimeType,"image/png");assert.equal(image.contentItems[1].imageUrl,"data:image/png;base64,"+pixel.toString("base64"));
   assert.deepEqual(calls,["info:/workspace/layout.png","stream:/workspace/layout.png"]);
@@ -56,6 +58,9 @@ test("Native workspace image reads preserve the actual pixels for the model with
   try{
     await writeFile(join(root,"src","pixel.png"),pixel);
     const execute=createNativeBuiltins({root});
+    const guarded=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png"}});
+    assert.equal(guarded.imageModeRequired,true);assert.equal(guarded.mimeType,"image/png");
+    assert.equal(Object.hasOwn(guarded,"content"),false);assert.match(guarded.message,/as_image=true/i);
     const image=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png",as_image:true}});
     assert.equal(image.success,true);assert.equal(image.mimeType,"image/png");
     assert.equal(image.contentItems[1].type,"inputImage");

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, readFile, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import {
   environmentWorkspaceFile,
   environmentWorkspaceTree,
@@ -16,6 +16,14 @@ const DEFAULT_READ_BYTES=256*1024;
 const MAX_EDIT_BYTES=2*1024*1024;
 const DEFAULT_OUTPUT_BYTES=512*1024;
 const MAX_IMAGE_BYTES=8*1024*1024;
+
+function imageMimeFromPath(path){
+  const extension=extname(String(path||"")).toLowerCase();
+  if(extension===".png")return "image/png";
+  if(extension===".jpg"||extension===".jpeg")return "image/jpeg";
+  if(extension===".webp")return "image/webp";
+  return null;
+}
 
 function supportedImageMime(bytes){
   if(bytes.length>=8&&bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))return "image/png";
@@ -242,6 +250,8 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
       if(name==="read_file"){
         const located=await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:true});
         if(args.as_image===true)return await workspaceImage(located,{environments,environmentId});
+        const imageMimeType=imageMimeFromPath(located.path);
+        if(imageMimeType)return {success:true,path:located.path,mimeType:imageMimeType,imageModeRequired:true,message:"Raster image text decoding was skipped to avoid binary data in model context. Re-read this path with as_image=true to inspect its pixels."};
         return await environmentWorkspaceFile(located.path,boundedInteger(args.max_bytes,DEFAULT_READ_BYTES,1,1024*1024),{root,environments,environmentId});
       }
       if(name==="write_file"){
