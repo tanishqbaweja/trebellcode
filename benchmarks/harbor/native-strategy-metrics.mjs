@@ -46,6 +46,7 @@ export function createNativeStrategyMetrics(){
     completionGateOutputCapRetries:0,
     completionGateOutputTokenBudget:0,
     completionGateInvalidFailClosed:0,
+    completionGateBlockedVerificationNormalizations:0,
     completionArtifactConstraintAuditBlocks:0,
     completionGateRecoveries:0,
     completionRecoveryEvidenceUses:0,
@@ -136,6 +137,7 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
     target.completionGateOutputTokenBudget=Number(target.completionGateOutputTokenBudget||0)+Math.max(0,Number(data?.maxOutputTokens||0));
   }
   else if(name==="native.completion.gate_invalid_fail_closed")target.completionGateInvalidFailClosed=Number(target.completionGateInvalidFailClosed||0)+1;
+  else if(name==="native.completion.blocked_verification_normalized")target.completionGateBlockedVerificationNormalizations=Number(target.completionGateBlockedVerificationNormalizations||0)+1;
   else if(name==="native.completion.constraint_audit_blocked")target.completionArtifactConstraintAuditBlocks=Number(target.completionArtifactConstraintAuditBlocks||0)+1;
   else if(name==="native.completion.gate_recovery"){
     target.completionGateRecoveries=Number(target.completionGateRecoveries||0)+1;
