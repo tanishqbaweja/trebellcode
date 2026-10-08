@@ -65,6 +65,7 @@ export function createNativeStrategyMetrics(){
     completionRecoveryDependentEditVerificationBlocks:0,
     completionRecoveryEditsBlocked:0,
     completionRecoveryNonEditCallsBlocked:0,
+    completionRecoveryEditDebtsUnpaid:0,
     postEditEvidenceCheckpoints:0,
     postEditEvidenceEscalations:0,
     postEditEvidenceCallsBlocked:0,
@@ -163,6 +164,7 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
     if(event?.data?.reason==="recovery_dependent_edit_requires_verification")target.completionRecoveryDependentEditVerificationBlocks=Number(target.completionRecoveryDependentEditVerificationBlocks||0)+1;
   }
   else if(name==="native.completion.recovery_non_edit_call_blocked")target.completionRecoveryNonEditCallsBlocked=Number(target.completionRecoveryNonEditCallsBlocked||0)+1;
+  else if(name==="native.completion.recovery_edit_debt_unpaid")target.completionRecoveryEditDebtsUnpaid=Number(target.completionRecoveryEditDebtsUnpaid||0)+1;
   else if(name==="native.progress.post_edit_evidence_checkpoint")target.postEditEvidenceCheckpoints=Number(target.postEditEvidenceCheckpoints||0)+1;
   else if(name==="native.progress.post_edit_evidence_escalation")target.postEditEvidenceEscalations=Number(target.postEditEvidenceEscalations||0)+1;
   else if(name==="native.progress.post_edit_evidence_call_blocked")target.postEditEvidenceCallsBlocked=Number(target.postEditEvidenceCallsBlocked||0)+1;

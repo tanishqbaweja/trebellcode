@@ -1263,6 +1263,16 @@ export async function runNativeAgentTurn({
     const output=await read(preferBinary?id+":text":id,{path,max_bytes:1024*1024});
     return output?.imageModeRequired===true?await read(id+":binary",binaryArgs):output;
   };
+  const endWithUnpaidRecoveryEdit=({misses,source})=>{
+    const stateLabel=workspaceMutationRequested?"workspace state":"task state",action=externalStateMutationRequested?"state-changing action":"implementation edit";
+    const unresolved=completionRecoveryIncumbent?.unresolved?.length?completionRecoveryIncumbent.unresolved:["A material acceptance condition remains unresolved."];
+    const preservation=completionRecoveryIncumbentWorkspaceAligned?`The strongest evidence-backed ${stateLabel} has been preserved or restored`:`The current ${stateLabel} could not be proven equivalent to the strongest evidence-backed recovery incumbent`;
+    const resultModel=String(lastResponse?.model||model),resultProvider=lastResponse?.provider||provider||null;
+    emit(onEvent,{name:"native.completion.recovery_edit_debt_unpaid",status:"blocked",model:resultModel,provider:resultProvider,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,misses,source,incumbentWorkspaceAligned:completionRecoveryIncumbentWorkspaceAligned,unresolved}});
+    const result={text:`Trebell stopped semantic recovery because the owed corrective ${action} was not performed after a retry. ${preservation}, and completion is not verified. Unresolved: ${unresolved.join("; ")}`,model:resultModel,provider:resultProvider,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse};
+    emit(onEvent,{name:"native.turn.completed",status:"completed",model:resultModel,provider:resultProvider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,completionGateVerdict:"incomplete",completionRecoveryEditDebtUnpaid:true}});
+    return result;
+  };
   const captureRecoveryWorkspacePathSnapshot=async(path,{candidateSha256=null}={})=>{
     path=String(path||"").trim();if(!path)return null;
     try{
@@ -2445,8 +2455,7 @@ export async function runNativeAgentTurn({
           emit(onEvent,{name:"native.completion.recovery_edit_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,misses:completionRecoveryEditRequiredMisses}});
           continue;
         }
-        const error=new Error(externalStateMutationRequested?"Native completion recovery failed to perform the required corrective state-changing action.":"Native completion recovery failed to perform the required corrective implementation edit.");error.code="native_recovery_edit_not_called";
-        emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{reason:error.code,modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch}});throw error;
+        return endWithUnpaidRecoveryEdit({misses:completionRecoveryEditRequiredMisses+1,source:"text_response"});
       }
       const batchEvidencePrecommitLeaseCurrent=batchEvidenceCommitAuditRequested&&batchEvidenceCommittedWrites>0&&constraintCommitValidatedRevision===editRevision;
       if(semanticCompletionGate===true&&taskMutationRequested&&modelTurns<budget.maxModelTurns&&batchEvidencePrecommitLeaseCurrent){
@@ -2854,10 +2863,7 @@ export async function runNativeAgentTurn({
       completionRecoveryMutationForbidden=false;
     }
     if(recoveryEditMode&&blockedRequiredRecoveryNonEdit&&editRevision===editRevisionBeforeCalls){
-      if(completionRecoveryEditRequiredMisses>=1){
-        const error=new Error(externalStateMutationRequested?"Native completion recovery repeatedly failed to perform the required corrective state-changing action.":"Native completion recovery repeatedly failed to perform the required corrective implementation edit.");error.code="native_recovery_edit_not_called";
-        emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{reason:error.code,modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,misses:completionRecoveryEditRequiredMisses+1}});throw error;
-      }
+      if(completionRecoveryEditRequiredMisses>=1)return endWithUnpaidRecoveryEdit({misses:completionRecoveryEditRequiredMisses+1,source:"non_edit_tool_response"});
       completionRecoveryEditRequiredMisses++;
       conversation.push({role:"developer",content:externalStateMutationRequested
         ?"Trebell recovery edit convergence: the previous required-mutation response attempted only non-mutating evidence and was blocked. This is the one retry. On the next turn perform the reserved persistent external/runtime state change using the evidence already gathered; do not issue another read-only/status/inspection call."
