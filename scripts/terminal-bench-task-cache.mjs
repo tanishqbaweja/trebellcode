@@ -25,6 +25,54 @@ export function terminalBenchTaskDockerImagesFromToml(text){
   return images;
 }
 
+function stripTomlComments(text){
+  let out="",inString=false;
+  for(let index=0;index<text.length;index++){
+    const char=text[index];
+    if(inString){out+=char;if(char==="\\"){out+=text[++index]||"";continue}if(char==='"')inString=false;continue}
+    if(char==='"'){inString=true;out+=char;continue}
+    if(char==="#"){while(index<text.length&&text[index]!=="\n")index++;out+="\n";continue}
+    out+=char;
+  }
+  return out;
+}
+
+export function terminalBenchTaskArtifactsFromToml(text){
+  const source=stripTomlComments(String(text||"")),header=source.search(/^artifacts\s*=\s*\[/m);if(header<0)return [];
+  const open=source.indexOf("[",header);let depth=0,inString=false,close=-1;
+  for(let index=open;index<source.length;index++){
+    const char=source[index];
+    if(inString){if(char==="\\"){index++;continue}if(char==='"')inString=false;continue}
+    if(char==='"'){inString=true;continue}
+    if(char==="["||char==="{")depth++;
+    else if((char==="]"||char==="}")&&--depth===0){close=index;break}
+  }
+  if(close<0)return [];
+  const entries=[];let current="",level=0;inString=false;
+  for(let index=open+1;index<close;index++){
+    const char=source[index];
+    if(inString){current+=char;if(char==="\\"){current+=source[++index]||"";continue}if(char==='"')inString=false;continue}
+    if(char==='"'){inString=true;current+=char;continue}
+    if(char==="["||char==="{")level++;else if(char==="]"||char==="}")level--;
+    if(char===","&&level===0){entries.push(current.trim());current="";continue}
+    current+=char;
+  }
+  if(current.trim())entries.push(current.trim());
+  const string=value=>{try{return JSON.parse(value)}catch{return null}};
+  return entries.map(entry=>{
+    if(entry.startsWith('"'))return {source:string(entry),exclude:[],service:null};
+    if(!entry.startsWith("{"))return null;
+    const field=name=>{const match=entry.match(new RegExp("\\b"+name+'\\s*=\\s*("(?:[^"\\\\]|\\\\.)*")'));return match?string(match[1]):null};
+    const excludeBody=entry.match(/\bexclude\s*=\s*\[([^\]]*)\]/)?.[1]||"";
+    return {source:field("source"),exclude:[...excludeBody.matchAll(/"(?:[^"\\]|\\.)*"/g)].map(match=>string(match[0])).filter(value=>typeof value==="string"),service:field("service")};
+  }).filter(item=>item&&typeof item.source==="string"&&item.source);
+}
+
+export async function terminalBenchCachedTaskArtifacts(options={}){
+  const taskToml=await terminalBenchCachedTaskToml(options);if(!taskToml)return [];
+  return terminalBenchTaskArtifactsFromToml(await readFile(taskToml,"utf8"));
+}
+
 export function terminalBenchTaskNoNetworkSectionsFromToml(text){
   const sections=[];let section="";
   for(const rawLine of String(text||"").split(/\r?\n/)){

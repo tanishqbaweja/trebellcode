@@ -243,6 +243,9 @@ class TrebellNativeAgent(BaseInstalledAgent):
         reasoning_context = os.environ.get("TREBELL_OPENAI_REASONING_CONTEXT", "").strip()
         if reasoning_context:
             env["TREBELL_OPENAI_REASONING_CONTEXT"] = reasoning_context
+        gate_snapshot_paths = os.environ.get("TREBELL_HARBOR_GATE_SNAPSHOT_PATHS", "").strip()
+        if gate_snapshot_paths:
+            env["TREBELL_HARBOR_GATE_SNAPSHOT_PATHS"] = gate_snapshot_paths
         await self.exec_as_agent(
             environment,
             command=(
