@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, readFile, realpath, stat } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import {
   environmentWorkspaceFile,
@@ -17,12 +17,43 @@ const MAX_EDIT_BYTES=2*1024*1024;
 const DEFAULT_OUTPUT_BYTES=512*1024;
 const MAX_IMAGE_BYTES=8*1024*1024;
 
+function sha256Bytes(value){return createHash("sha256").update(value).digest("hex")}
+
 function imageMimeFromPath(path){
   const extension=extname(String(path||"")).toLowerCase();
   if(extension===".png")return "image/png";
   if(extension===".jpg"||extension===".jpeg")return "image/jpeg";
   if(extension===".webp")return "image/webp";
   return null;
+}
+
+async function workspaceBinary(located,maxBytes,{environments,environmentId}={}){
+  const bounded=Math.max(1,Math.min(MAX_EDIT_BYTES,Math.trunc(Number(maxBytes)||DEFAULT_READ_BYTES)));
+  const info=located.remote?await environments.attachmentInfo(environmentId,located.path):await stat(located.path);
+  if(!located.remote&&!info.isFile())throw new Error("Path is not a file");
+  if(!Number.isSafeInteger(info.size)||info.size<0||info.size>bounded)throw new Error(`File is too large for an internal recovery snapshot (${Math.ceil(Number(info.size||0)/1024)} KB)`);
+  let bytes;
+  if(located.remote){
+    if(typeof environments.streamFile!=="function")throw new Error("Remote environment cannot stream recovery bytes");
+    const child=environments.streamFile(environmentId,located.path),chunks=[];let count=0;
+    const completion=new Promise((resolve,reject)=>{child.once("error",reject);child.once("close",code=>code===0?resolve():reject(new Error("Remote recovery read exited with code "+code)))});
+    try{
+      for await(const chunk of child.stdout){const part=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);count+=part.length;if(count>bounded||count>info.size)throw new Error("Recovery byte stream exceeds its verified size limit");chunks.push(part)}
+      await completion;bytes=Buffer.concat(chunks,count);
+    }catch(error){child.kill?.();await completion.catch(()=>{});throw error}
+  }else bytes=await readFile(located.path);
+  if(bytes.length!==info.size||bytes.length>bounded)throw new Error("File changed during bounded recovery read");
+  return {success:true,path:located.path,size:bytes.length,binary:true,contentBase64:bytes.toString("base64"),sha256:sha256Bytes(bytes)};
+}
+
+async function writeWorkspaceBinary(located,encoded,{environments,environmentId}={}){
+  const raw=String(encoded??"").trim();if(raw&&!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(raw))throw new Error("Internal recovery binary content is not valid base64");
+  const bytes=Buffer.from(raw,"base64");if(bytes.length>MAX_EDIT_BYTES)throw new Error("Binary recovery content exceeds the 2 MB Native edit limit");
+  if(located.remote){
+    if(typeof environments.writeTextFile!=="function")throw new Error("Remote environment cannot restore recovery bytes");
+    await environments.writeTextFile(environmentId,located.path,bytes);
+  }else{await mkdir(dirname(located.path),{recursive:true});await writeFile(located.path,bytes)}
+  return {success:true,path:located.path,size:bytes.length,binary:true,createdOrReplaced:true,sha256:sha256Bytes(bytes)};
 }
 
 function supportedImageMime(bytes){
@@ -242,6 +273,7 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
   if(!root)throw new Error("Native built-in tools require an active workspace root");
   return async function execute(call={}){
     const namespace=String(call.namespace||""),name=String(call.name||""),args=call.arguments&&typeof call.arguments==="object"?call.arguments:{};
+    const internalRecovery=/^native-recovery-(?:snapshot|restore)-/.test(String(call.id||""));
     if(namespace==="trebell_workspace"){
       if(name==="list"){
         const located=await safeWorkspacePath(root,args.path||".",{environments,environmentId,mustExist:true});
@@ -249,12 +281,14 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
       }
       if(name==="read_file"){
         const located=await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:true});
+        if(internalRecovery&&args._trebell_internal_binary===true)return await workspaceBinary(located,args.max_bytes,{environments,environmentId});
         if(args.as_image===true)return await workspaceImage(located,{environments,environmentId});
         const imageMimeType=imageMimeFromPath(located.path);
         if(imageMimeType)return {success:true,path:located.path,mimeType:imageMimeType,imageModeRequired:true,message:"Raster image text decoding was skipped to avoid binary data in model context. Re-read this path with as_image=true to inspect its pixels."};
         return await environmentWorkspaceFile(located.path,boundedInteger(args.max_bytes,DEFAULT_READ_BYTES,1,1024*1024),{root,environments,environmentId});
       }
       if(name==="write_file"){
+        if(internalRecovery&&args._trebell_internal_binary===true){const located=await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:false});return await writeWorkspaceBinary(located,args.content_base64,{environments,environmentId})}
         const content=String(args.content??"");if(Buffer.byteLength(content,"utf8")>MAX_EDIT_BYTES)throw new Error("File content exceeds the 2 MB Native edit limit");
         let existedBefore=false;
         try{await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:true});existedBefore=true}catch{}

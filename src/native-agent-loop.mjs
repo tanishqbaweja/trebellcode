@@ -1251,11 +1251,22 @@ export async function runNativeAgentTurn({
   const canRunParallel=call=>parallelToolCalls===true&&typeof isToolParallelSafe==="function"&&isToolParallelSafe(call)===true;
   const recoverySnapshotMissing=output=>output?.success===false&&/(?:\benoent\b|\bmissing\b|no such file|not found|does not exist|cannot find (?:the )?(?:file|path))/i.test(String(output?.error||output?.message||""));
   const recoverySnapshotFailureReason=(output,fallback)=>String(output?.error||output?.message||fallback).slice(0,240);
+  const recoveryBinarySnapshotOutput=output=>output?.success!==false&&output?.binary===true&&typeof output?.contentBase64==="string"&&typeof output?.sha256==="string";
+  const readRecoveryWorkspaceSnapshot=async(id,path,{binary=false}={})=>{
+    const args={path,max_bytes:1024*1024,...(binary?{_trebell_internal_binary:true}:{})};
+    let output=await executeControllerTool({id,namespace:"trebell_workspace",name:"read_file",arguments:args,rawArguments:JSON.stringify(args),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+    if(!binary&&output?.imageModeRequired===true){
+      const binaryArgs={path,max_bytes:1024*1024,_trebell_internal_binary:true};
+      output=await executeControllerTool({id:id+":binary",namespace:"trebell_workspace",name:"read_file",arguments:binaryArgs,rawArguments:JSON.stringify(binaryArgs),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+    }
+    return output;
+  };
   const captureRecoveryWorkspacePathSnapshot=async(path,{candidateSha256=null}={})=>{
     path=String(path||"").trim();if(!path)return null;
     try{
-      const output=await executeControllerTool({id:`native-recovery-snapshot-${modelTurns}-${editRevision}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+      const output=await readRecoveryWorkspaceSnapshot(`native-recovery-snapshot-${modelTurns}-${editRevision}`,path);
       if(recoverySnapshotMissing(output))return {path,restorable:true,absentBefore:true,candidateAbsent:null,content:null,beforeSha256:null,candidateSha256:null};
+      if(recoveryBinarySnapshotOutput(output))return {path:String(output?.path||path).trim()||path,restorable:true,absentBefore:false,binary:true,contentBase64:output.contentBase64,beforeSha256:output.sha256,candidateSha256};
       if(output?.success===false||typeof output?.content!=="string")return {path,restorable:false,reason:recoverySnapshotFailureReason(output,"workspace snapshot was unavailable")};
       const content=output.content,resolvedPath=String(output?.path||path).trim()||path,beforeSha256=sha256Text(content);
       return {path:resolvedPath,restorable:true,absentBefore:false,content,beforeSha256,candidateSha256};
@@ -1265,7 +1276,8 @@ export async function runNativeAgentTurn({
     if(call?.namespace!=="trebell_workspace"||!["write_file","replace_text"].includes(String(call?.name||"")))return null;
     const args=safeArguments(call?.arguments),path=String(args.path||"").trim();if(!path)return null;
     try{
-      const output=await executeControllerTool({id:`native-recovery-snapshot-${modelTurns}-${editRevision}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+      const output=await readRecoveryWorkspaceSnapshot(`native-recovery-snapshot-${modelTurns}-${editRevision}`,path);
+      if(recoveryBinarySnapshotOutput(output))return {path:String(output?.path||path).trim()||path,restorable:true,binary:true,contentBase64:output.contentBase64,beforeSha256:output.sha256,candidateSha256:null};
       if(output?.success===false||typeof output?.content!=="string")return {path,restorable:false,reason:recoverySnapshotFailureReason(output,"workspace snapshot was unavailable")};
       const content=output.content,resolvedPath=String(output?.path||path).trim()||path,kind=String(call?.name||""),beforeSha256=sha256Text(content);
       let candidateContent=null;
@@ -1283,13 +1295,17 @@ export async function runNativeAgentTurn({
       const snapshot=snapshots[index];if(!snapshot?.restorable||snapshot.candidateSha256||snapshot.candidateAbsent===true||!String(snapshot.path||"").trim())continue;
       const path=String(snapshot.path).trim();
       try{
-        const current=await executeControllerTool({id:`native-recovery-snapshot-seal-${modelTurns}-${index+1}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+        const current=await readRecoveryWorkspaceSnapshot(`native-recovery-snapshot-seal-${modelTurns}-${index+1}`,path,{binary:snapshot.binary===true});
         if(snapshot.absentBefore===true){
           if(recoverySnapshotMissing(current)){snapshot.candidateAbsent=true;continue}
-          if(current?.success!==false&&typeof current?.content==="string"){
+          if(current?.success!==false&&(typeof current?.content==="string"||recoveryBinarySnapshotOutput(current))){
             snapshot.restorable=false;snapshot.reason="recovery candidate created a previously absent artifact and safe deletion restore is unavailable";continue;
           }
           snapshot.restorable=false;snapshot.reason=recoverySnapshotFailureReason(current,"candidate absent workspace state could not be sealed before semantic comparison");continue;
+        }
+        if(snapshot.binary===true){
+          if(!recoveryBinarySnapshotOutput(current)){snapshot.restorable=false;snapshot.reason=recoverySnapshotFailureReason(current,"binary candidate workspace state could not be sealed before semantic comparison");continue}
+          snapshot.candidateSha256=current.sha256;continue;
         }
         if(current?.success===false||typeof current?.content!=="string"){
           snapshot.restorable=false;snapshot.reason=recoverySnapshotFailureReason(current,"candidate workspace state could not be sealed before semantic comparison");continue;
@@ -1303,16 +1319,25 @@ export async function runNativeAgentTurn({
   };
   const restoreRecoveryEditTransaction=async transaction=>{
     const snapshots=Array.isArray(transaction?.snapshots)?transaction.snapshots:[];
-    const unrestorable=snapshots.find(item=>!item?.restorable||(item?.absentBefore===true?item?.candidateAbsent!==true:typeof item?.content!=="string"));
+    const unrestorable=snapshots.find(item=>!item?.restorable||(item?.absentBefore===true?item?.candidateAbsent!==true:(item?.binary===true?typeof item?.contentBase64!=="string":typeof item?.content!=="string")));
     if(!snapshots.length||unrestorable)return {restored:false,paths:[],reason:String(unrestorable?.reason||"one or more edited files did not have a restorable pre-edit snapshot").slice(0,240)};
     const restored=[];
     for(const snapshot of snapshots){
       const path=String(snapshot.path||"").trim();if(!path)return {restored:false,paths:restored,reason:"snapshot path was unavailable"};
       try{
-        const current=await executeControllerTool({id:`native-recovery-restore-check-${modelTurns}-${restored.length+1}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+        const current=await readRecoveryWorkspaceSnapshot(`native-recovery-restore-check-${modelTurns}-${restored.length+1}`,path,{binary:snapshot.binary===true});
         if(snapshot.absentBefore===true){
           if(recoverySnapshotMissing(current)){restored.push(path);continue}
           return {restored:false,paths:restored,reason:"a previously absent artifact changed after the recovery candidate was sealed"};
+        }
+        if(snapshot.binary===true){
+          if(!recoveryBinarySnapshotOutput(current))return {restored:false,paths:restored,reason:recoverySnapshotFailureReason(current,"current binary workspace state could not be checked before restore")};
+          if(snapshot.candidateSha256&&current.sha256!==snapshot.candidateSha256)return {restored:false,paths:restored,reason:"workspace changed after the recovery candidate was written"};
+          if(current.sha256===snapshot.beforeSha256){restored.push(path);continue}
+          const restoreArguments={path,content_base64:snapshot.contentBase64,_trebell_internal_binary:true};
+          const output=await executeControllerTool({id:`native-recovery-restore-${modelTurns}-${restored.length+1}`,namespace:"trebell_workspace",name:"write_file",arguments:restoreArguments,rawArguments:JSON.stringify(restoreArguments),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+          if(output?.success===false||output?.uncertain===true||output?.binary!==true)return {restored:false,paths:restored,reason:String(output?.error||output?.message||"binary workspace restore failed").slice(0,240)};
+          restored.push(path);continue;
         }
         if(current?.success===false||typeof current?.content!=="string")return {restored:false,paths:restored,reason:recoverySnapshotFailureReason(current,"current workspace state could not be checked before restore")};
         const currentSha256=sha256Text(current.content);

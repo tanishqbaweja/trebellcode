@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
@@ -23,6 +24,57 @@ test("batch evidence precommit record audit requires complete unique per-record 
   assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,recordAudit:valid.recordAudit.map((item,index)=>index?item:{...item,stagedValue:""})}).reason,"record_closure_incomplete");
   assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,recordAudit:valid.recordAudit.map((item,index)=>index?item:{...item,dependencyRecordId:"record-2",dependencyNecessityChecked:false,dependencyJustification:""})}).reason,"record_dependency_unverified");
   assert.equal(batchEvidencePrecommitRecordAuditCoverage({...valid,recordAudit:[valid.recordAudit[0],{...valid.recordAudit[1],id:valid.recordAudit[0].id}]}).reason,"invalid_record_identity");
+});
+
+test("native recovery snapshots and restores requested binary artifacts byte-for-byte",async()=>{
+  let turns=0,sourceContent="incumbent-source",artifactBytes=Buffer.from([137,80,78,71,13,10,26,10,1,2,3,4]);const incumbentBytes=Buffer.from(artifactBytes),events=[],internalRecoveryCalls=[];
+  const hash=bytes=>createHash("sha256").update(bytes).digest("hex");
+  const rawTool=async call=>{
+    const path=String(call.arguments?.path||"").replace(/^\/app\//,"");
+    if(call.namespace==="trebell_workspace"&&call.name==="read_file"){
+      if(path==="solver.py")return {path,content:sourceContent,size:sourceContent.length};
+      if(path==="candidate.png"){
+        if(call.arguments?._trebell_internal_binary===true)return {success:true,path,binary:true,size:artifactBytes.length,contentBase64:artifactBytes.toString("base64"),sha256:hash(artifactBytes)};
+        return {success:true,path,mimeType:"image/png",imageModeRequired:true,message:"Raster image text decoding was skipped to avoid binary data in model context."};
+      }
+      return {success:false,error:"missing"};
+    }
+    if(call.namespace==="trebell_workspace"&&call.name==="write_file"&&call.arguments?._trebell_internal_binary===true){artifactBytes=Buffer.from(String(call.arguments.content_base64||""),"base64");return {success:true,path,binary:true,size:artifactBytes.length,createdOrReplaced:true,sha256:hash(artifactBytes)}}
+    if(call.namespace==="trebell_workspace"&&call.name==="replace_text"){
+      const oldText=String(call.arguments?.old_text??""),newText=String(call.arguments?.new_text??"");assert.ok(sourceContent.includes(oldText),`${sourceContent} does not include ${oldText}`);sourceContent=sourceContent.replace(oldText,newText);return {path:"solver.py",replacements:1};
+    }
+    if(call.namespace==="trebell_terminal"&&call.name==="run"){
+      if(String(call.id||"")==="verify-1")artifactBytes=Buffer.from([137,80,78,71,13,10,26,10,9,9,9]);
+      if(String(call.id||"")==="verify-2")artifactBytes=Buffer.from([137,80,78,71,13,10,26,10,7,7,7]);
+      return {exitCode:0,stdout:"focused evidence"};
+    }
+    return {success:false,error:"unsupported"};
+  };
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix solver.py and render the final requested artifact to candidate.png. Preserve the strongest validated artifact while improving the remaining acceptance gap."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"The current generated artifact is the strongest candidate so far, with one localized issue.",toolCalls:[],usage:{}};
+      if(turns===2)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"uncertain","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["one localized issue remains"],"reason":"The current output is the recovery incumbent."}',toolCalls:[],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"evidence",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["inspect.mjs"]}'}],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"repair-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"solver.py","old_text":"incumbent-source","new_text":"candidate-source"}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-1.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"",toolCalls:[{id:"repair-2",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"solver.py","old_text":"candidate-source","new_text":"worse-source"}'}],usage:{}};
+      if(turns===7)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-2.mjs"]}'}],usage:{}};
+      if(turns===8)return {text:"The generated artifact is now worse than the recovery incumbent.",toolCalls:[],usage:{}};
+      if(turns===9)return {text:'{"status":"incomplete","progress":"regressed","edit_support":"uncertain","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["the localized issue remains"],"reason":"The latest generated artifact regressed relative to the incumbent."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:rawTool,
+    executeInternalTool:async call=>{internalRecoveryCalls.push(call);return rawTool(call)},
+  });
+  assert.equal(turns,9);assert.equal(sourceContent,"incumbent-source");assert.equal(artifactBytes.equals(incumbentBytes),true);
+  const snapshots=events.filter(event=>event.name==="native.completion.recovery_candidate_snapshot");assert.equal(snapshots.length,2);assert.ok(snapshots.every(event=>event.data?.restorable===true),JSON.stringify(snapshots));
+  assert.ok(internalRecoveryCalls.some(call=>call.name==="read_file"&&call.arguments?._trebell_internal_binary===true&&/candidate\.png$/.test(String(call.arguments?.path||""))));
+  assert.ok(internalRecoveryCalls.some(call=>call.name==="write_file"&&call.arguments?._trebell_internal_binary===true&&/candidate\.png$/.test(String(call.arguments?.path||""))));
+  assert.match(result.text,/strongest evidence-backed workspace state has been preserved or restored/i);
 });
 
 test("native precommit repair gives a multi-gap audit at most two focused mutation responses before retained-candidate re-audit",async()=>{

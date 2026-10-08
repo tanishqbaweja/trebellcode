@@ -561,7 +561,7 @@ export class EnvironmentManager {
       cwd:"",
       stdio:["pipe","pipe","pipe"],
     });
-    const bytes=Buffer.from(String(content??""),"utf8");
+    const bytes=Buffer.isBuffer(content)?content:Buffer.from(String(content??""),"utf8");
     await new Promise((resolveWrite,reject)=>{
       let stderr="",settled=false;
       const finish=error=>{if(settled)return;settled=true;error?reject(error):resolveWrite()};

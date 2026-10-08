@@ -33,6 +33,19 @@ test("Native workspace built-ins read, list, write, and replace exact text insid
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("Native internal recovery can snapshot and restore binary workspace bytes without exposing text decoding",async()=>{
+  const root=await workspace(),pixel=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+i8XkAAAAASUVORK5CYII=","base64"),replacement=Buffer.from([0,1,2,3,255,254,253,10,13,0,127]);
+  try{
+    const path=join(root,"src","pixel.png");await writeFile(path,pixel);const execute=createNativeBuiltins({root});
+    const guarded=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png"}});assert.equal(guarded.imageModeRequired,true);assert.equal(Object.hasOwn(guarded,"contentBase64"),false);
+    const blocked=await execute({id:"model-call",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png",max_bytes:1024*1024,_trebell_internal_binary:true}});assert.equal(blocked.imageModeRequired,true);assert.equal(Object.hasOwn(blocked,"contentBase64"),false);
+    const snapshot=await execute({id:"native-recovery-snapshot-test",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png",max_bytes:1024*1024,_trebell_internal_binary:true}});
+    assert.equal(snapshot.binary,true);assert.equal(Buffer.from(snapshot.contentBase64,"base64").equals(pixel),true);assert.match(snapshot.sha256,/^[a-f0-9]{64}$/);
+    const written=await execute({id:"native-recovery-restore-test",namespace:"trebell_workspace",name:"write_file",arguments:{path:"src/pixel.png",content_base64:replacement.toString("base64"),_trebell_internal_binary:true}});
+    assert.equal(written.binary,true);assert.equal((await readFile(path)).equals(replacement),true);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("Native workspace image reads use remote binary streams without decoding bytes as UTF-8",async()=>{
   const pixel=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+i8XkAAAAASUVORK5CYII=","base64"),calls=[];
   const environments={
@@ -51,6 +64,22 @@ test("Native workspace image reads use remote binary streams without decoding by
   const image=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"layout.png",as_image:true}});
   assert.equal(image.mimeType,"image/png");assert.equal(image.contentItems[1].imageUrl,"data:image/png;base64,"+pixel.toString("base64"));
   assert.deepEqual(calls,["info:/workspace/layout.png","stream:/workspace/layout.png"]);
+});
+
+test("Native internal binary recovery preserves remote workspace bytes",async()=>{
+  let remoteBytes=Buffer.from([0,255,10,13,1,2,3]),written=null;const calls=[];
+  const environments={
+    get:()=>({id:"test-remote",type:"docker",cwd:"/workspace"}),
+    executeArgv:async(_id,options)=>({exitCode:0,stdout:String(options.args[0])+"\n"}),
+    attachmentInfo:async(_id,path)=>({path,size:remoteBytes.length}),
+    streamFile:(_id,path)=>{calls.push("stream:"+path);const child=new EventEmitter();child.stdout=Readable.from([remoteBytes]);child.kill=()=>{};process.nextTick(()=>child.emit("close",0));return child},
+    writeTextFile:async(_id,path,content)=>{calls.push("write:"+path);written=Buffer.from(content);remoteBytes=Buffer.from(content);return {path,size:remoteBytes.length}},
+  };
+  const execute=createNativeBuiltins({root:"/workspace",environments,environmentId:"test-remote"}),replacement=Buffer.from([9,8,7,0,255]);
+  const snapshot=await execute({id:"native-recovery-snapshot-remote",namespace:"trebell_workspace",name:"read_file",arguments:{path:"artifact.bin",_trebell_internal_binary:true,max_bytes:1024}});
+  assert.equal(Buffer.from(snapshot.contentBase64,"base64").equals(Buffer.from([0,255,10,13,1,2,3])),true);
+  const restored=await execute({id:"native-recovery-restore-remote",namespace:"trebell_workspace",name:"write_file",arguments:{path:"artifact.bin",_trebell_internal_binary:true,content_base64:replacement.toString("base64")}});
+  assert.equal(restored.binary,true);assert.equal(written.equals(replacement),true);assert.deepEqual(calls,["stream:/workspace/artifact.bin","write:/workspace/artifact.bin"]);
 });
 
 test("Native workspace image reads preserve the actual pixels for the model without changing text reads",async()=>{
