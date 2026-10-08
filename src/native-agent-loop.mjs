@@ -286,12 +286,37 @@ function requestsExternalPersistence(text=""){
   return externalMutation.test(source);
 }
 
-function requestsTaskMutation(messages=[]){
+// Code-change requests the verb list in requestsTaskMutation misses: clause-initial verbs ("Build a CLI",
+// "Please resolve the issue", "Make validators include...", "Drop support for..."), the same verbs after a
+// request frame ("Your task is to resolve..."), and "...and then resolve it". "Resolve" counts only for a
+// defect-like object (issue, conflict, error, queue...), not lookups such as "resolve the definition".
+// Artifact-production verbs (generate/save/output) stay on the persistent-deliverable path instead.
+const IMPERATIVE_MUTATION_REQUEST=/(?:(?:^|[.!?;:]\s+|\n\s*(?:[-*]\s+|\d+[.)]\s+)?)(?:(?:please|kindly|now|also|finally|first|next|then|just)\s*,?\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?|(?:i(?:'|’)?d\s+like\s+you\s+to|i\s+(?:want|need)\s+you\s+to|you\s+(?:must|should|need\s+to|have\s+to|are\s+(?:asked|required|expected)\s+to)|your\s+(?:job|task|goal|objective)\s+is\s+to)\s+)(?:build(?=\s+(?:a|an|new|me)\b)|resolve(?=\s+(?:(?:it|them)\b|(?:[\w\x60'"-]+\s+){0,4}?(?:issues?|bugs?|problems?|errors?|conflicts?|failures?|regressions?|crash(?:es)?|exceptions?|warnings?|queues?|tickets?|cases?|incidents?|discrepanc(?:y|ies)|inconsistenc(?:y|ies)|mismatch(?:es)?|vulnerabilit(?:y|ies)|disputes?)\b))|make(?!\s+(?:sure|a|an)\b)|drop|deprecate|allow|support|extend|handle)(?=\s+[\w\x60'"(\[<./-])|,?\s+(?:and|then)\s+(?:resolve(?=\s+(?:(?:it|them)\b|(?:[\w\x60'"-]+\s+){0,4}?(?:issues?|bugs?|problems?|errors?|conflicts?|failures?|regressions?|crash(?:es)?|exceptions?|warnings?|queues?|tickets?|cases?|incidents?|discrepanc(?:y|ies)|inconsistenc(?:y|ies)|mismatch(?:es)?|vulnerabilit(?:y|ies)|disputes?)\b))|deprecate)(?=\s+[\w\x60'"(\[<./-])/i;
+
+// A request that opens as a question or with a read-only verb ("Why does...", "Explain this traceback").
+function opensAsReadOnlyRequest(text=""){
+  const opening=String(text||"").replace(/\x60\x60\x60[\s\S]*?\x60\x60\x60/g," ").trim().split(/(?<=[.!?])\s+|\n+/)[0]||"";
+  return /\?\s*$/.test(opening)
+    ||/^(?:please\s+)?(?:why|how|what|which|where|when|who|is|are|was|were|does|do|did|can|could|should|would|will|has|have)\b/i.test(opening)
+    ||/^(?:please\s+)?(?:explain|describe|summari[sz]e|list|tell|show|review|analy[sz]e|inspect|investigate|diagnose|identify|find|determine|compare|count|assess|evaluate|outline|answer|report)\b/i.test(opening);
+}
+
+// Issue-style reports of software misbehavior ("X doesn't support Y", "raises ValueError", "[Bug]: ... has
+// no effect", "Expected behavior") are requests to fix the behavior even without an imperative verb. A
+// negation counts only after a subject, so prohibitions such as "Do not use..." are not defect reports.
+function describesSoftwareDefect(text=""){
+  const prose=String(text||"").replace(/\x60\x60\x60[\s\S]*?\x60\x60\x60/g," ");
+  return /\b[A-Z][A-Za-z]*(?:Error|Exception)\b/.test(prose)
+    ||/\[bug\]|\bbug\s+(?:summary|report)\b|\bsteps\s+to\s+reproduce\b|\b(?:expected|actual|current)\s+(?:behaviou?r|output|result)s?\b|\btraceback\b|\b(?:syntax|runtime|type|value|attribute|key|index|import|assertion|recursion)\s+error\b|\b(?:has|have|had)\s+no\s+effect\b|\bfalse\s+(?:positive|negative)s?\b|\b(?:crash(?:es|ed|ing)?|segfaults?|deadlocks?)\b|\bunable\s+to\s+\w+/i.test(prose)
+    ||/(?<!(?:^|[.!?;:\n])\s*)(?<!\b(?:please|and|or|but|then|also|just|you|we|i|they)\s+)\b(?:(?:does|do|did|is|are|was|were|could|would|should)\s*n(?:o|'|’)t|won(?:'|’)t|can(?:not|'t|’t)|will\s+not)\s+(?:be\s+|get\s+)?(?:work|support|show|display|render|draw|handle|respect|honou?r|accept|return|raise|preserve|apply|match|simplif|pickle|compile|parse|load|save|serialize|import|run|start|print|format|validate|recogni[sz]|detect|propagate|update|reset|close|stop|respond|include|allow|use|emit|warn|create|find|call|pass|produce|generate|convert|exist|equal|terminate|converge|stay|keep|behave|take)\w*/i.test(prose);
+}
+
+export function requestsTaskMutation(messages=[]){
   const text=lastUserInstructionText(latestUserMessage(messages)).trim();
   if(!text)return false;
   const externalPersistenceRequested=requestsExternalPersistence(text);
   const explicitlyReadOnly=/(?:do\s+not|don't|dont|never)\s+(?:edit|change|modify|write|update)(?=\s*(?:[.!?;\n]|$))/i.test(text)
-    ||/(?:do\s+not|don't|dont|never)\s+(?:edit|change|modify|write|update)\s+(?:anything|any\s+(?:files?|code)|(?:all\s+)?files?|code|(?:the|this)\s+(?:workspace|repository|repo|project|codebase))\b/i.test(text)
+    ||/(?:do\s+not|don't|dont|never)\s+(?:edit|change|modify|write|update)\s+(?:anything|any\s+(?:files?|code)|(?:all\s+)?files?|code|(?:the|this)\s+(?:workspace|repository|repo|project|codebase))\b(?!\s+(?:outside|other\s+than|except|besides|beyond|apart\s+from|under|inside|within|from|of|that|which|named|matching|listed|provided|given|at(?!\s+all\b)|in(?!\s+any\s+(?:way|form|manner|fashion)\b))\b)/i.test(text)
     ||/without\s+(?:editing|changing|modifying|writing|updating)(?=\s*(?:anything|any\s+(?:files?|code)|(?:the|this)\s+(?:workspace|repository|repo|project|codebase)|[.!?;\n]|$))/i.test(text)
     ||/\b(?:task|request|workspace|repository|repo|project|codebase|work)\s+(?:is\s+|must\s+(?:remain|be)\s+|should\s+(?:remain|be)\s+)?read[- ]only\b/i.test(text)
     ||/\b(?:make|perform|apply)\s+no\s+(?:code\s+)?changes?\b/i.test(text)
@@ -303,6 +328,7 @@ function requestsTaskMutation(messages=[]){
     const prefix=text.slice(Math.max(0,Number(match.index||0)-56),Number(match.index||0));
     if(!/(?:do\s+not|don't|dont|never|without)(?:\s+\w+){0,2}\s*$/i.test(prefix))return true;
   }
+  if(IMPERATIVE_MUTATION_REQUEST.test(text))return true;
   const reportArtifact=/\b(?:report|record|return|provide)\b[\s\S]{0,140}\b(?:in|to|as|at)\s+(?:an?\s+)?(?:file|artifact|output)\b/i.test(text)
     ||/\b(?:report|record|return|provide)\b[\s\S]{0,160}\b(?:file\s+named|file\s+at|output\s+path|artifact\s+at)\b/i.test(text);
   if(reportArtifact&&!/(?:do\s+not|don't|dont|never)\s+(?:report|record|return|provide)\b/i.test(text))return true;
@@ -311,6 +337,7 @@ function requestsTaskMutation(messages=[]){
   const diagnosticOnly=/\b(?:inspect|explain|analy[sz]e|diagnose|investigate|review|report|identify|find)\b[\s\S]{0,120}\b(?:why|cause|root cause|problem|issue|bug|failure|behavior|behaviour)\b/i.test(text)
     ||/\b(?:why|how|what)\b[\s\S]{0,120}\b(?:broken|failing|fails|not working|incorrect|wrong)\b/i.test(text);
   if(diagnosticOnly)return false;
+  if(!opensAsReadOnlyRequest(text)&&describesSoftwareDefect(text))return true;
   return /\b(?:not\s+working(?:\s+(?:correctly|properly))?|broken|buggy|malfunction(?:ing|s)?|incorrect(?:ly)?|wrong\s+results?|fails?\b|failing\b|regression\b)\b/i.test(text);
 }
 
@@ -332,7 +359,7 @@ function requestsStructuredArtifactSemanticValidation(messages=[]){
     ||/\bno\b[^.\n]{1,160}\b(?:accepted|allowed|permitted)\b/i.test(text);
 }
 
-function requestsWorkspaceMutation(messages=[]){
+export function requestsWorkspaceMutation(messages=[]){
   const text=lastUserInstructionText(latestUserMessage(messages)).trim();
   if(!text||!requestsTaskMutation(messages))return false;
   if(requestsExternalStateMutation(messages))return false;

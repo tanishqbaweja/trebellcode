@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
@@ -1884,6 +1884,37 @@ test("native probe batching guard does not constrain terminal investigation for 
   assert.deepEqual(executed,["probe-1","probe-2","probe-3","probe-4"]);
   assert.equal(events.some(event=>event.name==="native.progress.probe_batch_checkpoint"),false);
   assert.equal(events.some(event=>event.name==="native.progress.implementation_call_blocked"),false);
+});
+
+test("task-mutation classifier recognizes code-change imperatives, scoped limits, and issue reports without flagging questions",()=>{
+  const mutation=text=>requestsTaskMutation([{role:"user",content:text}]);
+  for(const text of [
+    "Build a stateful `dispatch` CLI for the packet in `/app/packet`.",
+    "After switching configs the streams differ.\n\nPlease resolve the issue on the server side so both streams keep the same ordering.",
+    "Make validators include the provided value in ValidationError",
+    "Drop support for SQLite < 3.9.0",
+    "Allow `cleaned_data` to overwrite fields' default values.",
+    "Investigate the crash and then resolve it.",
+    "Implement the pipeline by editing Main.scala. Do not modify files outside that single source file.",
+    "dateformat.y() doesn't support years < 1000.",
+    "[Bug]: offset dash linestyle has no effect in patch objects",
+    "sylow_subgroup() IndexError",
+    "unused-import false positive for a module used in a type comment\n### Steps to reproduce\n### Expected behavior\nNo warning.",
+  ])assert.equal(mutation(text),true,text);
+  for(const text of [
+    "Explain this error: TypeError: x is undefined",
+    "What does `parse_config()` do?",
+    "How should I build this project on Windows?",
+    "Build the project and report the compiler output.",
+    "Please explain how the build pipeline and support scripts fit together.",
+    "Should we drop support for Node 18? Give me the pros and cons.",
+    "Do not modify any files. Summarize the failing traceback.",
+    "Explain why `foo()` raises ValueError when given an empty list.",
+    "Use only the two data files. Do not use external databases. Report the five properties.",
+    "Resolve the semantic definition of typed",
+    "Make a list of all public endpoints.",
+  ])assert.equal(mutation(text),false,text);
+  assert.equal(requestsWorkspaceMutation([{role:"user",content:"Responses from the server in `/app/sglang` arrive out of order. Please resolve the issue on the server side."}]),true);
 });
 
 test("native implementation pressure does not treat a build-only request as a workspace mutation",async()=>{
