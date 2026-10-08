@@ -108,7 +108,10 @@ test("runtime launch flags preserve Trebell permission-mode boundaries",()=>{
 test("Windows runtime discovery includes current installer locations even when PATH is stale",()=>{
   const env={USERPROFILE:"C:\\Users\\me",LOCALAPPDATA:"C:\\Users\\me\\AppData\\Local",APPDATA:"C:\\Users\\me\\AppData\\Roaming"};
   assert.ok(runtimeExecutableCandidates("grok",{env,platform:"win32"}).some(path=>path.endsWith("xAI.GrokBuild_Microsoft.Winget.Source_8wekyb3d8bbwe\\grok.exe")));
-  assert.ok(runtimeExecutableCandidates("claude",{env,platform:"win32"}).some(path=>path.endsWith(".local\\bin\\claude.exe")));
+  const claudeCandidates=runtimeExecutableCandidates("claude",{env,platform:"win32"});
+  assert.ok(claudeCandidates.some(path=>path.endsWith(".local\\bin\\claude.exe")));
+  const npmClaudeBinary=claudeCandidates.findIndex(path=>path.endsWith("npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"));
+  assert.ok(npmClaudeBinary>=0&&npmClaudeBinary<claudeCandidates.findIndex(path=>path.endsWith("npm\\claude.cmd")),"the native binary behind npm's shim is preferred over the .cmd shim");
   const openCodeCandidates=runtimeExecutableCandidates("opencode",{env,platform:"win32"});
   assert.ok(openCodeCandidates[0].endsWith("AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe"));
   assert.ok(openCodeCandidates.some(path=>path.endsWith("AppData\\Roaming\\npm\\opencode.cmd")));

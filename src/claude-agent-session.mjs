@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, query, renameSession } from "@anthropic-ai/claude-agent-sdk";
 import { permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
+import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
 const MODEL_ALIASES=["sonnet","opus","haiku"];
 
@@ -100,7 +101,8 @@ export class ClaudeAgentSession{
     const options={
       cwd:this.cwd,
       model:this.model||undefined,
-      pathToClaudeCodeExecutable:this.command,
+      // A Windows .cmd shim cannot be spawned directly; the SDK runs a native binary or a .js entry itself.
+      pathToClaudeCodeExecutable:this.spawnProcess?this.command:resolveWindowsCommandShim(this.command,{allowScripts:true}),
       env:{...this.env,CLAUDE_AGENT_SDK_CLIENT_APP:`trebell-code/${this.version}`},
       permissionMode:permissionMode(this.permissionMode),
       ...(this.permissionMode==="full"?{allowDangerouslySkipPermissions:true}:{}),
