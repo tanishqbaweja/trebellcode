@@ -1162,6 +1162,117 @@ test("native precommit repair windows exhaust after two rejected audits and bloc
   assert.equal(result.text,"precommit blocker remains after bounded repair");
 });
 
+test("native precommit terminal exhaustion is candidate-local and lets a distinct persistent candidate earn a fresh audit on the same revision",async()=>{
+  const events=[],executed=[];let ordinary=0,precommitGates=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const commit=(id,value)=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c",`INSERT INTO decisions(id) VALUES (${value})`]})});
+  const incomplete=()=>({text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["candidate A still lacks decisive pre-write evidence"],reason:"Candidate A is not yet safe to persist."}),toolCalls:[],usage:{}});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:22,maxToolCalls:36,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued case, reconcile the authoritative evidence, then submit the complete decision batch to the remote system. The batch contains two materially independent persistent decision groups."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      if(request.metadata?.batchEvidencePostcommitGate)return {text:batchEvidencePostcommitVerdict(),toolCalls:[],usage:{}};
+      if(request.metadata?.batchEvidencePrecommitGate){
+        precommitGates++;
+        if(precommitGates<=3)return incomplete();
+        return {text:batchEvidencePrecommitVerdict({status:"complete",progress:"improved",edit_support:"supported",mutation_safety:"allowed",recovery_mode:"none",unresolved:[],reason:"Independent candidate B is fully supported and safe to persist."}),toolCalls:[],usage:{}};
+      }
+      ordinary++;
+      if(ordinary<=3)return {text:"",toolCalls:[read("probe-"+ordinary)],usage:{}};
+      if(ordinary===4)return {text:"",toolCalls:[commit("candidate-a-1",1)],usage:{}};
+      if(ordinary===5)return {text:"",toolCalls:[read("candidate-a-closure")],usage:{}};
+      if(ordinary===6)return {text:"",toolCalls:[read("candidate-a-repair-1")],usage:{}};
+      if(ordinary===7)return {text:"",toolCalls:[commit("candidate-a-2",1)],usage:{}};
+      if(ordinary===8)return {text:"",toolCalls:[read("candidate-a-repair-2")],usage:{}};
+      if(ordinary===9)return {text:"",toolCalls:[commit("candidate-a-3",1)],usage:{}};
+      if(ordinary===10)return {text:"",toolCalls:[commit("candidate-b",2)],usage:{}};
+      if(ordinary===11){
+        assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});
+        return {text:"",toolCalls:[read("candidate-b-closure")],usage:{}};
+      }
+      if(ordinary===12)return {text:"",toolCalls:[commit("candidate-a-retried-after-b",1)],usage:{}};
+      if(ordinary>=13)return {text:"independent candidate B submitted; exhausted candidate A remains blocked",toolCalls:[],usage:{}};
+      throw new Error("unexpected ordinary provider call "+ordinary);
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(precommitGates,4);
+  assert.equal(result.text,"independent candidate B submitted; exhausted candidate A remains blocked");
+  assert.equal(executed.includes("candidate-a-1"),false);assert.equal(executed.includes("candidate-a-2"),false);assert.equal(executed.includes("candidate-a-3"),false);assert.equal(executed.includes("candidate-a-retried-after-b"),false);assert.equal(executed.includes("candidate-b"),false);
+  // Candidate B advances editRevision, so a later A retry must obtain a new closure audit,
+  // never execute using B's authorization or A's exhausted prior-revision evidence.
+  assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_blocked"&&event.data?.callId==="candidate-a-retried-after-b"&&event.data?.reason==="precommit_closure_audit_required").length,1);
+  assert.ok(executed.includes("candidate-b-closure"));
+  assert.equal(executed.filter(id=>/^native-precommit-authorized-/.test(id)).length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_repair_exhausted").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_exhausted_candidate_blocked"&&event.data?.callId==="candidate-b").length,0);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_new_candidate_after_exhaustion").length,1);
+  const gates=events.filter(event=>event.name==="native.progress.batch_evidence_precommit_gate");assert.deepEqual(gates.map(event=>[event.status,event.data?.verdict]),[["blocked","incomplete"],["blocked","incomplete"],["blocked","incomplete"],["completed","complete"]]);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_authorized_mutation_resumed"&&event.status==="completed").length,1);
+});
+
+test("native semantic recovery can pivot from an exhausted persistent candidate to an independent candidate on the same revision",async()=>{
+  const events=[],executed=[];let ordinary=0,precommitGates=0,semanticGates=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const commit=(id,value)=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c",`INSERT INTO decisions(id) VALUES (${value})`]})});
+  const incompleteA=()=>({text:batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["candidate A still lacks decisive pre-write evidence"],reason:"Candidate A is not yet safe to persist."}),toolCalls:[],usage:{}});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxCompletionRecoveryEpochs:2,maxModelTurns:30,maxToolCalls:48,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued case, reconcile the authoritative evidence, then submit the complete decision batch to the remote system. The batch contains two materially independent persistent decision groups."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      if(request.metadata?.batchEvidencePostcommitGate)return {text:batchEvidencePostcommitVerdict(),toolCalls:[],usage:{}};
+      if(request.metadata?.batchEvidencePrecommitGate){
+        precommitGates++;
+        if(precommitGates<=3)return incompleteA();
+        return {text:batchEvidencePrecommitVerdict({status:"complete",progress:"improved",edit_support:"supported",mutation_safety:"allowed",recovery_mode:"none",unresolved:[],reason:"Independent candidate B is fully supported and safe to persist."}),toolCalls:[],usage:{}};
+      }
+      if(request.metadata?.completionGate){
+        semanticGates++;
+        if(semanticGates===1)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"allowed","recovery_mode":"edit","constraint_audit":[],"unresolved":["submit independent decision group B"],"reason":"Candidate A remains unsafe, but the independent decision group B is supported and still required."}',toolCalls:[],usage:{}};
+        return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","constraint_audit":[],"unresolved":[],"reason":"Independent decision group B was persisted and verified after candidate A remained safely blocked."}',toolCalls:[],usage:{}};
+      }
+      ordinary++;
+      if(ordinary<=3)return {text:"",toolCalls:[read("probe-"+ordinary)],usage:{}};
+      if(ordinary===4)return {text:"",toolCalls:[commit("candidate-a-1",1)],usage:{}};
+      if(ordinary===5)return {text:"",toolCalls:[read("candidate-a-closure")],usage:{}};
+      if(ordinary===6)return {text:"",toolCalls:[read("candidate-a-repair-1")],usage:{}};
+      if(ordinary===7)return {text:"",toolCalls:[commit("candidate-a-2",1)],usage:{}};
+      if(ordinary===8)return {text:"",toolCalls:[read("candidate-a-repair-2")],usage:{}};
+      if(ordinary===9)return {text:"",toolCalls:[commit("candidate-a-3",1)],usage:{}};
+      if(ordinary===10)return {text:"Candidate A remains safety-blocked; independent decision group B is still unsubmitted.",toolCalls:[],usage:{}};
+      if(ordinary===11){
+        assert.equal(request.toolChoice,"required");
+        const scope=request.messages.findLast(message=>message.role==="developer"&&/materially different required persistent action/i.test(String(message.content||"")));
+        assert.ok(scope);
+        return {text:"",toolCalls:[commit("candidate-b",2)],usage:{}};
+      }
+      if(ordinary===12){
+        assert.deepEqual(request.toolChoice,{namespace:"trebell_terminal",name:"run"});
+        return {text:"",toolCalls:[read("candidate-b-closure")],usage:{}};
+      }
+      if(ordinary===13)return {text:"",toolCalls:[read("candidate-b-verify")],usage:{}};
+      if(ordinary===14)return {text:"Independent decision group B is now submitted and verified; candidate A remains safely blocked.",toolCalls:[],usage:{}};
+      throw new Error("unexpected ordinary provider call "+ordinary);
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(precommitGates,4);
+  assert.equal(semanticGates,1);
+  assert.equal(result.text,"Independent decision group B is now submitted and verified; candidate A remains safely blocked.");
+  assert.equal(executed.includes("candidate-a-1"),false);assert.equal(executed.includes("candidate-a-2"),false);assert.equal(executed.includes("candidate-a-3"),false);assert.equal(executed.includes("candidate-b"),false);
+  assert.ok(executed.includes("candidate-b-closure"));assert.ok(executed.includes("candidate-b-verify"));
+  assert.equal(executed.filter(id=>/^native-precommit-authorized-/.test(id)).length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_repair_exhausted").length,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_candidate_scope").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_new_candidate_after_exhaustion").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_precommit_exhausted_candidate_blocked"&&event.data?.callId==="candidate-b").length,0);
+  const allowance=events.filter(event=>event.name==="native.completion.recovery_allowance_used");
+  assert.equal(allowance.filter(event=>event.data?.kind==="edit").length,1);
+  assert.equal(allowance.filter(event=>event.data?.kind==="post_edit_verification").length,1);
+});
+
 test("native recovery closes an active edit debt when its batch precommit repair later exhausts",async()=>{
   const events=[],executed=[];let ordinary=0,precommitGates=0,semanticGates=0;
   const audit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
