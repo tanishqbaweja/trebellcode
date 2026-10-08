@@ -41,7 +41,9 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/dockerImagePrewarm/);
   assert.match(source,/--sequential/);
   assert.match(source,/cannot be both --parallel and --sequential/);
-  assert.match(nativeRunnerSource,/semanticCompletionGate:true/);
+  assert.match(nativeRunnerSource,/const semanticCompletionGate=String\(process\.env\.TREBELL_HARBOR_SEMANTIC_GATE\|\|""\)\.trim\(\)==="1";/);
+  assert.match(nativeRunnerSource,/^  semanticCompletionGate,$/m);
+  assert.match(nativeAdapterSource,/TREBELL_HARBOR_SEMANTIC_GATE/);
   assert.match(source,/NATIVE_CONTEXT_WINDOW/);
   assert.match(source,/272_000/);
   assert.match(source,/NATIVE_COMPACT_THRESHOLD/);
