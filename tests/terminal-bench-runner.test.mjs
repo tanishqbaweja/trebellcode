@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, parseWindowsProcessRows, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
+import { windowsHarborEnv } from "../scripts/harbor-process-env.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
 import { benchmarkRunPrefix, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, terminalBenchTaskNoNetworkSectionsFromToml, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
@@ -114,7 +115,7 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/execFileSync\("git",\["rev-parse","--git-common-dir"\]/);
   assert.match(source,/loadEnvFile\(join\(root,"\.env"\)\)/);
   assert.match(source,/loadEnvFile\(join\(repositoryRoot,"\.env"\)\)/);
-  assert.match(source,/process\.platform==="win32"\?\{PYTHONUTF8:"1",PYTHONIOENCODING:"utf-8"\}/);
+  assert.match(source,/\.\.\.windowsHarborEnv\(process\.env\)/);
   assert.match(source,/\.codex-api-auth-/);
   assert.match(source,/harnessEnv\.CODEX_AUTH_JSON_PATH=codexApiAuthPath/);
   assert.match(source,/delete harnessEnv\.OPENAI_API_KEY/);
@@ -300,6 +301,17 @@ test("Terminal-Bench network preflight refuses no-network tasks before inference
   assert.match(source,/networkPolicyPreflight=await preflightTerminalBenchNetworkPolicy\(/);
   assert.ok(source.indexOf("preflightTerminalBenchNetworkPolicy(")<source.indexOf("const runLane=async"),"network preflight must run before any lane starts");
   assert.match(source,/networkPolicyPreflight,/);
+});
+
+test("Harbor processes on Windows opt out of the detached telemetry sender that opens console windows",async()=>{
+  assert.deepEqual(windowsHarborEnv({},"win32"),{PYTHONUTF8:"1",PYTHONIOENCODING:"utf-8",HARBOR_TELEMETRY:"0"});
+  const explicit={HARBOR_TELEMETRY:"1"};
+  assert.equal({...explicit,...windowsHarborEnv(explicit,"win32")}.HARBOR_TELEMETRY,"1");
+  assert.deepEqual(windowsHarborEnv({},"linux"),{});
+  for(const script of ["live-terminal-bench-harness-comparison.mjs","run-terminal-bench.mjs","terminal-bench-gate-regrade.mjs"]){
+    const source=await readFile(new URL(`../scripts/${script}`,import.meta.url),"utf8");
+    assert.match(source,/\.\.\.windowsHarborEnv\(process\.env\)/,script);
+  }
 });
 
 test("Benchmark run IDs carry the dataset family without renaming Terminal-Bench 4 runs",async()=>{

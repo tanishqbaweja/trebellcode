@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { windowsHarborEnv } from "./harbor-process-env.mjs";
 
 const here=dirname(fileURLToPath(import.meta.url));
 const root=resolve(here,"..");
@@ -71,7 +72,7 @@ args.push("-n","1","-o",output,"--job-name",jobName,"-y");
 const env={
   ...process.env,
   PYTHONPATH:[root,process.env.PYTHONPATH].filter(Boolean).join(process.platform==="win32"?";":":"),
-  ...(process.platform==="win32"?{PYTHONUTF8:"1",PYTHONIOENCODING:"utf-8"}:{}),
+  ...windowsHarborEnv(process.env),
   ...(nativePinnedNodeTarballPath?{TREBELL_NODE_PINNED_TARBALL:nativePinnedNodeTarballPath}:{}),
 };
 const child=spawn(harbor,args,{cwd:root,env,stdio:"inherit",windowsHide:true});
