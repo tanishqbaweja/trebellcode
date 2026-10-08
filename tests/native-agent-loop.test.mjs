@@ -2306,9 +2306,8 @@ test("native empty control-gate response uses the gate retry instead of final-an
         assert.equal(request.maxOutputTokens,12288);
         assert.equal(request.reasoningEffort,"max");
         assert.equal(request.metadata?.controlGateRetry,false);
-        assert.equal(request.responseJsonSchema?.name,"trebell_completion_gate");
-        assert.equal(request.responseJsonSchema?.strict,true);
-        assert.deepEqual(request.responseJsonSchema?.schema?.required,["status","progress","edit_support","mutation_safety","recovery_mode","constraint_audit","unresolved","reason"]);
+        assert.equal(request.responseJsonSchema,null);
+        assert.match(String(request.messages.at(-1)?.content||""),/Return only one JSON object: \{"status":"complete\|incomplete\|blocked"/);
         assert.ok(request.messages.some(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||""))));
         return {text:"",toolCalls:[],usage:{}};
       }
@@ -4483,7 +4482,8 @@ test("native localizes residual structure after an abstraction repair before reo
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
         assert.equal(request.maxOutputTokens,12288);
-        assert.equal(request.responseJsonSchema?.name,"trebell_abstraction_verification_gate");
+        assert.equal(request.responseJsonSchema,null);
+        assert.match(String(request.messages.at(-1)?.content||""),/Return only one JSON object: \{"status":"verified\|failed\|uncertain"/);
         assert.equal(request.reasoningEffort,"max");
         assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification gate/i.test(String(message.content||""))));
         return {text:'{"status":"failed","reason":"The independent replica invariant still disagrees after the repair."}',toolCalls:[],usage:{}};
