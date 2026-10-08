@@ -46,6 +46,7 @@ async function readVerifierSummary(trialDir){
   }catch{}
   let officialReward=null;
   try{officialReward=finiteNumber(JSON.parse(await readFile(join(trialDir,"verifier","reward.json"),"utf8"))?.reward)}catch{}
+  if(officialReward==null)try{const text=String(await readFile(join(trialDir,"verifier","reward.txt"),"utf8")).trim();if(text)officialReward=finiteNumber(text)}catch{}
   let diagnostic=null,cases=null;
   try{({diagnostic,cases}=normalizeVerifierDiagnosticText(await readFile(join(trialDir,"verifier","test-stdout.txt"),"utf8")))}catch{}
   if(!summary&&officialReward==null&&!diagnostic&&!cases)return null;
