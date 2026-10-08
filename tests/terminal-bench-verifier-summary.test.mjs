@@ -25,6 +25,23 @@ test("Terminal-Bench verifier summary reads official reward and scorer diagnosti
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("Terminal-Bench verifier summary reads the official reward from reward.txt when reward.json is absent",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-reward-txt-trial-"));
+  try{
+    const verifier=join(root,"verifier");await mkdir(verifier,{recursive:true});
+    await writeFile(join(verifier,"ctrf.json"),JSON.stringify({results:{summary:{tests:10,passed:8,failed:2,pending:0,skipped:0,other:0}}}));
+    await writeFile(join(verifier,"reward.txt"),"0\n");
+    assert.deepEqual(await readTrialVerifierSummary(root),{trials:1,tests:10,passed:8,failed:2,pending:0,skipped:0,other:0,officialReward:0});
+    await writeFile(join(verifier,"reward.json"),JSON.stringify({reward:1}));
+    assert.equal((await readTrialVerifierSummary(root)).officialReward,1);
+    await rm(join(verifier,"reward.json"));
+    for(const text of ["","  \n","not-a-number\n"]){
+      await writeFile(join(verifier,"reward.txt"),text);
+      assert.equal(Object.hasOwn(await readTrialVerifierSummary(root),"officialReward"),false);
+    }
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("Terminal-Bench verifier summary normalizes trace-results counts",()=>{
   assert.deepEqual(normalizeTraceResultsVerifierSummary({total_cases:20,passed_cases:15,partial_score:.75}),{tests:20,passed:15,failed:5,pending:0,skipped:0,other:0});
   assert.equal(normalizeTraceResultsVerifierSummary({total_cases:0,passed_cases:0}),null);

@@ -10,6 +10,8 @@ const watch=process.argv.includes("--watch"),intervalMs=Math.max(2000,Number(pro
 const explicitTarget=process.argv.find(arg=>arg.startsWith("--target="))?.slice("--target=".length)||null;
 if(explicitTarget&&!['auto','pair','native-rerun'].includes(explicitTarget))throw new Error(`Invalid watchdog --target=${explicitTarget}; expected auto, pair, or native-rerun.`);
 const targetMode=explicitTarget||"auto";
+const explicitPair=process.argv.find(arg=>arg.startsWith("--pair="))?.slice("--pair=".length).trim()||null;
+if(explicitPair&&!/^tb4-(?:pair|native-rerun)-[a-z0-9-]+$/i.test(explicitPair))throw new Error(`Invalid watchdog --pair=${explicitPair}; expected a saved tb4-pair-* or tb4-native-rerun-* report id.`);
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function json(path){try{return JSON.parse(String(await readFile(path,"utf8")).replace(/^\uFEFF/,""))}catch{return null}}
 async function newestTrialDir(jobName){
@@ -56,15 +58,17 @@ async function laneState(lane,report,recovered=null){
 function money(value,{lowerBound=false}={}){return value==null?"-":`${lowerBound?"≥":""}$${Number(value).toFixed(4)}`}
 function count(value){return value==null?"-":Number(value).toLocaleString("en-US")}
 async function snapshot(){
-  const pairPointer=await json(join(validationDir,"terminal-bench-latest.json")),rerunPointer=await json(join(validationDir,"terminal-bench-native-rerun-latest.json"));
+  const pairPointer=explicitPair?null:await json(join(validationDir,"terminal-bench-latest.json")),rerunPointer=explicitPair?null:await json(join(validationDir,"terminal-bench-native-rerun-latest.json"));
   const pairReport=pairPointer?.reportPath?await json(pairPointer.reportPath)||{}:{},rerunReport=rerunPointer?.reportPath?await json(rerunPointer.reportPath)||{}:{};
   const pairTime=reportTimeMs(pairPointer,pairReport),rerunTime=reportTimeMs(rerunPointer,rerunReport);
-  const selectRerun=targetMode==="native-rerun"||(targetMode==="auto"&&Boolean(rerunPointer)&&(!pairPointer||rerunTime>pairTime));
-  if(targetMode==="pair"&&!pairPointer)throw new Error("No saved Terminal-Bench pair pointer found yet.");
-  if(selectRerun&&!rerunPointer)throw new Error("No saved standalone Native rerun pointer found yet.");
-  const pointer=selectRerun?rerunPointer:pairPointer;
+  const explicitReportPath=explicitPair?join(validationDir,explicitPair+".json"):null,explicitReport=explicitReportPath?await json(explicitReportPath):null;
+  if(explicitPair&&!explicitReport)throw new Error(`No saved Terminal-Bench report found for --pair=${explicitPair}.`);
+  const selectRerun=explicitPair?explicitPair.startsWith("tb4-native-rerun-"):targetMode==="native-rerun"||(targetMode==="auto"&&Boolean(rerunPointer)&&(!pairPointer||rerunTime>pairTime));
+  if(!explicitPair&&targetMode==="pair"&&!pairPointer)throw new Error("No saved Terminal-Bench pair pointer found yet.");
+  if(!explicitPair&&selectRerun&&!rerunPointer)throw new Error("No saved standalone Native rerun pointer found yet.");
+  const pointer=explicitReport?{pairId:explicitPair,reportPath:explicitReportPath,task:explicitReport.task,lanes:explicitReport.lanes}:selectRerun?rerunPointer:pairPointer;
   if(!pointer)throw new Error("No saved Terminal-Bench run pointer found yet.");
-  const report=selectRerun?rerunReport:pairReport;
+  const report=explicitReport||(selectRerun?rerunReport:pairReport);
   const recovered=await json(String(pointer.reportPath||"").replace(/\.json$/,".recovered-verifier.json"));
   let lanes=await Promise.all((report.lanes||pointer.lanes||[]).map(lane=>laneState(selectRerun?{...lane,label:"native-rerun",sourceLabel:"native"}:lane,report,recovered)));
   let nativeRerun=null;
@@ -127,11 +131,13 @@ function render(snap,saved){
   lines.push("LANE          STATUS     ACTIVITY   REWARD   DIAG       PYTEST  INPUT        OUTPUT       CACHE      API-EQ COST");
   lines.push("------------  ---------  ---------  -------  ---------  ------  -----------  -----------  ---------  -----------");
   for(const lane of snap.lanes){
-    const checks=lane.job?.verifierChecks||lane.job?.recoveredVerifierChecks,reward=checks?.officialReward==null?"-":Number(checks.officialReward).toFixed(3),diag=checks?.diagnostic?`${checks.diagnostic.correct}/${checks.diagnostic.total}`:"-",pytest=checks?.tests?`${checks.passed}/${checks.tests}${lane.job?.verifierRecovered?"*":""}`:"-";
+    const infrastructureReason=lane.job?.infrastructureFailureReason||(lane.job?.exceptionType==="AgentAuthenticationError"?"agent_authentication_failure":null);
+    const checks=infrastructureReason?null:lane.job?.verifierChecks||lane.job?.recoveredVerifierChecks,reward=infrastructureReason?"INFRA":checks?.officialReward==null?"-":Number(checks.officialReward).toFixed(3),diag=checks?.diagnostic?`${checks.diagnostic.correct}/${checks.diagnostic.total}`:"-",pytest=checks?.tests?`${checks.passed}/${checks.tests}${lane.job?.verifierRecovered?"*":""}`:"-";
     const age=lane.activity?.state?.ageSeconds,activity=age==null?"-":age<30?"active":age<180?`${age}s ago`:`${Math.round(age/60)}m ago`;
     const cache=lane.job?.cacheHitPercent==null?"-":`${Number(lane.job.cacheHitPercent).toFixed(1)}%`;
     lines.push(`${lane.label.padEnd(12)}  ${String(lane.status||"?").padEnd(9)}  ${String(activity).padEnd(9)}  ${reward.padEnd(7)}  ${diag.padEnd(9)}  ${pytest.padEnd(6)}  ${count(lane.job?.inputTokens).padEnd(11)}  ${count(lane.job?.outputTokens).padEnd(11)}  ${cache.padEnd(9)}  ${money(lane.job?.apiEquivalentCostUsd,{lowerBound:lane.job?.apiEquivalentCostIsLowerBound===true})}`);
     if(lane.runError)lines.push(`  error: ${String(lane.runError).slice(0,180)}`);
+    if(infrastructureReason)lines.push(`  infrastructure: ${infrastructureReason} — not a quality result; rerun only this lane`);
   }
   if(snap.lanes.some(lane=>lane.job?.apiEquivalentCostIsLowerBound===true))lines.push("Cost note: ≥ indicates a lower bound because one or more provider responses omitted token usage.");
   if(snap.lanes.some(lane=>lane.job?.verifierChecks?.tests))lines.push("Verifier note: REWARD is Harbor's official task reward; DIAG is a task scorer diagnostic when exposed; PYTEST only says the verifier test harness executed/passed.");

@@ -13,7 +13,7 @@ import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "./terminal-bench-pair-lock.mjs";
 import { estimateGpt6LunaCostFromAggregate, gpt6LunaPricingForServiceTier } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
-import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
+import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
 import { preflightTerminalBenchDatasetTaskMembership, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName } from "./terminal-bench-task-cache.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
@@ -322,10 +322,11 @@ try{
     let runError=null,runnerError=null,regradeRecovery=null;
     try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
     const failedTrial=await trialResult(outputRoot,jobName),preTrialRunnerFailure=Boolean(runnerError)&&!failedTrial;
-    const subnetExhaustion=isPreAgentDockerSubnetExhaustion(failedTrial),imagePullFailure=isPreAgentDockerImagePullFailure(failedTrial),dockerExecTransportFailure=isDockerExecTransportFailure(failedTrial),nativeExternalTermination=harness==="native"&&isNativeAgentExternalTermination(failedTrial);
-    laneState.attempts.push({jobName,status:runnerError||subnetExhaustion||imagePullFailure||dockerExecTransportFailure||nativeExternalTermination?"failed":"finished",runnerError,trialInfrastructureFailure:preTrialRunnerFailure?"pre_trial_runner_failure":subnetExhaustion?"docker_subnet_exhaustion":imagePullFailure?"docker_image_pull_failure":dockerExecTransportFailure?"docker_exec_transport_failure":nativeExternalTermination?"native_agent_external_termination":null});
+    const subnetExhaustion=isPreAgentDockerSubnetExhaustion(failedTrial),imagePullFailure=isPreAgentDockerImagePullFailure(failedTrial),dockerExecTransportFailure=isDockerExecTransportFailure(failedTrial),nativeExternalTermination=harness==="native"&&isNativeAgentExternalTermination(failedTrial),agentAuthenticationFailure=isAgentAuthenticationFailure(failedTrial);
+    laneState.attempts.push({jobName,status:runnerError||subnetExhaustion||imagePullFailure||dockerExecTransportFailure||nativeExternalTermination||agentAuthenticationFailure?"failed":"finished",runnerError,trialInfrastructureFailure:preTrialRunnerFailure?"pre_trial_runner_failure":subnetExhaustion?"docker_subnet_exhaustion":imagePullFailure?"docker_image_pull_failure":dockerExecTransportFailure?"docker_exec_transport_failure":nativeExternalTermination?"native_agent_external_termination":agentAuthenticationFailure?"agent_authentication_failure":null});
     if(dockerExecTransportFailure)laneState.infrastructureFailureReason="docker_exec_transport_failure";
     if(nativeExternalTermination)laneState.infrastructureFailureReason="native_agent_external_termination";
+    if(agentAuthenticationFailure)laneState.infrastructureFailureReason="agent_authentication_failure";
     if(subnetExhaustion||imagePullFailure||preTrialRunnerFailure){
         let cleanup;
         try{
@@ -372,7 +373,7 @@ try{
       let result=null;
       try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
       const recordedTrial=await trialResult(outputRoot,jobName),trial=regradeRecovery?.ok&&regradeRecovery.regrade?.result?regradeRecovery.regrade.result:recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
-      const infrastructureFailureReason=isDockerExecTransportFailure(trial)?"docker_exec_transport_failure":harness==="native"&&isNativeAgentExternalTermination(trial)?"native_agent_external_termination":isPreAgentDockerSubnetExhaustion(trial)?"docker_subnet_exhaustion":isDockerImagePullFailure(trial)?"docker_image_pull_failure":laneState.infrastructureFailureReason;
+      const infrastructureFailureReason=isDockerExecTransportFailure(trial)?"docker_exec_transport_failure":harness==="native"&&isNativeAgentExternalTermination(trial)?"native_agent_external_termination":isAgentAuthenticationFailure(trial)?"agent_authentication_failure":isPreAgentDockerSubnetExhaustion(trial)?"docker_subnet_exhaustion":isDockerImagePullFailure(trial)?"docker_image_pull_failure":laneState.infrastructureFailureReason;
       laneState.infrastructureFailureReason=infrastructureFailureReason||null;
       const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName,{serviceTier:SERVICE_TIER}):null;
       const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName,{serviceTier:SERVICE_TIER}):null;

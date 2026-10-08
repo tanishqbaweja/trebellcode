@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, parseWindowsProcessRows, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
-import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
+import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
 import { preflightTerminalBenchDatasetTaskMembership, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
@@ -364,6 +364,25 @@ test("Terminal-Bench classifies externally SIGTERM'd Trebell Native agents as in
   assert.equal(isNativeAgentExternalTermination(null),false);
 });
 
+test("Terminal-Bench classifies agent authentication failures as infrastructure instead of quality zeros",async()=>{
+  const authFailure={
+    exception_info:{
+      exception_type:"AgentAuthenticationError",
+      exception_message:"Command failed (exit 1): codex exec --json -c web_search=disabled -- 'task'\nstdout: {\"type\":\"turn.failed\",\"error\":{\"message\":\"workspace routing discovery unauthorized (401)\"}}",
+    },
+    agent_execution:{started_at:"a",finished_at:"b"},
+    verifier:{started_at:"c",finished_at:"d"},
+    verifier_result:{rewards:{reward:0}},
+  };
+  assert.equal(isAgentAuthenticationFailure(authFailure),true);
+  assert.equal(isAgentAuthenticationFailure({...authFailure,exception_info:{exception_type:"NonZeroAgentExitCodeError",exception_message:"Command failed (exit 1): codex exec --json\nstdout: unauthorized word in ordinary output"}}),false);
+  assert.equal(isAgentAuthenticationFailure({verifier_result:{rewards:{reward:0}}}),false);
+  assert.equal(isAgentAuthenticationFailure(null),false);
+  const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
+  assert.match(source,/isAgentAuthenticationFailure\(failedTrial\)/);
+  assert.match(source,/isAgentAuthenticationFailure\(trial\)\?"agent_authentication_failure"/);
+});
+
 test("Terminal-Bench Docker cleanup only removes exited environments from sealed verifier trials",async()=>{
   const entries={
     "ROOT":[{name:"job-a",isDirectory:()=>true},{name:"job-b",isDirectory:()=>true}],
@@ -558,6 +577,9 @@ test("Terminal-Bench watchdog persists latest and timestamped history snapshots"
   assert.match(source,/recoverNativeEventEvidence\(jobsDir,lane\.jobName,\{serviceTier:report\?\.serviceTier\|\|"standard"\}\)/);
   assert.match(source,/readJobVerifierSummary\(jobsDir,lane\.jobName\)/);
   assert.match(source,/effectiveJob\.verifierChecks=\{\.\.\.\(effectiveJob\.verifierChecks\|\|\{\}\),\.\.\.checks\}/);
+  assert.match(source,/exceptionType==="AgentAuthenticationError"\?"agent_authentication_failure"/);
+  assert.match(source,/reward=infrastructureReason\?"INFRA"/);
+  assert.match(source,/not a quality result; rerun only this lane/);
   assert.match(source,/REWARD\s+DIAG\s+PYTEST/);
   assert.match(source,/Verifier note: REWARD is Harbor's official task reward/);
 });

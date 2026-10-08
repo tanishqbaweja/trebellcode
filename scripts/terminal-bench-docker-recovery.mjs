@@ -16,6 +16,14 @@ export function isNativeAgentExternalTermination(trial){
     && /stdout:\s*Terminated(?:\r?\n|$)/i.test(message);
 }
 
+export function isAgentAuthenticationFailure(trial){
+  if(!trial||typeof trial!=="object")return false;
+  // Harbor raises this when the agent's provider credentials are rejected
+  // (expired/rotated OAuth tokens, revoked keys). The verifier may still grade
+  // the untouched workspace, but that reward is not harness-quality evidence.
+  return String(trial?.exception_info?.exception_type||"")==="AgentAuthenticationError";
+}
+
 export function isPreAgentDockerSubnetExhaustion(trial){
   if(!trial||typeof trial!=="object")return false;
   if(trial.agent_setup||trial.agent_execution||trial.verifier)return false;
