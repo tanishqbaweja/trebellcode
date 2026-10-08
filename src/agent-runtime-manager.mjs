@@ -11,6 +11,7 @@ import { withoutSecretEnvironment } from "./secret-redactor.mjs";
 import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 import { installAntigravityRuntime, readAntigravityAuthState, readAntigravityInstall } from "./antigravity-runtime-installer.mjs";
 import { discoverOpenCodeModelCatalog } from "./opencode-agent-session.mjs";
+import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
 const RUNTIMES=Object.freeze({
   native:{id:"native",name:"Trebell Native",protocol:"native",command:null,multipleInstances:false,managed:true},
@@ -161,6 +162,9 @@ export function runtimeExecutableCandidates(kind,{env=process.env,platform=proce
   }
   if(kind==="claude"){
     if(user)values.push(join(user,".local","bin","claude.exe"));
+    // npm's claude.cmd only forwards to this native binary. The Claude Agent SDK spawns its executable
+    // directly, and Node cannot spawn a .cmd shim without a shell (spawn EINVAL), so prefer the binary.
+    if(appData)values.push(join(appData,"npm","node_modules","@anthropic-ai","claude-code","bin","claude.exe"));
     if(appData)values.push(join(appData,"npm","claude.cmd"));
   }
   if(appData&&kind==="opencode"){
@@ -264,14 +268,14 @@ export class AgentRuntimeManager{
     this.state.updateSettings(patch);return {ok:true,resetTo,kind:target.kind};
   }
   executable(instance,{environmentId=undefined}={}){
-    if(instance?.binaryPath?.trim())return instance.binaryPath.trim();
+    if(instance?.binaryPath?.trim())return resolveWindowsCommandShim(instance.binaryPath.trim(),{platform:this.platform});
     const def=RUNTIMES[instance?.kind];
     const profile=this.activeEnvironment(environmentId);
     if(profile&&profile.type!=="local")return def?.command||null;
     if(instance?.kind==="codex")return codexBin(this.env,this.platform,this.arch);
     if(instance?.kind==="antigravity")return join(trebellHome(this.env),"agent-runtimes","antigravity","current",this.platform==="win32"?"agy_acp_server.exe":"agy_acp_server.par");
     const discovered=runtimeExecutableCandidates(instance?.kind,{env:this.env,platform:this.platform}).find(candidate=>existsSync(candidate));
-    if(discovered)return discovered;
+    if(discovered)return resolveWindowsCommandShim(discovered,{platform:this.platform});
     return def?.command||null;
   }
   childEnv(instance){
