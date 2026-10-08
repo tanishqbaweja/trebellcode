@@ -71,11 +71,6 @@ const BATCH_EVIDENCE_PRECOMMIT_RESPONSE_SCHEMA=Object.freeze({
   },
   required:["status","progress","edit_support","mutation_safety","recovery_mode","constraint_audit","unresolved","reason","staged_record_count","audited_record_count","record_audit"],
 });
-const ABSTRACTION_GATE_RESPONSE_SCHEMA=Object.freeze({
-  type:"object",additionalProperties:false,
-  properties:{status:{type:"string",enum:["verified","failed","uncertain"]},reason:{type:"string"}},
-  required:["status","reason"],
-});
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -1918,6 +1913,11 @@ export async function runNativeAgentTurn({
     const controlGateMaxOutputTokens=officialOpenAiControlGate?(controlGateRetry?OPENAI_CONTROL_GATE_RETRY_MAX_OUTPUT_TOKENS:OPENAI_CONTROL_GATE_INITIAL_MAX_OUTPUT_TOKENS):CONTROL_GATE_MAX_OUTPUT_TOKENS;
     const requestMaxOutputTokens=controlGateMode?(configuredMaxOutputTokens==null?controlGateMaxOutputTokens:Math.min(configuredMaxOutputTokens,controlGateMaxOutputTokens)):actionOutputCapActive?Math.min(configuredMaxOutputTokens??ACTION_TURN_MAX_OUTPUT_TOKENS,ACTION_TURN_MAX_OUTPUT_TOKENS):configuredMaxOutputTokens;
     const requestReasoningEffort=reasoningEffort;
+    // A strict text.format schema puts an OpenAI request in a different prompt-cache prefix from the
+    // schema-less coding turns, so the first gate of a run rewrote the whole conversation (measured: 0 of
+    // 14K tokens reused, vs a full hit without the schema). Gates whose prompts spell out their JSON rely on
+    // the prompt and the lenient parser; only batch-evidence gates, whose prompts cite the schema, keep it.
+    const batchEvidenceGateSchemaRequired=!abstractionRepairVerificationGateMode&&["precommit","postcommit"].includes(completionGateCandidate?.phase);
     if(recoveryEditMode)emit(onEvent,{name:"native.completion.recovery_edit_required",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,visibleEditToolCount:recoveryEditPairs.length,visibleToolCount:exposedToolPairs(requestTools).length,toolSchemaStable:openAiStableRecoveryEditTools,selectionConstrained:forceRecoveryEditTool}});
     if(batchEvidenceRepairRequiredActionMode)emit(onEvent,{name:"native.progress.batch_evidence_repair_action_required",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,repairWindow:batchEvidencePrecommitRepairWindows,repairResponsesUsed:batchEvidenceRepairMutationResponsesUsed,maxMutationResponses:batchEvidenceRepairMutationResponseLimit,persistentRetry:batchEvidenceRepairPersistentRetryMode,visibleActionToolCount:batchEvidenceRepairRequiredActionPairs.length,visibleToolCount:exposedToolPairs(requestTools).length,toolSchemaStable:openAiStableBatchEvidenceRepairRequiredAction,selectionConstrained:forceBatchEvidenceRepairRequiredAction}});
     if(implementationPressure)emit(onEvent,{name:"native.progress.implementation_pressure",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,visibleToolCount:exposedToolPairs(requestTools).length,blockedUntilFirstEdit:Math.max(0,exposedToolPairs(requestTools).filter(item=>!(item.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(item.name))).length),toolSchemaStable:true}});
@@ -1949,7 +1949,7 @@ export async function runNativeAgentTurn({
     // bounded budget instead of consuming the attempts reserved for transient failures.
     for(let attempt=1;attempt<=providerAttempts+rateLimitRetries;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens:requestMaxOutputTokens,temperature,reasoningEffort:requestReasoningEffort,parallelToolCalls,responseJsonSchema:officialOpenAiControlGate?{name:abstractionRepairVerificationGateMode?"trebell_abstraction_verification_gate":completionGateCandidate?.phase==="precommit"?"trebell_batch_evidence_precommit_gate":completionGateCandidate?.phase==="postcommit"?"trebell_batch_evidence_postcommit_gate":"trebell_completion_gate",strict:true,schema:abstractionRepairVerificationGateMode?ABSTRACTION_GATE_RESPONSE_SCHEMA:completionGateCandidate?.phase==="precommit"?BATCH_EVIDENCE_PRECOMMIT_RESPONSE_SCHEMA:COMPLETION_GATE_RESPONSE_SCHEMA}:null,signal:turnSignal,metadata:controlGateMode?{...(metadata&&typeof metadata==="object"?metadata:{}),completionGate:true,batchEvidencePrecommitGate:completionGateCandidate?.phase==="precommit",batchEvidencePostcommitGate:completionGateCandidate?.phase==="postcommit",abstractionRepairVerificationGate:abstractionRepairVerificationGateMode,controlGateRetry}:metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
+        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens:requestMaxOutputTokens,temperature,reasoningEffort:requestReasoningEffort,parallelToolCalls,responseJsonSchema:officialOpenAiControlGate&&batchEvidenceGateSchemaRequired?{name:completionGateCandidate.phase==="precommit"?"trebell_batch_evidence_precommit_gate":"trebell_batch_evidence_postcommit_gate",strict:true,schema:completionGateCandidate.phase==="precommit"?BATCH_EVIDENCE_PRECOMMIT_RESPONSE_SCHEMA:COMPLETION_GATE_RESPONSE_SCHEMA}:null,signal:turnSignal,metadata:controlGateMode?{...(metadata&&typeof metadata==="object"?metadata:{}),completionGate:true,batchEvidencePrecommitGate:completionGateCandidate?.phase==="precommit",batchEvidencePostcommitGate:completionGateCandidate?.phase==="postcommit",abstractionRepairVerificationGate:abstractionRepairVerificationGateMode,controlGateRetry}:metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){
