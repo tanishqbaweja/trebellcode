@@ -10,7 +10,7 @@ import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, pars
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
-import { preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, terminalBenchTaskNoNetworkSectionsFromToml, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
+import { benchmarkRunPrefix, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, terminalBenchTaskNoNetworkSectionsFromToml, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -300,6 +300,22 @@ test("Terminal-Bench network preflight refuses no-network tasks before inference
   assert.match(source,/networkPolicyPreflight=await preflightTerminalBenchNetworkPolicy\(/);
   assert.ok(source.indexOf("preflightTerminalBenchNetworkPolicy(")<source.indexOf("const runLane=async"),"network preflight must run before any lane starts");
   assert.match(source,/networkPolicyPreflight,/);
+});
+
+test("Benchmark run IDs carry the dataset family without renaming Terminal-Bench 4 runs",async()=>{
+  assert.equal(benchmarkRunPrefix("terminal-bench/terminal-bench@4.0.0"),"tb4");
+  assert.equal(benchmarkRunPrefix("terminal-bench/terminal-bench@2.0"),"tb2");
+  assert.equal(benchmarkRunPrefix("swe-bench/swe-bench-verified@latest"),"swebv");
+  assert.equal(benchmarkRunPrefix("example-org/My_Bench Pro@1.0"),"my-bench-pro");
+  assert.equal(benchmarkRunPrefix(""),"bench");
+  const comparison=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
+  assert.match(comparison,/RUN_PREFIX=benchmarkRunPrefix\(DATASET\)/);
+  assert.match(comparison,/pairId=`\$\{RUN_PREFIX\}-\$\{STANDALONE_NATIVE_RERUN\?"native-rerun":"pair"\}-/);
+  assert.match(comparison,/jobName:`\$\{RUN_PREFIX\}-\$\{lane\.label\}-/);
+  const launcher=await readFile(new URL("../scripts/launch-terminal-bench-detached.mjs",import.meta.url),"utf8");
+  assert.match(launcher,/const id=`\$\{prefix\}-detached-/);
+  const watchdog=await readFile(new URL("../scripts/terminal-bench-watchdog.mjs",import.meta.url),"utf8");
+  assert.match(watchdog,/\/\^\[a-z0-9\]\+-\(\?:pair\|native-rerun\)-/);
 });
 
 test("Terminal-Bench Docker subnet retry only recognizes pre-agent exhaustion",()=>{
