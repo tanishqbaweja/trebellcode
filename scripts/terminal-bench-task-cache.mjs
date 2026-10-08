@@ -25,6 +25,37 @@ export function terminalBenchTaskDockerImagesFromToml(text){
   return images;
 }
 
+export function terminalBenchTaskNoNetworkSectionsFromToml(text){
+  const sections=[];let section="";
+  for(const rawLine of String(text||"").split(/\r?\n/)){
+    const line=rawLine.trim();if(!line||line.startsWith("#"))continue;
+    const header=line.match(/^\[([^\]]+)\]$/);if(header){section=header[1].trim();continue}
+    if(section!=="environment"&&section!=="verifier.environment")continue;
+    if(/^allow_internet\s*=\s*false\s*$/i.test(line)&&!sections.includes(section))sections.push(section);
+  }
+  return sections;
+}
+
+// Harbor 0.23's Docker environment can only enforce no-network when the engine kernel
+// supports nftables fib inet rules; otherwise it rejects that environment at trial time,
+// which for a verifier is after paid agent inference. Mirror Harbor's own probe so the
+// launch fails before any lane starts.
+const HARBOR_EGRESS_KERNEL_PROBE_IMAGE="alpine:3.23.4@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11";
+const HARBOR_EGRESS_KERNEL_PROBE_SCRIPT="if [ ! -f /proc/config.gz ]; then exit 0; fi; zcat /proc/config.gz 2>/dev/null | grep -qE '^CONFIG_NFT_FIB_INET=[ym]'";
+
+export async function preflightTerminalBenchNetworkPolicy({dataset,task,env,captureFn,docker="docker",home=homedir(),cacheRoot=null}={}){
+  if(typeof captureFn!=="function")throw new TypeError("preflightTerminalBenchNetworkPolicy requires captureFn");
+  const taskToml=await terminalBenchCachedTaskToml({dataset,task,home,cacheRoot});
+  if(!taskToml)return {completed:false,taskTomlFound:false,noNetworkSections:[]};
+  const noNetworkSections=terminalBenchTaskNoNetworkSectionsFromToml(await readFile(taskToml,"utf8"));
+  if(!noNetworkSections.length)return {completed:true,taskTomlFound:true,noNetworkSections,egressControlSupported:null};
+  try{await captureFn(docker,["container","run","--rm",HARBOR_EGRESS_KERNEL_PROBE_IMAGE,"sh","-c",HARBOR_EGRESS_KERNEL_PROBE_SCRIPT],{env})}
+  catch(error){
+    throw new Error(`Task ${task} requires allow_internet=false for ${noNetworkSections.join(", ")}, but this Docker engine cannot enforce Harbor no-network policies (its kernel lacks CONFIG_NFT_FIB_INET). Harbor would reject that environment only after paid agent inference, so no lane could be graded. Refusing launch. Probe: ${String(error?.message||error).slice(0,300)}`);
+  }
+  return {completed:true,taskTomlFound:true,noNetworkSections,egressControlSupported:true};
+}
+
 export async function terminalBenchCachedTaskToml({dataset,task,home=homedir(),cacheRoot=null}={}){
   const qualified=terminalBenchTaskQualifiedName(dataset,task);if(!qualified)return null;
   const [namespace,...parts]=qualified.split("/"),slug=parts.join("/");if(!namespace||!slug||slug.includes("/"))return null;

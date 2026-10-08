@@ -10,7 +10,7 @@ import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, pars
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
-import { preflightTerminalBenchDatasetTaskMembership, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
+import { preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, terminalBenchTaskNoNetworkSectionsFromToml, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -274,6 +274,32 @@ test("Terminal-Bench Docker prewarm retries one transient pull serially and then
     const result=await prewarmTerminalBenchDockerImages({dataset:"terminal-bench/terminal-bench@4.0.0",task:"example-task",cacheRoot:root,maxAttempts:3,captureFn:async()=>{throw new Error("missing")},runFn:async()=>{calls++;if(calls<2)throw new Error("unexpected EOF")}});
     assert.equal(calls,2);assert.deepEqual(result.attempts.map(item=>item.status),["failed","pulled"]);
   }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Terminal-Bench network preflight refuses no-network tasks before inference when Docker cannot enforce them",async()=>{
+  assert.deepEqual(terminalBenchTaskNoNetworkSectionsFromToml(`[environment]\nallow_internet = true\n[verifier.environment]\ncpus = 2\nallow_internet = false\n[agent]\nallow_internet = false\n`),["verifier.environment"]);
+  assert.deepEqual(terminalBenchTaskNoNetworkSectionsFromToml(`[environment]\ndocker_image = "x"\n`),[]);
+  const root=await mkdtemp(join(tmpdir(),"trebell-tb-network-preflight-"));
+  try{
+    const versionDir=join(root,"content-hash");await mkdir(versionDir,{recursive:true});
+    const options={dataset:"terminal-bench/terminal-bench@4.0.0",task:"example-task",cacheRoot:root,env:{SAFE:"1"}};
+    await writeFile(join(versionDir,"task.toml"),`[environment]\ndocker_image = "registry.example/env@sha256:abc"\n`);
+    let probes=0;
+    const open=await preflightTerminalBenchNetworkPolicy({...options,captureFn:async()=>{probes++;return ""}});
+    assert.equal(open.taskTomlFound,true);assert.deepEqual(open.noNetworkSections,[]);assert.equal(probes,0);
+    await writeFile(join(versionDir,"task.toml"),`[environment]\ndocker_image = "registry.example/env@sha256:abc"\n[verifier.environment]\nallow_internet = false\n`);
+    const calls=[];
+    const enforced=await preflightTerminalBenchNetworkPolicy({...options,captureFn:async(command,args,captureOptions)=>{calls.push({command,args,captureOptions});return ""}});
+    assert.equal(enforced.egressControlSupported,true);assert.deepEqual(enforced.noNetworkSections,["verifier.environment"]);
+    assert.equal(calls.length,1);assert.equal(calls[0].command,"docker");assert.deepEqual(calls[0].args.slice(0,3),["container","run","--rm"]);assert.match(calls[0].args.at(-1),/CONFIG_NFT_FIB_INET/);assert.deepEqual(calls[0].captureOptions,{env:{SAFE:"1"}});
+    await assert.rejects(preflightTerminalBenchNetworkPolicy({...options,captureFn:async()=>{throw new Error("docker exited with 1")}}),/allow_internet=false[\s\S]*verifier\.environment[\s\S]*Refusing launch/);
+    const missing=await preflightTerminalBenchNetworkPolicy({...options,cacheRoot:join(root,"absent"),captureFn:async()=>{throw new Error("must not probe")}});
+    assert.equal(missing.taskTomlFound,false);
+  }finally{await rm(root,{recursive:true,force:true})}
+  const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
+  assert.match(source,/networkPolicyPreflight=await preflightTerminalBenchNetworkPolicy\(/);
+  assert.ok(source.indexOf("preflightTerminalBenchNetworkPolicy(")<source.indexOf("const runLane=async"),"network preflight must run before any lane starts");
+  assert.match(source,/networkPolicyPreflight,/);
 });
 
 test("Terminal-Bench Docker subnet retry only recognizes pre-agent exhaustion",()=>{
