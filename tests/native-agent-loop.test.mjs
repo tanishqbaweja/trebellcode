@@ -77,6 +77,83 @@ test("native recovery snapshots and restores requested binary artifacts byte-for
   assert.match(result.text,/strongest evidence-backed workspace state has been preserved or restored/i);
 });
 
+async function runRegressedRecoveryWithDeliverables({request,artifacts}){
+  let turns=0;const files=new Map([["solver.py",Buffer.from("incumbent-source")]]),events=[],internalRecoveryCalls=[];
+  for(const [path,versions] of Object.entries(artifacts))files.set(path,Buffer.from(versions.incumbent));
+  const hash=bytes=>createHash("sha256").update(bytes).digest("hex"),kb=bytes=>Math.ceil(bytes.length/1024);
+  const rawTool=async call=>{
+    const path=String(call.arguments?.path||"").replace(/^\/app\//,"");
+    if(call.namespace==="trebell_workspace"&&call.name==="read_file"){
+      const bytes=files.get(path),limit=Number(call.arguments?.max_bytes)||256*1024;if(!bytes)return {success:false,error:"missing"};
+      if(call.arguments?._trebell_internal_binary===true){
+        if(bytes.length>limit)return {success:false,error:`File is too large for an internal recovery snapshot (${kb(bytes)} KB)`};
+        return {success:true,path,binary:true,size:bytes.length,contentBase64:bytes.toString("base64"),sha256:hash(bytes)};
+      }
+      if(bytes.length>limit)return {success:false,error:`File is too large to preview (${kb(bytes)} KB)`};
+      return {path,content:bytes.toString("utf8"),size:bytes.length};
+    }
+    if(call.namespace==="trebell_workspace"&&call.name==="write_file"&&call.arguments?._trebell_internal_binary===true){const bytes=Buffer.from(String(call.arguments.content_base64||""),"base64");files.set(path,bytes);return {success:true,path,binary:true,size:bytes.length,createdOrReplaced:true,sha256:hash(bytes)}}
+    if(call.namespace==="trebell_workspace"&&call.name==="replace_text"){
+      const current=(files.get(path)||Buffer.alloc(0)).toString("utf8"),oldText=String(call.arguments?.old_text??""),newText=String(call.arguments?.new_text??"");
+      assert.ok(current.includes(oldText),`${path} does not include the expected text`);files.set(path,Buffer.from(current.replace(oldText,newText),"utf8"));return {path,replacements:1};
+    }
+    if(call.namespace==="trebell_terminal"&&call.name==="run"){
+      const stage=String(call.id||"")==="verify-1"?"candidate":String(call.id||"")==="verify-2"?"worse":null;
+      if(stage)for(const [artifactPath,versions] of Object.entries(artifacts))files.set(artifactPath,Buffer.from(versions[stage]));
+      return {exitCode:0,stdout:"focused evidence"};
+    }
+    return {success:false,error:"unsupported"};
+  };
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:request}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"The current generated output is the strongest candidate so far, with one localized issue.",toolCalls:[],usage:{}};
+      if(turns===2)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"uncertain","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["one localized issue remains"],"reason":"The current output is the recovery incumbent."}',toolCalls:[],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"evidence",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["inspect.mjs"]}'}],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"repair-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"solver.py","old_text":"incumbent-source","new_text":"candidate-source"}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-1.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"",toolCalls:[{id:"repair-2",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"solver.py","old_text":"candidate-source","new_text":"worse-source"}'}],usage:{}};
+      if(turns===7)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-2.mjs"]}'}],usage:{}};
+      if(turns===8)return {text:"The generated output is now worse than the recovery incumbent.",toolCalls:[],usage:{}};
+      if(turns===9)return {text:'{"status":"incomplete","progress":"regressed","edit_support":"uncertain","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["the localized issue remains"],"reason":"The latest generated output regressed relative to the incumbent."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:rawTool,
+    executeInternalTool:async call=>{internalRecoveryCalls.push(call);return rawTool(call)},
+  });
+  return {result,files,events,internalRecoveryCalls,turns};
+}
+
+test("native recovery restores a requested text deliverable larger than the text read preview limit",async()=>{
+  const sized=fill=>Buffer.from(JSON.stringify({clusters:fill.repeat(1_600_000)}));
+  const incumbent=sized("a");assert.ok(incumbent.length>1024*1024);
+  const {result,files,events,internalRecoveryCalls,turns}=await runRegressedRecoveryWithDeliverables({
+    request:"Fix solver.py, then generate output/clusters.json. Preserve the strongest validated output while improving the remaining acceptance gap.",
+    artifacts:{"output/clusters.json":{incumbent,candidate:sized("b"),worse:sized("c")}},
+  });
+  assert.equal(turns,9);
+  assert.equal(files.get("solver.py").toString("utf8"),"incumbent-source");
+  assert.equal(files.get("output/clusters.json").equals(incumbent),true);
+  const snapshots=events.filter(event=>event.name==="native.completion.recovery_candidate_snapshot");assert.ok(snapshots.length>=1);assert.ok(snapshots.every(event=>event.data?.restorable===true),JSON.stringify(snapshots.map(event=>event.data)));
+  assert.ok(internalRecoveryCalls.some(call=>call.name==="read_file"&&call.arguments?._trebell_internal_binary===true&&/clusters\.json$/.test(String(call.arguments?.path||""))&&Number(call.arguments?.max_bytes)>=incumbent.length));
+  assert.match(result.text,/strongest evidence-backed workspace state has been preserved or restored/i);
+});
+
+test("native recovery restores a requested non-UTF-8 binary deliverable byte-exactly",async()=>{
+  const incumbent=Buffer.from([0x80,0xff,0x00,0xc3,0x28,0xfe,0x0a,0x0d,0xe2,0x82]);
+  const {files,events,turns}=await runRegressedRecoveryWithDeliverables({
+    request:"Fix solver.py, then write output/model.bin. Preserve the strongest validated output while improving the remaining acceptance gap.",
+    artifacts:{"output/model.bin":{incumbent,candidate:Buffer.from([0x81,0xfe,0x01,0xc0]),worse:Buffer.from([0x82,0xfd,0x02,0xc1,0x00])}},
+  });
+  assert.equal(turns,9);
+  assert.equal(files.get("solver.py").toString("utf8"),"incumbent-source");
+  assert.equal(files.get("output/model.bin").equals(incumbent),true,files.get("output/model.bin").toString("hex"));
+  const snapshots=events.filter(event=>event.name==="native.completion.recovery_candidate_snapshot");assert.ok(snapshots.every(event=>event.data?.restorable===true),JSON.stringify(snapshots.map(event=>event.data)));
+});
+
 test("native precommit repair gives a multi-gap audit at most two focused mutation responses before retained-candidate re-audit",async()=>{
   const events=[],executed=[];let turn=0;
   const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
