@@ -2236,6 +2236,13 @@ export async function runNativeAgentTurn({
             :"Trebell closed the current recovery epoch without forcing a speculative workspace edit because the semantic gate explicitly found that the exhausted evidence does not support a corrective edit in this hypothesis class. Do not mutate merely to consume an allowance. Advance to the next bounded recovery strategy from the preserved evidence-backed workspace state."});
           emit(onEvent,{name:"native.completion.recovery_edit_skipped",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,reason:completionRecoveryMutationForbidden?"mutation_forbidden":"unsupported_by_evidence",unresolved:verdict.unresolved}});
         }
+        const pendingDependentEditVerification=completionRecoveryEpoch>0&&completionRecoveryMode==="evidence_then_edit"&&completionRecoveryEditConsumedEpoch===completionRecoveryEpoch&&completionRecoveryPostEditEvidenceResponsesRemaining>0&&completionRecoveryEditResponsesRemaining>0;
+        if(pendingDependentEditVerification){
+          completionRecoveryEditRequired=false;completionRecoveryEditRequiredMisses=0;
+          conversation.push({role:"developer",content:"Trebell evidence-then-edit recovery: the first corrective state change has been applied, but its reserved independent post-edit verification response is still outstanding. Before requiring any dependent corrective mutation, use exactly one focused non-mutating tool response to verify the actual resulting state. Do not persist another change or reopen general investigation during this verification response. Then submit the strongest completion candidate so the semantic gate can judge the fresh evidence and decide whether the remaining dependent edit is supported."});
+          emit(onEvent,{name:"native.completion.recovery_verification_required",status:"running",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,remaining:completionRecoveryPostEditEvidenceResponsesRemaining,reason:"pending_postcommit_dependent_edit_verification"}});
+          continue;
+        }
         const unresolvedRecoveryEdit=completionRecoveryEpoch>0&&completionRecoveryEvidenceRoundsRemaining<=0&&completionRecoveryEditResponsesRemaining>0;
         if(unresolvedRecoveryEdit){
           completionRecoveryEditRequired=true;

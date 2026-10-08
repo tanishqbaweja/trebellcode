@@ -1003,6 +1003,61 @@ test("native batch evidence precommit authorization is bound to the exact staged
   assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_commit_validation_carried").length,0);assert.equal(events.filter(event=>event.name==="native.progress.batch_evidence_postcommit_gate"&&event.status==="completed").length,2);
 });
 
+test("native postcommit recovery verifies the first corrective write before requiring a dependent second edit",async()=>{
+  const events=[],executed=[];let ordinary=0,precommitGates=0,postcommitGates=0,semanticGates=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const write=(id,value)=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c",`INSERT INTO decisions(id) VALUES (${value})`]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxModelTurns:24,maxToolCalls:36,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued case, reconcile authoritative evidence and submit the complete decision batch to the remote system. Verify each dependent persistent correction before the next write."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      if(request.metadata?.batchEvidencePrecommitGate){
+        precommitGates++;
+        return {text:batchEvidencePrecommitVerdict({reason:"Exact staged candidate passes its own precommit review."}),toolCalls:[],usage:{}};
+      }
+      if(request.metadata?.batchEvidencePostcommitGate){
+        postcommitGates++;
+        return {text:batchEvidencePostcommitVerdict({
+          status:"incomplete",progress:"uncertain",edit_support:"supported",mutation_safety:"allowed",
+          recovery_mode:postcommitGates===1?"evidence_then_edit":"edit",
+          unresolved:["A direct post-write verification is needed before another dependent state change."],
+          reason:"The latest external write did not yet demonstrate the required live state.",
+        }),toolCalls:[],usage:{}};
+      }
+      if(request.metadata?.completionGate){
+        semanticGates++;
+        return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","constraint_audit":[],"unresolved":[],"reason":"The latest independent verification establishes the live-state requirement."}',toolCalls:[],usage:{}};
+      }
+      ordinary++;
+      if(ordinary<=3)return {text:"",toolCalls:[read("probe-"+ordinary)],usage:{}};
+      if(ordinary===4)return {text:"",toolCalls:[write("initial-write",1)],usage:{}};
+      if(ordinary===5)return {text:"",toolCalls:[read("first-closure")],usage:{}};
+      if(ordinary===6)return {text:"",toolCalls:[read("recovery-evidence")],usage:{}};
+      if(ordinary===7)return {text:"",toolCalls:[read("surplus-recovery-evidence")],usage:{}};
+      if(ordinary===8)return {text:"",toolCalls:[write("first-recovery-write",2)],usage:{}};
+      if(ordinary===9)return {text:"",toolCalls:[read("second-closure")],usage:{}};
+      if(ordinary===10){
+        assert.notEqual(request.toolChoice,"required","postcommit must honor reserved read-only verification instead of forcing a second write");
+        return {text:"",toolCalls:[write("dependent-write-before-verification",3)],usage:{}};
+      }
+      if(ordinary===11)return {text:"",toolCalls:[read("verify-first-recovery-write")],usage:{}};
+      if(ordinary===12)return {text:"The latest live state has been verified.",toolCalls:[],usage:{}};
+      throw new Error("unexpected ordinary provider call "+ordinary);
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(result.text,"The latest live state has been verified.");
+  assert.equal(precommitGates,2);assert.equal(postcommitGates,2);assert.equal(semanticGates,1);
+  assert.equal(executed.includes("surplus-recovery-evidence"),false);
+  assert.equal(executed.includes("dependent-write-before-verification"),false);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_edit_call_blocked"&&event.data?.callId==="dependent-write-before-verification"&&event.data?.reason==="recovery_dependent_edit_requires_verification").length,1);
+  assert.ok(executed.includes("verify-first-recovery-write"));
+  assert.equal(executed.filter(id=>/^native-precommit-authorized-/.test(id)).length,2);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,1);
+  assert.equal(events.filter(event=>event.name==="native.turn.blocked"&&event.data?.reason==="native_recovery_edit_not_called").length,0);
+});
+
 test("native audited batch commit preserves a self-admitted postcommit gap without automatic corrective mutation",async()=>{
   const events=[],executed=[];let turn=0;
   const commit={id:"commit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO decisions(id) VALUES (1)"]})};
