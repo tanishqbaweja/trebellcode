@@ -1328,6 +1328,52 @@ test("native semantic recovery can pivot from an exhausted persistent candidate 
   assert.equal(allowance.filter(event=>event.data?.kind==="post_edit_verification").length,1);
 });
 
+test("native recovery permits bounded precommit repair evidence after its required persistent candidate is refused",async()=>{
+  const events=[],executed=[];let ordinary=0,precommitGates=0,semanticGates=0;
+  const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
+  const commit=(id,value)=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c",`INSERT INTO decisions(id) VALUES (${value})`]})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",semanticCompletionGate:true,maxCompletionRecoveryEpochs:2,maxModelTurns:18,maxToolCalls:30,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"For every queued case, reconcile the authoritative evidence, then submit the complete decision batch to the remote system. Never submit a persistent candidate rejected by its precommit semantic audit."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_process",tools:[{name:"start"}]}],
+    providerTurn:async request=>{
+      if(request.metadata?.batchEvidencePostcommitGate)return {text:batchEvidencePostcommitVerdict(),toolCalls:[],usage:{}};
+      if(request.metadata?.batchEvidencePrecommitGate){
+        precommitGates++;
+        return {text:precommitGates===1?batchEvidencePrecommitVerdict({status:"incomplete",mutation_safety:"forbidden",recovery_mode:"evidence_only",unresolved:["first candidate lacks decisive evidence"],reason:"The exact first candidate is not safe to persist."}):batchEvidencePrecommitVerdict({reason:"The distinct corrected candidate passes current source evidence and is safe to persist."}),toolCalls:[],usage:{}};
+      }
+      if(request.metadata?.completionGate){
+        semanticGates++;
+        return {text:semanticGates===1
+          ?'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"allowed","recovery_mode":"edit","constraint_audit":[],"unresolved":["submit a safely audited correction"],"reason":"A corrective external mutation is required, but only after candidate-local audit."}'
+          :'{"status":"complete","progress":"improved","edit_support":"unsupported","mutation_safety":"allowed","recovery_mode":"none","constraint_audit":[],"unresolved":[],"reason":"The separate corrected candidate was independently audited and verified."}',toolCalls:[],usage:{}};
+      }
+      ordinary++;
+      if(ordinary===1)return {text:"The proposed decision requires persistent submission.",toolCalls:[],usage:{}};
+      if(ordinary===2)return {text:"",toolCalls:[commit("unsafe-first",1)],usage:{}};
+      if(ordinary===3)return {text:"",toolCalls:[read("closure-first")],usage:{}};
+      if(ordinary===4){
+        assert.notEqual(request.toolChoice,"required","a denied candidate must not force an unsafe write ahead of its focused repair audit");
+        return {text:"",toolCalls:[read("focused-precommit-repair")],usage:{}};
+      }
+      if(ordinary===5)return {text:"",toolCalls:[commit("corrected-second",2)],usage:{}};
+      if(ordinary===6)return {text:"",toolCalls:[read("closure-corrected")],usage:{}};
+      if(ordinary===7)return {text:"The corrected decision was submitted after an independent precommit audit.",toolCalls:[],usage:{}};
+      throw new Error("unexpected ordinary model response "+ordinary);
+    },
+    executeTool:async call=>{executed.push(call.id);return closureAwareTerminalOutput(call)},
+  });
+  assert.equal(precommitGates,2);assert.ok(semanticGates>=1);
+  assert.match(result.text,/corrected decision was submitted/i);
+  assert.ok(executed.includes("focused-precommit-repair"),"focused non-mutating repair must actually execute");
+  assert.ok(executed.includes("closure-corrected"),"distinct corrected candidate still requires its closure audit");
+  assert.equal(executed.includes("unsafe-first"),false);
+  assert.equal(executed.includes("corrected-second"),false);
+  assert.equal(executed.filter(id=>/^native-precommit-authorized-/.test(id)).length,1,"only the independently authorized write executes");
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_non_edit_call_blocked"&&event.data?.callId==="focused-precommit-repair").length,0);
+  assert.equal(events.filter(event=>event.name==="native.turn.blocked"&&event.data?.reason==="native_recovery_edit_not_called").length,0);
+});
+
 test("native recovery closes an active edit debt when its batch precommit repair later exhausts",async()=>{
   const events=[],executed=[];let ordinary=0,precommitGates=0,semanticGates=0;
   const audit=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
