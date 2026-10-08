@@ -1252,19 +1252,21 @@ export async function runNativeAgentTurn({
   const recoverySnapshotMissing=output=>output?.success===false&&/(?:\benoent\b|\bmissing\b|no such file|not found|does not exist|cannot find (?:the )?(?:file|path))/i.test(String(output?.error||output?.message||""));
   const recoverySnapshotFailureReason=(output,fallback)=>String(output?.error||output?.message||fallback).slice(0,240);
   const recoveryBinarySnapshotOutput=output=>output?.success!==false&&output?.binary===true&&typeof output?.contentBase64==="string"&&typeof output?.sha256==="string";
-  const readRecoveryWorkspaceSnapshot=async(id,path,{binary=false}={})=>{
-    const args={path,max_bytes:1024*1024,...(binary?{_trebell_internal_binary:true}:{})};
-    let output=await executeControllerTool({id,namespace:"trebell_workspace",name:"read_file",arguments:args,rawArguments:JSON.stringify(args),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
-    if(!binary&&output?.imageModeRequired===true){
-      const binaryArgs={path,max_bytes:1024*1024,_trebell_internal_binary:true};
-      output=await executeControllerTool({id:id+":binary",namespace:"trebell_workspace",name:"read_file",arguments:binaryArgs,rawArguments:JSON.stringify(binaryArgs),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+  const recoverySnapshotMaxBytes=32*1024*1024;
+  const readRecoveryWorkspaceSnapshot=async(id,path,{binary=false,preferBinary=false}={})=>{
+    const read=(callId,args)=>executeControllerTool({id:callId,namespace:"trebell_workspace",name:"read_file",arguments:args,rawArguments:JSON.stringify(args),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+    const binaryArgs={path,max_bytes:recoverySnapshotMaxBytes,_trebell_internal_binary:true};
+    if(binary||preferBinary){
+      const output=await read(id,binaryArgs);
+      if(binary||recoveryBinarySnapshotOutput(output)||recoverySnapshotMissing(output)||typeof output?.content==="string"||/too large/i.test(String(output?.error||output?.message||"")))return output;
     }
-    return output;
+    const output=await read(preferBinary?id+":text":id,{path,max_bytes:1024*1024});
+    return output?.imageModeRequired===true?await read(id+":binary",binaryArgs):output;
   };
   const captureRecoveryWorkspacePathSnapshot=async(path,{candidateSha256=null}={})=>{
     path=String(path||"").trim();if(!path)return null;
     try{
-      const output=await readRecoveryWorkspaceSnapshot(`native-recovery-snapshot-${modelTurns}-${editRevision}`,path);
+      const output=await readRecoveryWorkspaceSnapshot(`native-recovery-snapshot-${modelTurns}-${editRevision}`,path,{preferBinary:true});
       if(recoverySnapshotMissing(output))return {path,restorable:true,absentBefore:true,candidateAbsent:null,content:null,beforeSha256:null,candidateSha256:null};
       if(recoveryBinarySnapshotOutput(output))return {path:String(output?.path||path).trim()||path,restorable:true,absentBefore:false,binary:true,contentBase64:output.contentBase64,beforeSha256:output.sha256,candidateSha256};
       if(output?.success===false||typeof output?.content!=="string")return {path,restorable:false,reason:recoverySnapshotFailureReason(output,"workspace snapshot was unavailable")};
@@ -1276,7 +1278,7 @@ export async function runNativeAgentTurn({
     if(call?.namespace!=="trebell_workspace"||!["write_file","replace_text"].includes(String(call?.name||"")))return null;
     const args=safeArguments(call?.arguments),path=String(args.path||"").trim();if(!path)return null;
     try{
-      const output=await readRecoveryWorkspaceSnapshot(`native-recovery-snapshot-${modelTurns}-${editRevision}`,path);
+      const output=await readRecoveryWorkspaceSnapshot(`native-recovery-snapshot-${modelTurns}-${editRevision}`,path,{preferBinary:true});
       if(recoveryBinarySnapshotOutput(output))return {path:String(output?.path||path).trim()||path,restorable:true,binary:true,contentBase64:output.contentBase64,beforeSha256:output.sha256,candidateSha256:null};
       if(output?.success===false||typeof output?.content!=="string")return {path,restorable:false,reason:recoverySnapshotFailureReason(output,"workspace snapshot was unavailable")};
       const content=output.content,resolvedPath=String(output?.path||path).trim()||path,kind=String(call?.name||""),beforeSha256=sha256Text(content);

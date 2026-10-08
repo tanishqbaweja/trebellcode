@@ -16,6 +16,7 @@ const DEFAULT_READ_BYTES=256*1024;
 const MAX_EDIT_BYTES=2*1024*1024;
 const DEFAULT_OUTPUT_BYTES=512*1024;
 const MAX_IMAGE_BYTES=8*1024*1024;
+const MAX_RECOVERY_SNAPSHOT_BYTES=32*1024*1024;
 
 function sha256Bytes(value){return createHash("sha256").update(value).digest("hex")}
 
@@ -28,7 +29,7 @@ function imageMimeFromPath(path){
 }
 
 async function workspaceBinary(located,maxBytes,{environments,environmentId}={}){
-  const bounded=Math.max(1,Math.min(MAX_EDIT_BYTES,Math.trunc(Number(maxBytes)||DEFAULT_READ_BYTES)));
+  const bounded=Math.max(1,Math.min(MAX_RECOVERY_SNAPSHOT_BYTES,Math.trunc(Number(maxBytes)||DEFAULT_READ_BYTES)));
   const info=located.remote?await environments.attachmentInfo(environmentId,located.path):await stat(located.path);
   if(!located.remote&&!info.isFile())throw new Error("Path is not a file");
   if(!Number.isSafeInteger(info.size)||info.size<0||info.size>bounded)throw new Error(`File is too large for an internal recovery snapshot (${Math.ceil(Number(info.size||0)/1024)} KB)`);
@@ -48,7 +49,7 @@ async function workspaceBinary(located,maxBytes,{environments,environmentId}={})
 
 async function writeWorkspaceBinary(located,encoded,{environments,environmentId}={}){
   const raw=String(encoded??"").trim();if(raw&&!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(raw))throw new Error("Internal recovery binary content is not valid base64");
-  const bytes=Buffer.from(raw,"base64");if(bytes.length>MAX_EDIT_BYTES)throw new Error("Binary recovery content exceeds the 2 MB Native edit limit");
+  const bytes=Buffer.from(raw,"base64");if(bytes.length>MAX_RECOVERY_SNAPSHOT_BYTES)throw new Error("Binary recovery content exceeds the 32 MB internal recovery limit");
   if(located.remote){
     if(typeof environments.writeTextFile!=="function")throw new Error("Remote environment cannot restore recovery bytes");
     await environments.writeTextFile(environmentId,located.path,bytes);
