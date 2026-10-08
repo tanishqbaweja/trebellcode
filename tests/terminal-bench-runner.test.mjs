@@ -660,7 +660,10 @@ test("Pinned Harbor Codex adapter pins the official version and uses Windows-saf
 
 test("Trebell Native Harbor adapter launches the agent with the image's login-shell environment",async()=>{
   const adapter=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
-  assert.ok(adapter.includes(String.raw`_LOGIN_ENVIRONMENT = "eval \"$(bash -lc 'export -p' 2>/dev/null)\" 2>/dev/null || true; "`),"import a separate login shell's exported environment");
+  const loginEnvironment=adapter.slice(adapter.indexOf("_LOGIN_ENVIRONMENT = ("),adapter.indexOf("\n    )",adapter.indexOf("_LOGIN_ENVIRONMENT = (")));
+  assert.ok(loginEnvironment.includes("bash -lc 'export -p'"),"import a separate login shell's exported environment");
+  assert.ok(loginEnvironment.includes('trebell_path=\\"$PATH\\"')&&loginEnvironment.includes('PATH=\\"$trebell_path\\"'),"restore the original PATH so Dockerfile ENV PATH entries survive a resetting /etc/profile");
+  assert.ok(loginEnvironment.includes('PATH=\\"$trebell_prefix:$PATH\\"'),"prepend only the entries the login shell added");
   const launch=adapter.slice(adapter.indexOf("await self.exec_as_agent("),adapter.indexOf("populate_context_post_run"));
   assert.ok(launch.indexOf("{self._LOGIN_ENVIRONMENT}")>0,"the agent launch must load the login environment");
   const pinned=launch.indexOf('runtime_cmd="$(command -v "$runtime_cmd"');
