@@ -54,8 +54,18 @@ class TrebellNativeAgent(BaseInstalledAgent):
     # interpreter only for login shells (e.g. SWE-bench's `conda activate testbed` in ~/.bashrc, reached via
     # ~/.profile) and Codex runs every model command through `bash -lc`. Import a login shell's exported
     # environment once before launching Native so every tool command it spawns inherits it; capturing it
-    # from a separate login shell keeps a profile that prints or exits from breaking the launch.
-    _LOGIN_ENVIRONMENT = "eval \"$(bash -lc 'export -p' 2>/dev/null)\" 2>/dev/null || true; "
+    # from a separate login shell keeps a profile that prints or exits from breaking the launch. Debian's
+    # /etc/profile resets PATH, so keep the original PATH (and its order) and only prepend entries the login
+    # shell added, e.g. an activated conda env, instead of dropping Dockerfile `ENV PATH` entries.
+    _LOGIN_ENVIRONMENT = (
+        "trebell_path=\"$PATH\"; eval \"$(bash -lc 'export -p' 2>/dev/null)\" 2>/dev/null || true; "
+        "trebell_login_path=\"$PATH\"; PATH=\"$trebell_path\"; trebell_prefix=\"\"; IFS=:; "
+        "for entry in $trebell_login_path; do if [ -n \"$entry\" ]; "
+        "then case \":$trebell_path:\" in *\":$entry:\"*) ;; "
+        "*) case \":$trebell_prefix:\" in *\":$entry:\"*) ;; "
+        "*) trebell_prefix=\"${trebell_prefix:+$trebell_prefix:}$entry\";; esac;; esac; fi; done; "
+        "unset IFS; if [ -n \"$trebell_prefix\" ]; then PATH=\"$trebell_prefix:$PATH\"; fi; export PATH; "
+    )
     _PINNED_NODE_VERSION = "22.23.3"
     _PINNED_NODE_TARBALL_SHA256 = (
         "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af"
