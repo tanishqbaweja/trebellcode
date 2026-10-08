@@ -466,7 +466,7 @@ export class NativeAgentSession{
             if(modelController.signal.aborted&&!request.signal?.aborted){const steered=new Error("Native model request interrupted by steering");steered.code="NATIVE_STEER";steered.nativeSteered=true;throw steered}
             throw error;
           }finally{if(this.modelController===modelController)this.modelController=null}
-        },executeTool:wrappedExecutor,executeInternalTool:rawExecutor,
+        },executeTool:wrappedExecutor,executeInternalTool:call=>rawExecutor({...call,_trebellInternalRecovery:true}),
       });
       if(preserveCacheHistory){
         this.messages=result.messages;

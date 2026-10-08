@@ -39,9 +39,10 @@ test("Native internal recovery can snapshot and restore binary workspace bytes w
     const path=join(root,"src","pixel.png");await writeFile(path,pixel);const execute=createNativeBuiltins({root});
     const guarded=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png"}});assert.equal(guarded.imageModeRequired,true);assert.equal(Object.hasOwn(guarded,"contentBase64"),false);
     const blocked=await execute({id:"model-call",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png",max_bytes:1024*1024,_trebell_internal_binary:true}});assert.equal(blocked.imageModeRequired,true);assert.equal(Object.hasOwn(blocked,"contentBase64"),false);
-    const snapshot=await execute({id:"native-recovery-snapshot-test",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png",max_bytes:1024*1024,_trebell_internal_binary:true}});
+    const idOnly=await execute({id:"native-recovery-snapshot-model-like",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png",max_bytes:1024*1024,_trebell_internal_binary:true}});assert.equal(idOnly.imageModeRequired,true);assert.equal(Object.hasOwn(idOnly,"contentBase64"),false);
+    const snapshot=await execute({_trebellInternalRecovery:true,id:"native-recovery-snapshot-test",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png",max_bytes:1024*1024,_trebell_internal_binary:true}});
     assert.equal(snapshot.binary,true);assert.equal(Buffer.from(snapshot.contentBase64,"base64").equals(pixel),true);assert.match(snapshot.sha256,/^[a-f0-9]{64}$/);
-    const written=await execute({id:"native-recovery-restore-test",namespace:"trebell_workspace",name:"write_file",arguments:{path:"src/pixel.png",content_base64:replacement.toString("base64"),_trebell_internal_binary:true}});
+    const written=await execute({_trebellInternalRecovery:true,id:"native-recovery-restore-test",namespace:"trebell_workspace",name:"write_file",arguments:{path:"src/pixel.png",content_base64:replacement.toString("base64"),_trebell_internal_binary:true}});
     assert.equal(written.binary,true);assert.equal((await readFile(path)).equals(replacement),true);
   }finally{await rm(root,{recursive:true,force:true})}
 });
@@ -76,9 +77,9 @@ test("Native internal binary recovery preserves remote workspace bytes",async()=
     writeTextFile:async(_id,path,content)=>{calls.push("write:"+path);written=Buffer.from(content);remoteBytes=Buffer.from(content);return {path,size:remoteBytes.length}},
   };
   const execute=createNativeBuiltins({root:"/workspace",environments,environmentId:"test-remote"}),replacement=Buffer.from([9,8,7,0,255]);
-  const snapshot=await execute({id:"native-recovery-snapshot-remote",namespace:"trebell_workspace",name:"read_file",arguments:{path:"artifact.bin",_trebell_internal_binary:true,max_bytes:1024}});
+  const snapshot=await execute({_trebellInternalRecovery:true,id:"native-recovery-snapshot-remote",namespace:"trebell_workspace",name:"read_file",arguments:{path:"artifact.bin",_trebell_internal_binary:true,max_bytes:1024}});
   assert.equal(Buffer.from(snapshot.contentBase64,"base64").equals(Buffer.from([0,255,10,13,1,2,3])),true);
-  const restored=await execute({id:"native-recovery-restore-remote",namespace:"trebell_workspace",name:"write_file",arguments:{path:"artifact.bin",_trebell_internal_binary:true,content_base64:replacement.toString("base64")}});
+  const restored=await execute({_trebellInternalRecovery:true,id:"native-recovery-restore-remote",namespace:"trebell_workspace",name:"write_file",arguments:{path:"artifact.bin",_trebell_internal_binary:true,content_base64:replacement.toString("base64")}});
   assert.equal(restored.binary,true);assert.equal(written.equals(replacement),true);assert.deepEqual(calls,["stream:/workspace/artifact.bin","write:/workspace/artifact.bin"]);
 });
 

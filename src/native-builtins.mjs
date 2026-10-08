@@ -273,7 +273,7 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
   if(!root)throw new Error("Native built-in tools require an active workspace root");
   return async function execute(call={}){
     const namespace=String(call.namespace||""),name=String(call.name||""),args=call.arguments&&typeof call.arguments==="object"?call.arguments:{};
-    const internalRecovery=/^native-recovery-(?:snapshot|restore)-/.test(String(call.id||""));
+    const internalRecovery=call._trebellInternalRecovery===true&&/^native-recovery-(?:snapshot|restore)-/.test(String(call.id||""));
     if(namespace==="trebell_workspace"){
       if(name==="list"){
         const located=await safeWorkspacePath(root,args.path||".",{environments,environmentId,mustExist:true});
