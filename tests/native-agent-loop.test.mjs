@@ -6172,6 +6172,24 @@ test("native agent cancellation stops before provider or later tool work",async(
   assert.equal(executions,1);
 });
 
+test("native agent waits out rate limits on their own bounded retry budget",async()=>{
+  const events=[];let attempts=0;
+  const rateLimit=()=>Object.assign(new Error("Rate limit reached. Please try again in 5ms."),{code:"rate_limit_exceeded",retryable:true,rateLimited:true,retryAfterMs:5});
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"limited"}],retryBaseDelayMs:0,maxProviderAttempts:1,onEvent:event=>events.push(event),
+    providerTurn:async()=>{attempts++;if(attempts<=3)throw rateLimit();return {text:"through",toolCalls:[],usage:{inputTokens:2,outputTokens:1,totalTokens:3}}},executeTool:async()=>"",
+  });
+  assert.equal(result.text,"through");assert.equal(attempts,4);
+  const retries=events.filter(event=>event.name==="native.model.retrying");
+  assert.equal(retries.length,3);assert.ok(retries.every(event=>event.data.rateLimited===true&&event.data.retryAfterMs===5&&event.data.delayMs>=5));
+  let cappedAttempts=0;
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",messages:[],retryBaseDelayMs:0,maxProviderAttempts:1,maxRateLimitRetries:2,
+    providerTurn:async()=>{cappedAttempts++;throw rateLimit()},executeTool:async()=>"",
+  }),/rate limit reached/i);
+  assert.equal(cappedAttempts,3);
+});
+
 test("native agent retries only transient provider inference failures",async()=>{
   const events=[];let attempts=0;
   const result=await runNativeAgentTurn({

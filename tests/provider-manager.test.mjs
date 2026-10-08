@@ -628,6 +628,42 @@ test("OpenAI WebSocket server_error remains caller-retryable through ProviderMan
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("OpenAI WebSocket rate limit is caller-retryable without cooling the healthy socket",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-rate-limit-"));let factoryCalls=0,requests=0,closed=0,fetchCalls=0;
+  try{
+    const manager=new ProviderManager({
+      env:{TREBELL_HOME:root},
+      openAiResponsesWebSocketFactory:()=>{factoryCalls++;return {
+        close:()=>{closed++},
+        request:async body=>{
+          requests++;
+          if(requests===1){const error=new Error("Rate limit reached. Please try again in 2.434s.");error.code="rate_limit_exceeded";error.webSocketFailureKind="api_error";error.replaySafe=false;error.retryable=true;error.rateLimited=true;error.retryAfterMs=2434;error.webSocketTelemetry={requestBytes:40,responseBytes:20,timeToFirstTokenMs:null};throw error}
+          return {requestBytes:11,response:{id:"resp-after-limit",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"after limit"}]}]},telemetry:{responseBytes:12,totalLatencyMs:1,timeToFirstTokenMs:1}};
+        },
+      }},
+      fetchFn:async()=>{fetchCalls++;throw new Error("HTTP should not run while the socket is healthy")},
+    });
+    manager.setKey("openai","oa-key");const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_rate_limit"}};
+    await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.retryable===true&&error?.rateLimited===true&&error?.retryAfterMs===2434);
+    assert.equal(closed,0);
+    const recovered=await manager.turn("openai",request,{streamResponses:true});
+    assert.equal(recovered.text,"after limit");assert.equal(recovered.telemetry.persistentConnection,true);assert.equal(factoryCalls,1);assert.equal(fetchCalls,0);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("HTTP 429 rate limits carry the server wait while exhausted quota stays terminal",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-http-429-"));let mode="rate";
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>mode==="rate"
+      ?new Response(JSON.stringify({error:{type:"tokens",code:"rate_limit_exceeded",message:"Rate limit reached. Please try again in 2.434s."}}),{status:429,headers:{"content-type":"application/json","retry-after-ms":"2434"}})
+      :new Response(JSON.stringify({error:{type:"insufficient_quota",code:"insufficient_quota",message:"You exceeded your current quota."}}),{status:429,headers:{"content-type":"application/json"}})});
+    manager.setKey("openai","oa-key");const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_http_429"}};
+    await assert.rejects(manager.turn("openai",request),error=>error?.status===429&&error?.retryable===true&&error?.rateLimited===true&&error?.retryAfterMs===2434);
+    mode="quota";
+    await assert.rejects(manager.turn("openai",request),error=>error?.status===429&&error?.retryable===false&&error?.rateLimited===undefined);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("OpenAI WebSocket retryable response failure cools the lane so the caller retry uses HTTPS",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-response-retry-"));let factoryCalls=0,fetchCalls=0,closed=0;
   try{
