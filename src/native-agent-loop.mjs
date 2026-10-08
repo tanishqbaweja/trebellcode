@@ -293,7 +293,7 @@ function opensAsReadOnlyRequest(text=""){
   const opening=String(text||"").replace(/\x60\x60\x60[\s\S]*?\x60\x60\x60/g," ").trim().split(/(?<=[.!?])\s+|\n+/)[0]||"";
   return /\?\s*$/.test(opening)
     ||/^(?:please\s+)?(?:why|how|what|which|where|when|who|is|are|was|were|does|do|did|can|could|should|would|will|has|have)\b/i.test(opening)
-    ||/^(?:please\s+)?(?:explain|describe|summari[sz]e|list|tell|show|review|analy[sz]e|inspect|investigate|diagnose|identify|find|determine|compare|count|assess|evaluate|outline|answer|report)\b/i.test(opening);
+    ||/^(?:please\s+)?(?:explain|describe|summari[sz]e|list|tell|show|review|analy[sz]e|inspect|investigate|diagnose|identify|find|determine|compare|count|assess|evaluate|outline|answer|report|read|open|view|look|print|display|check|see|run|test|search|grep|browse|fetch|give|walk|help|clarify|interpret|trace|profile|measure|benchmark)\b/i.test(opening);
 }
 
 // Issue-style reports of software misbehavior ("X doesn't support Y", "raises ValueError", "[Bug]: ... has
@@ -304,6 +304,13 @@ function describesSoftwareDefect(text=""){
   return /\b[A-Z][A-Za-z]*(?:Error|Exception)\b/.test(prose)
     ||/\[bug\]|\bbug\s+(?:summary|report)\b|\bsteps\s+to\s+reproduce\b|\b(?:expected|actual|current)\s+(?:behaviou?r|output|result)s?\b|\btraceback\b|\b(?:syntax|runtime|type|value|attribute|key|index|import|assertion|recursion)\s+error\b|\b(?:has|have|had)\s+no\s+effect\b|\bfalse\s+(?:positive|negative)s?\b|\b(?:crash(?:es|ed|ing)?|segfaults?|deadlocks?)\b|\bunable\s+to\s+\w+/i.test(prose)
     ||/(?<!(?:^|[.!?;:\n])\s*)(?<!\b(?:please|and|or|but|then|also|just|you|we|i|they)\s+)\b(?:(?:does|do|did|is|are|was|were|could|would|should)\s*n(?:o|'|’)t|won(?:'|’)t|can(?:not|'t|’t)|will\s+not)\s+(?:be\s+|get\s+)?(?:work|support|show|display|render|draw|handle|respect|honou?r|accept|return|raise|preserve|apply|match|simplif|pickle|compile|parse|load|save|serialize|import|run|start|print|format|validate|recogni[sz]|detect|propagate|update|reset|close|stop|respond|include|allow|use|emit|warn|create|find|call|pass|produce|generate|convert|exist|equal|terminate|converge|stay|keep|behave|take)\w*/i.test(prose);
+}
+
+// Code fences, inline code, REPL transcripts, or call syntax mark a technical report. Issue phrasing is too
+// varied to enumerate, so a code-referencing request that neither opens as a question/read-only request nor
+// names an explicit output artifact is treated as asking for the described behavior to be changed.
+function referencesCode(text=""){
+  return /\x60|^\s*>>>|\b\w+\.\w+\(|\b\w+\(\)/m.test(String(text||""));
 }
 
 export function requestsTaskMutation(messages=[]){
@@ -332,7 +339,7 @@ export function requestsTaskMutation(messages=[]){
   const diagnosticOnly=/\b(?:inspect|explain|analy[sz]e|diagnose|investigate|review|report|identify|find)\b[\s\S]{0,120}\b(?:why|cause|root cause|problem|issue|bug|failure|behavior|behaviour)\b/i.test(text)
     ||/\b(?:why|how|what)\b[\s\S]{0,120}\b(?:broken|failing|fails|not working|incorrect|wrong)\b/i.test(text);
   if(diagnosticOnly)return false;
-  if(!opensAsReadOnlyRequest(text)&&describesSoftwareDefect(text))return true;
+  if(!opensAsReadOnlyRequest(text)&&(describesSoftwareDefect(text)||(referencesCode(text)&&!explicitPersistentArtifactTargets(messages).length)))return true;
   return /\b(?:not\s+working(?:\s+(?:correctly|properly))?|broken|buggy|malfunction(?:ing|s)?|incorrect(?:ly)?|wrong\s+results?|fails?\b|failing\b|regression\b)\b/i.test(text);
 }
 
