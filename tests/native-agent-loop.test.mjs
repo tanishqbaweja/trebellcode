@@ -1899,6 +1899,8 @@ test("task-mutation classifier recognizes code-change imperatives, scoped limits
     "dateformat.y() doesn't support years < 1000.",
     "[Bug]: offset dash linestyle has no effect in patch objects",
     "sylow_subgroup() IndexError",
+    "Session default headers set to None\nThe docs say a header can be removed by setting it to None, which works per request.\n```python\ns.headers['X-Trace'] = None\n```\nWhat happens is that the literal string None is sent.",
+    "`Report.render()` ignores the locale argument and always formats dates in UTC.",
     "unused-import false positive for a module used in a type comment\n### Steps to reproduce\n### Expected behavior\nNo warning.",
   ])assert.equal(mutation(text),true,text);
   for(const text of [
@@ -1913,6 +1915,9 @@ test("task-mutation classifier recognizes code-change imperatives, scoped limits
     "Use only the two data files. Do not use external databases. Report the five properties.",
     "Resolve the semantic definition of typed",
     "Make a list of all public endpoints.",
+    "Read `src/config.mjs` and show me its contents.",
+    "Why does `parse()` return None for empty input?",
+    "I'd like you to output a STEP file in `/app/out.step` that matches the schematic.",
   ])assert.equal(mutation(text),false,text);
   assert.equal(requestsWorkspaceMutation([{role:"user",content:"Responses from the server in `/app/sglang` arrive out of order. Please resolve the issue on the server side."}]),true);
 });
