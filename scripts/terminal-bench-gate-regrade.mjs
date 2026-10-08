@@ -85,5 +85,7 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   if(!trialDir)throw new Error("Usage: node scripts/terminal-bench-gate-regrade.mjs <trialDir> [--out=<dir>] [--task-path=<dir>]");
   const option=name=>rest.find(arg=>arg.startsWith(`--${name}=`))?.slice(name.length+3)||null;
   const outDir=resolve(option("out")||join(trialDir,"..","..","..",".harbor-validation","gate-regrade",String(trialDir).replace(/[\\/]+$/,"").split(/[\\/]/).slice(-2).join("__")));
-  console.log(JSON.stringify(await regradeGateSnapshots({trialDir:resolve(trialDir),outDir,taskPath:option("task-path")}),null,2));
+  const result=await regradeGateSnapshots({trialDir:resolve(trialDir),outDir,taskPath:option("task-path")});
+  await mkdir(outDir,{recursive:true});await writeFile(join(outDir,"gate-regrade.json"),JSON.stringify(result,null,2)+"\n","utf8");
+  console.log(JSON.stringify(result,null,2));
 }
