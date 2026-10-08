@@ -14,7 +14,7 @@ import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTermin
 import { estimateGpt6LunaCostFromAggregate, gpt6LunaPricingForServiceTier } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
-import { preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName } from "./terminal-bench-task-cache.mjs";
+import { preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, prewarmTerminalBenchDockerImages, terminalBenchCachedTaskArtifacts, prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName } from "./terminal-bench-task-cache.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -241,6 +241,8 @@ try{
   // Refuse tasks whose no-network environments this Docker engine cannot enforce before any paid lane starts.
   let networkPolicyPreflight=await preflightTerminalBenchNetworkPolicy({dataset:DATASET,task:TASK,env:sharedEnv,captureFn:capture});
   if(!networkPolicyPreflight.taskTomlFound&&!taskCachePrewarm){taskCachePrewarm=await prewarmTaskCache();networkPolicyPreflight=await preflightTerminalBenchNetworkPolicy({dataset:DATASET,task:TASK,env:sharedEnv,captureFn:capture})}
+  // Measurement only: Native snapshots the task's own-container deliverables at each completion gate for later official regrading.
+  const nativeGateSnapshotArtifacts=(await terminalBenchCachedTaskArtifacts({dataset:DATASET,task:TASK}).catch(()=>[])).filter(item=>!item.service).map(({source,exclude})=>({source,exclude}));
   if(PARALLEL&&selectedLanes.length>1)dockerImagePrewarm={startedAt:new Date().toISOString(),...(await prewarmTerminalBenchDockerImages({dataset:DATASET,task:TASK,env:sharedEnv,runFn:run,captureFn:capture})),finishedAt:new Date().toISOString()};
   const willRunCodexApi=selectedLanes.some(lane=>lane.label==="codex-api"),willRunCodexOauth=selectedLanes.some(lane=>lane.label==="codex-oauth");
   let codexOauthAuthPath=null;
@@ -268,7 +270,7 @@ try{
     status:"pending",startedAt:null,finishedAt:null,runError:null,attempts:[],retryReason:null,retryCleanup:null,infrastructureFailureReason:null,
   }));
   const reportSnapshot=({complete=false}={})=>({
-    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,hostedWebSearch:"disabled",setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,datasetMembershipPreflight,taskCachePrewarm,networkPolicyPreflight,dockerImagePrewarm,
+    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,hostedWebSearch:"disabled",setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,datasetMembershipPreflight,taskCachePrewarm,networkPolicyPreflight,dockerImagePrewarm,nativeGateSnapshotArtifacts,
     usesBaseAgentTimeout:AGENT_TIMEOUT_MULTIPLIER===1,
     timeoutComparability:AGENT_TIMEOUT_MULTIPLIER===1?"benchmark-base":"extended-agent-timeout",
     sameModel:true,sameReasoningEffort:true,sameServiceTier:true,sameHostedWebSearchPolicy:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
@@ -312,7 +314,9 @@ try{
     if(harness==="native"){
       if(NATIVE_REASONING_CONTEXT)harnessEnv.TREBELL_OPENAI_REASONING_CONTEXT=NATIVE_REASONING_CONTEXT;
       else delete harnessEnv.TREBELL_OPENAI_REASONING_CONTEXT;
-    }
+      if(nativeGateSnapshotArtifacts.length)harnessEnv.TREBELL_HARBOR_GATE_SNAPSHOT_PATHS=JSON.stringify(nativeGateSnapshotArtifacts);
+      else delete harnessEnv.TREBELL_HARBOR_GATE_SNAPSHOT_PATHS;
+    }else delete harnessEnv.TREBELL_HARBOR_GATE_SNAPSHOT_PATHS;
     if(harness==="codex"){
       delete harnessEnv.CODEX_AUTH_JSON_PATH;
       delete harnessEnv.CODEX_FORCE_AUTH_JSON;

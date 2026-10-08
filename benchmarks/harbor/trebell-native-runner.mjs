@@ -19,6 +19,7 @@ import {
 } from "../../src/repository-tool-catalog.mjs";
 import { repositoryContextEntries } from "../../ui/src/context-provenance.js";
 import { createNativeStrategyMetrics, observeNativeStrategyEvent } from "./native-strategy-metrics.mjs";
+import { createGateSnapshotter, parseGateSnapshotArtifacts } from "./native-gate-snapshots.mjs";
 
 const VERSION="trebell-native-harbor/1";
 
@@ -74,9 +75,12 @@ const tools=platformDynamicToolNamespaces({
 const outputStore=new NativeToolOutputStore({directory:"/tmp/trebell-output",environment:process.env});
 const contextEngine=new ContextEngine();
 const requests=[],assistantChunks=[],eventStarted=performance.now(),strategyMetrics=createNativeStrategyMetrics();let eventWrites=Promise.resolve();
+const gateSnapshots=createGateSnapshotter({artifacts:parseGateSnapshotArtifacts(process.env.TREBELL_HARBOR_GATE_SNAPSHOT_PATHS),directory:String(process.env.TREBELL_HARBOR_GATE_SNAPSHOT_DIR||"/logs/agent/gate-snapshots")});
 const onEvent=event=>{
   const row={atMs:Math.round(performance.now()-eventStarted),name:event?.name||null,status:event?.status||null,data:event?.data||null};
   observeNativeStrategyEvent(strategyMetrics,event,row.atMs);
+  // Synchronous on purpose: capture the exact deliverable state the gate is about to judge.
+  if(gateSnapshots.enabled&&row.name==="native.completion.gate_requested"){try{gateSnapshots.snapshot({atMs:row.atMs,modelTurn:row.data?.modelTurn??null,editRevision:row.data?.editRevision??null,toolCalls:row.data?.toolCalls??null})}catch{}}
   eventWrites=eventWrites.then(()=>appendFile(eventsPath,JSON.stringify(row)+"\n","utf8")).catch(()=>{});
 };
 const backgroundProcesses=new NativeBackgroundProcessManager({environment:process.env,onEvent});
@@ -210,6 +214,7 @@ const metrics={
   providerRequestElapsedMs:requests.reduce((total,item)=>total+Number(item?.elapsedMs||0),0),
   cacheCarryover:nativeCacheCarryover(requests.map(item=>item?.usage||{})),
   strategy:strategyMetrics,
+  gateSnapshots:gateSnapshots.count,
   finalReply:assistantChunks.join("").trim().slice(-4000),
   error:error?String(error?.stack||error?.message||error).slice(-8000):null,
 };
