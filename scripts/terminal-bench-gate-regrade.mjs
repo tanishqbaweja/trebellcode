@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { windowsHarborEnv } from "./harbor-process-env.mjs";
 import { readTrialVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
 
 // Regrade the deliverable snapshots a Native trial captured at each completion gate with the
@@ -59,7 +60,7 @@ export async function buildGateSnapshotTrial({trialDir,snapshot,destination}){
 
 function run(command,args){
   return new Promise((resolveRun,reject)=>{
-    const child=spawn(command,args,{stdio:["ignore","pipe","pipe"],windowsHide:true,env:{...process.env,PYTHONUTF8:"1",PYTHONIOENCODING:"utf-8"}});let output="";
+    const child=spawn(command,args,{stdio:["ignore","pipe","pipe"],windowsHide:true,env:{...process.env,PYTHONUTF8:"1",PYTHONIOENCODING:"utf-8",...windowsHarborEnv(process.env)}});let output="";
     child.stdout.on("data",chunk=>{output+=chunk});child.stderr.on("data",chunk=>{output+=chunk});
     child.once("error",reject);child.once("exit",code=>code===0?resolveRun(output):reject(new Error(`${command} exited with ${code}: ${output.trim().slice(-600)}`)));
   });

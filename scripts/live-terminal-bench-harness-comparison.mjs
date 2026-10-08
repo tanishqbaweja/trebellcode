@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
+import { windowsHarborEnv } from "./harbor-process-env.mjs";
 import { waitForJobProcessDrain } from "./terminal-bench-process-drain.mjs";
 import { jobsForPairReport } from "./terminal-bench-pair-report.mjs";
 import { readJobVerifierSummary, readTrialVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
@@ -230,7 +231,7 @@ try{
     PYTHONPATH:pythonPath,
     TREBELL_HARBOR_CONTEXT_WINDOW:String(NATIVE_CONTEXT_WINDOW),
     TREBELL_HARBOR_COMPACT_THRESHOLD:String(NATIVE_COMPACT_THRESHOLD),
-    ...(process.platform==="win32"?{PYTHONUTF8:"1",PYTHONIOENCODING:"utf-8"}:{}),
+    ...windowsHarborEnv(process.env),
     ...(nativePinnedNodeTarballPath?{TREBELL_NODE_PINNED_TARBALL:nativePinnedNodeTarballPath}: {}),
     ...(codexPinnedTarballPath?{TREBELL_CODEX_PINNED_TARBALL:codexPinnedTarballPath}: {}),
   },outputRoot=join(root,".harbor-jobs"),jobs=[];
