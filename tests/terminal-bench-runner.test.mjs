@@ -658,6 +658,16 @@ test("Pinned Harbor Codex adapter pins the official version and uses Windows-saf
   assert.doesNotMatch(source,/async def run\(/);
 });
 
+test("Trebell Native Harbor adapter launches the agent with the image's login-shell environment",async()=>{
+  const adapter=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
+  assert.ok(adapter.includes(String.raw`_LOGIN_ENVIRONMENT = "eval \"$(bash -lc 'export -p' 2>/dev/null)\" 2>/dev/null || true; "`),"import a separate login shell's exported environment");
+  const launch=adapter.slice(adapter.indexOf("await self.exec_as_agent("),adapter.indexOf("populate_context_post_run"));
+  assert.ok(launch.indexOf("{self._LOGIN_ENVIRONMENT}")>0,"the agent launch must load the login environment");
+  const pinned=launch.indexOf('runtime_cmd="$(command -v "$runtime_cmd"');
+  assert.ok(pinned>launch.indexOf(". ~/.nvm/nvm.sh")&&pinned<launch.indexOf("{self._LOGIN_ENVIRONMENT}"),"resolve the agent runtime path before the login environment can shadow it");
+  assert.ok(launch.indexOf("{self._LOGIN_ENVIRONMENT}")<launch.indexOf('"$runtime_cmd" {self._REMOTE_RUNNER}'),"the login environment must load before the agent starts");
+});
+
 test("Trebell Native Harbor adapter skips package-manager setup when curl already exists",async()=>{
   const source=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
   assert.match(source,/_PINNED_NODE_VERSION = "22\.23\.3"/);

@@ -50,6 +50,12 @@ class TrebellNativeAgent(BaseInstalledAgent):
     _REMOTE_API_KEY = "/installed-agent/openai-api-key"
     _OUTPUT = "/logs/agent/trebell-native.txt"
     _METRICS = "/logs/agent/trebell-native-metrics.json"
+    # Harbor runs agent commands with `bash -c` (non-login), while task images often activate the project
+    # interpreter only for login shells (e.g. SWE-bench's `conda activate testbed` in ~/.bashrc, reached via
+    # ~/.profile) and Codex runs every model command through `bash -lc`. Import a login shell's exported
+    # environment once before launching Native so every tool command it spawns inherits it; capturing it
+    # from a separate login shell keeps a profile that prints or exits from breaking the launch.
+    _LOGIN_ENVIRONMENT = "eval \"$(bash -lc 'export -p' 2>/dev/null)\" 2>/dev/null || true; "
     _PINNED_NODE_VERSION = "22.23.3"
     _PINNED_NODE_TARBALL_SHA256 = (
         "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af"
@@ -256,7 +262,10 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 f"rm -f {self._REMOTE_API_KEY}; "
                 f'if [ "$runtime" = "bun" ]; then runtime_cmd=bun; '
                 'else runtime_cmd=node; fi; '
-                f"$runtime_cmd {self._REMOTE_RUNNER} {self._REMOTE_INSTRUCTION} "
+                # Pin the agent runtime before the login environment can put a project-provided node first.
+                'runtime_cmd="$(command -v "$runtime_cmd" || printf %s "$runtime_cmd")"; '
+                f"{self._LOGIN_ENVIRONMENT}"
+                f'"$runtime_cmd" {self._REMOTE_RUNNER} {self._REMOTE_INSTRUCTION} '
                 f"2>&1 | tee {self._OUTPUT}; "
                 'pipeline_status=$?; '
                 'if [ "$pipeline_status" -eq 0 ]; then exit 0; fi; '
