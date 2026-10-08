@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp,mkdir,readFile,rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
+import { EventEmitter } from "node:events";
 import { createNativeBuiltins } from "../src/native-builtins.mjs";
 
 async function workspace(){
@@ -28,6 +30,41 @@ test("Native workspace built-ins read, list, write, and replace exact text insid
     const rootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/",depth:2,limit:20}});assert.ok(rootList.entries.some(item=>item.name==="src"));
     const virtualRootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/workspace",depth:2,limit:20}});assert.ok(virtualRootList.entries.some(item=>item.name==="src"));
     const appRootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/app",depth:2,limit:20}});assert.ok(appRootList.entries.some(item=>item.name==="src"));
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native workspace image reads use remote binary streams without decoding bytes as UTF-8",async()=>{
+  const pixel=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+i8XkAAAAASUVORK5CYII=","base64"),calls=[];
+  const environments={
+    get:()=>({id:"test-remote",type:"docker",cwd:"/workspace"}),
+    executeArgv:async(_id,options)=>({exitCode:0,stdout:String(options.args[0])+"\n"}),
+    attachmentInfo:async(_id,path)=>{calls.push("info:"+path);return {size:pixel.length}},
+    streamFile:(_id,path)=>{
+      calls.push("stream:"+path);
+      const child=new EventEmitter();child.stdout=Readable.from([pixel.subarray(0,12),pixel.subarray(12)]);
+      child.kill=()=>{};process.nextTick(()=>child.emit("close",0));return child;
+    },
+  };
+  const execute=createNativeBuiltins({root:"/workspace",environments,environmentId:"test-remote"});
+  const image=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"layout.png",as_image:true}});
+  assert.equal(image.mimeType,"image/png");assert.equal(image.contentItems[1].imageUrl,"data:image/png;base64,"+pixel.toString("base64"));
+  assert.deepEqual(calls,["info:/workspace/layout.png","stream:/workspace/layout.png"]);
+});
+
+test("Native workspace image reads preserve the actual pixels for the model without changing text reads",async()=>{
+  const root=await workspace(),pixel=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+i8XkAAAAASUVORK5CYII=","base64");
+  try{
+    await writeFile(join(root,"src","pixel.png"),pixel);
+    const execute=createNativeBuiltins({root});
+    const image=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/pixel.png",as_image:true}});
+    assert.equal(image.success,true);assert.equal(image.mimeType,"image/png");
+    assert.equal(image.contentItems[1].type,"inputImage");
+    assert.equal(image.contentItems[1].imageUrl,"data:image/png;base64,"+pixel.toString("base64"));
+    assert.match(image.contentItems[0].text,/src.*pixel\.png/i);
+    const text=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/app.js"}});
+    assert.equal(text.content,"const value = 1;\n");
+    await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/app.js",as_image:true}}),/supported image/i);
+    await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"..\\outside.png",as_image:true}}),/outside the active workspace/i);
   }finally{await rm(root,{recursive:true,force:true})}
 });
 

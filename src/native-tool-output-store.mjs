@@ -78,6 +78,14 @@ export class NativeToolOutputStore{
     await Promise.all(rows.slice(this.maxEntries).map(row=>unlink(row.path).catch(()=>{})));
   }
   async virtualize(value,{namespace=null,name=null}={}){
+    // A text preview would irreversibly discard model-visible image pixels.
+    // Redact ordinary metadata and text, but keep image payloads intact in hot context.
+    if(Array.isArray(value?.contentItems)&&value.contentItems.some(item=>item?.type==="inputImage"||item?.type==="image")){
+      const {contentItems,...metadata}=value;
+      const safeMetadata=redactSecretValue(metadata,{environment:this.environment,maxDepth:20,maxArray:5000,maxFields:5000});
+      const safeItems=contentItems.map(item=>item?.type==="inputImage"||item?.type==="image"?item:redactSecretValue(item,{environment:this.environment,maxDepth:20,maxArray:5000,maxFields:5000}));
+      return {value:{...safeMetadata,contentItems:safeItems},virtualized:false,totalBytes:0};
+    }
     const safeValue=redactSecretValue(value,{environment:this.environment,maxDepth:20,maxArray:5000,maxFields:5000});
     const text=serialized(safeValue),totalBytes=byteLength(text);
     if(totalBytes<=this.maxHotBytes)return {value:safeValue,virtualized:false,totalBytes};

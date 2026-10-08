@@ -29,6 +29,18 @@ test("Native tool output store virtualizes large output, supports targeted retri
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("Native tool output store never replaces model-visible image content with a text preview",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-output-image-")),secret="multimodal-secret-value";
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096,environment:{IMAGE_TEST_SECRET:secret}});
+    const imageUrl="data:image/png;base64,"+"A".repeat(12000);
+    const value={success:true,contentItems:[{type:"inputText",text:"Preview "+secret},{type:"inputImage",imageUrl}]};
+    const shaped=await store.virtualize(value,{namespace:"trebell_workspace",name:"read_file"});
+    assert.equal(shaped.virtualized,false);assert.equal(shaped.value.contentItems[1].imageUrl,imageUrl);
+    assert.doesNotMatch(shaped.value.contentItems[0].text,new RegExp(secret));
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("Native tool output store keeps the wider hot preview when large output has no failure signal",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-output-no-signal-"));
   try{
