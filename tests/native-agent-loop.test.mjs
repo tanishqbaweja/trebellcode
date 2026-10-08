@@ -5246,7 +5246,7 @@ test("native OpenAI recovery lets a designated closure audit override required-e
 test("native external-state recovery fails closed after two non-mutating required-edit responses",async()=>{
   let turns=0;const events=[],executed=[];
   const read=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[id+".mjs"]})});
-  await assert.rejects(()=>runNativeAgentTurn({
+  const result=await runNativeAgentTurn({
     model:"test-model",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:16,onEvent:event=>events.push(event),
     messages:[{role:"user",content:"Manage the running campaign through its API. The OpenAPI spec is served at the server's /openapi.json path. Change the live config until the measured acceptance target passes."}],
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_process",tools:[{name:"start"},{name:"status"}]}],
@@ -5268,12 +5268,43 @@ test("native external-state recovery fails closed after two non-mutating require
       throw new Error("unexpected provider call "+turns);
     },
     executeTool:async call=>{executed.push(call.id);return {exitCode:0,stdout:"updated"};},
-  }),error=>error?.code==="native_recovery_edit_not_called");
+  });
   assert.equal(turns,5);
   assert.deepEqual(executed,["initial-api-write"]);
   const blocked=events.filter(event=>event.name==="native.completion.recovery_non_edit_call_blocked");assert.equal(blocked.length,2);assert.deepEqual(blocked.map(event=>event.data?.callId),["wrong-read-1","wrong-read-2"]);
   const retries=events.filter(event=>event.name==="native.completion.recovery_edit_retry"&&event.data?.reason==="non_edit_tool_response");assert.equal(retries.length,1);assert.equal(retries[0].data?.misses,1);
-  const terminalBlock=events.find(event=>event.name==="native.turn.blocked"&&event.data?.reason==="native_recovery_edit_not_called");assert.ok(terminalBlock);assert.equal(terminalBlock.data?.misses,2);
+  const unpaid=events.filter(event=>event.name==="native.completion.recovery_edit_debt_unpaid");assert.equal(unpaid.length,1);assert.equal(unpaid[0].status,"blocked");assert.equal(unpaid[0].data?.misses,2);assert.equal(unpaid[0].data?.source,"non_edit_tool_response");
+  assert.equal(events.filter(event=>event.name==="native.turn.blocked").length,0);
+  assert.match(result.text,/stopped semantic recovery because the owed corrective state-changing action was not performed/i);
+  assert.match(result.text,/completion is not verified/i);assert.match(result.text,/live acceptance target still fails/);
+  const completed=events.findLast(event=>event.name==="native.turn.completed");assert.equal(completed?.data?.completionGateVerdict,"incomplete");assert.equal(completed?.data?.completionRecoveryEditDebtUnpaid,true);
+});
+
+test("native workspace recovery ends gracefully when the owed corrective edit is answered with text twice",async()=>{
+  let turns=0;const events=[],executed=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:12,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until the acceptance condition is satisfied."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"Candidate one is ready.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","mutation_safety":"allowed","recovery_mode":"edit","unresolved":["acceptance still fails"],"reason":"A concrete correction is supported."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"The implementation already looks correct to me.",toolCalls:[],usage:{}};
+      if(turns===5)return {text:"No further change seems necessary.",toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return {path:"src/a.mjs",replacements:1}},
+  });
+  assert.equal(turns,5);
+  assert.deepEqual(executed.filter(id=>!String(id).startsWith("native-recovery-")),["initial"]);
+  assert.match(result.text,/stopped semantic recovery because the owed corrective implementation edit was not performed/i);
+  assert.match(result.text,/completion is not verified/i);assert.match(result.text,/acceptance still fails/);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_edit_retry").length,1);
+  const unpaid=events.filter(event=>event.name==="native.completion.recovery_edit_debt_unpaid");assert.equal(unpaid.length,1);assert.equal(unpaid[0].data?.source,"text_response");
+  assert.equal(events.filter(event=>event.name==="native.turn.blocked").length,0);
+  assert.equal(events.findLast(event=>event.name==="native.turn.completed")?.data?.completionRecoveryEditDebtUnpaid,true);
 });
 
 test("native advances recovery without forcing an edit when exhausted evidence explicitly supports no correction",async()=>{
