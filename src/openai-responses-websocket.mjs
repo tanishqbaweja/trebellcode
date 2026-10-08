@@ -7,6 +7,17 @@ function websocketUrl(baseUrl){
   return url.toString();
 }
 
+// Server-suggested wait before retrying a rate-limited request, from OpenAI's retry headers
+// (also carried on WebSocket error events) or the "Please try again in 2.4s" message.
+export function openAiRetryAfterMs({headers=null,message=""}={}){
+  const header=name=>String((typeof headers?.get==="function"?headers.get(name):headers?.[name])??"").trim();
+  const ms=header("retry-after-ms"),seconds=header("retry-after");
+  if(ms&&Number.isFinite(Number(ms))&&Number(ms)>=0)return Math.ceil(Number(ms));
+  if(seconds&&Number.isFinite(Number(seconds))&&Number(seconds)>=0)return Math.ceil(Number(seconds)*1000);
+  const match=/\btry again in (\d+(?:\.\d+)?)\s*(ms|s)\b/i.exec(String(message||""));
+  return match?Math.ceil(Number(match[1])*(match[2].toLowerCase()==="ms"?1:1000)):null;
+}
+
 function responseError(event,message="OpenAI Responses WebSocket request failed",kind="api_error"){
   const providerError=event?.response?.error||event?.error||null,error=new Error(providerError?.message||event?.message||message);
   error.code=providerError?.code||event?.code||"openai_responses_websocket_error";
@@ -15,7 +26,9 @@ function responseError(event,message="OpenAI Responses WebSocket request failed"
     /\ban error occurred while processing your request\b[\s\S]*\byou can retry your request\b/i.test(providerMessage)||
     /\bthe server had an error while processing your request\b/i.test(providerMessage)
   );
-  error.webSocketEvent=event||null;error.webSocketFailureKind=kind;error.replaySafe=false;error.retryable=providerErrorType==="server_error"||providerErrorCode==="server_error"||explicitTransientProcessingFailure;
+  const rateLimited=providerErrorCode==="rate_limit_exceeded";
+  error.webSocketEvent=event||null;error.webSocketFailureKind=kind;error.replaySafe=false;error.retryable=providerErrorType==="server_error"||providerErrorCode==="server_error"||explicitTransientProcessingFailure||rateLimited;
+  if(rateLimited){error.rateLimited=true;const retryAfterMs=openAiRetryAfterMs({headers:providerError?.headers,message:providerMessage});if(retryAfterMs!=null)error.retryAfterMs=retryAfterMs}
   return error;
 }
 

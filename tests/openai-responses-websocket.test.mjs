@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { OpenAiResponsesWebSocket, openAiResponsesWebSocketStreamId } from "../src/openai-responses-websocket.mjs";
+import { OpenAiResponsesWebSocket, openAiResponsesWebSocketStreamId, openAiRetryAfterMs } from "../src/openai-responses-websocket.mjs";
 
 class FakeSocket extends EventEmitter{
   static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;static instances=[];
@@ -71,6 +71,20 @@ test("Responses WebSocket server errors are retryable while request-level model 
   reset();const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket}),serverFailure=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));const socket=FakeSocket.instances[0];
   socket.server({type:"error",stream_id:"lane",error:{type:"server_error",code:null,message:"Sorry, something went wrong."}});await assert.rejects(serverFailure,error=>error?.retryable===true&&error?.webSocketFailureKind==="api_error"&&error?.replaySafe===false);
   const modelFailure=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));socket.server({type:"response.failed",stream_id:"lane",response:{id:"resp-model",status:"failed",error:{type:"invalid_request_error",code:"model_error",message:"request failed"}}});await assert.rejects(modelFailure,error=>error?.retryable===false&&error?.webSocketFailureKind==="response_failed");ws.close();
+});
+
+test("Responses WebSocket rate limits are retryable after the server-suggested wait and keep the socket",async()=>{
+  reset();const resets=[];const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket,onReset:event=>resets.push(event)}),limited=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));const socket=FakeSocket.instances[0];
+  socket.server({type:"error",stream_id:"lane",error:{type:"tokens",code:"rate_limit_exceeded",headers:{"retry-after":"3","retry-after-ms":"2434"},message:"Rate limit reached for gpt-5.6 on tokens per min (TPM): Limit 2000000, Used 1920595, Requested 160545. Please try again in 2.434s."}});
+  await assert.rejects(limited,error=>error?.retryable===true&&error?.rateLimited===true&&error?.retryAfterMs===2434&&error?.replaySafe===false&&error?.webSocketFailureKind==="api_error");assert.equal(resets.length,0);
+  const quota=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));assert.equal(FakeSocket.instances.length,1);
+  socket.server({type:"error",stream_id:"lane",error:{type:"insufficient_quota",code:"insufficient_quota",message:"You exceeded your current quota."}});
+  await assert.rejects(quota,error=>error?.retryable===false&&error?.rateLimited===undefined);ws.close();
+  assert.equal(openAiRetryAfterMs({headers:{"retry-after":"3"}}),3000);
+  assert.equal(openAiRetryAfterMs({headers:new Headers({"retry-after-ms":"120.4"})}),121);
+  assert.equal(openAiRetryAfterMs({message:"Please try again in 850ms."}),850);
+  assert.equal(openAiRetryAfterMs({message:"Please try again in 1.5s."}),1500);
+  assert.equal(openAiRetryAfterMs({headers:{"retry-after":"Wed, 21 Oct 2026 07:28:00 GMT"},message:"no hint"}),null);
 });
 
 test("Responses WebSocket retries an untyped explicit provider processing failure without broadening model errors",async()=>{

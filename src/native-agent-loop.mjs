@@ -1094,7 +1094,7 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,executeInternalTool=null,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,reasoningEffort=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxCompletionRecoveryEpochs=1,
-  maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
+  maxProviderAttempts=3,maxRateLimitRetries=6,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
   autoRerunVerification=false,semanticCompletionGate=false,abstractionRepairVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,directGitStatus=false,directProcessRunningStatus=false,directBrowserRuntimeStatus=false,directBrowserScreenshot=false,prepareProviderMessages=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
@@ -1917,8 +1917,10 @@ export async function runNativeAgentTurn({
     const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
     if(Number(providerView?.count||0)>0)emit(onEvent,{name:"native.context.provider_view_compacted",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,count:Number(providerView.count||0),savedChars:Number(providerView.savedChars||0)}});
     emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:providerMessages.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),completionGate:completionGateMode,batchEvidencePrecommitGate:completionGateCandidate?.phase==="precommit",batchEvidencePostcommitGate:completionGateCandidate?.phase==="postcommit",abstractionRepairVerificationGate:abstractionRepairVerificationGateMode,requestMetrics}});
-    const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
-    for(let attempt=1;attempt<=providerAttempts;attempt++){
+    const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8}),rateLimitRetryLimit=boundedInteger(maxRateLimitRetries,6,{min:0,max:16});let response=null,rateLimitRetries=0;
+    // Rate limits are account back-pressure with a server-suggested wait, so they get their own
+    // bounded budget instead of consuming the attempts reserved for transient failures.
+    for(let attempt=1;attempt<=providerAttempts+rateLimitRetries;attempt++){
       try{
         response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens:requestMaxOutputTokens,temperature,reasoningEffort:requestReasoningEffort,parallelToolCalls,responseJsonSchema:officialOpenAiControlGate?{name:abstractionRepairVerificationGateMode?"trebell_abstraction_verification_gate":completionGateCandidate?.phase==="precommit"?"trebell_batch_evidence_precommit_gate":completionGateCandidate?.phase==="postcommit"?"trebell_batch_evidence_postcommit_gate":"trebell_completion_gate",strict:true,schema:abstractionRepairVerificationGateMode?ABSTRACTION_GATE_RESPONSE_SCHEMA:completionGateCandidate?.phase==="precommit"?BATCH_EVIDENCE_PRECOMMIT_RESPONSE_SCHEMA:COMPLETION_GATE_RESPONSE_SCHEMA}:null,signal:turnSignal,metadata:controlGateMode?{...(metadata&&typeof metadata==="object"?metadata:{}),completionGate:true,batchEvidencePrecommitGate:completionGateCandidate?.phase==="precommit",batchEvidencePostcommitGate:completionGateCandidate?.phase==="postcommit",abstractionRepairVerificationGate:abstractionRepairVerificationGateMode,controlGateRetry}:metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
       }catch(error){
@@ -1931,10 +1933,12 @@ export async function runNativeAgentTurn({
           throw error;
         }
         if(turnSignal?.aborted||error?.name==="AbortError")throw abortError(turnSignal);
-        const retryable=nativeProviderRetryable(error),last=attempt>=providerAttempts;
-        if(!retryable||last)throw error;
-        const delay=Math.max(0,Math.min(10_000,Math.trunc(Number(retryBaseDelayMs)||0)*2**(attempt-1)));
-        emit(onEvent,{name:"native.model.retrying",status:"retrying",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,attempt,nextAttempt:attempt+1,maxAttempts:providerAttempts,delayMs:delay,status:Number(error.status||error.statusCode||0)||null,code:error.code||null,message:String(error.message||error).slice(0,500),providerTelemetry:error?.telemetry||null}});
+        const retryable=nativeProviderRetryable(error),rateLimited=retryable&&error?.rateLimited===true;
+        if(rateLimited&&rateLimitRetries<rateLimitRetryLimit)rateLimitRetries++;
+        if(!retryable||attempt>=providerAttempts+rateLimitRetries)throw error;
+        const retryAfterMs=rateLimited&&Number.isFinite(Number(error.retryAfterMs))?Math.max(0,Math.ceil(Number(error.retryAfterMs))):null;
+        const delay=Math.max(Math.min(60_000,retryAfterMs||0),Math.max(0,Math.min(10_000,Math.trunc(Number(retryBaseDelayMs)||0)*2**(attempt-1))));
+        emit(onEvent,{name:"native.model.retrying",status:"retrying",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,attempt,nextAttempt:attempt+1,maxAttempts:providerAttempts+rateLimitRetries,delayMs:delay,rateLimited,retryAfterMs,status:Number(error.status||error.statusCode||0)||null,code:error.code||null,message:String(error.message||error).slice(0,500),providerTelemetry:error?.telemetry||null}});
         await retryDelay(delay,turnSignal);
       }
     }

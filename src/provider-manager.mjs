@@ -9,7 +9,7 @@ import { redactSecretText } from "./secret-redactor.mjs";
 import { performance } from "node:perf_hooks";
 import { providerCapabilities } from "./provider-capabilities.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY, OpenAiResponseContinuationTracker } from "./openai-response-continuation.mjs";
-import { OpenAiResponsesWebSocket, openAiResponsesWebSocketStreamId } from "./openai-responses-websocket.mjs";
+import { OpenAiResponsesWebSocket, openAiResponsesWebSocketStreamId, openAiRetryAfterMs } from "./openai-responses-websocket.mjs";
 import { NATIVE_TOOL_SCHEMA_FINGERPRINT } from "./native-request-metrics.mjs";
 
 export const MODEL_PROVIDERS = Object.freeze({
@@ -830,7 +830,8 @@ export class ProviderManager {
             if(error?.transportFailure)this.#resetOpenAiWebSocket("transport_failure");
             else if(error?.protocolFailure)this.#resetOpenAiWebSocket("protocol_failure");
             else if(error?.name==="TimeoutError")this.#resetOpenAiWebSocket("timeout_failure");
-            else if(error?.retryable===true&&["api_error","response_failed"].includes(failureKind))this.#resetOpenAiWebSocket("api_failure");
+            // A rate limit is account back-pressure, not lane damage: keep the socket and its continuation parent.
+            else if(error?.retryable===true&&error?.rateLimited!==true&&["api_error","response_failed"].includes(failureKind))this.#resetOpenAiWebSocket("api_failure");
           }
           if(!replaySafe){
             // A post-send timeout is not safe to replay inside this provider turn,
@@ -906,6 +907,11 @@ export class ProviderManager {
       const error=new Error(`${provider.name} HTTP ${upstream.status}: ${providerErrorExcerpt(raw,{environment:this.env,secret:this.key(provider.id),maxChars:1200})}`);
       error.status=upstream.status;
       error.retryable=[408,409,425,429].includes(upstream.status)||(upstream.status>=500&&upstream.status<=599);
+      if(upstream.status===429){
+        let providerCode="";try{providerCode=String(JSON.parse(raw)?.error?.code||"").trim().toLowerCase()}catch{}
+        if(providerCode==="insufficient_quota")error.retryable=false;
+        else{error.rateLimited=true;const retryAfterMs=openAiRetryAfterMs({headers:upstream.headers,message:raw});if(retryAfterMs!=null)error.retryAfterMs=retryAfterMs}
+      }
       error.telemetry=baseTelemetry;
       throw error;
     }
