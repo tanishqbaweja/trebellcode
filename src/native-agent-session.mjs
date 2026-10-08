@@ -448,7 +448,12 @@ export class NativeAgentSession{
           const signals=[request.signal,modelController.signal].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
           try{
             const comparisonResponseId=this.provider==="openai"?String(this.lastProviderResponseId||"").trim():"",completionGate=request?.metadata?.completionGate===true,controlGateRetry=completionGate&&request?.metadata?.controlGateRetry===true,controlGateContinuationId=controlGateRetry?String(openAiControlGateResponseId||"").trim():"";
-            const response=await this.providerTurn({...request,provider:this.provider,serviceTier:this.serviceTier,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{}),...(this.provider==="openai"?{openAiContinuationResponseId:completionGate?controlGateContinuationId:comparisonResponseId,openAiDisableWebSocket:completionGate}:{}),...(this.provider==="openai"&&this.openAiServerCompactionThreshold?{contextManagement:[{type:"compaction",compactThreshold:this.openAiServerCompactionThreshold}]}:{})});
+            // Fork the OpenAI judge onto a separate WebSocket lane. Keep the coding lane's
+            // parent unchanged so an incomplete verdict can resume its warm prefix.
+            const gateSessionId=String(request?.metadata?.sessionId||"").trim(),gateFork=completionGate&&this.provider==="openai"&&Boolean(gateSessionId&&comparisonResponseId);
+            const gateParent=controlGateRetry?controlGateContinuationId:comparisonResponseId;
+            const cacheComparisonResponseId=completionGate?(gateFork?gateParent:controlGateContinuationId):comparisonResponseId;
+            const response=await this.providerTurn({...request,provider:this.provider,serviceTier:this.serviceTier,signal,...(cacheComparisonResponseId?{promptCacheComparisonResponseId:cacheComparisonResponseId}:{}),...(gateFork?{metadata:{...request.metadata,sessionId:"gate-"+gateSessionId}}:{}),...(this.provider==="openai"?{openAiContinuationResponseId:completionGate?(gateFork?gateParent:controlGateContinuationId):comparisonResponseId,openAiDisableWebSocket:completionGate&&!gateFork}:{}),...(this.provider==="openai"&&this.openAiServerCompactionThreshold?{contextManagement:[{type:"compaction",compactThreshold:this.openAiServerCompactionThreshold}]}:{})});
             if(this.provider==="openai"){
               if(!completionGate)lastOpenAiInputTokens=Math.max(0,Math.trunc(Number(response?.usage?.inputTokens)||0));
               const responseId=String(response?.telemetry?.providerResponseId||response?.id||"").trim();

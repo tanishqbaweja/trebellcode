@@ -66,9 +66,10 @@ test("Native OpenAI completion gate isolates the initial judge and resumes only 
       if(calls===3){
         assert.equal(request.metadata?.completionGate,true);
         assert.equal(request.metadata?.controlGateRetry,false);
-        assert.equal(request.promptCacheComparisonResponseId,"resp-candidate");
-        assert.equal(request.openAiContinuationResponseId,"");
-        assert.equal(request.openAiDisableWebSocket,true);
+        assert.equal(request.promptCacheComparisonResponseId,"resp-candidate","judge should compare with its live WebSocket ancestor");
+        assert.equal(request.openAiContinuationResponseId,"resp-candidate");
+        assert.equal(request.openAiDisableWebSocket,false);
+        assert.equal(request.metadata?.sessionId,"gate-openai-semantic-gate");
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,tools);
         return {id:"resp-gate-incomplete",provider:"openai",model:"gpt-6-luna",text:"",toolCalls:[],finishReason:"incomplete",usage:{},telemetry:{providerResponseId:"resp-gate-incomplete"}};
@@ -76,9 +77,10 @@ test("Native OpenAI completion gate isolates the initial judge and resumes only 
       if(calls===4){
         assert.equal(request.metadata?.completionGate,true);
         assert.equal(request.metadata?.controlGateRetry,true);
-        assert.equal(request.promptCacheComparisonResponseId,"resp-candidate");
+        assert.equal(request.promptCacheComparisonResponseId,"resp-gate-incomplete","judge retry may compare against its own HTTP predecessor");
         assert.equal(request.openAiContinuationResponseId,"resp-gate-incomplete");
-        assert.equal(request.openAiDisableWebSocket,true);
+        assert.equal(request.openAiDisableWebSocket,false);
+        assert.equal(request.metadata?.sessionId,"gate-openai-semantic-gate");
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,tools);
         return {id:"resp-gate-complete",provider:"openai",model:"gpt-6-luna",text:'{"status":"complete","unresolved":[],"reason":"The requested workspace edit is present."}',toolCalls:[],usage:{},telemetry:{providerResponseId:"resp-gate-complete"}};

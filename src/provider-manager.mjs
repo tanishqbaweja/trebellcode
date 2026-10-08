@@ -794,9 +794,18 @@ export class ProviderManager {
     let openAiWebSocketFallback=null,continuationFallback=false,continuationFallbackReason=null;
     const openAiWebSocketStreamId=provider.id==="openai"&&streamResponses===true?openAiResponsesWebSocketStreamId(request?.metadata?.sessionId):null;
     const openAiWebSocketEnabled=request?.openAiDisableWebSocket!==true&&Boolean(openAiWebSocketStreamId)&&String(this.env.TREBELL_OPENAI_RESPONSES_WEBSOCKET||"1").trim()!=="0"&&!this.#openAiWebSocketCircuitOpen();
-    if(openAiWebSocketEnabled){
-      const transport=this.#openAiWebSocketTransport();
-      if(transport){
+    const openAiWebSocketTransport=openAiWebSocketEnabled?this.#openAiWebSocketTransport():null;
+    if(provider.id==="openai"&&provider.wireApi==="responses"&&request?.metadata?.completionGate===true&&request.openAiDisableWebSocket!==true&&!openAiWebSocketTransport){
+      // A WebSocket-only parent cannot be relied upon when the audit must fall back to HTTP.
+      // Rebuild the complete prompt and omit the inaccessible cross-transport comparison ID.
+      fullResponsesBody=this.#officialOpenAiResponsesBody({...request,promptCacheComparisonResponseId:""});
+      if(streamResponses===true)fullResponsesBody.stream=true;
+      openAiContinuation=this.openAiResponseContinuations.prepare(fullResponsesBody,"",{messageRefs:Array.isArray(request.messages)?request.messages:null,identityToken:request?.[NATIVE_OPENAI_CONTINUATION_IDENTITY]||null});
+      responsesBody=fullResponsesBody;
+      continuationFallback=true;continuationFallbackReason="control_gate_websocket_unavailable";
+    }
+    if(openAiWebSocketTransport){
+      const transport=openAiWebSocketTransport;
         try{
           if(openAiContinuation?.used&&!this.#openAiWebSocketParentAvailable(openAiContinuation.parentId,transport)){
             const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
@@ -839,7 +848,6 @@ export class ProviderManager {
             fullResponsesBody=fallbackBody;responsesBody=fallbackBody;continuationFallback=true;continuationFallbackReason=continuationRejected?"previous_response_unavailable":"invalid_tool_output_state";
           }
         }
-      }
     }
     let upstream=provider.wireApi==="responses"
       ?await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)})

@@ -37,6 +37,49 @@ test("provider keys are stored separately and never returned by definitions", ()
   assert.match(stored,/ar-secret/);
 });
 
+test("OpenAI completion judge forks onto a different WebSocket stream without advancing the coding lane",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-judge-fork-")),calls=[];
+  try{
+    const manager=new ProviderManager({
+      env:{TREBELL_HOME:root},
+      openAiResponsesWebSocketFactory:()=>({request:async(body,{streamId}={})=>{
+        calls.push({body,streamId});
+        const index=calls.length,text=index===2?'(structured judge)':'coding-'+index;
+        return {requestBytes:10,response:{id:"fork-resp-"+index,model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text}]}],usage:{input_tokens:12,output_tokens:2,total_tokens:14}},telemetry:{responseBytes:10,totalLatencyMs:1}};
+      }}),
+      fetchFn:async()=>{throw new Error("Healthy judge fork must stay on WebSocket")},
+    });manager.setKey("openai","test-key");
+    const identity={},first={role:"user",content:"Make a safe coding change"},sourceMeta={sessionId:"native-judge-test"};
+    const initial=await manager.turn("openai",{model:"gpt-5.6",messages:[first],tools:[],metadata:sourceMeta,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:identity},{streamResponses:true});
+    const history=[first,{role:"assistant",content:initial.text}];
+    await manager.turn("openai",{model:"gpt-5.6",messages:[...history,{role:"developer",content:"Independently audit the result"}],tools:[],metadata:{...sourceMeta,sessionId:"gate-native-judge-test",completionGate:true},openAiContinuationResponseId:initial.id,promptCacheComparisonResponseId:initial.id,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:identity},{streamResponses:true});
+    await manager.turn("openai",{model:"gpt-5.6",messages:[...history,{role:"developer",content:"Continue the original coding work"}],tools:[],metadata:sourceMeta,openAiContinuationResponseId:initial.id,promptCacheComparisonResponseId:initial.id,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:identity},{streamResponses:true});
+    assert.deepEqual(calls.map(call=>call.streamId),["native-judge-test","gate-native-judge-test","native-judge-test"]);
+    assert.equal(calls[1].body.previous_response_id,initial.id,"judge should reuse the cached source response");
+    assert.equal(calls[2].body.previous_response_id,initial.id,"coding lane must resume the original response, not the judge");
+    manager.close();
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI judge without a usable WebSocket safely sends full HTTP input without a foreign cache comparison",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-judge-fallback-")),env={TREBELL_HOME:root},httpBodies=[];
+  try{
+    const manager=new ProviderManager({env,
+      openAiResponsesWebSocketFactory:()=>({request:async body=>({requestBytes:10,response:{id:"fallback-source-response",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"Implemented"}]}],usage:{}},telemetry:{responseBytes:10,totalLatencyMs:1}})}),
+      fetchFn:async(_url,init)=>{const body=JSON.parse(init.body);httpBodies.push(body);return Response.json({id:"fallback-judge",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"verified"}]}],usage:{}})}
+    });manager.setKey("openai","test-key");
+    const identity={},user={role:"user",content:"Implement and then audit"},meta={sessionId:"native-fallback"};
+    const initial=await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools:[],metadata:meta,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:identity},{streamResponses:true});
+    env.TREBELL_OPENAI_RESPONSES_WEBSOCKET="0";
+    const verdict=await manager.turn("openai",{model:"gpt-5.6",messages:[user,{role:"assistant",content:initial.text},{role:"developer",content:"Judge completion"}],tools:[],metadata:{...meta,sessionId:"gate-native-fallback",completionGate:true},openAiContinuationResponseId:initial.id,promptCacheComparisonResponseId:initial.id,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:identity},{streamResponses:true});
+    assert.equal(verdict.text,"verified");assert.equal(httpBodies.length,1);
+    assert.equal(Object.hasOwn(httpBodies[0],"previous_response_id"),false);
+    assert.equal(Object.hasOwn(httpBodies[0].prompt_cache_options||{},"comparison_response_id"),false);
+    assert.ok(httpBodies[0].input.length>=3,"fallback must send the full judge context, not only its delta");
+    manager.close();
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("previously stored provider keys with wrapping quotes are normalized on read", () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   writeFileSync(join(root,"provider-secrets.json"),JSON.stringify({agentrouter:'"ar-existing-key"'}),"utf8");
