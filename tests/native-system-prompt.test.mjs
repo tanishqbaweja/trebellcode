@@ -98,6 +98,9 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/repository seed already names likely relevant paths/i);
   assert.match(prompt,/edit calls together in one model response/i);
   assert.match(prompt,/executes non-parallel edits in order/i);
+  assert.match(prompt,/image file is relevant/i);
+  assert.match(prompt,/read_file with as_image=true/i);
+  assert.match(prompt,/pixel dumps/i);
   assert.match(prompt,/stop speculative polishing/i);
   assert.match(prompt,/acceptance-critical behavior/i);
   assert.match(prompt,/reasonably testable requirement as unverified/i);
