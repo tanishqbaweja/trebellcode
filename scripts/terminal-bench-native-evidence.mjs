@@ -11,14 +11,31 @@ function rows(text){
   return out;
 }
 
+function accountedUsage(turn={}){return Number(turn?.inputTokens||0)>0||Number(turn?.outputTokens||0)>0||Number(turn?.totalTokens||0)>0}
+
+// OpenAI reports all-zero usage for an output-capped (incomplete) response that continues a
+// previous response (verified live 2026-10-08), although those tokens are generated. When the
+// request's cap is known, impute output = cap and input/cached = the adjacent accounted request
+// over the same context (the retry, else the prior request). Unknown-cap gaps stay a lower bound.
+function imputedIncompleteUsage(events){
+  const imputed=new Map();let pendingCap=null;
+  const accountedModels=events.map((event,index)=>({event,index})).filter(({event})=>event?.name==="native.model.completed"&&accountedUsage(event?.data?.usage));
+  events.forEach((event,index)=>{
+    if(/_output_cap$/.test(String(event?.name||""))){pendingCap=Number(event?.data?.maxOutputTokens||0)||null;return}
+    if(event?.name!=="native.model.completed")return;
+    const cap=pendingCap;pendingCap=null;
+    if(String(event?.data?.finishReason||"").trim().toLowerCase()!=="incomplete"||accountedUsage(event?.data?.usage)||!cap)return;
+    const neighbor=accountedModels.find(item=>item.index>index)||[...accountedModels].reverse().find(item=>item.index<index),usage=neighbor?.event?.data?.usage||{};
+    imputed.set(event,{inputTokens:Number(usage.inputTokens||0),cachedInputTokens:Number(usage.cachedInputTokens||0),cacheWriteInputTokens:0,outputTokens:cap});
+  });
+  return imputed;
+}
+
 export function summarizeNativeEventEvidence(text,{serviceTier="standard"}={}){
   const events=rows(text),models=events.filter(event=>event?.name==="native.model.completed"),tools=events.filter(event=>event?.name==="native.tool.requested");
   if(!models.length&&!tools.length)return null;
-  const unaccountedProviderRequests=models.filter(event=>{
-    const finish=String(event?.data?.finishReason||"").trim().toLowerCase(),turn=event?.data?.usage||{};
-    const accounted=Number(turn?.inputTokens||0)>0||Number(turn?.outputTokens||0)>0||Number(turn?.totalTokens||0)>0;
-    return finish==="incomplete"&&!accounted;
-  }).length;
+  const zeroUsageIncomplete=models.filter(event=>String(event?.data?.finishReason||"").trim().toLowerCase()==="incomplete"&&!accountedUsage(event?.data?.usage)).length;
+  const imputedByEvent=imputedIncompleteUsage(events),imputedUsageRecords=[...imputedByEvent.values()],unaccountedProviderRequests=Math.max(0,zeroUsageIncomplete-imputedUsageRecords.length);
   const usageAccountingComplete=unaccountedProviderRequests===0;
   const usage={inputTokens:0,cachedInputTokens:0,outputTokens:0,totalTokens:0,reasoningOutputTokens:0,cacheWriteInputTokens:0};
   for(const event of models){
@@ -26,8 +43,9 @@ export function summarizeNativeEventEvidence(text,{serviceTier="standard"}={}){
     for(const key of Object.keys(usage))usage[key]+=Number(turn?.[key]||0);
   }
   const uncachedInputTokens=Math.max(0,usage.inputTokens-usage.cachedInputTokens);
-  const requestUsage=models.map(event=>event?.data?.usage||{}),rawCost=estimateGpt6LunaCostFromRecords(requestUsage,{serviceTier});
-  const cost={...rawCost,usageAccountingComplete,unaccountedProviderRequests,totalUsdIsLowerBound:!usageAccountingComplete};
+  const requestUsage=models.map(event=>event?.data?.usage||{}),rawCost=estimateGpt6LunaCostFromRecords(models.map(event=>imputedByEvent.get(event)||event?.data?.usage||{}),{serviceTier});
+  const imputedUsage=imputedUsageRecords.reduce((total,item)=>{for(const key of Object.keys(total))total[key]+=item[key];return total},{inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0});
+  const cost={...rawCost,usageAccountingComplete,unaccountedProviderRequests,totalUsdIsLowerBound:!usageAccountingComplete,imputedIncompleteResponses:imputedUsageRecords.length,...(imputedUsageRecords.length?{imputedUsage}:{})};
   return {
     modelTurns:models.length,
     toolCalls:tools.length,
@@ -40,6 +58,7 @@ export function summarizeNativeEventEvidence(text,{serviceTier="standard"}={}){
     cacheWriteInputTokens:usage.cacheWriteInputTokens,
     usageAccountingComplete,
     unaccountedProviderRequests,
+    imputedIncompleteResponses:imputedUsageRecords.length,
     apiEquivalentCostIsLowerBound:!usageAccountingComplete,
     maxObservedInputTokens:requestUsage.reduce((max,turn)=>Math.max(max,Number(turn?.inputTokens||turn?.input_tokens||0)),0),
     apiEquivalentCostUsd:cost.totalUsd,
