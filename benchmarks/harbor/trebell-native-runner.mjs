@@ -48,6 +48,10 @@ const metricsPath=String(process.env.TREBELL_METRICS_PATH||"/logs/agent/trebell-
 const eventsPath=String(process.env.TREBELL_EVENTS_PATH||"/logs/agent/trebell-native-events.jsonl");
 const probeOnly=String(process.env.TREBELL_HARBOR_PROBE||"").trim()==="1";
 const liveProbe=String(process.env.TREBELL_HARBOR_LIVE_PROBE||"").trim()==="1";
+// The semantic completion gate is opt-in for Harbor runs. On fresh SWE-bench Verified pairs it never
+// produced a resolution the gate-off harness missed, overturned a correct fix by reading a hedged issue
+// sentence literally, and cost about a third more. Set TREBELL_HARBOR_SEMANTIC_GATE=1 to measure it again.
+const semanticCompletionGate=String(process.env.TREBELL_HARBOR_SEMANTIC_GATE||"").trim()==="1";
 // Harbor already enforces each task's agent timeout. Keep Trebell's internal
 // safety ceilings deliberately non-binding by default so difficult benchmark
 // tasks are not scored under a smaller private resource budget than Codex.
@@ -124,7 +128,7 @@ const session=new NativeAgentSession({
   cwd:root,
   provider,
   model,
-  semanticCompletionGate:true,
+  semanticCompletionGate,
   contextWindow,
   openAiServerCompactionThreshold:compactionThreshold,
   reasoningEffort,
@@ -206,6 +210,7 @@ const metrics={
   contextPolicy:{operatingContextWindow:contextWindow,serverCompactionThreshold:compactionThreshold,retroactiveOpenAiReadCooling:false},
   effectiveReasoningContexts:[...new Set(requests.map(item=>String(item?.telemetry?.reasoningContext||"").trim()).filter(Boolean))],
   budgets:{maxModelTurns,maxToolCalls,maxWallTimeMs},
+  semanticCompletionGate,
   elapsedMs,
   modelTurns:Number(raw.modelTurns)||Number(error?.nativeModelTurns)||requests.length,
   toolCalls:Number(raw.toolCalls)||Number(error?.nativeToolCalls)||0,
