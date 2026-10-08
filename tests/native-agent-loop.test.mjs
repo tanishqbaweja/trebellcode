@@ -5382,7 +5382,7 @@ test("native changes recovery strategy after three incomplete semantic epochs wi
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_exhausted").length,1);
 });
 
-test("native semantic recovery defaults to four bounded epochs",async()=>{
+test("native semantic recovery defaults to one bounded epoch",async()=>{
   let turns=0;const events=[];
   const result=await runNativeAgentTurn({
     model:"test-model",semanticCompletionGate:true,maxModelTurns:16,maxToolCalls:8,onEvent:event=>events.push(event),
@@ -5396,13 +5396,13 @@ test("native semantic recovery defaults to four bounded epochs",async()=>{
     },
     executeTool:async()=>({path:"src/a.mjs",replacements:1}),
   });
-  assert.equal(turns,11);
-  assert.match(result.text,/stopped after 4 bounded semantic recovery epochs/i);
+  assert.equal(turns,5);
+  assert.match(result.text,/stopped after 1 bounded semantic recovery epoch because/i);
   const recoveries=events.filter(event=>event.name==="native.completion.gate_recovery");
-  assert.deepEqual(recoveries.map(event=>event.data?.recoveryEpoch),[1,2,3,4]);
+  assert.deepEqual(recoveries.map(event=>event.data?.recoveryEpoch),[1]);
   const exhausted=events.filter(event=>event.name==="native.completion.recovery_exhausted");
   assert.equal(exhausted.length,1);
-  assert.equal(exhausted[0].data?.maxRecoveryEpochs,4);
+  assert.equal(exhausted[0].data?.maxRecoveryEpochs,1);
 });
 
 test("native factorizes a verified localized residual instead of reopening global search",async()=>{
