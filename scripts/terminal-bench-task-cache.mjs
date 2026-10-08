@@ -13,6 +13,13 @@ export function terminalBenchTaskQualifiedName(dataset,task){
   return packageTask;
 }
 
+export function benchmarkRunPrefix(dataset){
+  const text=String(dataset||"").trim().toLowerCase(),at=text.lastIndexOf("@"),ref=at>=0?text.slice(at+1):"",pkg=at>=0?text.slice(0,at):text;
+  if(pkg==="terminal-bench/terminal-bench")return "tb"+(ref.match(/^(\d+)\./)?.[1]||"");
+  if(pkg==="swe-bench/swe-bench-verified")return "swebv";
+  return (pkg.split("/").pop()||"").replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,20)||"bench";
+}
+
 export function terminalBenchTaskDockerImagesFromToml(text){
   const images=[];let section="";
   for(const rawLine of String(text||"").split(/\r?\n/)){

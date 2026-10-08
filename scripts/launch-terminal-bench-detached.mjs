@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { launchDetachedDescriptor, writeDetachedDescriptor } from "./detached-process.mjs";
+import { benchmarkRunPrefix } from "./terminal-bench-task-cache.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to launch paid/live Terminal-Bench without --live.");
 const here=dirname(fileURLToPath(import.meta.url)),root=resolve(here,"..");
@@ -10,7 +11,8 @@ const task=String(taskArg?.slice("--task=".length)||"").trim();
 if(!task)throw new Error("Detached Terminal-Bench launch requires --task=<task-id>.");
 const slug=String(task).replace(/^terminal-bench\//,"").replace(/[^a-z0-9]+/gi,"-").replace(/^-|-$/g,"").toLowerCase().slice(0,80)||"task";
 const stamp=new Date().toISOString().replace(/[-:]/g,"").replace(/\.\d{3}Z$/,"Z");
-const id=`tb4-detached-${slug}-${stamp}`,dir=join(root,".harbor-validation","detached");
+const prefix=benchmarkRunPrefix(process.env.TREBELL_TERMINAL_BENCH_DATASET||"terminal-bench/terminal-bench@4.0.0");
+const id=`${prefix}-detached-${slug}-${stamp}`,dir=join(root,".harbor-validation","detached");
 await mkdir(dir,{recursive:true});
 const descriptorPath=join(dir,`${id}.descriptor.json`),statusPath=join(dir,`${id}.status.json`),stdoutPath=join(dir,`${id}.stdout.log`),stderrPath=join(dir,`${id}.stderr.log`),launchPath=join(dir,`${id}.launch.json`);
 await writeDetachedDescriptor(descriptorPath,{

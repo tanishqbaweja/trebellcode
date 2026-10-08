@@ -11,7 +11,7 @@ const explicitTarget=process.argv.find(arg=>arg.startsWith("--target="))?.slice(
 if(explicitTarget&&!['auto','pair','native-rerun'].includes(explicitTarget))throw new Error(`Invalid watchdog --target=${explicitTarget}; expected auto, pair, or native-rerun.`);
 const targetMode=explicitTarget||"auto";
 const explicitPair=process.argv.find(arg=>arg.startsWith("--pair="))?.slice("--pair=".length).trim()||null;
-if(explicitPair&&!/^tb4-(?:pair|native-rerun)-[a-z0-9-]+$/i.test(explicitPair))throw new Error(`Invalid watchdog --pair=${explicitPair}; expected a saved tb4-pair-* or tb4-native-rerun-* report id.`);
+if(explicitPair&&!/^[a-z0-9]+-(?:pair|native-rerun)-[a-z0-9-]+$/i.test(explicitPair))throw new Error(`Invalid watchdog --pair=${explicitPair}; expected a saved <bench>-pair-* or <bench>-native-rerun-* report id.`);
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function json(path){try{return JSON.parse(String(await readFile(path,"utf8")).replace(/^\uFEFF/,""))}catch{return null}}
 async function newestTrialDir(jobName){
@@ -63,7 +63,7 @@ async function snapshot(){
   const pairTime=reportTimeMs(pairPointer,pairReport),rerunTime=reportTimeMs(rerunPointer,rerunReport);
   const explicitReportPath=explicitPair?join(validationDir,explicitPair+".json"):null,explicitReport=explicitReportPath?await json(explicitReportPath):null;
   if(explicitPair&&!explicitReport)throw new Error(`No saved Terminal-Bench report found for --pair=${explicitPair}.`);
-  const selectRerun=explicitPair?explicitPair.startsWith("tb4-native-rerun-"):targetMode==="native-rerun"||(targetMode==="auto"&&Boolean(rerunPointer)&&(!pairPointer||rerunTime>pairTime));
+  const selectRerun=explicitPair?/^[a-z0-9]+-native-rerun-/i.test(explicitPair):targetMode==="native-rerun"||(targetMode==="auto"&&Boolean(rerunPointer)&&(!pairPointer||rerunTime>pairTime));
   if(!explicitPair&&targetMode==="pair"&&!pairPointer)throw new Error("No saved Terminal-Bench pair pointer found yet.");
   if(!explicitPair&&selectRerun&&!rerunPointer)throw new Error("No saved standalone Native rerun pointer found yet.");
   const pointer=explicitReport?{pairId:explicitPair,reportPath:explicitReportPath,task:explicitReport.task,lanes:explicitReport.lanes}:selectRerun?rerunPointer:pairPointer;

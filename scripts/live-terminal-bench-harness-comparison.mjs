@@ -14,7 +14,7 @@ import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTermin
 import { estimateGpt6LunaCostFromAggregate, gpt6LunaPricingForServiceTier } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
-import { preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, prewarmTerminalBenchDockerImages, terminalBenchCachedTaskArtifacts, prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName } from "./terminal-bench-task-cache.mjs";
+import { benchmarkRunPrefix, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, prewarmTerminalBenchDockerImages, terminalBenchCachedTaskArtifacts, prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName } from "./terminal-bench-task-cache.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -38,7 +38,7 @@ const SERVICE_TIER=String(serviceTierArg?.slice("--service-tier=".length)||proce
 if(!["default","fast"].includes(SERVICE_TIER))throw new Error("Terminal-Bench service tier must be default or fast.");
 const taskArg=process.argv.find(arg=>arg.startsWith("--task="));
 const TASK=String(taskArg?.slice("--task=".length)||process.env.TREBELL_TERMINAL_BENCH_TASK||"terminal-bench/session-window-debug").trim();
-const HARBOR_TASK=terminalBenchTaskQualifiedName(DATASET,TASK);
+const HARBOR_TASK=terminalBenchTaskQualifiedName(DATASET,TASK),RUN_PREFIX=benchmarkRunPrefix(DATASET);
 if(!HARBOR_TASK)throw new Error(`Cannot derive Harbor task identity from dataset=${DATASET} task=${TASK}`);
 const setupTimeoutArg=process.argv.find(arg=>arg.startsWith("--agent-setup-timeout-multiplier="));
 const SETUP_TIMEOUT_MULTIPLIER=Number(setupTimeoutArg?.slice("--agent-setup-timeout-multiplier=".length)||process.env.TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER||3);
@@ -194,7 +194,7 @@ async function recoverTrialEvidence(outputRoot,jobName){
 const sourceProvenance=await sourceGitProvenance();
 assertCleanTrackedSource(sourceProvenance);
 const gitCommonDir=String(await capture("git",["rev-parse","--git-common-dir"])).trim(),lockPath=STANDALONE_NATIVE_RERUN?sharedTerminalBenchNativeRerunLockPath(root,gitCommonDir):sharedTerminalBenchLockPath(root,gitCommonDir);
-const releaseLock=await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`${STANDALONE_NATIVE_RERUN?"tb4-native-rerun":"tb4-pair"}-${safeSlug(MODEL)}-${EFFORT}-${SERVICE_TIER}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json");let codexApiAuthPath=null;
+const releaseLock=await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`${RUN_PREFIX}-${STANDALONE_NATIVE_RERUN?"native-rerun":"pair"}-${safeSlug(MODEL)}-${EFFORT}-${SERVICE_TIER}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json");let codexApiAuthPath=null;
 try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");
@@ -266,7 +266,7 @@ try{
   const laneStates=selectedLanes.map(lane=>({
     label:lane.label,harness:lane.harness,authMode:lane.authMode,
     serviceTier:SERVICE_TIER,
-    jobName:`tb4-${lane.label}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,
+    jobName:`${RUN_PREFIX}-${lane.label}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,
     status:"pending",startedAt:null,finishedAt:null,runError:null,attempts:[],retryReason:null,retryCleanup:null,infrastructureFailureReason:null,
   }));
   const reportSnapshot=({complete=false}={})=>({
