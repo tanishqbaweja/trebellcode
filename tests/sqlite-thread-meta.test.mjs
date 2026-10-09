@@ -13,8 +13,8 @@ test("thread metadata migrates to SQLite and stays durable without returning to 
   const home=await mkdtemp(join(tmpdir(),"trebell-thread-meta-sqlite-")),secret="thread-meta-secret-value",env={...process.env,TREBELL_HOME:home,THREAD_META_TOKEN:secret},statePath=join(home,"ui-state.json"),dbPath=join(home,"trebell.sqlite");
   const legacyMeta={
     "thread-1":{
-      cwd:"C:/repo",runtime:"native",runtimeInstanceId:"native-default",provider:"freebuff",environmentId:null,branch:"feature/sqlite",projectless:true,snoozedUntil:12345,
-      threadSnapshot:{id:"thread-1",name:"SQLite thread",preview:"Catalog preview",cwd:"C:/repo",model:"model-a",updatedAt:102,createdAt:90,status:{type:"idle"},runtime:"native",provider:"freebuff"},
+      cwd:"C:/repo",runtime:"native",runtimeInstanceId:"native-default",provider:"openai",environmentId:null,branch:"feature/sqlite",projectless:true,snoozedUntil:12345,
+      threadSnapshot:{id:"thread-1",name:"SQLite thread",preview:"Catalog preview",cwd:"C:/repo",model:"model-a",updatedAt:102,createdAt:90,status:{type:"idle"},runtime:"native",provider:"openai"},
       goal:{threadId:"thread-1",status:"active",objective:"Ship the durable migration",updatedAt:100},
       queuedSubmissions:[{id:"queued-1",input:[{type:"text",text:"Run verification with "+secret}]}],
       continuityNotes:{completedWork:["Created schema"],pendingNextActions:["Run tests"],updatedAt:101},

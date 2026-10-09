@@ -12,10 +12,10 @@ test("opening a catalog-only thread hydrates its full durable metadata on demand
   };
   let fullMeta={...catalogMeta,trebellQueue:[{id:"saved-followup",createdAt:Date.now()-1000,text:"Hydrated queued follow-up",attachments:[],contextChips:[]}]};
   let metadataReads=0;
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"freebuff",followUpMode:"queue",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",followUpMode:"queue",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
 
   await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
-    mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:false,wsUrl:"",
+    mock:true,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:false,wsUrl:"",
     cwd:process.cwd(),platform:process.platform,version:"thread-meta-hydration-fixture",runtimeCapabilities:{nativeQueue:false,steering:false},activeEnvironmentId:null,activeEnvironment:null,
   })}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[thread.id]:catalogMeta}})}));

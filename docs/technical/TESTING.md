@@ -56,7 +56,9 @@ For every provider you can test:
 
 Providers:
 
-- [ ] Freebuff
+- [ ] OpenAI API
+- [ ] Anthropic API
+- [ ] Google Gemini API
 - [ ] AgentRouter
 - [ ] JustWorker.icu
 - [ ] HCNSec.cn
@@ -73,6 +75,7 @@ Live provider transport smoke on **2026-09-27** (npm run test:providers:live):
 Failure checks:
 
 - [ ] Invalid key produces an explicit error.
+- [ ] On a fresh profile with no key, Trebell Native shows that an API key is required and its **Configure** action opens **Settings → Agents & models** instead of starting a turn.
 - [ ] Provider refresh failure does not erase the last valid config.
 - [ ] No raw key appears in visible diagnostics/log output.
 

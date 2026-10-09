@@ -26,7 +26,7 @@ test("desktop Codex collaboration mode uses native Plan and Default settings",as
       else if(message.method==="collaborationMode/list")result={data:modes};
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
       else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
-      else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null,collaborationMode:{mode:"plan",settings:{model:"freebuff/test/coding-fast",reasoning_effort:"medium",developer_instructions:null}}};
+      else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null,collaborationMode:{mode:"plan",settings:{model:"test/coding-fast",reasoning_effort:"medium",developer_instructions:null}}};
       else if(message.method==="thread/settings/update")result={};
       else if(message.method==="turn/start")result={turn:{id:"turn-plan",status:"inProgress"}};
       else if(message.method==="thread/goal/get")result={goal:null};
@@ -42,9 +42,9 @@ test("desktop Codex collaboration mode uses native Plan and Default settings",as
   const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"collaboration-mode-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
-    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"collaboration-mode-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
@@ -58,14 +58,14 @@ test("desktop Codex collaboration mode uses native Plan and Default settings",as
     await expect.poll(()=>calls.filter(call=>call.method==="thread/settings/update").length).toBe(1);
     expect(calls.find(call=>call.method==="thread/settings/update")?.params).toEqual({
       threadId:thread.id,
-      collaborationMode:{mode:"default",settings:{model:"freebuff/test/coding-fast",reasoning_effort:null,developer_instructions:null}},
+      collaborationMode:{mode:"default",settings:{model:"test/coding-fast",reasoning_effort:null,developer_instructions:null}},
     });
 
-    notificationSocket.send(JSON.stringify({method:"thread/settings/updated",params:{threadId:thread.id,threadSettings:{collaborationMode:{mode:"plan",settings:{model:"freebuff/test/coding-fast",reasoning_effort:"medium",developer_instructions:null}}}}}));
+    notificationSocket.send(JSON.stringify({method:"thread/settings/updated",params:{threadId:thread.id,threadSettings:{collaborationMode:{mode:"plan",settings:{model:"test/coding-fast",reasoning_effort:"medium",developer_instructions:null}}}}}));
     await expect(picker).toHaveValue("plan");
     await page.getByTestId("composer").fill("Use Plan mode for this task");await page.getByTestId("send").click();
     await expect.poll(()=>calls.filter(call=>call.method==="turn/start").length).toBe(1);
-    expect(calls.find(call=>call.method==="turn/start")?.params?.collaborationMode).toEqual({mode:"plan",settings:{model:"freebuff/test/coding-fast",reasoning_effort:"medium",developer_instructions:null}});
+    expect(calls.find(call=>call.method==="turn/start")?.params?.collaborationMode).toEqual({mode:"plan",settings:{model:"test/coding-fast",reasoning_effort:"medium",developer_instructions:null}});
 
     await page.setViewportSize({width:1600,height:980});await page.screenshot({path:auditDir+"chat-collaboration-plan-1600x980.png",fullPage:true});
     await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"chat-collaboration-plan-light-1280x800.png",fullPage:true});

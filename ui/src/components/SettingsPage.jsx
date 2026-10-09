@@ -7,19 +7,9 @@ import { searchSettings } from "../settings-search.js";
 import { normalizeCustomTheme } from "../theme-utils.js";
 import { sharedRuntimeCapabilities } from "../../../src/runtime-capabilities.mjs";
 import { runtimeStatusForKind } from "../runtime-status.js";
-import { freebuffSessionLabel, freebuffSessionUnavailable } from "../freebuff-status.js";
+import { DEFAULT_MODEL_PROVIDER, MODEL_PROVIDER_LABELS, modelProviderLabel } from "../provider-labels.js";
 import ScopedSettingsCard from "./ScopedSettingsCard.jsx";
 
-const PROVIDER_LABELS={
-  freebuff:"Freebuff",
-  openai:"OpenAI API",
-  anthropic:"Anthropic API",
-  gemini:"Google Gemini API",
-  agentrouter:"AgentRouter",
-  justworker:"JustWorker.icu",
-  hcnsec:"HCNSec.cn",
-  vyceai:"VyceAi",
-};
 const PROVIDER_NOTES={
   openai:"Models are loaded live from the official OpenAI /v1/models API for this key.",
   anthropic:"Models are loaded live from the official Anthropic /v1/models API for this key.",
@@ -29,9 +19,10 @@ const PROVIDER_NOTES={
   justworker:"Available model: claude-opus-4-8.",
   hcnsec:"Available model: glm-5.3.",
 };
+let appliedSettingsEntryNonce=null;
 
-export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,runtimeCapabilities={},rpcStatus,loggedIn,freebuff=null,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
-  const [settingsSection,setSettingsSection]=useState("general");
+export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,entry:settingsEntry=null}){
+  const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||"general");
   const [settingsSearch,setSettingsSearch]=useState("");
   const [workspaceScope,setWorkspaceScope]=useState({environmentId:settings.activeEnvironmentId||"local",projectId:""});
   const [workspaceScopeCatalog,setWorkspaceScopeCatalog]=useState({environmentData:{profiles:[]},projects:[]});
@@ -45,8 +36,6 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const [settingsError,setSettingsError]=useState("");
   const [environmentThemeRefreshing,setEnvironmentThemeRefreshing]=useState(false);
   const [providerSwitching,setProviderSwitching]=useState(false);
-  const [freebuffAuthBusy,setFreebuffAuthBusy]=useState(false);
-  const [freebuffAuthError,setFreebuffAuthError]=useState(false);
   const [agentInfo,setAgentInfo]=useState(null);
   const [agentMessage,setAgentMessage]=useState("");
   const [agentMessageTarget,setAgentMessageTarget]=useState(null);
@@ -70,11 +59,10 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const [themeDraft,setThemeDraft]=useState(null);
   const [themeMessage,setThemeMessage]=useState("");
   const themeImportRef=useRef(null);
-  const selected=settings.modelProvider||"freebuff";
+  const selected=settings.modelProvider||DEFAULT_MODEL_PROVIDER;
   const providerOptions=providerInfo?.providers?.length
-    ?providerInfo.providers.map(item=>({id:item.id,name:item.name||PROVIDER_LABELS[item.id]||item.id,official:Boolean(item.official)}))
-    :Object.entries(PROVIDER_LABELS).map(([id,name])=>({id,name,official:["openai","anthropic","gemini"].includes(id)}));
-  const freebuffUnavailable=selected==="freebuff"&&freebuffSessionUnavailable(freebuff);
+    ?providerInfo.providers.map(item=>({id:item.id,name:item.name||modelProviderLabel(item.id),official:Boolean(item.official)}))
+    :Object.entries(MODEL_PROVIDER_LABELS).map(([id,name])=>({id,name,official:["openai","anthropic","gemini"].includes(id)}));
   const selectedAgent=agentSelectionOverride||settings.agentRuntime||runtime?.agentRuntime||agentInfo?.selectedRuntime||"codex";
   const selectedManagedInference=Boolean(sharedRuntimeCapabilities(selectedAgent).managedInference);
   const keybindingRules=normalizeKeybindingRules(settings);
@@ -222,7 +210,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       }else next=await api("/api/settings",{method:"POST",body:patch});
     }
     catch(error){
-      if(optimistic){onProviderChanging?.(settings.modelProvider||"freebuff");onSettings(settings)}
+      if(optimistic){onProviderChanging?.(settings.modelProvider||DEFAULT_MODEL_PROVIDER);onSettings(settings)}
       if(providerChange)setProviderSwitching(false);
       setSettingsError(error?.message||String(error)||"Could not save settings.");
       throw error;
@@ -231,7 +219,6 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     if("modelProvider" in patch){
       setApiKey("");
       setProviderMessage("");
-      setFreebuffAuthError(false);
       try{
         if(providerResult){
           setProviderInfo(providerResult);
@@ -284,16 +271,6 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       }
       setSettingsError(error?.message||String(error)||"Could not update background mode.");
     }
-  }
-  async function changeFreebuffAuth(){
-    if(freebuffAuthBusy)return;
-    setFreebuffAuthBusy(true);setFreebuffAuthError(false);setProviderMessage(loggedIn?"Signing out…":"Waiting for Freebuff sign-in…");
-    try{
-      if(loggedIn){await logout?.();setProviderMessage("Signed out.")}
-      else{await login?.();setProviderMessage("Signed in.")}
-      await loadProviders();
-    }catch(error){setFreebuffAuthError(true);setProviderMessage(error?.message||String(error)||"Freebuff authentication failed.")}
-    finally{setFreebuffAuthBusy(false)}
   }
   async function selectEnvironmentTheme(theme){
     if(!theme?.publishedId||!environmentThemeCatalog?.environmentKey)return;
@@ -368,7 +345,6 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     await save({customModels:current.filter(candidate=>!(candidate.id===item.id&&candidate.runtime===item.runtime&&candidate.provider===item.provider))});
   }
   async function saveProviderKey(){
-    if(selected==="freebuff")return;
     setProviderMessage("Saving…");
     try{
       const result=await api("/api/providers",{method:"POST",body:{provider:selected,apiKey}});
@@ -379,7 +355,6 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     }catch(error){setProviderMessage(error.message)}
   }
   async function clearProviderKey(){
-    if(selected==="freebuff")return;
     setProviderMessage("Removing…");
     try{
       const result=await api("/api/providers",{method:"POST",body:{provider:selected,apiKey:""}});
@@ -505,6 +480,13 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   useEffect(()=>{if(settingsSection==="agents")loadProviders()},[settingsSection]);
   useEffect(()=>{if(settingsSection==="agents"||settingsSection==="diagnostics")loadAgentRuntimes()},[settingsSection]);
   useEffect(()=>{
+    if(!settingsEntry?.nonce||settingsEntry.nonce===appliedSettingsEntryNonce)return;
+    appliedSettingsEntryNonce=settingsEntry.nonce;
+    if(settingsEntry.section)setSettingsSection(settingsEntry.section);
+    setSettingsSearch("");
+    if(settingsEntry.target)revealSettingTarget(settingsEntry.target);
+  },[settingsEntry?.nonce]);
+  useEffect(()=>{
     setInstanceDraft(null);
     setCustomModelEditorOpen(false);
   },[selectedAgent]);
@@ -531,6 +513,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const updateStatusLabel={idle:"Ready to check",checking:"Checking…",available:"Update available",downloading:"Downloading…",downloaded:"Ready to install",installing:"Restarting…",current:"Up to date",error:"Update failed",development:"Development build"}[desktopUpdate?.status]||desktopUpdate?.status||"idle";
 
   const selectedStatus=providerInfo?.providers?.find(p=>p.id===selected)||providerInfo?.status;
+  const providerStatusText=providerSwitching?"switching provider…":selectedStatus?.hasKey?(modelError?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required";
   const selectedAgentStatus=runtimeStatusForKind(agentInfo,selectedAgent,{preferSelected:true});
   const selectedAgentDefinition=(agentInfo?.definitions||[]).find(item=>item.id===selectedAgent)||null;
   const selectedAgentCapabilities=Object.keys(runtimeCapabilities||{}).length?runtimeCapabilities:(selectedAgentDefinition?.capabilities||(agentInfo?.selectedRuntime===selectedAgent?agentInfo?.capabilities:null)||{});
@@ -558,13 +541,12 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const workspaceEnvironment=workspaceScope.environmentId==="local"?null:(workspaceScopeCatalog.environmentData.profiles||[]).find(profile=>profile.id===workspaceScope.environmentId);
   const workspaceProject=workspaceProjects.find(project=>project.id===workspaceScope.projectId)||null;
   function targetProps(id){return {"data-setting-target":id}}
-  function openSearchResult(item){
-    setSettingsSection(item.section);setSettingsSearch("");
+  function revealSettingTarget(id,title=""){
     requestAnimationFrame(()=>requestAnimationFrame(()=>{
-      const exact=document.querySelector(`[data-setting-target="${item.id}"]`);
+      const exact=document.querySelector(`[data-setting-target="${id}"]`);
       const candidates=[...document.querySelectorAll(".settings-card,.settings-section-slot,.diagnostics-log,.keybinding-row")];
-      const wanted=String(item.title||"").trim().toLowerCase();
-      const fallback=candidates.find(node=>{
+      const wanted=String(title||"").trim().toLowerCase();
+      const fallback=wanted&&candidates.find(node=>{
         const heading=node.querySelector("h3,strong");
         return String(heading?.textContent||"").trim().toLowerCase()===wanted;
       });
@@ -573,6 +555,10 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       target?.classList.add("settings-search-hit");
       setTimeout(()=>target?.classList.remove("settings-search-hit"),1600);
     }));
+  }
+  function openSearchResult(item){
+    setSettingsSection(item.section);setSettingsSearch("");
+    revealSettingTarget(item.id,item.title);
   }
   return <div className="settings-page redesigned-settings">
     <aside className="settings-rail">
@@ -653,20 +639,15 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
             {providerOptions.map(item=><option key={item.id} value={item.id}>{item.name}{item.official?" · official":""}</option>)}
           </select>
         </label>
-        {selected==="freebuff"?<>
-          <p>{loggedIn?(freebuffUnavailable?`Signed in, but Freebuff inference is unavailable (${freebuffSessionLabel(freebuff)}).`:"Signed in to Freebuff."):"Sign in to use Freebuff inference."}</p>
-          <button className="setting-action" onClick={changeFreebuffAuth} disabled={freebuffAuthBusy}>{freebuffAuthBusy?(loggedIn?"Signing out…":"Waiting for sign-in…"):(loggedIn?"Sign out":"Sign in to Freebuff")}</button>
-        </>:<>
-          <label>API key
-            <input data-testid="provider-api-key" type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={selectedStatus?.hasKey?"Saved key ••••••••":"Paste API key"}/>
-          </label>
-          <div className="provider-key-actions">
-            <button data-testid="save-provider-key" className="setting-action" onClick={saveProviderKey} disabled={!apiKey.trim()}>Save API key</button>
-            {selectedStatus?.hasKey&&<button onClick={clearProviderKey}>Remove key</button>}
-          </div>
-          <p className="provider-note">{PROVIDER_NOTES[selected]||"Models are loaded from the selected provider when its API supports discovery."}</p>
-        </>}
-        <p data-testid="provider-status" className={modelError||freebuffAuthError||freebuffUnavailable?"provider-status-error":""}><strong>{PROVIDER_LABELS[selected]||selectedStatus?.name||selected}</strong> · {providerSwitching?"switching provider…":selectedStatus?.hasKey||selected==="freebuff"?(modelError||freebuffAuthError||freebuffUnavailable?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required"}{providerMessage?" · "+providerMessage:""}{modelError?" · "+modelError:""}</p>
+        <label>API key
+          <input data-testid="provider-api-key" type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={selectedStatus?.hasKey?"Saved key ••••••••":"Paste API key"}/>
+        </label>
+        <div className="provider-key-actions">
+          <button data-testid="save-provider-key" className="setting-action" onClick={saveProviderKey} disabled={!apiKey.trim()}>Save API key</button>
+          {selectedStatus?.hasKey&&<button onClick={clearProviderKey}>Remove key</button>}
+        </div>
+        <p className="provider-note">{PROVIDER_NOTES[selected]||"Models are loaded from the selected provider when its API supports discovery."}</p>
+        <p data-testid="provider-status" className={modelError?"provider-status-error":""}><strong>{MODEL_PROVIDER_LABELS[selected]||selectedStatus?.name||selected}</strong> · {providerStatusText}{providerMessage?" · "+providerMessage:""}{modelError&&modelError!==providerStatusText?" · "+modelError:""}</p>
       </div>}
       {settingsSection==="agents"&&["codex","claude","opencode"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-models")}>
         <h3>Custom models</h3>
@@ -700,7 +681,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         {!scopedMcpServers.length&&!mcpDraft&&<p className="provider-note">No Trebell-managed MCP servers are configured for this runtime and environment.</p>}
         {mcpMessage&&<p className={/failed|error/i.test(mcpMessage)?"provider-status-error":"provider-note"}>{mcpMessage}</p>}
       </div>}
-      {settingsSection==="agents"&&<div className="settings-card" {...targetProps("agents-runtime")}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available?"ready":"not ready"}</strong>{selectedManagedInference&&<><br/>{selectedAgent==="codex"&&<>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/></>}Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong><br/>Freebuff account: <strong>{freebuffUnavailable?freebuffSessionLabel(freebuff):loggedIn?"ready":"signed out"}</strong></>}</>}</p><button onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>}
+      {settingsSection==="agents"&&<div className="settings-card" {...targetProps("agents-runtime")}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available?"ready":"not ready"}</strong>{selectedManagedInference&&<><br/>{selectedAgent==="codex"&&<>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/></>}Inference: <strong>{modelProviderLabel(runtime?.provider||selected)}</strong></>}</p><button onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>}
       {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-followups")}><h3>Follow-up behavior</h3>{selectedAgentCapabilities.steering?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">{selectedAgent==="native"?"Steer current turn at the next safe boundary":"Steer current turn immediately"}</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. This runtime does not expose in-flight steering.</p>}</div>}
       {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-context-management")}>
         <h3>Context management</h3>
@@ -753,7 +734,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       {settingsSection==="desktop"&&window.trebellDesktop?.background&&<div className="settings-card"><h3>Background mode</h3><p>Keep Trebell's local harness running in the system tray after the window closes, and start it automatically when you sign in.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.backgroundMode)} onChange={e=>setBackgroundMode(e.target.checked)}/> Keep Trebell running in background</label></div>}
       <div className="settings-card keybindings-settings" hidden={settingsSection!=="shortcuts"}><h3>Keyboard shortcuts</h3><p>Shortcuts can be conditional. For example, <code>threadOpen && !modalOpen</code> means “only when a thread is open and no dialog is covering the app.”</p>{settingsSection==="shortcuts"&&KEYBINDING_COMMANDS.map(command=>{const rule=keybindingRules.find(item=>item.command===command.id);return <div className="keybinding-row" key={command.id}><strong>{command.label}</strong><label>Shortcut<input value={rule?.key||""} onChange={e=>updateKeybinding(command.id,{key:e.target.value})}/></label><label>When<input value={rule?.when||""} placeholder="Always" onChange={e=>updateKeybinding(command.id,{when:e.target.value})}/></label></div>})}{settingsSection==="shortcuts"&&projectScripts.length>0&&<><h4>Project actions</h4>{projectScripts.map(script=>{const command="script."+script.id+".run";const rule=keybindingRules.find(item=>item.command===command);return <div className="keybinding-row" key={command}><strong>Run {script.name}</strong><label>Shortcut<input value={rule?.key||""} onChange={e=>updateKeybinding(command,{key:e.target.value})}/></label><label>When<input value={rule?.when||"projectOpen && !modalOpen"} onChange={e=>updateKeybinding(command,{when:e.target.value})}/></label></div>})}</>}<p className="provider-note">Available contexts: chatFocus, terminalFocus, terminalOpen, previewFocus, textInputFocus, modelPickerOpen, projectOpen, threadOpen, pullRequestOpen, running, modalOpen, rightPanelOpen, desktop. Combine them with <code>!</code>, <code>&&</code>, <code>||</code> and parentheses. Blank shortcuts stay unbound until you assign one.</p></div>
       <div className="settings-card update-settings" hidden={settingsSection!=="general"}><h3>Updates</h3>{desktopUpdate?.supported?<><p>Current: <strong>{desktopUpdate.currentVersion||update?.current||"unknown"}</strong>{desktopUpdate.availableVersion&&<><br/>Available: <strong>{desktopUpdate.availableVersion}</strong></>}<br/>Status: <strong>{updateStatusLabel}</strong></p>{desktopUpdate.status==="downloading"&&<div className="update-progress"><span style={{width:`${Math.max(0,Math.min(100,desktopUpdate.percent||0))}%`}}/></div>}{desktopUpdate.status==="downloading"&&<p className="provider-note">{Math.round(desktopUpdate.percent||0)}% downloaded</p>}{desktopUpdate.error&&<p className="provider-status-error">{desktopUpdate.error}</p>}<div className="provider-key-actions"><button onClick={checkDesktopUpdate} disabled={["checking","downloading","installing"].includes(desktopUpdate.status)}><RefreshCw size={12}/> Check now</button>{desktopUpdate.status==="available"&&<button className="setting-action" onClick={downloadDesktopUpdate}><Download size={12}/> Download update</button>}{desktopUpdate.status==="downloaded"&&<button className="setting-action" onClick={installDesktopUpdate}>Restart & install</button>}</div>{desktopUpdate.status==="downloaded"&&!settings.continueThreadsAfterRestart&&<p className="provider-note">Restart recovery is off. Finish active work first, or enable Restart recovery before installing.</p>}</>:<>{update?.latest?<p>Current: <strong>{update.current}</strong><br/>Latest: <strong>{update.latest}</strong></p>:<p>{update?.error||"Checking releases…"}</p>}{update?.url&&<button onClick={()=>window.open(update.url,"_blank")}><Download size={13}/> Open latest release</button>}{desktopUpdate?.status==="development"&&<p className="provider-note">In-app installation is available in packaged Trebell builds.</p>}</>}</div>
-      <div className="settings-card" hidden={settingsSection!=="diagnostics"}><h3>Diagnostics</h3><p>Runtime and project diagnostics are local to this machine.</p><div className="diag-badges"><span className={runtime?.agentRuntimeStatus?.available?"ok":""}><Activity size={12}/> {selectedAgentStatus?.name||selectedAgent}</span>{selectedManagedInference&&<span className={diagnostics?.runtime?.providerReady?"ok":""}><ShieldCheck size={12}/> {PROVIDER_LABELS[diagnostics?.runtime?.provider||selected]||"Provider"}</span>}</div></div>
+      <div className="settings-card" hidden={settingsSection!=="diagnostics"}><h3>Diagnostics</h3><p>Runtime and project diagnostics are local to this machine.</p><div className="diag-badges"><span className={runtime?.agentRuntimeStatus?.available?"ok":""}><Activity size={12}/> {selectedAgentStatus?.name||selectedAgent}</span>{selectedManagedInference&&<span className={diagnostics?.runtime?.providerReady?"ok":""}><ShieldCheck size={12}/> {MODEL_PROVIDER_LABELS[diagnostics?.runtime?.provider||selected]||"Provider"}</span>}</div></div>
     </div>
     <div className="diagnostics-log" hidden={settingsSection!=="diagnostics"}><div><strong>Runtime log</strong><button aria-label="Refresh diagnostics" onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={12}/></button></div>{settingsSection==="diagnostics"&&diagnostics?.logs?.length?<pre>{diagnostics.logs.map(x=>"["+new Date(x.at).toLocaleTimeString()+"] "+x.stream+": "+x.text).join("")}</pre>:<div className="diagnostics-empty"><Activity size={22}/><strong>No runtime activity yet</strong><span>Provider and harness diagnostics will appear here when Trebell has something useful to report.</span></div>}</div>
     </section>

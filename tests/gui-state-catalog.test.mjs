@@ -23,8 +23,8 @@ test("/api/state returns compact thread catalog while per-thread metadata stays 
     const state=new TrebellStateStore(env);
     state.updateSettings({onboardingComplete:true});
     state.updateThreadMeta("thread-heavy",{
-      runtime:"codex",runtimeInstanceId:"codex-default",provider:"freebuff",projectless:true,updatedAt:100,
-      threadSnapshot:{id:"thread-heavy",name:"Heavy thread",preview:"Bootstrap should stay compact",cwd:"C:/repo",model:"model-a",updatedAt:100,createdAt:90,status:{type:"idle"},runtime:"codex",provider:"freebuff"},
+      runtime:"codex",runtimeInstanceId:"codex-default",provider:"openai",projectless:true,updatedAt:100,
+      threadSnapshot:{id:"thread-heavy",name:"Heavy thread",preview:"Bootstrap should stay compact",cwd:"C:/repo",model:"model-a",updatedAt:100,createdAt:90,status:{type:"idle"},runtime:"codex",provider:"openai"},
       goal:{objective:"G".repeat(10000)},trebellQueue:[{id:"queued-1",input:[{type:"text",text:"Q".repeat(10000)}]}],
       trebellContext:{task:"T".repeat(10000),selectedFiles:[{path:"src/heavy.js",reason:"R".repeat(5000)}]},
       continuityNotes:{completedWork:["C".repeat(10000)]},reviewedFiles:Array.from({length:500},(_,index)=>"src/file-"+index+".js"),

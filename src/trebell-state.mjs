@@ -9,6 +9,8 @@ import { normalizeProjectHooks } from "./project-hooks.mjs";
 import { SqliteStateCollections,threadMetaCatalogProjection } from "./sqlite-state-collections.mjs";
 import { normalizeReasoningEffort } from "./model-reasoning-effort.mjs";
 import { normalizeModelServiceTier } from "./model-service-tier.mjs";
+import { DEFAULT_MODEL_PROVIDER, normalizeProviderId } from "./provider-manager.mjs";
+import { isRetiredProviderSelection, migrateLegacyProjectSettings, migrateLegacyProviderSettings, migrateLegacyQueueItems } from "./legacy-provider-migration.mjs";
 
 const DEFAULT_STATE = Object.freeze({
   version: 2,
@@ -53,7 +55,7 @@ const DEFAULT_STATE = Object.freeze({
     modelServiceTiers: {},
     modelPrices: {},
     mcpServers: [],
-    modelProvider: "freebuff",
+    modelProvider: DEFAULT_MODEL_PROVIDER,
     onboardingComplete: false,
   },
   environments: [],
@@ -200,12 +202,16 @@ export class TrebellStateStore {
       if(JSON.stringify(rawSettings.agentRuntimeInstances||[])!==JSON.stringify(normalizedRuntimeInstances))this.needsRewrite=true;
       settings.agentRuntimeInstances=normalizedRuntimeInstances;
       if(!Object.prototype.hasOwnProperty.call(rawSettings,"onboardingComplete")&&projects.length>0)settings.onboardingComplete=true;
+      // Retired model providers: re-point the Native provider selection and clear its persisted model ids. Whether the
+      // retired provider was selected comes from the raw file: the merged defaults already name the new default.
+      const providerMigration=migrateLegacyProviderSettings(settings,{defaultProvider:DEFAULT_MODEL_PROVIDER,retiredProviderActive:isRetiredProviderSelection(rawSettings.modelProvider)}),projectMigrations=projects.map(project=>migrateLegacyProjectSettings(project));
+      if(providerMigration.changed||projectMigrations.some(item=>item.changed))this.needsRewrite=true;
       return {
         ...clone(DEFAULT_STATE),
         ...parsed,
         version:DEFAULT_STATE.version,
-        settings,
-        projects,
+        settings:providerMigration.settings,
+        projects:projectMigrations.map(item=>item.project),
         threadMeta:parsed.threadMeta&&typeof parsed.threadMeta==="object"?parsed.threadMeta:{},
         environments:Array.isArray(parsed.environments)?parsed.environments.map(profile=>({...profile,enabled:profile?.enabled!==false})):[],
         stashes:Array.isArray(parsed.stashes)?parsed.stashes:[],
@@ -291,6 +297,7 @@ export class TrebellStateStore {
     if("remoteAccessEnabled" in patch){patch={...patch};delete patch.remoteAccessEnabled}
     if("remoteAccessPort" in patch){patch={...patch};delete patch.remoteAccessPort}
     if("agentDeviceAccess" in patch){patch={...patch};delete patch.agentDeviceAccess}
+    if("modelProvider" in patch)patch={...patch,modelProvider:normalizeProviderId(patch.modelProvider)};
     if("worktreeSubmodules" in patch&&!['recursive','top-level','none'].includes(String(patch.worktreeSubmodules)))patch={...patch,worktreeSubmodules:'recursive'};
     if("worktreeCleanup" in patch)patch={...patch,worktreeCleanup:normalizeWorktreeCleanup(patch.worktreeCleanup)};
     if("storageCleanup" in patch)patch={...patch,storageCleanup:normalizeStorageCleanup(patch.storageCleanup)};
@@ -419,8 +426,12 @@ export class TrebellStateStore {
     this.#save();
   }
   threadMeta(threadId){
-    if(this.collections)return clone(this.collections.threadMeta(threadId)||{});
-    return clone(this.state.threadMeta[threadId]||{});
+    const stored=this.collections?(this.collections.threadMeta(threadId)||{}):(this.state.threadMeta[threadId]||{});
+    const queue=migrateLegacyQueueItems(stored.trebellQueue);if(!queue.changed)return clone(stored);
+    // Queued follow-ups saved with a retired provider's model are kept but lose that model.
+    const next={...stored,trebellQueue:queue.items};
+    if(this.collections)this.collections.putThreadMeta(threadId,next);else{this.state.threadMeta[threadId]=next;this.#save()}
+    return clone(next);
   }
   updateThreadMeta(threadId,patch={}){
     const current=this.collections?(this.collections.threadMeta(threadId)||{}):(this.state.threadMeta[threadId]||{});

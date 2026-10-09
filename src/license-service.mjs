@@ -40,8 +40,6 @@ async function scanNodeModules(dir,rootPackage,records,seen){
 async function build(){
   const rootPackage=await readJson(join(packageRoot,"package.json"))||{};const records=[],seen=new Set();
   try{await scanNodeModules(join(packageRoot,"node_modules"),rootPackage,records,seen)}catch{}
-  const vendor=join(packageRoot,"vendor","freebuff2api");const vendorPkg=await readJson(join(vendor,"package.json"));
-  if(vendorPkg?.name){const key=`${vendorPkg.name}@${vendorPkg.version||"vendored"}`;if(!seen.has(key))records.push({id:key,name:vendorPkg.name,version:String(vendorPkg.version||"vendored"),license:typeof vendorPkg.license==="string"?vendorPkg.license:"MIT",component:"Vendored provider bridge",directory:vendor,homepage:vendorPkg.homepage||vendorPkg.repository?.url||null})}
   records.sort((a,b)=>a.name.localeCompare(b.name)||a.version.localeCompare(b.version));
   return {records,rootPackage};
 }

@@ -17,19 +17,16 @@ import {
 } from "./workspace.mjs";
 import { spawn } from "node:child_process";
 import { codexBin, codexHome, packageRoot, trebellHome } from "./paths.mjs";
-import { DEFAULT_PORT } from "./config.mjs";
-import { health, isLoggedIn, listModels, listModelMetadata, logout, runLogin, startBridge } from "./freebuff.mjs";
-import { getFreebuffOverview } from "./freebuff-product.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
 import { CheckpointService } from "./checkpoint-service.mjs";
 import { TerminalManager } from "./terminal-manager.mjs";
 import { EnvironmentManager, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { interactiveTerminalCommand } from "./terminal-command.mjs";
 import { startRemoteAppServer } from "./environment-app-server.mjs";
-import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
+import { DEFAULT_MODEL_PROVIDER, MODEL_PROVIDERS, ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
+import { isRetiredProviderModel, removeRetiredProviderData } from "./legacy-provider-migration.mjs";
 import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-context-window.mjs";
 import { withNormalizedModelCapabilities } from "./model-capabilities.mjs";
-import { normalizeChatTurnResponse, providerTurnToChat } from "./provider-turn.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
 import { AcpClient } from "./acp-client.mjs";
 import { configureAntigravityAuth } from "./antigravity-runtime-installer.mjs";
@@ -325,12 +322,20 @@ async function stopAppServer(instance){
   try{await instance?.close?.()}catch{}
 }
 
-function fakeModels(provider="freebuff"){
+function knownModelProvider(providerId){
+  return Object.prototype.hasOwnProperty.call(MODEL_PROVIDERS,String(providerId||"").trim().toLowerCase());
+}
+
+const MOCK_DEFAULT_MODEL="test/coding-fast";
+function fakeModels(provider=DEFAULT_MODEL_PROVIDER){
   if(provider==="agentrouter") return ["gpt-5.6-sol","gpt-6-astra","claude-opus-4-8","claude-opus-5","deepseek-v4-flash"];
   if(provider==="justworker") return ["claude-opus-4-8"];
   if(provider==="hcnsec") return ["glm-5.3"];
   if(provider==="vyceai") return ["claude-sonnet-4-6","gpt-astra","deepseek-v4.1","auto"];
-  return ["freebuff/deepseek/deepseek-v4-flash","freebuff/test/coding-large","freebuff/test/coding-fast"];
+  return [MOCK_DEFAULT_MODEL,"test/coding-large"];
+}
+function fakeDefaultModel(provider=DEFAULT_MODEL_PROVIDER){
+  return fakeModels(provider).includes(MOCK_DEFAULT_MODEL)?MOCK_DEFAULT_MODEL:null;
 }
 
 function statsSnapshot(){
@@ -473,6 +478,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const bootId=randomUUID();
   const dist=String(env.TREBELL_UI_DIST||"").trim()?resolve(String(env.TREBELL_UI_DIST).trim()):resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
+  // After the settings migration above: delete what retired model providers left under the Trebell home.
+  removeRetiredProviderData(env,{log:message=>console.error(message)});
   const eventJournal=new EventJournal(env);
   const providers=new ProviderManager({env,fetchFn:fetchImpl});
   const environments=new EnvironmentManager({state,env});
@@ -527,12 +534,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   async function resolveNativeModelContextWindow({provider,model}={}){
     const providerId=normalizeProviderId(provider||selectedProvider),key=modelContextWindowKey(providerId,model);if(nativeModelContextWindows.has(key))return nativeModelContextWindows.get(key);
     if(mock||!model)return null;
-    if(providerId==="freebuff"){
-      if(!isLoggedIn(env))return null;await ensureBridge();
-      const metadata=await listModelMetadata(DEFAULT_PORT);rememberNativeModelContextWindows({metadata:{models:metadata?.models||[]}}, {fallbackProvider:"freebuff"});
-    }else{
-      const result=await providers.models(providerId);rememberNativeModelContextWindows({metadata:{models:result.metadata||[]}}, {fallbackProvider:providerId});
-    }
+    const result=await providers.models(providerId);rememberNativeModelContextWindows({metadata:{models:result.metadata||[]}}, {fallbackProvider:providerId});
     return nativeModelContextWindows.get(key)||null;
   }
   const safeLogText=value=>boundDiagnosticText(redactSecretText(value,{environment:env}));
@@ -542,8 +544,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(agentRuntimes.activeRuntime()==="codex")return agentRuntimes.activeInstance().id;
     return "codex-default";
   }
-  let bridge=null;
-  let loginPromise=null;
   const checkpoints=new CheckpointService({state,env,environments});
   function recordCheckpointTrace(name,status,checkpoint=null,extra={}){
     const threadId=checkpoint?.threadId||extra.threadId||null,meta=threadId?state.threadMeta(threadId):{};
@@ -994,7 +994,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   let appServer=await ensureCodexAppServer(agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null,{preferredPort:appPort,ownerKey:"catalog"});
 
   function providerReady(providerId=selectedProvider){
-    return providerId==="freebuff" ? (mock || isLoggedIn(env)) : (mock || providers.hasKey(providerId));
+    return mock || providers.hasKey(providerId);
   }
   async function bootstrapPayload(req,{agentSnapshot=null}={}){
     const appReady=mock || await appServerReady(appServer,appPort);
@@ -1006,7 +1006,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       :Boolean(activeAgentStatus?.available);
     return {
       mock,
-      loggedIn:mock || isLoggedIn(env),
       agentRuntime:selectedAgentRuntime,
       agentRuntimeInstanceId:activeAgentInstance?.id||`${selectedAgentRuntime}-default`,
       runtimeCapabilities:agentRuntimes.capabilities(activeAgentInstance),
@@ -1014,7 +1013,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       agentRuntimeStatus:activeAgentStatus,
       provider:selectedProvider,
       providerReady:providerReady(),
-      bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
       appServerReady:appReady,
       wsUrl:mock ? null : (env.TREBELL_GUI_PUBLIC==="1"
         ? `${String(req.headers["x-forwarded-proto"]||"https").split(",")[0].trim()==="https"?"wss":"ws"}://${String(req.headers["x-forwarded-host"]||req.headers.host||"").split(",")[0].trim()}${selectedAgentRuntime==="codex"?"/api/codex/ws":"/api/agent/ws"}`
@@ -1452,20 +1450,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
     if(selectedAgentRuntime!=="native"){
       const result=await agentRuntimes.models(agentRuntimes.activeInstance());
-      return finish({models:result.models||[],metadata:{provider:selectedAgentRuntime,agentRuntime:selectedAgentRuntime,source:result.source,models:result.metadata||[]},error:result.error||null});
+      return finish({models:result.models||[],defaultModel:result.preferred||null,metadata:{provider:selectedAgentRuntime,agentRuntime:selectedAgentRuntime,source:result.source,models:result.metadata||[]},error:result.error||null});
     }
-    if(mock) return finish({models:fakeModels(selectedProvider),metadata:{provider:selectedProvider,models:fakeModels(selectedProvider).map(id=>({id,provider:selectedProvider}))}});
-    if(selectedProvider==="freebuff"){
-      if(!isLoggedIn(env)) return finish({models:[],metadata:{provider:"freebuff",models:[]}});
-      await ensureBridge();
-      const [models,metadata]=await Promise.all([
-        listModels(DEFAULT_PORT),
-        listModelMetadata(DEFAULT_PORT).catch(()=>({registry:null,models:[]})),
-      ]);
-      return finish({models:models.filter(id=>id.startsWith("freebuff/")),metadata:{...metadata,provider:"freebuff"}});
-    }
+    if(mock) return finish({models:fakeModels(selectedProvider),defaultModel:fakeDefaultModel(selectedProvider),metadata:{provider:selectedProvider,models:fakeModels(selectedProvider).map(id=>({id,provider:selectedProvider}))}});
     const result=nativeProviderCatalog||await providers.models(selectedProvider);
-    return finish({models:result.models||[],metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null});
+    return finish({models:result.models||[],defaultModel:result.defaultModel||null,metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null});
   }
   async function selectedModelsPayload(){
     const catalog=await selectedModels();
@@ -1474,6 +1463,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       agentRuntime:selectedAgentRuntime,
       ready:selectedAgentRuntime==="native"?providerReady():true,
       models:catalog.models||[],
+      defaultModel:catalog.defaultModel||null,
       metadata:catalog.metadata||null,
       error:catalog.error||null,
     };
@@ -1486,6 +1476,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         agentRuntime:selectedAgentRuntime,
         ready:false,
         models:[],
+        defaultModel:null,
         metadata:null,
         error:error instanceof Error?error.message:String(error),
       })),
@@ -1493,48 +1484,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return {bootstrap,catalog};
   }
 
-  async function ensureBridge(){
-    if(mock) return null;
-    if(await health(DEFAULT_PORT)) return bridge;
-    if(!isLoggedIn(env)) return null;
-    bridge=await startBridge({port:DEFAULT_PORT,env,quiet:true});
-    return bridge;
-  }
-
-  async function queryFreebuff(prompt,model){
-    if(mock) return {text:`Mock Freebuff reply: ${prompt}`,model};
-    if(!isLoggedIn(env)) throw new Error("Sign in to Freebuff first.");
-    await ensureBridge();
-    const response=await fetchImpl(`http://127.0.0.1:${DEFAULT_PORT}/v1/chat/completions`,{
-      method:"POST",
-      headers:{"content-type":"application/json"},
-      body:JSON.stringify({model,messages:[{role:"user",content:prompt}],stream:false}),
-      signal:AbortSignal.timeout(300000),
-    });
-    const raw=await response.text();
-    if(!response.ok) throw new Error(raw.slice(0,1200)||`Freebuff HTTP ${response.status}`);
-    const parsed=JSON.parse(raw);
-    return {text:parsed?.choices?.[0]?.message?.content ?? "",model,raw:parsed};
-  }
   async function nativeProviderTurn(request={}){
     const provider=normalizeProviderId(request.provider||selectedProvider),model=String(request.model||"").trim();if(!model)throw new Error("Trebell Native requires a model.");
     if(mock){
       const last=[...(request.messages||[])].reverse().find(message=>message?.role==="user"),content=typeof last?.content==="string"?last.content:"";
       return {id:"mock-native-"+randomUUID(),provider,model,text:`Mock Trebell Native reply: ${content}`.trim(),toolCalls:[],finishReason:"stop",status:"completed",usage:{inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0},raw:{mock:true}};
     }
-    if(provider!=="freebuff")return providers.turn(provider,request,{signal:request.signal,promptCaching:provider==="anthropic",streamResponses:provider==="openai"});
-    if(!isLoggedIn(env))throw new Error("Sign in to Freebuff first.");await ensureBridge();
-    const signals=[request.signal,AbortSignal.timeout(300000)].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
-    const response=await fetchImpl(`http://127.0.0.1:${DEFAULT_PORT}/v1/chat/completions`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(providerTurnToChat(request)),signal});
-    const raw=await response.text();
-    if(!response.ok){
-      const error=new Error(raw.slice(0,1200)||`Freebuff HTTP ${response.status}`);
-      error.status=response.status;
-      error.retryable=[408,409,425,429].includes(response.status)||(response.status>=500&&response.status<=599);
-      throw error;
-    }
-    let parsed;try{parsed=raw?JSON.parse(raw):{}}catch{throw new Error("Freebuff returned invalid JSON for a Native provider turn.")}
-    return normalizeChatTurnResponse(parsed,"freebuff",model);
+    if(!knownModelProvider(request.provider||selectedProvider))throw Object.assign(new Error("Trebell Native cannot use this thread's model provider because it is not available. Choose a model provider in Settings > Agents & models."),{retryable:false});
+    if(isRetiredProviderModel(model))throw Object.assign(new Error("Trebell Native cannot use this thread's model because it is no longer available. Choose another model and send again."),{retryable:false});
+    return providers.turn(provider,request,{signal:request.signal,promptCaching:provider==="anthropic",streamResponses:provider==="openai"});
   }
   function sourceControlStyleInstruction(style,kind,customInstructions=""){
     if(style==="conventional")return kind==="review"
@@ -1594,12 +1552,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(mock)return kind==="review"
       ?{text:JSON.stringify({title:"Mock generated review",body:"Mock generated description."}),style,model:selectedModel,prompt}
       :{text:"Mock generated commit",style,model:selectedModel,prompt};
-    const answer=selectedProvider==="freebuff"
-      ?await queryFreebuff(prompt,selectedModel)
-      :await providers.directChat(selectedProvider,{prompt,model:selectedModel});
+    const answer=await providers.directChat(selectedProvider,{prompt,model:selectedModel});
     return {text:String(answer.text||"").trim(),style,model:selectedModel,prompt};
   }
-  if(!mock && isLoggedIn(env)) ensureBridge().catch(()=>{});
 
   const server=createServer(async(req,res)=>{
     const url=new URL(req.url || "/",`http://127.0.0.1:${port}`);
@@ -1781,7 +1736,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           const body=await readJsonBody(req);
           const provider=normalizeProviderId(body.provider||selectedProvider);
           let previousKey=null,validatedCatalog=null;
-          if("apiKey" in body && provider!=="freebuff"){
+          if("apiKey" in body&&!knownModelProvider(body.provider||selectedProvider))throw new Error("Unknown model provider. Choose a listed provider before saving an API key.");
+          if("apiKey" in body){
             previousKey=providers.key(provider);
             providers.setKey(provider,body.apiKey);
             if(String(body.apiKey||"").trim() && ["openai","anthropic","gemini","agentrouter","vyceai"].includes(provider)){
@@ -1806,6 +1762,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             status:providers.status(selectedProvider),
             ready:providerReady(),
             models:catalog.models||[],
+            defaultModel:catalog.defaultModel||null,
             metadata:catalog.metadata||null,
             error:catalog.error||null,
           });
@@ -2432,7 +2389,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         provider:selectedProvider,
         providerReady:providerReady(),
         appServerReady:mock || await appServerReady(appServer,appPort),
-        bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
         appServerExitCode:appServer?.child?.exitCode ?? null,
         activeEnvironment:appServer?.environment||null,
         appServerError:appServer?.error||null,
@@ -2445,7 +2401,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const prompt=String(payload.prompt||"").trim();
         const model=String(payload.model||"").trim();
         if(!prompt||!model) return json(res,400,{error:"prompt and model are required"});
-        if(selectedProvider==="freebuff") return json(res,200,await queryFreebuff(prompt,model));
+        if(mock) return json(res,200,{text:`Mock direct reply: ${prompt}`,model,provider:selectedProvider,raw:{mock:true}});
+        // Never send a prompt meant for another harness to the Native provider (e.g. while that harness reconnects).
+        if(selectedAgentRuntime!=="native") return json(res,409,{error:"Direct chat is only available when Trebell Native is the active harness."});
         return json(res,200,await providers.directChat(selectedProvider,{prompt,model}));
       }catch(error){return json(res,502,{error:error instanceof Error?error.message:String(error)});}
     }
@@ -2817,98 +2775,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await environments.validateAttachments(body.environmentId||null,paths));
       }catch(error){return json(res,400,{error:error.message});}
     }
-    if(url.pathname==="/api/freebuff/overview"){
-      const model=url.searchParams.get("model") || "";
-      const timezone=url.searchParams.get("timezone") || "UTC";
-      if(mock) return json(res,200,{
-        loggedIn:true,
-        user:{name:"Tanishq",email:"tanishq@example.com"},
-        instanceId:"mock-instance",
-        proxySession:{status:"active",model:model.replace(/^freebuff\//,"") || "deepseek/deepseek-v4-flash",instanceId:"mock-instance"},
-        session:{
-          status:"active",
-          admittedAt:new Date(Date.now()-11*60_000).toISOString(),
-          freebucks:{balance:86},
-          prices:{"deepseek/deepseek-v4-flash":10,"z-ai/glm-5.3-flash":5,"google/gemini-3.8-flash":50},
-          rateLimitsByModel:{"deepseek/deepseek-v4-flash":{remaining:73,limit:100}},
-          offPeakOffers:{active:true},
-        },
-        streak:{streak:6,todayUsed:true,lastUsageDate:new Date().toISOString().slice(0,10),timeZone:timezone,freebucksDailyBonus:10},
-        errors:{session:null,streak:null},
-        derived:{
-          balance:86,
-          selectedModel:model || "freebuff/deepseek/deepseek-v4-flash",
-          activeModel:model || "freebuff/deepseek/deepseek-v4-flash",
-          selectedPrice:{model:(model || "freebuff/deepseek/deepseek-v4-flash").replace(/^freebuff\//,""),current:10,peak:15,offPeak:10,offPeakActive:true,source:"server"},
-          priceByModel:{
-            "freebuff/deepseek/deepseek-v4-flash":{current:10,peak:15,offPeak:10,offPeakActive:true,source:"server"},
-            "freebuff/z-ai/glm-5.3-flash":{current:5,offPeakActive:false,source:"server"},
-            "freebuff/google/gemini-3.8-flash":{current:50,offPeakActive:false,source:"server"}
-          },
-          rateLimit:{remaining:73,limit:100},
-          sessionStatus:"active",
-          admittedAt:new Date(Date.now()-11*60_000).toISOString(),
-          expiresAt:null,
-          firstTabDiscount:null,
-          offPeakOffers:{active:true},
-          resetTime:null,
-          timezone,
-        }
-      });
-      if(!isLoggedIn(env)) return json(res,200,{loggedIn:false,user:null,session:null,streak:null,derived:null});
-      try{
-        await ensureBridge();
-        const overview=await getFreebuffOverview({model,timezone,bridgePort:DEFAULT_PORT,env,fetchImpl});
-        return json(res,200,overview);
-      }catch(error){
-        return json(res,503,{loggedIn:true,error:error instanceof Error?error.message:String(error)});
-      }
-    }
-    if(url.pathname==="/api/freebuff/heartbeat" && req.method==="POST"){
-      const model=url.searchParams.get("model") || "";
-      const timezone=url.searchParams.get("timezone") || "UTC";
-      if(mock) return json(res,200,{ok:true});
-      if(!isLoggedIn(env)) return json(res,401,{ok:false,error:"not_logged_in"});
-      try{
-        const overview=await getFreebuffOverview({model,timezone,heartbeat:true,bridgePort:DEFAULT_PORT,env,fetchImpl});
-        return json(res,200,{ok:true,overview});
-      }catch(error){
-        return json(res,503,{ok:false,error:error instanceof Error?error.message:String(error)});
-      }
-    }
     if(url.pathname==="/api/models"){
       try{
         return json(res,200,await selectedModelsPayload());
       }catch(error){
-        return json(res,503,{...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),agentRuntime:selectedAgentRuntime,ready:false,models:[],error:error instanceof Error?error.message:String(error)});
+        return json(res,503,{...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),agentRuntime:selectedAgentRuntime,ready:false,models:[],defaultModel:null,error:error instanceof Error?error.message:String(error)});
       }
-    }
-    if(url.pathname==="/api/login/start" && req.method==="POST"){
-      if(mock) return json(res,202,{started:true});
-      if(!loginPromise){
-        let opened=false;
-        loginPromise=runLogin([],{
-          port:DEFAULT_PORT,
-          env,
-          onOutput:(chunk)=>{
-            if(opened) return;
-            const match=String(chunk).match(/https:\/\/[^\s]+/);
-            if(match){
-              opened=true;
-              try{ openBrowser(match[0]); }catch{}
-            }
-          },
-        })
-          .then(async code=>{ if(code===0) await ensureBridge(); return code; })
-          .finally(()=>{loginPromise=null;});
-      }
-      return json(res,202,{started:true});
-    }
-    if(url.pathname==="/api/logout" && req.method==="POST"){
-      logout(env);
-      try{bridge?.child?.kill("SIGTERM");}catch{}
-      bridge=null;
-      return json(res,200,{ok:true});
     }
     if(url.pathname==="/api/update/check"){
       try{
@@ -2933,7 +2805,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       const cwd=url.searchParams.get("path")||process.cwd();
       return json(res,200,{
         version:TREBELL_VERSION,
-        runtime:{provider:selectedProvider,providerReady:providerReady(),appServerReady:mock||await appServerReady(appServer,appPort),bridgeReady:selectedProvider==="freebuff"?(mock||await health(DEFAULT_PORT)):false,appServerExitCode:appServer?.child?.exitCode??null},
+        runtime:{provider:selectedProvider,providerReady:providerReady(),appServerReady:mock||await appServerReady(appServer,appPort),appServerExitCode:appServer?.child?.exitCode??null},
         state:{projects:state.projects(),settings:state.settings(),threadMeta:state.listThreadMeta()},
         git:await gitInfo(cwd).catch(error=>({error:error.message})),
         terminalSessions:mock?[]:terminals.list(),
@@ -3204,7 +3076,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         cloneJobs.shutdown(),
         terminals?.shutdown(),
         stopCodexAppServers(),
-        stopChildProcess(bridge?.child),
         eventJournal.close(),
       ]);
       await new Promise(resolve=>server.close(resolve));

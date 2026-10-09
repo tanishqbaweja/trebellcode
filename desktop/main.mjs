@@ -111,19 +111,11 @@ function nativeCodexPath(){
   return bundledCodexPath(process.resourcesPath);
 }
 
-function bundledBridgePath(){
-  if(!app.isPackaged) return null;
-  return join(process.resourcesPath,"app.asar.unpacked","vendor","freebuff2api","dist","index.mjs");
-}
-
 function configureBundledRuntime(){
   if(!app.isPackaged) return;
   const codex=nativeCodexPath();
-  const bridge=bundledBridgePath();
   if(!existsSync(codex)) throw new Error(`Bundled Codex harness is missing: ${codex}`);
-  if(!existsSync(bridge)) throw new Error(`Bundled Freebuff bridge is missing: ${bridge}`);
   process.env.TREBELL_CODEX_BIN=codex;
-  process.env.TREBELL_FREEBUFF_ENTRYPOINT=bridge;
   process.env.TREBELL_ELECTRON_AS_NODE="1";
 }
 

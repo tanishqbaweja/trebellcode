@@ -7,9 +7,8 @@ node_modules/
 .env.*
 !.env.example
 
-# Generated frontend/provider bundles
+# Generated frontend bundles
 ui/dist/
-vendor/freebuff2api/dist/
 
 # Test and visual artifacts
 test-results/

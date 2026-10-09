@@ -4,7 +4,7 @@ import { reduceEventJournal, reduceThreadEvents } from "../src/event-state-reduc
 
 test("thread event reducer reconstructs lifecycle, verification, checkpoints, policy and delegation",()=>{
   const events=[
-    {id:"1",at:100,runtime:"codex",provider:"freebuff",threadId:"thread-1",turnId:"turn-1",category:"client",name:"turn/started"},
+    {id:"1",at:100,runtime:"codex",provider:"codex-default",threadId:"thread-1",turnId:"turn-1",category:"client",name:"turn/started"},
     {id:"2",at:120,threadId:"thread-1",turnId:"turn-1",category:"checkpoint",name:"checkpoint.created",status:"completed",data:{checkpointId:"cp-1",root:"/repo",label:"before edit"}},
     {id:"3",at:140,threadId:"thread-1",turnId:"turn-1",category:"policy",name:"policy.decision",status:"confirm",data:{decision:"CONFIRM",reason:"External side effect"}},
     {id:"4",at:160,threadId:"thread-1",turnId:"turn-1",category:"runtime",name:"turn/completed",status:"completed",data:{turn:{id:"turn-1",status:"completed",durationMs:60}}},
@@ -13,7 +13,7 @@ test("thread event reducer reconstructs lifecycle, verification, checkpoints, po
     {id:"7",at:220,threadId:"thread-1",category:"delegation",name:"delegation.started",status:"running",data:{childThreadId:"child-1"}},
   ];
   const state=reduceThreadEvents(events,{threadId:"thread-1"});
-  assert.equal(state.runtime,"codex");assert.equal(state.provider,"freebuff");assert.equal(state.status,"active");assert.equal(state.activeTurnId,"repair-1");
+  assert.equal(state.runtime,"codex");assert.equal(state.provider,"codex-default");assert.equal(state.status,"active");assert.equal(state.activeTurnId,"repair-1");
   assert.equal(state.turns.started,1);assert.equal(state.turns.completed,1);assert.equal(state.checkpoint.id,"cp-1");
   assert.equal(state.verification.recordId,"v-1");assert.equal(state.verification.nextAction,"repair");assert.equal(state.verification.repairTurnId,"repair-1");
   assert.equal(state.policy.lastDecision,"CONFIRM");assert.equal(state.policy.confirmedCount,1);assert.equal(state.delegation.lastChildThreadId,"child-1");

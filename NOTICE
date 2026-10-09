@@ -2,7 +2,6 @@ Trebell Code
 
 Copyright 2026 Trebell Code contributors
 
-Trebell Code integrates the OpenAI Codex runtime package and includes a
-vendored derivative of freebuff2api. Their licenses, provenance, integration
-details, and retained notices are documented in THIRD_PARTY_NOTICES.md and the
-corresponding dependency/vendor license files.
+Trebell Code integrates the OpenAI Codex runtime package. Its license,
+provenance, integration details, and retained notices are documented in
+THIRD_PARTY_NOTICES.md and the corresponding dependency license files.

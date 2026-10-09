@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ProviderManager } from "../src/provider-manager.mjs";
+import { DEFAULT_MODEL_PROVIDER, MODEL_PROVIDERS, ProviderManager, normalizeProviderId } from "../src/provider-manager.mjs";
+import { RETIRED_MODEL_PROVIDERS } from "../src/legacy-provider-migration.mjs";
 import { nativeRequestMetrics, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "../src/provider-turn.mjs";
@@ -222,6 +223,140 @@ test("official API model catalogs use their documented authentication styles",as
   assert.equal(anthropic.headers["x-api-key"],"an-key");
   assert.equal(anthropic.headers["anthropic-version"],"2023-06-01");
   assert.equal(gemini.headers.Authorization,"Bearer gm-key");
+});
+
+test("the Native provider registry is exactly the seven API-key providers with OpenAI as the default",()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-registry-"));
+  try{
+    const ids=["openai","anthropic","gemini","agentrouter","justworker","hcnsec","vyceai"];
+    assert.equal(DEFAULT_MODEL_PROVIDER,"openai");
+    assert.deepEqual(Object.keys(MODEL_PROVIDERS),ids);
+    for(const id of ids){assert.equal(MODEL_PROVIDERS[id].id,id);assert.equal(MODEL_PROVIDERS[id].requiresKey,true,id);assert.ok(MODEL_PROVIDERS[id].envKey,id)}
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>{throw new Error("registry checks must not touch the network")}});
+    const definitions=manager.definitions();
+    assert.deepEqual(definitions.map(item=>item.id),ids);
+    for(const item of definitions){assert.equal(item.requiresKey,true,item.id);assert.equal(item.hasKey,false,item.id);assert.equal(manager.status(item.id).ready,false,item.id)}
+    assert.equal(manager.key(),"");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("provider ids normalize to known providers and fall back to the default for empty, unknown and retired ids",()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-normalize-"));
+  try{
+    assert.equal(normalizeProviderId(" AgentRouter "),"agentrouter");
+    assert.equal(normalizeProviderId("HCNSEC"),"hcnsec");
+    for(const value of [undefined,null,"","   ","unknown-provider","constructor","__proto__","toString",...RETIRED_MODEL_PROVIDERS])assert.equal(normalizeProviderId(value),DEFAULT_MODEL_PROVIDER,String(value));
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>{throw new Error("normalization must not touch the network")}});
+    for(const value of [undefined,"",...RETIRED_MODEL_PROVIDERS,"unknown-provider"]){
+      assert.equal(manager.get(value).id,"openai",String(value));
+      assert.equal(manager.status(value).id,"openai",String(value));
+      assert.equal(manager.hasKey(value),false,String(value));
+    }
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("official OpenAI catalog drops models that cannot run an agent turn and defaults to the newest full-size GPT model",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-catalog-"));
+  try{
+    const rows=[
+      {id:"babbage-002",created:1692634615},{id:"davinci-002",created:1692634301},
+      {id:"text-embedding-3-large",created:1705953180},{id:"text-embedding-ada-002",created:1671217299},
+      {id:"whisper-1",created:1677532384},{id:"tts-1",created:1681940951},{id:"tts-1-hd",created:1699046015},{id:"gpt-4o-mini-tts",created:1742403959},{id:"gpt-4o-transcribe",created:1742068463},
+      {id:"dall-e-3",created:1698785189},{id:"gpt-image-1",created:1745517030},{id:"omni-moderation-latest",created:1731689265},
+      {id:"gpt-4o-realtime-preview",created:1727659998},{id:"gpt-6-realtime",created:1795000000},{id:"gpt-4o-audio-preview",created:1727460443},{id:"gpt-3.5-turbo-instruct",created:1692901427},
+      {id:"gpt-6-luna-mini",created:1794000000},{id:"gpt-6-luna-nano",created:1794000001},{id:"gpt-6-codex",created:1794500000},{id:"gpt-6-search-preview",created:1794600000},{id:"gpt-6-chat-latest",created:1794700000},{id:"gpt-oss-120b",created:1794800000},
+      {id:"gpt-6-luna",created:1793000000},{id:"gpt-5.6-sol",created:1770000000},{id:"gpt-4.1",created:1744316542},{id:"o4-mini",created:1744225351},{id:"chatgpt-4o-latest",created:1723515131},
+    ];
+    const requests=[];
+    const manager=new ProviderManager({env:{TREBELL_HOME:root,OPENAI_API_KEY:"oa-catalog"},fetchFn:async(url,init={})=>{requests.push({url,authorization:init.headers?.Authorization});return Response.json({object:"list",data:rows.map(row=>({...row,object:"model",owned_by:"openai"}))})}});
+    const result=await manager.models("openai");
+    assert.deepEqual(requests,[{url:"https://api.openai.com/v1/models",authorization:"Bearer oa-catalog"}]);
+    assert.deepEqual(result.models,["chatgpt-4o-latest","gpt-4.1","gpt-5.6-sol","gpt-6-chat-latest","gpt-6-codex","gpt-6-luna","gpt-6-luna-mini","gpt-6-luna-nano","gpt-6-search-preview","gpt-oss-120b","o4-mini"]);
+    assert.equal(result.defaultModel,"gpt-6-luna");
+    assert.equal(result.source,"live");
+    assert.deepEqual(result.metadata.map(item=>item.id).sort(),result.models);
+    assert.ok(result.metadata.every(item=>item.provider==="openai"&&item.protocolCompatibility?.[0]==="openai-responses"));
+    assert.equal(result.models.includes(result.defaultModel),true);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("official OpenAI catalog judges fine-tunes by their base model and filtered words as whole id tokens",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-fine-tunes-"));
+  try{
+    const kept=[
+      "ft:gpt-4o-2024-08-06:speechify::AbC123",
+      "ft:gpt-4o-mini-2024-07-18:acme:image-captions:Xy12",
+      "ft:gpt-4.1-2025-04-14:acme:instructions-bot:Zz9",
+      "ft:gpt-4.1-mini-2025-04-14:audio-notes-org:support:Q1",
+      "ft:gpt-4o-2024-08-06:acme:realtime-support:R2",
+      "gpt-4.1",
+    ];
+    const dropped=[
+      "ft:davinci-002:acme::Old1","ft:babbage-002:acme:chat:Old2",
+      "gpt-4o-mini-tts","text-embedding-3-small","dall-e-3","gpt-3.5-turbo-instruct","gpt-3.5-turbo-instruct-0914",
+      "gpt-4o-transcribe-diarize","gpt-image-1-mini","gpt-realtime-mini","gpt-audio","whisper-1","tts-1-hd","omni-moderation-latest",
+    ];
+    const rows=[...kept,...dropped].map((id,index)=>({id,created:id==="gpt-4.1"?1744316542:1700000000+index}));
+    const manager=new ProviderManager({env:{TREBELL_HOME:root,OPENAI_API_KEY:"oa-fine-tunes"},fetchFn:async()=>Response.json({data:rows})});
+    const result=await manager.models("openai");
+    assert.deepEqual(result.models,[...kept].sort(),"an organization or suffix such as speechify or image-captions never hides a chat fine-tune");
+    assert.deepEqual(result.metadata.map(item=>item.id).sort(),result.models);
+    assert.equal(result.defaultModel,"gpt-4.1","a fine-tune is never the silent default");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("official OpenAI default model breaks created-time ties deterministically and falls back to the newest remaining model",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-default-"));
+  try{
+    let rows=[];
+    const manager=new ProviderManager({env:{TREBELL_HOME:root,OPENAI_API_KEY:"oa-default"},fetchFn:async()=>Response.json({data:rows})});
+    rows=[{id:"gpt-6-sol-2026-09-01",created:1790000000},{id:"gpt-6-sol",created:1790000000},{id:"gpt-6-astra"},{id:"gpt-5.6-sol",created:1770000000}];
+    assert.equal((await manager.models("openai")).defaultModel,"gpt-6-sol");
+    rows=[{id:"o3",created:100},{id:"o4-mini",created:300},{id:"gpt-6-luna-mini",created:200},{id:"text-embedding-3-small",created:400}];
+    const fallback=await manager.models("openai");
+    assert.deepEqual(fallback.models,["gpt-6-luna-mini","o3","o4-mini"]);
+    assert.equal(fallback.defaultModel,"o4-mini");
+    rows=[{id:"whisper-1",created:1},{id:"dall-e-3",created:2}];
+    assert.deepEqual(await manager.models("openai").then(({models,defaultModel})=>({models,defaultModel})),{models:[],defaultModel:null});
+    rows=[];
+    assert.deepEqual(await manager.models("openai").then(({models,defaultModel})=>({models,defaultModel})),{models:[],defaultModel:null});
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("official OpenAI default model never silently picks an expensive pro variant",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-pro-"));
+  try{
+    let rows=[];
+    const manager=new ProviderManager({env:{TREBELL_HOME:root,OPENAI_API_KEY:"oa-pro"},fetchFn:async()=>Response.json({data:rows})});
+    rows=[{id:"gpt-6-pro",created:1796000000},{id:"gpt-6-pro-2026-10-01",created:1796500000},{id:"o3-pro",created:1797000000},{id:"gpt-6-sol",created:1795000000},{id:"gpt-5.6-sol",created:1770000000}];
+    const result=await manager.models("openai");
+    assert.deepEqual(result.models,["gpt-5.6-sol","gpt-6-pro","gpt-6-pro-2026-10-01","gpt-6-sol","o3-pro"],"pro models stay in the catalog and remain selectable");
+    assert.equal(result.defaultModel,"gpt-6-sol");
+    rows=[{id:"GPT-6-Pro",created:1796000000},{id:"gpt-6-luna-mini",created:1795500000},{id:"o3-pro",created:1797000000},{id:"o4-mini",created:1790000000}];
+    assert.equal((await manager.models("openai")).defaultModel,"gpt-6-luna-mini","the fallback skips pro variants as well");
+    rows=[{id:"gpt-6-prometheus",created:1796000000},{id:"gpt-6-proto",created:1795900000},{id:"gpt-6-sol",created:1795000000}];
+    assert.equal((await manager.models("openai")).defaultModel,"gpt-6-prometheus","pro is matched as a whole id token, not as a substring");
+    rows=[{id:"o3-pro",created:2},{id:"gpt-6-pro",created:1}];
+    assert.deepEqual(await manager.models("openai").then(({models,defaultModel})=>({models,defaultModel})),{models:["gpt-6-pro","o3-pro"],defaultModel:null});
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("non-OpenAI catalogs keep their live list unfiltered while static catalogs report their configured default",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-default-model-"));
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>Response.json({data:[{id:"text-embedding-3-large",created:5},{id:"gpt-5.5",created:4}]})});
+    assert.deepEqual(await manager.models("openai"),{models:[],defaultModel:null,source:"none",error:"API key required"});
+    const justworker=await manager.models("justworker"),hcnsec=await manager.models("hcnsec");
+    assert.equal(justworker.defaultModel,"claude-opus-4-8");assert.equal(justworker.error,"API key required");
+    assert.equal(hcnsec.defaultModel,"glm-5.3");
+    manager.setKey("justworker","jw");assert.equal((await manager.models("justworker")).defaultModel,"claude-opus-4-8");
+    manager.setKey("agentrouter","ar");manager.setKey("vyceai","vy");manager.setKey("gemini","gm");manager.setKey("anthropic","an");
+    for(const id of ["agentrouter","vyceai","gemini","anthropic"]){
+      const result=await manager.models(id);
+      assert.deepEqual(result.models,["gpt-5.5","text-embedding-3-large"],id);
+      assert.equal(result.defaultModel,null,id);
+    }
+  }finally{rmSync(root,{recursive:true,force:true})}
 });
 
 test("official OpenAI Anthropic and Gemini turns use their native compatibility endpoints",async()=>{

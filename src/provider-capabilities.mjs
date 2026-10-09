@@ -42,12 +42,6 @@ const CAPABILITIES=Object.freeze({
     persistentConnection:feature("unsupported","The current Trebell Native Gemini integration uses HTTPS Chat Completions requests."),
     nativeCompaction:feature("unsupported","Trebell Native owns compaction for direct Gemini API sessions."),
   }),
-  freebuff:Object.freeze({
-    ...COMMON_PROXY,
-    promptCaching:feature("unverified","Freebuff is served through Trebell's local compatibility bridge; cache behavior depends on the authenticated upstream route and must be measured."),
-    previousResponseContinuation:feature("unverified","The bridge speaks a Responses-compatible protocol but Trebell has not verified server-side continuation through this route."),
-    persistentConnection:feature("unsupported","The current Trebell Freebuff bridge integration does not expose a persistent Responses WebSocket transport."),
-  }),
   agentrouter:Object.freeze({
     ...COMMON_PROXY,
     previousResponseContinuation:feature("unverified","AgentRouter accepts a Responses-shaped API, but Trebell has not verified that previous_response_id semantics are preserved by this proxy."),
@@ -74,9 +68,11 @@ const CAPABILITIES=Object.freeze({
   }),
 });
 
+// A missing, unknown or retired provider id keeps the conservative all-unverified profile; it never
+// inherits a first-party provider's verified features.
 export function providerCapabilities(providerId){
-  const id=String(providerId||"freebuff").trim().toLowerCase();
-  const value=CAPABILITIES[id]||COMMON_PROXY;
+  const id=String(providerId||"").trim().toLowerCase();
+  const value=Object.prototype.hasOwnProperty.call(CAPABILITIES,id)?CAPABILITIES[id]:COMMON_PROXY;
   return {
     promptCaching:{...value.promptCaching},
     explicitCacheControl:{...value.explicitCacheControl},

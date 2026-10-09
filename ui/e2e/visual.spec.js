@@ -17,7 +17,7 @@ const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 mkdirSync(auditDir,{recursive:true});
 
 async function prepare(page,request){
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"Visual Audit Workspace",activate:true}});
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
@@ -101,9 +101,9 @@ async function startCodexRequestHarness(thread,{onRequest}={}){
 }
 
 async function routeProjectlessCodexRequestFixture(page,harness,thread,version,{threadMeta={},settingsPatch={}}={}){
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version,activeEnvironmentId:null,activeEnvironment:null})}));
-  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...settingsPatch},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null},...threadMeta}})}));
-  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version,activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...settingsPatch},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null},...threadMeta}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
   await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
@@ -112,17 +112,16 @@ async function routeProjectlessCodexRequestFixture(page,harness,thread,version,{
 test("startup failures never become a fake empty mock workspace",async({page})=>{
   test.setTimeout(35_000);
   let bootstrapCalls=0,allowStartup=false;
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   await page.route(/\/api\/bootstrap$/,route=>{
     bootstrapCalls++;
     if(!allowStartup)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate startup bootstrap failure"})});
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"startup-retry-fixture",activeEnvironmentId:null,activeEnvironment:null})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"startup-retry-fixture",activeEnvironmentId:null,activeEnvironment:null})});
   });
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
-  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
   await page.waitForTimeout(300);
@@ -142,17 +141,15 @@ test("startup failures never become a fake empty mock workspace",async({page})=>
   await expect(page.getByTestId("model-picker")).toBeEnabled();
 });
 
-test("startup partial failures stay visible while Codex skips unrelated Native provider account state",async({page})=>{
+test("startup partial failures stay visible",async({page})=>{
   test.setTimeout(30_000);
   await page.addInitScript(()=>Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{background:{set:async()=>{throw new Error("Deliberate background mode apply failure")}}}}));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",backgroundMode:true};
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"startup-partial-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",backgroundMode:true};
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"startup-partial-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
-  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-  let freebuffOverviewCalls=0;
-  await page.route(/\/api\/freebuff\/overview/,route=>{freebuffOverviewCalls++;return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate startup Freebuff account failure"})})});
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
@@ -160,7 +157,6 @@ test("startup partial failures stay visible while Codex skips unrelated Native p
   const error=page.getByTestId("app-action-error");
   await expect(error).toContainText("Started with partial data");
   await expect(error).toContainText("desktop background mode: Deliberate background mode apply failure");
-  expect(freebuffOverviewCalls).toBe(0);
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
@@ -169,14 +165,14 @@ test("startup partial failures stay visible while Codex skips unrelated Native p
 
 test("startup launches independent model theme and project requests before core state resolves",async({page})=>{
   test.setTimeout(30_000);
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   let coreReleased=false;
   const extrasBeforeCore=new Set();
   const coreGate=new Promise(resolve=>setTimeout(()=>{coreReleased=true;resolve()},400));
   const markExtra=name=>{if(!coreReleased)extrasBeforeCore.add(name)};
-  await page.route(/\/api\/bootstrap$/,async route=>{await coreGate;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"startup-parallel-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
+  await page.route(/\/api\/bootstrap$/,async route=>{await coreGate;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"startup-parallel-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
   await page.route(/\/api\/state$/,async route=>{await coreGate;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})})});
-  await page.route(/\/api\/models$/,route=>{markExtra("models");return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})})});
+  await page.route(/\/api\/models$/,route=>{markExtra("models");return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})})});
   await page.route(/\/api\/projects$/,route=>{markExtra("projects");return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})})});
   await page.route(/\/api\/environment\/themes$/,route=>{markExtra("themes");return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})})});
   await page.goto("/");
@@ -385,7 +381,7 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   await page.setViewportSize({width:1280,height:800});
   await page.screenshot({path:auditDir+"chat-1280x800.png",fullPage:true});
   await expect(page.locator(".workspace-mode")).toHaveValue("current");
-  await expect(modelPicker).not.toContainText("deepseek/deepseek");
+  await expect(modelPicker).not.toContainText("/");
   const compactOverflow=await composerBar.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(compactOverflow.scroll).toBeLessThanOrEqual(compactOverflow.client+1);
   const compactMain=await box(main),compactComposer=await box(composer);
@@ -534,9 +530,9 @@ test("settings loads provider and runtime catalogs only on relevant sections",as
 
 test("ACP MCP settings persist runtime-scoped stdio servers",async({page})=>{
   test.setTimeout(35_000);
-  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default",modelProvider:"freebuff",activeEnvironmentId:null,mcpServers:[]};
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default",modelProvider:"openai",activeEnvironmentId:null,mcpServers:[]};
   const settingsPosts=[];
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"cursor",agentRuntimeReady:true,appServerReady:true,wsUrl:null,cwd:process.cwd(),platform:process.platform,version:"mcp-settings-fixture",runtimeCapabilities:{queue:true,fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}})}));
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"cursor",agentRuntimeReady:true,appServerReady:true,wsUrl:null,cwd:process.cwd(),platform:process.platform,version:"mcp-settings-fixture",runtimeCapabilities:{queue:true,fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}})}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>{
     if(route.request().method()==="POST"){const patch=route.request().postDataJSON()||{};settingsPosts.push(patch);settings={...settings,...patch}}
@@ -573,17 +569,17 @@ test("ACP MCP settings persist runtime-scoped stdio servers",async({page})=>{
 
 test("Trebell Native HTTP MCP settings persist only a bearer environment reference",async({page})=>{
   test.setTimeout(35_000);
-  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff",activeEnvironmentId:null,mcpServers:[]};
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",activeEnvironmentId:null,mcpServers:[]};
   const settingsPosts=[];
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:true,wsUrl:null,cwd:process.cwd(),platform:process.platform,version:"native-http-mcp-fixture",runtimeCapabilities:{queue:true,fork:true,rewind:true,compaction:true,mcpInjection:true,dynamicTools:true,languageIntelligence:true,clientFilesystem:true,clientTerminal:true,usageReporting:true,contextReporting:true,detachedTasks:true,multiModelFanout:true,backgroundProcesses:true,nativeQueue:true,nativeHistoryPagination:true,steering:true,delegation:true}})}));
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:true,wsUrl:null,cwd:process.cwd(),platform:process.platform,version:"native-http-mcp-fixture",runtimeCapabilities:{queue:true,fork:true,rewind:true,compaction:true,mcpInjection:true,dynamicTools:true,languageIntelligence:true,clientFilesystem:true,clientTerminal:true,usageReporting:true,contextReporting:true,detachedTasks:true,multiModelFanout:true,backgroundProcesses:true,nativeQueue:true,nativeHistoryPagination:true,steering:true,delegation:true}})}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>{
     if(route.request().method()==="POST"){const patch=route.request().postDataJSON()||{};settingsPosts.push(patch);settings={...settings,...patch}}
     return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)});
   });
   await page.route(/\/api\/agent-runtimes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native",canAuthenticate:false,installable:false,capabilities:{mcpInjection:true,dynamicTools:true}}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true,approvedEnvironmentKeys:["MCP_ACCESS_TOKEN"]}],statuses:[{id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true,version:"built-in"}]})}));
-  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ready:true,providers:[{id:"freebuff",name:"Freebuff",ready:true}]})}));
-  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["gpt-5.6"],metadata:{provider:"freebuff",models:[{id:"gpt-5.6",name:"GPT-5.6"}]}})}));
+  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ready:true,providers:[{id:"openai",name:"OpenAI API",official:true,ready:true}]})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["gpt-5.6"],metadata:{provider:"openai",models:[{id:"gpt-5.6",name:"GPT-5.6"}]}})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
   await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
@@ -669,7 +665,7 @@ test("composer file mentions use fuzzy shared workspace search",async({page,requ
       writeFile(join(components,"UserCard.jsx"),"export const UserCard=()=>null;\n","utf8"),
       writeFile(join(utils,"compareUsers.js"),"export function compareUsers(){}\n","utf8"),
     ]);
-    await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+    await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
     await request.post("/api/projects",{data:{path:dir,name:"Fuzzy Mention Workspace",activate:true}});
     await page.goto("/");
     const composer=page.getByTestId("composer");await expect(composer).toBeVisible();await composer.fill("Inspect @ucard");
@@ -686,7 +682,7 @@ test("workspace panel refreshes from live RPC file-change notifications",async({
   const dir=await mkdtemp(join(tmpdir(),"trebell-live-workspace-"));
   try{
     await writeFile(join(dir,"initial.txt"),"initial\n","utf8");
-    await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+    await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
     await request.post("/api/projects",{data:{path:dir,name:"Live Workspace",activate:true}});
     await page.goto("/");
     await page.getByTestId("right-panel-toggle").click();
@@ -830,9 +826,9 @@ test("agent question failures keep attachments and answers retryable",async({pag
   const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"question-attachment-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
-    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"question-attachment-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
@@ -1144,10 +1140,10 @@ test("checkpoint failures warn without blocking successful turns",async({page})=
     return false;
   }});
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"checkpoint-warning-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
-    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"checkpoint-warning-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null}}})}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
     await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
     await page.route(/\/api\/thread-meta$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
@@ -1222,10 +1218,10 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     return false;
   }});
   try{
-    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"context-engine-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"context-engine-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:meta}})}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
     await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
     await page.route(/\/api\/thread-meta$/,async route=>{
@@ -2251,11 +2247,11 @@ test("thread context Git metadata failures stay visible without blocking open",a
   const project={id:"thread-context-project",name:"Thread Context Project",path:process.cwd(),environmentId:null};
   const thread={id:"thread-context-thread",name:"Thread context fixture",preview:"Git metadata honesty",cwd:project.path,createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
   const harness=await startCodexRequestHarness(thread);
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"thread-context-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"thread-context-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null}}})}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
     await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
     await page.route(/\/api\/thread-meta$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
@@ -2314,11 +2310,11 @@ test("Codex repository tools query Trebell context intelligence end to end",asyn
   const root=process.cwd(),project={id:"repo-tools-project",name:"Repository tools fixture",path:root,environmentId:null,effectiveSettings:{defaultWorkspaceMode:"current"}};
   const thread={id:"repo-tools-thread",name:"Repository tools fixture",preview:"Deterministic repository intelligence",cwd:root,createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
   const harness=await startCodexRequestHarness(thread);
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:root,platform:process.platform,version:"repo-tools-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:root,platform:process.platform,version:"repo-tools-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,cwd:root,environmentId:null}}})}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
     await page.route(/\/api\/thread-meta$/,route=>{const body=route.request().postDataJSON?.()||{};return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body.patch||{})})});
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
@@ -2343,7 +2339,7 @@ test("Codex repository tools query Trebell context intelligence end to end",asyn
 
 test("Agents refresh failures preserve the last valid thread list",async({page})=>{
   test.setTimeout(35_000);
-  const child={id:"agents-refresh-child",parentThreadId:"agents-refresh-parent",name:"Preserved delegated agent",preview:"Agent refresh preservation",agentRole:"researcher",status:{type:"idle"},model:"freebuff/test/coding-fast",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const child={id:"agents-refresh-child",parentThreadId:"agents-refresh-parent",name:"Preserved delegated agent",preview:"Agent refresh preservation",agentRole:"researcher",status:{type:"idle"},model:"test/coding-fast",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
   let failThreadList=false,threadListReads=0;
   const harness=await startCodexRequestHarness(child,{onRequest:async(message,ws)=>{
     if(message.method==="thread/list"){
@@ -2386,8 +2382,8 @@ test("Agents refresh failures preserve the last valid thread list",async({page})
 
 test("model delegation tool starts a bounded child and surfaces it in Agents",async({page})=>{
   test.setTimeout(35_000);
-  const parent={id:"delegation-parent",name:"Delegation parent",preview:"Parent task",cwd:process.cwd(),status:{type:"idle"},model:"freebuff/test/coding-fast",createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
-  const child={id:"delegation-child",parentThreadId:parent.id,name:null,preview:"Delegated parser audit",agentRole:"delegate",cwd:process.cwd(),status:{type:"active",activeFlags:[]},model:"freebuff/test/coding-fast",createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]};
+  const parent={id:"delegation-parent",name:"Delegation parent",preview:"Parent task",cwd:process.cwd(),status:{type:"idle"},model:"test/coding-fast",createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const child={id:"delegation-child",parentThreadId:parent.id,name:null,preview:"Delegated parser audit",agentRole:"delegate",cwd:process.cwd(),status:{type:"active",activeFlags:[]},model:"test/coding-fast",createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]};
   const childMeta={parentThreadId:parent.id,delegation:{id:"delegation-1",parentThreadId:parent.id,task:"Audit the parser edge cases",permission:"read-only",requestedPermission:"read-only",isolation:"shared",requestedIsolation:"inherit",ownership:["src/parser.js","tests/parser.test.js"],model:child.model,status:"running",turnId:"delegated-turn"}};
   let threads=[parent];const delegationRequests=[];
   const harness=await startCodexRequestHarness(parent,{onRequest:async(message,ws)=>{
@@ -2401,7 +2397,6 @@ test("model delegation tool starts a bounded child and surfaces it in Agents",as
   }});
   try{
     await routeProjectlessCodexRequestFixture(page,harness,parent,"delegation-tool-fixture");
-    await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
     await page.route(/\/api\/source-control\/branch-reviews$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[]})}));
     await page.route(/\/api\/checkpoints\?threadId=/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
     await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>{
@@ -2767,62 +2762,6 @@ test("published theme refresh failures keep the last valid catalog visible",asyn
   await page.screenshot({path:auditDir+"settings-theme-refresh-error-1280x800.png",fullPage:true});
 });
 
-test("Freebuff sign-in failures surface immediately without starting a useless poll",async({page,request})=>{
-  test.setTimeout(30_000);
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff"}});
-  const boot=await (await request.get("/api/bootstrap")).json();
-  let bootstrapCalls=0;
-  await page.route(/\/api\/bootstrap$/,route=>{
-    bootstrapCalls++;
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...boot,mock:false,loggedIn:false,providerReady:false,appServerReady:false,wsUrl:null})});
-  });
-  await page.route("**/api/login/start",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate Freebuff sign-in failure"})}));
-  await page.goto("/");
-  await page.getByRole("button",{name:"Settings",exact:true}).click();
-  await page.getByRole("button",{name:/Agents & models/}).click();
-  const signIn=page.getByRole("button",{name:"Sign in to Freebuff",exact:true});
-  await expect(signIn).toBeVisible();
-  const callsBefore=bootstrapCalls;
-  await signIn.click();
-  const status=page.getByTestId("provider-status");
-  await expect(status).toContainText("Deliberate Freebuff sign-in failure");
-  await expect(status).toHaveClass(/provider-status-error/);
-  await expect(signIn).toBeEnabled();
-  await page.waitForTimeout(1700);
-  expect(bootstrapCalls).toBe(callsBefore);
-  await page.setViewportSize({width:1280,height:800});
-  await status.scrollIntoViewIfNeeded();
-  await page.screenshot({path:auditDir+"freebuff-signin-error-1280x800.png",fullPage:true});
-});
-
-test("Freebuff sign-in verification failures stop the poll and stay visible",async({page,request})=>{
-  test.setTimeout(30_000);
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff"}});
-  const boot=await (await request.get("/api/bootstrap")).json();
-  let verifying=false,bootstrapCalls=0;
-  await page.route(/\/api\/bootstrap$/,route=>{
-    bootstrapCalls++;
-    if(verifying)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate Freebuff verification failure"})});
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...boot,mock:false,loggedIn:false,providerReady:false,appServerReady:false,wsUrl:null})});
-  });
-  await page.route("**/api/login/start",route=>{verifying=true;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({started:true})})});
-  await page.goto("/");
-  await page.getByRole("button",{name:"Settings",exact:true}).click();
-  await page.getByRole("button",{name:/Agents & models/}).click();
-  const signIn=page.getByRole("button",{name:"Sign in to Freebuff",exact:true});
-  await expect(signIn).toBeVisible();
-  const callsBefore=bootstrapCalls;
-  await signIn.click();
-  const status=page.getByTestId("provider-status");
-  await expect(status).toContainText("Could not verify Freebuff sign-in: Deliberate Freebuff verification failure",{timeout:7000});
-  await expect(status).toHaveClass(/provider-status-error/);
-  await expect(signIn).toBeEnabled();
-  expect(bootstrapCalls-callsBefore).toBeGreaterThanOrEqual(3);
-  await page.setViewportSize({width:1280,height:800});
-  await status.scrollIntoViewIfNeeded();
-  await page.screenshot({path:auditDir+"freebuff-signin-verification-error-1280x800.png",fullPage:true});
-});
-
 test("Claude runtime profile editor exposes real auto-compaction settings",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);
@@ -2932,7 +2871,7 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
   const codex=await startRpcFixture({name:"codex-runtime-fixture",sections:true});
   let selectedRuntime="antigravity",selectedInstanceId="antigravity-default";
   const requests={bootstrapGets:0,settingsGets:0,modelGets:0,runtimeGets:0,runtimePosts:0};
-  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const agentSnapshot=()=>({
     selectedRuntime,selectedInstanceId,
     definitions:[
@@ -2955,7 +2894,7 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
       requests.bootstrapGets++;
       const runtime=selectedRuntime;
       if(runtime==="codex")await new Promise(resolve=>setTimeout(resolve,250));
-      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:true,wsUrl:runtime==="codex"?codex.wsUrl:external.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:true,wsUrl:runtime==="codex"?codex.wsUrl:external.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null})});
     });
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
     await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="GET")requests.settingsGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())})});
@@ -2972,7 +2911,7 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
         selectedInstanceId=body.instanceId||`${selectedRuntime}-default`;
       }
       const snapshot=agentSnapshot(),instance=snapshot.instances.find(item=>item.id===selectedInstanceId),status=snapshot.statuses.find(item=>item.id===selectedInstanceId);
-      const bootstrap={mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:true,wsUrl:selectedRuntime==="codex"?codex.wsUrl:external.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null};
+      const bootstrap={mock:false,provider:"openai",providerReady:true,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:true,wsUrl:selectedRuntime==="codex"?codex.wsUrl:external.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null};
       const catalog={agentRuntime:selectedRuntime,models:["fixture-model"],metadata:{models:[{id:"fixture-model",name:"Fixture model",agent:selectedRuntime}]}};
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...snapshot,selected:{runtime:selectedRuntime,instance,status},bootstrap,catalog})});
     });
@@ -3026,10 +2965,10 @@ test("cross-runtime thread open reuses bundled runtime refresh state",async({pag
   test.setTimeout(30_000);
   const requests={bootstrapGets:0,modelGets:0,runtimePosts:0};
   const thread={id:"native-catalog-thread",name:"Native catalog thread",preview:"Open across runtimes",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000-10,status:{type:"idle"}};
-  const bootstrap=runtime=>({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:`${runtime}-default`,agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"cross-runtime-bundle-fixture",activeEnvironmentId:null,activeEnvironment:null});
-  const catalog=runtime=>({agentRuntime:runtime,models:[`${runtime}/test-model`],metadata:{provider:runtime==="native"?"freebuff":runtime,models:[{id:`${runtime}/test-model`,name:runtime==="native"?"Native Test model":"Codex Test model",provider:runtime==="native"?"freebuff":runtime,agent:runtime}]}});
+  const bootstrap=runtime=>({mock:true,provider:"openai",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:`${runtime}-default`,agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"cross-runtime-bundle-fixture",activeEnvironmentId:null,activeEnvironment:null});
+  const catalog=runtime=>({agentRuntime:runtime,models:[`${runtime}/test-model`],metadata:{provider:runtime==="native"?"openai":runtime,models:[{id:`${runtime}/test-model`,name:runtime==="native"?"Native Test model":"Codex Test model",provider:runtime==="native"?"openai":runtime,agent:runtime}]}});
   await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(bootstrap("codex"))})});
-  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{runtime:"native",runtimeInstanceId:"native-default",projectless:true,environmentId:null,threadSnapshot:{...thread,runtime:"native",provider:"freebuff"}}}})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{runtime:"native",runtimeInstanceId:"native-default",projectless:true,environmentId:null,threadSnapshot:{...thread,runtime:"native",provider:"openai"}}}})}));
   await page.route(/\/api\/models$/,route=>{requests.modelGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog("codex"))})});
   await page.route(/\/api\/agent-runtimes$/,route=>{
     if(route.request().method()!=="POST")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedRuntime:"codex",selectedInstanceId:"codex-default",definitions:[],instances:[],statuses:[]})});
@@ -3040,7 +2979,6 @@ test("cross-runtime thread open reuses bundled runtime refresh state",async({pag
   });
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({loggedIn:true})}));
   await page.goto("/");
   await expect(page.getByTestId("model-picker")).toContainText("Codex Test model");
   const baseline={...requests};
@@ -3060,14 +2998,14 @@ test("runtime profile mutations reuse bundled refresh state without follow-up re
     {id:"codex-spare",kind:"codex",displayName:"Codex Spare",enabled:true,homePath:"C:/codex-spare"},
   ];
   const requests={settingsGets:0,bootstrapGets:0,modelGets:0,runtimePosts:0,runtimeDeletes:0};
-  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const snapshot=()=>({
     selectedRuntime,selectedInstanceId,
     definitions:[{id:"codex",name:"Codex",protocol:"codex",multipleInstances:true}],
     instances,
     statuses:instances.map(item=>({id:item.id,kind:item.kind,name:item.displayName,available:true,installed:true,authenticated:true,version:"fixture"})),
   });
-  const bootstrap=()=>({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"runtime-profile-bundle-fixture",activeEnvironmentId:null,activeEnvironment:null});
+  const bootstrap=()=>({mock:true,provider:"openai",providerReady:true,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"runtime-profile-bundle-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const catalog=()=>({agentRuntime:selectedRuntime,models:["fixture-model"],metadata:{models:[{id:"fixture-model",name:"Fixture model",agent:selectedRuntime}]}});
   await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(bootstrap())})});
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
@@ -3129,13 +3067,13 @@ test("runtime profile mutations reuse bundled refresh state without follow-up re
 test("custom model edits refresh the catalog without refreshing bootstrap",async({page})=>{
   test.setTimeout(30_000);
   const requests={bootstrapGets:0,modelGets:0,settingsPosts:0};
-  let currentSettings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",customModels:[],defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  let currentSettings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",customModels:[],defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   const modelPayload=()=>{
     const custom=(currentSettings.customModels||[]).filter(item=>item.runtime==="codex");
     const metadata=[{id:"codex/base",name:"Base",agent:"codex"},...custom.map(item=>({id:item.id,name:item.name||item.id,agent:"codex"}))];
     return {agentRuntime:"codex",models:metadata.map(item=>item.id),metadata:{models:metadata}};
   };
-  await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"custom-model-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
+  await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"custom-model-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:currentSettings,projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>{
     if(route.request().method()==="POST"){
@@ -3146,7 +3084,7 @@ test("custom model edits refresh the catalog without refreshing bootstrap",async
   });
   await page.route(/\/api\/models$/,route=>{requests.modelGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(modelPayload())})});
   await page.route(/\/api\/agent-runtimes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedRuntime:"codex",selectedInstanceId:"codex-default",definitions:[{id:"codex",name:"Codex",protocol:"codex",multipleInstances:true}],instances:[{id:"codex-default",kind:"codex",displayName:"Codex",enabled:true}],statuses:[{id:"codex-default",kind:"codex",name:"Codex",available:true,installed:true,authenticated:true,version:"fixture"}]})}));
-  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:"freebuff",providers:[{id:"freebuff",name:"Freebuff",hasKey:true}],status:{id:"freebuff",hasKey:true},ready:true})}));
+  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:"openai",providers:[{id:"openai",name:"OpenAI API",official:true,hasKey:true}],status:{id:"openai",hasKey:true},ready:true})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
   await page.goto("/");
@@ -3185,9 +3123,9 @@ test("runtime install refreshes only the installed active harness and reuses bun
     {id:"opencode-default",kind:"opencode",name:"OpenCode",available:true,installed:true,authenticated:true,version:"fixture"},
     {id:"antigravity-default",kind:"antigravity",name:"Antigravity",available:true,installed:true,authenticated:true,version:"fixture"},
   ];
-  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const snapshot=()=>({selectedRuntime,selectedInstanceId,definitions,instances,statuses:statuses()});
-  const bootstrap=()=>({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"runtime-install-bundle-fixture",activeEnvironmentId:null,activeEnvironment:null});
+  const bootstrap=()=>({mock:true,provider:"openai",providerReady:true,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"runtime-install-bundle-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const catalog=()=>({agentRuntime:selectedRuntime,models:["fixture-model"],metadata:{models:[{id:"fixture-model",name:"Fixture model",agent:selectedRuntime}]}});
   await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(bootstrap())})});
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
@@ -3226,7 +3164,7 @@ test("successful direct runtime authentication reuses the returned runtime snaps
   test.setTimeout(30_000);
   const requests={runtimeGets:0,authPosts:0};
   let authenticated=false;
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"antigravity",agentRuntimeInstanceId:"antigravity-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"antigravity",agentRuntimeInstanceId:"antigravity-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   const snapshot=()=>({
     selectedRuntime:"antigravity",
     selectedInstanceId:"antigravity-default",
@@ -3234,11 +3172,11 @@ test("successful direct runtime authentication reuses the returned runtime snaps
     instances:[{id:"antigravity-default",kind:"antigravity",displayName:"Antigravity",enabled:true}],
     statuses:[{id:"antigravity-default",kind:"antigravity",name:"Antigravity",available:authenticated,installed:true,authenticated,version:"fixture"}],
   });
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"antigravity",agentRuntimeInstanceId:"antigravity-default",agentRuntimeReady:false,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"runtime-auth-snapshot-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"antigravity",agentRuntimeInstanceId:"antigravity-default",agentRuntimeReady:false,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"runtime-auth-snapshot-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
   await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({agentRuntime:"antigravity",models:["fixture-model"],metadata:{models:[{id:"fixture-model",name:"Fixture model",agent:"antigravity"}]}})}));
-  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:"freebuff",providers:[{id:"freebuff",name:"Freebuff",hasKey:true}],status:{id:"freebuff",hasKey:true},ready:true})}));
+  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:"openai",providers:[{id:"openai",name:"OpenAI API",official:true,hasKey:true}],status:{id:"openai",hasKey:true},ready:true})}));
   await page.route(/\/api\/agent-runtimes$/,route=>{requests.runtimeGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(snapshot())})});
   await page.route(/\/api\/agent-runtime-auth$/,route=>{requests.authPosts++;authenticated=true;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:"antigravity-default",methodId:"oauth-personal",methodName:"Log in with Google",methods:[{id:"oauth-personal",name:"Log in with Google"}]},agentSnapshot:snapshot()})})});
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
@@ -3275,18 +3213,21 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await expect(providerCard).toContainText("API that Trebell Native calls directly");
   await expect(providerCard).toContainText("Trebell Native still owns the thread, tools and agent loop");
   const providerSelect=page.getByTestId("provider-selector");
-  await expect(providerSelect).toHaveValue("freebuff");
+  await expect(providerSelect).toHaveValue("openai");
   await expect(providerSelect.locator('option[value="openai"]')).toHaveText("OpenAI API · official");
   await expect(providerSelect.locator('option[value="anthropic"]')).toHaveText("Anthropic API · official");
   await expect(providerSelect.locator('option[value="gemini"]')).toHaveText("Google Gemini API · official");
-  await providerSelect.selectOption("openai");
-  await expect(providerCard).toHaveAttribute("aria-busy","false");
-  await expect(providerSelect).toHaveValue("openai");
-  await expect(providerCard).toContainText("OpenAI API");
-  await expect(providerCard).toContainText("API key required");
+  const providerStatus=page.getByTestId("provider-status");
+  await expect(providerStatus).toContainText("OpenAI API");
+  await expect(providerStatus).toContainText("API key required");
   await page.setViewportSize({width:1280,height:800});
   await providerCard.scrollIntoViewIfNeeded();
   await page.screenshot({path:auditDir+"settings-native-official-openai-1280x800.png",fullPage:true});
+  await providerSelect.selectOption("anthropic");
+  await expect(providerCard).toHaveAttribute("aria-busy","false");
+  await expect(providerSelect).toHaveValue("anthropic");
+  await expect(providerStatus).toContainText("Anthropic API");
+  await expect(providerStatus).toContainText("API key required");
   await providerSelect.selectOption("agentrouter");
   await expect(providerCard).toHaveAttribute("aria-busy","false");
   await expect(providerSelect).toHaveValue("agentrouter");
@@ -3346,7 +3287,7 @@ test("Trebell Native fork and rewind stay usable and visually honest",async({pag
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   try{
     await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
-      mock:false,loggedIn:true,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,
+      mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,
       wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null,
     })}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
@@ -3606,11 +3547,11 @@ test("project polling failures preserve active clone cards and stay visible",asy
   test.setTimeout(30_000);
   const cloneJob={id:"projects-poll-clone",status:"running",phase:"Receiving objects",progress:37};
   const project={id:"projects-poll-project",name:"Polling Clone Project",path:process.cwd(),environmentId:null,cloneJob};
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
   let failProjects=false,projectReads=0;
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:project.path,platform:process.platform,version:"projects-poll-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:project.path,platform:process.platform,version:"projects-poll-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{}})}));
-  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
   await page.route(/\/api\/projects$/,route=>{
     projectReads++;
     if(failProjects)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate periodic project refresh failure"})});
@@ -3620,7 +3561,6 @@ test("project polling failures preserve active clone cards and stay visible",asy
   await page.route(/\/api\/project-actions\/suggestions\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({scripts:[],t3:{present:false},packageManager:null})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
   await page.route(/\/api\/environments$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({profiles:[]})}));
-  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
   await page.getByRole("button",{name:"Projects",exact:true}).click();
@@ -3645,15 +3585,14 @@ test("clone progress polling failures keep the last known job visible",async({pa
   test.setTimeout(30_000);
   const cloneJob={id:"clone-poll-failure",status:"running",phase:"Cloning objects",progress:42};
   const project={id:"clone-poll-project",name:"Clone Poll Project",path:process.cwd(),environmentId:null,cloneJob};
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:project.path,platform:process.platform,version:"clone-poll-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:project.path,platform:process.platform,version:"clone-poll-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{}})}));
-  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
   await page.route(/\/api\/clone-jobs\?/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate clone progress refresh failure"})}));
   await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:false,status:[],remotes:[],worktrees:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
   const banner=page.getByTestId("clone-banner");
@@ -3676,15 +3615,14 @@ test("clone completion surfaces failed Git metadata refreshes",async({page})=>{
   const completedJob={...runningJob,status:"completed",phase:"Clone complete",progress:100};
   const project={id:"clone-complete-project",name:"Clone Complete Project",path:process.cwd(),environmentId:null,cloneJob:runningJob};
   const completedProject={...project,cloneJob:completedJob};
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:project.path,platform:process.platform,version:"clone-complete-git-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:project.path,platform:process.platform,version:"clone-complete-git-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{}})}));
-  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
   await page.route(/\/api\/clone-jobs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({job:completedJob,project:completedProject})}));
   await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate post-clone Git metadata failure"})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
   await expect(page.getByTestId("clone-banner")).toHaveCount(0,{timeout:5000});
@@ -3776,9 +3714,9 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"steer"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"steer"};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"bounded-history-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"bounded-history-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
     await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["opencode/test-model"],metadata:{provider:"opencode",models:[{id:"opencode/test-model",name:"Test model",provider:"opencode"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
@@ -3859,9 +3797,9 @@ test("OpenCode multi-model fan-out keeps remote worktrees in the active environm
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeEnvironmentId:environmentId,activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeEnvironmentId:environmentId,activeProjectId:project.id};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:root,platform:process.platform,version:"remote-fanout-fixture",activeEnvironmentId:environmentId,activeEnvironment:project.environment})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:root,platform:process.platform,version:"remote-fanout-fixture",activeEnvironmentId:environmentId,activeEnvironment:project.environment})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{}})}));
     await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["opencode/model-a","opencode/model-b"],metadata:{provider:"opencode",models:[{id:"opencode/model-a",name:"Model A",provider:"opencode"},{id:"opencode/model-b",name:"Model B",provider:"opencode"}]}})}));
     await page.route(/\/api\/projects$/,route=>{
@@ -4044,7 +3982,7 @@ test("cross-environment project activation rolls back when project activation fa
   });
   await page.route(/\/api\/settings$/,route=>{
     if(route.request().method()!=="GET")return route.continue();
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeEnvironmentId})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeEnvironmentId})});
   });
   await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...baseBootstrap,activeEnvironmentId,activeEnvironment:activeEnvironmentId?remoteEnvironment:null})}));
   await page.route(/\/api\/environment\/themes(?:\?|$)/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:activeEnvironmentId||"local",environmentName:activeEnvironmentId?remoteEnvironment.name:"Local machine",directory:"",themes:[]})}));
@@ -4235,7 +4173,7 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
   let failTrace=false;const traceNow=Date.now();
   const traceItems=[
     {id:"trace-runtime",at:traceNow,runtime:"opencode",provider:"opencode-default",threadId:thread.id,turnId:"turn-fixture",category:"runtime",name:"item/completed",status:"done",data:{item:{type:"commandExecution"}}},
@@ -4249,7 +4187,7 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
       const items=traceItems.filter(item=>(!runtime||item.runtime===runtime)&&(!category||item.category===category)&&(!after||item.at>=after));
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items,journal:{lastError:null}})});
     });
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null,reviewedFiles:[]}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
     await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["opencode/test-model"],metadata:{provider:"opencode",models:[{id:"opencode/test-model",name:"Test model",provider:"opencode"}]}})}));
@@ -4381,8 +4319,8 @@ test("usage clear failures keep recorded usage visible",async({page,request})=>{
     at:new Date().toISOString(),
     environmentId:null,
     runtime:"codex",
-    provider:"freebuff",
-    model:"freebuff/test/coding-fast",
+    provider:"openai",
+    model:"test/coding-fast",
     usage:{inputTokens:1200,outputTokens:300,cachedInputTokens:200,reasoningOutputTokens:50,totalTokens:1500},
     cost:{currency:"USD",amount:0.0123},
   };
@@ -4391,7 +4329,7 @@ test("usage clear failures keep recorded usage visible",async({page,request})=>{
     return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
       records:[record],
       total:{inputTokens:1200,outputTokens:300,cachedInputTokens:200,reasoningOutputTokens:50,totalTokens:1500},
-      models:{"freebuff/test/coding-fast":{totalTokens:1500,turns:1}},
+      models:{"test/coding-fast":{totalTokens:1500,turns:1}},
       runtimes:{codex:{totalTokens:1500,turns:1}},
       daily:{[record.at.slice(0,10)]:{tokens:1500,turns:1}},
     })});
@@ -4399,12 +4337,12 @@ test("usage clear failures keep recorded usage visible",async({page,request})=>{
   await page.getByRole("button",{name:"Usage",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();
   const recent=page.locator(".usage-recent");
-  await expect(recent).toContainText("freebuff/test/coding-fast");
+  await expect(recent).toContainText("test/coding-fast");
   await expect(page.getByRole("button",{name:"Clear local history",exact:true})).toBeEnabled();
   page.once("dialog",dialog=>dialog.accept());
   await page.getByRole("button",{name:"Clear local history",exact:true}).click();
   await expect(page.getByRole("alert")).toContainText("Deliberate usage clear failure");
-  await expect(recent).toContainText("freebuff/test/coding-fast");
+  await expect(recent).toContainText("test/coding-fast");
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".usage-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
@@ -4625,7 +4563,7 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   await composer.fill(prompt);
   await page.getByTestId("send").click();
   await expect(page.locator(".user-bubble")).toContainText("Please inspect this sample output");
-  await expect(page.locator(".assistant-message-text")).toContainText("Mock Freebuff reply:");
+  await expect(page.locator(".assistant-message-text")).toContainText("Mock direct reply:");
   expect(await page.locator(".user-row").first().evaluate(node=>getComputedStyle(node).contentVisibility)).toBe("auto");
   expect(await page.locator(".history-assistant").first().evaluate(node=>getComputedStyle(node).contentVisibility)).toBe("auto");
   const conversation=page.locator(".conversation-column");
@@ -4687,7 +4625,7 @@ test("failed assistant citations keep the selected excerpt available for retry",
   await composer.fill("Create a citation failure fixture.");
   await page.getByTestId("send").click();
   const assistantText=page.locator(".assistant-message-text").last();
-  await expect(assistantText).toContainText("Mock Freebuff reply:");
+  await expect(assistantText).toContainText("Mock direct reply:");
   await composer.fill("Keep this draft");
   await page.route(/\/api\/attachments\/text$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate assistant citation failure"})}));
   await assistantText.evaluate(node=>{
@@ -4711,7 +4649,7 @@ test("failed assistant citations keep the selected excerpt available for retry",
 
 test("onboarding and license surfaces are visually intentional",async({page,request})=>{
   test.setTimeout(45_000);
-  await request.post("/api/settings",{data:{onboardingComplete:false,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  await request.post("/api/settings",{data:{onboardingComplete:false,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
   await page.goto("/");
   const onboarding=page.getByTestId("onboarding");
   await expect(onboarding).toBeVisible();
@@ -4767,7 +4705,7 @@ test("onboarding and license surfaces are visually intentional",async({page,requ
 
 test("onboarding finish failures stay visible and keep setup open",async({page,request})=>{
   test.setTimeout(30_000);
-  await request.post("/api/settings",{data:{onboardingComplete:false,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  await request.post("/api/settings",{data:{onboardingComplete:false,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
   await page.goto("/");
   const onboarding=page.getByTestId("onboarding");
   await expect(onboarding).toBeVisible();
@@ -4798,8 +4736,8 @@ test("onboarding completion surfaces a failed thread-list refresh",async({page})
   try{
     await routeProjectlessCodexRequestFixture(page,harness,thread,"onboarding-refresh-fixture",{settingsPatch:{onboardingComplete:false}});
     await page.route(/\/api\/settings$/,route=>{
-      if(route.request().method()==="POST")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"})});
-      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({onboardingComplete:false,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"})});
+      if(route.request().method()==="POST")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({onboardingComplete:false,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"})});
     });
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
@@ -4861,7 +4799,7 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await page.getByTestId("composer").fill("Give me a short light-mode citation fixture.");
   await page.getByTestId("send").click();
   const lightAssistant=page.locator(".assistant-message-text").last();
-  await expect(lightAssistant).toContainText("Mock Freebuff reply:");
+  await expect(lightAssistant).toContainText("Mock direct reply:");
   await lightAssistant.evaluate(node=>{
     const selection=window.getSelection();selection.removeAllRanges();selection.selectAllChildren(node);document.dispatchEvent(new Event("selectionchange"));
   });
@@ -4900,54 +4838,6 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   ].filter(Boolean).map(node=>getComputedStyle(node).backgroundColor));
   for(const value of historyButtonColors)expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.screenshot({path:auditDir+"light-history-1600x980.png",fullPage:true});
-});
-
-test("Freebuff dashboard stays visually coherent in light mode",async({page,request})=>{
-  test.setTimeout(30_000);
-  await prepare(page,request);
-  await request.post("/api/settings",{data:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff"}});
-  await page.reload();
-  await expect(page.locator(".sidebar-provider")).toContainText("Trebell Native");
-  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
-  await page.locator(".sidebar-provider").click();
-  await expect(page.getByRole("heading",{name:"Freebuff",level:1})).toBeVisible();
-  await expect(page.locator(".fb-hero")).toBeVisible();
-  const surfaces=await page.evaluate(()=>({
-    hero:getComputedStyle(document.querySelector(".fb-hero")).backgroundColor,
-    card:getComputedStyle(document.querySelector(".fb-dashboard-card")).backgroundColor,
-    table:getComputedStyle(document.querySelector(".fb-model-table")).backgroundColor,
-    raw:getComputedStyle(document.querySelector(".fb-raw")).backgroundColor,
-  }));
-  for(const value of Object.values(surfaces))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
-  await page.screenshot({path:auditDir+"freebuff-light-1600x980.png",fullPage:true});
-});
-
-test("Freebuff manual refresh failures preserve the last valid account state",async({page,request})=>{
-  test.setTimeout(30_000);
-  await prepare(page,request);
-  await request.post("/api/settings",{data:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff"}});
-  await page.reload();
-  await expect(page.locator(".sidebar-provider")).toContainText("Trebell Native");
-  await page.locator(".sidebar-provider").click();
-  await expect(page.getByRole("heading",{name:"Freebuff",level:1})).toBeVisible();
-  const hero=page.locator(".fb-hero");
-  await expect(hero).toBeVisible();
-  const balance=await hero.locator("strong").textContent();
-  const session=await page.locator(".fb-dashboard-card").filter({hasText:"Session"}).locator("strong").textContent();
-  await page.route("**/api/freebuff/overview*",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate Freebuff refresh failure"})}));
-  await page.setViewportSize({width:1280,height:800});
-  await hero.getByRole("button",{name:"Refresh",exact:true}).click();
-  const alert=page.locator(".freebuff-page").getByRole("alert");
-  await expect(alert).toContainText("Could not refresh Freebuff: Deliberate Freebuff refresh failure");
-  await expect(alert).toBeInViewport();
-  await expect(hero.locator("strong")).toHaveText(balance||"");
-  await expect(page.locator(".fb-dashboard-card").filter({hasText:"Session"}).locator("strong")).toHaveText(session||"");
-  await expect(hero.getByRole("button",{name:"Refresh",exact:true})).toBeEnabled();
-  const alertBox=await box(alert),gridBox=await box(page.locator(".fb-dashboard-grid"));
-  expect(alertBox.y+alertBox.height).toBeLessThanOrEqual(gridBox.y-4);
-  const metrics=await page.locator(".freebuff-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
-  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"freebuff-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("custom theme stays coherent across chat panel and command palette",async({page,request})=>{
@@ -4989,14 +4879,14 @@ test("custom theme stays coherent across chat panel and command palette",async({
 
 test("provider switching reuses its response without depending on bootstrap refresh",async({page})=>{
   test.setTimeout(30_000);
-  let provider="freebuff",failBootstrap=false,bootstrapCalls=0;
+  let provider="openai",failBootstrap=false,bootstrapCalls=0;
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const modelCatalog=()=>provider==="agentrouter"
     ?{models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}}
-    :{models:["freebuff/test/coding-fast"],metadata:{provider,models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider}]}};
+    :{models:["test/coding-fast"],metadata:{provider,models:[{id:"test/coding-fast",name:"Coding Fast",provider}]}};
   await page.route(/\/api\/bootstrap$/,route=>{bootstrapCalls++;return failBootstrap
     ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate provider bootstrap refresh failure"})})
-    :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-bootstrap-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
+    :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-bootstrap-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>{
     if(route.request().method()==="POST"){
@@ -5012,11 +4902,10 @@ test("provider switching reuses its response without depending on bootstrap refr
       const body=route.request().postDataJSON()||{};
       if(body.provider){provider=body.provider;failBootstrap=true}
     }
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...modelCatalog(),selected:provider,agentRuntime:"native",providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...modelCatalog(),selected:provider,agentRuntime:"native",providers:[{id:"openai",name:"OpenAI API",official:true,hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
   });
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
   await page.goto("/");
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
@@ -5037,10 +4926,10 @@ test("provider switching reuses its response without depending on bootstrap refr
 
 test("provider switch failure rolls back optimistic selection without a fallback refresh storm",async({page})=>{
   test.setTimeout(30_000);
-  let provider="freebuff",bootstrapCalls=0,modelCalls=0,providerPosts=0;
+  let provider="openai",bootstrapCalls=0,modelCalls=0,providerPosts=0;
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
-  const modelCatalog=()=>({models:["freebuff/test/coding-fast"],metadata:{provider,models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider}]}});
-  await page.route(/\/api\/bootstrap$/,route=>{bootstrapCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-switch-failure-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
+  const modelCatalog=()=>({models:["test/coding-fast"],metadata:{provider,models:[{id:"test/coding-fast",name:"Coding Fast",provider}]}});
+  await page.route(/\/api\/bootstrap$/,route=>{bootstrapCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-switch-failure-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())}));
   await page.route(/\/api\/models$/,route=>{modelCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(modelCatalog())})});
@@ -5049,18 +4938,17 @@ test("provider switch failure rolls back optimistic selection without a fallback
       providerPosts++;
       return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:"Deliberate provider switch failure"})});
     }
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...modelCatalog(),selected:provider,agentRuntime:"native",providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...modelCatalog(),selected:provider,agentRuntime:"native",providers:[{id:"openai",name:"OpenAI API",official:true,hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
   });
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
   await page.goto("/");
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
   const selector=page.getByTestId("provider-selector");
   const before={bootstrapCalls,modelCalls};
   await selector.selectOption("agentrouter");
-  await expect(selector).toHaveValue("freebuff");
+  await expect(selector).toHaveValue("openai");
   await expect(page.getByRole("alert")).toContainText("Deliberate provider switch failure");
   expect(providerPosts).toBe(1);
   expect(bootstrapCalls).toBe(before.bootstrapCalls);
@@ -5078,7 +4966,7 @@ test("provider key save reuses the returned catalog without refetching models or
   let failModels=false,modelCalls=0,bootstrapCalls=0;
   const provider="agentrouter",settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   const catalog={provider,agentRuntime:"native",models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}};
-  await page.route(/\/api\/bootstrap$/,route=>{bootstrapCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-model-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
+  await page.route(/\/api\/bootstrap$/,route=>{bootstrapCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-model-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
   await page.route(/\/api\/models$/,route=>{modelCalls++;return failModels
@@ -5127,14 +5015,14 @@ test("switching Trebell Native inference provider preserves the active chat and 
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  let provider="freebuff";
+  let provider="openai";
   const requests={bootstrap:0,settingsPost:0,models:0,providersGet:0,providersPost:0};
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const models=()=>provider==="agentrouter"
     ?{models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}}
-    :{models:["freebuff/test/coding-fast"],metadata:{provider,models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider}]}};
+    :{models:["test/coding-fast"],metadata:{provider,models:[{id:"test/coding-fast",name:"Coding Fast",provider}]}};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrap++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
+    await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrap++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,async route=>{
       if(route.request().method()==="POST"){requests.settingsPost++;const body=route.request().postDataJSON()||{};if(body.modelProvider)provider=body.modelProvider;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())})}
@@ -5144,7 +5032,7 @@ test("switching Trebell Native inference provider preserves the active chat and 
     await page.route(/\/api\/providers$/,route=>{
       if(route.request().method()==="POST"){requests.providersPost++;const body=route.request().postDataJSON()||{};if(body.provider)provider=body.provider}
       else requests.providersGet++;
-      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...models(),selected:provider,agentRuntime:"native",providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...models(),selected:provider,agentRuntime:"native",providers:[{id:"openai",name:"OpenAI API",official:true,hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
     });
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
@@ -5226,12 +5114,12 @@ test("sidebar thread action failures stay visible and keep the thread in place",
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",keybindingRules:[{command:"threadPin",key:"Ctrl+Alt+P",when:"threadOpen && !modalOpen"}]};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",keybindingRules:[{command:"threadPin",key:"Ctrl+Alt+P",when:"threadOpen && !modalOpen"}]};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
@@ -5283,7 +5171,7 @@ test("sidebar thread action failures stay visible and keep the thread in place",
 test("delegated agent open failures stay visible in the Agents panel",async({page})=>{
   test.setTimeout(35_000);
   const parent={id:"agent-parent-thread",name:"Agent parent fixture",preview:"Parent thread",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
-  const child={id:"agent-child-thread",parentThreadId:parent.id,name:"Failing delegated agent",agentRole:"researcher",status:{type:"idle"},model:"freebuff/test/coding-fast",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const child={id:"agent-child-thread",parentThreadId:parent.id,name:"Failing delegated agent",agentRole:"researcher",status:{type:"idle"},model:"test/coding-fast",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
   const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
   wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
@@ -5305,12 +5193,12 @@ test("delegated agent open failures stay visible in the Agents panel",async({pag
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[parent.id]:{projectless:true,environmentId:null},[child.id]:{projectless:true,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
@@ -5360,12 +5248,12 @@ test("failed background work restores the draft when stash saving also fails",as
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/general-workspace$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:process.cwd(),environmentId:null})}));
     await page.route(/\/api\/stashes$/,route=>{
@@ -5424,12 +5312,12 @@ test("uncertain background work warns before a stashed retry",async({page})=>{
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+wsPort,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+wsPort,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/general-workspace$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:process.cwd(),environmentId:null})}));
     await page.route(/\/api\/stashes$/,async route=>{
@@ -5488,12 +5376,12 @@ test("background thread verification failures remain uncertain",async({page})=>{
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+wsPort,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+wsPort,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/general-workspace$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:process.cwd(),environmentId:null})}));
     await page.route(/\/api\/stashes$/,route=>{
@@ -5595,12 +5483,12 @@ test("worktree setup monitor failures stop promptly and restore the unsent draft
   const thread={id:"setup-monitor-existing-thread",name:"Setup monitor existing thread",preview:"Fixture only",cwd:basePath,createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
   const harness=await startCodexRequestHarness(thread);
   let monitorReads=0;
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"worktree",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"worktree",activeProjectId:project.id};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:basePath,platform:process.platform,version:"setup-monitor-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:basePath,platform:process.platform,version:"setup-monitor-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>{
       if(route.request().method()==="POST"){
         const body=route.request().postDataJSON()||{};
@@ -5655,12 +5543,12 @@ test("non-blocking worktree setup monitor failures stay visible after the turn s
     if(message.method==="turn/start"){turnStarts++;ws.send(JSON.stringify({id:message.id,result:{turn:{id:"background-setup-turn",status:"inProgress"}}}));return true}
     return false;
   }});
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"worktree",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"worktree",activeProjectId:project.id};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:basePath,platform:process.platform,version:"background-setup-monitor-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:basePath,platform:process.platform,version:"background-setup-monitor-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[seedThread.id]:{projectless:false,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>{
       if(route.request().method()==="POST"){
         const body=route.request().postDataJSON()||{};
@@ -5719,12 +5607,12 @@ test("non-blocking worktree setup failures stay visible after the turn starts",a
     }
     return false;
   }});
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"worktree",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"worktree",activeProjectId:project.id};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:basePath,platform:process.platform,version:"background-setup-monitor-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:basePath,platform:process.platform,version:"background-setup-monitor-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>{
       if(route.request().method()==="POST"){
         const body=route.request().postDataJSON()||{};
@@ -5794,12 +5682,12 @@ test("background worktree registration failures warn without blocking the task",
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:project.path,platform:process.platform,version:"background-worktree-registration-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:project.path,platform:process.platform,version:"background-worktree-registration-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
     await page.route(/\/api\/projects$/,route=>{
       if(route.request().method()==="POST"&&(route.request().postDataJSON()||{}).path===worktree)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate background worktree registration failure"})});
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})});
@@ -5861,12 +5749,12 @@ test("delegated agent open failures stay visible without leaving the parent thre
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[parent.id]:{projectless:true,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate delegated worktree restore failure"})}));
     await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
@@ -5932,9 +5820,9 @@ test("non-Codex agent picker rolls back when the runtime rejects the change",asy
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
     await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["opencode/test-model"],metadata:{provider:"opencode",models:[{id:"opencode/test-model",name:"Test model",provider:"opencode"}]}})}));
@@ -6155,11 +6043,11 @@ test("linked pull-request auto-sync failures preserve the last valid links",asyn
     if(message.method==="thread/attachment/list"){ws.send(JSON.stringify({id:message.id,result:{data:[{attachmentType:"pull_request",identityKey:"github:77",payload:linkedPr}]}}));return true}
     return false;
   }});
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"linked-pr-sync-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"linked-pr-sync-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null}}})}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
     await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
     await page.route(/\/api\/thread-meta$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
@@ -6314,12 +6202,12 @@ test("failed linked-thread unarchive keeps the PR and archived state intact",asy
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[parent.id]:{projectless:false,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
     await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
@@ -6368,12 +6256,12 @@ test("linked-thread read failures report the runtime error instead of claiming t
     }
     return false;
   }});
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"linked-read-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"linked-read-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[parent.id]:{projectless:false,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
     await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
@@ -6564,11 +6452,11 @@ test("Claude thread can switch compatible account profiles from the model picker
   await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   try{
     await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
-      mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,
+      mock:false,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,
       wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null,
     })}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
-      settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-work",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},
+      settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-work",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},
       projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}},
     })}));
     await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
@@ -6691,14 +6579,14 @@ test("Codex thread can switch compatible account profiles from the model picker"
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   try{
     await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
-      mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,
+      mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,
       wsUrl:`ws://127.0.0.1:${relayPort}/api/codex/ws`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null,
     })}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
-      settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-work",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},
+      settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-work",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},
       projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null,runtimeInstanceId:"codex-work"}},
     })}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));

@@ -79,7 +79,7 @@ const fixture=createServer((_req,res)=>{
 
 await new Promise((resolve,reject)=>fixture.listen(fixturePort,"127.0.0.1",resolve).once("error",reject));
 
-let browser=null,ws=null,rpc=null,createdThreadId=null;
+let browser=null,ws=null,rpc=null,createdThreadId=null,restoreProvider=null;
 const workspace=await mkdtemp(join(tmpdir(),"trebell-installed-agent-"));
 try{
   for(let attempt=0;attempt<40&&!browser;attempt++){
@@ -98,6 +98,7 @@ try{
 
   const runtimeSelection=await fetch(base+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime:"native",instanceId:"native-default"})}).then(r=>r.json());
   assert.equal(runtimeSelection.selected?.runtime,"native","Packaged model-driven validation must run through Trebell Native");
+  restoreProvider=await fetch(base+"/api/providers").then(r=>r.json()).then(body=>body?.selected).catch(()=>null)||"openai";
   const switched=await fetch(base+"/api/providers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:"vyceai"})}).then(r=>r.json());
   assert.equal(switched.selected,"vyceai");
   assert.ok(switched.models?.includes(model),`Vyce model ${model} is unavailable in packaged app`);
@@ -208,5 +209,5 @@ try{
   try{await browser?.close()}catch{}
   await new Promise(resolve=>fixture.close(()=>resolve()));
   await rm(workspace,{recursive:true,force:true,maxRetries:10,retryDelay:100}).catch(()=>{});
-  await fetch(base+"/api/providers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:"freebuff"})}).catch(()=>{});
+  if(restoreProvider)await fetch(base+"/api/providers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:restoreProvider})}).catch(()=>{});
 }

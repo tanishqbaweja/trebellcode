@@ -41,10 +41,10 @@ async function startHarness(thread){
   };
 }
 async function routeApp(page,harness,thread){
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
-  await page.route("**/api/bootstrap",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-trace-ui",activeEnvironmentId:null,activeEnvironment:null})}));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  await page.route("**/api/bootstrap",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-trace-ui",activeEnvironmentId:null,activeEnvironment:null})}));
   await page.route("**/api/state",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
-  await page.route("**/api/models",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+  await page.route("**/api/models",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}})}));
   await page.route("**/api/projects",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route("**/api/environment/themes",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
   await page.route("**/api/recovery",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
@@ -52,10 +52,10 @@ async function routeApp(page,harness,thread){
 
 test("runtime trace filters by turn and preserves last-known-good data on refresh failure",async({page})=>{
   test.setTimeout(30_000);
-  const thread={id:"runtime-trace-thread",name:"Runtime trace fixture",preview:"Trace filters",cwd:process.cwd(),status:{type:"idle"},model:"freebuff/test/coding-fast",createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const thread={id:"runtime-trace-thread",name:"Runtime trace fixture",preview:"Trace filters",cwd:process.cwd(),status:{type:"idle"},model:"test/coding-fast",createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
   const harness=await startHarness(thread),requests=[];let fail=false;
   const events=[
-    {id:"event-delegate",at:Date.now()-2000,runtime:"codex",provider:"freebuff",threadId:thread.id,turnId:"turn-delegation-123456789",category:"delegation",name:"delegation.started",status:"running",data:{childThreadId:"child-1"}},
+    {id:"event-delegate",at:Date.now()-2000,runtime:"codex",provider:"openai",threadId:thread.id,turnId:"turn-delegation-123456789",category:"delegation",name:"delegation.started",status:"running",data:{childThreadId:"child-1"}},
     {id:"event-knowledge",at:Date.now()-1000,runtime:"claude",provider:"claude",threadId:thread.id,turnId:"turn-knowledge-2",category:"knowledge",name:"knowledge.refreshed",status:"completed",data:{facts:3}},
   ];
   try{

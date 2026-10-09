@@ -22,7 +22,8 @@ const results=[];
 
 function chooseModel(provider,catalog){
   const models=Array.isArray(catalog?.models)?catalog.models:[];
-  return (PREFERRED_MODELS[provider]||[]).find(model=>models.includes(model))||models[0]||MODEL_PROVIDERS[provider]?.staticModels?.[0]||null;
+  const defaultModel=models.includes(catalog?.defaultModel)?catalog.defaultModel:null;
+  return (PREFERRED_MODELS[provider]||[]).find(model=>models.includes(model))||defaultModel||models[0]||MODEL_PROVIDERS[provider]?.staticModels?.[0]||null;
 }
 
 for(const provider of PROVIDERS){

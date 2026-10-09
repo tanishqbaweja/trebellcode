@@ -38,16 +38,16 @@ test("saved threads stay visible across runtimes and foreign rows hand off befor
   test.setTimeout(30_000);
   let runtime="codex",runtimeSwitches=0;
   const now=Date.now()/1000,cwd=process.cwd();
-  const codex={id:"catalog-codex",name:"Codex history survives",preview:"Codex task",cwd,model:"freebuff/test/coding-fast",status:{type:"idle"},createdAt:now-100,updatedAt:now-10,turns:[]};
+  const codex={id:"catalog-codex",name:"Codex history survives",preview:"Codex task",cwd,model:"test/coding-fast",status:{type:"idle"},createdAt:now-100,updatedAt:now-10,turns:[]};
   const claude={id:"catalog-claude",name:"Claude history survives",preview:"Claude task",cwd,model:"claude-test",runtime:"claude",status:{type:"idle"},createdAt:now-90,updatedAt:now-5,turns:[]};
   const meta={
-    [codex.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{...codex,runtime:"codex",provider:"freebuff"}},
+    [codex.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{...codex,runtime:"codex",provider:"openai"}},
     [claude.id]:{projectless:true,environmentId:null,runtime:"claude",runtimeInstanceId:"claude-default",threadSnapshot:{...claude,runtime:"claude",provider:"claude"}},
   };
   const harness=await startRuntimeHarness({currentRuntime:()=>runtime,threadForRuntime:value=>value==="claude"?claude:codex});
   try{
-    const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd,platform:process.platform,version:"thread-catalog-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd,platform:process.platform,version:"thread-catalog-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:meta})}));
     await page.route(/\/api\/settings$/,async route=>{
       if(route.request().method()==="GET")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())});
@@ -59,8 +59,8 @@ test("saved threads stay visible across runtimes and foreign rows hand off befor
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedRuntime:runtime,selectedInstanceId:runtime+"-default",selected:{runtime,instance:{id:runtime+"-default"}}})});
     });
     await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(runtime==="claude"
-      ?{provider:"freebuff",agentRuntime:"claude",ready:true,models:["claude-test"],metadata:{provider:"claude",agentRuntime:"claude",models:[{id:"claude-test",name:"Claude Test",agent:"claude"}]}}
-      :{provider:"freebuff",agentRuntime:"codex",ready:true,models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",agentRuntime:"codex",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",agent:"Codex"}]}})}));
+      ?{provider:"openai",agentRuntime:"claude",ready:true,models:["claude-test"],metadata:{provider:"claude",agentRuntime:"claude",models:[{id:"claude-test",name:"Claude Test",agent:"claude"}]}}
+      :{provider:"openai",agentRuntime:"codex",ready:true,models:["test/coding-fast"],metadata:{provider:"openai",agentRuntime:"codex",models:[{id:"test/coding-fast",name:"Coding Fast",agent:"Codex"}]}})}));
     await page.route(/\/api\/thread-meta(?:\?|$)/,async route=>{
       if(route.request().method()==="POST"){
         const body=route.request().postDataJSON?.()||JSON.parse(route.request().postData()||"{}"),id=String(body.threadId);meta[id]={...(meta[id]||{}),...(body.patch||{})};
@@ -72,7 +72,6 @@ test("saved threads stay visible across runtimes and foreign rows hand off befor
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
-    await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:300,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
 

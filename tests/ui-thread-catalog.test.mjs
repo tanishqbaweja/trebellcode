@@ -14,7 +14,7 @@ test("thread catalog preserves rows from other runtimes when the active runtime 
 });
 
 test("provider changes inside the same runtime cannot erase the existing conversation catalog",()=>{
-  const existing=[{id:"codex-provider-thread",name:"Keep me",updatedAt:25,trebellRuntime:"codex",trebellProvider:"freebuff"}];
+  const existing=[{id:"codex-provider-thread",name:"Keep me",updatedAt:25,trebellRuntime:"codex",trebellProvider:"openai"}];
   const merged=mergeThreadCatalog(existing,[],{runtime:"codex",provider:"vyceai"});
   assert.equal(merged.length,1);assert.equal(merged[0].id,"codex-provider-thread");assert.equal(merged[0].trebellRuntime,"codex");
 });

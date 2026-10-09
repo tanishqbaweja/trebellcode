@@ -12,9 +12,9 @@ const {DatabaseSync}=require("node:sqlite");
 test("thread metadata catalog backfills old SQLite rows and excludes active-thread heavy state",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-thread-catalog-")),env={...process.env,TREBELL_HOME:home},dbPath=join(home,"trebell.sqlite");
   const fullMeta={
-    runtime:"native",runtimeInstanceId:"native-default",provider:"freebuff",model:"model-a",cwd:"C:/repo",environmentId:null,branch:"feature/catalog",
+    runtime:"native",runtimeInstanceId:"native-default",provider:"openai",model:"model-a",cwd:"C:/repo",environmentId:null,branch:"feature/catalog",
     projectless:false,snoozedUntil:12345,updatedAt:500,
-    threadSnapshot:{id:"thread-old",name:"Catalog thread",preview:"Compact me",cwd:"C:/repo",model:"model-a",updatedAt:500,createdAt:100,status:{type:"idle"},section:{id:"Pinned",name:"Pinned"},runtime:"native",provider:"freebuff"},
+    threadSnapshot:{id:"thread-old",name:"Catalog thread",preview:"Compact me",cwd:"C:/repo",model:"model-a",updatedAt:500,createdAt:100,status:{type:"idle"},section:{id:"Pinned",name:"Pinned"},runtime:"native",provider:"openai"},
     delegation:{parentThreadId:"parent-1",label:"Parser child",task:"Fix parser",role:"delegate",status:"running",permissions:"supervised",isolation:"worktree",branch:"child/parser",ownership:["src/parser.js"]},
     linkedPullRequests:[{identity:{provider:"github",host:"github.com",repository:"acme/widget",number:17},number:17,title:"Parser fix",state:"OPEN",url:"https://github.com/acme/widget/pull/17"}],
     goal:{objective:"This belongs to active-thread state",completionConditions:["Done"]},

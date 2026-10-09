@@ -16,13 +16,12 @@ test("large project lists paint before bounded enrichment finishes",async({page}
   test.setTimeout(30_000);
   const items=projects(120);let projectLoads=0,activeEnrichment=0,maxActiveEnrichment=0,completedEnrichment=0;
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
-  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,cwd:"C:/empty",platform:"win32",version:"project-enrichment-fixture"}));
-  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"},projects:[],threadMeta:{}}));
-  await page.route(/\/api\/models$/,route=>json(route,{provider:"freebuff",agentRuntime:"codex",ready:true,models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",agentRuntime:"codex",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",agent:"Codex"}]}}));
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,cwd:"C:/empty",platform:"win32",version:"project-enrichment-fixture"}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"},projects:[],threadMeta:{}}));
+  await page.route(/\/api\/models$/,route=>json(route,{provider:"openai",agentRuntime:"codex",ready:true,models:["test/coding-fast"],metadata:{provider:"openai",agentRuntime:"codex",models:[{id:"test/coding-fast",name:"Coding Fast",agent:"Codex"}]}}));
   await page.route(/\/api\/projects$/,route=>{projectLoads++;return json(route,{projects:projectLoads===1?[]:items})});
   await page.route(/\/api\/environments$/,route=>json(route,{profiles:[]}));
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
-  await page.route(/\/api\/freebuff\/overview/,route=>json(route,{}));
   const enrich=async(route,value)=>{
     activeEnrichment++;maxActiveEnrichment=Math.max(maxActiveEnrichment,activeEnrichment);
     await new Promise(resolve=>setTimeout(resolve,80));

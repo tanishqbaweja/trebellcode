@@ -43,7 +43,7 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
       browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),importCookies:async()=>({ok:true,imported:2,failed:0}),importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",installed:true,running:false,profiles:[{id:"C:/Profiles/Test",name:"Test profile"}]},{id:"helium",name:"Helium",installed:true,running:false,profiles:[{id:"C:/Helium/Default",name:"Default"}]}]}),importProfile:async(sourceId,profileId)=>sourceId==="helium"?({ok:true,sourceId,profileId,profileName:"Default",imported:5,failed:0,skipped:1}):({ok:true,sourceId,profileId,profileName:"Test profile",imported:7,failed:0}),close:async()=>({ok:true})}
     }});
   });
-  await request.post("/api/settings",{data:{onboardingComplete:true,agentRuntime:"native",agentRuntimeInstanceId:"native-default"}});
+  await request.post("/api/settings",{data:{onboardingComplete:true,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai"}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"E2E Project",worktreeSubmodules:"top-level",icon:{kind:"monogram",value:"E2",color:"#4f8cff"}}});
   await request.post("/api/environments",{data:{id:"ssh-palette",name:"E2E SSH",type:"ssh",host:"example.invalid",cwd:"/srv/app"}});
@@ -102,7 +102,7 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   }).toBe(true);
   await page.getByRole("button",{name:"Threads"}).click();
   await expect(page.getByTestId("model-picker")).toBeVisible();
-  await expectModelCatalog(page,["deepseek/deepseek-v4-flash · 10 FB/h off-peak","test/coding-large","test/coding-fast"]);
+  await expectModelCatalog(page,["test/coding-fast","test/coding-large"]);
   await expect(page.getByRole("button",{name:"New thread"})).toBeVisible();
   await expect(page.getByTestId("right-panel-toggle")).toBeVisible();
   await expect(page.getByTestId("terminal-toggle")).toBeVisible();
@@ -121,8 +121,8 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await composer.fill("Build and validate a private local converter.");
   await page.getByTestId("send").click();
 
-  await expect(page.getByText("Mock Freebuff reply: Build and validate a private local converter.")).toBeVisible({timeout:10000});
-  await expect(page.getByRole("group").getByText("Freebuff direct response")).toBeVisible();
+  await expect(page.getByText("Mock direct reply: Build and validate a private local converter.")).toBeVisible({timeout:10000});
+  await expect(page.getByRole("group").getByText("OpenAI API direct response")).toBeVisible();
 
   const assistantResponse=page.locator(".assistant-message-text").last();
   await assistantResponse.evaluate(node=>{
@@ -247,10 +247,6 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await page.getByRole("button",{name:"Attach annotation"}).click();
   await expect(page.getByTestId("preview-annotation")).toContainText("Annotation attached");
 
-  await page.getByRole("button",{name:"Freebuff"}).click();
-  await expect(page.getByRole("heading",{name:"Freebuff"})).toBeVisible();
-  await expect(page.getByText("Freebucks balance")).toBeVisible();
-
   await page.getByRole("button",{name:"Settings"}).click();
   await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
   await expect(page.getByText("Follow-up behavior")).toBeVisible();
@@ -328,14 +324,14 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await scopedSettings.getByLabel("Automatic pull").selectOption("true");
   await scopedSettings.getByLabel("Default PR merge").selectOption("rebase");
   await scopedSettings.getByLabel("Git text style").selectOption("custom");
-  await scopedSettings.getByLabel("Git text model").selectOption("freebuff/test/coding-fast");
+  await scopedSettings.getByLabel("Git text model").selectOption("test/coding-fast");
   await scopedSettings.getByLabel("Follow PR templates").selectOption("false");
   await scopedSettings.getByLabel("Custom Git instructions").fill("Prefix titles with the ticket ID.");
   await scopedSettings.getByLabel("Custom Git instructions").blur();
   await expect.poll(async()=>{
     const remoteDefaults=await (await request.get("/api/scoped-settings?environmentId=ssh-palette")).json();
     return {permission:remoteDefaults.effective.defaultPermissionMode,autoPull:remoteDefaults.effective.autoPull,merge:remoteDefaults.effective.sourceControlMergeMethod,style:remoteDefaults.effective.sourceControlTextStyle,textModel:remoteDefaults.effective.sourceControlTextModel,instructions:remoteDefaults.effective.sourceControlCustomInstructions,templates:remoteDefaults.effective.sourceControlFollowTemplates};
-  }).toEqual({permission:"full",autoPull:true,merge:"rebase",style:"custom",textModel:"freebuff/test/coding-fast",instructions:"Prefix titles with the ticket ID.",templates:false});
+  }).toEqual({permission:"full",autoPull:true,merge:"rebase",style:"custom",textModel:"test/coding-fast",instructions:"Prefix titles with the ticket ID.",templates:false});
   await settingsScope.getByLabel("Project scope").selectOption({label:"Remote App"});
   await expect(scopedSettings.getByLabel("Permissions")).toHaveValue("__inherit__");
   await expect(scopedSettings.getByLabel("Automatic pull")).toHaveValue("__inherit__");
@@ -409,10 +405,10 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
 
   await page.getByRole("button",{name:"Settings"}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
-  await selectProvider(page,"freebuff");
+  await selectProvider(page,"openai");
   await page.getByRole("button",{name:"Threads"}).click();
-  await expectModelCatalog(page,["deepseek/deepseek-v4-flash · 10 FB/h off-peak","test/coding-large","test/coding-fast"]);
-  await expect(page.getByRole("button",{name:"Freebuff"})).toBeVisible();
+  await expectModelCatalog(page,["test/coding-fast","test/coding-large"]);
+  await expect(page.locator(".sidebar-provider")).toContainText("OpenAI API inference");
 
   await page.screenshot({path:"test-results/trebell-code-ui.png",fullPage:true});
 });

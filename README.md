@@ -41,7 +41,7 @@ Public benchmark work compares Trebell Native against mature harnesses using the
 - **Browser and desktop verification** with Playwright-backed browser workflows, screenshots, runtime checks, and evidence-aware verification.
 - **MCP, skills, plugins, and lazy tool exposure** so specialized capabilities do not have to inflate every prompt.
 - **Durable context and recovery** through persisted thread state, event history, checkpoints, verification records, and bounded recovery flows.
-- **Official provider support** for OpenAI, Anthropic, and Gemini, plus compatible third-party routes.
+- **Official provider support** for OpenAI, Anthropic, and Google Gemini, plus the AgentRouter, JustWorker.icu, HCNSec.cn, and VyceAi compatible routes, each used with your own API key.
 
 ## What makes it different
 
@@ -131,6 +131,10 @@ npm run gui:server
 npm run ui:dev
 ```
 
+### Model provider
+
+Trebell Native calls the model provider you select with your own API key: OpenAI (the default), Anthropic, Google Gemini, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi. Every provider needs a key, so add one in **Settings → Agents & models** before the first Native turn (the OpenAI provider also reads `OPENAI_API_KEY` from the environment). Codex, Claude Code, OpenCode, and the other runtimes keep using their own accounts and configuration.
+
 ## Validation
 
 ```bash
@@ -172,7 +176,6 @@ scripts/       release, benchmark, replay, and live-test tooling
 src/           backend, runtime, services, providers, and tool policy
 tests/         deterministic and integration coverage
 ui/            React/Vite desktop UI and Playwright tests
-vendor/        vendored compatibility components
 ```
 
 ## Security and secrets

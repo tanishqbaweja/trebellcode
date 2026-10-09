@@ -57,7 +57,7 @@ flowchart LR
     NATIVE["Trebell Native"]
     CODEX["Codex app-server"]
     EXTERNAL["Claude Code · OpenCode · Cursor · Grok Build · Antigravity"]
-    PROVIDERS["Freebuff · AgentRouter · JustWorker · HCNSec · VyceAi"]
+    PROVIDERS["OpenAI · Anthropic · Gemini · AgentRouter · JustWorker · HCNSec · VyceAi"]
     MCP["MCP servers"]
     BROWSER["Agent Browser / desktop verification"]
 
@@ -109,21 +109,21 @@ The UI reads a runtime capability contract rather than scattering runtime-name a
 
 ## Trebell-managed inference providers
 
-Current integrations include:
+Current integrations:
 
-- **Freebuff**
+- **OpenAI API** (the default selection)
+- **Anthropic API**
+- **Google Gemini API**
 - **AgentRouter**
 - **JustWorker.icu**
 - **HCNSec.cn**
 - **VyceAi**
 
-Provider keys are configured in **Settings** and stored through Trebell's secret handling path.
+Every provider requires an API key, so Trebell Native needs one before its first turn. Add it in **Settings → Agents & models**; keys are stored through Trebell's secret handling path. A key saved in Settings takes precedence over the provider's environment variable (for example `OPENAI_API_KEY`).
 
 > **.env is not product configuration.** A local ignored .env may be used for developer/live-provider tests only.
 
 AgentRouter defaults to its current Codex-compatible OpenAI Chat endpoint at `https://co.agentrouter.org/v1`. Trebell Native still owns the prompt, tools, context, turn loop, and session; the Codex-shaped headers are only an upstream compatibility fingerprint. The fingerprint version follows the bundled `@openai/codex` package instead of freezing an old client version. Compatibility overrides remain available through `AGENTROUTER_BASE_URL`, `AGENTROUTER_WIRE_API`, and `AGENTROUTER_CLIENT_VERSION` when an older/private AgentRouter deployment requires them.
-
-For Codex compatibility, Trebell can translate provider protocols into the Responses-style lifecycle expected by the bundled Codex runtime.
 
 ---
 
@@ -463,14 +463,11 @@ trebell gui
 |---|---|
 | **trebell** | Start Trebell Code |
 | **trebell doctor** | Check installation/runtime prerequisites |
-| **trebell login** | Freebuff login |
-| **trebell login --force** | Refresh/switch Freebuff login |
-| **trebell logout** | Remove local Freebuff credential |
 | **trebell models --provider ID** | Show models for a Trebell Native provider |
 | **trebell --model ID** | Ask the real Codex harness to use a model for this CLI run |
 | **trebell gui** | Open the multi-harness app, including Trebell Native direct-API inference |
 
-Provider API keys for normal product use belong in **Settings**, not repository environment files.
+Provider API keys for normal product use belong in **Settings → Agents & models**, not repository environment files.
 `trebell run` does not rewrite Codex's provider or account configuration; Native provider selection is intentionally separate.
 
 ---
@@ -536,7 +533,7 @@ The release pipeline:
 1. installs dependencies including optional native packages;
 2. runs deterministic tests;
 3. materializes app icons;
-4. builds the provider bridge and frontend;
+4. builds the frontend;
 5. builds an unpacked Windows app;
 6. runs installed desktop + bundled Codex smoke tests;
 7. builds the NSIS installer/update metadata;
@@ -576,7 +573,6 @@ npm run desktop:dist:linux
 ├── src/                    backend/runtime/services
 ├── tests/                  deterministic and integration tests
 ├── ui/                     React/Vite desktop UI + Playwright E2E tests
-├── vendor/freebuff2api/    vendored compatibility bridge source
 ├── docs/                   architecture, testing, benchmark history, and releases
 ├── THIRD_PARTY_NOTICES.md  attribution/provenance
 ├── make-exe.cmd            Windows release entrypoint
@@ -610,8 +606,6 @@ Updater failures remain visible instead of being converted into fake success.
 Trebell Code wrapper/integration code is licensed under **Apache-2.0**.
 
 Trebell integrates the OpenAI Codex runtime and retains upstream attribution.
-
-The Freebuff compatibility bridge is derived from **chenjh16/freebuff2api** under the MIT license.
 
 See:
 
