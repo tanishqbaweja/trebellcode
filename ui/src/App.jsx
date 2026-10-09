@@ -21,6 +21,8 @@ import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queued
 import { historyFromItemEntries, historyFromTurns, mergeHistoryMessages, resumedActiveTurnId } from "./thread-history.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
+import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
+import { isListedThread, prependThread } from "./thread-list-state.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
 import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-message-search.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
@@ -337,14 +339,15 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :messages.map(renderMessage)}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
-function ApprovalCard({request,onResolve}){
+// threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
+function ApprovalCard({request,onResolve,threadLabel=""}){
   if(!request)return null;
   const p=request.params||{};
   const permissions=request.method==="item/permissions/requestApproval";
   const network=permissions?p.permissions?.network:null;const fileSystem=permissions?p.permissions?.fileSystem:null;
   const title=permissions?"Additional access requested":request.method.includes("fileChange")||request.method==="applyPatchApproval"?"File changes need approval":p.networkApprovalContext?.host?"Network access needs approval":"Command needs approval";
   const detail=permissions?[network&&"Network access",fileSystem&&"Filesystem access"].filter(Boolean).join(" + "):(p.networkApprovalContext?.host?`${p.networkApprovalContext.protocol||"network"}://${p.networkApprovalContext.host}`:p.reason||p.command||p.path||request.method);
-  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div><p>{detail||p.reason||request.method}</p>{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}<div className="approval-actions"><button onClick={()=>onResolve(request,"decline")}>Deny</button><button onClick={()=>onResolve(request,"acceptForSession")}>Allow session</button><button className="approve" onClick={()=>onResolve(request,"accept")}>Allow once</button></div></div>;
+  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}<p>{detail||p.reason||request.method}</p>{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}<div className="approval-actions"><button onClick={()=>onResolve(request,"decline")}>Deny</button><button onClick={()=>onResolve(request,"acceptForSession")}>Allow session</button><button className="approve" onClick={()=>onResolve(request,"accept")}>Allow once</button></div></div>;
 }
 function GuardianDenialCard({review,busy,onApprove,onDismiss}){
   if(!review)return null;
@@ -1501,10 +1504,13 @@ export default function App(){
         if(current!==rpcRef.current)return;
         setRpcStatus(status);
         if(status==="disconnected"&&ready&&!disposed){ready=false;retry(0)}
-      },onNotification:message=>notificationHandlerRef.current?.(message),onServerRequest:message=>serverRequestHandlerRef.current?.(current,message)});
+      },onNotification:message=>notificationHandlerRef.current?.(message,current),onServerRequest:message=>serverRequestHandlerRef.current?.(current,message)});
       client=current;rpcRef.current=current;setRpc(current);
       try{
-        await current.connect();if(disposed)return;await recoverCodexAfterRestart(current);await ensureSections(current);
+        await current.connect();if(disposed)return;
+        // A reconnect replaced the socket: the open approvals, questions and app requests of the old one died with it.
+        dropServerRequestsExcept(current);
+        await recoverCodexAfterRestart(current);await ensureSections(current);
         const listed=await loadThreads(current);
         const pending=pendingRuntimeThreadRef.current;
         if(pending&&pending.targetRuntime===agentRuntime){
@@ -1522,7 +1528,8 @@ export default function App(){
       }
       catch(error){current.close();if(disposed)return;retry(attempt+1)}
     };
-    connect(); return()=>{disposed=true;clearTimeout(retryTimer);client?.close()};
+    // Tearing the transport down (harness or environment switch, retry) closes its socket, and with it every request it carried.
+    connect(); return()=>{disposed=true;clearTimeout(retryTimer);client?.close();dropServerRequestsExcept(null)};
   },[bootstrap.wsUrl,bootstrap.mock,bootstrap.agentRuntime,agentRuntime,runtimeTransportRevision]);
   useEffect(()=>{if(rpcStatus==="connected"&&rpc)loadSkills(rpc,projectPath)},[projectPath,rpcStatus]);
   useEffect(()=>{
@@ -1902,7 +1909,7 @@ export default function App(){
     }
     if(permissionMode==="edits"&&message.method==="item/fileChange/requestApproval"){client.respond(message.id,{decision:"accept"});return}
     if(permissionMode==="edits"&&message.method==="applyPatchApproval"){client.respond(message.id,{decision:"approved"});return}
-    if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,message]);desktopNotify("Approval required",message.params?.reason||message.params?.command||"Trebell Code is waiting for permission.");return}
+    if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,ownedRequest(message,client)]);desktopNotify("Approval required",message.params?.reason||message.params?.command||"Trebell Code is waiting for permission.");return}
     client.reject(message.id,-32601,"Unsupported Trebell client request: "+message.method);
   }
   async function planCompletedTurnEvidence(threadId,turnId){
@@ -1934,19 +1941,20 @@ export default function App(){
       if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-plan-error-"+turnId,kind:"error",title:"Could not plan turn verification: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId}}]);
     }
   }
-  function handleNotification(message){
+  function handleNotification(message,client=null){
     const p=message.params||{};
     const threadId=p.threadId||null;
     const isCurrent=notificationIsActive(threadId);
     if(message.method==="serverRequest/resolved"){
-      const requestId=String(p.requestId??"");
-      const matches=request=>request&&String(request.id)===requestId&&(!p.threadId||!request.params?.threadId||request.params.threadId===p.threadId);
-      setApprovals(prev=>prev.filter(request=>!matches(request)));
-      setQuestion(current=>current&&matches(current.request)?null:current);
-      setElicitations(prev=>prev.filter(item=>!matches(item.request)));
+      // Request ids restart on every socket: only the request of this id from the socket that resolved it goes.
+      const resolved={requestId:p.requestId,threadId:p.threadId||null,client};
+      setApprovals(prev=>prev.filter(request=>!requestResolvedBy(request,request.client,resolved)));
+      setQuestion(current=>current&&requestResolvedBy(current.request,current.client,resolved)?null:current);
+      setElicitations(prev=>prev.filter(item=>!requestResolvedBy(item.request,item.client,resolved)));
     }
     else if(message.method==="thread/started"&&p.thread){
-      setThreads(prev=>[p.thread,...prev.filter(t=>t.id!==p.thread.id)]);
+      // This notification arrives before the thread/start response, so whichever lands second replaces the first.
+      if(isListedThread(p.thread))setThreads(prev=>prependThread(prev,p.thread));
       if(activeThreadRef.current?.id===p.thread.id)setActiveThread(p.thread);
     }
     else if(message.method==="thread/delegated"&&p.thread){
@@ -2822,7 +2830,7 @@ export default function App(){
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
     const autoCompaction=thread?await maybeAutoCompactBeforeTurn(thread):{attempted:false,compacted:false,decision:null,error:null};
-    if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>[thread,...prev]);setProjectPath(cwd)}
+    if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>prependThread(prev,thread));setProjectPath(cwd)}
     const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
     try{
       let checkpoint=null;
@@ -3315,8 +3323,10 @@ export default function App(){
     setPanel(null);setSection("chat");
   }
   async function attachPr(pr){const text=["Pull request #"+pr.number+": "+pr.title,pr.url,pr.headRefName+" -> "+pr.baseRefName,pr.body||""].join("\n");await addContextAttachment({name:"pr-"+pr.number+".txt",text,kind:"pr",label:"PR #"+pr.number,detail:pr.title});setSection("chat")}
+  // Links answered for a thread update that thread's metadata, and the visible list only while that thread is still open: a link
+  // or sync started in one thread can answer after another one was opened (the render that started it still names the old thread).
   function applyThreadPullRequestLinks(threadId,links){
-    const next=Array.isArray(links)?links:[];if(activeThread?.id===threadId)setLinkedPullRequests(next);
+    const next=Array.isArray(links)?links:[];if(activeThreadRef.current?.id===threadId)setLinkedPullRequests(next);
     setThreadMeta(previous=>({...previous,[threadId]:{...(previous[threadId]||{}),linkedPullRequests:next}}));
   }
   async function linkPr(pr){
@@ -3344,10 +3354,19 @@ export default function App(){
       catch(error){setReviewedFiles(previous);throw error}
     }
   }
+  // The answer goes back on the socket that asked: request ids restart on every socket, so a newer one can hold another request.
   function resolveApproval(request,decision){
-    if(!rpc)throw new Error("Runtime is not connected.");
-    if(!rpc.respond(request.id,approvalResponse(request,decision)))throw new Error("Runtime disconnected before the approval response could be sent.");
-    setApprovals(prev=>prev.filter(x=>x.id!==request.id));return true;
+    const client=request?.client||rpc;
+    if(!client)throw new Error("Runtime is not connected.");
+    if(!client.respond(request.id,approvalResponse(request,decision)))throw new Error("Runtime disconnected before the approval response could be sent.");
+    setApprovals(prev=>prev.filter(item=>item!==request));return true;
+  }
+  // Server requests belong to the socket that asked. Once that socket is replaced or torn down its relay has already failed them,
+  // so they leave the screen: only requests from `client` (the live socket, if any) stay answerable.
+  function dropServerRequestsExcept(client){
+    setApprovals(prev=>liveRequests(prev,client));
+    setQuestion(current=>current&&client&&current.client===client?current:null);
+    setElicitations(prev=>liveRequests(prev,client));
   }
   async function approveGuardianDenial(review){
     if(!rpc||!review?.threadId||guardianBusy)return;
@@ -3537,11 +3556,17 @@ export default function App(){
   async function cycleAppearance(){const modes=["system","light","dark"];const next=modes[(modes.indexOf(settings.appearanceMode||"system")+1)%modes.length];await saveAppSettings({appearanceMode:next})}
 
   const activeTitle=titleOf(activeThread);
+  // The open thread's approval comes first; one from another thread says which task is asking.
+  const shownApproval=approvalToShow(approvals,activeThread?.id);
+  const shownApprovalThreadId=approvalForeignThreadId(shownApproval,activeThread?.id);
+  const shownApprovalOwner=shownApprovalThreadId?threads.find(thread=>String(thread.id)===shownApprovalThreadId)||null:null;
+  const shownApprovalThreadLabel=shownApprovalThreadId?(shownApprovalOwner?titleOf(shownApprovalOwner):"another thread"):"";
   const projectLabel=projectlessMode?"No project":String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
   const providerLabel=modelProviderLabel(provider);
   const agentRuntimeLabel=AGENT_RUNTIME_LABELS[agentRuntime]||agentRuntime;
   // Git text is written by the runtime the server runs (bootstrap), so the Source Control label names that harness.
   const sourceControlRuntime=bootstrap.agentRuntime||agentRuntime;
+  const sourceControlRuntimeInstanceId=bootstrap.agentRuntimeInstanceId||(settings.agentRuntime===sourceControlRuntime?settings.agentRuntimeInstanceId:null)||null;
   const conversationEditFromHere=useLatestCallback(editFromHere);
   const conversationLoadEarlier=useLatestCallback(loadEarlierMessages);
   const conversationCite=useLatestCallback((message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text"));
@@ -3629,15 +3654,21 @@ export default function App(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab+":"+(workspaceEnvironmentId||"local")} defaultTab={rightPanelTab==="diff"&&!projectlessMode?"diff":"files"} allowDiff={!projectlessMode} projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="context")return <ContextInspector packet={activeThread?.id?threadMeta[activeThread.id]?.trebellContext||null:null} error={activeThread?.id?threadMeta[activeThread.id]?.trebellContextError||null:null} pressure={activeThread?.id?threadMeta[activeThread.id]?.trebellContextPressure||null:null} remote={workspaceRemote} root={projectPath||null} environmentId={workspaceEnvironmentId||null}/>;
     if(rightPanelTab==="preview")return previewSurface;
-    if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} agentRuntime={sourceControlRuntime} agentRuntimeLabel={agentRuntimeName(sourceControlRuntime)} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
+    if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} agentRuntime={sourceControlRuntime} agentRuntimeInstanceId={sourceControlRuntimeInstanceId} agentRuntimeLabel={agentRuntimeName(sourceControlRuntime)} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="agents"&&runtimeCapabilities.delegation)return <div className="panel-page"><AgentsPage threads={threads} threadMeta={threadMeta} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onDelegate={delegateTask} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry} canModelDelegate={Boolean(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation)}/></div>;
-    if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal} continuity={continuity} onContinuity={setContinuity}/>;
+    // Everything the goal panel holds (drafts, busy state and its last error) belongs to one thread: another thread, or a harness
+    // switch, starts it afresh instead of showing the previous thread's error. A save that answers after another thread opened
+    // updates nothing on screen (that thread loads its own goal), like every other goal and continuity update here.
+    if(rightPanelTab==="goal"){
+      const goalThreadId=activeThread?.id||null,forGoalThread=apply=>next=>{if(goalThreadId&&activeThreadRef.current?.id===goalThreadId)apply(next)};
+      return <GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/>;
+    }
     return <div className="runtime-surface">
       <section className="runtime-summary">
         <div><span className={"runtime-dot "+(rpcStatus==="connected"?"online":"")}/><div><strong>{running?"Agent working":agentRuntimeLabel+" harness"}</strong><span>{rpcStatus==="connected"?"Connected locally":rpcStatus}</span></div></div>
         <small>{completedEvents}/{events.length||1} current activity steps complete</small>
       </section>
-      <ApprovalCard request={approvals[0]} onResolve={resolveApproval}/>
+      <ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/>
       <section className="runtime-grid">
         <div><span>Agent harness</span><strong>{agentRuntimeLabel}</strong></div>
         <div><span>Harness status</span><strong>{providerReady?"Ready":"Setup required"}</strong></div>
@@ -3732,7 +3763,7 @@ export default function App(){
               <Conversation messages={messages} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId} scrollContainerRef={conversationScrollRef}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
-              {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
+              {shownApproval&&<div className="inline-approval"><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?`Queued in ${agentRuntimeLabel}`:item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button disabled={running&&!runtimeCapabilities.steering} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>runUserAction(()=>editQueued(item),"Could not edit queued follow-up")} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
               {!messages.length&&!events.length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>

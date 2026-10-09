@@ -19,6 +19,21 @@ export function repositoryContextSeed(packet={},{currentTask=""}={}){
   return lines.join("\n").slice(0,6000);
 }
 
+// The Context Engine's full repository evidence starts with a one-line header, then "Task: <task>" (which may span
+// lines), then a fixed selection line. When that task is exactly the request the user is sending, repeating it inside
+// untrusted evidence presents the user's own instruction as text embedded in untrusted data, so prompt builders drop
+// the task (the seed projection above already omits it). Any other task, such as a continuity anchor, is kept, and
+// evidence in another shape is returned unchanged.
+const EVIDENCE_SELECTION_LINE="Selection is deterministic and bounded.";
+export function repositoryEvidenceWithoutVisibleTask(value="",currentTask=""){
+  const text=String(value??""),visible=String(currentTask??"").trim();
+  if(!visible)return text;
+  const headerEnd=text.indexOf("\n");if(headerEnd<0)return text;
+  const taskLine="\nTask: "+visible+"\n",selectionStart=headerEnd+taskLine.length;
+  if(!text.startsWith(taskLine,headerEnd)||!text.startsWith(EVIDENCE_SELECTION_LINE,selectionStart))return text;
+  return text.slice(0,headerEnd+1)+text.slice(selectionStart);
+}
+
 export function repositoryContextDeliveryPacket(packet={},{seedOnly=false,currentTask=""}={}){
   if(!seedOnly||!packet||typeof packet!=="object"||packet.deliveryProjection==="seed")return packet;
   const instructionInjection=String(packet.instructionInjection||"").trim();

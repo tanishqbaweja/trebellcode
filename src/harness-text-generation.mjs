@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { query as claudeAgentQuery } from "@anthropic-ai/claude-agent-sdk";
 import { createOpencodeClient } from "@opencode-ai/sdk";
+import { createOpencodeClient as createOpencodeV2Client } from "@opencode-ai/sdk/v2";
 import { AcpClient } from "./acp-client.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexApprovalResponse, isCodexApprovalRequest } from "./codex-policy-adapter.mjs";
-import { connectedOpenCodeModels, startOpenCodeServer } from "./opencode-agent-session.mjs";
+import { checkedOpenCodeProviders, connectedOpenCodeModels, openCodeModelPreferences, startOpenCodeServer } from "./opencode-agent-session.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
 // One-shot Git text (commit subject, pull request title and body) through the active external harness, using that
@@ -162,28 +163,80 @@ function openCodeData(result,label){
   if(result?.error)throw new Error(result.error?.data?.message||result.error?.message||`OpenCode ${label} failed`);
   return result?.data;
 }
+// OpenCode writes Git text in a regular OpenCode turn, the kind every OpenCode model answers: OpenCode's built-in tools are offered, but
+// each needs permission first, and every other tool (MCP servers, plugins) is denied, so OpenCode leaves it out. Trebell refuses every
+// permission request and dismisses every question, so nothing runs and the session stays read-only. A tool-less request (no tool
+// definitions at all) is never sent: OpenCode Zen's free models refuse it with "OpenCode's free tier can only be used from within
+// OpenCode". No `tools` map is sent either: OpenCode would replace these rules with it.
+const OPENCODE_BUILTIN_PERMISSIONS=Object.freeze(["read","edit","glob","grep","list","bash","task","external_directory","todowrite","question","webfetch","websearch","lsp","doom_loop","skill"]);
+export const OPENCODE_GIT_TEXT_PERMISSION=Object.freeze([{permission:"*",pattern:"*",action:"deny"},...OPENCODE_BUILTIN_PERMISSIONS.map(permission=>({permission,pattern:"*",action:"ask"}))]);
+export const OPENCODE_GIT_TEXT_REFUSAL="Tools are not available while writing Git text. Everything you need is in the user message: reply once with exactly the requested text.";
 // Remote OpenCode answers through its ACP server, as remote OpenCode threads do. ACP never asks the client about tools OpenCode allows
-// (its default build agent runs bash and edits unasked), so the process starts with this deny-all config (OPENCODE_CONFIG_CONTENT works
-// in OpenCode 1.x and 2.x) and the session switches to its deny-all agent before the prompt; without that agent nothing is sent.
+// (its default build agent runs bash and edits unasked), so the process starts with this config (OPENCODE_CONFIG_CONTENT works in
+// OpenCode 1.x and 2.x), the session switches to its agent before the prompt (without that agent nothing is sent), and the same rules
+// apply: built-in tools ask, Trebell's ACP client refuses each request, everything else is denied.
 const OPENCODE_GIT_TEXT_AGENT="trebell-git-text";
-export const OPENCODE_GIT_TEXT_CONFIG=JSON.stringify({permission:{"*":"deny"},agent:{[OPENCODE_GIT_TEXT_AGENT]:{mode:"primary",description:"Trebell Git text",permission:{"*":"deny"}}}});
-// OpenCode: an SDK session with every permission denied and every tool disabled, deleted afterwards.
+const OPENCODE_GIT_TEXT_RULES=Object.freeze(Object.fromEntries(OPENCODE_GIT_TEXT_PERMISSION.map(rule=>[rule.permission,rule.action])));
+export const OPENCODE_GIT_TEXT_CONFIG=JSON.stringify({permission:{"*":"deny"},agent:{[OPENCODE_GIT_TEXT_AGENT]:{mode:"primary",description:"Trebell Git text",permission:OPENCODE_GIT_TEXT_RULES}}});
+// A refusal with a reason goes back to the model and the turn goes on; a plain refusal ends the turn. Past this many refusals the plain
+// one is sent, so a model that keeps reaching for tools cannot loop until the timeout.
+const OPENCODE_GIT_TEXT_FEEDBACK_REFUSALS=2;
+const OPENCODE_EVENTS_READY_MS=3000;
+// Refuses every permission request and question of one OpenCode session until stopped. `ready` settles once the event stream is open
+// (OpenCode sends server.connected first), so nothing the prompt asks is missed.
+function refuseOpenCodeAsks({client,v2Client,directory,sessionId}){
+  const controller=new AbortController();let refusals=0,markReady=()=>{};
+  const opened=new Promise(resolve=>{markReady=resolve});
+  const legacyReject=requestID=>Promise.resolve(client.postSessionIdPermissionsPermissionId?.({path:{id:sessionId,permissionID:requestID},query:{directory},body:{response:"reject"}})).catch(()=>{});
+  const task=(async()=>{
+    try{
+      const events=await client.event.subscribe({query:{directory},signal:controller.signal,sseMaxRetryAttempts:0});
+      for await(const event of events.stream){
+        markReady();
+        const p=event?.properties||{},requestID=String(p.id||"");
+        if(String(p.sessionID||"")!==sessionId||!requestID)continue;
+        if(event.type==="permission.asked"){
+          refusals++;const feedback=refusals<=OPENCODE_GIT_TEXT_FEEDBACK_REFUSALS;
+          const replied=await Promise.resolve(v2Client?.permission?.reply?.({requestID,directory,reply:"reject",...(feedback?{message:OPENCODE_GIT_TEXT_REFUSAL}:{})})).then(result=>Boolean(result)&&!result.error,()=>false);
+          if(!replied)await legacyReject(requestID);
+        }
+        else if(event.type==="permission.updated")await legacyReject(requestID);
+        else if(event.type==="question.asked")await Promise.resolve(v2Client?.question?.reject?.({requestID,directory})).catch(()=>{});
+      }
+    }catch{}
+    finally{markReady()}
+  })();
+  return {
+    ready:Promise.race([opened,new Promise(resolve=>{const timer=setTimeout(resolve,OPENCODE_EVENTS_READY_MS);timer.unref?.()})]),
+    async stop(){controller.abort();await within(task,1500)},
+  };
+}
+// OpenCode: one regular turn (see above) in a fresh SDK session, which is deleted afterwards.
 async function openCodeText(ctx){
   const {runtimeManager,instance,environmentId}=ctx;
   if(runtimeManager.remoteIo?.(ctx.cwd,environmentId))return acpText(ctx,{args:["acp"],environment:{OPENCODE_CONFIG_CONTENT:OPENCODE_GIT_TEXT_CONFIG},mode:OPENCODE_GIT_TEXT_AGENT,deleteSession:true});
   // Trebell starts its own `opencode serve` in an empty folder, so the repository's .opencode plugins and opencode.json never load (plugin
   // code would run as the user and see the diff). A profile's own server URL keeps the repository as its directory: Trebell does not own
   // that server's working folder, and a local temp path may not exist on its host.
-  const cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx);
-  const server=await (ctx.deps.openCodeServer||startOpenCodeServer)({command:runtimeManager.executable(instance,{environmentId}),cwd,env:runtimeManager.childEnv(instance),serverUrl:instance.serverUrl||null});
+  const cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx),env=runtimeManager.childEnv(instance);
+  const server=await (ctx.deps.openCodeServer||startOpenCodeServer)({command:runtimeManager.executable(instance,{environmentId}),cwd,env,serverUrl:instance.serverUrl||null});
   ctx.defer(()=>server?.close?.());ctx.check();
   const client=(ctx.deps.openCodeClient||createOpencodeClient)({baseUrl:server.url,directory:cwd});
-  const catalog=connectedOpenCodeModels(openCodeData(await client.provider.list({query:{directory:cwd}}),"provider list")||{});ctx.check();
-  const chosen=ctx.models.find(id=>catalog.models.some(item=>item.id===id))||catalog.preferred||null,entry=catalog.models.find(item=>item.id===chosen)||null;
-  const session=openCodeData(await client.session.create({query:{directory:cwd},body:{title:"Trebell Git text",permission:[{permission:"*",pattern:"*",action:"deny"}]}}),"session create");
+  const providers=checkedOpenCodeProviders(openCodeData(await client.provider.list({query:{directory:cwd}}),"provider list"));ctx.check();
+  // The thread's model when OpenCode has it; otherwise the model OpenCode itself would pick: configured, then recently used, then a
+  // connected provider's default (the recent list is read only for the server Trebell started here).
+  let catalog=connectedOpenCodeModels(providers),chosen=ctx.models.find(id=>catalog.models.some(item=>item.id===id))||null;
+  if(!chosen){catalog=connectedOpenCodeModels(providers,await openCodeModelPreferences({client,directory:cwd,env,localState:!instance.serverUrl,readText:ctx.deps.openCodeStateReader}));ctx.check();chosen=catalog.preferred||null}
+  const entry=catalog.models.find(item=>item.id===chosen)||null;
+  const session=openCodeData(await client.session.create({query:{directory:cwd},body:{title:"Trebell Git text",permission:OPENCODE_GIT_TEXT_PERMISSION}}),"session create");
   const sessionId=String(session?.id||"");if(!sessionId)throw new Error("OpenCode did not create the Git text session");
   ctx.defer(async()=>{await within(client.session.abort({path:{id:sessionId},query:{directory:cwd}}),1500);await client.session.delete({path:{id:sessionId},query:{directory:cwd}})});ctx.check();
-  const result=openCodeData(await client.session.prompt({path:{id:sessionId},query:{directory:cwd},body:{...(entry?{model:{providerID:entry.providerID,modelID:entry.modelID}}:{}),system:HARNESS_TEXT_INSTRUCTIONS,tools:{"*":false},parts:[{type:"text",text:ctx.prompt}]},signal:ctx.signal}),"session prompt");
+  const refusals=refuseOpenCodeAsks({client,v2Client:(ctx.deps.openCodeV2Client||createOpencodeV2Client)({baseUrl:server.url,directory:cwd}),directory:cwd,sessionId});
+  let result;
+  try{
+    await refusals.ready;ctx.check();
+    result=openCodeData(await client.session.prompt({path:{id:sessionId},query:{directory:cwd},body:{...(entry?{model:{providerID:entry.providerID,modelID:entry.modelID}}:{}),system:HARNESS_TEXT_INSTRUCTIONS,parts:[{type:"text",text:ctx.prompt}]},signal:ctx.signal}),"session prompt");
+  }finally{await refusals.stop()}
   const info=result?.info||{};if(info.error)throw new Error(info.error?.data?.message||info.error?.name||"OpenCode model request failed");
   const text=(result?.parts||[]).filter(part=>part?.type==="text"&&!part.synthetic).map(part=>String(part.text||"")).join("");
   return {text,model:chosen||(info.providerID&&info.modelID?`${info.providerID}/${info.modelID}`:null)};

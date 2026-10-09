@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { OpenCodeAgentSession, configureOpenCodeMcpServers, connectedOpenCodeModels, openCodePermissionDisposition } from "../src/opencode-agent-session.mjs";
+import { OpenCodeAgentSession, configureOpenCodeMcpServers, connectedOpenCodeModels, openCodeLongRequestFetch, openCodePermissionDisposition } from "../src/opencode-agent-session.mjs";
 
 test("OpenCode model selection stays inside connected providers instead of picking the first global provider",()=>{
   const catalog=connectedOpenCodeModels({
@@ -50,7 +50,8 @@ test("OpenCode fork rewind and compaction map to the real SDK session operations
   assert.deepEqual(calls,[
     ["fork",{path:{id:"session-1"},query:{directory:"/repo"},body:{}}],
     ["revert",{path:{id:"session-1"},query:{directory:"/repo"},body:{messageID:"user-message-2"}}],
-    ["summarize",{path:{id:"session-1"},query:{directory:"/repo"},body:{providerID:"provider-a",modelID:"model-a"}}],
+    // Compaction waits for a whole model call, so it uses the transport without Node fetch's five-minute header deadline.
+    ["summarize",{path:{id:"session-1"},query:{directory:"/repo"},body:{providerID:"provider-a",modelID:"model-a"},fetch:openCodeLongRequestFetch}],
   ]);
 });
 
@@ -62,6 +63,8 @@ test("OpenCode appends bounded Trebell runtime context through its native system
   await session.prompt([{type:"text",text:"Fix the parser"}],{messageId:"user-1"});
   assert.equal(calls.length,1);
   assert.equal(calls[0].body.parts[0].text,"Fix the parser");
+  assert.equal(Object.hasOwn(calls[0].body,"messageID"),false,"OpenCode names its messages itself");
+  assert.equal(calls[0].fetch,openCodeLongRequestFetch);
   assert.match(calls[0].body.system,/Trebell Code/);
   assert.match(calls[0].body.system,/OpenCode harness/);
   assert.match(calls[0].body.system,/openai\/gpt-5/);

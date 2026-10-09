@@ -129,6 +129,9 @@ const ThreadSidebar=memo(function ThreadSidebar({
     setActionError("");
     return Promise.resolve().then(action).catch(error=>setActionError(error?.message||String(error)||"Action failed."));
   },[]);
+  // An earlier failure belongs to the harness that was active then; after a switch it describes nothing on screen. (An action that
+  // itself switches harness, like opening another harness's thread, still reports its own failure: that lands after this reset.)
+  useEffect(()=>{setActionError("")},[agentRuntime]);
   useEffect(()=>{
     const focus=()=>{searchRef.current?.focus();searchRef.current?.select?.()};
     window.addEventListener("trebell:sidebar-search",focus);

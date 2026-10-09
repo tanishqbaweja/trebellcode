@@ -3,9 +3,10 @@ import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus
 import { api } from "../api.js";
 import { SOURCE_CONTROL_PAGE_SIZE, sourceControlWindow } from "../source-control-window.js";
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
+import { createGitTextRequests, sourceControlContext, sourceControlContextCurrent, sourceControlErrorAfterContextChange } from "../source-control-context.js";
 import PullRequestComposer from "./PullRequestComposer.jsx";
 
-export default function SourceControlPanel({projectPath,environmentId=null,remote=false,environmentName="Local machine",model,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="native",agentRuntimeLabel="",threadId=null,sourceControlSettings={},onProjectChange,onAttachPr,onLinkPr,onLinkPrUrl,onOpenLinkedThread,onSelectedPrChange,onLinkedPullRequestsChanged,linkedPullRequests=[]}){
+export default function SourceControlPanel({projectPath,environmentId=null,remote=false,environmentName="Local machine",model,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="native",agentRuntimeInstanceId=null,agentRuntimeLabel="",threadId=null,sourceControlSettings={},onProjectChange,onAttachPr,onLinkPr,onLinkPrUrl,onOpenLinkedThread,onSelectedPrChange,onLinkedPullRequestsChanged,linkedPullRequests=[]}){
   const [info,setInfo]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [sourceProvider,setSourceProvider]=useState("");
@@ -19,51 +20,82 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const [linkedThreadsKey,setLinkedThreadsKey]=useState(null);
   const [viewed,setViewed]=useState({prNumber:null,store:null,files:[],loading:false});
   const [busy,setBusy]=useState("");
-  const [error,setError]=useState("");
+  // An error carries the scope it describes (repository, writer or thread); see source-control-context.js.
+  const [errorState,setErrorState]=useState(null);
+  const error=errorState?.message||"";
   const [diagnosticsLoading,setDiagnosticsLoading]=useState(false);
   const [statusLimit,setStatusLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [prLimit,setPrLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [fileLimit,setFileLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const prDetailRef=useRef(null);
+  // The context on screen. A request remembers the context it was made in, and its result or error only lands while that is still shown.
+  const context=sourceControlContext({projectPath,environmentId,agentRuntime,agentRuntimeInstanceId,provider,threadId});
+  const contextRef=useRef(context);contextRef.current=context;
+  const shownContextRef=useRef(context);
+  // Commit text ("generate") and PR text ("generate-pr") in flight, one of each kind; see createGitTextRequests.
+  const [textRequests]=useState(createGitTextRequests);
+  function setError(message,scope="repository"){const text=String(message||"");setErrorState(text?{message:text,scope}:null)}
+  function stillShown(started,scope="repository"){return sourceControlContextCurrent(started,contextRef.current,scope)}
+  function reportError(started,message,scope="repository"){if(stillShown(started,scope))setError(message,scope)}
+  function startTextRequest(kind){const request=textRequests.start(kind);setBusy(kind);return request}
+  // Cancelled when the writer or the repository changes: Generate is free at once, and nothing a cancelled request produces lands.
+  function cancelTextRequests(){
+    const kinds=textRequests.cancelAll();
+    if(kinds.length)setBusy(current=>kinds.includes(current)?"":current);
+  }
+  useEffect(()=>{
+    const previous=shownContextRef.current;shownContextRef.current=context;
+    if(previous.repository===context.repository&&previous.writer===context.writer&&previous.thread===context.thread)return;
+    // Text the old writer was writing, or text about the old repository, is cancelled; Generate is free for the new context.
+    if(!sourceControlContextCurrent(previous,context,"writer"))cancelTextRequests();
+    if(previous.repository!==context.repository)setCommitMessage("");
+    setErrorState(current=>sourceControlErrorAfterContextChange(current,previous,context));
+  },[context.repository,context.writer,context.thread]);
+  useEffect(()=>()=>{textRequests.cancelAll()},[]);
   function query(values={}){
     const params=new URLSearchParams(values);params.set("environmentId",environmentId||"");return params.toString();
   }
   function environmentBody(values={}){return {...values,environmentId:environmentId||null}}
 
+  // A refresh answered after the repository changed describes the old one: it is dropped, data and errors alike.
   async function refresh(providerOverride=sourceProvider,{reportErrors=false}={}){
     if(!projectPath)return;
+    const started=contextRef.current;
     if(reportErrors)setError("");
     let i;
     try{i=await api("/api/git/info?"+query({path:projectPath}))}
     catch(error){
-      if(reportErrors||!info)setError(error.message||String(error)||"Could not refresh repository information.");
+      if(stillShown(started)&&(reportErrors||!info))setError(error.message||String(error)||"Could not refresh repository information.");
       return false;
     }
+    if(!stillShown(started))return false;
     let d=null;
     setDiagnosticsLoading(true);
     try{d=await api("/api/source-control/diagnostics?"+query({path:projectPath,...(providerOverride?{provider:providerOverride}:{})}))}
     catch(error){
-      if(reportErrors)setError(error.message||String(error)||"Could not refresh source-control diagnostics.");
+      if(reportErrors)reportError(started,error.message||String(error)||"Could not refresh source-control diagnostics.");
     }finally{setDiagnosticsLoading(false)}
+    if(!stillShown(started))return false;
     setInfo(i);if(d)setDiagnostics(d);
     const chosen=providerOverride||d?.selectedProvider||(d?.detectedProvider&&d.detectedProvider!=="unknown"?d.detectedProvider:"");
     if(chosen&&!sourceProvider)setSourceProvider(chosen);
     try{
       const p=await api("/api/source-control/prs?"+query({path:projectPath,...(chosen?{provider:chosen}:{})}));
+      if(!stillShown(started))return false;
       setPrs(p.items||[]);if(p.capabilities)setCapabilities(p.capabilities);else if(chosen&&d?.capabilities?.[chosen])setCapabilities(d.capabilities[chosen]);
     }catch(error){
-      if(reportErrors||i?.remotes?.length)setError(error.message||String(error)||"Could not refresh pull requests.");
+      if(stillShown(started)&&(reportErrors||i?.remotes?.length))setError(error.message||String(error)||"Could not refresh pull requests.");
       return false;
     }
     return true;
   }
-  function partialSuccess(label,issues=[]){
+  function partialSuccess(label,issues=[],started=contextRef.current){
     const details=(Array.isArray(issues)?issues:[]).map(item=>String(item||"").trim()).filter(Boolean);
-    if(details.length)setError(label+", but "+details.join(" "));
+    if(details.length)reportError(started,label+", but "+details.join(" "));
   }
-  async function refreshAfterSuccess(label,providerOverride=sourceProvider){
+  async function refreshAfterSuccess(label,providerOverride=sourceProvider,started=contextRef.current){
     const refreshed=await refresh(providerOverride);
-    if(!refreshed)partialSuccess(label,["the latest source-control state could not be refreshed. The last valid view is still shown."]);
+    if(!refreshed)partialSuccess(label,["the latest source-control state could not be refreshed. The last valid view is still shown."],started);
     return refreshed;
   }
   function gitActionSuccessLabel(action){
@@ -75,22 +107,36 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   useEffect(()=>{setFileLimit(SOURCE_CONTROL_PAGE_SIZE)},[selectedPr?.number]);
 
   async function action(action,extra={}){
+    const started=contextRef.current;
     setBusy(action);setError("");
     try{
       const data=await api("/api/git/action",{method:"POST",body:environmentBody({action,cwd:projectPath,...extra})});
-      setInfo(data.result?.info||data.result||info);await refreshAfterSuccess(gitActionSuccessLabel(action));return data;
-    }catch(e){setError(e.message);return null}finally{setBusy("")}
+      if(!stillShown(started))return null;
+      setInfo(data.result?.info||data.result||info);await refreshAfterSuccess(gitActionSuccessLabel(action),sourceProvider,started);return data;
+    }catch(e){reportError(started,e.message);return null}finally{setBusy("")}
   }
+  // The text is written by the writer on screen when Generate was pressed. A switch of harness, profile or repository cancels it,
+  // so neither its text nor its error ever shows under the next one; Generate clears the last error before it starts.
   async function generate(){
-    setBusy("generate");setError("");
-    try{const d=await api("/api/git/commit-message",{method:"POST",body:environmentBody({cwd:projectPath,model})});setCommitMessage(d.message||"")}
-    catch(e){setError(e.message)}finally{setBusy("")}
+    const request=startTextRequest("generate");setError("");
+    try{
+      const d=await api("/api/git/commit-message",{method:"POST",body:environmentBody({cwd:projectPath,model}),signal:request.controller.signal});
+      if(textRequests.current(request))setCommitMessage(d.message||"");
+    }catch(e){if(textRequests.current(request))setError(e.message,"writer")}
+    finally{if(textRequests.finish(request))setBusy("")}
   }
   async function createReview({generateText=false}={}){
-    setBusy(generateText?"generate-pr":"create-pr");setError("");
+    const started=contextRef.current,text=generateText?startTextRequest("generate-pr"):null;
+    if(!text)setBusy("create-pr");
+    setError("");
+    let ownsBusy=true;
     try{
       let suggested={title:commitMessage||"Trebell Code changes",body:""};
-      if(generateText)suggested=await api("/api/git/review-text",{method:"POST",body:environmentBody({cwd:projectPath,model})});
+      if(text){
+        try{suggested=await api("/api/git/review-text",{method:"POST",body:environmentBody({cwd:projectPath,model}),signal:text.controller.signal})}
+        catch(e){if(!textRequests.finish(text)){ownsBusy=false;return}setError(e.message||String(e),"writer");return}
+        if(!textRequests.finish(text)){ownsBusy=false;return}
+      }
       const title=prompt("PR title",suggested.title||commitMessage||"Trebell Code changes");if(!title)return;
       const body=prompt("PR description",suggested.body||"");if(body==null)return;
       const d=await api("/api/source-control/pr",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,title:title.trim(),body})});
@@ -100,33 +146,39 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
         try{window.open(d.url,"_blank")}catch(error){issues.push("its browser tab could not be opened: "+(error.message||String(error))+".")}
       }
       const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
-      partialSuccess("Pull request was created",issues);
-    }catch(e){setError(e.message||String(e))}finally{setBusy("")}
+      partialSuccess("Pull request was created",issues,started);
+    }catch(e){reportError(started,e.message||String(e))}finally{if(ownsBusy)setBusy("")}
   }
   async function openPr(pr){
+    const started=contextRef.current;
     setError("");
     let d=null;
     let nextError="";
     try{d=await api("/api/source-control/pr-detail?"+query({path:projectPath,number:String(pr.number),...(sourceProvider?{provider:sourceProvider}:{})}))}
     catch(error){nextError=error.message||String(error)||"Could not load pull request details."}
+    if(!stillShown(started))return "";
     const item=d?.item||pr;setSelectedPr(item);onSelectedPrChange?.(item);setTimeout(()=>prDetailRef.current?.scrollIntoView({block:"start",behavior:"auto"}),0);
     const viewedError=await loadViewed(item,d?.provider||sourceProvider||item.provider);if(viewedError)nextError=viewedError;
     if(item?.identity){
       const params=new URLSearchParams({provider:item.identity.provider||"",host:item.identity.host||"",repository:item.identity.repository||"",number:String(item.identity.number||item.number)});
       const linkKey=params.toString();
-      try{const reverse=await api("/api/source-control/thread-link?"+params);setLinkedThreads(reverse.threads||[]);setLinkedThreadsKey(linkKey)}
-      catch(error){if(linkedThreadsKey!==linkKey){setLinkedThreads([]);setLinkedThreadsKey(linkKey)}nextError=error.message||String(error)||"Could not load linked threads."}
+      try{const reverse=await api("/api/source-control/thread-link?"+params);if(stillShown(started)){setLinkedThreads(reverse.threads||[]);setLinkedThreadsKey(linkKey)}}
+      catch(error){if(stillShown(started)&&linkedThreadsKey!==linkKey){setLinkedThreads([]);setLinkedThreadsKey(linkKey)}nextError=error.message||String(error)||"Could not load linked threads."}
     }else{setLinkedThreads([]);setLinkedThreadsKey(null)}
+    if(!stillShown(started))return "";
     setError(nextError);return nextError;
   }
+  // Linked pull requests belong to the thread that was open when the sync started. Its links are always reported (the callback
+  // of that render names that thread, and App shows them only while it is still open); its error only while it is still shown.
   async function syncLinkedPullRequests(reportErrors=false){
     if(!threadId)return;
+    const started=contextRef.current;
     if(reportErrors){setBusy("sync-links");setError("")}
     try{
       const result=await api("/api/source-control/thread-link",{method:"POST",body:{action:"sync",threadId}});
       if(result?.links)onLinkedPullRequestsChanged?.(result.links);
     }catch(error){
-      if(reportErrors||linkedPullRequests.length)setError("Could not sync linked pull requests: "+(error.message||String(error)||"Unknown error"));
+      if(reportErrors||linkedPullRequests.length)reportError(started,"Could not sync linked pull requests: "+(error.message||String(error)||"Unknown error"),"thread");
     }finally{
       if(reportErrors)setBusy("");
     }
@@ -141,19 +193,21 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     catch(error){setViewed(current=>String(current.prNumber)===String(prNumber)?{...current,loading:false}:{prNumber,store:null,files:[],loading:false});return error.message||String(error)||"Could not load viewed-file state."}
   }
   async function setFileViewed(file,value){
-    if(!selectedPr?.number)return;setBusy("viewed:"+file.path);setError("");
-    try{const result=await api("/api/source-control/pr-viewed",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||selectedPr.provider||null,number:selectedPr.number,files:[{path:file.path,viewed:value}]})});setViewed({prNumber:selectedPr.number,store:result.store||viewed.store,files:result.files||[],loading:false})}
-    catch(error){setError(error.message||String(error))}finally{setBusy("")}
+    if(!selectedPr?.number)return;const started=contextRef.current;setBusy("viewed:"+file.path);setError("");
+    try{const result=await api("/api/source-control/pr-viewed",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||selectedPr.provider||null,number:selectedPr.number,files:[{path:file.path,viewed:value}]})});if(stillShown(started))setViewed({prNumber:selectedPr.number,store:result.store||viewed.store,files:result.files||[],loading:false})}
+    catch(error){reportError(started,error.message||String(error))}finally{setBusy("")}
   }
   async function prAction(actionName,extra={}){
+    const started=contextRef.current;
     setBusy(actionName);setError("");
     try{
       const result=await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:selectedPr.number,action:actionName,...extra})});
+      if(!stillShown(started))return result;
       const issues=[];const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".");
       const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
-      partialSuccess("Pull request action "+actionName+" succeeded",issues);
+      partialSuccess("Pull request action "+actionName+" succeeded",issues,started);
       return result;
-    }catch(e){setError(e.message);return null}finally{setBusy("")}
+    }catch(e){reportError(started,e.message);return null}finally{setBusy("")}
   }
   async function openProjectPath(path){
     if(!path||!onProjectChange)return false;
@@ -174,11 +228,13 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     const created=await action("worktree-create",{branch,path,baseBranch:info?.branch});
     if(created)await openProjectPath(path);
   }
+  // Attaching or linking a pull request acts on the open thread, so its error belongs to that thread.
   async function runCallback(label,callback){
     if(!callback||busy)return false;
+    const started=contextRef.current;
     setBusy(label);setError("");
     try{await Promise.resolve(callback());return true}
-    catch(error){setError(error?.message||String(error)||label+" failed.");return false}
+    catch(error){reportError(started,error?.message||String(error)||label+" failed.","thread");return false}
     finally{setBusy("")}
   }
 
@@ -196,6 +252,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       ?"Merge "+mergeScope.map(pr=>"#"+pr.number).join(" → ")+" using "+stackMergeMethod+" as one GitHub stack operation? GitHub will enforce branch rules and merge queues."
       :"Rebase stack "+label+"? This rewrites the remote stack branches bottom-to-top with force-with-lease and restarts checks. Your current checkout is not changed.";
     if(!confirm(promptText))return;
+    const started=contextRef.current;
     setBusy(kind+"-stack");setError("");
     try{
       if(kind==="merge"){
@@ -203,10 +260,11 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       }else{
         await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:selectedPr.number,action:"rebase-stack"})});
       }
+      if(!stillShown(started))return;
       const issues=[];const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
       if(selectedPr){const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
-      partialSuccess("Stack "+kind+" succeeded",issues);
-    }catch(e){setError(e.message)}
+      partialSuccess("Stack "+kind+" succeeded",issues,started);
+    }catch(e){reportError(started,e.message)}
     finally{setBusy("")}
   }
   async function publishRepository(){
@@ -215,15 +273,17 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     const defaults={bitbucket:"workspace/"+localName,"azure-devops":"project/"+localName};
     const name=prompt(labels[sourceProvider]||"Repository name",defaults[sourceProvider]||localName);if(!name)return;
     const visibility=sourceProvider==="azure-devops"?"private":confirm("Make this repository public?\n\nOK = public\nCancel = private")?"public":"private";
+    const started=contextRef.current;
     setBusy("publish");setError("");
     try{
       const result=await api("/api/source-control/publish",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider,name,visibility})});
       const issues=[];
       if(result.url)try{window.open(result.url,"_blank")}catch(error){issues.push("its browser tab could not be opened: "+(error.message||String(error))+".")}
+      if(!stillShown(started))return;
       const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
       if(!result.pushed)issues.push("no commit was pushed yet; make the first commit, then push it to origin.");
-      partialSuccess(result.pushed?"Repository was published":"Repository was created",issues);
-    }catch(e){setError("Could not publish repository: "+(e.message||String(e)))}finally{setBusy("")}
+      partialSuccess(result.pushed?"Repository was published":"Repository was created",issues,started);
+    }catch(e){reportError(started,"Could not publish repository: "+(e.message||String(e)))}finally{setBusy("")}
   }
   const linkedGroups=(()=>{
     const groups=[];const byKey=new Map();
