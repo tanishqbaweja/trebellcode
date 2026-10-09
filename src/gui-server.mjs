@@ -67,6 +67,7 @@ import { resolveRecipeExecution } from "./recipes.mjs";
 import { runProjectHooks, verificationHookSteps } from "./project-hooks.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
+import { generateTextWithHarness, HARNESS_TEXT_TIMEOUT_MS } from "./harness-text-generation.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -471,7 +472,7 @@ async function projectActionSuggestions(projectPath){
   };
 }
 
-export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env,fetchFn=globalThis.fetch}={}){
+export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env,fetchFn=globalThis.fetch,harnessTextGenerator=generateTextWithHarness}={}){
   const offlineE2E=env.TREBELL_E2E_OFFLINE==="1"||process.env.TREBELL_E2E_OFFLINE==="1";
   if(offlineE2E&&!mock)throw new Error("Offline browser E2E forbids starting a real Trebell provider or Codex app-server.");
   const fetchImpl=offlineE2E?offlineE2eFetch(fetchFn):fetchFn;
@@ -974,9 +975,21 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     codexAppServerStarts.set(key,starting);
     try{return await starting}finally{codexAppServerStarts.delete(key)}
   }
-  async function stopCodexAppServers(){
+  // A private app-server for one-shot Git text: no relay connection shares it, so its ephemeral thread is never announced
+  // to the UI or recorded in thread metadata, and stopping it afterwards leaves nothing behind. A profile or environment
+  // restart leaves it running (stopCodexAppServers keepGitText); the request releases it.
+  async function dedicatedCodexAppServer(instanceId,environmentId=null){
+    const server=await ensureCodexAppServer(instanceId,{environmentId,ownerKey:"git-text:"+randomUUID()});
+    const release=async()=>{if(codexAppServers.get(server.poolKey)===server)codexAppServers.delete(server.poolKey);await stopAppServer(server)};
+    if(server?.error||!server?.targetUrl){await release().catch(()=>{});throw new Error(server?.error||"Codex app-server is unavailable")}
+    return {url:server.targetUrl,release};
+  }
+  // keepGitText leaves the private Git text app-servers running: a profile or environment switch must not kill a request in flight, which
+  // already snapshotted its runtime profile and environment and releases its own server. Shutdown (close) stops every server.
+  async function stopCodexAppServers({keepGitText=false}={}){
     if(codexThreadReleases.size)await Promise.allSettled([...codexThreadReleases.values()]);
-    const servers=[...codexAppServers.values()];codexAppServers.clear();
+    const keys=[...codexAppServers.keys()].filter(key=>!keepGitText||!key.startsWith("git-text:")),servers=keys.map(key=>codexAppServers.get(key));
+    for(const key of keys)codexAppServers.delete(key);
     codexThreadServerKeys.clear();codexThreadReleases.clear();
     await Promise.all(servers.map(server=>stopAppServer(server)));
   }
@@ -1334,7 +1347,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
 
   async function restartAppServer(){
-    await stopCodexAppServers();
+    await stopCodexAppServers({keepGitText:true});
     appServer=await ensureCodexAppServer(agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null,{preferredPort:appPort,ownerKey:"catalog"});
     return appServer;
   }
@@ -1519,7 +1532,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       :null;
     return {subjects,instructions,reviewTemplate};
   }
-  async function sourceControlTextRequest({cwd,environmentId,kind,model=null}){
+  function sourceControlTextGenerator(){
+    if(selectedAgentRuntime==="native")return {runtime:"native",generatedWith:MODEL_PROVIDERS[selectedProvider]?.name||selectedProvider};
+    return {runtime:selectedAgentRuntime,generatedWith:agentRuntimes.definitions().find(item=>item.id===selectedAgentRuntime)?.name||selectedAgentRuntime};
+  }
+  async function sourceControlTextRequest({cwd,environmentId,kind,model=null,signal=null}){
+    // Snapshot the writer first so a harness switch during the diff cannot route this prompt somewhere else.
+    const generator=sourceControlTextGenerator(),harnessInstance=generator.runtime==="native"?null:agentRuntimes.activeInstance();
     const scoped=state.projectSettings(cwd,environmentId).effective;
     const style=scoped.sourceControlTextStyle||"repository";const selectedModel=scoped.sourceControlTextModel||model||null;
     const customInstructions=String(scoped.sourceControlCustomInstructions||"").trim();const followTemplates=scoped.sourceControlFollowTemplates!==false;
@@ -1550,11 +1569,27 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         recent,instructions,"Status:\n"+String(diff.status||"").slice(0,12000),"Diff:\n"+String(diff.diff||"").slice(0,60000),
       ].filter(Boolean).join("\n\n");
     if(mock)return kind==="review"
-      ?{text:JSON.stringify({title:"Mock generated review",body:"Mock generated description."}),style,model:selectedModel,prompt}
-      :{text:"Mock generated commit",style,model:selectedModel,prompt};
+      ?{text:JSON.stringify({title:"Mock generated review",body:"Mock generated description."}),style,model:selectedModel,prompt,...generator}
+      :{text:"Mock generated commit",style,model:selectedModel,prompt,...generator};
+    if(harnessInstance){
+      // An external harness writes the text with its own account and current/default model, and the diff never reaches the
+      // Native provider. Codex threads are ephemeral, Claude Code sessions are not saved and OpenCode sessions are deleted; ACP
+      // has no delete, so Cursor, Grok Build and Antigravity keep the temp-folder session in their own store (see harness-text-generation.mjs).
+      const generated=await harnessTextGenerator({
+        runtimeManager:agentRuntimes,instance:harnessInstance,prompt,cwd,environmentId,signal,version:TREBELL_VERSION,timeoutMs:HARNESS_TEXT_TIMEOUT_MS,
+        models:[scoped.sourceControlTextModel,model].filter(Boolean),
+        codexAppServer:()=>dedicatedCodexAppServer(harnessInstance.id,environmentId),
+      });
+      return {text:String(generated?.text||"").trim(),style,model:generated?.model||null,prompt,runtime:harnessInstance.kind,generatedWith:generated?.name||generator.generatedWith};
+    }
     const answer=await providers.directChat(selectedProvider,{prompt,model:selectedModel});
-    return {text:String(answer.text||"").trim(),style,model:selectedModel,prompt};
+    return {text:String(answer.text||"").trim(),style,model:selectedModel,prompt,...generator};
   }
+  function generatedCommitSubject(text){
+    const lines=String(text||"").replace(/```[\w-]*/g,"").split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+    return String(lines[0]||"").replace(/^["'`]+|["'`]+$/g,"").trim();
+  }
+  function sourceControlTextStatus(error){return error?.code==="HARNESS_TEXT_TIMEOUT"?504:400}
 
   const server=createServer(async(req,res)=>{
     const url=new URL(req.url || "/",`http://127.0.0.1:${port}`);
@@ -2296,20 +2331,26 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/git/commit-message" && req.method==="POST"){
+      const cancellation=requestAbortController(req,res);
       try{
         const body=await readJsonBody(req);
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
         const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
-        const generated=await sourceControlTextRequest({cwd,environmentId,kind:"commit",model:body.model||null});
-        return json(res,200,{message:generated.text.split(/\r?\n/)[0].replace(/^[\"']|[\"']$/g,""),style:generated.style,model:generated.model});
-      }catch(error){return json(res,400,{error:error.message});}
+        const generated=await sourceControlTextRequest({cwd,environmentId,kind:"commit",model:body.model||null,signal:cancellation.signal});
+        const message=generatedCommitSubject(generated.text);if(!message)throw new Error("The model did not return a commit subject");
+        return json(res,200,{message,style:generated.style,model:generated.model,runtime:generated.runtime,generatedWith:generated.generatedWith});
+      }catch(error){
+        if(cancellation.signal.aborted)return;
+        return json(res,sourceControlTextStatus(error),{error:error.message});
+      }finally{cancellation.dispose()}
     }
     if(url.pathname==="/api/git/review-text" && req.method==="POST"){
+      const cancellation=requestAbortController(req,res);
       try{
         const body=await readJsonBody(req);
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
         const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
-        const generated=await sourceControlTextRequest({cwd,environmentId,kind:"review",model:body.model||null});
+        const generated=await sourceControlTextRequest({cwd,environmentId,kind:"review",model:body.model||null,signal:cancellation.signal});
         const raw=generated.text.replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/i,"").trim();
         let parsed=null;try{parsed=JSON.parse(raw)}catch{
           const start=raw.indexOf("{"),end=raw.lastIndexOf("}");if(start>=0&&end>start)try{parsed=JSON.parse(raw.slice(start,end+1))}catch{}
@@ -2318,8 +2359,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const title=String(parsed?.title||lines[0]||"").replace(/^[#*\-\s]+/,"").slice(0,100).trim();
         const reviewBody=String(parsed?.body||(!parsed?lines.slice(1).join("\n"):"")).trim();
         if(!title)throw new Error("The model did not return a pull request title");
-        return json(res,200,{title,body:reviewBody,style:generated.style,model:generated.model});
-      }catch(error){return json(res,400,{error:error.message});}
+        return json(res,200,{title,body:reviewBody,style:generated.style,model:generated.model,runtime:generated.runtime,generatedWith:generated.generatedWith});
+      }catch(error){
+        if(cancellation.signal.aborted)return;
+        return json(res,sourceControlTextStatus(error),{error:error.message});
+      }finally{cancellation.dispose()}
     }
     if(url.pathname==="/api/checkpoints"){
       if(req.method==="GET") return json(res,200,{checkpoints:checkpoints.list(url.searchParams.get("threadId")||null)});
@@ -2381,11 +2425,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       return json(res,200,await bootstrapPayload(req));
     }
     if(url.pathname==="/api/runtime"){
-      const agentSnapshot=await agentRuntimes.snapshot().catch(()=>({selectedRuntime:selectedAgentRuntime,selectedInstanceId:null,statuses:[]}));
+      // The UI polls this every few seconds and shows only the active harness, so probe that one CLI instead of every
+      // installed harness (the official Cursor launcher alone takes seconds to answer).
+      let activeInstance=null,agentRuntimeStatus=null;
+      try{activeInstance=agentRuntimes.activeInstance();agentRuntimeStatus=await agentRuntimes.probe(activeInstance)}catch{}
       return json(res,200,{
         agentRuntime:selectedAgentRuntime,
-        agentRuntimeInstanceId:agentSnapshot.selectedInstanceId,
-        agentRuntimeStatus:agentSnapshot.statuses?.find(item=>item.id===agentSnapshot.selectedInstanceId)||null,
+        agentRuntimeInstanceId:activeInstance?.id||null,
+        agentRuntimeStatus:agentRuntimeStatus||null,
         provider:selectedProvider,
         providerReady:providerReady(),
         appServerReady:mock || await appServerReady(appServer,appPort),

@@ -1,8 +1,48 @@
 import { test,expect } from "@playwright/test";
+import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { mkdtemp,rm,writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+const execFileAsync=promisify(execFile);
+
+// A throwaway repository with one tracked change, registered as a project; close() restores the runtime and active-project settings and removes both.
+async function commitWriterFixture(request,name){
+  const root=await mkdtemp(join(tmpdir(),"trebell-source-writer-")),git=args=>execFileAsync("git",args,{cwd:root,windowsHide:true,encoding:"utf8"});
+  await git(["init"]);await git(["config","user.email","trebell-test@example.invalid"]);await git(["config","user.name","Trebell Test"]);
+  await writeFile(join(root,"notes.txt"),"before\n","utf8");await git(["add","notes.txt"]);await git(["commit","-m","Seed notes"]);await writeFile(join(root,"notes.txt"),"after\n","utf8");
+  const previous=await (await request.get("/api/settings")).json();
+  const {project}=await (await request.post("/api/projects",{data:{path:root,name}})).json();
+  return {async close(){
+    await request.post("/api/settings",{data:{agentRuntime:previous.agentRuntime||"codex",agentRuntimeInstanceId:previous.agentRuntimeInstanceId||null,modelProvider:previous.modelProvider||"openai",activeProjectId:previous.activeProjectId||null}}).catch(()=>{});
+    if(project?.id)await request.delete("/api/projects?id="+encodeURIComponent(project.id)).catch(()=>{});
+    await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});
+  }};
+}
+
+for(const [runtime,writer] of [["native","OpenAI API"],["codex","Codex"]]){
+  test(`Generate names ${writer} as the commit text writer, as the server reports`,async({page,request})=>{
+    test.setTimeout(40_000);
+    const name="Source control writer "+runtime,fixture=await commitWriterFixture(request,name);
+    try{
+      await request.post("/api/settings",{data:{onboardingComplete:true,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",modelProvider:"openai"}});
+      await page.goto("/");await page.getByRole("button",{name:"Projects",exact:true}).click();
+      const project=page.locator(".project-card").filter({hasText:name});await expect(project).toBeVisible();await project.locator(".project-open").click();
+      await page.getByTestId("right-panel-toggle").click();const right=page.getByTestId("right-panel");await right.getByRole("button",{name:"Git",exact:true}).click();
+      // Trebell Native writes with its model provider; any other runtime writes with the harness itself.
+      const generate=right.getByRole("button",{name:"Generate with "+writer,exact:true});await expect(generate).toBeVisible({timeout:10_000});
+      const reply=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/git/commit-message");
+      await generate.click();
+      const response=await reply;expect(response.status()).toBe(200);
+      expect(await response.json()).toMatchObject({message:"Mock generated commit",runtime,generatedWith:writer});
+      await expect(right.getByPlaceholder("Commit message")).toHaveValue("Mock generated commit");
+    }finally{await fixture.close()}
+  });
+}
 
 test("large source control collections mount bounded windows",async({page,request})=>{
   test.setTimeout(35_000);

@@ -99,6 +99,11 @@ function useLatestCallback(callback){
   return useCallback((...args)=>ref.current?.(...args),[]);
 }
 
+const AGENT_RUNTIME_LABELS=Object.freeze({native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"});
+function agentRuntimeName(kind){return AGENT_RUNTIME_LABELS[kind]||String(kind||"")||"the agent harness"}
+// A model catalog belongs to its harness, and to the inference provider only when Trebell manages inference for that harness.
+function modelCatalogScope(runtime,provider){return String(runtime||"")+"\0"+(sharedRuntimeCapabilities(runtime).managedInference?String(provider||""):"")}
+
 async function recordBrowserVerificationEvidence(client,params,tool,result,success=true){
   const threadId=String(params?.threadId||"").trim(),turnId=String(params?.turnId||"").trim();if(!client?.request||!threadId||!turnId)return;
   const evidence=browserVerificationReceipt({tool,result,success,callId:params?.callId||params?.toolCallId||null});if(!evidence)return;
@@ -367,7 +372,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,providerReady,transportReady=true,transportStatus="",onRetryTransport,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onReasoningEffort,onServiceTier,onModelPickerOpenChange}){
+const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,providerReady,transportReady=true,transportStatus="",onRetryTransport,runtimeSwitchLabel="",modelsLoading=false,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onReasoningEffort,onServiceTier,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [modelQuery,setModelQuery]=useState("");
   const [listening,setListening]=useState(false);
@@ -520,8 +525,13 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   // The harness transport is down: the draft stays editable but nothing is sent until it is back.
   const transportError=!transportReady&&transportStatus==="error";
   const transportMessage=transportError?`Could not connect to ${agentRuntimeLabel}`:transportStatus==="reconnecting"?`Reconnecting to ${agentRuntimeLabel}…`:`Connecting to ${agentRuntimeLabel}…`;
+  // Every usable harness catalog lists at least one model; a prompt never goes out without one of the active runtime's models.
+  // A running turn takes steers and queued follow-ups without a model (as Enter does); a queued one drains through startTurn, which checks the catalog.
+  const modelReady=chosenModels.some(id=>(models||[]).includes(id));
+  const modelBlocker=runtimeSwitchLabel||modelReady||running?"":modelsLoading?"Loading models…":modelError||"No models available — check Settings";
+  const configureLabel="Configure "+(modelProviderRuntime?providerLabel:agentRuntimeLabel),setupRequired=!providerReady&&!models.length;
   const composerPlaceholder=openingThread?"Opening thread…":submitting?"Sending…"
-    :providerReady?(!transportReady?transportMessage:running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…")
+    :providerReady?(runtimeSwitchLabel||(!transportReady?transportMessage:running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"))
     :modelProviderRuntime?`Configure ${providerLabel} in Settings…`
     :`Configure ${agentRuntimeLabel} in Settings…`;
   return <div className={"composer-wrap"+(prompt.length>=32768?" long-draft":"")} onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
@@ -539,14 +549,14 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
       {runtimeCapabilities.collaborationModes&&collaborationModes.length>0&&<select data-testid="collaboration-mode-picker" className="permission-picker collaboration-mode-picker" value={collaborationMode} disabled={running||collaborationModeBusy} onChange={e=>onCollaborationMode?.(e.target.value)} title="Collaboration mode">{collaborationModes.map(item=><option key={item.mode} value={item.mode}>{item.name} mode</option>)}</select>}
       {!threadOpen&&!projectless&&<select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>}
     </div><div className="composer-right">
-      {!providerReady&&!models.length?<button className="login-btn" onClick={onConfigureProvider}>{modelProviderRuntime?"Configure "+providerLabel:"Configure "+agentRuntimeLabel}</button>:<>
+      {setupRequired?<button className="login-btn" onClick={onConfigureProvider}>{configureLabel}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
-        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||modelError||"No models")}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>event.stopPropagation()} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
+        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError||"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>event.stopPropagation()} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
-      <button data-testid="send" className="send-btn" onClick={()=>onSend?.(prompt)} disabled={!providerReady||!transportReady||submitting||openingThread||!prompt.trim()||promptTooLong} title={transportReady?undefined:transportMessage}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
+      <button data-testid="send" className="send-btn" onClick={()=>onSend?.(prompt)} disabled={!providerReady||!transportReady||Boolean(runtimeSwitchLabel)||Boolean(modelBlocker)||submitting||openingThread||!prompt.trim()||promptTooLong} title={runtimeSwitchLabel||(!transportReady?transportMessage:modelBlocker||undefined)}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
-    <div className={"composer-status"+(modelError||promptTooLong||transportError?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:!transportReady?<span data-testid="composer-transport" className="composer-transport">{transportMessage}{transportError?". Your draft is kept.":" · your draft stays here until it connects."}{transportError&&<button className="context-compact-btn" type="button" onClick={onRetryTransport} title={"Reconnect to "+agentRuntimeLabel}>Retry</button>}</span>:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups</span></div>
+    <div className={"composer-status"+(promptTooLong||transportError||(modelBlocker?!modelsLoading:modelError)?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:runtimeSwitchLabel?<span data-testid="composer-runtime-switch" className="composer-transport">{runtimeSwitchLabel} · your draft stays here until it is ready.</span>:!transportReady?<span data-testid="composer-transport" className="composer-transport">{transportMessage}{transportError?". Your draft is kept.":" · your draft stays here until it connects."}{transportError&&<button className="context-compact-btn" type="button" onClick={onRetryTransport} title={"Reconnect to "+agentRuntimeLabel}>Retry</button>}</span>:modelBlocker?<span data-testid="composer-model-status" className="composer-transport">{modelBlocker}{!modelsLoading&&!setupRequired&&onConfigureProvider&&<button className="context-compact-btn" type="button" onClick={onConfigureProvider} title={configureLabel+" in Settings"}>{configureLabel}</button>}</span>:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups</span></div>
   </div>;
 });
 
@@ -598,7 +608,9 @@ export default function App(){
   const localQueueStartRef=useRef(null);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null);
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
-  const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false);
+  const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false); const [modelsLoading,setModelsLoading]=useState(false);
+  // runtimeSwitch is set from the moment a harness switch starts until the server answers it: nothing new is sent meanwhile, while the current transport stays open for running turns and approvals.
+  const [runtimeSwitch,setRuntimeSwitch]=useState(null);
   const [collaborationModes,setCollaborationModes]=useState([]); const [collaborationMode,setCollaborationMode]=useState("default"); const [collaborationModeBusy,setCollaborationModeBusy]=useState(false);
   const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
   const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({threadId:null,supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
@@ -625,6 +637,8 @@ export default function App(){
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
+  const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeSwitchSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
+  modelsRef.current=models;modelRef.current=model;
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
@@ -868,8 +882,9 @@ export default function App(){
     :sharedRuntimeCapabilities(agentRuntime),[bootstrap.agentRuntime,bootstrap.runtimeCapabilities,agentRuntime]);
   const managedInference=Boolean(runtimeCapabilities.managedInference);
   const provider=settings.modelProvider||bootstrap.provider||DEFAULT_MODEL_PROVIDER;
+  agentRuntimeRef.current=agentRuntime;providerRef.current=provider;
   useEffect(()=>{
-    const next=agentRuntime+"\0"+provider;
+    const next=modelCatalogScope(agentRuntime,provider);
     if(modelCatalogScopeRef.current&&modelCatalogScopeRef.current!==next){
       setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("");
     }
@@ -912,40 +927,126 @@ export default function App(){
     return()=>{disposed=true;clearTimeout(timer)};
   },[threadFind.open,threadFind.query,runtimeCapabilities.threadSearch,activeThread?.id,rpc,rpcStatus]);
   useEffect(()=>{threadTelemetryRef.current={};setThreadTelemetry({})},[provider,agentRuntime]);
-  async function refreshProviderModels({resetThread=false,provider:expectedProvider=null,agentRuntime:expectedRuntime=null,catalog=null,bootstrap:bootstrapSnapshot=null,refreshBootstrap=true}={}){
-    const seq=++modelRefreshSeqRef.current;
-    const targetProvider=expectedProvider||provider;
-    const targetRuntime=expectedRuntime||agentRuntime;
-    const sameScope=targetProvider===provider&&targetRuntime===agentRuntime;
-    const bundledCatalogMatches=Boolean(catalog&&(!catalog.provider||catalog.provider===targetProvider)&&(!catalog.agentRuntime||catalog.agentRuntime===targetRuntime));
-    if(!sameScope&&!bundledCatalogMatches){setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
-    const [bootResult,modelResult]=await Promise.all([
-      bootstrapSnapshot?Promise.resolve({value:bootstrapSnapshot,error:null}):refreshBootstrap?api("/api/bootstrap").then(value=>({value,error:null}),error=>({value:null,error})):Promise.resolve({value:null,error:null}),
-      catalog?Promise.resolve({value:catalog,error:null}):api("/api/models").then(value=>({value,error:null}),error=>({value:null,error})),
-    ]);
-    if(seq!==modelRefreshSeqRef.current)return modelResult.value;
-    if(modelResult.error){
-      const message=modelResult.error.message||String(modelResult.error);
-      if(bootResult.value)setBootstrap(bootResult.value);
-      else if(bootResult.error)showActionError(bootResult.error,"Model catalog and provider status could not refresh");
-      setModelError(message);
-      return {provider:targetProvider,agentRuntime:targetRuntime,models:sameScope?models:[],metadata:sameScope?{models:Object.entries(modelMeta).map(([id,item])=>({id,...item}))}:null,error:message,stale:sameScope};
-    }
-    const d=modelResult.value||{models:[]};
-    if((d?.provider&&d.provider!==targetProvider)||(d?.agentRuntime&&d.agentRuntime!==targetRuntime))return d;
-    if(bootResult.value)setBootstrap(bootResult.value);
-    else if(!refreshBootstrap)setBootstrap(previous=>({...previous,...(d?.provider?{provider:d.provider}:{}),...(typeof d?.ready==="boolean"?{providerReady:d.ready}:{}),...(d?.agentRuntime?{agentRuntime:d.agentRuntime}:{})}));
-    else if(bootResult.error)showActionError(bootResult.error,"Models refreshed, but provider status could not refresh");
-    const ids=d?.models||[];
+  // preferredModel may be a function, read when the catalog lands (a project opened meanwhile can name its default model).
+  function applyModelCatalog(d,{preferredModel=modelRef.current}={}){
+    const ids=Array.isArray(d?.models)?d.models:[],preferred=typeof preferredModel==="function"?preferredModel():preferredModel;
     setModelError(d?.error||"");
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
-    const next=ids.includes(model)?model:(ids.includes(d?.defaultModel)?d.defaultModel:(ids[0]||""));
+    const next=ids.includes(preferred)?preferred:(ids.includes(d?.defaultModel)?d.defaultModel:(ids[0]||""));
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
-    if(resetThread){activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null)}
-    return d;
+    return next;
+  }
+  function clearModelCatalog(){modelsLoadingRef.current=false;setModelsLoading(false);setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
+  async function refreshProviderModels({provider:expectedProvider=null,agentRuntime:expectedRuntime=null,catalog=null,bootstrap:bootstrapSnapshot=null,refreshBootstrap=true,preferredModel=modelRef.current}={}){
+    const seq=++modelRefreshSeqRef.current;
+    // Scope checks read the latest committed runtime and provider, never a render closure: a harness switch may have landed since this refresh was requested.
+    const currentRuntime=agentRuntimeRef.current,currentProvider=providerRef.current;
+    const targetProvider=expectedProvider||currentProvider,targetRuntime=expectedRuntime||currentRuntime;
+    const sameScope=modelCatalogScope(targetRuntime,targetProvider)===modelCatalogScope(currentRuntime,currentProvider);
+    const bundledCatalogMatches=Boolean(catalog&&(!catalog.provider||catalog.provider===targetProvider)&&(!catalog.agentRuntime||catalog.agentRuntime===targetRuntime));
+    if(!sameScope&&!bundledCatalogMatches){setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
+    if(!catalog){modelsLoadingRef.current=true;setModelsLoading(true)}
+    try{
+      const [bootResult,modelResult]=await Promise.all([
+        bootstrapSnapshot?Promise.resolve({value:bootstrapSnapshot,error:null}):refreshBootstrap?api("/api/bootstrap").then(value=>({value,error:null}),error=>({value:null,error})):Promise.resolve({value:null,error:null}),
+        catalog?Promise.resolve({value:catalog,error:null}):api("/api/models").then(value=>({value,error:null}),error=>({value:null,error})),
+      ]);
+      if(seq!==modelRefreshSeqRef.current)return modelResult.value;
+      if(modelResult.error){
+        const message=modelResult.error.message||String(modelResult.error);
+        if(bootResult.value)setBootstrap(bootResult.value);
+        else if(bootResult.error)showActionError(bootResult.error,"Model catalog and provider status could not refresh");
+        setModelError(message);
+        return {provider:targetProvider,agentRuntime:targetRuntime,models:sameScope?modelsRef.current:[],error:message,stale:sameScope};
+      }
+      const d=modelResult.value||{models:[]};
+      // Accept the catalog of the runtime this refresh targets or of the runtime shown now; any other catalog answers for a harness that is no longer active.
+      const runtimeMatches=!d?.agentRuntime||d.agentRuntime===targetRuntime||d.agentRuntime===agentRuntimeRef.current;
+      const providerMatches=!d?.provider||d.provider===targetProvider||d.provider===providerRef.current;
+      if(!runtimeMatches||!providerMatches){
+        if(!modelsRef.current.length)setModelError(`The model catalog came back for ${runtimeMatches?modelProviderLabel(d.provider):agentRuntimeName(d.agentRuntime)} instead. Select the harness again in Settings.`);
+        return d;
+      }
+      if(bootResult.value)setBootstrap(bootResult.value);
+      else if(!refreshBootstrap)setBootstrap(previous=>({...previous,...(d?.provider?{provider:d.provider}:{}),...(typeof d?.ready==="boolean"?{providerReady:d.ready}:{}),...(d?.agentRuntime?{agentRuntime:d.agentRuntime}:{})}));
+      else if(bootResult.error)showActionError(bootResult.error,"Models refreshed, but provider status could not refresh");
+      applyModelCatalog(d,{preferredModel});
+      return d;
+    }finally{if(seq===modelRefreshSeqRef.current){modelsLoadingRef.current=false;setModelsLoading(false)}}
+  }
+  function resetThreadView(runtime,capabilities){
+    activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setEvents([]);resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime:runtime,nativeQueue:capabilities?.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);
+  }
+  // A harness switch clears the previous runtime's models at once and gates the composer until the server answers. Its transport stays open
+  // until then (see the transport effect), so a rejected switch leaves running turns and open approvals of the active harness untouched.
+  function beginRuntimeSwitch({runtime,instanceId=null,resetThread=true}={}){
+    const pending={id:++runtimeSwitchSeqRef.current,from:agentRuntime,to:String(runtime||agentRuntime),instanceId:instanceId||null,resetThread,previous:{models,modelMeta,model,selectedModels,modelError,scope:modelCatalogScopeRef.current}};
+    runtimeSwitchRef.current=pending;modelRefreshSeqRef.current++;
+    setRuntimeSwitch({id:pending.id,from:pending.from,to:pending.to});
+    clearModelCatalog();
+    return pending;
+  }
+  async function completeRuntimeSwitch(pending,result){
+    if(runtimeSwitchRef.current?.id!==pending.id)return false;
+    // The switch response reports the runtime the server now runs; its bundled bootstrap and catalog belong to that runtime.
+    const runtime=String(result?.selectedRuntime||result?.selected?.runtime||result?.kind||result?.bootstrap?.agentRuntime||pending.to);
+    const instanceId=result?.selectedInstanceId||result?.selected?.instance?.id||result?.resetTo||pending.instanceId||`${runtime}-default`;
+    let boot=result?.bootstrap||null;
+    if(!boot){
+      try{boot=await api("/api/bootstrap")}
+      catch(error){showActionError(error,`${agentRuntimeName(runtime)} is selected, but its status could not refresh`)}
+      if(runtimeSwitchRef.current?.id!==pending.id)return false;
+    }
+    const nextProvider=settings.modelProvider||boot?.provider||bootstrap.provider||DEFAULT_MODEL_PROVIDER;
+    const capabilities=boot?.agentRuntime===runtime&&boot?.runtimeCapabilities?boot.runtimeCapabilities:sharedRuntimeCapabilities(runtime);
+    const catalog=result?.catalog||null,catalogMatches=Boolean(catalog&&(!catalog.agentRuntime||catalog.agentRuntime===runtime)&&(!catalog.provider||catalog.provider===nextProvider));
+    const preferredModel=runtime===pending.from?pending.previous.model:"";
+    // One batch: the runtime, its bootstrap, exactly one transport reconnect and (when bundled) its catalog land together. Nothing reconnects after the catalog.
+    runtimeSwitchRef.current=null;modelCatalogScopeRef.current=modelCatalogScope(runtime,nextProvider);
+    setRuntimeSwitch(null);
+    setSettings(previous=>({...previous,agentRuntime:runtime,agentRuntimeInstanceId:instanceId}));
+    if(boot)setBootstrap(boot);
+    setRuntimeTransportRevision(value=>value+1);
+    if(pending.resetThread)resetThreadView(runtime,capabilities);
+    if(catalogMatches){modelRefreshSeqRef.current++;applyModelCatalog(catalog,{preferredModel})}
+    else refreshProviderModels({agentRuntime:runtime,provider:nextProvider,bootstrap:boot,refreshBootstrap:false,preferredModel}).catch(()=>{});
+    return true;
+  }
+  async function abortRuntimeSwitch(pending){
+    if(runtimeSwitchRef.current?.id!==pending.id)return;
+    let boot=null;
+    try{boot=await api("/api/bootstrap")}catch{}
+    if(runtimeSwitchRef.current?.id!==pending.id)return;
+    runtimeSwitchRef.current=null;
+    setRuntimeSwitch(null);
+    if(boot)setBootstrap(boot);
+    const runtime=boot?.agentRuntime||pending.from;
+    if(runtime===pending.from){
+      // The server stayed on the previous harness: restore its catalog as it was. Its transport was never closed, so it does not reconnect.
+      const previous=pending.previous;modelRefreshSeqRef.current++;modelCatalogScopeRef.current=previous.scope;
+      setModels(previous.models);setModelMeta(previous.modelMeta);setModel(previous.model);setSelectedModels(previous.selectedModels);setModelError(previous.modelError);
+      return;
+    }
+    // The server moved before the error surfaced: follow it so the transport and the catalog match what actually runs. The new agentRuntime
+    // (with the bootstrap set above) reconnects the transport once through the transport effect.
+    const nextProvider=settings.modelProvider||boot?.provider||bootstrap.provider||DEFAULT_MODEL_PROVIDER;
+    modelCatalogScopeRef.current=modelCatalogScope(runtime,nextProvider);
+    setSettings(previous=>({...previous,agentRuntime:runtime,agentRuntimeInstanceId:boot?.agentRuntimeInstanceId||`${runtime}-default`}));
+    if(pending.resetThread)resetThreadView(runtime,boot?.runtimeCapabilities||sharedRuntimeCapabilities(runtime));
+    refreshProviderModels({agentRuntime:runtime,provider:nextProvider,bootstrap:boot,refreshBootstrap:false}).catch(()=>{});
+  }
+  // perform() runs the server request that switches (or reloads) the active harness. gate:false leaves sends ungated while it runs and only
+  // applies its result (e.g. after an install). Either way the transport reconnects once, in completeRuntimeSwitch.
+  async function switchAgentRuntime(target={},perform,{gate=true}={}){
+    let pending=gate?beginRuntimeSwitch(target):null,result;
+    try{result=await perform()}
+    catch(error){if(pending)await abortRuntimeSwitch(pending);throw error}
+    if(!pending)pending=beginRuntimeSwitch(target);
+    await completeRuntimeSwitch(pending,result);
+    return result;
   }
   useEffect(()=>{
-    if(!initialLoaded||section!=="chat"||!providerReady||models.length)return;
+    if(!initialLoaded||section!=="chat"||!providerReady||models.length||runtimeSwitchRef.current||modelsLoadingRef.current)return;
     refreshProviderModels().catch(()=>{});
   },[initialLoaded,section,providerReady,provider,agentRuntime,models.length]);
   async function touchProject(path,environmentId=undefined,{activate=true}={}){
@@ -963,7 +1064,8 @@ export default function App(){
     setCurrentProject(project);
     if(project&&activate)setSettings(prev=>({...prev,activeProjectId:project.id}));
     const scoped=project?.effectiveSettings||{};
-    if(scoped.defaultModel&&models.includes(scoped.defaultModel)){setModel(scoped.defaultModel);setSelectedModels([scoped.defaultModel])}
+    // The latest committed catalog, not this render's: opening a project in another environment reloads the catalog while this request runs.
+    if(scoped.defaultModel&&modelsRef.current.includes(scoped.defaultModel)){setModel(scoped.defaultModel);setSelectedModels([scoped.defaultModel])}
     if(scoped.defaultPermissionMode)setPermissionMode(scoped.defaultPermissionMode);
     if(scoped.defaultWorkspaceMode)setWorkspaceMode(scoped.defaultWorkspaceMode);
     if(scoped.autoPull&&(!project?.cloneJob||project.cloneJob.status==="completed"))api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path,environmentId:resolvedEnvironmentId}}).catch(error=>showActionError(error,"Could not automatically pull project"));
@@ -1030,7 +1132,8 @@ export default function App(){
       const modelData=modelResult.status==="fulfilled"?modelResult.value:{models:[],error:modelResult.reason?.message||String(modelResult.reason)};
       const themeCatalog=themeResult.status==="fulfilled"?themeResult.value:environmentThemeCatalog;
       const projectData=projectResult.status==="fulfilled"?projectResult.value:{projects:state.projects||[]};
-      if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
+      // The startup catalog belongs to the runtime these settings resolve to: record its scope so the scope effect keeps it instead of loading it twice.
+      if(cancelled)return; setBootstrap(boot); setSettings(prev=>{const next={...prev,...(state.settings||{})},runtime=next.agentRuntime||boot.agentRuntime||"codex";if(!modelData.agentRuntime||modelData.agentRuntime===runtime)modelCatalogScopeRef.current=modelCatalogScope(runtime,next.modelProvider||boot.provider||DEFAULT_MODEL_PROVIDER);return next}); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
       setEnvironmentThemeCatalog(themeCatalog);
       const activeEnvironmentId=state.settings?.activeEnvironmentId||null;
       const projectsForEnvironment=(projectData.projects||state.projects||[]).filter(project=>(project.environmentId||null)===activeEnvironmentId);
@@ -1381,6 +1484,8 @@ export default function App(){
   useEffect(()=>{
     if(!bootstrap.wsUrl||bootstrap.mock)return;
     transportConnectedRef.current=false;
+    // A pending harness switch leaves this transport open (running turns and open approvals keep it) and only gates sends. The
+    // transport reconnects once, when completeRuntimeSwitch applies the runtime the server confirmed; a failed switch never touches it.
     if(bootstrap.agentRuntime&&bootstrap.agentRuntime!==agentRuntime)return;
     // established: this transport connected at least once, so later attempts back off from 500ms to 5s.
     let disposed=false,retryTimer=null,client=null,established=false;
@@ -2224,19 +2329,8 @@ export default function App(){
     setSelectedThreadIds(new Set());
     pendingRuntimeThreadRef.current={thread,preserveSection,targetRuntime};
     try{
-      const selected=await api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:targetRuntime,instanceId:meta.runtimeInstanceId||null}});
-      const selectedRuntime=selected.selectedRuntime||selected.selected?.runtime||targetRuntime;
-      const selectedInstanceId=selected.selectedInstanceId||selected.selected?.instance?.id||meta.runtimeInstanceId||`${selectedRuntime}-default`;
-      modelCatalogScopeRef.current=selectedRuntime+"\0"+provider;
-      setSettings(previous=>({...previous,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId}));
-      await refreshProviderModels({
-        resetThread:false,
-        provider,
-        agentRuntime:selectedRuntime,
-        catalog:selected.catalog||null,
-        bootstrap:selected.bootstrap||null,
-        refreshBootstrap:!selected.bootstrap,
-      });
+      const instanceId=meta.runtimeInstanceId||null;
+      await switchAgentRuntime({runtime:targetRuntime,instanceId,resetThread:false},()=>api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:targetRuntime,instanceId}}));
       return true;
     }catch(error){
       pendingRuntimeThreadRef.current=null;throw error;
@@ -2718,7 +2812,12 @@ export default function App(){
       return null;
     }
   }
+  function assertTurnModel(modelId){
+    if(runtimeSwitchRef.current)throw new Error(`Trebell is switching to ${agentRuntimeName(runtimeSwitchRef.current.to)}; send again once it is ready.`);
+    if(!modelsRef.current.includes(modelId))throw new Error(`${agentRuntimeLabel} does not list the model ${modelId||"(none selected)"}. Choose one of its models and send again.`);
+  }
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null}={}){
+    assertTurnModel(modelId);
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
@@ -2753,6 +2852,7 @@ export default function App(){
     }
   }
   async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null,projectless=projectlessMode,focusPaths=null}={}){
+    assertTurnModel(modelId);
     await validateAttachmentPaths(paths||[]);if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
     let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");if(!projectless)cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree,environmentId:workspaceEnvironmentId});
     let thread=null;let turnRequestStarted=false;
@@ -2934,6 +3034,8 @@ export default function App(){
     const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim();if(!text)return;
     if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
     if(text.startsWith("/")){const special=await handleSpecial(text);if(special===true){setPrompt("");return}}
+    // Nothing new is sent while a harness switch is pending: the server may already run the new harness behind the current transport.
+    if(runtimeSwitchRef.current){const label=agentRuntimeName(runtimeSwitchRef.current.to);setEvents(prev=>[...prev.filter(item=>item.id!=="runtime-switching"),{id:"runtime-switching",kind:"error",title:`Trebell is switching to ${label}. Your draft was kept; send it again once ${label} is ready.`,status:"done",raw:{}}]);return}
     // Never route a prompt elsewhere while the harness transport is down: keep the draft until it reconnects.
     if(!bootstrap.mock&&(!rpc||rpcStatus!=="connected")){setEvents(prev=>[...prev.filter(item=>item.id!=="transport-reconnecting"),{id:"transport-reconnecting",kind:"error",title:`${agentRuntimeLabel} is ${transportConnectedRef.current?"reconnecting":"not connected yet"}. Your draft was kept; send it again once ${agentRuntimeLabel} is connected.`,status:"done",raw:{}}]);return}
     if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
@@ -2956,6 +3058,11 @@ export default function App(){
       }
       try{await validateAttachmentPaths(draft.attachments);const item={id:crypto.randomUUID(),createdAt:Date.now(),...draft};if(activeThread?.id)await persistLocalQueue(activeThread.id,[...queued,item]);else setQueued(prev=>[...prev,item])}
       catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-local-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}return;
+    }
+    // Never start a turn with a model the active runtime does not list: a stale pick from another harness, or a catalog that is loading or failed.
+    if(!modelsRef.current.includes(model)&&selectedModels.filter(id=>modelsRef.current.includes(id)).length<2){
+      const reason=modelsLoadingRef.current||!initialLoaded?`${agentRuntimeLabel} models are still loading`:modelError?`${agentRuntimeLabel} has no usable model: ${modelError}`:`No ${agentRuntimeLabel} model is available`;
+      setEvents(prev=>[...prev.filter(item=>item.id!=="model-unavailable"),{id:"model-unavailable",kind:"error",title:reason+". Your draft was kept; send it again once a model is selected.",status:"done",raw:{model:model||null}}]);return;
     }
     try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     if(await sendModelFanout(text))return;
@@ -2988,13 +3095,13 @@ export default function App(){
   }
   async function sendInBackground(promptOverride=null){
     if(!runtimeCapabilities.detachedTasks){await send(promptOverride);return}
-    if(activeThread?.id||running){await send(promptOverride);return}
+    if(activeThread?.id||running||runtimeSwitchRef.current){await send(promptOverride);return}
     const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim();if(!text)return;
     if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
     if(text.startsWith("/")){await send(promptOverride);return}
     try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     if(await sendModelFanout(text))return;
-    if(bootstrap.mock||!rpc||rpcStatus!=="connected"){await send(promptOverride);return}
+    if(bootstrap.mock||!rpc||rpcStatus!=="connected"||runtimeSwitchRef.current||!modelsRef.current.includes(model)){await send(promptOverride);return}
     if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
@@ -3296,6 +3403,11 @@ export default function App(){
     const targetEnvironmentId=environmentId||null;
     const currentEnvironmentId=settings.activeEnvironmentId||null;
     const shouldStartFresh=Boolean(activeThread?.id&&String(activeThread.cwd||"")!==String(path));
+    // Each environment runs its own harness install with its own credentials and model discovery, so its catalog is loaded afresh in the
+    // background (remote discovery can take 30 s; Send waits on "Loading models…"). The new catalog keeps the project's default model or the
+    // current pick when it lists them.
+    const previousModel=modelRef.current;let projectDefaultModel=null;
+    const reloadModels=nextBootstrap=>{clearModelCatalog();refreshProviderModels({bootstrap:nextBootstrap,refreshBootstrap:false,preferredModel:()=>projectDefaultModel||previousModel}).catch(()=>{})};
     let switchedEnvironment=false;
     try{
       if(targetEnvironmentId!==currentEnvironmentId){
@@ -3306,9 +3418,10 @@ export default function App(){
         setSettings(prev=>({...prev,...nextSettings}));
         setBootstrap(nextBootstrap);
         setRuntimeTransportRevision(value=>value+1);
+        reloadModels(nextBootstrap);
         await refreshEnvironmentThemes();
       }
-      await touchProject(path,targetEnvironmentId);
+      const project=await touchProject(path,targetEnvironmentId);projectDefaultModel=project?.effectiveSettings?.defaultModel||null;
       if(shouldStartFresh)await newChat();
       setSection("chat");
       if(targetEnvironmentId===currentEnvironmentId&&rpcStatus==="connected")loadSkills(rpc,path);
@@ -3320,6 +3433,8 @@ export default function App(){
           setSettings(prev=>({...prev,...rollbackSettings}));
           setBootstrap(rollbackBootstrap);
           setRuntimeTransportRevision(value=>value+1);
+          // Reload this environment's catalog too: the forward load is discarded, so a late answer cannot bring the other environment's models back.
+          projectDefaultModel=null;reloadModels(rollbackBootstrap);
           await refreshEnvironmentThemes();
         }catch(rollbackError){
           throw new Error((error?.message||String(error))+" Environment rollback failed: "+(rollbackError?.message||String(rollbackError)));
@@ -3424,7 +3539,9 @@ export default function App(){
   const activeTitle=titleOf(activeThread);
   const projectLabel=projectlessMode?"No project":String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
   const providerLabel=modelProviderLabel(provider);
-  const agentRuntimeLabel=({native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime);
+  const agentRuntimeLabel=AGENT_RUNTIME_LABELS[agentRuntime]||agentRuntime;
+  // Git text is written by the runtime the server runs (bootstrap), so the Source Control label names that harness.
+  const sourceControlRuntime=bootstrap.agentRuntime||agentRuntime;
   const conversationEditFromHere=useLatestCallback(editFromHere);
   const conversationLoadEarlier=useLatestCallback(loadEarlierMessages);
   const conversationCite=useLatestCallback((message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text"));
@@ -3445,6 +3562,10 @@ export default function App(){
   const composerCompact=useLatestCallback(compactContext);
   const composerRuntimeProfile=useLatestCallback(switchThreadRuntimeProfile);
   const composerRetryTransport=useLatestCallback(()=>setRuntimeTransportRevision(value=>value+1));
+  const settingsProviderChanging=useLatestCallback(nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=modelCatalogScope(agentRuntime,nextProvider);clearModelCatalog()});
+  const settingsProviderUpdated=useLatestCallback((options={})=>refreshProviderModels(options));
+  const settingsAgentRuntimeSwitch=useLatestCallback(switchAgentRuntime);
+  const runtimeSwitchLabel=runtimeSwitch?(runtimeSwitch.to===runtimeSwitch.from?`Reloading ${agentRuntimeName(runtimeSwitch.to)}…`:`Switching to ${agentRuntimeName(runtimeSwitch.to)}…`):"";
   if(rpcStatus==="connected")transportConnectedRef.current=true;
   const composerReasoningEffort=useLatestCallback(async effort=>{
     if(!model)return;
@@ -3508,7 +3629,7 @@ export default function App(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab+":"+(workspaceEnvironmentId||"local")} defaultTab={rightPanelTab==="diff"&&!projectlessMode?"diff":"files"} allowDiff={!projectlessMode} projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="context")return <ContextInspector packet={activeThread?.id?threadMeta[activeThread.id]?.trebellContext||null:null} error={activeThread?.id?threadMeta[activeThread.id]?.trebellContextError||null:null} pressure={activeThread?.id?threadMeta[activeThread.id]?.trebellContextPressure||null:null} remote={workspaceRemote} root={projectPath||null} environmentId={workspaceEnvironmentId||null}/>;
     if(rightPanelTab==="preview")return previewSurface;
-    if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
+    if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} agentRuntime={sourceControlRuntime} agentRuntimeLabel={agentRuntimeName(sourceControlRuntime)} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="agents"&&runtimeCapabilities.delegation)return <div className="panel-page"><AgentsPage threads={threads} threadMeta={threadMeta} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onDelegate={delegateTask} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry} canModelDelegate={Boolean(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation)}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal} continuity={continuity} onContinuity={setContinuity}/>;
     return <div className="runtime-surface">
@@ -3623,7 +3744,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
-  <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(openingThreadId)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} onRetryTransport={composerRetryTransport} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={openProviderSettings} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelPickerOpenChange={setModelPickerOpen}/>
+  <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(openingThreadId)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={openProviderSettings} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>
@@ -3637,7 +3758,7 @@ export default function App(){
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} settings={settings} onSettings={setSettings} onProviderChanging={nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=agentRuntime+"\0"+nextProvider;setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}} onProviderUpdated={(options={})=>{if(options.reconnectRuntime)setRuntimeTransportRevision(v=>v+1);return refreshProviderModels({...options,resetThread:options.resetThread??false})}} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} settings={settings} onSettings={setSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
           {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert">Could not load thread history: {threadHistory.error}</div>}
           {threadHistory.items.length?threadHistory.items.map(t=><button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button>}</div>}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
@@ -115,7 +115,52 @@ test("Windows runtime discovery includes current installer locations even when P
   const openCodeCandidates=runtimeExecutableCandidates("opencode",{env,platform:"win32"});
   assert.ok(openCodeCandidates[0].endsWith("AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe"));
   assert.ok(openCodeCandidates.some(path=>path.endsWith("AppData\\Roaming\\npm\\opencode.cmd")));
+  const cursorCandidates=runtimeExecutableCandidates("cursor",{env,platform:"win32"});
+  assert.ok(cursorCandidates[0].endsWith("AppData\\Local\\cursor-agent\\cursor-agent.cmd"),"the official Cursor launcher is preferred over whatever cursor-agent PATH finds first");
+  assert.ok(cursorCandidates.some(path=>path.endsWith(".cursor\\bin\\cursor-agent.exe")));
+  assert.ok(cursorCandidates.some(path=>path.endsWith("AppData\\Local\\Programs\\cursor\\resources\\app\\bin\\cursor-agent.exe")));
   assert.deepEqual(runtimeExecutableCandidates("grok",{env,platform:"linux"}),[]);
+});
+
+const CURSOR_LAUNCHER_FIXTURE=String.raw`
+import readline from "node:readline";
+const args=process.argv.slice(2);
+if(args[0]==="--version")process.stdout.write("2026.09.26-dd393fe\n");
+else if(args[0]==="about")process.stdout.write(args.join(" ")==="about --format json"?JSON.stringify({cliVersion:"2026.09.26-dd393fe",userEmail:"dev@example.test"})+"\n":"User Email          dev@example.test\n");
+else if(args.at(-1)==="acp"){
+  const send=message=>process.stdout.write(JSON.stringify(message)+"\n");
+  readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{
+    let m;try{m=JSON.parse(line)}catch{return}
+    if(m.method==="initialize")send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"cursor-launcher-fixture"},agentCapabilities:{sessionCapabilities:{close:{}}}}});
+    else if(m.method==="session/new")send({jsonrpc:"2.0",id:m.id,result:{sessionId:"cursor-launcher-session",models:{currentModelId:"auto",availableModels:[{modelId:"auto",name:"Auto"}]}}});
+    else if(m.id!=null)send({jsonrpc:"2.0",id:m.id,result:{}});
+  });
+}else{process.stderr.write("unexpected arguments: "+args.join(" ")+"\n");process.exitCode=2}
+`;
+
+test("the official Cursor .cmd launcher wins over PATH and serves version, about and ACP sessions",{skip:process.platform!=="win32"&&"Windows-only launcher discovery"},async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-cursor-launcher-"));
+  const local=join(root,"Local"),launcherDir=join(local,"cursor-agent"),decoyBin=join(root,"npm"),fixture=join(launcherDir,"fixture.mjs"),launcher=join(launcherDir,"cursor-agent.cmd");
+  try{
+    await Promise.all([mkdir(launcherDir,{recursive:true}),mkdir(decoyBin,{recursive:true}),mkdir(join(root,"user"),{recursive:true})]);
+    await writeFile(fixture,CURSOR_LAUNCHER_FIXTURE,"utf8");
+    await writeFile(launcher,["@echo off",`"${process.execPath}" "${fixture}" %*`,""].join("\r\n"),"utf8");
+    // An unrelated npm package's cursor-agent shim that PATH would find first.
+    await writeFile(join(decoyBin,"cursor-agent.cmd"),["@echo off","echo spawn EINVAL 1>&2","exit /b 1",""].join("\r\n"),"utf8");
+    const parent=Object.fromEntries(Object.entries(process.env).filter(([key])=>key.toUpperCase()!=="PATH"));
+    const env={...parent,PATH:decoyBin+";"+String(process.env.PATH||""),TREBELL_HOME:join(root,"home"),LOCALAPPDATA:local,USERPROFILE:join(root,"user")};
+    const manager=new AgentRuntimeManager({state:new TrebellStateStore(env),env,platform:"win32"});
+    const instance=manager.instances().find(item=>item.id==="cursor-default");
+    assert.equal(manager.executable(instance),launcher,"the official launcher is used as-is because it is not an npm %~dp0 shim");
+    const status=await manager.probe(instance);
+    assert.equal(status.installed,true);assert.equal(status.available,true);assert.equal(status.binary,launcher);
+    assert.equal(status.version,"2026.09.26-dd393fe");assert.equal(status.authenticated,true);assert.equal(status.account?.email,"dev@example.test");
+    const session=new AcpAgentSession({runtime:"cursor",command:manager.executable(instance),args:manager.acpArgs(instance,"supervised"),cwd:root,env:manager.childEnv(instance)});
+    try{
+      const started=await session.start();
+      assert.equal(started.session.sessionId,"cursor-launcher-session");assert.equal(started.initialize.agentInfo.name,"cursor-launcher-fixture");
+    }finally{await session.close()}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
 });
 
 test("runtime child environments do not inherit unrelated parent secrets",async()=>{
@@ -163,6 +208,24 @@ test("remote runtime processes receive the same least-privilege environment-name
   const names=calls[0].options.environmentNames;
   assert.ok(names.includes("PATH"));assert.ok(names.includes("HOME"));assert.ok(names.includes("ANTHROPIC_API_KEY"));assert.ok(names.includes("TEAM_PROXY"));
   assert.equal(names.includes("OPENAI_API_KEY"),false);
+});
+
+test("remote runtime spawns carry explicit variables, and the runtime CLI runs where the profile runs",async()=>{
+  const spawns=[],executes=[],profile={id:"ssh-fixture",type:"ssh",cwd:"/srv/app"};
+  const state={settings:()=>({activeEnvironmentId:"ssh-fixture"})};
+  const environments={get:id=>id===profile.id?profile:null,spawnArgv:(id,options)=>{spawns.push({id,options});return {pid:123}},executeArgv:async(id,options)=>{executes.push({id,options});return {exitCode:0,stdout:"",stderr:""}}};
+  const manager=new AgentRuntimeManager({state,environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test",OPENAI_API_KEY:"other-secret"}});
+  const instance={id:"opencode-remote",kind:"opencode",approvedEnvironmentKeys:[],environment:{}};
+  const spawnRuntime=manager.processSpawner(instance,"ssh-fixture"),config=JSON.stringify({permission:{"*":"deny"}});
+  spawnRuntime({args:["acp"],cwd:"/srv/app",environment:{OPENCODE_CONFIG_CONTENT:config}});
+  spawnRuntime({args:["acp"],cwd:"/srv/app"});
+  assert.deepEqual(spawns[0].options.environment,{OPENCODE_CONFIG_CONTENT:config},"an explicit variable reaches the remote process");
+  assert.equal(Object.prototype.hasOwnProperty.call(spawns[1].options,"environment"),false,"a plain spawn adds no variables");
+  assert.equal(spawns[0].options.command,"opencode");assert.deepEqual(spawns[0].options.args,["acp"]);assert.ok(spawns[0].options.environmentNames.includes("PATH"));
+  const result=await manager.runCli(instance,["session","delete","ses_1"],{environmentId:"ssh-fixture",timeoutMs:15_000});
+  assert.equal(result.ok,true);assert.equal(executes.length,1);assert.equal(executes[0].id,"ssh-fixture");
+  assert.equal(executes[0].options.command,"opencode");assert.deepEqual(executes[0].options.args,["session","delete","ses_1"]);assert.equal(executes[0].options.timeoutMs,15_000);
+  assert.deepEqual(executes[0].options.environmentNames,spawns[0].options.environmentNames,"the CLI runs with the profile's variable allowlist");
 });
 
 test("Claude runtime profiles validate and persist auto-compact thresholds",async()=>{
