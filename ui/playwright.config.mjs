@@ -1,6 +1,5 @@
 import { defineConfig } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { randomInt } from "node:crypto";
 import { cpSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +9,13 @@ const hostedBaseUrl=String(process.env.TREBELL_E2E_BASE_URL||"").trim();
 const browserChannel=String(process.env.TREBELL_E2E_BROWSER_CHANNEL||"").trim();
 const allowExternalNetwork=String(process.env.TREBELL_E2E_ALLOW_NETWORK||"").trim()==="1";
 const configuredPort=Number(process.env.TREBELL_E2E_PORT);
-const localPort=Number.isInteger(configuredPort)&&configuredPort>=1024&&configuredPort<=65535?configuredPort:randomInt(32000,60000);
+// Ask the OS for a free loopback port. A random pick from a fixed range can land in a Windows excluded port
+// range (Hyper-V/WSL reservations), where binding fails and the whole suite stops before its first test.
+function freeLoopbackPort(){
+  const script="const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>{process.stdout.write(String(s.address().port));s.close()})";
+  return Number(execFileSync(process.execPath,["-e",script],{encoding:"utf8",windowsHide:true}).trim());
+}
+const localPort=Number.isInteger(configuredPort)&&configuredPort>=1024&&configuredPort<=65535?configuredPort:freeLoopbackPort();
 process.env.TREBELL_E2E_PORT=String(localPort);
 process.env.TREBELL_E2E_OFFLINE=allowExternalNetwork?"0":"1";
 const localBaseUrl="http://127.0.0.1:"+localPort;
