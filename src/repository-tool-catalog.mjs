@@ -6,6 +6,11 @@ export const REPOSITORY_TOOL_INSTRUCTIONS="Use these deterministic Trebell repos
 export const CORE_REPOSITORY_TOOL_NAMES=Object.freeze([
   "search_symbols","search_files","search_code","read_source",
 ]);
+// Advanced capabilities backed by the JavaScript/TypeScript parser or language service. The invoke
+// description lists them in their own group so other languages do not spend a direct invoke on them.
+export const JS_TS_ONLY_REPOSITORY_TOOL_NAMES=Object.freeze([
+  "call_hierarchy","diagnostics","language_symbol","code_actions","organize_imports","rename_preview",
+]);
 export const REPOSITORY_DISCOVERY_TOOL=Object.freeze({
   type:"function",
   name:"discover",
@@ -17,20 +22,6 @@ export const REPOSITORY_DISCOVERY_TOOL=Object.freeze({
       limit:{type:"integer",minimum:1,maximum:12},
     },
     required:["query"],
-    additionalProperties:false,
-  },
-});
-export const REPOSITORY_INVOKE_TOOL=Object.freeze({
-  type:"function",
-  name:"invoke",
-  description:"Call a discovered capability using its returned input schema.",
-  inputSchema:{
-    type:"object",
-    properties:{
-      name:{type:"string",minLength:1,maxLength:100,description:"Discovered capability name."},
-      arguments:{type:"object",description:"Arguments for its schema."},
-    },
-    required:["name","arguments"],
     additionalProperties:false,
   },
 });
@@ -106,6 +97,49 @@ export function advancedRepositoryToolDefinition(name){
   const definition=repositoryToolDefinition(name);
   return definition&&!CORE_REPOSITORY_TOOL_NAME_SET.has(definition.name)?definition:null;
 }
+const ADVANCED_REPOSITORY_TOOL_DEFINITIONS=Object.freeze(REPOSITORY_TOOL_DEFINITIONS.filter(definition=>!CORE_REPOSITORY_TOOL_NAME_SET.has(definition.name)));
+export const ADVANCED_REPOSITORY_TOOL_NAMES=Object.freeze(ADVANCED_REPOSITORY_TOOL_DEFINITIONS.map(definition=>definition.name));
+
+export function repositoryToolInputJsonSchema(definition){
+  const inputSchema=z.toJSONSchema(z.object(definition.inputSchema));
+  delete inputSchema.$schema;
+  return inputSchema;
+}
+
+// Compact argument signature such as git_blame{path,startLine?,endLine?,maxLines?}: required keys bare,
+// optional keys with "?", enum values inline. It is derived from the same JSON Schema that discover returns,
+// so the invoke description cannot drift from the real input schemas.
+function repositoryToolSignature(definition){
+  const schema=repositoryToolInputJsonSchema(definition),required=new Set(schema.required||[]);
+  const keys=Object.entries(schema.properties||{}).map(([key,property])=>key+(required.has(key)?"":"?")+(Array.isArray(property?.enum)?":"+property.enum.join("|"):""));
+  return definition.name+"{"+keys.join(",")+"}";
+}
+
+// Built once at module load from the frozen catalog in catalog order, with no clock, locale, or environment
+// input, so the provider-visible tool manifest and its prompt-cache prefix are byte-identical across requests and runs.
+function repositoryInvokeDescription(){
+  const jsTsOnly=new Set(JS_TS_ONLY_REPOSITORY_TOOL_NAMES);
+  const general=ADVANCED_REPOSITORY_TOOL_DEFINITIONS.filter(definition=>!jsTsOnly.has(definition.name)).map(repositoryToolSignature);
+  const scoped=ADVANCED_REPOSITORY_TOOL_DEFINITIONS.filter(definition=>jsTsOnly.has(definition.name)).map(repositoryToolSignature);
+  return "Call an advanced repository capability directly by name; discovery is optional. Capabilities (args, ?=optional): "
+    +general.join(", ")+(scoped.length?"; JS/TS only: "+scoped.join(", "):"")
+    +". Use trebell_repo/discover for a full input schema.";
+}
+
+export const REPOSITORY_INVOKE_TOOL=Object.freeze({
+  type:"function",
+  name:"invoke",
+  description:repositoryInvokeDescription(),
+  inputSchema:{
+    type:"object",
+    properties:{
+      name:{type:"string",minLength:1,maxLength:100,description:"Capability name from this description or from discover."},
+      arguments:{type:"object",description:"Arguments for its schema."},
+    },
+    required:["name","arguments"],
+    additionalProperties:false,
+  },
+});
 
 const REPOSITORY_DISCOVERY_STOP_WORDS=new Set([
   "a","an","and","the","for","of","to","in","on","with",
@@ -151,11 +185,7 @@ export function repositoryDynamicToolNamespace({progressive=false,names=null,inc
     name:"trebell_repo",
     description:"Deterministic repository search, source, verification, Git, and durable knowledge.",
     tools:[
-      ...definitions.map(definition=>{
-      const inputSchema=z.toJSONSchema(z.object(definition.inputSchema));
-      delete inputSchema.$schema;
-      return {type:"function",name:definition.name,description:definition.description,inputSchema};
-      }),
+      ...definitions.map(definition=>({type:"function",name:definition.name,description:definition.description,inputSchema:repositoryToolInputJsonSchema(definition)})),
       ...(includeDiscovery?[REPOSITORY_DISCOVERY_TOOL,REPOSITORY_INVOKE_TOOL]:[]),
     ],
   }];

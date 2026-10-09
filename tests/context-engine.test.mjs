@@ -69,7 +69,7 @@ test("exhausted context budget skips repository I/O entirely",async()=>{
   };
   const packet=await engine.buildPacket({root:"/srv/app",io,task:"Continue",tokensUsed:93_000,contextWindow:100_000});
   assert.equal(packet.skipped,true);assert.equal(packet.injection,"");assert.equal(packet.tokenEstimate,0);
-  assert.equal(packet.stats.skippedByPressure,true);assert.equal(touched,false);
+  assert.equal(packet.stats.skippedByPressure,true);assert.equal(touched,false);assert.deepEqual(packet.testEntryPoints,[]);
 });
 
 test("pre-cancelled context builds stop before repository I/O",async()=>{
@@ -591,9 +591,11 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   const first=await engine.buildPacket({root,io,task:"Fix the refresh token session bug",maxTokens:1800,maxFiles:8});
   assert.equal(first.stats.remote,true);assert.ok(first.stats.reparsed>=4);assert.match(first.injection,/Keep authentication changes covered by tests/);
   assert.ok(first.items.some(item=>item.path==="src/auth/session.js"));
+  assert.deepEqual(first.testEntryPoints,[{command:"npm run test",path:"package.json",source:"declared"}]);
   const afterFirstMetadata=metadataCalls,afterFirstContent=contentCalls;
   const second=await engine.buildPacket({root,io,task:"Fix the refresh token session bug",maxTokens:1800,maxFiles:8});
   assert.equal(second.stats.reparsed,0);assert.ok(second.stats.reused>=4);
+  assert.deepEqual(second.testEntryPoints,first.testEntryPoints,"clean remote packets reuse detected test entry points");
   assert.equal(second.stats.pathInventoryReused,true);assert.equal(discoverCalls,1,"clean remote packets should reuse the prior Git path inventory");
   assert.equal(metadataCalls,afterFirstMetadata,"clean Git state should not restat cached remote source files");
   assert.equal(contentCalls,afterFirstContent,"clean remote packets should reuse indexed source samples instead of rereading candidate files");

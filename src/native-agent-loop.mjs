@@ -409,9 +409,9 @@ function plausibleArtifactTarget(token=""){
   return !/^v?\d+(?:\.\d+)*$/i.test(stem);
 }
 
-export function explicitPersistentArtifactTargets(messages=[]){
-  const text=lastUserInstructionText(latestUserMessage(messages)).trim();
-  if(!text)return [];
+// Persistent-output targets named in one prose unit (a sentence, or a list item with its lead-in): an explicit
+// report-to-file request, or a file-like token near a production verb.
+function artifactTargetsInText(text=""){
   const targets=[];
   for(const match of text.matchAll(/\breport(?:s|ed|ing)?\b[\s\S]{0,140}?\b(?:in|to|into|as)\s+(?:(?:a|the)\s+)?(?:file|artifact)(?:\s+(?:named|called))?\s+[`"']?([A-Za-z0-9_./\\-]+\.[A-Za-z0-9_-]{1,16})[`"']?/ig)){
     const target=String(match[1]||"").trim();
@@ -436,6 +436,51 @@ export function explicitPersistentArtifactTargets(messages=[]){
     if(!plausibleArtifactTarget(token))continue;
     if(!targets.includes(token))targets.push(token);
   }
+  return targets;
+}
+
+// Sentence units for the persistent-output detector, so a production verb and a file-like token count together only
+// when they sit in the same sentence or list item. Code fences and shell/REPL transcript lines are not requests: they
+// end the current paragraph or item and clear any lead-in. Markdown blockquote markers are removed and the quoted text
+// is read as prose. A blank line ends the paragraph or item; a heading is its own unit and clears the lead-in. Wrapped
+// lines of one paragraph, or of one list item, are rejoined before sentence splitting so a hard-wrapped request stays
+// whole. A list item inherits the last sentence of a preceding colon-terminated paragraph ("Create these files:").
+function artifactTargetUnits(text=""){
+  const fence="\u0000fence\u0000",transcript=/^\s*(?:\$|>>>|\.\.\.|In\s*\[\d+\]:|Out\s*\[\d+\]:)\s/;
+  const sentences=value=>String(value||"").split(/(?<=[.!?;])(?<!\b(?:e\.g|i\.e|etc|vs|cf|approx|fig|no)\.)\s+/i).filter(Boolean);
+  const units=[];let paragraph=[],item=null,leadIn="";
+  const flushParagraph=()=>{
+    if(!paragraph.length)return;
+    const parts=sentences(paragraph.join(" "));units.push(...parts);
+    leadIn=/:\s*$/.test(paragraph.at(-1))?String(parts.at(-1)||""):"";
+    paragraph=[];
+  };
+  const flushItem=()=>{
+    if(item==null)return;
+    const parts=sentences(item);
+    if(parts.length&&leadIn)parts[0]=leadIn+" "+parts[0];
+    units.push(...parts);item=null;
+  };
+  const endBlock=({clearLeadIn=false}={})=>{flushParagraph();flushItem();if(clearLeadIn)leadIn=""};
+  for(const raw of String(text||"").replace(/```[\s\S]*?```/g,"\n"+fence+"\n").split(/\r?\n/)){
+    if(raw===fence||transcript.test(raw)){endBlock({clearLeadIn:true});continue}
+    const line=raw.replace(/^\s*(?:>(?!>)\s?)+/,"").trimEnd();
+    if(!line.trim()){endBlock();continue}
+    if(transcript.test(line)){endBlock({clearLeadIn:true});continue}
+    if(/^\s*#{1,6}\s/.test(line)){endBlock({clearLeadIn:true});units.push(line.trim());continue}
+    if(/^\s*(?:[-*+]|\d+[.)])\s+/.test(line)){endBlock();item=line.trim().replace(/^(?:[-*+]|\d+[.)])\s+/,"");continue}
+    if(item!=null){item+=" "+line.trim();continue}
+    paragraph.push(line.trim());
+  }
+  endBlock();
+  return units;
+}
+
+export function explicitPersistentArtifactTargets(messages=[]){
+  const text=lastUserInstructionText(latestUserMessage(messages)).trim();
+  if(!text)return [];
+  const targets=[];
+  for(const unit of artifactTargetUnits(text))for(const target of artifactTargetsInText(unit))if(!targets.includes(target))targets.push(target);
   return targets;
 }
 
@@ -1153,7 +1198,7 @@ export async function runNativeAgentTurn({
   const executeControllerTool=typeof executeInternalTool==="function"?executeInternalTool:executeTool;
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),completionRecoveryEpochLimit=boundedInteger(maxCompletionRecoveryEpochs,1,{min:1,max:16}),strictAbstractionRepairVerification=abstractionRepairVerification===true,conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),taskMutationRequested=requestsTaskMutation(conversation),workspaceMutationRequested=requestsWorkspaceMutation(conversation),externalStateMutationRequested=requestsExternalStateMutation(conversation),batchEvidenceCommitAuditRequested=requestsBatchEvidenceCommitAudit(conversation),constraintPlanningRequested=requestsConstraintPlanning(conversation)||batchEvidenceCommitAuditRequested,quantitativeCalculationRequested=requestsDerivedQuantitativeCalculation(conversation),persistentArtifactTargets=explicitPersistentArtifactTargets(conversation),structuredArtifactSemanticValidationRequested=persistentArtifactTargets.length>0&&requestsStructuredArtifactSemanticValidation(conversation),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsCurrentTurnCache=new WeakMap(),requestMetricsHistoryHashCache={},requestMetricsClassificationCache=typeof coolReadToolHistory==="function"?null:{},openAiContinuationIdentity={};
   const initialConversationLength=conversation.length;
-  const persistentArtifactRequested=persistentArtifactTargets.length>0,artifactTargetSummary=persistentArtifactTargets.slice(0,3).map(value=>`\`${value}\``).join(", "),explicitArtifactAcceptanceRequirements=persistentArtifactRequested?explicitAcceptanceRequirementClauses(conversation):[],strictArtifactAcceptanceAudit=explicitArtifactAcceptanceRequirements.length>=2;
+  const persistentArtifactRequested=persistentArtifactTargets.length>0,artifactTargetSummary=persistentArtifactTargets.slice(0,3).map(value=>`\`${value}\``).join(", "),persistentArtifactTargetTelemetry=persistentArtifactTargets.slice(0,3).map(value=>redactSecretText(value,{trim:true}).slice(0,240)),explicitArtifactAcceptanceRequirements=persistentArtifactRequested?explicitAcceptanceRequirementClauses(conversation):[],strictArtifactAcceptanceAudit=explicitArtifactAcceptanceRequirements.length>=2;
   const explicitlyRequired=explicitlyRequestedTools(conversation,visibleTools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,directBrowserRuntimeRequest=directBrowserRuntimeStatus===true&&explicitBrowserRuntimeHealthRequest(conversation),directBrowserScreenshotRequest=directBrowserScreenshot===true&&explicitBrowserScreenshotRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
@@ -1420,7 +1465,9 @@ export async function runNativeAgentTurn({
     const toolStarted=nowMs();
     const terminalAudit=nativeTerminalAuditMetadata(namespace,name,args),processMutationAudit=namespace==="trebell_process"&&name==="start"?nativeTerminalAuditMetadata("trebell_terminal","run",args):null;
     const editRevisionBeforeTool=editRevision,batchEvidenceRepairWorkspaceEdit=implementationPressureEditCall(call)&&batchEvidenceCommitAuditRequested&&batchEvidencePrecommitRepairWindows>0&&batchEvidencePrecommitResolutionPendingRevision===editRevision,externalStagingWorkspaceEdit=implementationPressureEditCall(call)&&externalStateMutationRequested&&externalObservationEscalated&&batchEvidencePrecommitRepairWindows===0&&batchEvidencePrecommitResolutionPendingRevision<0&&batchEvidencePrecommitTerminalBlockerRevision<0&&completionRecoveryEpoch<=0;
-    emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,...(terminalAudit?{terminalAudit}:{})}});
+    // Telemetry only: name the advanced repository capability behind trebell_repo/invoke so traces can attribute it.
+    const invokedCapability=namespace==="trebell_repo"&&name==="invoke"?{capability:redactSecretText(String(args.name??""),{trim:true}).slice(0,100)||null}:null;
+    emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,...(terminalAudit?{terminalAudit}:{}),...(invokedCapability||{})}});
     let output,success=true,errorMessage=null,uncertain=false,retrySafe=false,terminalTimeoutMs=null,toolController=null,watchdogAbortedTool=false;
     try{
       terminalTimeoutMs=terminalToolTimeoutMs(namespace,name,args);toolController=terminalTimeoutMs==null?null:new AbortController();const toolSignal=toolController?(turnSignal?AbortSignal.any([turnSignal,toolController.signal]):toolController.signal):turnSignal;
@@ -1541,7 +1588,9 @@ export async function runNativeAgentTurn({
       }
     }
     const content=resultContent(output)||(!success?errorMessage||"Tool execution failed.":"Tool completed without text output.");
-    emit(onEvent,{name:"native.tool.completed",status:success?"completed":uncertain?"uncertain":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,durationMs:duration(toolStarted),success,uncertain,retrySafe,error:errorMessage}});
+    // Telemetry only: the exit code a terminal run reported (null when it reported none).
+    const terminalExitCode=namespace==="trebell_terminal"&&name==="run"?{exitCode:output?.exitCode!=null&&String(output.exitCode).trim()!==""&&Number.isFinite(Number(output.exitCode))?Number(output.exitCode):null}:null;
+    emit(onEvent,{name:"native.tool.completed",status:success?"completed":uncertain?"uncertain":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,durationMs:duration(toolStarted),success,uncertain,retrySafe,error:errorMessage,...(terminalExitCode||{})}});
     const observation={role:"tool",toolCallId:callId,content};
     try{Object.defineProperty(observation,NATIVE_TOOL_OBSERVATION_OUTPUT,{value:output,enumerable:false,configurable:true})}catch{}
     return observation;
@@ -1748,10 +1797,10 @@ export async function runNativeAgentTurn({
     const implementationCheckpointDue=workspaceMutationRequested&&!progressCheckpointInjected&&!probeBatchingRequired&&editRevision===0&&((toolCalls>=24&&modelTurns>=3)||modelTurns>=4);
     const deliverableCheckpointDue=persistentArtifactRequested&&!deliverableCheckpointInjected&&modelTurns>=4;
     if(implementationCheckpointDue&&deliverableCheckpointDue){
-      conversation.push({role:"developer",content:"Trebell progress checkpoint + deliverable checkpoint: enough read-only exploration has elapsed without a workspace edit, and the user requires persistent output at "+artifactTargetSummary+". Begin the smallest evidence-supported implementation and smallest viable generation or production attempt now. Batch only evidence that directly unblocks that action; singleton pre-edit reconnaissance is blocked. Before a hard-to-reverse external write, validate explicit prerequisite constraints/objectives. If implementation is impossible, state the concrete blocker. Do not claim the deliverable exists without tool evidence."});
+      conversation.push({role:"developer",content:"Trebell progress checkpoint + deliverable checkpoint: enough read-only exploration has elapsed without a workspace edit, and Trebell detected a possible required persistent output at "+artifactTargetSummary+". Begin the smallest evidence-supported implementation now, together with the smallest viable generation or production attempt for that output if the request actually asks you to produce it. A file that appears only in reproduction steps, examples, commands, or as an existing input is not a requested output; do not create it. Batch only evidence that directly unblocks that action; singleton pre-edit reconnaissance is blocked. Before a hard-to-reverse external write, validate explicit prerequisite constraints/objectives. If implementation is impossible, state the concrete blocker. Do not claim the deliverable exists without tool evidence."});
       progressCheckpointInjected=true;deliverableCheckpointInjected=true;
       emit(onEvent,{name:"native.progress.implementation_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,coalescedWithDeliverable:true}});
-      emit(onEvent,{name:"native.progress.deliverable_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,targetCount:persistentArtifactTargets.length,coalescedWithImplementation:true}});
+      emit(onEvent,{name:"native.progress.deliverable_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,targetCount:persistentArtifactTargets.length,targets:persistentArtifactTargetTelemetry,coalescedWithImplementation:true}});
     }else if(implementationCheckpointDue){
       conversation.push({role:"developer",content:"Trebell progress checkpoint: enough read-only exploration has elapsed without a workspace edit. Begin the smallest evidence-supported implementation now. Batch only evidence that directly unblocks it; singleton pre-edit reconnaissance is blocked. Before a hard-to-reverse external write, validate explicit prerequisite constraints/objectives. If implementation is impossible, state the concrete blocker."});
       progressCheckpointInjected=true;
@@ -1766,14 +1815,14 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.progress.global_constraint_planning_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,mode:batchEvidenceCommitAuditRequested?"batch_evidence_commit":"constraint_planning"}});
     }
     if(deliverableCheckpointDue&&!deliverableCheckpointInjected){
-        conversation.push({role:"developer",content:"Trebell deliverable checkpoint: the user explicitly requires a persistent output artifact at "+artifactTargetSummary+". Four model turns have already elapsed. Keep investigating when necessary, but make sure the work is converging toward a concrete deliverable rather than spending the entire turn on open-ended analysis. If no provisional artifact exists yet, establish the necessary toolchain and start the smallest viable generation or production attempt now; batch any final independent discovery that directly unblocks that attempt. If an artifact already exists, verify and refine it against the strongest available acceptance evidence. If producing the deliverable also commits non-idempotent or hard-to-reverse external state, validate prerequisite semantic constraints and objective/priority requirements before committing that state whenever a reversible transaction or dry run is unavailable. Do not claim that the artifact exists unless tool evidence establishes it."});
+        conversation.push({role:"developer",content:"Trebell deliverable checkpoint: Trebell detected a possible required persistent output artifact at "+artifactTargetSummary+". If the request does not actually ask you to produce it (for example it appears only in reproduction steps, examples, commands, or as an existing input), disregard this checkpoint and do not create it. Otherwise: four model turns have already elapsed. Keep investigating when necessary, but make sure the work is converging toward a concrete deliverable rather than spending the entire turn on open-ended analysis. If no provisional artifact exists yet, establish the necessary toolchain and start the smallest viable generation or production attempt now; batch any final independent discovery that directly unblocks that attempt. If an artifact already exists, verify and refine it against the strongest available acceptance evidence. If producing the deliverable also commits non-idempotent or hard-to-reverse external state, validate prerequisite semantic constraints and objective/priority requirements before committing that state whenever a reversible transaction or dry run is unavailable. Do not claim that the artifact exists unless tool evidence establishes it."});
       deliverableCheckpointInjected=true;
-      emit(onEvent,{name:"native.progress.deliverable_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,targetCount:persistentArtifactTargets.length}});
+      emit(onEvent,{name:"native.progress.deliverable_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,targetCount:persistentArtifactTargets.length,targets:persistentArtifactTargetTelemetry}});
     }
     if(persistentArtifactRequested&&deliverableCheckpointInjected&&!deliverableEscalationInjected&&modelTurns>=8){
-      conversation.push({role:"developer",content:"Trebell deliverable escalation: eight model turns have elapsed on a task whose required result is a persistent artifact at "+artifactTargetSummary+". If the required artifact still does not exist, stop broad exploratory analysis and take the next concrete production or toolchain action now, unless a specific blocker makes production impossible. A provisional artifact that can be measured and improved is more useful than another round of unbounded reconnaissance. If the artifact exists, switch from discovery to acceptance-focused measurement and refinement. Do not fabricate or silently weaken the requested deliverable."});
+      conversation.push({role:"developer",content:"Trebell deliverable escalation: eight model turns have elapsed since Trebell detected a possible required persistent artifact at "+artifactTargetSummary+". If the request does not actually ask for it, disregard this escalation. Otherwise, if the required artifact still does not exist, stop broad exploratory analysis and take the next concrete production or toolchain action now, unless a specific blocker makes production impossible. A provisional artifact that can be measured and improved is more useful than another round of unbounded reconnaissance. If the artifact exists, switch from discovery to acceptance-focused measurement and refinement. Do not fabricate or silently weaken the requested deliverable."});
       deliverableEscalationInjected=true;
-      emit(onEvent,{name:"native.progress.deliverable_escalation",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,targetCount:persistentArtifactTargets.length}});
+      emit(onEvent,{name:"native.progress.deliverable_escalation",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,targetCount:persistentArtifactTargets.length,targets:persistentArtifactTargetTelemetry}});
     }
     if(workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!implementationPressureEscalated&&implementationPressureEvidenceRounds>=2){
       conversation.push({role:"developer",content:"Trebell implementation escalation: "+implementationPressureEvidenceRounds+" additional batched evidence rounds have already executed after the implementation checkpoint without a workspace edit. The evidence-gathering allowance is now exhausted. On the next action, either include the smallest evidence-supported workspace edit or explain a concrete blocker that makes implementation impossible. Further pre-edit reads, searches, and terminal probes without an edit will be blocked; do not repackage the same investigation into another batch."});

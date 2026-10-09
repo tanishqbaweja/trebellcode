@@ -48,3 +48,10 @@ test("Harbor Native runner keeps durable output retrieval available and avoids a
   assert.match(source,/TREBELL_OPENAI_REASONING_CONTEXT/);
   assert.match(source,/effectiveReasoningContexts/);
 });
+
+test("Harbor Native runner records when OpenAI server compaction arms in its context policy",async()=>{
+  const source=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
+  assert.match(source,/import \{ NativeAgentSession, openAiServerCompactionArmTokens \} from "\.\.\/\.\.\/src\/native-agent-session\.mjs"/);
+  assert.match(source,/openAiServerCompactionThreshold:compactionThreshold/);
+  assert.match(source,/contextPolicy:\{operatingContextWindow:contextWindow,serverCompactionThreshold:compactionThreshold,serverCompactionArming:\{armAtMaxObservedInputTokens:openAiServerCompactionArmTokens\(compactionThreshold\),staysArmed:true\},retroactiveOpenAiReadCooling:false\}/);
+});
