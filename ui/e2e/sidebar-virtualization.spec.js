@@ -4,7 +4,7 @@ function catalogThreads(count,cwd){
   const now=Date.now()/1000,meta={};
   for(let index=0;index<count;index++){
     const id="sidebar-thread-"+String(index).padStart(4,"0"),name="Thread "+String(index).padStart(4,"0"),updatedAt=now-index;
-    meta[id]={projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id,name,preview:"Saved task "+index,cwd,model:"freebuff/test/coding-fast",createdAt:updatedAt-100,updatedAt,status:{type:"idle"},runtime:"codex",provider:"freebuff"}};
+    meta[id]={projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id,name,preview:"Saved task "+index,cwd,model:"test/coding-fast",createdAt:updatedAt-100,updatedAt,status:{type:"idle"},runtime:"codex",provider:"openai"}};
   }
   return meta;
 }
@@ -13,12 +13,11 @@ test("thousand-thread sidebar mounts bounded rows while search and active-thread
   test.setTimeout(30_000);
   const cwd=process.cwd(),threadMeta=catalogThreads(1000,cwd);
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
-  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,cwd,platform:process.platform,version:"sidebar-virtualization-fixture"}));
-  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta}));
-  await page.route(/\/api\/models$/,route=>json(route,{provider:"freebuff",agentRuntime:"codex",ready:true,models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",agentRuntime:"codex",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",agent:"Codex"}]}}));
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,cwd,platform:process.platform,version:"sidebar-virtualization-fixture"}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta}));
+  await page.route(/\/api\/models$/,route=>json(route,{provider:"openai",agentRuntime:"codex",ready:true,models:["test/coding-fast"],metadata:{provider:"openai",agentRuntime:"codex",models:[{id:"test/coding-fast",name:"Coding Fast",agent:"Codex"}]}}));
   await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
-  await page.route(/\/api\/freebuff\/overview/,route=>json(route,{}));
   await page.route(/\/api\/thread-meta$/,async route=>{
     const body=route.request().postDataJSON();threadMeta[body.threadId]={...(threadMeta[body.threadId]||{}),...(body.patch||{})};return json(route,threadMeta[body.threadId]);
   });

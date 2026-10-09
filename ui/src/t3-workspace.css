@@ -321,7 +321,7 @@ html[data-mode="light"] .context-diagnostics,html[data-mode="light"] .context-fi
 .page-header{max-width:1120px;margin:0 auto 24px}
 .secondary-page h1,.page-header h1{font-size:22px;font-weight:620;letter-spacing:-.45px;margin:8px 0 5px}
 .secondary-page>p,.page-header p{font-size:11px;line-height:1.5;color:#71777e;margin:0}
-.settings-page:not(.redesigned-settings),.projects-page,.freebuff-page,.history-page{max-width:1120px;margin:0 auto}
+.settings-page:not(.redesigned-settings),.projects-page,.history-page{max-width:1120px;margin:0 auto}
 .settings-page.redesigned-settings{width:min(1320px,100%);margin:0 auto;display:grid;grid-template-columns:224px minmax(0,1fr);gap:24px;align-items:start}
 .settings-page.redesigned-settings [hidden]{display:none!important}
 .settings-rail{position:sticky;top:0;min-width:0;display:grid;gap:6px}
@@ -367,7 +367,7 @@ html[data-custom-theme="true"] .settings-action-error{background:color-mix(in sr
 .keybinding-row label{margin:0!important;gap:3px!important;font-size:6.5px!important}
 .keybinding-row input{height:30px!important;font-size:8px!important}
 .keybindings-settings>h4{margin:12px 0 4px;font-size:9px;color:#a8aeb5}
-.settings-card,.project-card,.clone-card,.sc-card,.pr-card,.fb-hero,.fb-card{border-color:#25282c!important;background:#111315!important;border-radius:9px!important;box-shadow:none!important}
+.settings-card,.project-card,.clone-card,.sc-card,.pr-card{border-color:#25282c!important;background:#111315!important;border-radius:9px!important;box-shadow:none!important}
 .settings-card{padding:16px;min-width:0}.settings-card h3{font-size:13px}.settings-card p{font-size:10.5px;line-height:1.5;color:#737980}
 .about-card{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px}
 .about-brand{display:flex;align-items:center;gap:11px}.about-brand img{width:44px;height:44px;display:block;object-fit:contain;filter:drop-shadow(0 0 11px rgba(132,104,255,.16))}
@@ -758,26 +758,6 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .history-empty strong{co
 html[data-mode="light"]:not([data-custom-theme="true"]) :where(.history-page span,.history-page time,.history-empty span){color:#687181!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .history-empty{border-color:#d9dee8!important;color:#687181!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .history-empty button{background:#f0eafa!important;border-color:#d8c6ed!important;color:#654b82!important}
-
-/* Freebuff dashboard light-mode surfaces */
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-hero{background:radial-gradient(circle at 80% 10%,rgba(130,74,220,.10),transparent 34%),linear-gradient(135deg,#fff,#f7f3fb)!important;border-color:#d8c6ed!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-hero span,
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-hero small{color:#687181!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-hero strong{color:#4d3b66!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-hero button{background:#f0eafa!important;border-color:#d8c6ed!important;color:#654b82!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) :where(.fb-dashboard-card,.fb-model-table,.fb-raw,.fb-product-signals section){background:#fff!important;border-color:#d9dee8!important;color:#303741!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-dashboard-card span,
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-dashboard-card small,
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-raw span{color:#687181!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-dashboard-card strong,
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-raw code{color:#303741!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-model-table>div{border-color:#e1e5ec!important;color:#4d5868!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-model-table .fb-table-head{background:#f6f7fa!important;color:#687181!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-model-table>div.selected{background:#f0eafa!important;color:#654b82!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-raw>div{border-color:#e1e5ec!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-product-signals pre{color:#596473!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-offpeak{background:#f1faf3!important;border-color:#b9ddc1!important;color:#3d7a4d!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .fb-warning{background:#fff4f5!important;border-color:#e2b8bf!important;color:#914b58!important}
 
 
 /* command palette */

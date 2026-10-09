@@ -137,7 +137,7 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,onD
           <div>
             <strong>{delegatedLabel(t,meta)}</strong>
             <span className="agent-live-phase">{delegatedRole(t,meta)} · <b>{delegation.status==="uncertain"?"Uncertain launch":delegation.status==="failed"?"Launch failed":phase}</b>{flags.length?" · "+flags.join(", "):""}</span>
-            <small>{(t.model||delegation.model||model||"model").replace(/^freebuff\//,"")}{delegation.permissions||delegation.permission?" · "+(delegation.permissions||delegation.permission):""}{delegation.isolation?" · "+delegation.isolation:""}{delegation.branch?" · "+delegation.branch:""}{usage?" · "+usage:""}{activityAge?" · active "+activityAge+" ago":""} · parent {String(parentIdOf(t)||"").slice(0,8)}</small>
+            <small>{t.model||delegation.model||model||"model"}{delegation.permissions||delegation.permission?" · "+(delegation.permissions||delegation.permission):""}{delegation.isolation?" · "+delegation.isolation:""}{delegation.branch?" · "+delegation.branch:""}{usage?" · "+usage:""}{activityAge?" · active "+activityAge+" ago":""} · parent {String(parentIdOf(t)||"").slice(0,8)}</small>
             {delegation.ownership?.length>0&&<small className="agent-last-activity">Owns · {delegation.ownership.join(", ")}</small>}
             {!live.currentActivity&&live.lastActivity?.title&&<small className="agent-last-activity">Last · {live.lastActivity.title}{live.lastActivity.durationMs!=null?" · "+Math.max(1,Math.round(live.lastActivity.durationMs))+"ms":""}</small>}
           </div>

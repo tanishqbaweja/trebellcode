@@ -9,14 +9,14 @@ test("manual diagnostics refresh failures preserve the last valid runtime log",a
   test.setTimeout(30_000);
   let failDiagnostics=false;
   const validDiagnostics={
-    runtime:{provider:"freebuff",providerReady:true},
+    runtime:{provider:"openai",providerReady:true},
     logs:[{at:Date.now(),stream:"stdout",text:"known-good diagnostics\n"}],
   };
   await page.route(/\/api\/diagnostics(?:\?.*)?$/,route=>failDiagnostics
     ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate diagnostics refresh failure"})})
     :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(validDiagnostics)}));
   await page.route(/\/api\/update\/check$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({current:true})}));
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"Settings Reliability Workspace",activate:true}});
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
@@ -47,10 +47,10 @@ test("Codex runtime diagnostics show unavailable state instead of assuming readi
     body:JSON.stringify({
       agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",
       agentRuntimeStatus:{id:"codex-default",kind:"codex",name:"Codex",available:false,message:"Codex fixture unavailable"},
-      provider:"freebuff",providerReady:true,appServerReady:false,bridgeReady:true,logs:[],
+      provider:"openai",providerReady:true,appServerReady:false,logs:[],
     }),
   }));
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"Unavailable Runtime Workspace",activate:true}});
   await page.goto("/");

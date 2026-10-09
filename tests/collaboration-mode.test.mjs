@@ -19,13 +19,13 @@ test("collaboration mode payload uses the selected model and built-in instructio
     {name:"Plan",mode:"plan",model:null,reasoning_effort:"medium"},
     {name:"Default",mode:"default",model:null,reasoning_effort:null},
   ]);
-  assert.deepEqual(collaborationModePayload(modes,"plan","freebuff/test/coding-fast"),{
+  assert.deepEqual(collaborationModePayload(modes,"plan","test/coding-fast"),{
     mode:"plan",
-    settings:{model:"freebuff/test/coding-fast",reasoning_effort:"medium",developer_instructions:null},
+    settings:{model:"test/coding-fast",reasoning_effort:"medium",developer_instructions:null},
   });
-  assert.deepEqual(collaborationModePayload(modes,"default","freebuff/test/coding-large"),{
+  assert.deepEqual(collaborationModePayload(modes,"default","test/coding-large"),{
     mode:"default",
-    settings:{model:"freebuff/test/coding-large",reasoning_effort:null,developer_instructions:null},
+    settings:{model:"test/coding-large",reasoning_effort:null,developer_instructions:null},
   });
-  assert.equal(collaborationModePayload(modes,"missing","freebuff/test/coding-fast"),null);
+  assert.equal(collaborationModePayload(modes,"missing","test/coding-fast"),null);
 });

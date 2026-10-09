@@ -31,6 +31,19 @@ test("managed provider capabilities distinguish protocol compatibility from veri
   assert.equal(providerFeatureEnabled("openai","persistentConnection"),true);
 });
 
+test("missing and unknown provider ids keep the conservative unverified profile instead of a first-party one",()=>{
+  const conservative=providerCapabilities("unlisted-proxy");
+  for(const name of ["promptCaching","explicitCacheControl","previousResponseContinuation","persistentConnection","nativeCompaction","parallelToolCalls"])assert.equal(conservative[name].status,"unverified",name);
+  assert.equal(conservative.cacheUsageBreakdown.status,"supported");
+  for(const id of [null,undefined,"","   ","constructor","__proto__","toString"]){
+    assert.deepEqual(providerCapabilities(id),conservative,String(id));
+    for(const name of ["promptCaching","explicitCacheControl","previousResponseContinuation","persistentConnection"])assert.equal(providerFeatureEnabled(id,name),false,String(id)+" "+name);
+  }
+  assert.notDeepEqual(providerCapabilities(null),providerCapabilities("openai"));
+  assert.deepEqual(providerCapabilities(" OpenAI "),providerCapabilities("openai"));
+  const copy=providerCapabilities(null);copy.promptCaching.status="supported";assert.equal(providerCapabilities(null).promptCaching.status,"unverified");
+});
+
 test("ProviderManager surfaces conservative capability metadata without secrets",()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-cap-"));
   try{

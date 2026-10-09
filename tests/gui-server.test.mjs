@@ -113,7 +113,7 @@ test("saving a Native provider key does not refetch the live model catalog durin
     const url=String(input instanceof URL?input.href:input?.url||input);
     if(url.endsWith("/models")){
       modelFetches++;
-      return new Response(JSON.stringify({data:[{id:"gpt-provider-fixture"}]}),{status:200,headers:{"content-type":"application/json"}});
+      return new Response(JSON.stringify({data:[{id:"gpt-provider-fixture",created:1}]}),{status:200,headers:{"content-type":"application/json"}});
     }
     throw new Error("Unexpected external request: "+url);
   };
@@ -121,11 +121,112 @@ test("saving a Native provider key does not refetch the live model catalog durin
   const gui=await createGuiServer({port,appPort,mock:false,env,fetchFn});
   try{
     const saved=await fetch(gui.url+"/api/providers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:"openai",apiKey:"sk-provider-fixture"})}).then(r=>r.json());
-    assert.equal(saved.ready,true);assert.deepEqual(saved.models,["gpt-provider-fixture"]);
+    assert.equal(saved.ready,true);assert.deepEqual(saved.models,["gpt-provider-fixture"]);assert.equal(saved.defaultModel,"gpt-provider-fixture");
     assert.equal(modelFetches,1);
+    const catalog=await fetch(gui.url+"/api/models").then(r=>r.json());
+    assert.equal(catalog.provider,"openai");assert.deepEqual(catalog.models,["gpt-provider-fixture"]);assert.equal(catalog.defaultModel,"gpt-provider-fixture");
   }finally{
     await gui.close();
     await rm(home,{recursive:true,force:true});
+  }
+});
+
+test("direct chat never sends another harness's prompt to the Native provider",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-direct-chat-harness-"));
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",onboardingComplete:true}}));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"sk-direct-chat-fixture",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const requests=[];
+  const fetchFn=async input=>{requests.push(String(input instanceof URL?input.href:input?.url||input));throw new Error("No model provider request is expected")};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const gui=await createGuiServer({port,appPort,mock:false,env,fetchFn});
+  try{
+    const response=await fetch(gui.url+"/api/chat/direct",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:"A prompt meant for Claude Code",model:"sonnet"})});
+    assert.equal(response.status,409);
+    assert.equal((await response.json()).error,"Direct chat is only available when Trebell Native is the active harness.");
+    assert.deepEqual(requests,[],"the prompt never reaches a model provider");
+  }finally{
+    await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+test("mock GUI server serves the default Native provider catalog and direct replies without provider requests",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-mock-provider-"));
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"retired-provider-fixture",onboardingComplete:true}}));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const requests=[];
+  const fetchFn=async input=>{requests.push(String(input instanceof URL?input.href:input?.url||input));throw new Error("Mock mode must not contact a model provider")};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const gui=await createGuiServer({port,appPort,mock:true,env,fetchFn});
+  try{
+    assert.equal(JSON.parse(await readFile(join(home,"ui-state.json"),"utf8")).settings.modelProvider,"openai","an unknown stored provider must boot and persist as the default provider");
+    const boot=await fetch(gui.url+"/api/bootstrap").then(r=>r.json());
+    assert.equal(boot.mock,true);assert.equal(boot.agentRuntime,"native");assert.equal(boot.provider,"openai");assert.equal(boot.providerReady,true);
+    assert.deepEqual(Object.keys(boot).filter(key=>/bridge|logged/i.test(key)),[],"the bootstrap payload carries no provider bridge or account sign-in state");
+    const runtime=await fetch(gui.url+"/api/runtime").then(r=>r.json());
+    assert.equal(runtime.provider,"openai");assert.equal(runtime.providerReady,true);assert.deepEqual(Object.keys(runtime).filter(key=>/bridge/i.test(key)),[]);
+    const diagnostics=await fetch(gui.url+"/api/diagnostics?"+new URLSearchParams({path:home})).then(r=>r.json());
+    assert.equal(diagnostics.runtime.provider,"openai");assert.equal(diagnostics.runtime.providerReady,true);assert.deepEqual(Object.keys(diagnostics.runtime).filter(key=>/bridge/i.test(key)),[]);
+    const models=await fetch(gui.url+"/api/models").then(r=>r.json());
+    assert.equal(models.provider,"openai");assert.equal(models.agentRuntime,"native");assert.equal(models.ready,true);
+    assert.deepEqual(models.models,["test/coding-fast","test/coding-large"]);assert.equal(models.defaultModel,"test/coding-fast");
+    assert.deepEqual(models.metadata.models.map(row=>[row.id,row.provider]),[["test/coding-fast","openai"],["test/coding-large","openai"]]);
+    const anthropic=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({modelProvider:"anthropic"})}).then(r=>r.json());
+    assert.equal(anthropic.modelProvider,"anthropic");
+    const anthropicModels=await fetch(gui.url+"/api/models").then(r=>r.json());
+    assert.equal(anthropicModels.provider,"anthropic");assert.deepEqual(anthropicModels.models,["test/coding-fast","test/coding-large"]);assert.equal(anthropicModels.defaultModel,"test/coding-fast");
+    const unknownProvider=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({modelProvider:"unknown-provider-fixture"})}).then(r=>r.json());
+    assert.equal(unknownProvider.modelProvider,"openai");
+    const providerStatus=await fetch(gui.url+"/api/providers").then(r=>r.json());
+    assert.equal(providerStatus.selected,"openai");assert.equal(providerStatus.ready,true);
+    assert.deepEqual(providerStatus.providers.map(item=>item.id),["openai","anthropic","gemini","agentrouter","justworker","hcnsec","vyceai"]);
+    const directResponse=await fetch(gui.url+"/api/chat/direct",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:"Summarize the release notes",model:"test/coding-large"})});
+    assert.equal(directResponse.status,200);
+    const direct=await directResponse.json();
+    assert.equal(direct.text,"Mock direct reply: Summarize the release notes");assert.equal(direct.model,"test/coding-large");assert.equal(direct.provider,"openai");
+    const misroutedKey=await fetch(gui.url+"/api/providers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:"unknown-provider-fixture",apiKey:"unknown-provider-key-fixture"})});
+    assert.equal(misroutedKey.status,400);assert.match((await misroutedKey.json()).error,/Unknown model provider/);
+    assert.equal((await fetch(gui.url+"/api/providers").then(r=>r.json())).status.hasKey,false,"a key sent with an unknown provider id must not be saved for another provider");
+    assert.deepEqual(requests,[],"mock mode must not contact a model provider");
+  }finally{
+    await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+test("harness catalogs report the OpenCode preferred model as their default model",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-harness-default-model-"));
+  const originalProbe=AgentRuntimeManager.prototype.probe,originalModels=AgentRuntimeManager.prototype.models;
+  AgentRuntimeManager.prototype.probe=async function(instanceOrKind){
+    const instance=typeof instanceOrKind==="string"
+      ?this.instances().find(item=>item.id===instanceOrKind||item.kind===instanceOrKind)
+      :instanceOrKind;
+    const kind=instance?.kind||String(instanceOrKind||"codex");
+    return {id:instance?.id||`${kind}-default`,kind,name:kind,available:true,installed:true,authenticated:true,version:"fixture"};
+  };
+  AgentRuntimeManager.prototype.models=async function(instanceOrKind,options){
+    if((typeof instanceOrKind==="string"?instanceOrKind:instanceOrKind?.kind)!=="opencode")return originalModels.call(this,instanceOrKind,options);
+    const models=["fixture/other","fixture/preferred"];
+    return {models,metadata:models.map(id=>({id,provider:"opencode",agent:"OpenCode"})),source:"live-connected",preferred:"fixture/preferred",connectedProviders:["fixture"]};
+  };
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1"};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:true,env});
+    const codexModels=await fetch(gui.url+"/api/models").then(r=>r.json());
+    assert.equal(codexModels.agentRuntime,"codex");assert.ok(codexModels.models.length>=1);assert.equal(codexModels.defaultModel,null);
+    const opencode=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime:"opencode",instanceId:"opencode-default"})}).then(r=>r.json());
+    assert.equal(opencode.selectedRuntime,"opencode");assert.deepEqual(opencode.catalog.models,["fixture/other","fixture/preferred"]);assert.equal(opencode.catalog.defaultModel,"fixture/preferred");
+    const opencodeModels=await fetch(gui.url+"/api/models").then(r=>r.json());
+    assert.equal(opencodeModels.agentRuntime,"opencode");assert.equal(opencodeModels.defaultModel,"fixture/preferred");
+    const claude=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime:"claude",instanceId:"claude-default"})}).then(r=>r.json());
+    assert.equal(claude.selectedRuntime,"claude");assert.ok(claude.catalog.models.length>=1);assert.equal(claude.catalog.defaultModel,null);
+  }finally{
+    if(gui)await gui.close();
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    AgentRuntimeManager.prototype.models=originalModels;
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
 });
 
@@ -143,7 +244,7 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
   try{
     const boot=await fetch(gui.url+"/api/bootstrap").then(r=>r.json());
     assert.equal(boot.mock,true);
-    assert.equal(boot.loggedIn,true);
+    assert.deepEqual(Object.keys(boot).filter(key=>/bridge|logged/i.test(key)),[],"the bootstrap payload carries no provider bridge or account sign-in state");
     assert.equal(boot.version,packageVersion);
     assert.equal(boot.runtimeCapabilities.nativeSandbox,true);
     assert.equal(boot.runtimeCapabilities.dynamicTools,true);
@@ -465,14 +566,14 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const storageSweep=await fetch(gui.url+"/api/storage-cleanup",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(r=>r.json());
     assert.equal(storageSweep.attachments.enabled,true);assert.equal(storageSweep.attachments.removed,0);
     assert.equal(storageSweep.terminalHistory.enabled,false);
-    const sourceDefaults=await fetch(gui.url+"/api/scoped-settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({environmentId:null,projectId:projectSaved.project.id,patch:{sourceControlMergeMethod:"rebase",sourceControlTextStyle:"repository",sourceControlTextModel:"freebuff/test/coding-fast"},resetKeys:[]})}).then(r=>r.json());
+    const sourceDefaults=await fetch(gui.url+"/api/scoped-settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({environmentId:null,projectId:projectSaved.project.id,patch:{sourceControlMergeMethod:"rebase",sourceControlTextStyle:"repository",sourceControlTextModel:"test/coding-fast"},resetKeys:[]})}).then(r=>r.json());
     assert.equal(sourceDefaults.effective.sourceControlMergeMethod,"rebase");
     assert.equal(sourceDefaults.effective.sourceControlTextStyle,"repository");
-    assert.equal(sourceDefaults.effective.sourceControlTextModel,"freebuff/test/coding-fast");
-    const commitText=await fetch(gui.url+"/api/git/commit-message",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cwd:projectPath,environmentId:null,model:"freebuff/test/coding-large"})}).then(r=>r.json());
-    assert.equal(commitText.message,"Mock generated commit");assert.equal(commitText.style,"repository");assert.equal(commitText.model,"freebuff/test/coding-fast");
-    const reviewText=await fetch(gui.url+"/api/git/review-text",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cwd:projectPath,environmentId:null,model:"freebuff/test/coding-large"})}).then(r=>r.json());
-    assert.equal(reviewText.title,"Mock generated review");assert.equal(reviewText.body,"Mock generated description.");assert.equal(reviewText.style,"repository");assert.equal(reviewText.model,"freebuff/test/coding-fast");
+    assert.equal(sourceDefaults.effective.sourceControlTextModel,"test/coding-fast");
+    const commitText=await fetch(gui.url+"/api/git/commit-message",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cwd:projectPath,environmentId:null,model:"test/coding-large"})}).then(r=>r.json());
+    assert.equal(commitText.message,"Mock generated commit");assert.equal(commitText.style,"repository");assert.equal(commitText.model,"test/coding-fast");
+    const reviewText=await fetch(gui.url+"/api/git/review-text",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cwd:projectPath,environmentId:null,model:"test/coding-large"})}).then(r=>r.json());
+    assert.equal(reviewText.title,"Mock generated review");assert.equal(reviewText.body,"Mock generated description.");assert.equal(reviewText.style,"repository");assert.equal(reviewText.model,"test/coding-fast");
     const meta=await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"thread-test",patch:{pinned:true}})}).then(r=>r.json());
     assert.equal(meta.pinned,true);
     const general=await fetch(gui.url+"/api/general-workspace",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({environmentId:null})}).then(r=>r.json());
@@ -516,11 +617,11 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const settlements=await fetch(gui.url+"/api/source-control/settlements").then(r=>r.json());
     assert.equal(settlements.enabled,true);assert.equal(settlements.items.some(item=>item.threadId==="thread-settle"),true);
 
-    const overview=await fetch(gui.url+"/api/freebuff/overview?model=freebuff/deepseek/deepseek-v4-flash&timezone=UTC").then(r=>r.json());
-    assert.equal(overview.loggedIn,true);
-    assert.equal(overview.derived.balance,86);
-    assert.equal(overview.derived.selectedPrice.current,10);
-    assert.equal(overview.streak.streak,6);
+    for(const retiredRoute of ["/api/login/start","/api/logout"]){
+      const retiredResponse=await fetch(gui.url+retiredRoute,{method:"POST",headers:{"content-type":"application/json"},body:"{}"});
+      assert.equal(retiredResponse.status,404,retiredRoute+" must not remain an API surface");
+      assert.deepEqual(await retiredResponse.json(),{error:"API route not found"});
+    }
 
     const health=await fetch(gui.url+"/api/health").then(r=>r.json());
     assert.equal(health.ok,true);

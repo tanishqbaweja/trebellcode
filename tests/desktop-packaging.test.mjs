@@ -29,6 +29,16 @@ test("desktop packaging exposes native-host Windows macOS and Linux build target
   for(const name of ["codex-win32-x64","codex-win32-arm64","codex-darwin-x64","codex-darwin-arm64","codex-linux-x64","codex-linux-arm64"])assert.ok(pkg.build.asarUnpack.includes(`node_modules/@openai/${name}/**/*`),`missing asarUnpack for ${name}`);
 });
 
+test("desktop packaging ships and builds no vendored provider bridge",async()=>{
+  const pkg=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8"));
+  for(const entry of [...pkg.build.files,...pkg.build.asarUnpack])assert.doesNotMatch(entry,/^vendor\/|bridge/i,`packaged entry ${entry} ships a vendored bridge`);
+  for(const [name,command] of Object.entries(pkg.scripts))assert.doesNotMatch(`${name} ${command}`,/bridge|vendor\//i,`script ${name} runs a bridge build`);
+  for(const name of ["desktop:dir","desktop:dist:windows","desktop:dist:mac","desktop:dist:linux"])assert.match(pkg.scripts[name],/npm run ui:build && electron-builder /,`${name} must build the UI before electron-builder`);
+  const release=await readFile(new URL("../scripts/make-windows-release.ps1",import.meta.url),"utf8"),npmRuns=[...release.matchAll(/Invoke-Native "npm" @\("run","([^"]+)"\)/g)].map(match=>match[1]);
+  assert.ok(npmRuns.includes("prepare:icon")&&npmRuns.includes("ui:build"),"release script must prepare the icon and build the UI");
+  for(const name of npmRuns)assert.ok(pkg.scripts[name],`release script runs missing npm script ${name}`);
+});
+
 test("icon materialization emits PNG ICO and a structurally valid 256px ICNS",async()=>{
   await execFileAsync(process.execPath,[fileURLToPath(new URL("../scripts/materialize-icon.mjs",import.meta.url))],{cwd:root,windowsHide:true});
   const [png,ico,icns]=await Promise.all([readFile(new URL("../build/icon.png",import.meta.url)),readFile(new URL("../build/icon.ico",import.meta.url)),readFile(new URL("../build/icon.icns",import.meta.url))]);

@@ -32,10 +32,10 @@ async function startRuntimeHarness(thread){
 }
 
 test("History pages older Trebell catalog rows even without a connected runtime",async({page})=>{
-  const now=Date.now()/1000,settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const now=Date.now()/1000,settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   const recent={"recent-a":meta("recent-a","Recent A",now),"recent-b":meta("recent-b","Recent B",now-1)},older={"older-c":meta("older-c","Older C",now-100)};
   let catalogReads=0;
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"catalog-page-fixture",runtimeCapabilities:{},activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"catalog-page-fixture",runtimeCapabilities:{},activeEnvironmentId:null,activeEnvironment:null})}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:recent,threadMetaNextCursor:"older-page-1"})}));
   await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({agentRuntime:"claude",ready:true,models:["claude-test"],metadata:{agentRuntime:"claude",models:[{id:"claude-test",name:"Claude Test",agent:"Claude Code"}]}})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
@@ -55,10 +55,10 @@ test("History pages older Trebell catalog rows even without a connected runtime"
 
 test("connected runtime history refresh preserves the independent Trebell catalog cursor",async({page})=>{
   const now=Date.now()/1000,runtimeThread={id:"runtime-recent",name:"Runtime recent",preview:"Runtime recent preview",cwd:process.cwd(),model:"claude-test",runtime:"claude",status:{type:"idle"},createdAt:now-20,updatedAt:now-2,turns:[]};
-  const harness=await startRuntimeHarness(runtimeThread),settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const harness=await startRuntimeHarness(runtimeThread),settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   const recent={"catalog-recent":meta("catalog-recent","Catalog recent",now-1)},older={"catalog-older":meta("catalog-older","Catalog older",now-100)};let catalogReads=0;
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"catalog-page-connected-fixture",runtimeCapabilities:{},activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"catalog-page-connected-fixture",runtimeCapabilities:{},activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:recent,threadMetaNextCursor:"catalog-connected-older"})}));
     await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({agentRuntime:"claude",ready:true,models:["claude-test"],metadata:{agentRuntime:"claude",models:[{id:"claude-test",name:"Claude Test",agent:"Claude Code"}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));

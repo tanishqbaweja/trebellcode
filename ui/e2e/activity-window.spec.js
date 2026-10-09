@@ -42,17 +42,17 @@ async function startHarness(thread){
 test("large restored activity traces mount one bounded page at a time",async({page})=>{
   test.setTimeout(30_000);
   const cwd=process.cwd(),now=Date.now()/1000;
-  const thread={id:"activity-thread",name:"Large activity trace",preview:"300 tools",cwd,model:"freebuff/test/coding-fast",status:{type:"idle"},createdAt:now-100,updatedAt:now,turns:[{id:"turn-long",status:"completed",items:[
+  const thread={id:"activity-thread",name:"Large activity trace",preview:"300 tools",cwd,model:"test/coding-fast",status:{type:"idle"},createdAt:now-100,updatedAt:now,turns:[{id:"turn-long",status:"completed",items:[
     {type:"userMessage",id:"user-long",content:[{type:"text",text:"Run a long deterministic tool workflow."}]},
     {type:"agentMessage",id:"assistant-long",text:"Workflow complete."},
   ]}]};
-  const meta={[thread.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id:thread.id,name:thread.name,preview:thread.preview,cwd,model:thread.model,createdAt:thread.createdAt,updatedAt:thread.updatedAt,status:{type:"idle"},runtime:"codex",provider:"freebuff"}}};
+  const meta={[thread.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id:thread.id,name:thread.name,preview:thread.preview,cwd,model:thread.model,createdAt:thread.createdAt,updatedAt:thread.updatedAt,status:{type:"idle"},runtime:"codex",provider:"openai"}}};
   const harness=await startHarness(thread);
   try{
     const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
-    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd,platform:process.platform,version:"activity-window-fixture"}));
-    await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:meta}));
-    await page.route(/\/api\/models$/,route=>json(route,{provider:"freebuff",agentRuntime:"codex",ready:true,models:[thread.model],metadata:{provider:"freebuff",agentRuntime:"codex",models:[{id:thread.model,name:"Coding Fast",agent:"Codex"}]}}));
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd,platform:process.platform,version:"activity-window-fixture"}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:meta}));
+    await page.route(/\/api\/models$/,route=>json(route,{provider:"openai",agentRuntime:"codex",ready:true,models:[thread.model],metadata:{provider:"openai",agentRuntime:"codex",models:[{id:thread.model,name:"Coding Fast",agent:"Codex"}]}}));
     await page.route(/\/api\/thread-meta(?:\?|$)/,async route=>{
       if(route.request().method()==="POST"){const body=route.request().postDataJSON();meta[body.threadId]={...(meta[body.threadId]||{}),...(body.patch||{})};return json(route,meta[body.threadId])}
       return json(route,meta[new URL(route.request().url()).searchParams.get("threadId")]||{});
@@ -61,7 +61,6 @@ test("large restored activity traces mount one bounded page at a time",async({pa
     await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
     await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
     await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
-    await page.route(/\/api\/freebuff\/overview/,route=>json(route,{}));
     await page.goto("/");
     await page.locator('.thread-main[title="Large activity trace"]').click();
 

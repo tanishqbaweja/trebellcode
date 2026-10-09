@@ -33,6 +33,8 @@ import { normalizePermissionMode } from "./permission-policy.mjs";
 import { evaluatePolicy, POLICY_ALLOW, POLICY_CONFIRM, POLICY_REJECT } from "./policy-engine.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { providerFeatureEnabled } from "./provider-capabilities.mjs";
+import { normalizeProviderId } from "./provider-manager.mjs";
+import { isRetiredModelProvider, isRetiredProviderModel, migrateLegacyNativeThread } from "./legacy-provider-migration.mjs";
 import { NativeToolOutputStore } from "./native-tool-output-store.mjs";
 import { trebellHome } from "./paths.mjs";
 import { dirname, join } from "node:path";
@@ -634,12 +636,23 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     return ()=>{const next=Math.max(0,(Number(pendingDelegations.get(threadId))||1)-1);if(next)pendingDelegations.set(threadId,next);else pendingDelegations.delete(threadId)};
   }
 
+  // Native threads persisted under a retired model provider are re-pointed at the selected provider and
+  // lose their model, so resuming one never ships its transcript to a different vendor unattended.
+  function migrateRetiredNativeThread(thread){
+    if(thread?.runtime!=="native")return {thread,retiredProvider:false};
+    const retiredProvider=isRetiredModelProvider(thread.providerMeta?.modelProvider),legacy=migrateLegacyNativeThread(thread,{provider:normalizeProviderId(state?.settings?.().modelProvider)});
+    if(!legacy.changed)return {thread,retiredProvider};
+    return {thread:threadStore.update(thread.id,{model:legacy.thread.model,providerMeta:legacy.thread.providerMeta})||legacy.thread,retiredProvider};
+  }
+
   async function ensureSession(thread,context,{permissionMode=null,model=null}={}){
     if(thread?.runtime==="native"){
       const storedNamespaces=Array.isArray(thread.providerMeta?.dynamicToolNamespaces)?thread.providerMeta.dynamicToolNamespaces:[],activeNamespaces=expandableNativeToolNamespaces(storedNamespaces);
       if(activeNamespaces.length!==storedNamespaces.length){
         thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),dynamicToolNamespaces:activeNamespaces}});
       }
+      const legacy=migrateRetiredNativeThread(thread);thread=legacy.thread;
+      if(legacy.retiredProvider||isRetiredProviderModel(model))model=null;
     }
     let session=sessions.get(thread.id);
     if(session instanceof NativeAgentSession){
@@ -974,6 +987,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       direction:"client",
       method,params,
     });
+    // A model of a retired provider (or one named alongside a retired provider by a stale client or stale
+    // thread metadata) can never be valid for the replacement provider: drop it instead of sending it on.
+    if(runtime==="native"&&(method==="thread/start"||method==="turn/start")&&params?.model&&(isRetiredModelProvider(params.modelProvider)||isRetiredProviderModel(params.model)))params={...params,model:null};
     if(method==="thread/list")return paginateAgentThreads(threadStore.list(runtime),params);
     if(method==="thread/search")return searchAgentThreads(typeof threadStore.searchCandidates==="function"?threadStore.searchCandidates(runtime,params.searchTerm,{archived:params.archived===true}):threadStore.list(runtime),params);
     if(method==="thread/read"){
@@ -1025,7 +1041,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const seed=threadStore.create({runtime,cwd:effectiveCwd,providerSessionId:"",model:params.model||null,agent:params.agent||null,providerMeta:{
         runtimeInstanceId:instance.id,environmentId,permissionProfile:permissionMode,
         ...(runtime==="native"?{
-          modelProvider:String(params.modelProvider||state?.settings?.().modelProvider||"freebuff"),
+          modelProvider:normalizeProviderId(params.modelProvider||state?.settings?.().modelProvider),
           dynamicToolNamespaces,projectless:Boolean(params.projectless),developerInstructions:String(params.developerInstructions||""),threadSource:String(params.threadSource||"trebell-code"),
         }:{}),
       }});
@@ -1263,6 +1279,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(thread.status?.type==="active")throw Object.assign(new Error("Thread already has an active or pending turn"),{code:-32602});
       const queue=agentQueue(state,params.threadId),index=params.queuedSubmissionId?queue.findIndex(item=>item.id===params.queuedSubmissionId):0;
       if(index<0||!queue[index])throw Object.assign(new Error("Queued submission not found"),{code:-32602});
+      // A Native thread without a model (e.g. one migrated off a retired provider) would fail its queued turn and lose
+      // the submission with its attachments and tool scope: keep it queued until the user continues with a model.
+      if(thread.runtime==="native"&&!migrateRetiredNativeThread(thread).thread?.model)throw Object.assign(new Error("Choose a model for this thread before its queued follow-up can run."),{code:-32602});
       const submission=queue[index],started=await request(context,"turn/start",{threadId:params.threadId,input:submission.input,...(Array.isArray(submission.dynamicToolNamespaces)&&submission.dynamicToolNamespaces.length?{dynamicToolNamespaces:submission.dynamicToolNamespaces}:{})});
       const next=queue.filter((_,itemIndex)=>itemIndex!==index);saveAgentQueue(state,params.threadId,next);emit("thread/queue/changed",{threadId:params.threadId});return {turn:started.turn};
     }
@@ -1308,19 +1327,20 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }
     if(method==="turn/start"){
       let thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");const turnGoal=assertGoalBudget(thread.id);
-      const permissionPatch=agentPermissionProfilePatch(params);
-      const providerPatch=runtime==="native"&&params.modelProvider?{modelProvider:String(params.modelProvider)}:{};
+      thread=migrateRetiredNativeThread(thread).thread;
+      const permissionPatch=agentPermissionProfilePatch(params),requestedProvider=runtime==="native"&&params.modelProvider?normalizeProviderId(params.modelProvider):null;
+      const providerPatch=requestedProvider?{modelProvider:requestedProvider}:{};
       if(Object.keys(permissionPatch).length||Object.keys(providerPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch,...providerPatch}});
       if(thread.runtime==="native"&&Array.isArray(params.dynamicToolNamespaces)&&params.dynamicToolNamespaces.length)thread=(await ensureNativeToolNamespaces(thread,params.dynamicToolNamespaces)).thread;
       const session=await ensureSession(thread,context,{model:params.model||thread.model});
-      if(runtime==="native"&&params.modelProvider&&typeof session.setProvider==="function")session.setProvider(params.modelProvider);
-      if(runtime==="native"&&typeof session.setReasoningEffort==="function"){const providerId=params.modelProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setReasoningEffort(Object.prototype.hasOwnProperty.call(params,"reasoningEffort")?params.reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",providerId,nextModel))}
-      if(runtime==="native"&&typeof session.setServiceTier==="function"){const providerId=params.modelProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setServiceTier(Object.prototype.hasOwnProperty.call(params,"serviceTier")?params.serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",providerId,nextModel))}
+      if(requestedProvider&&typeof session.setProvider==="function")session.setProvider(requestedProvider);
+      if(runtime==="native"&&typeof session.setReasoningEffort==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setReasoningEffort(Object.prototype.hasOwnProperty.call(params,"reasoningEffort")?params.reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",providerId,nextModel))}
+      if(runtime==="native"&&typeof session.setServiceTier==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setServiceTier(Object.prototype.hasOwnProperty.call(params,"serviceTier")?params.serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",providerId,nextModel))}
       if(runtime==="native"&&typeof session.setPermissionMode==="function")session.setPermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
       if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
       if(runtime==="native"&&typeof session.setContextWindow==="function"){
         let contextWindow=null;
-        if(typeof nativeModelContextWindow==="function")try{contextWindow=await nativeModelContextWindow({provider:params.modelProvider||thread.providerMeta?.modelProvider||null,model:params.model||thread.model||null,thread:threadStore.get(thread.id)||thread})}catch(error){log("Native model context metadata unavailable: "+(error?.message||String(error)))}
+        if(typeof nativeModelContextWindow==="function")try{contextWindow=await nativeModelContextWindow({provider:requestedProvider||thread.providerMeta?.modelProvider||null,model:params.model||thread.model||null,thread:threadStore.get(thread.id)||thread})}catch(error){log("Native model context metadata unavailable: "+(error?.message||String(error)))}
         session.setContextWindow(contextWindow);
       }
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";

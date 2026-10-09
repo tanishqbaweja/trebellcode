@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 
 test("Usage page exposes cache reads and cache writes from recorded token telemetry",async({page,request})=>{
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"freebuff"}});
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
   const record={
     id:"usage-cache-write-fixture",runtime:"native",provider:"agentrouter",model:"gpt-fixture",environmentId:null,threadId:"thread-usage",turnId:"turn-usage",at:Date.now(),
     usage:{inputTokens:12_000,cachedInputTokens:3_000,cacheWriteInputTokens:1_500,outputTokens:2_000,reasoningOutputTokens:500,totalTokens:14_000},cost:null,

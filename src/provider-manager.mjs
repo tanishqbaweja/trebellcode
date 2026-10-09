@@ -12,16 +12,9 @@ import { NATIVE_OPENAI_CONTINUATION_IDENTITY, OpenAiResponseContinuationTracker 
 import { OpenAiResponsesWebSocket, openAiResponsesWebSocketStreamId, openAiRetryAfterMs } from "./openai-responses-websocket.mjs";
 import { NATIVE_TOOL_SCHEMA_FINGERPRINT } from "./native-request-metrics.mjs";
 
+export const DEFAULT_MODEL_PROVIDER = "openai";
+
 export const MODEL_PROVIDERS = Object.freeze({
-  freebuff: {
-    id: "freebuff",
-    name: "Freebuff",
-    baseUrl: null,
-    wireApi: "responses",
-    protocolCompatibility: ["openai-responses"],
-    envKey: null,
-    requiresKey: false,
-  },
   openai: {
     id: "openai",
     name: "OpenAI API",
@@ -100,8 +93,25 @@ export const MODEL_PROVIDERS = Object.freeze({
 });
 
 export function normalizeProviderId(value) {
-  const id = String(value || "freebuff").trim().toLowerCase();
-  return MODEL_PROVIDERS[id] ? id : "freebuff";
+  const id = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(MODEL_PROVIDERS, id) ? id : DEFAULT_MODEL_PROVIDER;
+}
+
+// The official OpenAI /models list also returns embedding, audio, image, moderation, realtime and legacy
+// completion models; none of them can run a Trebell Native agent turn on the Responses API. The words match
+// whole id tokens only, and a fine-tune (ft:<base>:<org>:<suffix>:<id>) is judged by its base model, so an
+// organization or suffix such as "speechify" or "image-captions" never hides a chat fine-tune.
+const OPENAI_NON_AGENT_MODEL=/(?:^|[^a-z0-9])(?:embedding|audio|tts|whisper|transcribe|speech|dall-e|image|moderation|realtime|babbage|davinci|instruct)(?=[^a-z0-9]|$)/;
+const OPENAI_DEFAULT_MODEL_EXCLUDED=/mini|nano|search|preview|audio|realtime|codex|oss|chat-latest/;
+// Expensive "-pro" variants (pro as a whole id token, e.g. gpt-6-pro, o3-pro) stay selectable but are never the silent default.
+const OPENAI_PRO_MODEL=/(?:^|[^a-z0-9])pro(?:[^a-z0-9]|$)/;
+function openAiAgentModel(id){const text=String(id||"").trim().toLowerCase(),base=text.startsWith("ft:")?text.split(":")[1]||"":text;return !OPENAI_NON_AGENT_MODEL.test(base)}
+function openAiDefaultModel(rows=[]){
+  const ranked=rows.map(item=>({id:String((typeof item==="string"?item:item?.id)||"").trim(),created:Number(typeof item==="string"?NaN:item?.created)})).filter(item=>item.id&&!OPENAI_PRO_MODEL.test(item.id.toLowerCase()))
+    .map(item=>({...item,created:Number.isFinite(item.created)?item.created:-Infinity}))
+    .sort((a,b)=>(b.created>a.created?1:b.created<a.created?-1:0)||a.id.length-b.id.length||(a.id<b.id?-1:a.id>b.id?1:0));
+  const flagship=ranked.find(item=>{const id=item.id.toLowerCase();return id.startsWith("gpt-")&&!OPENAI_DEFAULT_MODEL_EXCLUDED.test(id)});
+  return (flagship||ranked[0])?.id||null;
 }
 
 function providerSecretsPath(env = process.env) {
@@ -543,7 +553,7 @@ export class ProviderManager {
       protocolCompatibility: [...(provider.protocolCompatibility || [])],
       requiresKey: provider.requiresKey,
       official: Boolean(provider.official),
-      hasKey: provider.requiresKey ? this.hasKey(provider.id) : true,
+      hasKey: this.hasKey(provider.id),
       capabilities:providerCapabilities(provider.id),
     }));
   }
@@ -555,7 +565,6 @@ export class ProviderManager {
 
   key(providerId) {
     const provider = this.get(providerId);
-    if (!provider.requiresKey) return "";
     const envValue = (provider.envKeys || [provider.envKey]).map(key => this.env[key]).find(Boolean);
     return normalizeProviderKey(this.secrets[provider.id] || envValue || "");
   }
@@ -566,7 +575,6 @@ export class ProviderManager {
 
   setKey(providerId, value) {
     const provider = this.get(providerId);
-    if (!provider.requiresKey) throw new Error(`${provider.name} does not use an API key here.`);
     const previousKey=this.key(provider.id),key = normalizeProviderKey(value);
     if (key) this.secrets[provider.id] = key;
     else delete this.secrets[provider.id];
@@ -589,11 +597,9 @@ export class ProviderManager {
   childEnv(providerId, baseEnv = this.env) {
     const provider = this.get(providerId);
     const next = { ...baseEnv };
-    if (provider.requiresKey) {
-      const key = this.key(provider.id);
-      if (key) next[provider.envKey] = key;
-      else delete next[provider.envKey];
-    }
+    const key = this.key(provider.id);
+    if (key) next[provider.envKey] = key;
+    else delete next[provider.envKey];
     return next;
   }
 
@@ -607,25 +613,25 @@ export class ProviderManager {
       protocolCompatibility: [...(provider.protocolCompatibility || [])],
       requiresKey: provider.requiresKey,
       official: Boolean(provider.official),
-      hasKey: provider.requiresKey ? this.hasKey(provider.id) : true,
-      ready: provider.requiresKey ? this.hasKey(provider.id) : true,
+      hasKey: this.hasKey(provider.id),
+      ready: this.hasKey(provider.id),
       capabilities:providerCapabilities(provider.id),
     };
   }
 
   async models(providerId) {
     const provider = this.get(providerId);
-    if (provider.id === "freebuff") return { models: [], source: "freebuff" };
     if (provider.staticModels) {
       return {
         models: [...provider.staticModels],
+        defaultModel: provider.staticModels[0] || null,
         source: "static",
         metadata: provider.staticModels.map((id) => ({ id, provider: provider.id, protocolCompatibility: [...(provider.protocolCompatibility || [])] })),
-        ...(provider.requiresKey && !this.hasKey(provider.id) ? { error: "API key required" } : {}),
+        ...(!this.hasKey(provider.id) ? { error: "API key required" } : {}),
       };
     }
-    if (provider.requiresKey && !this.hasKey(provider.id)) {
-      return { models: [], source: "none", error: "API key required" };
+    if (!this.hasKey(provider.id)) {
+      return { models: [], defaultModel: null, source: "none", error: "API key required" };
     }
 
     const key = this.key(provider.id);
@@ -654,10 +660,12 @@ export class ProviderManager {
     } catch {
       throw new Error(`${provider.name} returned invalid JSON from /models`);
     }
-    const rows = Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed?.models) ? parsed.models : [];
+    const listed = Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed?.models) ? parsed.models : [];
+    const rows = provider.id === "openai" ? listed.filter((item) => openAiAgentModel(typeof item === "string" ? item : item?.id)) : listed;
     const models = [...new Set(rows.map((item) => typeof item === "string" ? item : item?.id).filter(Boolean).map(String))].sort();
     return {
       models,
+      defaultModel: provider.id === "openai" ? openAiDefaultModel(rows) : null,
       source: "live",
       metadata: rows
         .filter((item) => item && typeof item === "object" && item.id)
@@ -671,7 +679,6 @@ export class ProviderManager {
 
   async forwardChat(providerId, chatBody, { signal, userAgent, onWire, promptCaching=false, anthropicBody=null } = {}) {
     const provider = this.get(providerId);
-    if (provider.id === "freebuff") throw new Error("Freebuff chat is handled by the local freebuff2api bridge.");
     const key = this.key(provider.id);
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
     if (provider.protocolCompatibility?.includes("anthropic-messages")) {
@@ -753,7 +760,6 @@ export class ProviderManager {
   async turn(providerId, request={}, { signal, promptCaching=false, streamResponses=false, streamChat=false } = {}) {
     const provider=this.get(providerId),model=String(request.model||"").trim();
     if(!model)throw new Error("Provider turn requires a model.");
-    if(provider.id==="freebuff")throw new Error("Freebuff provider turns are served by the local Freebuff bridge, not ProviderManager.");
     const requestedServiceTierRaw=String(request.serviceTier||request.service_tier||"").trim().toLowerCase(),requestedServiceTier=requestedServiceTierRaw==="priority"?"fast":requestedServiceTierRaw||null;
     const started=performance.now(),requestDeadlineAt=started+this.requestTimeoutMs;let wire={endpoint:null,wireApi:null,requestBytes:0},wireRequestBytes=0,wireAttempts=0;
     const onWire=value=>{wire=value||wire;wireRequestBytes+=Number(value?.requestBytes||0);wireAttempts++};

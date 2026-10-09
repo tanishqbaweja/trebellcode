@@ -223,8 +223,7 @@ if (-not $SkipTests) {
 Write-Host "`n[3/8] Preparing canonical app icon..." -ForegroundColor Cyan
 Invoke-Native "npm" @("run","prepare:icon")
 
-Write-Host "`n[4/8] Building provider bridge and UI..." -ForegroundColor Cyan
-Invoke-Native "npm" @("run","bridge:build")
+Write-Host "`n[4/8] Building UI..." -ForegroundColor Cyan
 Invoke-Native "npm" @("run","ui:build")
 
 Write-Host "`n[5/8] Building unpacked Windows app for native smoke tests..." -ForegroundColor Cyan
@@ -260,7 +259,7 @@ try {
       onboardingComplete = $true
       agentRuntime = "codex"
       agentRuntimeInstanceId = "codex-default"
-      modelProvider = "freebuff"
+      modelProvider = "openai"
     }
   } | ConvertTo-Json -Depth 5
   [IO.File]::WriteAllText((Join-Path $SmokeHome "ui-state.json"),$SeedState,[Text.UTF8Encoding]::new($false))

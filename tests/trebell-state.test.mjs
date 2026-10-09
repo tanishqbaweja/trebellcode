@@ -52,6 +52,37 @@ test("retired mobile companion and device-control settings are scrubbed from leg
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("fresh state defaults the Native provider to OpenAI and saves only known provider ids",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-provider-default-")),env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);
+    assert.equal(state.settings().modelProvider,"openai");
+    assert.equal(state.updateSettings({modelProvider:" HCNSec "}).modelProvider,"hcnsec");
+    assert.equal(state.updateSettings({modelProvider:"unknown-provider"}).modelProvider,"openai");
+    assert.equal(state.updateSettings({modelProvider:"agentrouter"}).modelProvider,"agentrouter");
+    assert.equal(new TrebellStateStore(env).settings().modelProvider,"agentrouter");
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("current provider settings load untouched and are not rewritten",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-provider-current-")),env={...process.env,TREBELL_HOME:home},file=join(home,"ui-state.json");
+  try{
+    const raw=JSON.stringify({version:2,projects:[{id:"project-1",path:"/repo",defaultModel:"gpt-6-luna",settingsOverrides:{defaultModel:"gpt-6-luna",sourceControlTextModel:"test/coding-fast"}}],settings:{
+      modelProvider:"agentrouter",defaultModel:"deepseek-v4-flash",sourceControlTextModel:"gpt-6-sol",environmentDefaults:{"ssh-a":{defaultModel:"glm-5.3"}},
+      customModels:[{id:"deepseek-v4-flash",name:"DeepSeek",runtime:"native",provider:"agentrouter"}],modelReasoningEfforts:{"codex:agentrouter:gpt-5.5":"high","native:openai:gpt-6-luna":"max"},modelServiceTiers:{"native:openai:gpt-6-sol":"fast"},
+    }},null,2);
+    await writeFile(file,raw);
+    const state=new TrebellStateStore(env),settings=state.settings();
+    assert.equal(settings.modelProvider,"agentrouter");assert.equal(settings.defaultModel,"deepseek-v4-flash");assert.equal(settings.sourceControlTextModel,"gpt-6-sol");
+    assert.equal(state.environmentDefaults("ssh-a").defaultModel,"glm-5.3");
+    assert.deepEqual(settings.customModels,[{id:"deepseek-v4-flash",name:"DeepSeek",runtime:"native",provider:"agentrouter"}]);
+    assert.deepEqual(settings.modelReasoningEfforts,{"codex:agentrouter:gpt-5.5":"high","native:openai:gpt-6-luna":"max"});
+    assert.deepEqual(settings.modelServiceTiers,{"native:openai:gpt-6-sol":"fast"});
+    assert.equal(state.projects()[0].defaultModel,"gpt-6-luna");assert.equal(state.projectSettings("/repo").effective.sourceControlTextModel,"test/coding-fast");
+    assert.equal(await readFile(file,"utf8"),raw);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("pull request auto-settle is opt-in and persists",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-auto-settle-"));const env={...process.env,TREBELL_HOME:home};
   try{
@@ -128,7 +159,7 @@ test("project actions persist, sanitize, inherit preference, and allow clearing 
     const state=new TrebellStateStore(env);
     const projectPath=join(home,"project");
     const saved=state.touchProject(projectPath,{
-      defaultModel:"freebuff/test/coding-fast",
+      defaultModel:"test/coding-fast",
       permissionMode:"full",
       workspaceMode:"worktree",
       worktreeSubmodules:"top-level",

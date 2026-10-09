@@ -2,7 +2,7 @@ import React,{forwardRef,lazy,memo,Suspense,useCallback,useEffect,useImperativeH
 import {
   Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
-  ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Coins, Mic, Camera, History,
+  ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Mic, Camera, History,
   PanelRight, PanelBottom, PanelLeftOpen, Command, Target, Play, Search
 } from "lucide-react";
 import { CodexRpcClient } from "./rpc.js";
@@ -51,7 +51,7 @@ import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, sameCa
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "./activity-window.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
-import { freebuffSessionLabel, freebuffSessionUnavailable as isFreebuffSessionUnavailable } from "./freebuff-status.js";
+import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "./provider-labels.js";
 import { specializedToolNamespaceNames, specializedToolSelection } from "./lazy-tool-exposure.js";
 import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
 import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
@@ -66,7 +66,6 @@ const ProjectsPage=lazy(()=>import("./components/ProjectsPage.jsx"));
 const AgentsPage=lazy(()=>import("./components/AgentsPage.jsx"));
 const PreviewPage=lazy(()=>import("./components/PreviewPage.jsx"));
 const SettingsPage=lazy(()=>import("./components/SettingsPage.jsx"));
-const FreebuffPage=lazy(()=>import("./components/FreebuffPage.jsx"));
 const HarnessToolsPage=lazy(()=>import("./components/HarnessToolsPage.jsx"));
 const EnvironmentsPage=lazy(()=>import("./components/EnvironmentsPage.jsx"));
 const GoalPanel=lazy(()=>import("./components/GoalPanel.jsx"));
@@ -148,17 +147,10 @@ async function resumeWithBoundedHistory(rpc,params){
 }
 
 function titleOf(thread){return thread?.name||thread?.preview||"New Trebell task"}
-function modelLabel(id,freebuff){
-  const clean=String(id||"").replace(/^freebuff\//,"");
-  const p=freebuff?.derived?.priceByModel?.[id]||(freebuff?.derived?.selectedModel===id?freebuff?.derived?.selectedPrice:null);
-  if(p?.dynamic)return clean+" · dynamic";
-  if(typeof p?.current==="number")return clean+" · "+p.current+" FB/h"+(p.offPeakActive?" off-peak":"");
-  return clean;
-}
-function compactModelLabel(id,freebuff){
-  const full=modelLabel(id,freebuff);const [qualified,...detail]=full.split(" · ");
-  const short=qualified.includes("/")?qualified.split("/").filter(Boolean).pop():qualified;
-  return [short,...detail].filter(Boolean).join(" · ");
+function modelLabel(id){return String(id||"")}
+function compactModelLabel(id){
+  const full=modelLabel(id);
+  return (full.includes("/")?full.split("/").filter(Boolean).pop():full)||"";
 }
 function attachmentDisplayName(path){
   const name=String(path||"").split(/[\\/]/).pop()||"attachment";
@@ -355,11 +347,6 @@ function GuardianDenialCard({review,busy,onApprove,onDismiss}){
   const risk=review.review?.riskLevel;
   return <div className="approval-card guardian-denial-card" data-testid="guardian-denial-card"><div className="card-title"><ShieldCheck size={16}/><strong>Auto review denied this action</strong></div><p>{detail}</p>{review.review?.rationale&&<p>{review.review.rationale}</p>}{risk&&<small>Risk assessment: {risk}</small>}<div className="approval-actions"><button onClick={()=>onDismiss(review)} disabled={busy}>Dismiss</button><button className="approve" onClick={()=>onApprove(review)} disabled={busy}>{busy?"Allowing…":"Allow anyway"}</button></div></div>;
 }
-function FreebuffMini({freebuff,model,onOpen}){
-  const balance=freebuff?.derived?.balance;
-  const p=freebuff?.derived?.priceByModel?.[model]||freebuff?.derived?.selectedPrice;
-  return <button className="freebuff-card" data-testid="freebuff-card" onClick={onOpen}><div className="freebuff-card-head"><span><Coins size={16}/> Freebucks</span><b>{balance??"—"}</b></div><div className="freebuff-mini-grid"><div><small>Model</small><strong>{model?.replace(/^freebuff\//,"").split("/").at(-1)||"—"}</strong></div><div><small>Price</small><strong>{p?.current!=null?p.current+" FB/h":"—"}</strong></div><div><small>Session</small><strong>{freebuff?.derived?.sessionStatus||"none"}</strong></div><div><small>Streak</small><strong>{freebuff?.streak?.streak??"—"}d</strong></div></div></button>;
-}
 
 const SLASH_COMMANDS=[
   ["/compact","Compact conversation context"],
@@ -380,7 +367,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onReasoningEffort,onServiceTier,onModelPickerOpenChange}){
+const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,providerReady,transportReady=true,transportStatus="",onRetryTransport,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onReasoningEffort,onServiceTier,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [modelQuery,setModelQuery]=useState("");
   const [listening,setListening]=useState(false);
@@ -519,23 +506,23 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   const currentRuntimeProfile=runtimeProfileItems.find(item=>item.id===runtimeProfiles?.currentInstanceId)||null;
   const runtimeProfileLabel=runtimeProfiles?.label||`${agentRuntimeLabel} profile`;
   const steerFollowUps=Boolean(runtimeCapabilities.steering)&&settings.followUpMode==="steer";
-  const modelProviderRuntime=Boolean(runtimeCapabilities.managedInference),freebuffInference=modelProviderRuntime&&provider==="freebuff";
+  const modelProviderRuntime=Boolean(runtimeCapabilities.managedInference);
   const reasoningEffortOptions=supportedReasoningEfforts(agentRuntime,provider,model,modelMeta?.[model]||{});
   const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,model)||"";
   const serviceTierOptions=supportedModelServiceTiers(agentRuntime,provider,model,modelMeta?.[model]||{});
   const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,model)||"";
-  const freebuffNeedsSettings=freebuffInference&&Boolean(freebuff?.loggedIn)&&isFreebuffSessionUnavailable(freebuff);
-  const modelProviderLabel=({freebuff:"Freebuff",openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Gemini API",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider||"provider");
+  const providerLabel=modelProviderLabel(provider)||"provider";
   function pickModel(event,id){
     const next=nextModelSelection(chosenModels,id,{shiftKey:event.shiftKey,allowMulti:allowMultiModel});
     onSelectedModels?.(next);if(!next.includes(model))setModel(next[0]||id);
     if(!event.shiftKey||!allowMultiModel)setModelOpen(false);
   }
+  // The harness transport is down: the draft stays editable but nothing is sent until it is back.
+  const transportError=!transportReady&&transportStatus==="error";
+  const transportMessage=transportError?`Could not connect to ${agentRuntimeLabel}`:transportStatus==="reconnecting"?`Reconnecting to ${agentRuntimeLabel}…`:`Connecting to ${agentRuntimeLabel}…`;
   const composerPlaceholder=openingThread?"Opening thread…":submitting?"Sending…"
-    :providerReady?(running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…")
-    :freebuffNeedsSettings?`Freebuff ${freebuffSessionLabel(freebuff)} — check Settings…`
-    :freebuffInference?"Sign in to Freebuff to start…"
-    :modelProviderRuntime?`Configure ${modelProviderLabel} in Settings…`
+    :providerReady?(!transportReady?transportMessage:running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…")
+    :modelProviderRuntime?`Configure ${providerLabel} in Settings…`
     :`Configure ${agentRuntimeLabel} in Settings…`;
   return <div className={"composer-wrap"+(prompt.length>=32768?" long-draft":"")} onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
     {slashOpen&&slashItems.length>0&&<div className="slash-menu">{slashItems.map(([cmd,desc])=><button key={cmd} onMouseDown={e=>{e.preventDefault();setPrompt(cmd+" ")}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
@@ -552,20 +539,20 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
       {runtimeCapabilities.collaborationModes&&collaborationModes.length>0&&<select data-testid="collaboration-mode-picker" className="permission-picker collaboration-mode-picker" value={collaborationMode} disabled={running||collaborationModeBusy} onChange={e=>onCollaborationMode?.(e.target.value)} title="Collaboration mode">{collaborationModes.map(item=><option key={item.mode} value={item.mode}>{item.name} mode</option>)}</select>}
       {!threadOpen&&!projectless&&<select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>}
     </div><div className="composer-right">
-      {!providerReady&&!models.length?<button className="login-btn" onClick={freebuffNeedsSettings?onConfigureProvider:freebuffInference?login:onConfigureProvider}>{freebuffNeedsSettings?"Open Settings":freebuffInference?"Sign in to Freebuff":modelProviderRuntime?"Configure "+modelProviderLabel:"Configure "+agentRuntimeLabel}</button>:<>
+      {!providerReady&&!models.length?<button className="login-btn" onClick={onConfigureProvider}>{modelProviderRuntime?"Configure "+providerLabel:"Configure "+agentRuntimeLabel}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
-        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model,freebuff)||modelError||"No models")}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>event.stopPropagation()} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
+        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||modelError||"No models")}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>event.stopPropagation()} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
-      <button data-testid="send" className="send-btn" onClick={()=>onSend?.(prompt)} disabled={!providerReady||submitting||openingThread||!prompt.trim()||promptTooLong}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
+      <button data-testid="send" className="send-btn" onClick={()=>onSend?.(prompt)} disabled={!providerReady||!transportReady||submitting||openingThread||!prompt.trim()||promptTooLong} title={transportReady?undefined:transportMessage}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
-    <div className={"composer-status"+(modelError||promptTooLong?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups</span></div>
+    <div className={"composer-status"+(modelError||promptTooLong||transportError?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:!transportReady?<span data-testid="composer-transport" className="composer-transport">{transportMessage}{transportError?". Your draft is kept.":" · your draft stays here until it connects."}{transportError&&<button className="context-compact-btn" type="button" onClick={onRetryTransport} title={"Reconnect to "+agentRuntimeLabel}>Retry</button>}</span>:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups</span></div>
   </div>;
 });
 
 export default function App(){
-  const [bootstrap,setBootstrap]=useState({mock:false,loggedIn:false,wsUrl:null,cwd:"",platform:""});
-  const [rpc,setRpc]=useState(null); const [rpcStatus,setRpcStatus]=useState("disconnected");
+  const [bootstrap,setBootstrap]=useState({mock:false,wsUrl:null,cwd:"",platform:""});
+  const [rpc,setRpc]=useState(null); const [rpcStatus,setRpcStatus]=useState("disconnected"); const transportConnectedRef=useRef(false);
   const [threads,setThreads]=useState([]); const [sections,setSections]=useState({}); const [threadMeta,setThreadMeta]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]);
@@ -609,15 +596,15 @@ export default function App(){
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [openingThreadId,setOpeningThreadId]=useState(null); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   const localQueueStartRef=useRef(null);
-  const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat");
+  const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null);
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false);
   const [collaborationModes,setCollaborationModes]=useState([]); const [collaborationMode,setCollaborationMode]=useState("default"); const [collaborationModeBusy,setCollaborationModeBusy]=useState(false);
-  const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
+  const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
   const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({threadId:null,supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
   const submittingRef=useRef(false);
   const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
-  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
+  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:DEFAULT_MODEL_PROVIDER});
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
   const [sidebarOpen,setSidebarOpen]=useState(true);
   const [layoutPrefs,setLayoutPrefs]=useState(()=>{
@@ -636,7 +623,7 @@ export default function App(){
   const [threadTelemetry,setThreadTelemetry]=useState({});const threadTelemetryRef=useRef({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
@@ -880,7 +867,7 @@ export default function App(){
     ?bootstrap.runtimeCapabilities
     :sharedRuntimeCapabilities(agentRuntime),[bootstrap.agentRuntime,bootstrap.runtimeCapabilities,agentRuntime]);
   const managedInference=Boolean(runtimeCapabilities.managedInference);
-  const provider=settings.modelProvider||bootstrap.provider||"freebuff";
+  const provider=settings.modelProvider||bootstrap.provider||DEFAULT_MODEL_PROVIDER;
   useEffect(()=>{
     const next=agentRuntime+"\0"+provider;
     if(modelCatalogScopeRef.current&&modelCatalogScopeRef.current!==next){
@@ -899,8 +886,7 @@ export default function App(){
   };
   const workspaceEnvironmentType=currentProject?.environment?.type||(workspaceEnvironmentId&&(workspaceEnvironmentId===settings.activeEnvironmentId)?bootstrap.activeEnvironment?.type:null)||(workspaceEnvironmentId?"remote":"local");
   const workspaceRemote=Boolean(workspaceEnvironmentId&&workspaceEnvironmentType!=="local");
-  const freebuffSessionUnavailable=isFreebuffSessionUnavailable(freebuff);
-  const providerReady=bootstrap.mock||(managedInference?(provider==="freebuff"?Boolean(bootstrap.loggedIn)&&!freebuffSessionUnavailable:Boolean(bootstrap.providerReady)):Boolean(bootstrap.agentRuntimeReady));
+  const providerReady=bootstrap.mock||(managedInference?Boolean(bootstrap.providerReady):Boolean(bootstrap.agentRuntimeReady));
   useEffect(()=>{
     if(!threadFind.open)return;
     const term=threadFind.query.trim();
@@ -926,16 +912,6 @@ export default function App(){
     return()=>{disposed=true;clearTimeout(timer)};
   },[threadFind.open,threadFind.query,runtimeCapabilities.threadSearch,activeThread?.id,rpc,rpcStatus]);
   useEffect(()=>{threadTelemetryRef.current={};setThreadTelemetry({})},[provider,agentRuntime]);
-  async function refreshFreebuff(modelOverride=model,{strict=false}={}){
-    if(!managedInference||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
-    const params=new URLSearchParams({timezone}); if(modelOverride)params.set("model",modelOverride);
-    try{
-      const data=await api("/api/freebuff/overview?"+params);if(data)setFreebuff(data);return data;
-    }catch(error){
-      if(strict)throw error;
-      return null;
-    }
-  }
   async function refreshProviderModels({resetThread=false,provider:expectedProvider=null,agentRuntime:expectedRuntime=null,catalog=null,bootstrap:bootstrapSnapshot=null,refreshBootstrap=true}={}){
     const seq=++modelRefreshSeqRef.current;
     const targetProvider=expectedProvider||provider;
@@ -963,13 +939,9 @@ export default function App(){
     const ids=d?.models||[];
     setModelError(d?.error||"");
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
-    const next=ids.includes(model)?model:(ids[0]||"");
+    const next=ids.includes(model)?model:(ids.includes(d?.defaultModel)?d.defaultModel:(ids[0]||""));
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
     if(resetThread){activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null)}
-    if(sharedRuntimeCapabilities(targetRuntime).managedInference&&targetProvider==="freebuff"&&next){
-      const params=new URLSearchParams({timezone,model:next});
-      api("/api/freebuff/overview?"+params).then(data=>{if(seq===modelRefreshSeqRef.current&&data)setFreebuff(data)}).catch(error=>showActionError(error,"Models refreshed, but Freebuff account state could not refresh"));
-    }
     return d;
   }
   useEffect(()=>{
@@ -1071,9 +1043,9 @@ export default function App(){
       setProjectPath(initialPath);
       const availableModels=modelData.models||[];
       setModelError(modelData.error||"");
-      setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item]))); const fallback=availableModels.length?availableModels:(boot.mock?["freebuff/deepseek/deepseek-v4-flash","freebuff/test/coding-large","freebuff/test/coding-fast"]:[]);
+      setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item]))); const fallback=availableModels.length?availableModels:(boot.mock?["test/coding-fast","test/coding-large"]:[]);
       const initialScoped=initialProject?.effectiveSettings||{};
-      const initialModel=(initialScoped.defaultModel&&fallback.includes(initialScoped.defaultModel))?initialScoped.defaultModel:(fallback[0]||"");
+      const initialModel=(initialScoped.defaultModel&&fallback.includes(initialScoped.defaultModel))?initialScoped.defaultModel:(fallback.includes(modelData.defaultModel)?modelData.defaultModel:(fallback[0]||""));
       setModels(fallback); setModel(initialModel);setSelectedModels(initialModel?[initialModel]:[]);
       setPermissionMode(initialScoped.defaultPermissionMode||state.settings?.defaultPermissionMode||"supervised");
       setWorkspaceMode(initialScoped.defaultWorkspaceMode||state.settings?.defaultWorkspaceMode||"current");
@@ -1083,12 +1055,6 @@ export default function App(){
       if(window.trebellDesktop?.background&&state.settings?.backgroundMode!=null){
         try{await window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode))}
         catch(error){partialErrors.push("desktop background mode: "+(error?.message||String(error)))}
-      }
-      const initialRuntime=state.settings?.agentRuntime||boot.agentRuntime||"codex";
-      if(sharedRuntimeCapabilities(initialRuntime).managedInference&&(state.settings?.modelProvider||boot.provider||"freebuff")==="freebuff"&&initialModel){
-        const p=new URLSearchParams({timezone,model:initialModel});
-        try{const fb=await api("/api/freebuff/overview?"+p);if(fb&&!cancelled)setFreebuff(fb)}
-        catch(error){partialErrors.push("Freebuff account state: "+(error?.message||String(error)))}
       }
       if(themeResult.status==="rejected")partialErrors.push("themes: "+(themeResult.reason?.message||String(themeResult.reason)));
       if(projectResult.status==="rejected")partialErrors.push("projects: "+(projectResult.reason?.message||String(projectResult.reason)));
@@ -1414,26 +1380,42 @@ export default function App(){
 
   useEffect(()=>{
     if(!bootstrap.wsUrl||bootstrap.mock)return;
+    transportConnectedRef.current=false;
     if(bootstrap.agentRuntime&&bootstrap.agentRuntime!==agentRuntime)return;
-    let disposed=false,retryTimer=null,client=null;
+    // established: this transport connected at least once, so later attempts back off from 500ms to 5s.
+    let disposed=false,retryTimer=null,client=null,established=false;
+    const retry=attempt=>{
+      clearTimeout(retryTimer);retryTimer=null;if(disposed)return;
+      if(attempt>=120){setRpcStatus("error");return}
+      setRpcStatus("connecting");retryTimer=setTimeout(()=>connect(attempt),established?Math.min(5000,500*2**attempt):500);
+    };
     const connect=async(attempt=0)=>{
-      client=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:setRpcStatus,onNotification:message=>notificationHandlerRef.current?.(message),onServerRequest:message=>serverRequestHandlerRef.current?.(client,message)}); rpcRef.current=client;setRpc(client);
+      let ready=false;
+      const current=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:status=>{
+        // A replaced client's late close must not overwrite the status of the transport that replaced it.
+        if(current!==rpcRef.current)return;
+        setRpcStatus(status);
+        if(status==="disconnected"&&ready&&!disposed){ready=false;retry(0)}
+      },onNotification:message=>notificationHandlerRef.current?.(message),onServerRequest:message=>serverRequestHandlerRef.current?.(current,message)});
+      client=current;rpcRef.current=current;setRpc(current);
       try{
-        await client.connect();if(disposed)return;await recoverCodexAfterRestart(client);await ensureSections(client);
-        const listed=await loadThreads(client);
+        await current.connect();if(disposed)return;await recoverCodexAfterRestart(current);await ensureSections(current);
+        const listed=await loadThreads(current);
         const pending=pendingRuntimeThreadRef.current;
         if(pending&&pending.targetRuntime===agentRuntime){
           pendingRuntimeThreadRef.current=null;
           const reopen=(listed||[]).find(thread=>thread.id===pending.thread.id)||pending.thread;
-          await openThread(reopen,{client,preserveSection:pending.preserveSection});
+          await openThread(reopen,{client:current,preserveSection:pending.preserveSection});
         }else{
           const activeId=activeThreadRef.current?.id,cataloged=activeId?threads.find(thread=>thread.id===activeId)||activeThreadRef.current:null;
           const reopen=activeId?((listed||[]).find(thread=>thread.id===activeId)||cataloged):null;
-          if(reopen&&threadCatalogRuntime(reopen,threadMeta[reopen.id]||{},agentRuntime)===agentRuntime)await openThread(reopen,{client,preserveSection:true});
+          if(reopen&&threadCatalogRuntime(reopen,threadMeta[reopen.id]||{},agentRuntime)===agentRuntime)await openThread(reopen,{client:current,preserveSection:true});
         }
-        await Promise.all([loadSkills(client,projectPath),loadCollaborationModes(client)]);
+        await Promise.all([loadSkills(current,projectPath),loadCollaborationModes(current)]);
+        if(disposed)return;ready=established=true;
+        if(!current.isConnected()){ready=false;retry(0)}
       }
-      catch(error){client.close();if(disposed)return;if(attempt<120){setRpcStatus("connecting");retryTimer=setTimeout(()=>connect(attempt+1),500)}else setRpcStatus("error")}
+      catch(error){current.close();if(disposed)return;retry(attempt+1)}
     };
     connect(); return()=>{disposed=true;clearTimeout(retryTimer);client?.close()};
   },[bootstrap.wsUrl,bootstrap.mock,bootstrap.agentRuntime,agentRuntime,runtimeTransportRevision]);
@@ -1476,12 +1458,6 @@ export default function App(){
     const visible=()=>{if(!document.hidden)poll()};document.addEventListener("visibilitychange",visible);
     return()=>{disposed=true;clearInterval(timer);document.removeEventListener("visibilitychange",visible)};
   },[section,rightPanelOpen,rightPanelTab]);
-  useEffect(()=>{
-    const visible=section==="chat"||section==="freebuff"||(rightPanelOpen&&rightPanelTab==="runtime");
-    if(!visible||!managedInference||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
-    const poll=startVisibilityPoll(()=>refreshFreebuff(model),{intervalMs:15000});return()=>poll.dispose();
-  },[section,rightPanelOpen,rightPanelTab,agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
-  useEffect(()=>{if(!managedInference||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[managedInference,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
   useEffect(()=>{
     if(!rpc||rpcStatus!=="connected")return;
@@ -2921,7 +2897,7 @@ export default function App(){
       catch(error){setEvents(prev=>[...prev,{id:"background-stop-error-"+Date.now(),kind:"error",title:"Could not stop background processes: "+(error.message||String(error)),status:"done",raw:{}}])}
       return true
     }
-    if(command==="/model"){setSection(managedInference&&provider==="freebuff"?"freebuff":"settings");return true}
+    if(command==="/model"){openProviderSettings();return true}
     if(command==="/terminal"){setPanel("terminal");return true}
     if(command==="/diff"){openRightPanel("diff");return true}
     if(command==="/git"){openRightPanel("source");return true}
@@ -2958,6 +2934,8 @@ export default function App(){
     const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim();if(!text)return;
     if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
     if(text.startsWith("/")){const special=await handleSpecial(text);if(special===true){setPrompt("");return}}
+    // Never route a prompt elsewhere while the harness transport is down: keep the draft until it reconnects.
+    if(!bootstrap.mock&&(!rpc||rpcStatus!=="connected")){setEvents(prev=>[...prev.filter(item=>item.id!=="transport-reconnecting"),{id:"transport-reconnecting",kind:"error",title:`${agentRuntimeLabel} is ${transportConnectedRef.current?"reconnecting":"not connected yet"}. Your draft was kept; send it again once ${agentRuntimeLabel} is connected.`,status:"done",raw:{}}]);return}
     if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
     if(runtimeCapabilities.nativeQueue&&queuedEditId&&rpc&&activeThread&&queueMode!=="local"){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips]};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
@@ -2984,7 +2962,7 @@ export default function App(){
     try{await validateAttachmentPaths(attachments)}catch(e){setEvents(prev=>[...prev,{id:"attachment-error-"+Date.now(),kind:"error",title:e.message,status:"done",raw:{}}]);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};
     setPrompt("");setPromptHistoryIndex(-1);setSection("chat");
-    if(bootstrap.mock||!rpc||rpcStatus!=="connected"){
+    if(bootstrap.mock){
       if(draft.attachments.length||draft.contextChips.length){
         restoreFailedDraft(draft);
         setEvents([{id:"error",kind:"error",title:"Direct fallback cannot send attachments or context. Reconnect the agent harness and retry.",status:"done",raw:{}}]);
@@ -2993,7 +2971,7 @@ export default function App(){
       const clientId="user-"+Date.now();setMessages(prev=>[...prev,{id:clientId,role:"user",text:draft.text}]);setRunning(true);
       try{
         const d=await api("/api/chat/direct",{method:"POST",body:{prompt:draft.text,model:draft.model}});
-        setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:({freebuff:"Freebuff",openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Gemini API",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"Provider")+" direct response",status:"done",raw:{}}]);
+        setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:(modelProviderLabel(provider)||"Provider")+" direct response",status:"done",raw:{}}]);
       }catch(e){
         setMessages(prev=>prev.filter(message=>message.id!==clientId));restoreFailedDraft(draft);setEvents([{id:"error",kind:"error",title:e.message,status:"done",raw:{}}]);
       }finally{setRunning(false)}
@@ -3294,33 +3272,6 @@ export default function App(){
     if(!result?.proof)throw new Error("Codex did not return a verification proof.");
     return result.proof;
   }
-  async function login(){
-    const started=await api("/api/login/start",{method:"POST"});
-    if(started?.started!==true)throw new Error("Freebuff sign-in could not be started.");
-    return new Promise((resolve,reject)=>{
-      let settled=false,verificationFailures=0;
-      const finish=(error,data)=>{
-        if(settled)return;settled=true;clearInterval(poll);clearTimeout(timeout);
-        error?reject(error):resolve(data);
-      };
-      const check=async()=>{
-        let data;
-        try{data=await api("/api/bootstrap");verificationFailures=0}
-        catch(error){
-          verificationFailures++;
-          if(verificationFailures>=3)finish(new Error("Could not verify Freebuff sign-in: "+(error?.message||String(error))));
-          return;
-        }
-        if(!data?.loggedIn)return;
-        try{setBootstrap(data);await refreshProviderModels();finish(null,data)}
-        catch(error){finish(error)}
-      };
-      const poll=setInterval(check,1500);
-      const timeout=setTimeout(()=>finish(new Error("Freebuff sign-in timed out. Try again.")),120000);
-      check();
-    });
-  }
-  async function logout(){await api("/api/logout",{method:"POST"});setBootstrap(prev=>({...prev,loggedIn:false,providerReady:false}));setModels([]);setModel("");setSelectedModels([]);setFreebuff({loggedIn:false})}
   async function renameThread(){if(!rpc||!activeThread)return;const name=prompt("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
   async function shareThread(){const text=messages.map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
   async function startReview(){
@@ -3396,7 +3347,7 @@ export default function App(){
       try{await loadThreads(rpc,{strict:true})}
       catch(error){showActionError(error,"Onboarding finished, but the thread list could not refresh")}
     }
-    if(openSettings)setSection("settings");
+    if(openSettings)openProviderSettings();
   }
   async function historyImported(){
     if(!rpc||rpcStatus!=="connected")return;
@@ -3437,7 +3388,7 @@ export default function App(){
       if(result?.status==="targetUnavailable"){
         setEvents(prev=>[...prev,{id:"live-model-unavailable-"+Date.now(),kind:"tool",title:"Model changed for the next turn; the current turn was already finishing.",status:"done",raw:{model:nextModel}}]);
       }else{
-        setEvents(prev=>[...prev,{id:"live-model-"+Date.now(),kind:"tool",title:"Running turn switched to "+(modelMeta?.[nextModel]?.name||modelLabel(nextModel,freebuff)||nextModel),status:"done",raw:{model:nextModel}}]);
+        setEvents(prev=>[...prev,{id:"live-model-"+Date.now(),kind:"tool",title:"Running turn switched to "+(modelMeta?.[nextModel]?.name||modelLabel(nextModel)||nextModel),status:"done",raw:{model:nextModel}}]);
       }
     }catch(error){
       setEvents(prev=>[...prev,{id:"live-model-error-"+Date.now(),kind:"error",title:"Could not change the running turn's model. The new model will apply to the next turn: "+(error.message||String(error)),status:"done",raw:{model:nextModel}}]);
@@ -3457,6 +3408,8 @@ export default function App(){
     if(next==="agents"){openRightPanel("agents");return}
     setSection(next);
   }
+  const openProviderSettings=useCallback(()=>{setSettingsEntry({section:"agents",target:"agents-provider",nonce:Date.now()});setSection("settings")},[]);
+  useEffect(()=>{if(section!=="settings")setSettingsEntry(null)},[section]);
   async function saveAppSettings(patch){
     if("appearance" in patch&&environmentThemeCatalog?.environmentKey){
       const selections={...(settings.environmentThemeSelections||{})};
@@ -3470,7 +3423,7 @@ export default function App(){
 
   const activeTitle=titleOf(activeThread);
   const projectLabel=projectlessMode?"No project":String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
-  const providerLabel=({freebuff:"Freebuff",openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Gemini API",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider);
+  const providerLabel=modelProviderLabel(provider);
   const agentRuntimeLabel=({native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime);
   const conversationEditFromHere=useLatestCallback(editFromHere);
   const conversationLoadEarlier=useLatestCallback(loadEarlierMessages);
@@ -3478,8 +3431,6 @@ export default function App(){
   const composerPromptEdit=useLatestCallback(()=>setPromptHistoryIndex(-1));
   const composerSend=useLatestCallback(send);
   const composerBackgroundSend=useLatestCallback(sendInBackground);
-  const composerLogin=useLatestCallback(login);
-  const composerConfigureProvider=useLatestCallback(()=>setSection("settings"));
   const composerSetModel=useLatestCallback(changeComposerModel);
   const composerRemoveAttachment=useLatestCallback(path=>setAttachments(prev=>prev.filter(x=>x!==path)));
   const composerRemoveContext=useLatestCallback(removeContext);
@@ -3493,6 +3444,8 @@ export default function App(){
   const composerProviderAgent=useLatestCallback(changeProviderAgent);
   const composerCompact=useLatestCallback(compactContext);
   const composerRuntimeProfile=useLatestCallback(switchThreadRuntimeProfile);
+  const composerRetryTransport=useLatestCallback(()=>setRuntimeTransportRevision(value=>value+1));
+  if(rpcStatus==="connected")transportConnectedRef.current=true;
   const composerReasoningEffort=useLatestCallback(async effort=>{
     if(!model)return;
     const key=modelReasoningEffortKey(agentRuntime,provider,model),next={...(settings.modelReasoningEfforts||{})},normalized=String(effort||"").trim().toLowerCase();
@@ -3595,7 +3548,6 @@ export default function App(){
       </section>
       {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/>}
       <RuntimeTrace threadId={activeThread?.id||null}/>
-      {managedInference&&provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>}
       <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
     </div>;
   }
@@ -3619,7 +3571,7 @@ export default function App(){
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
-    <ThreadSidebar section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab}/>
+    <ThreadSidebar section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>
@@ -3671,7 +3623,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
-  <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(openingThreadId)} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} login={composerLogin} onConfigureProvider={composerConfigureProvider} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelPickerOpenChange={setModelPickerOpen}/>
+  <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(openingThreadId)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} onRetryTransport={composerRetryTransport} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={openProviderSettings} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>
@@ -3681,12 +3633,11 @@ export default function App(){
         </div>}
 
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
-        {section==="freebuff"&&managedInference&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><DeferredSurface label="Loading Freebuff…"><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model,{strict:true})}/></DeferredSurface></div>}
         {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage settings={settings} onSettings={setSettings} onProviderChanging={nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=agentRuntime+"\0"+nextProvider;setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}} onProviderUpdated={(options={})=>{if(options.reconnectRuntime)setRuntimeTransportRevision(v=>v+1);return refreshProviderModels({...options,resetThread:options.resetThread??false})}} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} freebuff={freebuff} login={login} logout={logout} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} settings={settings} onSettings={setSettings} onProviderChanging={nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=agentRuntime+"\0"+nextProvider;setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}} onProviderUpdated={(options={})=>{if(options.reconnectRuntime)setRuntimeTransportRevision(v=>v+1);return refreshProviderModels({...options,resetThread:options.resetThread??false})}} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
           {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert">Could not load thread history: {threadHistory.error}</div>}
           {threadHistory.items.length?threadHistory.items.map(t=><button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button>}</div>}

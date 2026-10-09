@@ -58,9 +58,9 @@ function makePagedTurns(count){
 }
 
 async function installFixtureRoutes(page,{thread,meta,harness,cwd}){
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd,platform:process.platform,version:"long-conversation-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
-  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:meta})}));
-  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({provider:"freebuff",agentRuntime:"codex",ready:true,models:[thread.model],metadata:{provider:"freebuff",agentRuntime:"codex",models:[{id:thread.model,name:"Coding Fast",agent:"Codex"}]}})}));
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd,platform:process.platform,version:"long-conversation-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:meta})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({provider:"openai",agentRuntime:"codex",ready:true,models:[thread.model],metadata:{provider:"openai",agentRuntime:"codex",models:[{id:thread.model,name:"Coding Fast",agent:"Codex"}]}})}));
   await page.route(/\/api\/thread-meta(?:\?|$)/,async route=>{
     if(route.request().method()==="POST"){
       const body=route.request().postDataJSON?.()||JSON.parse(route.request().postData()||"{}");meta[body.threadId]={...(meta[body.threadId]||{}),...(body.patch||{})};
@@ -72,14 +72,13 @@ async function installFixtureRoutes(page,{thread,meta,harness,cwd}){
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
   await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
-  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
 }
 
 test("long conversations keep only nearby message chunks mounted",async({page})=>{
   test.setTimeout(30_000);
   const cwd=process.cwd(),now=Date.now()/1000,turns=makeTurns(300);
-  const thread={id:"long-thread",name:"Long conversation stress",preview:"600 messages",cwd,model:"freebuff/test/coding-fast",status:{type:"idle"},createdAt:now-600,updatedAt:now,turns};
-  const meta={[thread.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id:thread.id,name:thread.name,preview:thread.preview,cwd,model:thread.model,createdAt:thread.createdAt,updatedAt:thread.updatedAt,status:{type:"idle"},runtime:"codex",provider:"freebuff"}}};
+  const thread={id:"long-thread",name:"Long conversation stress",preview:"600 messages",cwd,model:"test/coding-fast",status:{type:"idle"},createdAt:now-600,updatedAt:now,turns};
+  const meta={[thread.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id:thread.id,name:thread.name,preview:thread.preview,cwd,model:thread.model,createdAt:thread.createdAt,updatedAt:thread.updatedAt,status:{type:"idle"},runtime:"codex",provider:"openai"}}};
   const harness=await startHarness(thread);
   try{
     await installFixtureRoutes(page,{thread,meta,harness,cwd});
@@ -118,12 +117,12 @@ test("loading earlier virtualized history preserves the visible anchor",async({p
   test.setTimeout(30_000);
   await page.setViewportSize({width:1280,height:800});
   const cwd=process.cwd(),now=Date.now()/1000,turns=makePagedTurns(80);
-  const thread={id:"paged-long-thread",name:"Paged long conversation",preview:"480 messages",cwd,model:"freebuff/test/coding-fast",status:{type:"idle"},createdAt:now-600,updatedAt:now,turns};
+  const thread={id:"paged-long-thread",name:"Paged long conversation",preview:"480 messages",cwd,model:"test/coding-fast",status:{type:"idle"},createdAt:now-600,updatedAt:now,turns};
   const turnPages={
     "page-latest":{data:[...turns.slice(40)].reverse(),nextCursor:"page-older"},
     "page-older":{data:[...turns.slice(0,40)].reverse(),nextCursor:null},
   };
-  const meta={[thread.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id:thread.id,name:thread.name,preview:thread.preview,cwd,model:thread.model,createdAt:thread.createdAt,updatedAt:thread.updatedAt,status:{type:"idle"},runtime:"codex",provider:"freebuff"}}};
+  const meta={[thread.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id:thread.id,name:thread.name,preview:thread.preview,cwd,model:thread.model,createdAt:thread.createdAt,updatedAt:thread.updatedAt,status:{type:"idle"},runtime:"codex",provider:"openai"}}};
   const harness=await startHarness(thread,{turnPages});
   try{
     await installFixtureRoutes(page,{thread,meta,harness,cwd});

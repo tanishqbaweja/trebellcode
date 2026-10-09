@@ -68,6 +68,7 @@ try {
   );
   let providerCompatibility={skipped:!vyceKeyAvailable,reason:vyceKeyAvailable?null:"No Vyce key supplied to installer validation."};
   if(vyceKeyAvailable){
+    const previousProvider=await mainPage.evaluate(()=>fetch("/api/providers").then(r=>r.json()).then(body=>body?.selected||null)).catch(()=>null);
     const providerSwitch=await mainPage.evaluate(async()=>{
       const response=await fetch("/api/providers",{
         method:"POST",
@@ -93,11 +94,11 @@ try {
       throw new Error("Packaged Codex model discovery was incorrectly coupled to the Trebell Native provider.");
     }
     providerCompatibility={skipped:false,selected:providerSwitch.selected,runtime:providerRuntime,codexCatalogProvider:codexCatalog.metadata.provider};
-    await mainPage.evaluate(()=>fetch("/api/providers",{
+    await mainPage.evaluate(provider=>fetch("/api/providers",{
       method:"POST",
       headers:{"content-type":"application/json"},
-      body:JSON.stringify({provider:"freebuff"}),
-    }).then(r=>r.json()));
+      body:JSON.stringify({provider}),
+    }).then(r=>r.json()),previousProvider||"openai");
   }
 
   const initial=await mainPage.evaluate(()=>window.trebellDesktop.background.get());

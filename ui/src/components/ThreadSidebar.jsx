@@ -9,6 +9,7 @@ import { writeClipboardText } from "../clipboard.js";
 import { groupSidebarThreads, THREAD_GROUP_NAMES } from "../thread-sidebar-groups.js";
 import { threadCatalogRuntime } from "../thread-catalog.js";
 import { shouldVirtualizeSidebarGroup, sidebarChunkIndexForThread, sidebarVirtualChunks } from "../sidebar-virtualization.js";
+import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
 function relativeTime(epoch){
@@ -49,7 +50,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
       <div>
         <strong className="thread-title-line"><span className="thread-title-text">{titleOf(thread)}</span>{foreignRuntime&&<em className="thread-runtime-chip" title={"Owned by "+rowRuntimeLabel}>{rowRuntimeLabel}</em>}{reviewLabel&&<em className={linked.length?"thread-pr-chip linked":"thread-pr-chip detected"} title={linked.length?"Linked pull request":"Detected from saved branch"}><GitPullRequest size={9}/>{reviewLabel}</em>}</strong>
-        <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model?.replace(/^freebuff\//,"")||rowRuntimeLabel)+" · "+relativeTime(thread.updatedAt)}</span>
+        <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model||rowRuntimeLabel)+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
     <details ref={menuRef} className="thread-menu">
@@ -118,8 +119,8 @@ function UtilityButton({Icon,label,active,onClick}){
 
 const ThreadSidebar=memo(function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
-  selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex",threadMeta={},onCollapse,
-  rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={}
+  selectedIds,setSelectedIds,onBulkAction,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="codex",threadMeta={},onCollapse,
+  rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={},onOpenProviderSettings
 }){
   const searchRef=useRef(null);
   const sectionsRef=useRef(null);
@@ -136,7 +137,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
   const groups=useMemo(()=>groupSidebarThreads(threads,threadMeta),[threads,threadMeta]);
   const bulk=selectedIds.size>0;
   const managedInference=Boolean(runtimeCapabilities.managedInference);
-  const providerLabel={freebuff:"Freebuff",openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Gemini API",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider;
+  const providerLabel=modelProviderLabel(provider);
   const runtimeLabel={native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
   const toggle=useCallback(id=>{const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)},[selectedIds,setSelectedIds]);
   const firstGroupName=THREAD_GROUP_NAMES.find(name=>groups[name]?.length)||null;
@@ -190,7 +191,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
         <UtilityButton Icon={Server} label="Environments" active={section==="environments"} onClick={()=>setSection("environments")}/>
         <UtilityButton Icon={Settings} label="Settings" active={section==="settings"} onClick={()=>setSection("settings")}/>
       </div>
-      <button className="sidebar-provider" onClick={()=>setSection(managedInference&&provider==="freebuff"?"freebuff":"settings")} title={"Configure "+runtimeLabel}><span className="provider-dot"/><div><strong>{runtimeLabel}</strong><span>{managedInference?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
+      <button className="sidebar-provider" onClick={()=>managedInference&&onOpenProviderSettings?onOpenProviderSettings():setSection("settings")} title={"Configure "+runtimeLabel}><span className="provider-dot"/><div><strong>{runtimeLabel}</strong><span>{managedInference?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
     </div>
   </aside>;
 });

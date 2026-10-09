@@ -13,6 +13,7 @@ import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { ContextEngine } from "../src/context-engine.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
+import { RETIRED_MODEL_PROVIDERS } from "../src/legacy-provider-migration.mjs";
 
 async function listen(server){
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));return server.address().port;
@@ -667,4 +668,84 @@ test("Trebell Native exposes first-class Git status directly to the model loop",
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(calls,2);
     const persisted=threadStore.get(thread.id);assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_source_control"&&item.tool==="status"));
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});
+
+async function nativeRelayFixture(prefix,settings={},nativeProviderTurn=async()=>{throw new Error("unexpected provider call")}){
+  const root=await mkdtemp(join(tmpdir(),prefix)),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",activeEnvironmentId:null,...settings});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
+  return {root,repo,state,threadStore,ws,rpc:client(ws),close:async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}};
+}
+
+test("Trebell Native thread/start stores a normalized provider and defaults to the selected Native provider",async()=>{
+  const fixture=await nativeRelayFixture("trebell-native-provider-default-"),{rpc,repo,state}=fixture,retired=RETIRED_MODEL_PROVIDERS[0];
+  try{
+    const start=params=>rpc.request("thread/start",{cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[],...params}).then(result=>result.thread);
+    assert.equal(state.settings().modelProvider,"openai");
+    assert.equal((await start({model:"model-a"})).providerMeta.modelProvider,"openai");
+    state.updateSettings({modelProvider:"agentrouter"});
+    assert.equal((await start({model:"model-a"})).providerMeta.modelProvider,"agentrouter");
+    assert.equal((await start({model:"model-b",modelProvider:" HCNSec "})).providerMeta.modelProvider,"hcnsec");
+    const stale=await start({model:retired+"/test/coding-fast",modelProvider:retired});
+    assert.equal(stale.providerMeta.modelProvider,"openai");assert.equal(stale.model,null);
+    const staleModel=await start({model:retired+"/test/coding-large",modelProvider:"agentrouter"});
+    assert.equal(staleModel.providerMeta.modelProvider,"agentrouter");assert.equal(staleModel.model,null);
+  }finally{await fixture.close()}
+});
+
+test("Trebell Native re-points a retired-provider thread and fails fast before any provider call until a model is chosen",async()=>{
+  const requests=[],retired=RETIRED_MODEL_PROVIDERS[0];
+  const fixture=await nativeRelayFixture("trebell-native-retired-provider-",{modelProvider:"agentrouter"},async request=>{requests.push({provider:request.provider,model:request.model});return{id:"retired-provider-answer",provider:request.provider,model:request.model,text:"Continued with the chosen model.",toolCalls:[],finishReason:"stop",usage:{}}});
+  const {rpc,repo,threadStore}=fixture;
+  try{
+    const legacy=threadStore.create({runtime:"native",cwd:repo,providerSessionId:"native-retired-provider",model:retired+"/deepseek/deepseek-v4-flash",providerMeta:{runtimeInstanceId:"native-default",modelProvider:retired,permissionProfile:"auto",projectless:false,environmentId:null}});
+    const turnOf=async params=>{const turn=(await rpc.request("turn/start",{threadId:legacy.id,permissionProfile:"auto",...params})).turn;return (await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id)).params.turn};
+    const resumed=await turnOf({input:[{type:"text",text:"Continue the old conversation."}]});
+    assert.equal(resumed.status,"failed");assert.match(resumed.error?.message||"",/Trebell Native requires a model/);assert.equal(requests.length,0);
+    let stored=threadStore.get(legacy.id);assert.equal(stored.providerMeta.modelProvider,"agentrouter");assert.equal(stored.model,null);
+    const stale=await turnOf({model:retired+"/test/coding-fast",modelProvider:retired,input:[{type:"text",text:"A stale client still names the retired provider."}]});
+    assert.equal(stale.status,"failed");assert.match(stale.error?.message||"",/Trebell Native requires a model/);assert.equal(requests.length,0);
+    stored=threadStore.get(legacy.id);assert.equal(stored.providerMeta.modelProvider,"openai");assert.equal(stored.model,null);
+    const chosen=await turnOf({model:"model-a",modelProvider:"agentrouter",input:[{type:"text",text:"Continue with the model I picked."}]});
+    assert.equal(chosen.status,"completed");assert.deepEqual(requests,[{provider:"agentrouter",model:"model-a"}]);
+    stored=threadStore.get(legacy.id);assert.equal(stored.providerMeta.modelProvider,"agentrouter");assert.equal(stored.model,"model-a");assert.equal(stored.turns.length,3);
+  }finally{await fixture.close()}
+});
+
+test("Trebell Native keeps a retired-provider thread's queued follow-up queued until the user continues with a model",async()=>{
+  const requests=[],retired=RETIRED_MODEL_PROVIDERS[0];
+  const fixture=await nativeRelayFixture("trebell-native-retired-queue-",{modelProvider:"openai",continueThreadsAfterRestart:true},async request=>{
+    requests.push({provider:request.provider,model:request.model,messages:JSON.stringify(request.messages||[]),tools:(request.tools||[]).map(item=>item.name)});
+    return{id:"retired-queue-answer-"+requests.length,provider:request.provider,model:request.model,text:"Continued with the chosen model.",toolCalls:[],finishReason:"stop",usage:{}};
+  });
+  const {rpc,ws,repo,state,threadStore}=fixture;
+  try{
+    const png=Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082","hex"),image=join(repo,"before-upgrade.png");await writeFile(image,png);
+    const legacy=threadStore.create({runtime:"native",cwd:repo,providerSessionId:"native-retired-queue",model:"deepseek/deepseek-v4-flash",providerMeta:{runtimeInstanceId:"native-default",modelProvider:retired,permissionProfile:"auto",projectless:false,environmentId:null}});
+    const queued={id:"retired-q1",input:[{type:"text",text:"QUEUED FOLLOW-UP: what does the attached screenshot show?"},{type:"localImage",path:image}],clientUserMessageId:"retired-client",dynamicToolNamespaces:["trebell_browser"]};
+    state.updateThreadMeta(legacy.id,{queuedSubmissions:[queued]});
+    const queue=()=>state.threadMeta(legacy.id)?.queuedSubmissions||[];
+    ws.send(JSON.stringify({method:"initialized"}));
+    const notice=await rpc.waitFor(message=>message.method==="error"&&message.params?.threadId===legacy.id,5000);
+    assert.match(notice.params.message,/Choose a model for this thread before its queued follow-up can run/);
+    assert.doesNotMatch(notice.params.message,new RegExp(retired,"i"),"the notice never names the removed provider");
+    await new Promise(resolve=>setTimeout(resolve,100));
+    assert.deepEqual(requests,[],"no provider call is made for the old transcript");
+    assert.equal(threadStore.get(legacy.id).turns.length,0,"no turn is started, so none fails");
+    assert.deepEqual(queue(),[queued],"the follow-up keeps its text, attachment and tool scope");
+    let stored=threadStore.get(legacy.id);assert.equal(stored.providerMeta.modelProvider,"openai");assert.equal(stored.model,null);
+    await assert.rejects(()=>rpc.request("thread/queue/start",{threadId:legacy.id,queuedSubmissionId:queued.id}),/Choose a model for this thread before its queued follow-up can run/);
+    assert.deepEqual(queue(),[queued],"a manual start is refused without consuming the follow-up");assert.equal(threadStore.get(legacy.id).turns.length,0);assert.deepEqual(requests,[]);
+    const chosen=(await rpc.request("turn/start",{threadId:legacy.id,model:"model-a",modelProvider:"openai",permissionProfile:"auto",input:[{type:"text",text:"Continue with the model I picked."}]})).turn;
+    assert.equal((await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===chosen.id)).params.turn.status,"completed");
+    const drained=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.threadId===legacy.id&&message.params?.turn?.id!==chosen.id,5000);
+    assert.equal(drained.params.turn.status,"completed",JSON.stringify(drained.params.turn.error||null));
+    assert.deepEqual(requests.map(item=>[item.provider,item.model]),[["openai","model-a"],["openai","model-a"]],"the queued follow-up runs with the model the user chose");
+    assert.ok(requests[1].messages.includes("QUEUED FOLLOW-UP: what does the attached screenshot show?"),"the queued text is sent");assert.ok(requests[1].messages.includes(png.toString("base64")),"the queued image attachment is sent with it");
+    assert.ok(requests[1].tools.includes("trebell_browser"),"the queued tool scope is restored");
+    assert.deepEqual(queue(),[]);
+    stored=threadStore.get(legacy.id);assert.equal(stored.model,"model-a");assert.equal(stored.turns.length,2);
+  }finally{await fixture.close()}
 });
