@@ -41,6 +41,7 @@ async function startServer({command="opencode",cwd,env=process.env,serverUrl=nul
     try{child.kill()}catch{}
   }};
 }
+export const startOpenCodeServer=startServer;
 
 function toProviderModel(value,map){
   if(map.has(value))return map.get(value);

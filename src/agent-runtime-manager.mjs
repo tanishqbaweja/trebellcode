@@ -157,6 +157,9 @@ export function runtimeExecutableCandidates(kind,{env=process.env,platform=proce
     if(local)values.push(join(local,"Microsoft","WinGet","Packages","xAI.GrokBuild_Microsoft.Winget.Source_8wekyb3d8bbwe","grok.exe"));
   }
   if(kind==="cursor"){
+    // The official installer puts a cmd -> PowerShell launcher here. Prefer it over PATH, whose first cursor-agent can be an
+    // unrelated npm package. Probes and ACP sessions spawn through cross-spawn, which runs a .cmd launcher via cmd.exe.
+    if(local)values.push(join(local,"cursor-agent","cursor-agent.cmd"));
     if(user)values.push(join(user,".cursor","bin","cursor-agent.exe"));
     if(local)values.push(join(local,"Programs","cursor","resources","app","bin","cursor-agent.exe"));
   }
@@ -303,8 +306,11 @@ export class AgentRuntimeManager{
   processSpawner(instance,environmentId=undefined){
     const profile=this.activeEnvironment(environmentId);if(!profile||profile.type==="local"||!this.environments)return null;
     const environmentNames=this.childEnvironmentKeys(instance);
-    return options=>this.environments.spawnArgv(profile.id,{command:this.executable(instance,{environmentId:profile.id}),args:options.args||[],cwd:options.cwd||profile.cwd||null,stdio:options.stdio||["pipe","pipe","pipe"],environmentNames});
+    // options.environment sets explicit variables for this one process (e.g. a restricted harness config); environmentNames only forwards the remote shell's own values.
+    return options=>this.environments.spawnArgv(profile.id,{command:this.executable(instance,{environmentId:profile.id}),args:options.args||[],cwd:options.cwd||profile.cwd||null,stdio:options.stdio||["pipe","pipe","pipe"],environmentNames,...(options.environment&&typeof options.environment==="object"?{environment:options.environment}:{})});
   }
+  // Runs the instance's own CLI (arguments after the executable) where the instance runs, local or remote, with its approved variables.
+  runCli(instance,args=[],{timeoutMs=15_000,cwd=null,environmentId=undefined}={}){return this.#run(instance,args,{timeoutMs,cwd,environmentId})}
   remoteIo(cwd,environmentId=undefined){
     const profile=this.activeEnvironment(environmentId);if(!profile||profile.type==="local"||!this.environments)return null;
     const root=posix.resolve(String(cwd||profile.cwd||"/"));

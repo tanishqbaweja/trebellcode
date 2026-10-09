@@ -20,8 +20,11 @@ const PROVIDER_NOTES={
   hcnsec:"Available model: glm-5.3.",
 };
 let appliedSettingsEntryNonce=null;
+// The last harness snapshot this window saw: Agents & models renders it at once on later visits while a fresh probe runs.
+let lastAgentRuntimeInfo=null;
+const AGENT_RUNTIME_SKELETON_ROWS=[[12,20],[9,16],[14,24],[10,18]];
 
-export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,entry:settingsEntry=null}){
+export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,entry:settingsEntry=null}){
   const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||"general");
   const [settingsSearch,setSettingsSearch]=useState("");
   const [workspaceScope,setWorkspaceScope]=useState({environmentId:settings.activeEnvironmentId||"local",projectId:""});
@@ -36,7 +39,10 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const [settingsError,setSettingsError]=useState("");
   const [environmentThemeRefreshing,setEnvironmentThemeRefreshing]=useState(false);
   const [providerSwitching,setProviderSwitching]=useState(false);
-  const [agentInfo,setAgentInfo]=useState(null);
+  const [agentInfo,setAgentInfoState]=useState(()=>lastAgentRuntimeInfo);
+  const [agentInfoRefreshing,setAgentInfoRefreshing]=useState(false);
+  const [agentInfoError,setAgentInfoError]=useState("");
+  const agentInfoSeqRef=useRef(0);
   const [agentMessage,setAgentMessage]=useState("");
   const [agentMessageTarget,setAgentMessageTarget]=useState(null);
   const [agentSelectionOverride,setAgentSelectionOverride]=useState(null);
@@ -64,6 +70,12 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     ?providerInfo.providers.map(item=>({id:item.id,name:item.name||modelProviderLabel(item.id),official:Boolean(item.official)}))
     :Object.entries(MODEL_PROVIDER_LABELS).map(([id,name])=>({id,name,official:["openai","anthropic","gemini"].includes(id)}));
   const selectedAgent=agentSelectionOverride||settings.agentRuntime||runtime?.agentRuntime||agentInfo?.selectedRuntime||"codex";
+  const switchingAgent=Boolean(agentSelectionOverride);
+  // The app owns a harness switch end to end: it clears the old models and gates sends before the request, then applies the confirmed runtime with one reconnect.
+  const switchRuntime=onAgentRuntimeSwitch||((target,perform)=>perform());
+  // The profile the server runs comes from settings, which the app keeps current through every switch. agentInfo can be the snapshot cached on an
+  // earlier visit (opening another harness's thread switches profiles meanwhile), so it decides neither the Active markers nor the gated reload path.
+  const activeInstanceId=settings.agentRuntimeInstanceId||(settings.agentRuntime?`${settings.agentRuntime}-default`:agentInfo?.selectedInstanceId)||null;
   const selectedManagedInference=Boolean(sharedRuntimeCapabilities(selectedAgent).managedInference);
   const keybindingRules=normalizeKeybindingRules(settings);
   function updateKeybinding(command,patch){
@@ -84,38 +96,38 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       return fallback;
     }
   }
+  function rememberAgentInfo(info){
+    if(info&&!info.error&&Array.isArray(info.definitions)&&info.definitions.length)lastAgentRuntimeInfo=info;
+    setAgentInfoState(info);
+  }
+  // A mutation answer is newer than any probe still in flight, so that probe's answer is discarded.
+  function setAgentInfo(info){agentInfoSeqRef.current++;setAgentInfoRefreshing(false);setAgentInfoError("");rememberAgentInfo(info)}
   async function loadAgentRuntimes({strict=false}={}){
+    const seq=++agentInfoSeqRef.current;setAgentInfoRefreshing(true);
     try{
       const info=await api("/api/agent-runtimes");
-      setAgentInfo(info);return info;
+      if(seq===agentInfoSeqRef.current){setAgentInfoError("");rememberAgentInfo(info)}
+      return info;
     }catch(error){
       if(strict)throw error;
       const fallback=agentInfo||{error:error?.message||String(error),definitions:[],instances:[],statuses:[]};
-      if(!agentInfo)setAgentInfo(fallback);
+      // Cached rows stay on screen after a failed probe, so the failure is shown with them instead of passing them off as current.
+      if(seq===agentInfoSeqRef.current){if(agentInfo)setAgentInfoError(error?.message||String(error));else setAgentInfoState(fallback)}
       return fallback;
-    }
+    }finally{if(seq===agentInfoSeqRef.current)setAgentInfoRefreshing(false)}
   }
   async function selectAgentRuntime(kind,instanceId=null){
     setAgentSelectionOverride(kind);
     setAgentMessageTarget(kind);
     setAgentMessage("Switching…");
     try{
-      const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:kind,instanceId}});
+      const result=await switchRuntime({runtime:kind,instanceId,resetThread:true},()=>api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:kind,instanceId}}));
       setAgentInfo(result);
-      const selectedRuntime=result.selectedRuntime||result.selected?.runtime||kind;
-      const selectedInstanceId=result.selectedInstanceId||result.selected?.instance?.id||instanceId||`${selectedRuntime}-default`;
-      onSettings(previous=>({...previous,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId}));
       setAgentMessage(`${result.selected?.status?.name||kind} selected.`);
-      await onProviderUpdated?.({
-        agentRuntime:selectedRuntime,
-        provider:selected,
-        resetThread:true,
-        reconnectRuntime:true,
-        catalog:result.catalog||null,
-        bootstrap:result.bootstrap||null,
-        refreshBootstrap:!result.bootstrap,
-      });
-    }catch(error){setAgentMessage(error.message)}
+    }catch(error){
+      // The selection falls back to the harness that is still active, so the failure is reported there instead of on the runtime that failed.
+      setAgentMessageTarget(null);setAgentMessage(`Could not switch to ${(agentInfo?.definitions||[]).find(item=>item.id===kind)?.name||kind}: ${error.message}`);
+    }
     finally{setAgentSelectionOverride(null)}
   }
   function editInstance(instance=null){
@@ -129,9 +141,12 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     setAgentMessage("Saving runtime profile…");
     try{
       const instance={...instanceDraft};delete instance.environmentKeys;
-      const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"upsert",instance}});
+      const request=()=>api("/api/agent-runtimes",{method:"POST",body:{action:"upsert",instance}});
+      // Saving the active profile reloads its harness: the same single reconnect as a switch. Other profiles save in place.
+      const active=activeInstanceId===instance.id;
+      const result=active?await switchRuntime({runtime:instance.kind||selectedAgent,instanceId:instance.id,resetThread:true},request):await request();
+      if(!active&&result.selectedInstanceId===instance.id)await switchRuntime({runtime:result.selectedRuntime||instance.kind,instanceId:instance.id,resetThread:true},async()=>result,{gate:false});
       setAgentInfo(result);setInstanceDraft(null);setAgentMessage("Runtime profile saved.");
-      if(result.selectedInstanceId===instance.id)await onProviderUpdated?.({agentRuntime:result.selectedRuntime||instance.kind,provider:selected,resetThread:true,reconnectRuntime:true,catalog:result.catalog||null,bootstrap:result.bootstrap||null,refreshBootstrap:!result.bootstrap});
     }catch(error){setAgentMessage(error.message)}
   }
   async function removeInstance(instance){
@@ -139,14 +154,12 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     setAgentMessageTarget(instance.kind||selectedAgent);
     setAgentMessage("Removing runtime profile…");
     try{
-      const result=await api("/api/agent-runtimes?id="+encodeURIComponent(instance.id),{method:"DELETE"});
+      const request=()=>api("/api/agent-runtimes?id="+encodeURIComponent(instance.id),{method:"DELETE"});
+      // Removing the active profile moves its harness back to the default profile: the same single reconnect as a switch.
+      const active=activeInstanceId===instance.id;
+      const result=active?await switchRuntime({runtime:instance.kind||selectedAgent,instanceId:`${instance.kind||selectedAgent}-default`,resetThread:true},request):await request();
+      if(!active&&result.resetTo)await switchRuntime({runtime:result.selectedRuntime||result.kind||settings.agentRuntime,instanceId:result.selectedInstanceId||result.resetTo,resetThread:true},async()=>result,{gate:false});
       setAgentInfo(result);setInstanceDraft(null);setAgentMessage("Runtime profile removed.");
-      if(result.resetTo){
-        const selectedRuntime=result.selectedRuntime||result.kind||settings.agentRuntime;
-        const selectedInstanceId=result.selectedInstanceId||result.resetTo;
-        onSettings(previous=>({...previous,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId}));
-        await onProviderUpdated?.({agentRuntime:selectedRuntime,provider:selected,resetThread:true,reconnectRuntime:true,catalog:result.catalog||null,bootstrap:result.bootstrap||null,refreshBootstrap:!result.bootstrap});
-      }
     }catch(error){setAgentMessage(error.message)}
   }
   async function installAgentRuntime(kind){
@@ -160,18 +173,11 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     setInstallingAgent(kind);setAgentMessage("Installing "+label+"…");
     try{
       const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"install",runtime:kind,environmentId:settings.activeEnvironmentId||null}});
+      // Reinstalling the active harness reloads it once the install finishes; the transport stays usable during the install itself.
+      if(kind===selectedAgent)await switchRuntime({runtime:result.selectedRuntime||kind,instanceId:result.selectedInstanceId||null,resetThread:true},async()=>result,{gate:false});
       setAgentInfo(result);
       const status=result.installed?.status;
       setAgentMessage(status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.");
-      if(kind===selectedAgent)await onProviderUpdated?.({
-        agentRuntime:result.selectedRuntime||kind,
-        provider:selected,
-        resetThread:true,
-        reconnectRuntime:true,
-        catalog:result.catalog||null,
-        bootstrap:result.bootstrap||null,
-        refreshBootstrap:!result.bootstrap,
-      });
     }catch(error){setAgentMessage(error.message)}finally{setInstallingAgent(null)}
   }
   async function authenticateAgentRuntime(kind,instanceId){
@@ -523,6 +529,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const mcpEnvironmentId=settings.activeEnvironmentId||null;
   const scopedMcpServers=(settings.mcpServers||[]).filter(item=>item.runtime===selectedAgent&&(item.environmentId||null)===mcpEnvironmentId);
   const desktopAvailable=Boolean(window.trebellDesktop);
+  const reducedMotion=Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
   const settingsSections=[
     ["general",Settings2,"General","Everyday behavior, notifications and updates"],
     ["agents",Bot,"Agents & models","Harnesses, providers and model configuration"],
@@ -593,25 +600,25 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         <span className="about-version">v{diagnostics?.version||update?.current||"unknown"}</span><button onClick={onOpenLicenses}><FileText size={12}/> View licenses</button>
       </div>}
       {settingsSection==="agents"&&<div className="settings-card agent-runtime-settings" {...targetProps("agents-harness")}>
-        <h3>Agent harness</h3>
+        <h3>Agent harness{agentInfo&&agentInfoRefreshing&&<small data-testid="agent-runtime-refreshing" role="status" style={{marginLeft:8,fontSize:"0.7em",fontWeight:400,opacity:.7,display:"inline-flex",alignItems:"center",gap:4,verticalAlign:"middle"}}><RefreshCw size={10} style={reducedMotion?undefined:{animation:"trebell-spin .9s linear infinite"}}/>Refreshing…</small>}</h3>
         <p>Choose the coding-agent runtime. Trebell Native owns its model/tool loop and calls APIs directly; Codex, Claude Code, OpenCode, Cursor, Grok and Antigravity run as their real harnesses. Saved chats stay owned by the harness that created them, and opening one switches back to that harness automatically.</p>
-        <div className="agent-runtime-list">{(agentInfo?.definitions||[]).map(def=>{
+        <div className="agent-runtime-list" aria-busy={agentInfo===null||agentInfoRefreshing?"true":"false"}>{agentInfo===null?AGENT_RUNTIME_SKELETON_ROWS.map(([name,detail],index)=><div className="agent-runtime-option agent-runtime-skeleton" key={"skeleton-"+index} data-testid="agent-runtime-skeleton" aria-hidden="true"><button type="button" disabled tabIndex={-1} style={{opacity:.55,cursor:"default"}}><Bot size={14}/><span><strong style={{width:name+"%",height:9,borderRadius:4,background:"currentColor",opacity:.3}}/><small style={{width:detail+"%",height:7,marginTop:2,borderRadius:4,background:"currentColor",opacity:.2}}/></span><em/></button></div>):(agentInfo?.definitions||[]).map(def=>{
           const status=runtimeStatusForKind(agentInfo,def.id,{preferSelected:selectedAgent===def.id});
           const active=selectedAgent===def.id;
           const compatibility=status?.compatibility;const incompatible=["broken","unsupported"].includes(compatibility?.status);
           const unverified=status?.authenticated==null&&["cursor","grok","opencode"].includes(def.id)&&status?.message;
           const statusText=incompatible?(compatibility.message||"Incompatible runtime version"):unverified?status.message:status?.available?status?.version||status?.message||"Ready":status?.message||"Unavailable";
           const actionText=active?(incompatible||unverified?"Needs setup":"Active"):status?.available?(incompatible||unverified?"Needs setup":"Switch"):status?.installed?"Not ready":"Not installed";
-          return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={!active&&!status?.available} onClick={()=>!active&&status?.available&&selectAgentRuntime(def.id,status.id)}>
+          return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(def.id,status.id)}>
             <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em>{actionText}</em>
           </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id)}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
         })}</div>
         {selectedAgentDefinition?.multipleInstances!==false&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={selectedAgentDefinition?.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>
           {selectedInstances.map(instance=>{
-            const status=agentInfo?.statuses?.find(item=>item.id===instance.id);const active=agentInfo?.selectedInstanceId===instance.id;
+            const status=agentInfo?.statuses?.find(item=>item.id===instance.id);const active=activeInstanceId===instance.id;
             return <div className="runtime-profile-row" key={instance.id}>
-              <button className={active?"active":""} disabled={!active&&!status?.available} onClick={()=>!active&&status?.available&&selectAgentRuntime(instance.kind,instance.id)}><span><strong>{instance.displayName||instance.id}</strong><small>{status?.available?status.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?"Active":"Use"}</em></button>
+              <button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(instance.kind,instance.id)}><span><strong>{instance.displayName||instance.id}</strong><small>{status?.available?status.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?"Active":"Use"}</em></button>
               {(agentInfo?.definitions||[]).find(item=>item.id===instance.kind)?.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button onClick={()=>authenticateAgentRuntime(instance.kind,instance.id)} disabled={!!authenticatingAgent}>{authenticatingAgent===instance.id?"Opening…":"Sign in"}</button>}
               {selectedAgentDefinition?.multipleInstances!==false&&<button onClick={()=>editInstance(instance)}>Edit</button>}
               {instance.id!==`${instance.kind}-default`&&<button onClick={()=>removeInstance(instance)}>Remove</button>}
@@ -629,7 +636,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
           <p>Trebell passes only a safe OS baseline, this runtime's own credential variables, and the names listed here. Values are read from the parent process at launch time and are not stored in the profile.</p>
           <div className="provider-key-actions"><button className="setting-action" onClick={saveInstance}>Save profile</button><button onClick={()=>setInstanceDraft(null)}>Cancel</button></div>
         </div>}
-        <p className={agentInfo===null||selectedAgentStatus?.available?"provider-note":"provider-status-error"}><strong>{selectedAgentStatus?.name||selectedAgent}</strong> · {agentInfo===null?"checking…":selectedAgentStatus?.authenticated==null&&selectedAgentStatus?.message?selectedAgentStatus.message:selectedAgentStatus?.available?"ready":selectedAgentStatus?.message||agentInfo?.error||"setup required"}{agentMessage&&(!agentMessageTarget||agentMessageTarget===selectedAgent)?" · "+agentMessage:""} <button onClick={loadAgentRuntimes} disabled={!!authenticatingAgent}><RefreshCw size={11}/> Refresh</button></p>
+        <p className={!agentInfoError&&(agentInfo===null||selectedAgentStatus?.available)?"provider-note":"provider-status-error"}><strong>{selectedAgentStatus?.name||selectedAgent}</strong> · {agentInfo===null?"checking…":selectedAgentStatus?.authenticated==null&&selectedAgentStatus?.message?selectedAgentStatus.message:selectedAgentStatus?.available?"ready":selectedAgentStatus?.message||agentInfo?.error||"setup required"}{agentInfoError&&<span data-testid="agent-runtime-refresh-error" role="alert"> · Could not refresh harness status ({agentInfoError}); showing the last known list</span>}{agentMessage&&(!agentMessageTarget||agentMessageTarget===selectedAgent)?" · "+agentMessage:""} <button onClick={()=>loadAgentRuntimes()} disabled={!!authenticatingAgent}><RefreshCw size={11}/> Refresh</button></p>
       </div>}
       {settingsSection==="agents"&&selectedManagedInference&&<div className="settings-card provider-settings-card" {...targetProps("agents-provider")} data-testid="provider-settings-card" aria-busy={providerSwitching?"true":"false"}>
         <h3>Model provider</h3>

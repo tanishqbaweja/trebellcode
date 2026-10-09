@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
 import { createGuiServer, offlineE2eFetch, requestAbortController } from "../src/gui-server.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
+import { ProviderManager } from "../src/provider-manager.mjs";
 import { git } from "../src/git-service.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 
@@ -102,6 +103,33 @@ test("runtime install endpoint bundles refresh state only for the active harness
   }
 });
 
+test("the runtime status poll probes only the active harness",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-runtime-poll-probe-test-"));
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",onboardingComplete:true}}));
+  const originalProbe=AgentRuntimeManager.prototype.probe;
+  const probes=[];
+  AgentRuntimeManager.prototype.probe=async function(instanceOrKind){
+    const instance=typeof instanceOrKind==="string"?this.instances().find(item=>item.id===instanceOrKind||item.kind===instanceOrKind):instanceOrKind;
+    probes.push(instance?.id||String(instanceOrKind));
+    return {id:instance?.id,kind:instance?.kind,name:instance?.kind,available:true,installed:true,authenticated:true,version:"fixture"};
+  };
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1"};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:true,env});
+    probes.length=0;
+    const runtime=await fetch(gui.url+"/api/runtime").then(r=>r.json());
+    assert.equal(runtime.agentRuntime,"claude");assert.equal(runtime.agentRuntimeInstanceId,"claude-default");
+    assert.equal(runtime.agentRuntimeStatus?.id,"claude-default");assert.equal(runtime.agentRuntimeStatus?.available,true);
+    assert.deepEqual(probes,["claude-default"],"a status poll must not start every installed harness CLI");
+  }finally{
+    if(gui)await gui.close();
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100});
+  }
+});
+
 test("saving a Native provider key does not refetch the live model catalog during the immediate UI refresh",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-provider-refresh-"));
   const env={...process.env,TREBELL_HOME:home,OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
@@ -146,6 +174,127 @@ test("direct chat never sends another harness's prompt to the Native provider",a
     assert.deepEqual(requests,[],"the prompt never reaches a model provider");
   }finally{
     await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+test("Git commit and review text use the active harness and never the Native provider",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-harness-git-text-"));
+  const repo=join(home,"repo");await mkdir(repo,{recursive:true});
+  await git(repo,["init"]);await git(repo,["config","user.email","git-text@example.test"]);await git(repo,["config","user.name","Git Text"]);
+  await writeFile(join(repo,"notes.txt"),"before\n");await git(repo,["add","notes.txt"]);await git(repo,["commit","-m","Initial notes"]);
+  await writeFile(join(repo,"notes.txt"),"after: harness-diff-marker\n");
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",onboardingComplete:true}}));
+  // The boot-time Codex app-server gets its own empty home, so the test never touches the user's Codex state.
+  await mkdir(join(home,"codex"),{recursive:true});
+  const env={...process.env,TREBELL_HOME:home,CODEX_HOME:join(home,"codex"),TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"sk-git-text-fixture",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const providerRequests=[],directChats=[],harnessCalls=[];
+  const fetchFn=async input=>{providerRequests.push(String(input instanceof URL?input.href:input?.url||input));throw new Error("No model provider request is expected")};
+  const originalDirectChat=ProviderManager.prototype.directChat;
+  ProviderManager.prototype.directChat=async function(providerId,{model,prompt}){directChats.push({providerId,model,prompt});return {text:"chore: native provider subject",model,provider:providerId}};
+  let failNext=null;
+  const harnessTextGenerator=async options=>{
+    harnessCalls.push(options);
+    if(failNext){const error=failNext;failNext=null;throw error}
+    return {text:/pull request/.test(options.prompt)?"```json\n{\"title\":\"Harness review\",\"body\":\"Written by the harness.\"}\n```":"\n\"feat: harness subject\"\n",model:"sonnet",runtime:options.instance.kind,name:"Claude Code"};
+  };
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const gui=await createGuiServer({port,appPort,mock:false,env,fetchFn,harnessTextGenerator});
+  const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+  try{
+    const commitResponse=await post("/api/git/commit-message",{cwd:repo,environmentId:null,model:"sonnet"});
+    assert.equal(commitResponse.status,200);
+    assert.deepEqual(await commitResponse.json(),{message:"feat: harness subject",style:"repository",model:"sonnet",runtime:"claude",generatedWith:"Claude Code"});
+    const commitCall=harnessCalls[0];
+    assert.equal(commitCall.instance.id,"claude-default");assert.equal(commitCall.instance.kind,"claude");assert.equal(commitCall.cwd,repo);assert.equal(commitCall.environmentId,null);
+    assert.ok(commitCall.timeoutMs>0&&commitCall.timeoutMs<=90_000,"the harness request is bounded by 90 seconds");
+    assert.deepEqual(commitCall.models,["sonnet"]);assert.equal(typeof commitCall.codexAppServer,"function");assert.ok(commitCall.signal);
+    assert.match(commitCall.prompt,/Write one Git commit subject/);assert.match(commitCall.prompt,/harness-diff-marker/);
+    const reviewResponse=await post("/api/git/review-text",{cwd:repo,environmentId:null,model:"sonnet"});
+    assert.equal(reviewResponse.status,200);
+    assert.deepEqual(await reviewResponse.json(),{title:"Harness review",body:"Written by the harness.",style:"repository",model:"sonnet",runtime:"claude",generatedWith:"Claude Code"});
+    assert.match(harnessCalls[1].prompt,/Generate a pull request title and description/);
+    failNext=Object.assign(new Error("Claude Code did not return the Git text within 90 seconds. Try again, or choose a faster Claude Code model."),{code:"HARNESS_TEXT_TIMEOUT"});
+    const timedOut=await post("/api/git/commit-message",{cwd:home,environmentId:null,model:"sonnet"});
+    assert.equal(timedOut.status,504);assert.match((await timedOut.json()).error,/did not return the Git text within 90 seconds/);
+    failNext=new Error("Claude Code is installed but not authenticated");
+    const unavailable=await post("/api/git/review-text",{cwd:home,environmentId:null});
+    assert.equal(unavailable.status,400);assert.equal((await unavailable.json()).error,"Claude Code is installed but not authenticated");
+    assert.equal(harnessCalls.length,4);
+    assert.deepEqual(directChats,[],"a non-Native harness never sends Git text to the Native provider, even when it fails");
+    assert.deepEqual(providerRequests,[]);
+
+    const native=await post("/api/settings",{agentRuntime:"native",agentRuntimeInstanceId:"native-default"});
+    assert.equal(native.status,200);
+    const nativeCommit=await post("/api/git/commit-message",{cwd:repo,environmentId:null,model:"gpt-native-fixture"}).then(r=>r.json());
+    assert.deepEqual(nativeCommit,{message:"chore: native provider subject",style:"repository",model:"gpt-native-fixture",runtime:"native",generatedWith:"OpenAI API"});
+    assert.equal(directChats.length,1);assert.equal(directChats[0].providerId,"openai");assert.match(directChats[0].prompt,/harness-diff-marker/);
+    assert.equal(harnessCalls.length,4,"Trebell Native keeps the provider path");
+  }finally{
+    ProviderManager.prototype.directChat=originalDirectChat;
+    await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+// A stand-in for `codex app-server --listen ws://127.0.0.1:PORT`: it answers the readiness probe and records each start.
+const FAKE_CODEX_APP_SERVER=String.raw`
+import { createServer } from "node:http";
+import { appendFileSync } from "node:fs";
+const [record,...args]=process.argv.slice(2);const listen=args[args.indexOf("--listen")+1]||"";
+if(args[0]!=="app-server"||!listen){process.stdout.write("codex-cli 0.155.1-fixture\n");process.exit(0)}
+const port=Number(new URL(listen).port);
+const server=createServer((req,res)=>{res.writeHead(req.url==="/readyz"||req.url==="/healthz"?200:404);res.end("ok")});
+server.on("upgrade",(_req,socket)=>socket.destroy());
+server.listen(port,"127.0.0.1",()=>appendFileSync(record,JSON.stringify({port,pid:process.pid})+"\n"));
+`;
+
+test("a profile or environment restart leaves an in-flight Codex Git text app-server running",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-git-text-restart-"));
+  const repo=join(home,"repo");await mkdir(repo,{recursive:true});
+  await git(repo,["init"]);await git(repo,["config","user.email","git-text@example.test"]);await git(repo,["config","user.name","Git Text"]);
+  await writeFile(join(repo,"notes.txt"),"before\n");await git(repo,["add","notes.txt"]);await git(repo,["commit","-m","Initial notes"]);
+  await writeFile(join(repo,"notes.txt"),"after\n");
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",onboardingComplete:true}}));
+  await mkdir(join(home,"codex"),{recursive:true});
+  const fixture=join(home,"fake-codex.mjs"),record=join(home,"codex-starts.jsonl"),launcher=join(home,process.platform==="win32"?"codex.cmd":"codex");
+  await writeFile(fixture,FAKE_CODEX_APP_SERVER,"utf8");
+  if(process.platform==="win32")await writeFile(launcher,["@echo off",`"${process.execPath}" "${fixture}" "${record}" %*`,""].join("\r\n"),"utf8");
+  else{await writeFile(launcher,`#!/bin/sh\nexec "${process.execPath}" "${fixture}" "${record}" "$@"\n`,"utf8");await chmod(launcher,0o755)}
+  const env={...process.env,TREBELL_HOME:home,CODEX_HOME:join(home,"codex"),TREBELL_CODEX_BIN:launcher,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const originalProbe=AgentRuntimeManager.prototype.probe;
+  AgentRuntimeManager.prototype.probe=async function(instanceOrKind){
+    const instance=typeof instanceOrKind==="string"?this.instances().find(item=>item.kind===instanceOrKind):instanceOrKind;
+    return {id:instance?.id,kind:instance?.kind,name:instance?.kind,available:true,installed:true,authenticated:true,version:"fixture"};
+  };
+  const readyz=url=>fetch(String(url).replace(/^ws:/,"http:")+"/readyz",{signal:AbortSignal.timeout(2000)}).then(response=>response.ok,()=>false);
+  let serverReady=null,proceed=null,aliveAfterRestart=null;
+  const dedicated=new Promise(resolve=>{serverReady=resolve}),restarted=new Promise(resolve=>{proceed=resolve});
+  const harnessTextGenerator=async options=>{
+    const server=await options.codexAppServer();serverReady(server);await restarted;
+    aliveAfterRestart=await readyz(server.url);await server.release();
+    return {text:"fix: keep Git text through restarts",model:null,runtime:"codex",name:"Codex"};
+  };
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:false,env,harnessTextGenerator});
+    const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    const pending=post("/api/git/commit-message",{cwd:repo,environmentId:null});
+    const server=await dedicated;
+    assert.equal(await readyz(server.url),true);
+    // Activating an environment restarts every pooled Codex app-server except the one an in-flight Git text request is using.
+    const activated=await post("/api/environment/activate",{id:null});assert.equal(activated.status,200);
+    const starts=(await readFile(record,"utf8")).trim().split(/\r?\n/).map(line=>JSON.parse(line));
+    assert.equal(starts.length,3,"boot catalog, Git text and restarted catalog app-servers");
+    proceed();
+    const response=await pending;assert.equal(response.status,200);
+    assert.equal((await response.json()).message,"fix: keep Git text through restarts");
+    assert.equal(aliveAfterRestart,true,"the dedicated Git text app-server outlived the restart");
+    assert.equal(await readyz(server.url),false,"the request stops its own app-server afterwards");
+  }finally{
+    proceed?.();AgentRuntimeManager.prototype.probe=originalProbe;
+    if(gui)await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
 });
