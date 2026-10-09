@@ -395,13 +395,27 @@ function requestsBatchEvidenceCommitAudit(messages=[]){
   return multipleRecords&&evidence&&requestsExternalPersistence(text);
 }
 
-function explicitPersistentArtifactTargets(messages=[]){
+// A persistent-output target must look like a file the task asks to produce. Issue reports are full of dotted
+// tokens that are not output files: code identifiers (enum.Enum, io.fits.Card), versions (v5.2, 3.1, 1.2x),
+// keyword arguments (format="ascii.rst"), and library paths copied from tracebacks.
+function plausibleArtifactTarget(token=""){
+  const value=String(token||"");
+  if(!value||/[=()"'<>{}\[\];,]/.test(value)||/^(?:i\.e|e\.g)$/i.test(value))return false;
+  if(/(?:^|[\\/])(?:site-packages|dist-packages|node_modules)(?:[\\/]|$)|[\\/]lib[\\/]python\d/i.test(value))return false;
+  const name=value.split(/[\\/]/).pop()||"",match=/^(.+)\.([^.]+)$/.exec(name);
+  if(!match)return false;
+  const [,stem,extension]=match;
+  if(!/^[a-z][a-z0-9_-]{0,15}$/.test(extension))return false;
+  return !/^v?\d+(?:\.\d+)*$/i.test(stem);
+}
+
+export function explicitPersistentArtifactTargets(messages=[]){
   const text=lastUserInstructionText(latestUserMessage(messages)).trim();
   if(!text)return [];
   const targets=[];
   for(const match of text.matchAll(/\breport(?:s|ed|ing)?\b[\s\S]{0,140}?\b(?:in|to|into|as)\s+(?:(?:a|the)\s+)?(?:file|artifact)(?:\s+(?:named|called))?\s+[`"']?([A-Za-z0-9_./\\-]+\.[A-Za-z0-9_-]{1,16})[`"']?/ig)){
     const target=String(match[1]||"").trim();
-    if(target&&!targets.includes(target))targets.push(target);
+    if(target&&plausibleArtifactTarget(target)&&!targets.includes(target))targets.push(target);
   }
   const tokens=text.split(/\s+/).map(value=>value.replace(/^[\x60"'(]+|[\x60"'),;:.!?]+$/g,"")).filter(Boolean);
   for(let index=0;index<tokens.length;index++){
@@ -413,6 +427,7 @@ function explicitPersistentArtifactTargets(messages=[]){
     const outputConnector=/^(?:to|as|at|into|in)$/i.test(previous),outputNoun=/\b(?:output|result|artifact|deliverable|submission|files?|final)\b/i.test(before);
     if(sourceTail||!(action.test(near)||(action.test(before)&&(outputConnector||outputNoun))))continue;
     if(/(?:do\s+not|don't|dont|never|without)\s+(?:create|generate|produce|render|export|save|write|output|emit|place|deliver|report|build|make|store|leave)\b/i.test(before))continue;
+    if(!plausibleArtifactTarget(token))continue;
     if(!targets.includes(token))targets.push(token);
   }
   return targets;

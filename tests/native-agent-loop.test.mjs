@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
@@ -6698,4 +6698,16 @@ test("native agent cancellation during provider retry backoff prevents the next 
 test("native agent budget normalization stays bounded",()=>{
   assert.deepEqual(nativeAgentBudget({maxModelTurns:0,maxToolCalls:-5}),{maxModelTurns:1,maxToolCalls:0,maxWallTimeMs:null});
   assert.deepEqual(nativeAgentBudget({maxModelTurns:9999,maxToolCalls:99999,maxWallTimeMs:1234.9}),{maxModelTurns:500,maxToolCalls:5000,maxWallTimeMs:1234});
+});
+
+test("persistent-output targets ignore code identifiers, versions and traceback paths in issue reports",()=>{
+  const targets=text=>explicitPersistentArtifactTargets([{role:"user",content:text}]);
+  // Issue-style reports: dotted tokens near verbs such as "create" are not files the task must produce.
+  assert.deepEqual(targets("When I create an instance with MyChoice.FIRST_CHOICE the value is an enum.Enum member, which breaks APIs."),[]);
+  assert.deepEqual(targets("After upgrading to v5.2 and 3.1, writing with format=\"ascii.rst\" fails in io.fits.Card handling."),[]);
+  assert.deepEqual(targets("Traceback: File /usr/lib/python3/dist-packages/astropy/io/registry/core.py, line 3 while saving the table."),[]);
+  assert.deepEqual(targets("Running it made the speed-up about 1.2x, i.e. the output is written twice."),[]);
+  // Real deliverables are still detected.
+  assert.deepEqual(targets("Write the final report to /app/output/report.json and save the workings as /app/output/workings.xlsx."),["/app/output/report.json","/app/output/workings.xlsx"]);
+  assert.deepEqual(targets("Generate walk.npz under /app/results."),["walk.npz"]);
 });
