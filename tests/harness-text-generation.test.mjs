@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { WebSocketServer } from "ws";
-import { HARNESS_TEXT_INSTRUCTIONS, HARNESS_TEXT_TIMEOUT_MS, OPENCODE_GIT_TEXT_CONFIG, acpReadOnlyMode, claudeTextModel, codexGitTextConfig, declineCodexServerRequest, denyAcpRequest, generateTextWithHarness, harnessTextTimeout } from "../src/harness-text-generation.mjs";
+import { HARNESS_TEXT_INSTRUCTIONS, HARNESS_TEXT_TIMEOUT_MS, OPENCODE_GIT_TEXT_CONFIG, acpReadOnlyMode, claudeTextModel, codexGitTextConfig, declineCodexServerRequest, denyAcpRequest, generateTextWithHarness, harnessTextTimeout, OPENCODE_GIT_TEXT_PERMISSION, OPENCODE_GIT_TEXT_REFUSAL } from "../src/harness-text-generation.mjs";
 
 const NAMES={codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"};
 const PROTOCOLS={codex:"codex",claude:"claude",opencode:"sdk"};
@@ -218,21 +218,61 @@ test("Claude adapter aborts its query when the caller cancels",async()=>{
   assert.equal(abortSignal?.aborted,true);
 });
 
-function openCodeFixture(calls){
+// configured: the model in OpenCode's config; recent: the recently used models in OpenCode's state file (model.json), newest first.
+// promptErrors: the model error of each prompt in turn (none: it answers). asks: permission requests and questions a prompt without a
+// `tools` map (a regular OpenCode turn) raises on the event stream; it answers once every request of its own session has been answered.
+function openCodeFixture(calls,{configured=null,recent=null,providers=null,promptErrors=[],asks=[]}={}){
+  const streams=new Set(),answered=[];let sessions=0,prompts=0;
+  const emit=event=>{for(const push of streams)push(event)};
+  const subscribe=async({signal})=>{
+    calls.push(["event.subscribe"]);
+    const queue=[{type:"server.connected",properties:{}}];let wake=()=>{};
+    const push=event=>{queue.push(event);wake()};streams.add(push);
+    const stream=(async function*(){
+      try{
+        while(!signal.aborted){
+          if(queue.length){yield queue.shift();continue}
+          await new Promise(resolve=>{wake=resolve;signal.addEventListener("abort",resolve,{once:true})});
+        }
+      }finally{streams.delete(push)}
+    })();
+    return {stream};
+  };
   const openCodeServer=async options=>{calls.push(["server",options]);return {url:"http://127.0.0.1:4096",close(){calls.push(["server.close",existsSync(options.cwd)])}}};
   const openCodeClient=config=>{calls.push(["client",config]);return {
-    provider:{list:async request=>{calls.push(["provider.list",request]);return {data:{all:[{id:"anthropic",models:{"claude-x":{id:"claude-x"}}},{id:"openai",models:{"gpt-y":{id:"gpt-y"}}},{id:"offline",models:{local:{id:"local"}}}],connected:["anthropic","openai"],default:{anthropic:"claude-x"}}}}},
+    provider:{list:async request=>{calls.push(["provider.list",request]);return {data:providers??{all:[{id:"anthropic",models:{"claude-x":{id:"claude-x"}}},{id:"openai",models:{"gpt-y":{id:"gpt-y"}}},{id:"offline",models:{local:{id:"local"}}}],connected:["anthropic","openai"],default:{anthropic:"claude-x"}}}}},
+    config:{get:async request=>{calls.push(["config.get",request]);return {data:configured?{model:configured}:{}}}},
+    event:{subscribe},
+    postSessionIdPermissionsPermissionId:async request=>{calls.push(["permission.legacy",request]);answered.push(request.path.permissionID);return {data:true}},
     session:{
-      create:async request=>{calls.push(["session.create",request]);return {data:{id:"ses_git_text"}}},
-      prompt:async request=>{calls.push(["session.prompt",request]);return {data:{info:{id:"msg_2",providerID:request.body.model?.providerID,modelID:request.body.model?.modelID},parts:[{type:"reasoning",text:"thinking"},{type:"text",text:"{\"title\":\"Harness PR\",\"body\":\"Body\"}"}]}}},
+      create:async request=>{calls.push(["session.create",request]);sessions++;return {data:{id:sessions===1?"ses_git_text":`ses_git_text_${sessions}`}}},
+      prompt:async request=>{
+        calls.push(["session.prompt",request]);const error=promptErrors[prompts++];
+        if(error)return {data:{info:{id:"msg_2",error},parts:[]}};
+        if(!request.body.tools&&asks.length){
+          const own=asks.filter(ask=>!ask.sessionID).length;
+          for(const ask of asks)emit({type:ask.type,properties:{id:ask.id,sessionID:ask.sessionID||request.path.id}});
+          for(let waited=0;answered.length<own&&waited<100;waited++)await new Promise(resolve=>setTimeout(resolve,20));
+        }
+        return {data:{info:{id:"msg_2",providerID:request.body.model?.providerID,modelID:request.body.model?.modelID},parts:[{type:"reasoning",text:"thinking"},{type:"text",text:"{\"title\":\"Harness PR\",\"body\":\"Body\"}"}]}};
+      },
       abort:async request=>{calls.push(["session.abort",request]);return {data:true}},
       delete:async request=>{calls.push(["session.delete",request]);return {data:true}},
     },
   }};
-  return {openCodeServer,openCodeClient};
+  const openCodeV2Client=config=>{calls.push(["v2client",config]);return {
+    permission:{reply:async request=>{calls.push(["permission.reply",request]);answered.push(request.requestID);return {data:true}}},
+    question:{reject:async request=>{calls.push(["question.reject",request]);answered.push(request.requestID);return {data:true}}},
+  }};
+  // Never this machine's own OpenCode state: the tests choose the recently used models.
+  const openCodeStateReader=async path=>{
+    calls.push(["state.read",path]);if(!recent)throw Object.assign(new Error("no OpenCode state file"),{code:"ENOENT"});
+    return JSON.stringify({recent:recent.map(id=>({providerID:id.slice(0,id.indexOf("/")),modelID:id.slice(id.indexOf("/")+1)})),favorite:[]});
+  };
+  return {openCodeServer,openCodeClient,openCodeV2Client,openCodeStateReader};
 }
 
-test("OpenCode adapter prompts a deny-all, tool-less session in an empty folder and deletes it afterwards",async()=>{
+test("OpenCode adapter asks in a regular OpenCode turn whose tools all need permission, in an empty folder, and deletes the session",async()=>{
   const calls=[],deps=openCodeFixture(calls);
   const manager=fakeRuntimeManager("opencode");
   const result=await generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",cwd:"H:\\repo",models:["sonnet","openai/gpt-y"],deps});
@@ -241,13 +281,20 @@ test("OpenCode adapter prompts a deny-all, tool-less session in an empty folder 
   // The Trebell-started server and every SDK call use the empty folder, so the repository's .opencode plugins and config never load.
   assertScratchFolder(scratch,"H:\\repo");assert.equal(serverOptions.env.TREBELL_FIXTURE,"1");assert.equal(serverOptions.serverUrl,null);
   assert.equal(calls.find(([name])=>name==="client")[1].directory,scratch);
-  for(const [name,request] of calls.filter(([name])=>/^(?:provider|session)\./.test(name)))assert.equal(request.query.directory,scratch,name+" uses the empty folder");
+  for(const [name,request] of calls.filter(([name])=>/^(?:provider|config|session)\./.test(name)))assert.equal(request.query.directory,scratch,name+" uses the empty folder");
   const created=calls.find(([name])=>name==="session.create")[1];
-  assert.deepEqual(created.body.permission,[{permission:"*",pattern:"*",action:"deny"}]);
+  assert.deepEqual(created.body.permission,OPENCODE_GIT_TEXT_PERMISSION);
+  // Everything is denied except OpenCode's built-in tools, which must ask (and are refused); nothing is allowed outright.
+  assert.deepEqual(OPENCODE_GIT_TEXT_PERMISSION[0],{permission:"*",pattern:"*",action:"deny"});
+  assert.ok(OPENCODE_GIT_TEXT_PERMISSION.slice(1).every(rule=>rule.action==="ask"&&rule.pattern==="*"));
+  assert.ok(["bash","edit","read","task","webfetch","external_directory"].every(permission=>OPENCODE_GIT_TEXT_PERMISSION.some(rule=>rule.permission===permission)));
   const prompted=calls.find(([name])=>name==="session.prompt")[1];
-  assert.deepEqual(prompted.path,{id:"ses_git_text"});assert.deepEqual(prompted.body.tools,{"*":false});assert.deepEqual(prompted.body.model,{providerID:"openai",modelID:"gpt-y"});
+  assert.deepEqual(prompted.path,{id:"ses_git_text"});assert.deepEqual(prompted.body.model,{providerID:"openai",modelID:"gpt-y"});
+  // No tools map: a tool-less request is refused by OpenCode Zen's free models, and the map would replace the permission rules.
+  assert.equal("tools" in prompted.body,false);
   assert.equal(prompted.body.system,HARNESS_TEXT_INSTRUCTIONS);assert.deepEqual(prompted.body.parts,[{type:"text",text:"PROMPT"}]);
   const order=calls.map(([name])=>name);
+  assert.ok(order.indexOf("event.subscribe")>=0&&order.indexOf("event.subscribe")<order.indexOf("session.prompt"),"Trebell listens for permission requests before it prompts");
   assert.ok(order.indexOf("session.delete")>order.indexOf("session.prompt"),"the session is deleted after the reply");
   assert.equal(order.at(-1),"server.close","the Trebell-owned server stops last");
   assert.equal(calls.at(-1)[1],true,"the folder outlives the server process and is removed after it");
@@ -263,6 +310,71 @@ test("an OpenCode profile with its own server URL keeps the repository as its di
   assert.equal(calls[0][1].cwd,"H:\\repo");assert.equal(calls[0][1].serverUrl,"http://127.0.0.1:4096");
   assert.equal(calls.find(([name])=>name==="client")[1].directory,"H:\\repo");
   assert.equal(calls.find(([name])=>name==="session.prompt")[1].query.directory,"H:\\repo");
+});
+
+test("OpenCode Git text without the thread's model uses the model OpenCode itself would pick: configured, then recent, then a default",async()=>{
+  // test/coding-fast is a model this OpenCode does not offer; the provider default is anthropic/claude-x.
+  const run=async(options,instance=null)=>{
+    const calls=[],deps=openCodeFixture(calls,options);
+    const result=await generateTextWithHarness({runtimeManager:fakeRuntimeManager("opencode"),...(instance?{instance}:{}),prompt:"PROMPT",cwd:"H:\\repo",models:["test/coding-fast"],deps});
+    return {calls,model:result.model,prompted:calls.find(([name])=>name==="session.prompt")[1],folder:calls[0][1].cwd};
+  };
+  const recent=await run({recent:["offline/local","openai/gpt-y"]});
+  assert.equal(recent.model,"openai/gpt-y","the newest recent model of a connected provider beats the provider default");
+  assert.deepEqual(recent.prompted.body.model,{providerID:"openai",modelID:"gpt-y"});
+  const read=recent.calls.filter(([name])=>name==="state.read").map(([,path])=>path);
+  assert.equal(read.length,1);assert.match(read[0],/[\\/]opencode[\\/]model\.json$/);
+  const configured=await run({configured:"openai/gpt-y",recent:["anthropic/claude-x"]});
+  assert.equal(configured.model,"openai/gpt-y","OpenCode's configured model comes before its recent ones");
+  assert.equal(configured.calls.find(([name])=>name==="config.get")[1].query.directory,configured.folder);
+  assert.equal((await run({})).model,"anthropic/claude-x","with neither, a connected provider's default");
+  // A profile's own server may run on another machine: its configured model counts, this machine's recent list does not.
+  const external=await run({recent:["openai/gpt-y"]},{id:"opencode-server",kind:"opencode",serverUrl:"http://127.0.0.1:4096"});
+  assert.equal(external.model,"anthropic/claude-x");assert.equal(external.calls.some(([name])=>name==="state.read"),false);
+});
+
+test("OpenCode Git text refuses every permission request and question of its session, so nothing runs",async()=>{
+  // Three permission requests and a question from this session, plus a request from another session that is none of Trebell's business.
+  const asks=[{type:"permission.asked",id:"per_1"},{type:"permission.asked",id:"per_2"},{type:"question.asked",id:"que_1"},{type:"permission.asked",id:"per_3"},{type:"permission.asked",id:"per_other",sessionID:"ses_other"}];
+  const calls=[],deps=openCodeFixture(calls,{asks});
+  const result=await generateTextWithHarness({runtimeManager:fakeRuntimeManager("opencode"),prompt:"PROMPT",cwd:"H:\\repo",models:["openai/gpt-y"],deps});
+  assert.deepEqual(result,{text:"{\"title\":\"Harness PR\",\"body\":\"Body\"}",model:"openai/gpt-y",runtime:"opencode",name:"OpenCode"});
+  assert.equal(calls.filter(([name])=>name==="session.prompt").length,1,"one request");
+  // Refused with a reason the first two times, then plainly, which ends the turn; the question is dismissed.
+  const replies=calls.filter(([name])=>name==="permission.reply").map(([,request])=>request);
+  assert.deepEqual(replies.map(request=>request.requestID),["per_1","per_2","per_3"],"only this session's requests are answered");
+  assert.ok(replies.every(request=>request.reply==="reject"&&request.directory===calls[0][1].cwd));
+  assert.deepEqual(replies.map(request=>request.message??null),[OPENCODE_GIT_TEXT_REFUSAL,OPENCODE_GIT_TEXT_REFUSAL,null]);
+  assert.deepEqual(calls.filter(([name])=>name==="question.reject").map(([,request])=>request.requestID),["que_1"]);
+  assert.equal(calls.some(([name])=>name==="permission.legacy"),false);
+  const order=calls.map(([name])=>name);
+  assert.deepEqual(calls.filter(([name])=>name==="session.delete").map(([,request])=>request.path.id),["ses_git_text"]);
+  assert.equal(order.at(-1),"server.close","the Trebell-owned server stops last");
+});
+
+test("OpenCode model errors are reported in OpenCode's own words after one request",async()=>{
+  for(const [error,pattern] of [
+    [{name:"ProviderAuthError",data:{providerID:"openai",message:"Missing API key"}},/^OpenCode could not write the Git text: Missing API key$/],
+    [{name:"APIError",data:{message:"Rate limited",statusCode:429}},/^OpenCode could not write the Git text: Rate limited$/],
+    [{name:"MessageAbortedError"},/^OpenCode could not write the Git text: MessageAbortedError$/],
+  ]){
+    const calls=[],deps=openCodeFixture(calls,{promptErrors:[error]});
+    await assert.rejects(()=>generateTextWithHarness({runtimeManager:fakeRuntimeManager("opencode"),prompt:"PROMPT",cwd:"H:\\repo",models:["openai/gpt-y"],deps}),failure=>failure.code==="HARNESS_TEXT_FAILED"&&pattern.test(failure.message));
+    assert.equal(calls.filter(([name])=>name==="session.prompt").length,1);
+    assert.equal(calls.filter(([name])=>name==="session.delete").length,1,"the session is deleted");
+    assert.equal(calls.at(-1)[0],"server.close");
+  }
+});
+
+test("an OpenCode server without the 1.x API gets a clear Git text error and no prompt",async()=>{
+  const calls=[],deps=openCodeFixture(calls,{providers:"<!doctype html><html><body>OpenCode</body></html>"});
+  await assert.rejects(()=>generateTextWithHarness({runtimeManager:fakeRuntimeManager("opencode"),prompt:"PROMPT",cwd:"H:\\repo",deps}),error=>{
+    assert.equal(error.code,"HARNESS_TEXT_FAILED");
+    assert.match(error.message,/^OpenCode could not write the Git text: This OpenCode server does not offer the OpenCode 1\.x API/);
+    return true;
+  });
+  assert.equal(calls.some(([name])=>name==="session.create"),false,"nothing is sent to it");
+  assert.equal(calls.at(-1)[0],"server.close","the server Trebell started for it is stopped");
 });
 
 // An ACP agent fixture. Environment switches: TREBELL_ACP_MODES (comma list, first is current), TREBELL_ACP_SET_MODE=fail,
@@ -373,9 +485,13 @@ function remoteOpenCodeManager(acp,{env={},spawned=[]}={}){
   });
 }
 
-test("remote OpenCode writes Git text with a deny-all agent through its ACP server and deletes the session",async()=>{
-  const deny=JSON.parse(OPENCODE_GIT_TEXT_CONFIG);
-  assert.deepEqual(deny,{permission:{"*":"deny"},agent:{"trebell-git-text":{mode:"primary",description:"Trebell Git text",permission:{"*":"deny"}}}});
+test("remote OpenCode writes Git text with its Git text agent through its ACP server, refuses its permission requests and deletes the session",async()=>{
+  // The same rules as a local Git text session: everything is denied except OpenCode's built-in tools, which must ask (and are refused).
+  const config=JSON.parse(OPENCODE_GIT_TEXT_CONFIG);
+  assert.deepEqual(config.permission,{"*":"deny"});
+  assert.deepEqual(config.agent["trebell-git-text"],{mode:"primary",description:"Trebell Git text",permission:Object.fromEntries(OPENCODE_GIT_TEXT_PERMISSION.map(rule=>[rule.permission,rule.action]))});
+  assert.equal(Object.keys(config.agent["trebell-git-text"].permission)[0],"*","the catch-all deny comes first, so the built-in tools' ask rules win");
+  assert.ok(Object.values(config.agent["trebell-git-text"].permission).every(action=>action==="deny"||action==="ask"));
   // OpenCode 2.x advertises session/delete: the session is deleted over ACP before it closes.
   let acp=await acpFixture("trebell-acp-remote-git-text-");
   try{
@@ -385,8 +501,9 @@ test("remote OpenCode writes Git text with a deny-all agent through its ACP serv
     assert.deepEqual(spawned,[{command:"opencode",args:["acp"],cwd:"/srv/app",environment:{OPENCODE_CONFIG_CONTENT:OPENCODE_GIT_TEXT_CONFIG}}]);
     const record=await acp.record();
     assert.deepEqual(record.args,["acp"]);assert.equal(record.sessionCwd,"/srv/app");
-    assert.equal(record.setMode,"trebell-git-text","the session switches to the deny-all agent");
-    assert.ok(record.order.indexOf("session/set_mode")<record.order.indexOf("session/prompt"),"the deny-all agent is set before the prompt");
+    assert.equal(record.setMode,"trebell-git-text","the session switches to the Git text agent");
+    assert.ok(record.order.indexOf("session/set_mode")<record.order.indexOf("session/prompt"),"the Git text agent is set before the prompt");
+    assert.deepEqual(record.permission,{outcome:{outcome:"selected",optionId:"no"}},"OpenCode's permission request is refused");
     assert.equal(record.deleted,"acp-git-text");assert.ok(record.order.indexOf("session/delete")<record.order.indexOf("session/close"));
     assert.deepEqual(manager.calls.cli,[],"an ACP delete needs no CLI call");
     assert.deepEqual(manager.calls.probes,[{id:"opencode-default",options:{environmentId:"ssh-fixture"}}]);
@@ -402,7 +519,7 @@ test("remote OpenCode writes Git text with a deny-all agent through its ACP serv
   }finally{await acp.cleanup()}
 });
 
-test("remote OpenCode sends nothing when its deny-all agent is missing or cannot be selected",async()=>{
+test("remote OpenCode sends nothing when its Git text agent is missing or cannot be selected",async()=>{
   // Without the config the agent does not exist (an OpenCode that ignores OPENCODE_CONFIG_CONTENT); a failed switch is refused the same way.
   const cases=[{spawner:manager=>({...manager,processSpawner:()=>options=>manager.processSpawner()({...options,environment:undefined})}),pattern:/did not offer its restricted trebell-git-text agent/},{env:{TREBELL_ACP_SET_MODE:"fail"},pattern:/could not switch to its read-only trebell-git-text mode/}];
   for(const {spawner,env={},pattern} of cases){
