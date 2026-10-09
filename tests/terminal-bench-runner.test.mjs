@@ -90,6 +90,9 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(pinnedCodexAdapterSource,/class PinnedCodexOptions\(CodexOptions\)/);
   assert.match(pinnedCodexAdapterSource,/service_tier=\{value\}/);
   assert.match(pinnedCodexAdapterSource,/web_search=\{value\}/);
+  // ChatGPT connectors (codex_apps MCP) expose connector web search even with web_search disabled.
+  assert.match(pinnedCodexAdapterSource,/features\.apps=\{value\}/);
+  assert.match(source,/\["--ak","apps=false"\]/);
   assert.match(pinnedCodexAdapterSource,/default="disabled"/);
   assert.match(source,/--native-reasoning-context=/);
   assert.match(source,/nativeReasoningContext:NATIVE_REASONING_CONTEXT/);

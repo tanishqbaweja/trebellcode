@@ -27,6 +27,16 @@ class PinnedCodexOptions(CodexOptions):
         default="disabled",
         description="Hosted Codex web search is disabled for benchmark fairness.",
     )
+    apps: Annotated[
+        Literal["false"],
+        Cli("-c", format="-c features.apps={value}"),
+    ] = Field(
+        default="false",
+        description=(
+            "ChatGPT apps/connectors (the codex_apps MCP server, whose tools include "
+            "connector web search) are disabled for benchmark fairness."
+        ),
+    )
 
 
 class PinnedCodexAgent(Codex):
