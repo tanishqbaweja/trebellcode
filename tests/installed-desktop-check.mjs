@@ -32,7 +32,7 @@ await new Promise((resolve,reject)=>{
   fixture.listen(fixturePort,"127.0.0.1",resolve);
 });
 
-let browser,visualProjectRoot=null;
+let browser,visualProjectRoot=null,restoreBackground=null;
 try {
   let lastError;
   for(let attempt=0;attempt<40;attempt++){
@@ -104,6 +104,9 @@ try {
   const initial=await mainPage.evaluate(()=>window.trebellDesktop.background.get());
   if(typeof initial?.enabled!=="boolean") throw new Error("Background-mode state is unavailable.");
 
+  // Enabling background mode registers the app to start at login. Undo it even if a later check fails,
+  // so a failed validation run never leaves the smoke build in the user's startup list.
+  restoreBackground=()=>mainPage.evaluate(()=>window.trebellDesktop.background.set(false));
   const enabled=await mainPage.evaluate(()=>window.trebellDesktop.background.set(true));
   if(enabled?.enabled!==true) throw new Error("Background mode did not enable.");
 
@@ -416,6 +419,7 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
   if(disabled?.enabled!==false) throw new Error("Background mode did not disable after validation.");
   const afterDisable=await mainPage.evaluate(()=>window.trebellDesktop.background.get());
   if(afterDisable?.enabled!==false||afterDisable?.openAtLogin!==false) throw new Error("Windows startup registration was not cleaned up.");
+  restoreBackground=null;
 
   await mainPage.evaluate(()=>window.trebellDesktop.browser.close());
 
@@ -433,6 +437,7 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     visualAudit,
   },null,2));
 } finally {
+  if(restoreBackground){try{await restoreBackground()}catch{}}
   try{await browser?.close();}catch{}
   if(visualProjectRoot)await rm(visualProjectRoot,{recursive:true,force:true,maxRetries:8,retryDelay:100}).catch(()=>{});
   await new Promise(resolve=>fixture.close(()=>resolve()));
