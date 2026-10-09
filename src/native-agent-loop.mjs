@@ -417,11 +417,17 @@ export function explicitPersistentArtifactTargets(messages=[]){
     const target=String(match[1]||"").trim();
     if(target&&plausibleArtifactTarget(target)&&!targets.includes(target))targets.push(target);
   }
-  const tokens=text.split(/\s+/).map(value=>value.replace(/^[\x60"'(]+|[\x60"'),;:.!?]+$/g,"")).filter(Boolean);
+  // Shell and REPL transcript lines ("$ python manage.py runserver", ">>> x.values") are commands, not requests.
+  const prose=text.split(/\r?\n/).filter(line=>!/^\s*(?:\$|>>>|\.\.\.|In\s*\[\d+\]:|Out\s*\[\d+\]:)\s/.test(line)).join("\n");
+  const tokens=prose.split(/\s+/).map(value=>value.replace(/^[\x60"'(]+|[\x60"'),;:.!?]+$/g,"")).filter(Boolean);
   for(let index=0;index<tokens.length;index++){
     const token=tokens[index];
     if(!/[.][A-Za-z0-9_-]{1,16}$/.test(token))continue;
     const before=tokens.slice(Math.max(0,index-10),index).join(" "),near=tokens.slice(Math.max(0,index-4),index).join(" "),previous=String(tokens[index-1]||"").toLowerCase();
+    // A file handed to an interpreter or runner is an input being executed; a token followed by an operator is
+    // part of a code expression ("bad_indexed.values => array(...)").
+    if(/^(?:python\d*(?:\.\d+)?|py|node|deno|bun|ruby|perl|php|bash|sh|zsh|pwsh|powershell|java|run|exec|execute|invoke|import|source)$/.test(previous))continue;
+    if(/^(?:=>|==?|!=|->|:=|\+=|-=)$/.test(String(tokens[index+1]||"")))continue;
     const action=/\b(?:creat(?:e|es|ed|ing)|generat(?:e|es|ed|ing)|produc(?:e|es|ed|ing)|render(?:s|ed|ing)?|export(?:s|ed|ing)?|sav(?:e|es|ed|ing)|writ(?:e|es|ten|ing)|output(?:s|ted|ting)?|emit(?:s|ted|ting)?|plac(?:e|es|ed|ing)|deliver(?:s|ed|ing)?|report(?:s|ed|ing)?|build(?:s|ing)?|built|mak(?:e|es|ing)|made|stor(?:e|es|ed|ing)|leav(?:e|es|ing)|left)\b/i;
     const sourceTail=/(?:from|using|via|based\s+on|read|inspect|load|open)\b(?:\s+\w+){0,4}$/i.test(before);
     const outputConnector=/^(?:to|as|at|into|in)$/i.test(previous),outputNoun=/\b(?:output|result|artifact|deliverable|submission|files?|final)\b/i.test(before);

@@ -6707,6 +6707,10 @@ test("persistent-output targets ignore code identifiers, versions and traceback 
   assert.deepEqual(targets("After upgrading to v5.2 and 3.1, writing with format=\"ascii.rst\" fails in io.fits.Card handling."),[]);
   assert.deepEqual(targets("Traceback: File /usr/lib/python3/dist-packages/astropy/io/registry/core.py, line 3 while saving the table."),[]);
   assert.deepEqual(targets("Running it made the speed-up about 1.2x, i.e. the output is written twice."),[]);
+  // Commands and code expressions: an executed script is an input, and "x.values => ..." is code.
+  assert.deepEqual(targets("The server starts when I run python manage.py runserver and it creates the output twice."),[]);
+  assert.deepEqual(targets("Steps:\n$ python make_report.py --output out.json\n# bad_indexed.values => array([5]) after we create it"),[]);
+  assert.deepEqual(targets("Fix the tool so that running python /app/dispatch.py --output /output/flight_plan.json produces a correct plan."),["/output/flight_plan.json"]);
   // Real deliverables are still detected.
   assert.deepEqual(targets("Write the final report to /app/output/report.json and save the workings as /app/output/workings.xlsx."),["/app/output/report.json","/app/output/workings.xlsx"]);
   assert.deepEqual(targets("Generate walk.npz under /app/results."),["walk.npz"]);
