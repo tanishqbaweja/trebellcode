@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ContextEngine } from "../src/context-engine.mjs";
 import { createNativeToolExecutor } from "../src/native-tool-executor.mjs";
 import { runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import { ADVANCED_REPOSITORY_TOOL_NAMES, repositoryDynamicToolNamespace } from "../src/repository-tool-catalog.mjs";
 
 async function fixture(){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-tools-"));await mkdir(join(root,"src"),{recursive:true});
@@ -49,6 +50,61 @@ test("Native advanced repository capabilities use the stable discover/invoke int
     const invalid=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_history",arguments:{limit:1000}}});
     assert.equal(invalid.success,false);assert.match(invalid.error,/100|less than or equal|too big/i);
   }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native trebell_repo/invoke runs an advanced capability directly without a prior discover",async()=>{
+  const root=await fixture();
+  try{
+    let discoverCalls=0;
+    const executor=createNativeToolExecutor({
+      contextEngine:new ContextEngine(),root,policyContext:{permissionProfile:"read-only",runtime:"native"},
+      discoverRepositoryTools:()=>{discoverCalls++;throw new Error("discover must not be required before invoke")},
+    });
+    const relations=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"file_relations",arguments:{path:"/src/session.js"}}});
+    assert.equal(relations.path,"src/session.js");assert.ok(relations.definitions.some(item=>item.name==="SessionManager"));
+    const references=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"symbol_references",arguments:{name:"SessionManager"}}});
+    assert.ok(references.data.some(item=>item.path==="src/session.js"&&item.definition===true));
+    assert.equal(discoverCalls,0);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native invoke argument errors keep the validation message and add the capability input schema",async()=>{
+  const calls=[];
+  const contextEngine={gitHistory(args){calls.push(args);return {commits:[]}},assessVerification(args){calls.push(args);return {state:"verified"}}};
+  const executor=createNativeToolExecutor({contextEngine,root:"/repo",policyContext:{permissionProfile:"read-only",runtime:"native"}});
+  const discoveredSchema=name=>repositoryDynamicToolNamespace({names:[name],includeDiscovery:false})[0].tools[0].inputSchema;
+  const tooBig=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_history",arguments:{limit:1000}}});
+  assert.equal(tooBig.success,false);assert.match(tooBig.error,/too_big/);assert.match(tooBig.error,/<=100/);
+  const marker="\nInput schema for git_history: ";
+  assert.ok(tooBig.error.includes(marker),tooBig.error);
+  // The schema returned with the error is exactly what trebell_repo/discover would have returned.
+  assert.deepEqual(JSON.parse(tooBig.error.slice(tooBig.error.indexOf(marker)+marker.length)),discoveredSchema("git_history"));
+  assert.doesNotMatch(tooBig.error,/\$schema/);
+  const missingPlan=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"verification_assess",arguments:{evidence:[]}}});
+  assert.equal(missingPlan.success,false);assert.match(missingPlan.error,/"plan"/);
+  assert.ok(missingPlan.error.endsWith("\nInput schema for verification_assess: "+JSON.stringify(discoveredSchema("verification_assess"))),missingPlan.error);
+  assert.deepEqual(calls,[],"handlers must not run when arguments fail validation");
+  assert.deepEqual(await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_history",arguments:{limit:5}}}),{commits:[]});
+  assert.deepEqual(calls,[{root:"/repo",io:null,path:"",limit:5}]);
+});
+
+test("Native invoke names every valid advanced capability when the requested one is unknown or core",async()=>{
+  const executor=createNativeToolExecutor({contextEngine:{},root:"/repo",policyContext:{permissionProfile:"read-only",runtime:"native"}});
+  for(const name of ["git_log","read_source"]){
+    const result=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name,arguments:{}}});
+    assert.equal(result.success,false);
+    assert.ok(result.error.startsWith("Unknown or non-advanced repository capability: "+name+". Valid capabilities: "),result.error);
+    assert.deepEqual(result.error.split("Valid capabilities: ")[1].replace(/\.$/,"").split(", "),[...ADVANCED_REPOSITORY_TOOL_NAMES]);
+  }
+});
+
+test("Native invoke leaves capability failures after validation unchanged",async()=>{
+  const executor=createNativeToolExecutor({
+    contextEngine:{gitHistory(){throw new Error("git history is unavailable in this workspace")}},root:"/repo",
+    policyContext:{permissionProfile:"read-only",runtime:"native"},
+  });
+  const result=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_history",arguments:{limit:5}}});
+  assert.equal(result.success,false);assert.equal(result.error,"git history is unavailable in this workspace");
 });
 
 test("Native shared tools stay delegated but still pass through gateway requirements",async()=>{

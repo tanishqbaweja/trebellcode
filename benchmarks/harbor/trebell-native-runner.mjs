@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import { ContextEngine } from "../../src/context-engine.mjs";
 import { NativeBackgroundProcessManager } from "../../src/native-background-processes.mjs";
 import { createNativeBuiltins } from "../../src/native-builtins.mjs";
-import { NativeAgentSession } from "../../src/native-agent-session.mjs";
+import { NativeAgentSession, openAiServerCompactionArmTokens } from "../../src/native-agent-session.mjs";
 import { attachNativePromptProvenance, nativeCacheCarryover } from "../../src/native-request-metrics.mjs";
 import { nativeSystemPrompt } from "../../src/native-system-prompt.mjs";
 import { NativeToolOutputStore } from "../../src/native-tool-output-store.mjs";
@@ -207,7 +207,9 @@ const metrics={
   serviceTier,
   reasoningContext,
   effectiveServiceTiers:[...new Set(requests.map(item=>String(item?.telemetry?.serviceTier||"").trim()).filter(Boolean))],
-  contextPolicy:{operatingContextWindow:contextWindow,serverCompactionThreshold:compactionThreshold,retroactiveOpenAiReadCooling:false},
+  // Requests carry context_management only once the largest observed input (main or gate) reaches
+  // armAtMaxObservedInputTokens; the session then keeps it armed. native.model.requested reports serverCompactionArmed.
+  contextPolicy:{operatingContextWindow:contextWindow,serverCompactionThreshold:compactionThreshold,serverCompactionArming:{armAtMaxObservedInputTokens:openAiServerCompactionArmTokens(compactionThreshold),staysArmed:true},retroactiveOpenAiReadCooling:false},
   effectiveReasoningContexts:[...new Set(requests.map(item=>String(item?.telemetry?.reasoningContext||"").trim()).filter(Boolean))],
   budgets:{maxModelTurns,maxToolCalls,maxWallTimeMs},
   semanticCompletionGate,

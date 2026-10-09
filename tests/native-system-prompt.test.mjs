@@ -111,11 +111,23 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/trebell_repo\/discover/i);
   assert.match(prompt,/trebell_repo\/invoke/i);
   assert.match(prompt,/include those labels in verification_assess/i);
+  assert.match(prompt,/call trebell_repo\/invoke directly with a capability and arguments listed in its description; use trebell_repo\/discover only when you need a capability's full input schema\./);
+  assert.doesNotMatch(prompt,/discover then trebell_repo\/invoke|returned name\/schema/i,"advanced repository capabilities should not require a discover hop before every invoke");
+  assert.ok(prompt.includes("When verification_plan names required evidence labels, cover each label with a concrete check and include those labels in verification_assess rather than marking the step passed from a partial check. This keeps the manifest stable."),"the evidence-label guidance must stay unchanged");
   assert.match(prompt,/isolated browser/i);
   assert.match(prompt,/Permission profile: supervised/);
   assert.doesNotMatch(prompt,/Delegate only/i);
   assert.doesNotMatch(prompt,/source-control tools/i);
   assert.match(prompt,/untrusted data/i);
+});
+
+test("Native post-edit verification guidance batches already-known independent checks without naming or chaining checks",()=>{
+  const prompt=nativeSystemPrompt({permissionMode:"supervised",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]});
+  const postEdit=prompt.split("\n").filter(line=>line.startsWith("- After a successful exact edit"));
+  assert.deepEqual(postEdit,[
+    "- After a successful exact edit, prefer the requested deterministic verification over rereading the same file only to confirm your own edit. When you already know several independent checks you intend to run, issue them as separate tool calls in the same response rather than one check per model turn; leave a check for a later turn only when choosing or interpreting it depends on an earlier result. Repair failures and re-run the relevant check.",
+  ]);
+  assert.doesNotMatch(postEdit[0],/git diff|nearest|smoke|script|broader|chain/i,"the rule must not name specific checks, suggest chaining checks into one script, or drop a narrower check");
 });
 
 test("Native system prompt describes only dynamically exposed specialized capabilities",()=>{

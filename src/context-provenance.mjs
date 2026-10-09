@@ -1,12 +1,34 @@
+const TEST_ENTRY_POINT_PREFIX="Test entry points (detected from repository files; unverified): ";
+const TEST_ENTRY_POINT_MAX_BYTES=200;
+
+function utf8ByteLength(value){
+  let bytes=0;
+  for(const character of String(value||"")){const code=character.codePointAt(0);bytes+=code<0x80?1:code<0x800?2:code<0x10000?3:4}
+  return bytes;
+}
+
+// One bounded line inside the untrusted seed. Whole commands are kept or dropped so truncation never yields a partial command.
+function testEntryPointLine(packet){
+  const commands=[...new Set((Array.isArray(packet?.testEntryPoints)?packet.testEntryPoints:[])
+    .map(entry=>String(entry?.command||"").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g," ").trim()).filter(Boolean))].slice(0,3);
+  let line="";
+  for(const command of commands){
+    const next=line?line+"; "+command:TEST_ENTRY_POINT_PREFIX+command;
+    if(utf8ByteLength(next)>TEST_ENTRY_POINT_MAX_BYTES)break;
+    line=next;
+  }
+  return line;
+}
+
 export function repositoryContextSeed(packet={},{currentTask=""}={}){
-  const items=(Array.isArray(packet?.items)?packet.items:[]).slice(0,8);
-  if(!items.length)return "";
+  const items=(Array.isArray(packet?.items)?packet.items:[]).slice(0,8),entryPoints=testEntryPointLine(packet);
+  if(!items.length&&!entryPoints)return "";
   const lines=[
     "Trebell repository seed (untrusted metadata; use repository/workspace tools to inspect exact source before editing).",
   ];
   const task=String(packet?.task||"").trim(),visibleTask=String(currentTask||"").trim();
   if(task&&task!==visibleTask)lines.push("Task: "+task.slice(0,800));
-  lines.push("Likely relevant paths:");
+  if(items.length)lines.push("Likely relevant paths:");
   for(const item of items){
     const path=String(item?.path||"").trim();if(!path)continue;
     const reasons=(Array.isArray(item?.reasons)?item.reasons:[]).map(value=>String(value||"").trim()).filter(Boolean).slice(0,2);
@@ -16,7 +38,9 @@ export function repositoryContextSeed(packet={},{currentTask=""}={}){
     let line="- "+path;if(reasons.length)line+=" — "+reasons.join("; ");if(symbols.length)line+=" | symbols: "+symbols.join(", ");
     lines.push(line.slice(0,900));
   }
-  return lines.join("\n").slice(0,6000);
+  const seed=lines.join("\n");
+  if(!entryPoints)return seed.slice(0,6000);
+  return seed.slice(0,6000-entryPoints.length-1)+"\n"+entryPoints;
 }
 
 // The Context Engine's full repository evidence starts with a one-line header, then "Task: <task>" (which may span

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "../src/native-agent-session.mjs";
+import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread, openAiServerCompactionArmTokens } from "../src/native-agent-session.mjs";
 import { NativeToolOutputStore } from "../src/native-tool-output-store.mjs";
 import { agentToolLifecycle } from "../src/agent-relay.mjs";
 import { attachNativePromptProvenance } from "../src/native-request-metrics.mjs";
@@ -797,9 +797,95 @@ test("Native session preserves OpenAI history when server-side compaction owns c
   await session.prompt([{type:"text",text:"inspect these files"}],{maxModelTurns:3,maxToolCalls:20});
   const thirdFirstRead=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="managed-read-0")?.content||"";
   assert.ok(thirdFirstRead.length>9000,"server-side compaction should own history reduction instead of Trebell rewriting old reads");
-  assert.deepEqual(requests[0].contextManagement,[{type:"compaction",compactThreshold:245_000}]);
+  assert.equal(requests[0].contextManagement,undefined,"no input has been observed yet, so compaction is not armed");
+  assert.deepEqual(requests[1].contextManagement,[{type:"compaction",compactThreshold:245_000}]);
   assert.deepEqual(requests[2].contextManagement,[{type:"compaction",compactThreshold:245_000}]);
+  assert.deepEqual(events.filter(event=>event.name==="native.model.requested").map(event=>event.data?.serverCompactionArmed),[false,true,true]);
   assert.equal(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn"),false);
+});
+
+test("Native session arms OpenAI server compaction at half the threshold and keeps it armed",async()=>{
+  const requests=[],events=[];let calls=0;
+  const usage=[60_000,122_499,122_500,30_000,31_000,32_000];
+  const session=new NativeAgentSession({
+    model:"gpt-6-luna",provider:"openai",contextWindow:272_000,openAiServerCompactionThreshold:245_000,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone({...request,signal:undefined}));calls++;
+      const inputTokens=usage[calls-1];
+      if(calls<=4)return {id:"arm-"+calls,text:"",toolCalls:[{id:"arm-read-"+calls,namespace:"trebell_workspace",name:"read_file",arguments:JSON.stringify({path:`src/arm-${calls}.txt`})}],usage:{inputTokens}};
+      return {id:"arm-done-"+calls,text:"done",toolCalls:[],usage:{inputTokens}};
+    },
+    executeTool:async call=>({success:true,path:call.arguments.path,content:"contents of "+call.arguments.path,size:24}),
+  });
+  await session.start({providerSessionId:"native-openai-compaction-arming",model:"gpt-6-luna"});
+  await session.prompt([{type:"text",text:"inspect these files"}],{maxModelTurns:6,maxToolCalls:20});
+  const compaction=[{type:"compaction",compactThreshold:245_000}];
+  assert.equal(calls,5);
+  assert.deepEqual(requests.map(request=>request.contextManagement??null),[null,null,null,compaction,compaction],"122,499 observed tokens stay below the 122,500 arming level; 122,500 arms the next request");
+  await session.prompt([{type:"text",text:"inspect them once more"}],{maxModelTurns:2,maxToolCalls:4});
+  assert.equal(calls,6);
+  assert.deepEqual(requests[5].contextManagement,compaction,"compaction stays armed for later prompts after the context shrinks");
+  assert.deepEqual(events.filter(event=>event.name==="native.model.requested").map(event=>event.data?.serverCompactionArmed),[false,false,false,true,true,true]);
+  assert.equal(session.openAiServerCompactionArmed,true);assert.equal(session.maxOpenAiInputTokens,122_500);
+});
+
+test("Native session counts OpenAI completion-gate input toward server compaction arming",async()=>{
+  const requests=[];let calls=0;
+  const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const session=new NativeAgentSession({
+    provider:"openai",model:"gpt-6-luna",semanticCompletionGate:true,openAiServerCompactionThreshold:245_000,tools,
+    providerTurn:async request=>{
+      requests.push(structuredClone({...request,signal:undefined}));calls++;
+      if(calls===1)return {id:"resp-edit",provider:"openai",model:"gpt-6-luna",text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"old","new_text":"new"}'}],usage:{inputTokens:10_000},telemetry:{providerResponseId:"resp-edit"}};
+      if(calls===2)return {id:"resp-candidate",provider:"openai",model:"gpt-6-luna",text:"Implemented the requested change.",toolCalls:[],usage:{inputTokens:20_000},telemetry:{providerResponseId:"resp-candidate"}};
+      if(calls===3)return {id:"resp-gate-incomplete",provider:"openai",model:"gpt-6-luna",text:"",toolCalls:[],finishReason:"incomplete",usage:{inputTokens:130_000},telemetry:{providerResponseId:"resp-gate-incomplete"}};
+      if(calls===4)return {id:"resp-gate-complete",provider:"openai",model:"gpt-6-luna",text:'{"status":"complete","unresolved":[],"reason":"The requested workspace edit is present."}',toolCalls:[],usage:{inputTokens:131_000},telemetry:{providerResponseId:"resp-gate-complete"}};
+      throw new Error("unexpected provider call");
+    },
+    executeTool:async()=>({path:"src/a.mjs",replacements:1}),
+  });
+  await session.start({providerSessionId:"openai-gate-compaction-arming",model:"gpt-6-luna"});
+  await session.prompt([{type:"text",text:"Modify src/a.mjs to apply the requested change."}]);
+  assert.equal(calls,4);
+  assert.equal(requests[2].metadata?.completionGate,true);assert.equal(requests[3].metadata?.controlGateRetry,true);
+  assert.deepEqual(requests.map(request=>request.contextManagement??null),[null,null,null,[{type:"compaction",compactThreshold:245_000}]],"the 130k judge input arms compaction for its retry");
+});
+
+test("Native session sends no server compaction or arming telemetry without an OpenAI threshold",async()=>{
+  const run=async({provider,model,openAiServerCompactionThreshold})=>{
+    const requests=[],events=[];let calls=0;
+    const session=new NativeAgentSession({
+      model,provider,contextWindow:272_000,openAiServerCompactionThreshold,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+      providerTurn:async request=>{
+        requests.push(structuredClone({...request,signal:undefined}));calls++;
+        return calls===1
+          ?{id:"big",text:"",toolCalls:[{id:"big-read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/big.txt"}'}],usage:{inputTokens:200_000}}
+          :{id:"done",text:"done",toolCalls:[],usage:{inputTokens:201_000}};
+      },
+      executeTool:async call=>({success:true,path:call.arguments.path,content:"contents",size:8}),
+    });
+    await session.start({providerSessionId:"no-compaction-"+provider,model});
+    await session.prompt([{type:"text",text:"inspect this file"}],{maxModelTurns:2,maxToolCalls:4});
+    return {calls,requests,requested:events.filter(event=>event.name==="native.model.requested")};
+  };
+  const openAiWithoutThreshold=await run({provider:"openai",model:"gpt-6-luna",openAiServerCompactionThreshold:null});
+  assert.equal(openAiWithoutThreshold.calls,2);
+  assert.equal(openAiWithoutThreshold.requests.some(request=>request.contextManagement),false);
+  assert.equal(openAiWithoutThreshold.requested.some(event=>Object.hasOwn(event.data||{},"serverCompactionArmed")),false,"app sessions keep their event payloads unchanged");
+  const otherProvider=await run({provider:"fixture",model:"model-a",openAiServerCompactionThreshold:245_000});
+  assert.equal(otherProvider.calls,2);
+  assert.equal(otherProvider.requests.some(request=>request.contextManagement),false);
+  assert.deepEqual(otherProvider.requested.map(event=>event.data?.serverCompactionArmed),[false,false]);
+});
+
+test("OpenAI server compaction arms at half the configured threshold",()=>{
+  assert.equal(openAiServerCompactionArmTokens(245_000),122_500);
+  assert.equal(openAiServerCompactionArmTokens(245_001),122_500);
+  assert.equal(openAiServerCompactionArmTokens(null),null);
+  assert.equal(openAiServerCompactionArmTokens(0),null);
+  assert.equal(openAiServerCompactionArmTokens("not a number"),null);
 });
 
 test("Native session cools large historical workspace edit arguments only after one provider read",async()=>{

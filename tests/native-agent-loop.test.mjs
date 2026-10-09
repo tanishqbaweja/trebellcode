@@ -1951,10 +1951,14 @@ test("native persistent artifact request gets bounded deliverable progress check
       if(turn===5){
         const checkpoint=request.messages.find(message=>message.role==="developer"&&/deliverable checkpoint/i.test(String(message.content||"")));
         assert.ok(checkpoint);assert.match(String(checkpoint.content),/\/app\/out\.step/);assert.match(String(checkpoint.content),/smallest viable generation or production attempt/i);
+        // The detector can misfire, so the checkpoint names a possible target and lets the model disregard a non-output.
+        assert.match(String(checkpoint.content),/possible required/i);assert.match(String(checkpoint.content),/disregard this checkpoint/i);
+        assert.doesNotMatch(String(checkpoint.content),/user explicitly requires/i);
       }
       if(turn===9){
         const escalation=request.messages.find(message=>message.role==="developer"&&/deliverable escalation/i.test(String(message.content||"")));
         assert.ok(escalation);assert.match(String(escalation.content),/stop broad exploratory analysis/i);assert.match(String(escalation.content),/concrete production or toolchain action/i);
+        assert.match(String(escalation.content),/possible required persistent artifact at `\/app\/out\.step`/i);assert.match(String(escalation.content),/disregard this escalation/i);
       }
       return turn<=8?{text:"",toolCalls:[{id:"probe-"+turn,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"echo",args:["evidence"]})}],usage:{}}:{text:"done",toolCalls:[],usage:{}};
     },
@@ -1963,6 +1967,9 @@ test("native persistent artifact request gets bounded deliverable progress check
   assert.equal(result.text,"done");assert.equal(requests.length,9);
   assert.equal(events.filter(event=>event.name==="native.progress.deliverable_checkpoint").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.deliverable_escalation").length,1);
+  // The detected targets are traced so checkpoint misfires can be attributed.
+  assert.deepEqual(events.find(event=>event.name==="native.progress.deliverable_checkpoint")?.data?.targets,["/app/out.step"]);
+  assert.deepEqual(events.find(event=>event.name==="native.progress.deliverable_escalation")?.data?.targets,["/app/out.step"]);
   assert.equal(events.filter(event=>event.name==="native.progress.implementation_checkpoint").length,0);
   assert.equal(events.some(event=>event.name==="native.progress.implementation_call_blocked"),false);
 });
@@ -2150,6 +2157,11 @@ test("native persistent deliverable pressure coexists with workspace mutation in
         assert.match(String(checkpoint.content),/progress checkpoint/i);
         assert.match(String(checkpoint.content),/answer_base\.bin/);
         assert.match(String(checkpoint.content),/answer_edit\.bin/);
+        // Only the deliverable half is hedged; the implementation push stays unconditional.
+        assert.match(String(checkpoint.content),/Begin the smallest evidence-supported implementation now/);
+        assert.match(String(checkpoint.content),/possible required persistent output/i);
+        assert.match(String(checkpoint.content),/smallest viable generation or production attempt/i);
+        assert.doesNotMatch(String(checkpoint.content),/ignore this|disregard/i);
         assert.equal(request.messages.filter(message=>message.role==="developer"&&/(?:progress|deliverable) checkpoint/i.test(String(message.content||""))).length,1,"overlapping implementation/deliverable pressure should share one model-facing checkpoint");
       }
       return turn<=4
@@ -2166,6 +2178,40 @@ test("native persistent deliverable pressure coexists with workspace mutation in
   assert.equal(events.filter(event=>event.name==="native.progress.deliverable_checkpoint").length,1);
   assert.equal(events.find(event=>event.name==="native.progress.implementation_checkpoint")?.data?.coalescedWithDeliverable,true);
   assert.equal(events.find(event=>event.name==="native.progress.deliverable_checkpoint")?.data?.coalescedWithImplementation,true);
+  assert.deepEqual(events.find(event=>event.name==="native.progress.deliverable_checkpoint")?.data?.targets,["/app/answer_base.bin","/app/answer_edit.bin"]);
+});
+
+test("native repo-fix issue with a fenced reproduction file gets no deliverable checkpoint",async()=>{
+  const events=[],requests=[];let turn=0;
+  const issue="Loading a config file with a trailing comment fails.\n\nTo reproduce, create a config file:\n```\n# sample.cfg\nkey = value # note\n```\nLoading sample.cfg then raises ValueError.\n\nPlease fix the parser so trailing comments are ignored.";
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"openai",messages:[{role:"user",content:issue}],
+    tools:[
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
+    ],
+    maxModelTurns:7,maxToolCalls:16,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      return turn<=4
+        ?{text:"",toolCalls:[
+          {id:"probe-"+turn+"-a",namespace:"trebell_terminal",name:"run",arguments:'{"command":"echo","args":["evidence-a"]}'},
+          {id:"probe-"+turn+"-b",namespace:"trebell_terminal",name:"run",arguments:'{"command":"echo","args":["evidence-b"]}'},
+        ],usage:{}}
+        :{text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({success:true,stdout:"evidence",exitCode:0}),
+  });
+  assert.equal(result.text,"done");
+  // The file named only inside the reproduction is not a requested output; the fix still gets implementation pressure.
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_checkpoint").length,1);
+  assert.equal(events.find(event=>event.name==="native.progress.implementation_checkpoint")?.data?.coalescedWithDeliverable,undefined);
+  assert.equal(events.some(event=>event.name==="native.progress.deliverable_checkpoint"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.deliverable_escalation"),false);
+  const developer=requests.at(-1).messages.filter(message=>message.role==="developer").map(message=>String(message.content||""));
+  const checkpoint=developer.find(content=>/progress checkpoint/i.test(content));assert.ok(checkpoint);
+  assert.doesNotMatch(checkpoint,/deliverable|sample\.cfg/i);
+  assert.equal(developer.some(content=>/deliverable checkpoint/i.test(content)),false);
 });
 
 test("native input-file inspection is not mistaken for a persistent deliverable",async()=>{
@@ -3332,6 +3378,44 @@ test("native agent trace records a timed-out terminal command as failed",async()
   const completed=events.find(event=>event.name==="native.tool.completed");
   assert.equal(completed.status,"failed");assert.equal(completed.data.success,false);assert.match(completed.data.error,/timed out/i);
   assert.equal(result.text,"The check timed out; I will not treat it as verified.");
+});
+
+test("native agent trace names the invoked repository capability and records terminal exit codes",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Inspect the repository history and report the check status."}],onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_repo",tools:[{name:"invoke"},{name:"search_code"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[
+        {id:"invoke-history",namespace:"trebell_repo",name:"invoke",arguments:JSON.stringify({name:"git_history",arguments:{path:"src/app.js"}})},
+        {id:"search",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"check"}'},
+        {id:"run-pass",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["--version"]}'},
+        {id:"run-fail",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check.mjs"]}'},
+        {id:"run-error",namespace:"trebell_terminal",name:"run",arguments:'{"command":"missing-tool","args":[]}'},
+      ],usage:{}};
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.id==="run-pass")return {exitCode:0,stdout:"v22",stderr:""};
+      if(call.id==="run-fail")return {exitCode:2,stdout:"",stderr:"check failed"};
+      if(call.id==="run-error")throw new Error("spawn missing-tool ENOENT");
+      return {success:true,result:"ok"};
+    },
+  });
+  assert.equal(result.text,"done");
+  const requested=id=>events.find(event=>event.name==="native.tool.requested"&&event.data?.callId===id)?.data;
+  const completed=id=>events.find(event=>event.name==="native.tool.completed"&&event.data?.callId===id)?.data;
+  assert.equal(requested("invoke-history")?.capability,"git_history");
+  assert.equal(Object.hasOwn(requested("search"),"capability"),false);
+  assert.equal(Object.hasOwn(requested("run-pass"),"capability"),false);
+  assert.equal(completed("run-pass")?.exitCode,0);
+  assert.equal(completed("run-fail")?.exitCode,2);
+  assert.equal(completed("run-error")?.exitCode,null);assert.equal(completed("run-error")?.success,false);
+  assert.equal(Object.hasOwn(completed("invoke-history"),"exitCode"),false);
 });
 
 test("native agent watchdog hard-settles a terminal executor that never resolves",async()=>{
@@ -6714,4 +6798,28 @@ test("persistent-output targets ignore code identifiers, versions and traceback 
   // Real deliverables are still detected.
   assert.deepEqual(targets("Write the final report to /app/output/report.json and save the workings as /app/output/workings.xlsx."),["/app/output/report.json","/app/output/workings.xlsx"]);
   assert.deepEqual(targets("Generate walk.npz under /app/results."),["walk.npz"]);
+});
+
+test("persistent-output targets are scoped to sentences and list items, skipping fences and transcripts",()=>{
+  const targets=text=>explicitPersistentArtifactTargets([{role:"user",content:text}]);
+  // Files that appear only in reproduction steps, fenced examples, or command transcripts are not requested outputs,
+  // even when a production verb sits within a few words across a paragraph, fence, or heading boundary.
+  assert.deepEqual(targets("Create a file:\n```\n$ cat > sample.cfg\nkey = value\n```\nThen loading sample.cfg fails."),[]);
+  assert.deepEqual(targets("Create a config file:\n```\n# sample.cfg\nkey = value\n```\nLoading sample.cfg then fails with a parse error."),[]);
+  assert.deepEqual(targets("The CLI accepts an output flag, for example:\n```\ntool export --out example.csv\n```\nIt currently ignores the flag."),[]);
+  assert.deepEqual(targets("You are given:\n- `data/x.tsv`"),[]);
+  assert.deepEqual(targets("Session log:\n>>> export results to report.html\nNothing else happens."),[]);
+  assert.deepEqual(targets("From the log:\n> $ generate --out build/report.html\nIt crashed."),[]);
+  assert.deepEqual(targets("Write these files:\n## Notes\n- `data/input.csv` is provided"),[]);
+  // Hard-wrapped sentences are rejoined, blockquoted requirements are read as prose, and abbreviations do not split.
+  assert.deepEqual(targets("Please run the analysis and write the summary\nto out/summary.json."),["out/summary.json"]);
+  assert.deepEqual(targets("Parse every log file and write the per-level counts\nto /srv/reports/counts.json."),["/srv/reports/counts.json"]);
+  assert.deepEqual(targets("> The job must write the export to exports/daily.csv."),["exports/daily.csv"]);
+  assert.deepEqual(targets("Write the results, e.g. per-class scores, to results/scores.json."),["results/scores.json"]);
+  assert.deepEqual(targets("Run the benchmark; write the timings to bench/timings.csv."),["bench/timings.csv"]);
+  // List items inherit a colon-terminated lead-in, across a blank line and over wrapped continuation lines.
+  assert.deepEqual(targets("Create:\n\n- `out/a.json` - settings\n- `out/b.txt` - notes"),["out/a.json","out/b.txt"]);
+  assert.deepEqual(targets("Produce the following outputs:\n1. `/srv/reports/metrics.json` with per-class accuracy\n2. `/srv/reports/confusion.png`"),["/srv/reports/metrics.json","/srv/reports/confusion.png"]);
+  assert.deepEqual(targets("Please create these files:\n- `out/config.yaml` - the merged settings, keeping the same\n  key order as the input\n- `out/changes.txt` - one changed key per line"),["out/config.yaml","out/changes.txt"]);
+  assert.deepEqual(targets("## Outputs\nWrite these files:\n- `out/a.csv`\n- `out/b.csv`"),["out/a.csv","out/b.csv"]);
 });

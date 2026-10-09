@@ -200,6 +200,85 @@ function parseJustTargets(content){
   return data;
 }
 
+// Static test entry point detection for the Native repository seed. It only filters the indexed path list and
+// reads candidate files through the context I/O; it never executes repository code or probes the environment.
+const TEST_ENTRY_POINT_NAMES=new Set(["runtests.py","run_tests.py","run_tests.sh","test.sh","test"]);
+const TEST_ENTRY_POINT_DIRECTORIES=new Set(["bin","script","scripts","tests","tools"]);
+const TEST_ENTRY_POINT_MANIFESTS=Object.freeze(["package.json","gnumakefile","makefile","justfile"]);
+const TEST_ENTRY_POINT_LIMIT=3;
+// npm init's default test script only prints "Error: no test specified" and exits 1, so it is not a test entry point.
+const NPM_PLACEHOLDER_TEST_SCRIPT=/\bno test specified\b/i;
+
+function compareCodeUnits(a,b){return a<b?-1:a>b?1:0}
+
+function testEntryPointSources(paths){
+  const list=[...new Set((Array.isArray(paths)?paths:[]).map(path=>String(path||"")).filter(Boolean))],rootFiles=list.filter(path=>!path.includes("/"));
+  // Declared commands carry no directory, so only root manifests yield commands that are runnable from the repository root.
+  const manifests=TEST_ENTRY_POINT_MANIFESTS.flatMap(name=>rootFiles.filter(path=>path.toLowerCase()===name).sort(compareCodeUnits));
+  const scripts=list.filter(path=>{
+    const parts=path.split("/");
+    return TEST_ENTRY_POINT_NAMES.has(parts.at(-1))&&(parts.length===1||parts.length===2&&TEST_ENTRY_POINT_DIRECTORIES.has(parts[0]));
+  }).sort(compareCodeUnits);
+  return {rootFiles,manifests,scripts};
+}
+
+function shebangInterpreter(firstLine){
+  const line=String(firstLine||""),match=(line.charCodeAt(0)===0xfeff?line.slice(1):line).match(/^#!\s*(\S+)(.*)$/);if(!match)return "";
+  const program=match[1].split("/").pop();if(program!=="env")return program;
+  for(const token of match[2].trim().split(/\s+/))if(token&&!token.startsWith("-")&&!token.includes("="))return token.split("/").pop();
+  return "";
+}
+
+function testEntryPointCommand(path,firstLine){
+  const interpreter=shebangInterpreter(firstLine);
+  if(path.endsWith(".py")||/^python[0-9.]*$/.test(interpreter))return "python "+path;
+  if(path.endsWith(".sh")||interpreter==="sh"||interpreter==="bash")return "bash "+path;
+  // A bare root-level name such as `test` would resolve to the shell builtin, so keep it an explicit path.
+  return path.includes("/")?path:"./"+path;
+}
+
+function declaredTestCommands(path,content,available){
+  const base=basename(path).toLowerCase();
+  if(base==="package.json"){
+    try{
+      const manifest=JSON.parse(content),scripts=manifest?.scripts&&typeof manifest.scripts==="object"?manifest.scripts:{};
+      return Object.prototype.hasOwnProperty.call(scripts,"test")&&!NPM_PLACEHOLDER_TEST_SCRIPT.test(String(scripts.test??""))?[packageScriptCommand(packageManagerFor(path,manifest,available),"test")]:[];
+    }catch{return []}
+  }
+  return (base==="justfile"?parseJustTargets(content):parseMakeTargets(content,"make")).filter(item=>item.name==="test"&&item.kind==="test").map(item=>item.command);
+}
+
+async function detectTestEntryPoints({rootFiles=[],manifests=[],scripts=[]}={},{io=null,signal=null,limit=TEST_ENTRY_POINT_LIMIT,maxFileBytes=256_000}={}){
+  throwIfContextAborted(signal);
+  if(!manifests.length&&!scripts.length)return [];
+  const cap=Math.max(1,Math.min(20,Math.trunc(Number(limit))||TEST_ENTRY_POINT_LIMIT));
+  let readable=scripts;
+  if(scripts.length&&typeof io?.metadata==="function"){
+    const metadata=await io.metadata(scripts,{signal});throwIfContextAborted(signal);
+    readable=scripts.filter(path=>{const size=Number(metadata?.get?.(path)?.size);return Number.isFinite(size)&&size<=maxFileBytes});
+  }
+  const requested=[...manifests,...readable],contents=requested.length?await io.readMany(requested,maxFileBytes,{signal}):new Map();throwIfContextAborted(signal);
+  const entries=[],seen=new Set(),available=new Set(rootFiles);
+  const add=(command,path,source)=>{
+    if(entries.length>=cap||!command||seen.has(command)||/^(?:tox|nox)(?:\s|$)/.test(command))return;
+    seen.add(command);entries.push({command,path,source});
+  };
+  for(const path of manifests){
+    const content=contents.get(path);if(typeof content!=="string")continue;
+    for(const command of declaredTestCommands(path,content,available))add(command,path,"declared");
+  }
+  for(const path of readable){
+    const content=contents.get(path);if(typeof content!=="string")continue;
+    const firstLine=content.split(/\r?\n/,1)[0];if(firstLine.includes("\0"))continue;
+    add(testEntryPointCommand(path,firstLine),path,"detected");
+  }
+  return entries;
+}
+
+async function testEntryPoints({paths=[],io=null,signal=null,limit=TEST_ENTRY_POINT_LIMIT,maxFileBytes=256_000}={}){
+  return detectTestEntryPoints(testEntryPointSources(paths),{io,signal,limit,maxFileBytes});
+}
+
 function sourceDefinition(line,extension){
   const patterns=[];
   if([".js",".jsx",".ts",".tsx",".mjs",".cjs",".vue",".svelte"].includes(extension))patterns.push(
@@ -947,7 +1026,25 @@ export function planContextBudget({task="",focusPaths=[],tokensUsed=null,context
 
 export class ContextEngine{
   constructor({maxFileBytes=256_000,env=process.env,platform=process.platform}={}){
-    this.maxFileBytes=maxFileBytes;this.environment=buildRuntimeEnvironment("native",{parent:env,platform});this.roots=new Map();this.gitStates=new Map();this.packetGraphs=new Map();this.graphStructures=new Map();
+    this.maxFileBytes=maxFileBytes;this.environment=buildRuntimeEnvironment("native",{parent:env,platform});this.roots=new Map();this.gitStates=new Map();this.packetGraphs=new Map();this.graphStructures=new Map();this.testEntryPointCache=new Map();
+  }
+
+  // Clean Git state at the same HEAD and status means the candidate files are unchanged, so the detection is reused
+  // instead of rereading manifests and runner scripts on every packet. Detection failures never fail the packet.
+  async #testEntryPoints(contextIo,index,git,signal=null){
+    const sources=testEntryPointSources(index.paths),candidates=[...sources.manifests,...sources.scripts],cacheKey=index.cacheKey;
+    if(!candidates.length){this.testEntryPointCache.delete(cacheKey);return []}
+    const changed=[...(git?.changed||[])].map(path=>String(path||"")),changedSet=new Set(changed),changedDirectories=changed.filter(path=>path.endsWith("/"));
+    const dirty=candidates.some(path=>changedSet.has(path)||changedDirectories.some(directory=>path.startsWith(directory)));
+    const head=String(git?.head||"").trim(),statusFingerprint=String(git?.statusFingerprint||"").trim();
+    const key=git?.isGit&&head&&statusFingerprint&&!dirty?JSON.stringify([head,statusFingerprint,candidates]):null;
+    const cached=this.testEntryPointCache.get(cacheKey);
+    if(key&&cached?.key===key)return cached.entries.map(entry=>({...entry}));
+    let entries;
+    try{entries=await detectTestEntryPoints(sources,{io:contextIo,signal,maxFileBytes:this.maxFileBytes})}
+    catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);this.testEntryPointCache.delete(cacheKey);return []}
+    if(key)this.testEntryPointCache.set(cacheKey,{key,entries});else this.testEntryPointCache.delete(cacheKey);
+    return entries.map(entry=>({...entry}));
   }
 
   #graphSourceFingerprint(files){
@@ -1039,7 +1136,7 @@ export class ContextEngine{
     if(budgetPlan.skip)return {
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:contextIo.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:0,maxTokens:0,
-      items:[],injection:"",instructionInjection:"",untrustedInjection:"",budget:budgetPlan,skipped:true,
+      items:[],testEntryPoints:[],injection:"",instructionInjection:"",untrustedInjection:"",budget:budgetPlan,skipped:true,
       stats:{filesIndexed:0,reparsed:0,reused:0,skipped:0,inspected:0,graphEdges:0,durationMs:0,remote:Boolean(io),skippedByPressure:true,pathInventoryReused:false,graphReused:false,graphStructureReused:false},
     };
     const budget=budgetPlan.maxTokens,fileLimit=budgetPlan.maxFiles;
@@ -1085,11 +1182,12 @@ export class ContextEngine{
     const instructionInjection=instructionSections.join("\n\n").trim();
     const untrustedInjection=untrustedSections.length?[evidenceHeader,...untrustedSections].join("\n\n").trim():"";
     const injection=[instructionInjection,untrustedInjection].filter(Boolean).join("\n\n").trim();
+    const testEntryPoints=await this.#testEntryPoints(contextIo,index,git,signal);
     throwIfContextAborted(signal);
     return {
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,
-      items:selected,injection,instructionInjection,untrustedInjection,budget:budgetPlan,
+      items:selected,testEntryPoints,injection,instructionInjection,untrustedInjection,budget:budgetPlan,
       stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:edgeCount,durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed,pathInventoryReused:Boolean(index.pathInventoryReused),graphReused:packetGraph.reused,graphStructureReused:packetGraph.structureReused},
     };
   }
@@ -1460,4 +1558,4 @@ export class ContextEngine{
   }
 }
 
-export { pageRank, parseSource, taskTerms, tokenEstimate };
+export { pageRank, parseSource, taskTerms, testEntryPoints, tokenEstimate };

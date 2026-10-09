@@ -1,6 +1,6 @@
 import { createSharedToolGateway } from "./shared-tool-gateway.mjs";
 import { platformToolDefinition } from "./platform-tool-catalog.mjs";
-import { advancedRepositoryToolDefinition, invokeRepositoryTool, parseRepositoryToolArguments, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
+import { ADVANCED_REPOSITORY_TOOL_NAMES, advancedRepositoryToolDefinition, invokeRepositoryTool, parseRepositoryToolArguments, repositoryToolHandlers, repositoryToolInputJsonSchema } from "./repository-tool-catalog.mjs";
 import { normalizeRepositoryWorkspacePath } from "./native-workspace-path.mjs";
 
 function baseContext(value,call){
@@ -40,8 +40,13 @@ export function createNativeToolExecutor({
       if(call.definition?.source==="repository-invoke"){
         if(!repositoryHandlers)throw new Error("Repository intelligence is unavailable without an active Context Engine workspace.");
         const requested=String(call.arguments?.name||"").trim(),definition=advancedRepositoryToolDefinition(requested);
-        if(!definition)throw new Error("Unknown or non-advanced repository capability: "+(requested||"missing"));
-        const args=parseRepositoryToolArguments(definition,repositoryArguments(root,call.arguments?.arguments||{}));
+        if(!definition)throw new Error("Unknown or non-advanced repository capability: "+(requested||"missing")+". Valid capabilities: "+ADVANCED_REPOSITORY_TOOL_NAMES.join(", ")+".");
+        const requestedArguments=repositoryArguments(root,call.arguments?.arguments||{});
+        let args;
+        // Return the full input schema with the validation error so a wrong direct invoke self-corrects in one
+        // retry instead of needing a separate discover round trip.
+        try{args=parseRepositoryToolArguments(definition,requestedArguments)}
+        catch(error){throw new Error((error?.message||String(error))+"\nInput schema for "+definition.name+": "+JSON.stringify(repositoryToolInputJsonSchema(definition)),{cause:error})}
         return await invokeRepositoryTool(repositoryHandlers,definition,args);
       }
       if(call.namespace==="trebell_output"){
