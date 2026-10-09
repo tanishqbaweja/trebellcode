@@ -4,12 +4,17 @@ import shlex
 from pathlib import Path
 from typing import Annotated, Literal, override
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 from harbor.agents.installed.codex import Codex
 from harbor.agents.installed.codex import CodexOptions
 from harbor.agents.options import Cli
 from harbor.environments.base import BaseEnvironment
+
+
+def _lowercase_bool(value):
+    # Harbor parses --ak values, so "apps=false" arrives as the boolean False.
+    return str(value).lower() if isinstance(value, bool) else value
 
 
 class PinnedCodexOptions(CodexOptions):
@@ -29,6 +34,7 @@ class PinnedCodexOptions(CodexOptions):
     )
     apps: Annotated[
         Literal["false"],
+        BeforeValidator(_lowercase_bool),
         Cli("-c", format="-c features.apps={value}"),
     ] = Field(
         default="false",
