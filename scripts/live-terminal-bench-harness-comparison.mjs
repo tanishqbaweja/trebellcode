@@ -11,6 +11,7 @@ import { jobsForPairReport } from "./terminal-bench-pair-report.mjs";
 import { readJobVerifierSummary, readTrialVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
 import { recoverNativeEventEvidence, selectNativeMetric } from "./terminal-bench-native-evidence.mjs";
 import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs";
+import { auditJobIntegrity, compactIntegrity } from "./benchmark-integrity-audit.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "./terminal-bench-pair-lock.mjs";
 import { estimateGpt6LunaCostFromAggregate, gpt6LunaPricingForServiceTier } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
@@ -305,7 +306,7 @@ try{
     const {label,harness,authMode}=lane;
     const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":CODEX_INSTALL_MODE==="pinned"?"benchmarks.harbor.pinned_codex_agent:PinnedCodexAgent":"codex";
     const laneState=laneStates[laneIndex];let jobName=laneState.jobName;
-    const argsForJob=currentJobName=>["run","-d",DATASET,"-i",HARBOR_TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,...(SERVICE_TIER==="fast"?["--ak","service_tier=fast"]:[]),...(harness.startsWith("codex")?["--ak","web_search=disabled"]:[]),"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y"];
+    const argsForJob=currentJobName=>["run","-d",DATASET,"-i",HARBOR_TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,...(SERVICE_TIER==="fast"?["--ak","service_tier=fast"]:[]),...(harness.startsWith("codex")?["--ak","web_search=disabled"]:[]),...(harness.startsWith("codex")&&CODEX_INSTALL_MODE==="pinned"?["--ak","apps=false"]:[]),"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y"];
     let args=argsForJob(jobName);
     const retainNativeEnvironment=STANDALONE_NATIVE_RERUN&&harness==="native";
     if(retainNativeEnvironment)args.push("--no-delete");
@@ -444,6 +445,9 @@ try{
   for(const job of jobs.filter(Boolean)){
     try{job.verifierChecks=job.regradeTrialDir?await readTrialVerifierSummary(job.regradeTrialDir):await readJobVerifierSummary(outputRoot,job.jobName)}
     catch(error){const verifierError=`verifier summary recovery failed: ${error?.message||String(error)}`;job.runError=[job.runError,verifierError].filter(Boolean).join("; ");job.verifierChecks=null}
+    // Audit the lane's saved agent logs: hosted web use invalidates it; network, git history and verifier-path flags need review.
+    try{job.integrity=compactIntegrity(await auditJobIntegrity(outputRoot,job.jobName))}
+    catch(error){job.integrity={status:"audit-failed",error:error?.message||String(error)}}
   }
   const report=reportSnapshot({complete:true});await writeFile(reportPath,JSON.stringify(report,null,2)+"\n","utf8");
   console.log("TREBELL_TERMINAL_BENCH_REPORT "+JSON.stringify({...report,reportPath},null,2));
