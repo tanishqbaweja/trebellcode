@@ -281,3 +281,18 @@ test("Native terminal timeout kills descendant processes that inherit stdio",asy
     assert.equal(descendantAlive,false,"timed-out terminal command must not leave the descendant process running");
   }finally{await rm(root,{recursive:true,force:true})}
 });
+
+// npm, npx, yarn and pnpm are .cmd launchers on Windows, which child_process.spawn cannot start without a shell ("spawn npm
+// ENOENT"). A launcher found on PATH runs, its exit code comes back, and shell metacharacters in arguments stay literal.
+test("Native terminal runs Windows .cmd launchers found on PATH with literal arguments",{skip:process.platform!=="win32"},async()=>{
+  const root=await workspace(),bin=await mkdtemp(join(tmpdir(),"trebell-native-cmd-"));
+  try{
+    await writeFile(join(bin,"trebell-echo.cmd"),"@echo off\r\necho ARGS=%*\r\nexit /b 3\r\n","utf8");
+    const environment={...process.env,PATH:bin+";"+(process.env.PATH||process.env.Path||"")};delete environment.Path;
+    const execute=createNativeBuiltins({root,environment});
+    const result=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:"trebell-echo",args:["a&b","x y","50%"],timeout_ms:10000}});
+    assert.equal(result.exitCode,3);
+    assert.match(result.stdout,/ARGS=.*a&b.*x y.*50%/);
+    assert.doesNotMatch(String(result.stdout)+String(result.stderr),/is not recognized/i);
+  }finally{await rm(root,{recursive:true,force:true});await rm(bin,{recursive:true,force:true})}
+});
