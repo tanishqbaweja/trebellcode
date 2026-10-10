@@ -4,6 +4,7 @@ import Prism from "prismjs";
 import { api } from "../api.js";
 import { WORKSPACE_CHANGED_PAGE_SIZE, WORKSPACE_DIFF_CHUNK_CHARS, WORKSPACE_TREE_PAGE_SIZE, workspaceListWindow, workspaceTextWindow } from "../workspace-view-window.js";
 import OpenInPicker from "./OpenInPicker.jsx";
+import { askText } from "./RightPanel.jsx";
 
 const IMAGE_EXT=new Set(["png","jpg","jpeg","gif","webp","bmp","svg","ico"]);
 const VIDEO_EXT=new Set(["mp4","webm","mov"]);
@@ -67,6 +68,41 @@ function fileIcon(name){
   if(kind==="audio")return <Music2 size={14}/>;
   if(kind==="pdf"||kind==="markdown"||kind==="table")return <FileText size={14}/>;
   return <FileCode2 size={14}/>;
+}
+// Presentation only: colors unified-diff lines and git status codes in the inspector.
+// Header lines (index, ---/+++, mode) only occur before a file's first hunk, so a deleted "-- comment" line stays a deletion.
+function diffLineKinds(lines){
+  let inHunk=false;
+  return lines.map(line=>{
+    if(line.startsWith("diff --git ")){inHunk=false;return "file"}
+    if(line.startsWith("@@")){inHunk=true;return "hunk"}
+    if(!inHunk||line.startsWith("\\"))return "meta";
+    if(line.startsWith("+"))return "add";
+    if(line.startsWith("-"))return "del";
+    return "ctx";
+  });
+}
+// Nested tree rows show their own name (the indent carries the parent); flat rows and search hits keep the relative path.
+function treeLabel(entry,searching){
+  const relative=String(entry.relativePath||entry.name||"");
+  if(searching||!entry.name)return relative;
+  const depth=relative.split(/[\\/]/).filter(Boolean).length-1;
+  return depth===(entry.depth||0)?entry.name:relative;
+}
+function statusKind(code=""){
+  const value=String(code);
+  if(value.includes("U"))return "conflict";
+  if(value.includes("?")||value.includes("A"))return "added";
+  if(value.includes("D"))return "deleted";
+  if(value.includes("R"))return "renamed";
+  return "modified";
+}
+// A changed file shows its name first and its folder after it, muted, so a narrow list cuts the folder rather than the name
+// ("src/new-fe…" before). The text stays "dir/name" in document order (the separator is only hidden) for search and copy.
+function ChangedFilePath({path}){
+  const slash=path.lastIndexOf("/");
+  if(slash<0)return <span className="changed-file-path split"><bdi className="changed-file-name">{path}</bdi></span>;
+  return <span className="changed-file-path split"><bdi className="changed-file-dir">{path.slice(0,slash)}</bdi><span className="changed-file-sep">/</span><bdi className="changed-file-name">{path.slice(slash+1)}</bdi></span>;
 }
 
 export default function WorkspacePanel({projectPath,environmentId=null,remote=false,defaultTab="files",allowDiff=true,activeThreadId=null,reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
@@ -174,7 +210,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     finally{setActionBusy("")}
   }
   async function addReviewComment(path){
-    const comment=prompt("Review comment for "+path);if(!comment?.trim()||!onReviewComment||actionBusy)return;
+    const comment=await askText("Review comment for "+path);if(!comment?.trim()||!onReviewComment||actionBusy)return;
     setActionBusy("comment:"+path);setActionError("");
     try{await Promise.resolve(onReviewComment(path,comment.trim()))}
     catch(err){setActionError("Could not attach review comment: "+(err?.message||String(err)))}
@@ -182,11 +218,14 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   }
   const highlighted=useMemo(()=>file?.content!=null?Prism.highlight(file.content,languageFor(file.name),"javascript"):"",[file]);
   const changedPaths=useMemo(()=>String(diff.status||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3)),[diff.status]);
+  const changedCodes=useMemo(()=>new Map(String(diff.status||"").split(/\r?\n/).filter(Boolean).map(line=>[line.slice(3),line.slice(0,2).trim()||"M"])),[diff.status]);
   const diffPanelError=[diffError,actionError].filter(Boolean).join(" · ");
   const source=query?searchResults:entries;
   const treeWindow=useMemo(()=>query?{visible:source,total:source.length,shown:source.length,hasMore:false,nextCount:0}:workspaceListWindow(source,{limit:treeLimit,pageSize:WORKSPACE_TREE_PAGE_SIZE}),[source,query,treeLimit]);
   const changedWindow=useMemo(()=>workspaceListWindow(changedPaths,{limit:changedLimit,pageSize:WORKSPACE_CHANGED_PAGE_SIZE}),[changedPaths,changedLimit]);
   const diffWindow=useMemo(()=>workspaceTextWindow(diff.diff||diff.error||"No unstaged diff.",{limit:diffLimit,chunkSize:WORKSPACE_DIFF_CHUNK_CHARS}),[diff.diff,diff.error,diffLimit]);
+  // One span per line keeps the text (and its textContent) identical while each line gets its own diff color.
+  const diffLines=useMemo(()=>{const lines=diffWindow.text.split("\n"),kinds=diffLineKinds(lines);return lines.map((line,index)=><span key={index} className={"diff-line "+kinds[index]}>{line}{index<lines.length-1?"\n":""}</span>)},[diffWindow.text]);
   const rawUrl=file&&projectPath?"/api/workspace/raw?"+params({root:projectPath,path:file.path}):"";
   const table=useMemo(()=>file?.kind==="table"?parseDelimited(file.content,extension(file.name)==="tsv"?"\t":","):[],[file]);
 
@@ -206,18 +245,18 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
 
   const editable=Boolean(file&&["text","html","markdown","table"].includes(file.kind));
   return <div className="workspace-panel">
-    <div className="panel-tabs"><button className={tab==="files"?"active":""} onClick={()=>setTab("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>{setTab("diff");refreshDiff()}}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}<button aria-label="Refresh workspace files" onClick={()=>{refreshTree();if(allowDiff)refreshDiff()}}><RefreshCw size={13}/></button></div>
+    <div className="panel-tabs"><div className="workspace-seg"><button className={tab==="files"?"active":""} onClick={()=>setTab("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>{setTab("diff");refreshDiff()}}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}</div><button className="workspace-refresh" aria-label="Refresh workspace files" title="Refresh files and changes" onClick={()=>{refreshTree();if(allowDiff)refreshDiff()}}><RefreshCw size={13}/></button></div>
     {tab==="files"&&<div className="workspace-files">
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
-        <div className="tree-list">{(searchError||treeError)&&<p className="workspace-tree-error" role="alert">{searchError||treeError}</p>}{loading?<p>Loading…</p>:treeWindow.visible.map(entry=><button data-workspace-entry key={entry.path} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{entry.relativePath||entry.name}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}{treeWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setTreeLimit(limit=>limit+WORKSPACE_TREE_PAGE_SIZE)}>Show {treeWindow.nextCount} more files</button><span>{treeWindow.shown} of {treeWindow.total} mounted</span></div>}</div>
-        <div className={"file-view"+(error?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>{setError("");setEdit(v=>!v)}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{preview()}</div>
+        <div className="tree-list">{(searchError||treeError)&&<p className="workspace-tree-error" role="alert">{searchError||treeError}</p>}{loading?<p>Loading…</p>:treeWindow.visible.map(entry=><button data-workspace-entry key={entry.path} className={(entry.isDirectory?"tree-dir":"tree-file")+(file?.path===entry.path?" active":"")} title={entry.relativePath||entry.name} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{treeLabel(entry,Boolean(query))}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}{treeWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setTreeLimit(limit=>limit+WORKSPACE_TREE_PAGE_SIZE)}>Show {treeWindow.nextCount} more files</button><span>{treeWindow.shown} of {treeWindow.total} mounted</span></div>}</div>
+        <div className={"file-view"+(error?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>{setError("");if(edit)setDraft(file.content??"");setEdit(v=>!v)}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{preview()}</div>
       </div>
     </div>}
     {tab==="diff"&&(changedPaths.length?<div className={"changes-view"+(diffPanelError?" has-action-error":"")}>
       {diffPanelError&&<div className="inline-error workspace-diff-error" role="alert">{diffPanelError}</div>}
-      <div className="changed-files">{changedWindow.visible.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>changeReviewed(path,!reviewedFiles.includes(path))} disabled={actionBusy==="reviewed:"+path}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span>{path}</button><button className="review-comment" title="Add review comment as context" onClick={()=>addReviewComment(path)} disabled={actionBusy==="comment:"+path}>+</button></div>)}{changedWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setChangedLimit(limit=>limit+WORKSPACE_CHANGED_PAGE_SIZE)}>Show {changedWindow.nextCount} more changed files</button><span>{changedWindow.shown} of {changedWindow.total} mounted</span></div>}</div>
-      <div className="workspace-diff-preview"><pre className="git-diff" data-testid="workspace-diff-preview">{diffWindow.text}</pre>{diffWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setDiffLimit(limit=>limit+WORKSPACE_DIFF_CHUNK_CHARS)}>Show more diff</button><span>{Math.round(diffWindow.shown/1000)}k of {Math.round(diffWindow.total/1000)}k characters shown</span></div>}</div>
+      <div className="changed-files">{changedWindow.visible.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>changeReviewed(path,!reviewedFiles.includes(path))} disabled={actionBusy==="reviewed:"+path} aria-label={path} title={path+(reviewedFiles.includes(path)?" · reviewed. Click to mark as not reviewed":" · click to mark as reviewed")}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span><ChangedFilePath path={path}/></button><em className="changed-file-code" data-kind={statusKind(changedCodes.get(path))} title={"Git status "+(changedCodes.get(path)||"M")}>{changedCodes.get(path)||"M"}</em><button className="review-comment" title="Add review comment as context" onClick={()=>addReviewComment(path)} disabled={actionBusy==="comment:"+path}>+</button></div>)}{changedWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setChangedLimit(limit=>limit+WORKSPACE_CHANGED_PAGE_SIZE)}>Show {changedWindow.nextCount} more changed files</button><span>{changedWindow.shown} of {changedWindow.total} mounted</span></div>}</div>
+      <div className="workspace-diff-preview"><pre className="git-diff" data-testid="workspace-diff-preview">{diffLines}</pre>{diffWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setDiffLimit(limit=>limit+WORKSPACE_DIFF_CHUNK_CHARS)}>Show more diff</button><span>{Math.round(diffWindow.shown/1000)}k of {Math.round(diffWindow.total/1000)}k characters shown</span></div>}</div>
     </div>:<div className={"changes-empty"+((diffError||diff.error)?" error":"")}><FileDiff size={20}/><strong>{(diffError||diff.error)?"Could not load changes":"Working tree clean"}</strong><span>{diffError||diff.error||"No unstaged changes to review."}</span></div>)}
   </div>;
 }

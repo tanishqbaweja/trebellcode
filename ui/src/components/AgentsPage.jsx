@@ -58,10 +58,14 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,onD
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
   const [delegateOpen,setDelegateOpen]=useState(false);
+  // A failed delegation is shown inside the form, next to the button that caused it; the shared
+  // message sits below the collaboration card and is off screen at 1280x800.
+  const [delegateError,setDelegateError]=useState("");
   const [delegateTask,setDelegateTask]=useState("");
   const [delegatePermission,setDelegatePermission]=useState("supervised");
   const [delegateIsolation,setDelegateIsolation]=useState(activeProjectless?"inherit":"worktree");
   useEffect(()=>setDelegateIsolation(activeProjectless?"inherit":"worktree"),[activeThread?.id,activeProjectless]);
+  useEffect(()=>setDelegateError(""),[activeThread?.id]);
 
   const counts=useMemo(()=>{
     const result={working:0,idle:0,error:0,sleeping:0};
@@ -114,11 +118,11 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,onD
   }
   async function submitDelegate(){
     const task=delegateTask.trim();if(!task||!onDelegate||!activeThread?.id)return;
-    setBusy(true);setError("");
+    setBusy(true);setError("");setDelegateError("");
     try{
       await onDelegate({task,permissions:delegatePermission,isolation:delegateIsolation});
       setDelegateTask("");setDelegateOpen(false);await onRefreshThreads?.();
-    }catch(e){setError(e.message||String(e))}
+    }catch(e){setDelegateError(e.message||String(e))}
     finally{setBusy(false)}
   }
 
@@ -131,8 +135,9 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,onD
       const phase=phaseLabel(t,live,status);
       const usage=usageLabel(live.tokenUsage);
       const activityAge=ageLabel((live.lastActivityAt?live.lastActivityAt/1000:null)||t.updatedAt);
-      return <div className="agent-row" key={t.id}>
-        <button className="agent-open" onClick={()=>openAgent(t)} disabled={busy}>
+      const isOpen=t.id===activeThread?.id;
+      return <div className={"agent-row"+(isOpen?" current":"")} key={t.id}>
+        <button className="agent-open" aria-current={isOpen?"true":undefined} onClick={()=>openAgent(t)} disabled={busy}>
           <span className={"agent-status-dot "+status.key}/>
           <div>
             <strong>{delegatedLabel(t,meta)}</strong>
@@ -155,21 +160,22 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,onD
     <div className="agent-summary">
       <Bot size={24}/>
       <div><strong>Delegated agents</strong><span>Native subagents and Trebell-managed child tasks, grouped around the thread you are working in.</span></div>
-      <button className="agent-refresh" onClick={refresh} disabled={busy}><RefreshCw size={13}/></button>
+      <button className="agent-refresh" aria-label="Refresh agents" title="Refresh agents" onClick={refresh} disabled={busy}><RefreshCw size={13}/></button>
     </div>
     <div className="agent-fleet-stats">
       <span className="working">{counts.working} working</span><span>{counts.idle} idle</span><span>{counts.sleeping} sleeping</span>{counts.error>0&&<span className="error">{counts.error} error</span>}
     </div>
     <section className="delegate-card">
-      <div className="delegate-head"><div><GitBranch size={15}/><span><strong>Delegate a bounded task</strong><small>{canModelDelegate?"The model can also invoke Trebell delegation when parallel work is useful.":"Manual delegation is available; this runtime does not expose Trebell's delegation tool directly to the model."}</small></span></div>{activeThread?.id&&onDelegate&&<button onClick={()=>setDelegateOpen(value=>!value)} disabled={busy}>{delegateOpen?"Close":"Delegate"}</button>}</div>
+      <div className="delegate-head"><div><GitBranch size={15}/><span><strong>Delegate a bounded task</strong><small>{canModelDelegate?"The model can also invoke Trebell delegation when parallel work is useful.":"Manual delegation is available; this runtime does not expose Trebell's delegation tool directly to the model."}</small></span></div>{activeThread?.id&&onDelegate&&<button onClick={()=>{setDelegateOpen(value=>!value);setDelegateError("")}} disabled={busy}>{delegateOpen?"Close":"Delegate"}</button>}</div>
       {!activeThread?.id?<p>Open a parent thread before starting a child task.</p>:delegateOpen?<div className="delegate-form">
         <textarea aria-label="Delegated task" value={delegateTask} onChange={event=>setDelegateTask(event.target.value)} placeholder="Give the child one concrete objective…"/>
         <div><label>Permissions<select aria-label="Delegation permissions" value={delegatePermission} onChange={event=>setDelegatePermission(event.target.value)}><option value="supervised">Supervised</option><option value="read-only">Read only</option><option value="workspace-write">Workspace write</option><option value="full">Full access</option></select></label><label>Isolation<select aria-label="Delegation isolation" value={delegateIsolation} onChange={event=>setDelegateIsolation(event.target.value)}><option value="worktree">Isolated worktree</option><option value="inherit">Inherit parent workspace</option></select></label></div>
         <button className="delegate-submit" onClick={submitDelegate} disabled={busy||!delegateTask.trim()}>Start child task</button>
+        {delegateError&&<p className="provider-status-error delegate-error" role="alert">{delegateError}</p>}
       </div>:<p>Parallel coding delegates use separate worktrees by default. Shared workspace mode is explicit because two agents editing the same checkout is how merge drama gets promoted to production.</p>}
     </section>
     <section className="collaboration-card">
-      <div className="collaboration-head"><div><UsersRound size={15}/><span><strong>Collaboration mode</strong><small>Choose provider-native collaboration behavior when the active runtime exposes it.</small></span></div><button onClick={refresh} disabled={busy||rpcStatus!=="connected"}><RefreshCw size={12}/></button></div>
+      <div className="collaboration-head"><div><UsersRound size={15}/><span><strong>Collaboration mode</strong><small>Choose provider-native collaboration behavior when the active runtime exposes it.</small></span></div><button aria-label="Refresh collaboration modes" title="Refresh collaboration modes" onClick={refresh} disabled={busy||rpcStatus!=="connected"}><RefreshCw size={12}/></button></div>
       {!activeThread?.id?<p>Start or open a thread to select a collaboration mode.</p>:modes.length?<div className="collaboration-modes">{modes.map(mask=><button key={mask.name} className={selected===mask.name?"active":""} onClick={()=>applyMode(mask)} disabled={busy}><strong>{mask.name}</strong><span>{mask.mode||"default"}{mask.model?" · "+mask.model:""}{mask.reasoning_effort?" · "+mask.reasoning_effort:""}</span></button>)}</div>:<p>No provider-native collaboration presets were reported by this runtime.</p>}
     </section>
     {error&&<p className="provider-status-error" role="alert">{error}</p>}

@@ -2,6 +2,7 @@ import React,{useEffect,useState} from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, Pause, Play, RefreshCw, Target, Trash2 } from "lucide-react";
 import { startSameThreadVerificationRepair } from "../verification-repair.js";
 import { verificationEvidenceMeta, verificationEvidenceSummary, verificationEvidenceView } from "../verification-evidence-view.js";
+import { codexGoalStatusLabel } from "../codex-turn-options.js";
 
 function lines(value){return (Array.isArray(value)?value:[]).join("\n")}
 function parseLines(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean)}
@@ -135,7 +136,8 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
       setRepairStatus(result?.turn?.id?"Repair turn started on this thread.":"Repair request started.");
     }catch(e){setError(e.message||String(e))}finally{setBusy("")}
   }
-  const status=goal?.status||"not set";
+  // Codex's own goal statuses (usageLimited, budgetLimited) read as words rather than Codex's identifiers.
+  const status=goal?.status?codexGoalStatusLabel(goal.status):"not set";
   const blocked=goal?.status==="active"&&goal?.budgetExhausted;
   const tokensUsed=Math.max(0,Number(goal?.tokensUsed)||0),timeUsedSeconds=Math.max(0,Number(goal?.timeUsedSeconds)||0);
   const guidanceCount=(goal?.completionConditions?.length||0)+(goal?.constraints?.length||0)+(goal?.validationExpectations?.length||0);

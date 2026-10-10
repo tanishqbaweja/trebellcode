@@ -1,4 +1,5 @@
 import React,{forwardRef,lazy,memo,Suspense,useCallback,useEffect,useImperativeHandle,useLayoutEffect,useMemo,useRef,useState} from "react";
+import { flushSync } from "react-dom";
 import {
   Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
@@ -31,6 +32,8 @@ import { DEFAULT_LAYOUT, clampLayoutValue, normalizeLayoutPreferences } from "./
 import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary, guardianDeniedEvent } from "./guardian-review.js";
+import { completedItemStatus, toolEventFailed } from "./tool-event-status.js";
+import { startupRuntimeOutcome } from "./startup-runtime.js";
 import { collaborationModePayload, normalizeCollaborationModes } from "./collaboration-mode.js";
 import { ensureRuntimeProject, sameWorkspacePath } from "./codex-projects.js";
 import { writeClipboardText } from "./clipboard.js";
@@ -49,7 +52,7 @@ import { desktopBridgeToolAvailability } from "./desktop-tool-availability.js";
 import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
 import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
-import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, sameCatalogSnapshot, threadCatalogRuntime, threadsFromCatalogMeta } from "./thread-catalog.js";
+import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openThreadTitleSource, sameCatalogSnapshot, threadCatalogRuntime, threadOwnerElsewhere, threadsFromCatalogMeta, threadTitle, threadKeptBySwitch } from "./thread-catalog.js";
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "./activity-window.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
@@ -59,7 +62,12 @@ import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repai
 import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
 import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
 import { configuredReasoningEffort, modelReasoningEffortKey, supportedReasoningEfforts } from "../../src/model-reasoning-effort.mjs";
-import { configuredModelServiceTier, modelServiceTierKey, supportedModelServiceTiers } from "../../src/model-service-tier.mjs";
+import { CODEX_STANDARD_SERVICE_TIER, configuredModelServiceTier, modelServiceTierKey, modelServiceTierLabel, supportedModelServiceTiers } from "../../src/model-service-tier.mjs";
+import { configuredModelOptions, modelOptionSettingsWith, supportedModelOptions } from "../../src/model-options.mjs";
+import { codexReasoningEffortLabel } from "../../src/codex-model-catalog.mjs";
+import { goalAdditionalContext } from "../../src/goal-state.mjs";
+import { codexErrorNotice, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal, parseCodexGoalCommand } from "./codex-turn-options.js";
+import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayHarness, serviceTierPickerTitle } from "./harness-turn-options.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -153,7 +161,7 @@ async function resumeWithBoundedHistory(rpc,params){
   return rpc.request("thread/resume",{...params,excludeTurns:false}).then(result=>({...result,__trebellFullHistoryFallback:true}));
 }
 
-function titleOf(thread){return thread?.name||thread?.preview||"New Trebell task"}
+function titleOf(thread){return threadTitle(thread)}
 function modelLabel(id){return String(id||"")}
 function compactModelLabel(id){
   const full=modelLabel(id);
@@ -163,6 +171,8 @@ function attachmentDisplayName(path){
   const name=String(path||"").split(/[\\/]/).pop()||"attachment";
   return name.replace(/^\d{10,}-[0-9a-f]{8}-(?=.)/i,"");
 }
+// Replaces the activity row with the event's id, or adds the event.
+function upsertEvent(events,event){return events.some(item=>item.id===event.id)?events.map(item=>item.id===event.id?{...item,...event}:item):[...events,event]}
 function historyFromThread(thread,checkpointByTurn={}){
   return historyFromTurns(thread?.turns||[],checkpointByTurn);
 }
@@ -221,7 +231,7 @@ function tokenLabel(tokenUsage,price=null){
 }
 
 function EventIcon({event}){
-  if(event.kind==="error")return <X size={13}/>;
+  if(toolEventFailed(event))return <X size={13}/>;
   if(event.status==="done")return <Check size={13}/>;
   if(event.kind==="commandExecution")return <SquareTerminal size={13}/>;
   if(event.kind==="fileChange")return <FileDiff size={13}/>;
@@ -268,7 +278,7 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initial
 
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
   const [expanded,setExpanded]=useState(false);
-  return <details className={"tool-event status-"+(event.kind==="error"?"error":event.status)+" kind-"+(event.kind||"event")} onToggle={toggle=>setExpanded(toggle.currentTarget.open)}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
+  return <details className={"tool-event status-"+(toolEventFailed(event)?"error":event.status)+" kind-"+(event.kind||"event")} onToggle={toggle=>setExpanded(toggle.currentTarget.open)}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
     {expanded&&<div className="tool-event-body">{event.raw?.command&&<pre>{Array.isArray(event.raw.command)?event.raw.command.join(" "):event.raw.command}</pre>}{event.output&&<pre>{event.output}</pre>}{event.raw?.changes&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre></div>}
   </details>;
 });
@@ -347,7 +357,11 @@ function ApprovalCard({request,onResolve,threadLabel=""}){
   const network=permissions?p.permissions?.network:null;const fileSystem=permissions?p.permissions?.fileSystem:null;
   const title=permissions?"Additional access requested":request.method.includes("fileChange")||request.method==="applyPatchApproval"?"File changes need approval":p.networkApprovalContext?.host?"Network access needs approval":"Command needs approval";
   const detail=permissions?[network&&"Network access",fileSystem&&"Filesystem access"].filter(Boolean).join(" + "):(p.networkApprovalContext?.host?`${p.networkApprovalContext.protocol||"network"}://${p.networkApprovalContext.host}`:p.reason||p.command||p.path||request.method);
-  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}<p>{detail||p.reason||request.method}</p>{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}<div className="approval-actions"><button onClick={()=>onResolve(request,"decline")}>Deny</button><button onClick={()=>onResolve(request,"acceptForSession")}>Allow session</button><button className="approve" onClick={()=>onResolve(request,"accept")}>Allow once</button></div></div>;
+  const approvalOptions=Array.isArray(p.approvalOptions)?p.approvalOptions.filter(option=>option&&typeof option.decision==="string"&&option.label):[];
+  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}<p>{detail||p.reason||request.method}</p>{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}{approvalOptions.filter(option=>option.warning).map(option=><small key={"warning-"+option.decision}>{option.label}: {option.warning}</small>)}<div className="approval-actions">{approvalOptions.length
+    // An ACP harness's own choices, in its order and wording (T3 grokApprovalOptions / antigravityApprovalOptions).
+    ?approvalOptions.map(option=><button key={option.decision} className={option.decision==="accept"?"approve":undefined} onClick={()=>onResolve(request,option.decision)}>{option.label}</button>)
+    :<><button onClick={()=>onResolve(request,"decline")}>Deny</button><button onClick={()=>onResolve(request,"acceptForSession")}>Allow session</button><button className="approve" onClick={()=>onResolve(request,"accept")}>Allow once</button></>}</div></div>;
 }
 function GuardianDenialCard({review,busy,onApprove,onDismiss}){
   if(!review)return null;
@@ -375,7 +389,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,providerReady,transportReady=true,transportStatus="",onRetryTransport,runtimeSwitchLabel="",modelsLoading=false,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onReasoningEffort,onServiceTier,onModelPickerOpenChange}){
+const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,starting=false,providerReady,transportReady=true,transportStatus="",onRetryTransport,runtimeSwitchLabel="",modelsLoading=false,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onReasoningEffort,onServiceTier,onModelOption,onModelPickerOpenChange,codexThread=null}){
   const [modelOpen,setModelOpen]=useState(false);
   const [modelQuery,setModelQuery]=useState("");
   const [listening,setListening]=useState(false);
@@ -483,7 +497,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   }).filter(Boolean);
   const recipeByCommand=new Map((recipes||[]).map(recipe=>[String(recipe?.name||""),recipe]).filter(([name])=>name.startsWith("/")));
   const recipeSlash=[...recipeByCommand].map(([cmd,recipe])=>[cmd,recipe.description||recipe.title||"Project recipe"]);
-  const allSlash=[...SLASH_COMMANDS,...recipeSlash,...nativeSlash].filter(([cmd],index,array)=>array.findIndex(([candidate])=>candidate===cmd)===index);
+  const allSlash=[...SLASH_COMMANDS.map(([cmd,desc])=>cmd==="/goal"&&agentRuntime==="codex"?[cmd,"Set a goal Codex keeps working toward (/goal, pause, resume, clear)"]:[cmd,desc]),...recipeSlash,...nativeSlash].filter(([cmd],index,array)=>array.findIndex(([candidate])=>candidate===cmd)===index);
   const slashAvailable=cmd=>{
     const recipe=recipeByCommand.get(cmd);
     if(recipe)return !projectless&&(!recipe.runtime||recipe.runtime===agentRuntime)&&(!recipe.model||(models||[]).includes(recipe.model));
@@ -491,7 +505,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
     if(["/ps","/stop"].includes(cmd))return Boolean(runtimeCapabilities.backgroundProcesses)&&threadOpen;
     if(cmd==="/feedback")return agentRuntime==="codex"&&threadOpen;
     if(cmd==="/agents")return Boolean(runtimeCapabilities.delegation);
-    if(cmd==="/goal")return threadOpen;
+    if(cmd==="/goal")return threadOpen||agentRuntime==="codex";
     if(cmd==="/review")return threadOpen&&gitAvailable;
     if(["/diff","/git"].includes(cmd))return !projectless;
     return true;
@@ -516,9 +530,19 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   const steerFollowUps=Boolean(runtimeCapabilities.steering)&&settings.followUpMode==="steer";
   const modelProviderRuntime=Boolean(runtimeCapabilities.managedInference);
   const reasoningEffortOptions=supportedReasoningEfforts(agentRuntime,provider,model,modelMeta?.[model]||{});
-  const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,model)||"";
   const serviceTierOptions=supportedModelServiceTiers(agentRuntime,provider,model,modelMeta?.[model]||{});
-  const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,model)||"";
+  // Codex shows the open thread's own effort and tier while it runs this model, and its Standard tier is "default", as
+  // T3 Code's Codex selects do.
+  const codexChoices=agentRuntime==="codex"?codexModelChoices({settings,provider,model,metadata:modelMeta?.[model]||{},custom:(settings.customModels||[]).find(item=>item.id===model&&item.runtime==="codex")||null,thread:codexThread}):null;
+  const reasoningEffort=codexChoices?codexChoices.effort||"":configuredReasoningEffort(settings,agentRuntime,provider,model)||"";
+  const serviceTier=codexChoices?codexChoices.serviceTierPicker:configuredModelServiceTier(settings,agentRuntime,provider,model)||"";
+  const effortChoices=reasoningEffort&&!reasoningEffortOptions.includes(reasoningEffort)?[...reasoningEffortOptions,reasoningEffort]:reasoningEffortOptions;
+  // Every harness's effort ids read the same way (xhigh is Extra High); a harness's own names (OpenCode variants) stay as given.
+  const effortLabel=effort=>codexReasoningEffortLabel(effort);
+  // The model's other settings (Cursor's context size and thinking switch), each showing the user's pick or the harness's
+  // current value.
+  const modelOptionDescriptors=supportedModelOptions(modelMeta?.[model]||{});
+  const modelOptionPicks=configuredModelOptions(settings,agentRuntime,provider,model,modelMeta?.[model]||{});
   const providerLabel=modelProviderLabel(provider)||"provider";
   function pickModel(event,id){
     const next=nextModelSelection(chosenModels,id,{shiftKey:event.shiftKey,allowMulti:allowMultiModel});
@@ -527,13 +551,15 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   }
   // The harness transport is down: the draft stays editable but nothing is sent until it is back.
   const transportError=!transportReady&&transportStatus==="error";
-  const transportMessage=transportError?`Could not connect to ${agentRuntimeLabel}`:transportStatus==="reconnecting"?`Reconnecting to ${agentRuntimeLabel}…`:`Connecting to ${agentRuntimeLabel}…`;
+  const transportMessage=transportError?`Could not connect to ${agentRuntimeLabel}`:transportStatus==="reconnecting"?`Reconnecting to ${agentRuntimeLabel}…`:starting?"Starting Trebell Code…":`Connecting to ${agentRuntimeLabel}…`;
   // Every usable harness catalog lists at least one model; a prompt never goes out without one of the active runtime's models.
   // A running turn takes steers and queued follow-ups without a model (as Enter does); a queued one drains through startTurn, which checks the catalog.
   const modelReady=chosenModels.some(id=>(models||[]).includes(id));
   const modelBlocker=runtimeSwitchLabel||modelReady||running?"":modelsLoading?"Loading models…":modelError||"No models available — check Settings";
-  const configureLabel="Configure "+(modelProviderRuntime?providerLabel:agentRuntimeLabel),setupRequired=!providerReady&&!models.length;
-  const composerPlaceholder=openingThread?"Opening thread…":submitting?"Sending…"
+  // While Trebell is starting it does not know which harness to set up yet: the model picker waits for the catalog instead.
+  const configureLabel="Configure "+(modelProviderRuntime?providerLabel:agentRuntimeLabel),setupRequired=!starting&&!providerReady&&!models.length;
+  // starting: Trebell's first load has not yet said which harness runs, so the composer names none.
+  const composerPlaceholder=openingThread?"Opening thread…":submitting?"Sending…":starting?"Starting Trebell Code…"
     :providerReady?(runtimeSwitchLabel||(!transportReady?transportMessage:running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"))
     :modelProviderRuntime?`Configure ${providerLabel} in Settings…`
     :`Configure ${agentRuntimeLabel} in Settings…`;
@@ -547,8 +573,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
       <select className="permission-picker" value={permissionMode} onChange={e=>setPermissionMode(e.target.value)}><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select>
-      {reasoningEffortOptions.length>0&&<select data-testid="reasoning-effort-picker" className="permission-picker reasoning-effort-picker" value={reasoningEffort} disabled={running} onChange={e=>onReasoningEffort?.(e.target.value)} title="Model reasoning / thinking effort"><option value="">Thinking · provider default</option>{reasoningEffortOptions.map(effort=><option key={effort} value={effort}>Thinking · {effort}</option>)}</select>}
-      {serviceTierOptions.length>0&&<select data-testid="service-tier-picker" className="permission-picker service-tier-picker" value={serviceTier} disabled={running} onChange={e=>onServiceTier?.(e.target.value)} title="OpenAI processing speed tier"><option value="">Speed · Standard</option>{serviceTierOptions.map(tier=><option key={tier} value={tier}>Speed · {tier[0].toUpperCase()+tier.slice(1)}</option>)}</select>}
+      {reasoningEffortOptions.length>0&&<select data-testid="reasoning-effort-picker" className="permission-picker reasoning-effort-picker" value={reasoningEffort} disabled={running} onChange={e=>onReasoningEffort?.(e.target.value)} title="Model reasoning / thinking effort"><option value="">Thinking · provider default</option>{effortChoices.map(effort=><option key={effort} value={effort}>Thinking · {effortLabel(effort)}</option>)}</select>}
+      {serviceTierOptions.length>0&&<select data-testid="service-tier-picker" className="permission-picker service-tier-picker" value={serviceTier} disabled={running} onChange={e=>onServiceTier?.(e.target.value)} title={serviceTierPickerTitle(agentRuntime)}><option value={agentRuntime==="codex"?CODEX_STANDARD_SERVICE_TIER:""}>Speed · Standard</option>{serviceTierOptions.map(tier=><option key={tier} value={tier}>Speed · {modelServiceTierLabel(agentRuntime,tier,modelMeta?.[model]||{})}</option>)}</select>}
+      {modelOptionDescriptors.map(option=>{const value=modelOptionPicks[option.id]??option.defaultValue??"";return <select key={option.id} data-testid="model-option-picker" data-option-id={option.id} className="permission-picker model-option-picker" value={value} disabled={running} onChange={e=>onModelOption?.(option.id,e.target.value)} title={`${agentRuntimeLabel} model setting: ${option.label}`}>{!option.choices.some(choice=>choice.value===value)&&<option value="">{option.label} · {agentRuntimeLabel}'s setting</option>}{option.choices.map(choice=><option key={choice.value} value={choice.value}>{option.label} · {choice.label}</option>)}</select>})}
       {runtimeCapabilities.collaborationModes&&collaborationModes.length>0&&<select data-testid="collaboration-mode-picker" className="permission-picker collaboration-mode-picker" value={collaborationMode} disabled={running||collaborationModeBusy} onChange={e=>onCollaborationMode?.(e.target.value)} title="Collaboration mode">{collaborationModes.map(item=><option key={item.mode} value={item.mode}>{item.name} mode</option>)}</select>}
       {!threadOpen&&!projectless&&<select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>}
     </div><div className="composer-right">
@@ -617,6 +644,9 @@ export default function App(){
   const [collaborationModes,setCollaborationModes]=useState([]); const [collaborationMode,setCollaborationMode]=useState("default"); const [collaborationModeBusy,setCollaborationModeBusy]=useState(false);
   const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
   const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({threadId:null,supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
+  // The model, effort and tier the open Codex thread runs with (thread/resume, thread/settings/updated), and the Codex
+  // goal waiting to turn active after its first turn starts.
+  const [codexThreadState,setCodexThreadState]=useState(null); const codexGoalActivationRef=useRef(null);
   const submittingRef=useRef(false);
   const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
   const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:DEFAULT_MODEL_PROVIDER});
@@ -636,11 +666,16 @@ export default function App(){
   const [goal,setGoal]=useState(null); const [continuity,setContinuity]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]); const [sourceSelectedPr,setSourceSelectedPr]=useState(null);
   const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [threadTelemetry,setThreadTelemetry]=useState({});const threadTelemetryRef=useRef({});
+  // runtimeKnown: the first load or a landed harness switch has set settings.agentRuntime; until then it holds the app's default.
+  const [runtimeKnown,setRuntimeKnown]=useState(false);
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
+  // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
+  // menus before its thread exists, as T3 Code lists provider slash commands.
+  const runtimeInventoryRef=useRef(null);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
-  const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeSwitchSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
+  const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
   modelsRef.current=models;modelRef.current=model;
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
@@ -935,6 +970,11 @@ export default function App(){
     const ids=Array.isArray(d?.models)?d.models:[],preferred=typeof preferredModel==="function"?preferredModel():preferredModel;
     setModelError(d?.error||"");
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
+    // A new chat shows the harness's own menus, whole: what the new harness does not list (another harness's commands, agents
+    // or skills) is cleared. Codex lists its skills itself (skills/list).
+    const inventory=d?.inventory&&typeof d.inventory==="object"?d.inventory:null,previousInventory=runtimeInventoryRef.current;
+    runtimeInventoryRef.current=inventory;
+    if(!activeThreadRef.current&&(inventory||previousInventory))applyProviderInventory(harnessInventory(inventory,null,{withSkills:d?.agentRuntime!=="codex"}));
     const next=ids.includes(preferred)?preferred:(ids.includes(d?.defaultModel)?d.defaultModel:(ids[0]||""));
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
     return next;
@@ -978,12 +1018,19 @@ export default function App(){
     }finally{if(seq===modelRefreshSeqRef.current){modelsLoadingRef.current=false;setModelsLoading(false)}}
   }
   function resetThreadView(runtime,capabilities){
-    activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setEvents([]);resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime:runtime,nativeQueue:capabilities?.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);
+    activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setEvents([]);setTokenUsage(null);resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime:runtime,nativeQueue:capabilities?.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);
+  }
+  // The open thread when the person opened it while the switch ran and it belongs to the harness the switch lands on, else null. A
+  // switch closes the thread it replaces (the one open when it began), not one the person has since opened under the landing harness.
+  function threadOpenedDuringSwitch(pending,runtime){
+    const thread=activeThreadRef.current;
+    return threadKeptBySwitch(thread,threadMeta[thread?.id]||{},{switchThreadId:pending.threadId,landingRuntime:runtime,openedUnder:agentRuntimeRef.current})?thread:null;
   }
   // A harness switch clears the previous runtime's models at once and gates the composer until the server answers. Its transport stays open
   // until then (see the transport effect), so a rejected switch leaves running turns and open approvals of the active harness untouched.
+  // threadId: the thread open when the switch began, the one resetThread closes.
   function beginRuntimeSwitch({runtime,instanceId=null,resetThread=true}={}){
-    const pending={id:++runtimeSwitchSeqRef.current,from:agentRuntime,to:String(runtime||agentRuntime),instanceId:instanceId||null,resetThread,previous:{models,modelMeta,model,selectedModels,modelError,scope:modelCatalogScopeRef.current}};
+    const pending={id:++runtimeSwitchSeqRef.current,from:agentRuntime,to:String(runtime||agentRuntime),instanceId:instanceId||null,resetThread,threadId:activeThreadRef.current?.id||null,previous:{models,modelMeta,model,selectedModels,modelError,scope:modelCatalogScopeRef.current}};
     runtimeSwitchRef.current=pending;modelRefreshSeqRef.current++;
     setRuntimeSwitch({id:pending.id,from:pending.from,to:pending.to});
     clearModelCatalog();
@@ -1003,14 +1050,21 @@ export default function App(){
     const nextProvider=settings.modelProvider||boot?.provider||bootstrap.provider||DEFAULT_MODEL_PROVIDER;
     const capabilities=boot?.agentRuntime===runtime&&boot?.runtimeCapabilities?boot.runtimeCapabilities:sharedRuntimeCapabilities(runtime);
     const catalog=result?.catalog||null,catalogMatches=Boolean(catalog&&(!catalog.agentRuntime||catalog.agentRuntime===runtime)&&(!catalog.provider||catalog.provider===nextProvider));
-    const preferredModel=runtime===pending.from?pending.previous.model:"";
+    // Opening a thread of another harness lands on that thread's model rather than the harness default, as does a thread of this harness
+    // opened while the switch ran.
+    const pendingThread=pendingRuntimeThreadRef.current?.targetRuntime===runtime?pendingRuntimeThreadRef.current.thread:null;
+    const keptThread=threadOpenedDuringSwitch(pending,runtime);
+    const preferredModel=keptThread?.model||(runtime===pending.from?pending.previous.model:(pendingThread?.model||""));
     // One batch: the runtime, its bootstrap, exactly one transport reconnect and (when bundled) its catalog land together. Nothing reconnects after the catalog.
     runtimeSwitchRef.current=null;modelCatalogScopeRef.current=modelCatalogScope(runtime,nextProvider);
-    setRuntimeSwitch(null);
-    setSettings(previous=>({...previous,agentRuntime:runtime,agentRuntimeInstanceId:instanceId}));
+    setRuntimeSwitch(null);runtimeAppliedSeqRef.current++;
+    setSettings(previous=>({...previous,agentRuntime:runtime,agentRuntimeInstanceId:instanceId}));setRuntimeKnown(true);
     if(boot)setBootstrap(boot);
     setRuntimeTransportRevision(value=>value+1);
-    if(pending.resetThread)resetThreadView(runtime,capabilities);
+    // The previous harness's thread never stays open under this one, even when opening another harness's thread (resetThread:false)
+    // replaced a switch from Settings: its view, and a send from it, would go to that thread with this harness's model. A thread of
+    // this harness opened while the switch ran stays open, and the new transport resumes it.
+    if(!keptThread&&(pending.resetThread||threadOwnerElsewhere(activeThreadRef.current,threadMeta[activeThreadRef.current?.id],runtime)))resetThreadView(runtime,capabilities);
     if(catalogMatches){modelRefreshSeqRef.current++;applyModelCatalog(catalog,{preferredModel})}
     else refreshProviderModels({agentRuntime:runtime,provider:nextProvider,bootstrap:boot,refreshBootstrap:false,preferredModel}).catch(()=>{});
     return true;
@@ -1033,10 +1087,11 @@ export default function App(){
     // The server moved before the error surfaced: follow it so the transport and the catalog match what actually runs. The new agentRuntime
     // (with the bootstrap set above) reconnects the transport once through the transport effect.
     const nextProvider=settings.modelProvider||boot?.provider||bootstrap.provider||DEFAULT_MODEL_PROVIDER;
-    modelCatalogScopeRef.current=modelCatalogScope(runtime,nextProvider);
-    setSettings(previous=>({...previous,agentRuntime:runtime,agentRuntimeInstanceId:boot?.agentRuntimeInstanceId||`${runtime}-default`}));
-    if(pending.resetThread)resetThreadView(runtime,boot?.runtimeCapabilities||sharedRuntimeCapabilities(runtime));
-    refreshProviderModels({agentRuntime:runtime,provider:nextProvider,bootstrap:boot,refreshBootstrap:false}).catch(()=>{});
+    modelCatalogScopeRef.current=modelCatalogScope(runtime,nextProvider);runtimeAppliedSeqRef.current++;
+    setSettings(previous=>({...previous,agentRuntime:runtime,agentRuntimeInstanceId:boot?.agentRuntimeInstanceId||`${runtime}-default`}));setRuntimeKnown(true);
+    const keptThread=threadOpenedDuringSwitch(pending,runtime);
+    if(!keptThread&&(pending.resetThread||threadOwnerElsewhere(activeThreadRef.current,threadMeta[activeThreadRef.current?.id],runtime)))resetThreadView(runtime,boot?.runtimeCapabilities||sharedRuntimeCapabilities(runtime));
+    refreshProviderModels({agentRuntime:runtime,provider:nextProvider,bootstrap:boot,refreshBootstrap:false,...(keptThread?.model?{preferredModel:keptThread.model}:{})}).catch(()=>{});
   }
   // perform() runs the server request that switches (or reloads) the active harness. gate:false leaves sends ungated while it runs and only
   // applies its result (e.g. after an install). Either way the transport reconnects once, in completeRuntimeSwitch.
@@ -1121,23 +1176,39 @@ export default function App(){
     }
   }
 
+  // The model Trebell's first load lands on: the open thread's (one opened while its harness still listed its models), else the open
+  // project's default, else the catalog's own.
+  const startupModelChoice=useLatestCallback((ids,catalogDefault)=>{
+    const thread=activeThreadRef.current;
+    const threadModel=!thread?null:agentRuntime==="codex"?(codexThreadState?.threadId===thread.id?codexThreadState.model:null):thread.model;
+    return [threadModel,currentProject?.effectiveSettings?.defaultModel,catalogDefault].find(id=>id&&ids.includes(id))||ids[0]||"";
+  });
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
-      const extrasPromise=Promise.allSettled([api("/api/models"),api("/api/environment/themes"),api("/api/projects")]);
+      const switchSeqAtStart=runtimeSwitchSeqRef.current,appliedSeqAtStart=runtimeAppliedSeqRef.current,modelSeqAtStart=modelRefreshSeqRef.current;
+      // The startup catalog is this load's to show while no harness switch or other model refresh has begun since it was asked for.
+      const ownsModels=()=>runtimeSwitchSeqRef.current===switchSeqAtStart&&modelRefreshSeqRef.current===modelSeqAtStart;
+      const settleModels=()=>{if(ownsModels()){modelsLoadingRef.current=false;setModelsLoading(false)}};
+      // A harness can take seconds to list its models (Cursor took 8 s live), so the first load does not wait for them: the harness that runs,
+      // its threads and the project show once Trebell's own state is read, and the catalog lands when the harness answers. Waiting for it
+      // left the default harness described meanwhile, and Settings offering to switch to the harness that already runs.
+      modelsLoadingRef.current=true;setModelsLoading(true);
+      const modelPromise=api("/api/models").then(value=>value||{models:[]},error=>({models:[],error:error?.message||String(error)}));
+      const extrasPromise=Promise.allSettled([api("/api/environment/themes"),api("/api/projects")]);
       let boot,state;
       try{[boot,state]=await Promise.all([api("/api/bootstrap"),api("/api/state")])}
       catch(error){
-        if(!cancelled){setInitialLoadError(error?.message||String(error)||"Trebell startup failed.");setInitialLoaded(true)}
+        if(!cancelled){settleModels();setInitialLoadError(error?.message||String(error)||"Trebell startup failed.");setInitialLoaded(true)}
         return;
       }
-      const [modelResult,themeResult,projectResult]=await extrasPromise;
-      const modelData=modelResult.status==="fulfilled"?modelResult.value:{models:[],error:modelResult.reason?.message||String(modelResult.reason)};
+      const [themeResult,projectResult]=await extrasPromise;
       const themeCatalog=themeResult.status==="fulfilled"?themeResult.value:environmentThemeCatalog;
       const projectData=projectResult.status==="fulfilled"?projectResult.value:{projects:state.projects||[]};
-      // The startup catalog belongs to the runtime these settings resolve to: record its scope so the scope effect keeps it instead of loading it twice.
-      if(cancelled)return; setBootstrap(boot); setSettings(prev=>{const next={...prev,...(state.settings||{})},runtime=next.agentRuntime||boot.agentRuntime||"codex";if(!modelData.agentRuntime||modelData.agentRuntime===runtime)modelCatalogScopeRef.current=modelCatalogScope(runtime,next.modelProvider||boot.provider||DEFAULT_MODEL_PROVIDER);return next}); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
-      setEnvironmentThemeCatalog(themeCatalog);
+      if(cancelled)return;
+      // A harness switch begun while Trebell was starting owns the runtime: the startup bootstrap, runtime and model catalog describe the
+      // harness it replaces. A switch still pending applies its own when it lands; one that has landed already applied them.
+      const startup=startupRuntimeOutcome({switchSeqAtStart,switchSeq:runtimeSwitchSeqRef.current,appliedSeqAtStart,appliedSeq:runtimeAppliedSeqRef.current});
       const activeEnvironmentId=state.settings?.activeEnvironmentId||null;
       const projectsForEnvironment=(projectData.projects||state.projects||[]).filter(project=>(project.environmentId||null)===activeEnvironmentId);
       const activeProject=projectsForEnvironment.find(project=>project.id===state.settings?.activeProjectId)||null;
@@ -1145,18 +1216,20 @@ export default function App(){
       const environmentCwd=boot.activeEnvironment?.cwd||"";
       const initialProject=activeProject||(environmentCwd?projectsForEnvironment.find(project=>String(project.path)===String(environmentCwd)):null)||firstProject;
       const initialPath=initialProject?.path||environmentCwd||(!activeEnvironmentId?boot.cwd:"")||"";
-      setCurrentProject(initialProject);
-      setProjectPath(initialPath);
-      const availableModels=modelData.models||[];
-      setModelError(modelData.error||"");
-      setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item]))); const fallback=availableModels.length?availableModels:(boot.mock?["test/coding-fast","test/coding-large"]:[]);
       const initialScoped=initialProject?.effectiveSettings||{};
-      const initialModel=(initialScoped.defaultModel&&fallback.includes(initialScoped.defaultModel))?initialScoped.defaultModel:(fallback.includes(modelData.defaultModel)?modelData.defaultModel:(fallback[0]||""));
-      setModels(fallback); setModel(initialModel);setSelectedModels(initialModel?[initialModel]:[]);
-      setPermissionMode(initialScoped.defaultPermissionMode||state.settings?.defaultPermissionMode||"supervised");
-      setWorkspaceMode(initialScoped.defaultWorkspaceMode||state.settings?.defaultWorkspaceMode||"current");
-      if(initialProject?.permissionMode)setPermissionMode(initialProject.permissionMode);
-      if(initialProject?.workspaceMode)setWorkspaceMode(initialProject.workspaceMode);
+      // One synchronous commit, so the catalog that lands later is checked against the harness and provider this load shows.
+      flushSync(()=>{
+        setBootstrap(previous=>startup.keepLandedRuntime&&previous?.agentRuntime?previous:boot);
+        // The startup catalog belongs to the runtime these settings resolve to: record its scope so the scope effect keeps it instead of loading it twice.
+        setSettings(prev=>{const next={...prev,...(state.settings||{})};if(startup.keepLandedRuntime){next.agentRuntime=prev.agentRuntime;next.agentRuntimeInstanceId=prev.agentRuntimeInstanceId}const runtime=next.agentRuntime||boot.agentRuntime||"codex";if(startup.applyCatalog)modelCatalogScopeRef.current=modelCatalogScope(runtime,next.modelProvider||boot.provider||DEFAULT_MODEL_PROVIDER);return next}); setRuntimeKnown(true); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
+        setEnvironmentThemeCatalog(themeCatalog);
+        setCurrentProject(initialProject);
+        setProjectPath(initialPath);
+        setPermissionMode(initialScoped.defaultPermissionMode||state.settings?.defaultPermissionMode||"supervised");
+        setWorkspaceMode(initialScoped.defaultWorkspaceMode||state.settings?.defaultWorkspaceMode||"current");
+        if(initialProject?.permissionMode)setPermissionMode(initialProject.permissionMode);
+        if(initialProject?.workspaceMode)setWorkspaceMode(initialProject.workspaceMode);
+      });
       const partialErrors=[];
       if(window.trebellDesktop?.background&&state.settings?.backgroundMode!=null){
         try{await window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode))}
@@ -1165,7 +1238,20 @@ export default function App(){
       if(themeResult.status==="rejected")partialErrors.push("themes: "+(themeResult.reason?.message||String(themeResult.reason)));
       if(projectResult.status==="rejected")partialErrors.push("projects: "+(projectResult.reason?.message||String(projectResult.reason)));
       if(partialErrors.length)showActionError(new Error(partialErrors.join(" · ")),"Started with partial data");
-      if(!cancelled){setInitialLoadError("");setInitialLoaded(true)}
+      const modelData=await modelPromise;
+      if(cancelled)return;
+      if(ownsModels()){
+        // A catalog of another harness or provider (another window switched meanwhile) is not shown: the model refresh loads this one's.
+        if((!modelData.agentRuntime||modelData.agentRuntime===agentRuntimeRef.current)&&(!modelData.provider||modelData.provider===providerRef.current)){
+          const availableModels=modelData.models||[];
+          const fallback=availableModels.length?availableModels:(boot.mock?["test/coding-fast","test/coding-large"]:[]);
+          const initialModel=startupModelChoice(fallback,modelData.defaultModel);
+          setModelError(modelData.error||"");setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item])));
+          setModels(fallback);setModel(initialModel);setSelectedModels(initialModel?[initialModel]:[]);
+        }
+        settleModels();
+      }
+      setInitialLoadError("");setInitialLoaded(true);
     })().catch(error=>{if(!cancelled){setInitialLoadError(error?.message||String(error)||"Trebell startup failed.");setInitialLoaded(true)}}); return()=>{cancelled=true};
   },[initialLoadRevision]);
 
@@ -1293,14 +1379,42 @@ export default function App(){
     setCollaborationMode(current=>modes.some(item=>item.mode===current)?current:(modes.some(item=>item.mode==="default")?"default":modes[0]?.mode||"default"));
     return modes;
   }
-  function selectedCollaborationMode(modelId=model){
-    return runtimeCapabilities.collaborationModes?collaborationModePayload(collaborationModes,collaborationMode,modelId):null;
+  function selectedCollaborationMode(modelId=model,{effort=null}={}){
+    return runtimeCapabilities.collaborationModes?collaborationModePayload(collaborationModes,collaborationMode,modelId,{effort}):null;
+  }
+  // The effort and tier a Codex turn on this thread sends for the model (codex-turn-options.js).
+  function codexChoicesFor(modelId=model,threadId=activeThreadRef.current?.id){
+    const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime==="codex")||null;
+    return codexModelChoices({settings,provider,model:modelId,metadata:modelMeta?.[modelId]||{},custom,thread:threadId&&codexThreadState?.threadId===threadId?codexThreadState:null});
+  }
+  // A Codex thread is resumed without a model, so it keeps the model, effort and tier it runs with (T3 Code), and the
+  // composer moves to that model.
+  function applyCodexThreadSettings(threadId,resumed){
+    const next=codexThreadSettings(threadId,resumed||{});setCodexThreadState(next);
+    if(next&&modelsRef.current.includes(next.model)){setModel(next.model);setSelectedModels([next.model])}
+  }
+  // A pick for the model the open, idle Codex thread runs changes the thread's own setting too (thread/settings/update).
+  async function updateCodexThreadSetting(patch){
+    const threadId=activeThreadRef.current?.id;
+    if(agentRuntime!=="codex"||!threadId||!rpc||rpcStatus!=="connected"||running||codexThreadState?.threadId!==threadId||codexThreadState.model!==model)return;
+    const params={threadId};
+    if(Object.prototype.hasOwnProperty.call(patch,"effort")){
+      if(patch.effort)params.effort=patch.effort;
+      const collaboration=selectedCollaborationMode(model,{effort:patch.effort||null});if(collaboration)params.collaborationMode=collaboration;
+    }
+    if(patch.serviceTier)params.serviceTier=patch.serviceTier;
+    if(Object.keys(params).length===1)return;
+    try{
+      await rpc.request("thread/settings/update",params);
+      setCodexThreadState(current=>current?.threadId===threadId?{...current,...(Object.prototype.hasOwnProperty.call(patch,"effort")?{effort:patch.effort||null}:{}),...(patch.serviceTier?{serviceTier:patch.serviceTier}:{})}:current);
+    }catch(error){setEvents(prev=>[...prev,{id:"codex-settings-error-"+Date.now(),kind:"error",title:"Could not change this thread's Codex settings: "+(error.message||String(error)),status:"done",raw:{}}])}
   }
   async function changeCollaborationMode(nextMode){
     if(!collaborationModes.some(item=>item.mode===nextMode))return;
     const previous=collaborationMode;setCollaborationMode(nextMode);
     if(!runtimeCapabilities.collaborationModes||!rpc||rpcStatus!=="connected"||!activeThread?.id||running)return;
-    const payload=collaborationModePayload(collaborationModes,nextMode,model);if(!payload)return;
+    // Codex's collaboration mode carries the reasoning effort, so a mode change keeps the chosen effort.
+    const payload=collaborationModePayload(collaborationModes,nextMode,model,{effort:agentRuntime==="codex"?codexChoicesFor(model,activeThread.id).effort:null});if(!payload)return;
     setCollaborationModeBusy(true);
     try{await rpc.request("thread/settings/update",{threadId:activeThread.id,collaborationMode:payload})}
     catch(error){
@@ -1332,8 +1446,8 @@ export default function App(){
       const result=await rpc.request("thread/runtimeInstance/set",{threadId,instanceId});
       let updated=result?.thread;
       if(agentRuntime==="codex"){
-        const resumed=await rpc.request("thread/resume",{threadId,model:model||null,cwd:activeThreadRef.current?.cwd||null,excludeTurns:true});
-        updated=resumed?.thread||updated;
+        const resumed=await rpc.request("thread/resume",{threadId,cwd:activeThreadRef.current?.cwd||null,excludeTurns:true});
+        updated=resumed?.thread||updated;applyCodexThreadSettings(threadId,resumed);
       }
       if(updated){
         activeThreadRef.current=updated;
@@ -1516,7 +1630,10 @@ export default function App(){
         if(pending&&pending.targetRuntime===agentRuntime){
           pendingRuntimeThreadRef.current=null;
           const reopen=(listed||[]).find(thread=>thread.id===pending.thread.id)||pending.thread;
-          await openThread(reopen,{client:current,preserveSection:pending.preserveSection});
+          // The person asked for this thread, so a thread that cannot open says why, as a sidebar click on it does; the transport it was
+          // asked on stays up instead of reconnecting as if the socket had failed.
+          try{await openThread(reopen,{client:current,preserveSection:pending.preserveSection})}
+          catch(error){if(disposed||!current.isConnected())throw error;showActionError(error,"Could not open thread")}
         }else{
           const activeId=activeThreadRef.current?.id,cataloged=activeId?threads.find(thread=>thread.id===activeId)||activeThreadRef.current:null;
           const reopen=activeId?((listed||[]).find(thread=>thread.id===activeId)||cataloged):null;
@@ -1952,6 +2069,14 @@ export default function App(){
       setQuestion(current=>current&&requestResolvedBy(current.request,current.client,resolved)?null:current);
       setElicitations(prev=>prev.filter(item=>!requestResolvedBy(item.request,item.client,resolved)));
     }
+    else if(message.method==="agentRuntime/models/updated"){
+      // The harness's model list changed after the composer loaded it (Antigravity lists the account's models once a session
+      // starts; T3 pushes provider snapshots the same way). The composer keeps its model while it is still offered.
+      const runtime=String(p.runtime||"");
+      if(runtime&&runtime===agentRuntimeRef.current&&!runtimeSwitchRef.current&&(!client||client===rpcRef.current))api("/api/models").then(catalog=>{
+        if(agentRuntimeRef.current===runtime&&!runtimeSwitchRef.current)return refreshProviderModels({agentRuntime:runtime,catalog,refreshBootstrap:false});
+      }).catch(()=>{});
+    }
     else if(message.method==="thread/started"&&p.thread){
       // This notification arrives before the thread/start response, so whichever lands second replaces the first.
       if(isListedThread(p.thread))setThreads(prev=>prependThread(prev,p.thread));
@@ -1990,6 +2115,7 @@ export default function App(){
     else if(message.method==="thread/settings/updated"&&isCurrent){
       const nextMode=p.threadSettings?.collaborationMode?.mode;
       if(nextMode)setCollaborationMode(nextMode);
+      const codexSettings=agentRuntime==="codex"?codexThreadSettings(threadId,p):null;if(codexSettings)setCodexThreadState(codexSettings);
     }
     else if(message.method==="thread/reverted"&&isCurrent)reloadActiveThread();
     else if(message.method==="turn/started"){
@@ -2004,8 +2130,11 @@ export default function App(){
       const completedTurnId=p.turn?.id||p.turnId||null,completedAtMs=p.turn?.completedAt?Number(p.turn.completedAt)*1000:Date.now();
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
+      // A failed Codex turn ends with its error (T3 Code); an active Codex goal goes on with a turn Codex starts itself.
+      const codexFailure=agentRuntime==="codex"?codexTurnFailure(p.turn):null,codexGoalContinues=agentRuntime==="codex"&&isCurrent&&goal?.status==="active";
       if(isCurrent){
-        setRunning(false);setActiveTurnId(null);setEvents(prev=>prev.map(e=>e.status==="running"?{...e,status:"done"}:e));loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));desktopNotify("Trebell Code finished",titleOf(activeThreadRef.current)+" is ready for review.");
+        setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>e.status==="running"?{...e,status:"done"}:e);return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{}}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
+        if(codexFailure)desktopNotify("Trebell Code error",codexFailure.message);else if(!codexGoalContinues)desktopNotify("Trebell Code finished",titleOf(activeThreadRef.current)+" is ready for review.");
       }else if(threadId&&backgroundThreadsRef.current.has(threadId)){
         backgroundThreadsRef.current.delete(threadId);loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Background task completed, but the thread list could not refresh"));const thread=threads.find(item=>item.id===threadId);desktopNotify("Background task finished",(thread?titleOf(thread):"A background Trebell task")+" is ready for review.");
       }
@@ -2030,7 +2159,7 @@ export default function App(){
         const itemId=String(p.item.id||"");
         if(itemId){mcpProgressRef.current.delete(itemId);activityTimelineRef.current?.clearMcpProgress(itemId)}
       }
-      const item=normalizeItem({...p.item,status:"completed"});
+      const item=normalizeItem({...p.item,status:completedItemStatus(p.item)});
       const completedAtMs=p.completedAtMs||Date.now();
       const isActivityItem=!["userMessage","agentMessage"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===item.id?null:current.currentActivity,lastActivity:{id:item.id,kind:item.kind,title:item.title,durationMs:p.item?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs}));
@@ -2090,7 +2219,12 @@ export default function App(){
       updateThreadTelemetry(threadId,{tokenUsage:p.tokenUsage||null,lastActivityAt:Date.now()});
       if(isCurrent&&(section==="chat"||section==="new"||(rightPanelOpen&&rightPanelTab==="runtime")))setTokenUsage(p.tokenUsage||null);
     }
-    else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
+    else if(message.method==="thread/goal/updated"&&isCurrent){
+      // Codex ends an active goal itself: complete, or stopped by a budget, a usage limit or a blocker.
+      const next=p.goal||null;
+      if(agentRuntime==="codex"&&goal?.status==="active"&&next&&!["active","paused"].includes(next.status))desktopNotify(next.status==="complete"?"Goal complete":"Goal stopped",describeCodexGoal(next));
+      setGoal(next);
+    }
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
     else if(message.method==="thread/continuity/updated"&&isCurrent)setContinuity(p.continuity||null);
     else if(message.method==="thread/elicitation/completed"&&isCurrent){
@@ -2147,9 +2281,20 @@ export default function App(){
       if(isCurrent)setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Context compacted",status:"done",raw:p};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
     }
     else if(message.method==="error"){
-      if(threadId&&compactionWaitersRef.current.has(String(threadId)))settleCompactionWaiter(threadId,new Error(p.message||"Context compaction failed"));
-      updateThreadTelemetry(threadId,{currentActivity:null,lastError:p.message||"Agent error",lastActivityAt:Date.now()});
-      if(isCurrent){setEvents(prev=>[...prev,{id:"error-"+Date.now(),kind:"error",title:p.message||"Agent error",status:"done",raw:p}]);setRunning(false);desktopNotify("Trebell Code error",p.message||"The agent stopped with an error.")}
+      // Codex sends {error:{message, codexErrorInfo, additionalDetails}, willRetry, turnId} (T3 Code reads it the same way);
+      // other harnesses send {message}.
+      const notice=codexErrorNotice(p),codexTurnError=Boolean(p.error&&typeof p.error==="object"&&p.turnId);
+      if(notice.willRetry){
+        // Codex retries the turn itself: it keeps running, with one row showing the retry.
+        updateThreadTelemetry(threadId,{lastError:notice.message,lastActivityAt:Date.now()});
+        if(isCurrent)setEvents(prev=>upsertEvent(prev,{id:"codex-retry-"+(p.turnId||threadId),kind:"error",title:notice.title,status:"running",raw:p}));
+        return;
+      }
+      if(threadId&&compactionWaitersRef.current.has(String(threadId)))settleCompactionWaiter(threadId,new Error(notice.message||"Context compaction failed"));
+      updateThreadTelemetry(threadId,{currentActivity:null,lastError:notice.message,lastActivityAt:Date.now()});
+      // A Codex turn error ends the turn at turn/completed, which reports it once more and notifies.
+      if(isCurrent&&codexTurnError)setEvents(prev=>upsertEvent(prev,{id:"codex-error-"+p.turnId,kind:"error",title:notice.title,status:"done",raw:p}));
+      else if(isCurrent){setEvents(prev=>[...prev,{id:"error-"+Date.now(),kind:"error",title:notice.title,status:"done",raw:p}]);setRunning(false);desktopNotify("Trebell Code error",notice.message||"The agent stopped with an error.")}
     }
   }
 
@@ -2272,7 +2417,7 @@ export default function App(){
     if(action==="fork"){
       if(!rpc)return;
       const p=presetFor(permissionMode);
-      const result=await rpc.request("thread/fork",{threadId:thread.id,model:model||null,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd:thread.cwd||projectPath,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,threadSource:"trebell-code",excludeTurns:true});
+      const result=await rpc.request("thread/fork",{threadId:thread.id,...(agentRuntime==="codex"?{}:{model:model||null}),...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd:thread.cwd||projectPath,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,threadSource:"trebell-code",excludeTurns:true});
       if(result?.thread){setThreads(prev=>[result.thread,...prev.filter(t=>t.id!==result.thread.id)]);await openThread(result.thread)}
       return;
     }
@@ -2344,7 +2489,7 @@ export default function App(){
       pendingRuntimeThreadRef.current=null;throw error;
     }
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -2386,7 +2531,8 @@ export default function App(){
     let resumed=null,cp=null,goalData=null,continuityData=null,attachmentData=null;
     const persistentReadErrors=[];if(metaReadError)persistentReadErrors.push("thread metadata: "+(metaReadError.message||String(metaReadError)));
     if(connectedClient){
-      const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,model:model||null,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd:thread.cwd||null});
+      // A harness thread resumes on its own model (T3 keeps each thread's model selection); the composer then shows that model.
+      const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,...(agentRuntime==="native"?{model:model||null,modelProvider:provider}:{}),cwd:thread.cwd||null});
       const checkpointPromise=api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).then(value=>({value,error:null}),error=>({value:null,error}));
       const goalPromise=client.request("thread/goal/get",{threadId:thread.id}).then(value=>({value,error:null}),error=>({value:null,error}));
       const continuityPromise=client.request("thread/continuity/get",{threadId:thread.id}).then(value=>({value,error:null}),error=>({value:null,error}));
@@ -2423,12 +2569,14 @@ export default function App(){
     if(resumed?.thread){
       activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
       if(runtimeCapabilities.collaborationModes&&resumed.collaborationMode?.mode&&collaborationModes.some(item=>item.mode===resumed.collaborationMode.mode))setCollaborationMode(resumed.collaborationMode.mode);
+      if(agentRuntime==="codex")applyCodexThreadSettings(resumed.thread.id,resumed);
+      else if(relayHarness(agentRuntime)&&resumed.thread.model&&modelsRef.current.includes(resumed.thread.model)){setModel(resumed.thread.model);setSelectedModels([resumed.thread.model])}
       if(resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
         const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
         setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",loading:false});
       }else{setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
-      setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
+      setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex")applyProviderInventory(harnessInventory(runtimeInventoryRef.current,resumed.thread.providerMeta))
     }
     if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
       let listed={projects:[]};
@@ -2726,12 +2874,13 @@ export default function App(){
       try{nativeProjectId=(await ensureRuntimeProject(rpc,{trebellProject,cwd}))?.id||null}
       catch(error){showActionError(error,"Could not sync runtime project identity")}
     }
-    const result=await rpc.request("thread/start",{model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,projectless,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(nativeProjectId?{projectId:nativeProjectId}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
-    if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
+    const result=await rpc.request("thread/start",{model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,projectless,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...harnessThreadOptions(agentRuntime,{permissionMode}),...(nativeProjectId?{projectId:nativeProjectId}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
+    if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");applyProviderInventory(harnessInventory(runtimeInventoryRef.current,result.thread.providerMeta))}
     if(result.thread?.id)await persistThreadWorkspaceContext(result.thread,cwd,{sectionName:"Active",archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     return result.thread;
   }
-  function inputsFor(text,paths){return [{type:"text",text,textElements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
+  // Codex reads attachments from the paths named in the prompt (T3 Code), with images and audio also sent as items.
+  function inputsFor(text,paths){if(agentRuntime==="codex")return codexTurnInput(text,paths,{displayName:attachmentDisplayName});return [{type:"text",text,textElements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function loadNativeQueue(client=rpcRef.current,threadId=activeThreadRef.current?.id){
     if(!runtimeCapabilities.nativeQueue||!client||!threadId)return false;
     try{
@@ -2779,7 +2928,7 @@ export default function App(){
     const decision=autoCompactionDecision(usage,{enabled:settings.autoCompactContext===true,thresholdPercent:settings.autoCompactThresholdPercent??85});
     if(!decision.shouldCompact)return {attempted:false,compacted:false,decision,error:null};
     try{
-      await requestThreadCompaction(thread.id);
+      await requestThreadCompaction(thread.id,agentRuntime==="grok"?{timeoutMs:10*60_000}:undefined);
       updateThreadTelemetry(thread.id,{tokenUsage:null,lastActivityAt:Date.now()});
       if(activeThreadRef.current?.id===thread.id)setTokenUsage(null);
       return {attempted:true,compacted:true,decision,error:null};
@@ -2824,38 +2973,56 @@ export default function App(){
     if(runtimeSwitchRef.current)throw new Error(`Trebell is switching to ${agentRuntimeName(runtimeSwitchRef.current.to)}; send again once it is ready.`);
     if(!modelsRef.current.includes(modelId))throw new Error(`${agentRuntimeLabel} does not list the model ${modelId||"(none selected)"}. Choose one of its models and send again.`);
   }
-  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null}={}){
+  // T3 runGoalCommand: a Codex goal turns active once its first turn has started, unless Stop came first.
+  async function activateCodexGoal(activation){
+    try{
+      if(activation.stopped)return;
+      let current=(await rpc.request("thread/goal/set",{threadId:activation.threadId,status:"active"}))?.goal||null;
+      if(activation.stopped)current=(await rpc.request("thread/goal/set",{threadId:activation.threadId,status:"paused"}))?.goal||current;
+      if(activeThreadRef.current?.id===activation.threadId)setGoal(current);
+    }catch(error){
+      setEvents(prev=>[...prev,{id:"goal-start-error-"+Date.now(),kind:"error",title:"The turn started, but Codex could not make the goal active: "+(error.message||String(error)),status:"done",raw:{}}]);
+    }finally{if(codexGoalActivationRef.current===activation)codexGoalActivationRef.current=null}
+  }
+  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false}={}){
     assertTurnModel(modelId);
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
     const autoCompaction=thread?await maybeAutoCompactBeforeTurn(thread):{attempted:false,compacted:false,decision:null,error:null};
     if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>prependThread(prev,thread));setProjectPath(cwd)}
-    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
+    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);if(!goalResume)setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
     try{
       let checkpoint=null;
       if(!projectlessMode){
         try{checkpoint=await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}})}
         catch(error){reportCheckpointIssue("Could not create file checkpoint; file restore for this turn is unavailable",error,{threadId:thread.id,cwd})}
       }
+      // Codex runs an active goal's turns itself, so a Codex goal stays paused until this, its first turn, has started
+      // (T3 Code's runGoalCommand); the turn still carries Trebell's guidance for the goal, and Stop cancels the activation.
+      const goalActivation=goalPatch&&agentRuntime==="codex"&&(goalPatch.status??"active")==="active"?{threadId:thread.id,stopped:false}:null;
+      let goalContext=null;
       if(goalPatch){
-        const goalResult=await rpc.request("thread/goal/set",{threadId:thread.id,...goalPatch});
+        if(goalActivation)codexGoalActivationRef.current=goalActivation;
+        const goalResult=await rpc.request("thread/goal/set",{threadId:thread.id,...goalPatch,...(goalActivation?{status:"paused"}:{})});
         if(activeThreadRef.current?.id===thread.id)setGoal(goalResult?.goal||null);
+        if(goalActivation&&goalResult?.goal)goalContext=goalAdditionalContext({},{...goalResult.goal,status:"active"});
       }
       const p=presetFor(permissionModeOverride||permissionMode);
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
-      const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(!managedInference||item.provider===provider));
       const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,modelId);
       const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
-      const collaboration=selectedCollaborationMode(modelId);
+      const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
-      const turnContext={...repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text}),...(additionalContext||{})};
+      const turnContext={...repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&(reasoningEffort||custom?.effort)?{effort:reasoningEffort||custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
+      if(goalActivation)await activateCodexGoal(goalActivation);
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
     }catch(error){
       setMessages(prev=>prev.filter(message=>message.id!==clientId));
       setRunning(false);setActiveTurnId(null);
+      if(codexGoalActivationRef.current?.threadId===thread.id)codexGoalActivationRef.current=null;
       throw error;
     }
   }
@@ -2874,13 +3041,12 @@ export default function App(){
       }
       const p=presetFor(permissionMode);
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
-      const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(!managedInference||item.provider===provider));
       const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,modelId);
       const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
       turnRequestStarted=true;
-      const collaboration=selectedCollaborationMode(modelId);
+      const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true}),contextEntries=repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text});
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&(reasoningEffort||custom?.effort)?{effort:reasoningEffort||custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(contextEntries).length?{additionalContext:contextEntries}:{})});const turnId=result?.turn?.id||null;
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(contextEntries).length?{additionalContext:contextEntries}:{})});const turnId=result?.turn?.id||null;
       if(checkpoint?.id&&turnId)try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}})}catch(error){reportCheckpointIssue("Background file checkpoint was created but could not be linked to its turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}
       return {thread,turnId,cwd};
     }catch(error){
@@ -2972,6 +3138,32 @@ export default function App(){
     });
     return true;
   }
+  // Codex /goal, run like T3 Code's runGoalCommand and the Codex TUI: /goal shows the goal, clear, pause and resume
+  // control it, and any other text sets a new goal and starts its first turn.
+  async function runCodexGoalCommand(command){
+    const threadId=activeThread?.id||null;
+    const note=(title,kind="tool")=>setEvents(prev=>[...prev,{id:"goal-command-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),kind,title,status:"done",raw:{}}]);
+    try{
+      if(command?.type==="set"){
+        if(running){note("Stop the running turn before setting a new goal.","error");return}
+        await startTurn(command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"}});
+        return;
+      }
+      if(!threadId||!rpc){note("No goal is set.");return}
+      const current=(await rpc.request("thread/goal/get",{threadId}))?.goal||null;setGoal(current);
+      if(command?.type==="clear"){const result=await rpc.request("thread/goal/clear",{threadId});setGoal(null);note(result?.cleared?"Goal cleared.":"No goal to clear.");return}
+      if(!current){note("No goal is set.");return}
+      if(command?.type==="pause"){const paused=await rpc.request("thread/goal/set",{threadId,status:"paused"});setGoal(paused?.goal||null);note("Goal paused. Send /goal resume to continue.");return}
+      if(command?.type==="resume"){
+        // A running turn already belongs to the thread, so the goal just turns active and Codex continues after it;
+        // otherwise a turn without new input continues the goal from the history.
+        if(running){const resumed=await rpc.request("thread/goal/set",{threadId,status:"active"});setGoal(resumed?.goal||null);note("Goal resumed.");return}
+        await startTurn("",[],model,null,null,null,{goalPatch:{status:"active"},goalResume:true});
+        return;
+      }
+      openRightPanel("goal");note(describeCodexGoal(current));
+    }catch(error){note("Could not run /goal: "+(error.message||String(error)),"error")}
+  }
   async function handleSpecial(text){
     if(!text.startsWith("/"))return null;const [command,...rest]=text.split(/\s+/);
     const recipe=(currentProject?.recipes||[]).find(item=>item.name===command);
@@ -3020,7 +3212,7 @@ export default function App(){
       }catch(error){setEvents(prev=>[...prev,{id:"feedback-error-"+Date.now(),kind:"error",title:"Feedback upload failed: "+(error.message||String(error)),status:"done",raw:{}}])}
       return true;
     }
-    if(command==="/goal"){if(activeThread?.id)openRightPanel("goal");return true}
+    if(command==="/goal"){if(agentRuntime==="codex")await runCodexGoalCommand(parseCodexGoalCommand(text));else if(activeThread?.id)openRightPanel("goal");return true}
     if(command==="/palette"){setPaletteOpen(true);return true}
     if(command==="/new"){await newChat();return true}
     if(command==="/clear"){await newChat();return true}
@@ -3033,7 +3225,8 @@ export default function App(){
     const id="context-compact-"+activeThread.id;
     setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{}};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
     try{
-      await requestThreadCompaction(activeThread.id);
+      // Grok compacts in a turn of its own (its /compact command), which takes as long as the model needs.
+      await requestThreadCompaction(activeThread.id,agentRuntime==="grok"?{timeoutMs:10*60_000}:undefined);
     }catch(error){
       setEvents(prev=>[...prev,{id:"compact-error-"+Date.now(),kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done",raw:{}}]);
     }
@@ -3046,6 +3239,9 @@ export default function App(){
     if(runtimeSwitchRef.current){const label=agentRuntimeName(runtimeSwitchRef.current.to);setEvents(prev=>[...prev.filter(item=>item.id!=="runtime-switching"),{id:"runtime-switching",kind:"error",title:`Trebell is switching to ${label}. Your draft was kept; send it again once ${label} is ready.`,status:"done",raw:{}}]);return}
     // Never route a prompt elsewhere while the harness transport is down: keep the draft until it reconnects.
     if(!bootstrap.mock&&(!rpc||rpcStatus!=="connected")){setEvents(prev=>[...prev.filter(item=>item.id!=="transport-reconnecting"),{id:"transport-reconnecting",kind:"error",title:`${agentRuntimeLabel} is ${transportConnectedRef.current?"reconnecting":"not connected yet"}. Your draft was kept; send it again once ${agentRuntimeLabel} is connected.`,status:"done",raw:{}}]);return}
+    // A started thread continues only on the harness that owns it (T3 Code locks a started thread to its provider).
+    const threadOwner=threadOwnerElsewhere(activeThreadRef.current,threadMeta[activeThreadRef.current?.id],agentRuntime);
+    if(threadOwner){const label=agentRuntimeName(threadOwner);setEvents(prev=>[...prev.filter(item=>item.id!=="thread-owned-elsewhere"),{id:"thread-owned-elsewhere",kind:"error",title:`This chat belongs to ${label}. Your draft was kept; open the chat from the sidebar to continue it in ${label}.`,status:"done",raw:{}}]);return}
     if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
     if(runtimeCapabilities.nativeQueue&&queuedEditId&&rpc&&activeThread&&queueMode!=="local"){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips]};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
@@ -3195,7 +3391,19 @@ export default function App(){
     if(activeThread?.id)await persistLocalQueue(activeThread.id,next);else setQueued(next);
   }
   async function stop(){
-    if(rpc&&activeThread?.id&&activeTurnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId:activeTurnId});
+    // Stop pauses an active Codex goal first, so Codex starts no further goal turn, then stops the newest turn (T3 Code,
+    // the Codex TUI).
+    let turnId=activeTurnId;
+    if(agentRuntime==="codex"&&rpc&&activeThread?.id){
+      const threadId=activeThread.id;
+      if(codexGoalActivationRef.current?.threadId===threadId)codexGoalActivationRef.current.stopped=true;
+      if(goal?.status==="active"){
+        try{const paused=await rpc.request("thread/goal/set",{threadId,status:"paused"});if(activeThreadRef.current?.id===threadId)setGoal(paused?.goal||null)}
+        catch(error){showActionError(error,"Could not pause the goal")}
+        const latest=threadTelemetryRef.current[threadId];if(latest&&Object.prototype.hasOwnProperty.call(latest,"turnId"))turnId=latest.turnId;
+      }
+    }
+    if(rpc&&activeThread?.id&&turnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId});
     if(runtimeCapabilities.nativeQueue&&queueMode==="native"){setRunning(false);setActiveTurnId(null);await loadNativeQueue(rpc,activeThread?.id);return}
     const restored=restoreQueuedDraft({prompt,attachments,contextChips,queued,maxAttachments:MAX_COMPOSER_ATTACHMENTS});
     if(activeThread?.id)await persistLocalQueue(activeThread.id,[]);else setQueued([]);
@@ -3211,7 +3419,10 @@ export default function App(){
     );
     const restoreFiles=isolatedWorktree?confirm("Also restore workspace files to the checkpoint before this turn?\n\nOK = conversation + files\nCancel = conversation only"):false;
     if(restoreFiles)await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId:activeThread.id}}).catch(e=>alert(e.message));
-    await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId});setPrompt(message.text);await reloadActiveThread();
+    // A rewind the harness refuses (a running turn, a turn it has no checkpoint for) is shown, and the conversation stays as it is.
+    try{await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId})}
+    catch(error){showActionError(error,"Could not edit from this message");return}
+    setPrompt(message.text);await reloadActiveThread();
   }
   async function stashPrompt(){
     if(prompt.trim()||attachments.length){await api("/api/stashes",{method:"POST",body:{text:prompt,attachments,contextChips,projectPath}});setPrompt("");setAttachments([]);setContextChips([]);return}
@@ -3555,7 +3766,7 @@ export default function App(){
   async function cycleTheme(){const themes=["dark","midnight","black",...(settings.customThemes||[]).map(theme=>theme.id)];const next=themes[(themes.indexOf(settings.appearance||"dark")+1)%themes.length];await saveAppSettings({appearance:next})}
   async function cycleAppearance(){const modes=["system","light","dark"];const next=modes[(modes.indexOf(settings.appearanceMode||"system")+1)%modes.length];await saveAppSettings({appearanceMode:next})}
 
-  const activeTitle=titleOf(activeThread);
+  const activeTitle=titleOf(openThreadTitleSource(activeThread,threads));
   // The open thread's approval comes first; one from another thread says which task is asking.
   const shownApproval=approvalToShow(approvals,activeThread?.id);
   const shownApprovalThreadId=approvalForeignThreadId(shownApproval,activeThread?.id);
@@ -3597,12 +3808,18 @@ export default function App(){
     const key=modelReasoningEffortKey(agentRuntime,provider,model),next={...(settings.modelReasoningEfforts||{})},normalized=String(effort||"").trim().toLowerCase();
     if(normalized)next[key]=normalized;else delete next[key];
     await saveAppSettings({modelReasoningEfforts:next});
+    if(agentRuntime==="codex")await updateCodexThreadSetting({effort:normalized||null});
   });
   const composerServiceTier=useLatestCallback(async tier=>{
     if(!model)return;
     const key=modelServiceTierKey(agentRuntime,provider,model),next={...(settings.modelServiceTiers||{})},normalized=String(tier||"").trim().toLowerCase();
     if(normalized)next[key]=normalized;else delete next[key];
     await saveAppSettings({modelServiceTiers:next});
+    if(agentRuntime==="codex"&&normalized)await updateCodexThreadSetting({serviceTier:normalized});
+  });
+  const composerModelOption=useLatestCallback(async(id,value)=>{
+    if(!model)return;
+    await saveAppSettings({modelOptionValues:modelOptionSettingsWith(settings,agentRuntime,provider,model,id,value)});
   });
   const activityOpenPanel=useLatestCallback(name=>name==="workspace"?openRightPanel("diff"):setPanel(name));
   const sidebarNavigate=useLatestCallback(navigateSection);
@@ -3723,7 +3940,7 @@ export default function App(){
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
-    <ThreadSidebar section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab}/>
+    <ThreadSidebar runtimeStarting={!runtimeKnown} section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>
@@ -3768,14 +3985,14 @@ export default function App(){
               {!messages.length&&!events.length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>
-                <p>{projectlessMode?"This is a General chat with no attached project. Files and terminal commands stay inside a Trebell-managed scratch workspace.":<>{managedInference?`${providerLabel} supplies inference to ${agentRuntimeLabel}.`:`${agentRuntimeLabel} is the active coding-agent harness.`} Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</>}</p>
+                <p>{projectlessMode?"This is a General chat with no attached project. Files and terminal commands stay inside a Trebell-managed scratch workspace.":<>{!runtimeKnown?"":managedInference?`${providerLabel} supplies inference to ${agentRuntimeLabel}. `:`${agentRuntimeLabel} is the active coding-agent harness. `}Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</>}</p>
                 <div className="suggestions">{projectlessMode?<><button onClick={()=>setPrompt("Help me plan the architecture for this idea before I choose a repository.")}>Plan an idea</button><button onClick={()=>setPrompt("Research this technical question and give me a practical recommendation: ")}>Research a topic</button><button onClick={()=>setPrompt("Turn this rough idea into a clear technical specification: ")}>Draft a spec</button></>:<><button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></>}</div>
               </div>}
             </div>
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
-  <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(openingThreadId)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={openProviderSettings} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelPickerOpenChange={setModelPickerOpen}/>
+  <Composer starting={!runtimeKnown} prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(openingThreadId)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={openProviderSettings} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelOption={composerModelOption} onModelPickerOpenChange={setModelPickerOpen} codexThread={agentRuntime==="codex"&&activeThread?.id&&codexThreadState?.threadId===activeThread.id?codexThreadState:null}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>
@@ -3789,7 +4006,7 @@ export default function App(){
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} settings={settings} onSettings={setSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} settings={settings} runtimeKnown={runtimeKnown} onSettings={setSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
           {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert">Could not load thread history: {threadHistory.error}</div>}
           {threadHistory.items.length?threadHistory.items.map(t=><button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button>}</div>}

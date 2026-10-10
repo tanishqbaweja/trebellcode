@@ -1,0 +1,219 @@
+/* Trebell Code design system: tokens, base elements and shared primitives.
+   Visual source: the "Trebell code frontend" example design (Inter + JetBrains Mono, layered dark surfaces,
+   violet accent, soft borders).
+
+   Cascade plan (this file loads after styles.css / t3-workspace.css / guardian-review.css):
+   - Tokens use doubled :root selectors so they beat the legacy :root, html[data-theme] and html[data-mode]
+     variable blocks without !important.
+   - html[data-mode] switches light/dark; html[data-theme] picks the built-in Midnight / Black variants.
+   - Custom and environment themes are applied by App.jsx as inline variables (--bg, --panel, --panel2, --line,
+     --muted, --muted2, --purple, --purple2, --green, --theme-*). Inline values win over every rule here, and the
+     custom block below derives the new tokens from them. themeCssVariables() deliberately does not emit the new
+     token names: App.jsx only clears its fixed legacy list when a custom theme is removed, so extra inline
+     tokens would leak into the built-in themes.
+   - Legacy variables (--bg, --panel2, --muted, --purple, --t3-*, ...) are defined from the tokens so untouched
+     legacy CSS follows the same palette. */
+
+:root:root{
+  color-scheme:dark;
+  --bg0:#070709; --bg1:#0b0b0e; --bg2:#101014; --bg3:#16161b; --bg4:#1c1c22;
+  --line:#1e1e26; --line2:#2c2c36;
+  --tx0:#f2f2f5; --tx1:#b6b6c2; --tx2:#7e7e8a; --tx3:#54545e;
+  --ac:#8b7cff; --ac2:#6e5bef; --acsoft:rgba(139,124,255,.14); --acglow:rgba(124,92,255,.32);
+  --ok:#3ecf8e; --okt:rgba(62,207,142,.09); --okb:rgba(62,207,142,.28);
+  --err:#ef6a6a; --errt:rgba(239,106,106,.09); --errb:rgba(239,106,106,.28);
+  --warn:#f0b429; --warnt:rgba(240,180,41,.09); --warnb:rgba(240,180,41,.28);
+  --info:#6aa8ff;
+  --dadd:#7ee2b0; --ddel:#ff9b9b;
+  --surf:rgba(255,255,255,.026); --surf2:rgba(255,255,255,.012);
+  --bub1:var(--bg4); --bub2:var(--bg3);
+  --panel:#101014;
+  --bgtop:rgba(7,7,9,.72);
+  --ovl:rgba(4,4,7,.6);
+  --thumb:#26262c; --thumb2:#34343e;
+  --glow-opacity:.16;
+  --grain:.028;
+  --shadow:0 8px 28px rgba(0,0,0,.45);
+  --sh1:0 2px 10px rgba(0,0,0,.3);
+  --shbig:0 24px 70px rgba(0,0,0,.6);
+  --shseg:0 1px 5px rgba(0,0,0,.35);
+  --shside:-20px 0 60px rgba(0,0,0,.5);
+  --chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237e7e8a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  --r-s:8px; --r-m:11px; --r-l:15px;
+  --side:264px; --top:52px;
+  --font:"Inter Variable","Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono Variable","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --ease-out:cubic-bezier(.22,.8,.32,1);
+}
+
+/* Built-in dark variants (Settings > Appearance > Theme). */
+:root:root[data-theme="midnight"]{
+  --bg0:#06070d; --bg1:#0a0c15; --bg2:#0f111d; --bg3:#151827; --bg4:#1b1f31;
+  --line:#1c2033; --line2:#2a2f48;
+  --ac:#8f86ff; --ac2:#6b62f0; --acsoft:rgba(143,134,255,.15); --acglow:rgba(107,98,240,.34);
+  --panel:#0f111d; --bgtop:rgba(6,7,13,.72); --thumb:#232840; --thumb2:#323a58;
+}
+:root:root[data-theme="black"]{
+  --bg0:#000000; --bg1:#050506; --bg2:#0a0a0c; --bg3:#111114; --bg4:#18181c;
+  --line:#19191e; --line2:#26262d;
+  --panel:#0a0a0c; --bgtop:rgba(0,0,0,.72); --thumb:#202026; --thumb2:#2e2e36;
+}
+
+:root:root[data-mode="light"]:not([data-custom-theme="true"]){
+  color-scheme:light;
+  --bg0:#f7f7f8; --bg1:#ffffff; --bg2:#f4f4f7; --bg3:#eaeaf0; --bg4:#dfdfe7;
+  --line:#e6e6ec; --line2:#d5d5de;
+  --tx0:#16161b; --tx1:#3f3f49; --tx2:#6c6c78; --tx3:#9b9ba5;
+  --ac:#6b58ea; --ac2:#5743d6; --acsoft:rgba(107,88,234,.10); --acglow:rgba(107,88,234,.22);
+  --ok:#178a55; --okt:rgba(23,138,85,.10); --okb:rgba(23,138,85,.30);
+  --err:#cc4444; --errt:rgba(204,68,68,.10); --errb:rgba(204,68,68,.30);
+  --warn:#9a6b0b; --warnt:rgba(154,107,11,.12); --warnb:rgba(154,107,11,.32);
+  --info:#2f6fd0;
+  --dadd:#167a46; --ddel:#c03434;
+  --surf:rgba(255,255,255,.95); --surf2:rgba(255,255,255,.7);
+  --bub1:color-mix(in srgb,var(--ac) 9%,#fff); --bub2:color-mix(in srgb,var(--ac) 15%,#fff);
+  --panel:#ffffff;
+  --bgtop:rgba(247,247,248,.72);
+  --ovl:rgba(30,30,45,.28);
+  --thumb:#d3d3dc; --thumb2:#bcbcc8;
+  --glow-opacity:.5;
+  --grain:.016;
+  --shadow:0 8px 28px rgba(25,25,50,.10);
+  --sh1:0 2px 10px rgba(25,25,50,.07);
+  --shbig:0 24px 70px rgba(25,25,50,.18);
+  --shseg:0 1px 4px rgba(25,25,50,.12);
+  --shside:-20px 0 60px rgba(25,25,50,.12);
+  --chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23595963' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+
+/* Custom / environment themes: derive the tokens from the inline legacy variables set by App.jsx.
+   --line and --panel are shared names and come straight from the inline values. */
+:root:root[data-custom-theme="true"]{
+  --bg0:var(--bg);
+  --bg1:color-mix(in srgb,var(--panel) 45%,var(--bg));
+  --bg2:var(--panel);
+  --bg3:var(--panel2);
+  --bg4:color-mix(in srgb,var(--panel2) 88%,var(--theme-foreground));
+  --line2:color-mix(in srgb,var(--line) 78%,var(--theme-foreground));
+  --tx0:var(--theme-foreground);
+  --tx1:color-mix(in srgb,var(--theme-foreground) 80%,var(--theme-canvas));
+  --tx2:var(--muted);
+  --tx3:var(--muted2);
+  --ac:var(--purple); --ac2:var(--purple2);
+  --acsoft:color-mix(in srgb,var(--purple) 15%,transparent);
+  --acglow:color-mix(in srgb,var(--purple) 32%,transparent);
+  --ok:var(--green); --okt:color-mix(in srgb,var(--green) 10%,transparent); --okb:color-mix(in srgb,var(--green) 30%,transparent);
+  --err:var(--theme-error); --errt:color-mix(in srgb,var(--theme-error) 10%,transparent); --errb:color-mix(in srgb,var(--theme-error) 30%,transparent);
+  --warn:var(--theme-warning); --warnt:color-mix(in srgb,var(--theme-warning) 11%,transparent); --warnb:color-mix(in srgb,var(--theme-warning) 30%,transparent);
+  --dadd:var(--green); --ddel:var(--theme-error);
+  --surf:color-mix(in srgb,var(--theme-foreground) 3%,transparent);
+  --surf2:color-mix(in srgb,var(--theme-foreground) 1.2%,transparent);
+  --bub1:color-mix(in srgb,var(--purple) 12%,var(--panel2));
+  --bub2:color-mix(in srgb,var(--purple) 6%,var(--panel));
+  --ovl:color-mix(in srgb,var(--theme-canvas) 60%,transparent);
+  --bgtop:color-mix(in srgb,var(--bg) 72%,transparent);
+  --thumb:color-mix(in srgb,var(--theme-foreground) 16%,transparent);
+  --thumb2:color-mix(in srgb,var(--theme-foreground) 26%,transparent);
+}
+:root:root[data-custom-theme="true"][data-mode="light"]{
+  color-scheme:light;
+  /* Theme success colors default to a bright green; darken it toward the foreground so status text stays legible. */
+  --ok:color-mix(in srgb,var(--green) 55%,var(--theme-foreground)); --dadd:var(--ok);
+  --glow-opacity:.45;
+  --grain:.016;
+  --shadow:0 8px 28px rgba(25,25,50,.10);
+  --sh1:0 2px 10px rgba(25,25,50,.07);
+  --shbig:0 24px 70px rgba(25,25,50,.18);
+  --shseg:0 1px 4px rgba(25,25,50,.12);
+  --shside:-20px 0 60px rgba(25,25,50,.12);
+}
+
+/* Legacy variables follow the tokens. (0,3,0) beats the legacy t3 light block (0,2,1); custom themes still win
+   because they are inline styles on <html>. */
+:root:root:root{
+  --bg:var(--bg0); --panel2:var(--bg3); --muted:var(--tx2); --muted2:var(--tx3);
+  --purple:var(--ac); --purple2:var(--ac2); --green:var(--ok);
+  --t3-bg:var(--bg0); --t3-sidebar:var(--bg1); --t3-raised:var(--bg2); --t3-hover:var(--bg3);
+  --t3-active:var(--bg4); --t3-border:var(--line); --t3-soft:var(--line); --t3-text:var(--tx0);
+  --t3-muted:var(--tx2); --t3-faint:var(--tx3); --t3-accent:var(--ac);
+}
+
+/* Base */
+:root{font-family:var(--font)}
+html,body{background:var(--bg0);color:var(--tx0)}
+body{font-family:var(--font);font-size:13.5px;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-feature-settings:"cv11","ss01"}
+button,input,textarea,select{font-family:inherit}
+code,kbd,pre,samp,.mono{font-family:var(--mono)}
+input::placeholder,textarea::placeholder{color:var(--tx3)}
+::selection{background:color-mix(in srgb,var(--ac) 30%,transparent)}
+*::-webkit-scrollbar{width:9px;height:9px}
+*::-webkit-scrollbar-thumb{background:var(--thumb);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+*::-webkit-scrollbar-thumb:hover{background:var(--thumb2);background-clip:padding-box;border:2px solid transparent}
+*::-webkit-scrollbar-track,*::-webkit-scrollbar-corner{background:transparent}
+:focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 55%,transparent);outline-offset:2px}
+/* Film grain keeps the large dark gradients from banding. Fixed, click-through and above everything. */
+body::after{content:"";position:fixed;inset:0;z-index:999;pointer-events:none;opacity:var(--grain);background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E")}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+@keyframes tb-rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+@keyframes tb-pop{from{opacity:0;transform:scale(.97) translateY(6px)}}
+@keyframes tb-fade{from{opacity:0}}
+@keyframes tb-spin{to{transform:rotate(360deg)}}
+@keyframes tb-shimmer{to{background-position:-200% 0}}
+@keyframes tb-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+@keyframes tb-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+
+/* Primitives (tb- prefix avoids collisions with legacy class names) */
+.tb-kbd,kbd.tb-kbd{font-family:var(--mono);font-size:10px;color:var(--tx2);background:var(--bg3);border:1px solid var(--line2);border-bottom-width:2px;border-radius:5px;padding:2px 5px;white-space:nowrap;line-height:1.2}
+.tb-icon-btn{width:28px;height:28px;border-radius:var(--r-s);display:inline-grid;place-items:center;color:var(--tx2);background:none;border:0;cursor:pointer;transition:background .15s,color .15s}
+.tb-icon-btn:hover{background:var(--bg3);color:var(--tx0)}
+.tb-icon-btn.is-on{background:var(--acsoft);color:var(--ac)}
+.tb-icon-btn:disabled{opacity:.45;cursor:default}
+.tb-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:7.5px 13px;border-radius:9px;font-size:12.5px;font-weight:550;border:1px solid var(--line2);background:var(--bg3);color:var(--tx1);cursor:pointer;transition:background .15s,color .15s,border-color .15s,filter .15s;white-space:nowrap}
+.tb-btn:hover{background:var(--bg4);color:var(--tx0)}
+.tb-btn:active{transform:scale(.98)}
+.tb-btn:disabled{opacity:.5;cursor:default;transform:none}
+.tb-btn--primary{background:linear-gradient(135deg,var(--ac2),var(--ac));border-color:transparent;color:#fff;box-shadow:0 3px 14px var(--acglow)}
+.tb-btn--primary:hover{filter:brightness(1.1);color:#fff}
+.tb-btn--outline{background:transparent;border-color:color-mix(in srgb,var(--ac) 40%,var(--line));color:var(--ac)}
+.tb-btn--outline:hover{background:var(--acsoft);color:var(--ac)}
+.tb-btn--danger{color:var(--err);border-color:var(--errb);background:var(--errt)}
+.tb-btn--ghost{background:transparent;border-color:transparent}
+.tb-btn--sm{padding:5.5px 10px;font-size:11.5px;border-radius:var(--r-s)}
+.tb-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--line);border-radius:99px;background:var(--bg2);color:var(--tx1);font-size:11.5px;font-weight:500;font-family:var(--mono);transition:border-color .14s,color .14s}
+.tb-chip:hover{border-color:var(--line2);color:var(--tx0)}
+.tb-pill{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:600;font-family:var(--mono);padding:3.5px 9px;border-radius:99px;border:1px solid var(--line2);background:var(--bg3);color:var(--tx2);white-space:nowrap}
+.tb-pill--ok{color:var(--ok);border-color:var(--okb);background:var(--okt)}
+.tb-pill--warn{color:var(--warn);border-color:var(--warnb);background:var(--warnt)}
+.tb-pill--err{color:var(--err);border-color:var(--errb);background:var(--errt)}
+.tb-pill--muted{color:var(--tx2);border-color:var(--line2);background:var(--bg3)}
+.tb-pill--accent{color:var(--ac);border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:var(--acsoft)}
+.tb-badge{font-family:var(--mono);font-size:10px;padding:2px 6px;border-radius:5px;white-space:nowrap}
+.tb-badge--add{color:var(--ok);background:var(--okt)}
+.tb-badge--del{color:var(--err);background:var(--errt)}
+.tb-card{border:1px solid var(--line);border-radius:var(--r-l);background:linear-gradient(180deg,var(--surf),var(--surf2));padding:16px 18px;transition:border-color .18s}
+.tb-card:hover{border-color:var(--line2)}
+.tb-input,.tb-select{background-color:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:8px 12px;font-size:12.5px;color:var(--tx0);outline:none;transition:border-color .15s,box-shadow .15s}
+.tb-input::placeholder{color:var(--tx3)}
+.tb-input:focus,.tb-select:focus{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2));box-shadow:0 0 0 3px var(--acsoft)}
+.tb-select{appearance:none;-webkit-appearance:none;background-image:var(--chev);background-position:right 9px center;background-size:11px;background-repeat:no-repeat;padding-right:28px;cursor:pointer}
+.tb-toggle{position:relative;width:34px;height:19px;border-radius:99px;background:var(--bg4);border:1px solid var(--line2);transition:background .18s,border-color .18s;flex:none;cursor:pointer}
+.tb-toggle::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:var(--tx2);transition:left .18s cubic-bezier(.34,1.56,.64,1),background .18s}
+.tb-toggle.is-on,.tb-toggle[aria-checked="true"],.tb-toggle[aria-pressed="true"]{background:linear-gradient(135deg,var(--ac2),var(--ac));border-color:transparent}
+.tb-toggle.is-on::after,.tb-toggle[aria-checked="true"]::after,.tb-toggle[aria-pressed="true"]::after{left:17px;background:#fff}
+.tb-seg{display:inline-flex;padding:3px;gap:2px;background:var(--bg3);border:1px solid var(--line);border-radius:10px}
+.tb-seg>button{padding:5.5px 13px;border-radius:7px;font-size:12px;font-weight:550;color:var(--tx2);background:none;border:0;cursor:pointer;transition:color .14s,background .14s}
+.tb-seg>button:hover{color:var(--tx0)}
+.tb-seg>button.is-on,.tb-seg>button[aria-pressed="true"]{background:var(--bg4);color:var(--tx0);box-shadow:var(--shseg),inset 0 0 0 1px var(--line2)}
+.tb-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none;box-shadow:0 0 0 3px var(--okt);animation:tb-pulse 2.6s infinite}
+.tb-dot--off{background:var(--tx3);box-shadow:none;animation:none}
+.tb-dot--warn{background:var(--warn);box-shadow:0 0 0 3px var(--warnt)}
+.tb-dot--err{background:var(--err);box-shadow:0 0 0 3px var(--errt);animation:none}
+.tb-empty{border:1.5px dashed var(--line2);border-radius:var(--r-l);padding:38px 20px;text-align:center;color:var(--tx3);font-size:12.5px}
+.tb-skeleton{border-radius:7px;background:linear-gradient(90deg,var(--bg3) 25%,var(--bg4) 50%,var(--bg3) 75%);background-size:200% 100%;animation:tb-shimmer 1.6s infinite}
+.tb-page{flex:1;overflow-y:auto;padding:44px 56px}
+.tb-page-inner{max-width:1080px;margin:0 auto}
+.tb-page-title{font-size:26px;font-weight:650;letter-spacing:-.035em;margin:0}
+.tb-page-subtitle{color:var(--tx2);margin:6px 0 0;font-size:13px}
+.tb-field>label{display:block;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--tx3);margin-bottom:7px}
+@media (max-width:900px){.tb-page{padding:28px 22px}}

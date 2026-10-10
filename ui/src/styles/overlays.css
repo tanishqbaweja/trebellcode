@@ -1,0 +1,411 @@
+/* Overlays: command palette, onboarding, question / snooze / MCP modals, inline approval prompts, the assistant
+   selection toolbar, toasts and alerts. Built on the tokens in ../theme.css; loaded after the legacy sheets and
+   shell.css, so plain rules win by source order and parent-scoped specificity.
+   The last section re-asserts token values with !important where legacy light-mode and custom-theme rules force
+   hard-coded colors; delete it together with those legacy rules in the cleanup step. */
+
+@keyframes tb-ovl-pop{from{opacity:0;transform:scale(.97) translateY(6px)}to{opacity:1;transform:none}}
+@keyframes tb-toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes tb-cite-in{from{opacity:0;transform:translate(-50%,calc(-100% + 4px)) scale(.96)}to{opacity:1;transform:translate(-50%,-100%)}}
+
+:root{
+  --tb-icon-alert:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 8v4M12 16h.01'/%3E%3C/svg%3E");
+  --tb-icon-check-circle:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E");
+}
+
+/* ============ Backdrops ============ */
+/* Dialog containers take programmatic focus (tabIndex -1) when they open; the ring belongs on their controls. */
+:is(.command-palette,.onboarding-card,.question-modal,.snooze-dialog,.mcp-elicitation-modal):focus{outline:none}
+.modal-backdrop,.command-palette-backdrop,.onboarding-backdrop{position:fixed;inset:0;background:var(--ovl);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);animation:tb-fade .16s ease-out}
+.modal-backdrop{z-index:100;display:grid;place-items:center;padding:24px;overflow:auto}
+
+/* ============ Shared modal card ============ */
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal){--tb-pad:20px;position:relative;border:1px solid var(--line2);border-radius:var(--r-l);background:var(--panel);color:var(--tx0);box-shadow:var(--shbig);padding:var(--tb-pad);animation:tb-ovl-pop .18s var(--ease-out)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;padding:0;border:0}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-head>div{display:flex;align-items:center;gap:10px;min-width:0}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-head strong{font-size:15px;font-weight:650;letter-spacing:-.02em;line-height:1.3;color:var(--tx0)}
+.modal-head .modal-head-icon{width:30px;height:30px;flex:none;display:grid;place-items:center;border:1px solid color-mix(in srgb,var(--ac) 32%,transparent);border-radius:9px;background:var(--acsoft);color:var(--ac)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-head .modal-close{width:28px;height:28px;flex:none;display:grid;place-items:center;padding:0;border:0;border-radius:var(--r-s);background:transparent;color:var(--tx2);cursor:pointer;transition:background .15s,color .15s}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-head .modal-close:hover:not(:disabled){background:var(--bg3);color:var(--tx0)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-head .modal-close:disabled{opacity:.45;cursor:default}
+
+/* Footer actions (tb-btn look; the legacy .modal-actions button rule is more specific than .tb-btn). */
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:18px 0 0;padding:0}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-actions>span{margin-right:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tx3);font:500 11px var(--mono)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions,.onboarding-steps) .tb-btn{height:auto;min-height:34px;padding:7px 14px;border:1px solid var(--line2);border-radius:9px;background:var(--bg3);color:var(--tx1);font-size:12.5px;font-weight:550;line-height:1.2;gap:7px}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions,.onboarding-steps) .tb-btn:hover:not(:disabled){background:var(--bg4);color:var(--tx0)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions) .tb-btn.tb-btn--primary{border-color:transparent;background:linear-gradient(135deg,var(--ac2),var(--ac));color:#fff;box-shadow:0 3px 14px var(--acglow)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions) .tb-btn.tb-btn--primary:hover:not(:disabled){background:linear-gradient(135deg,var(--ac2),var(--ac));color:#fff;filter:brightness(1.1)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions) .tb-btn.tb-btn--outline{border-color:color-mix(in srgb,var(--ac) 40%,var(--line));background:transparent;color:var(--ac)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions) .tb-btn.tb-btn--outline:hover:not(:disabled){background:var(--acsoft);color:var(--ac)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions,.onboarding-steps) .tb-btn:disabled{opacity:.5;cursor:default;filter:none;transform:none}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions,.onboarding-steps) .tb-btn.tb-btn--sm{min-height:30px;padding:5px 11px;font-size:12px;border-radius:var(--r-s)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .tb-btn svg{flex:none}
+
+/* Fields inside modals */
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) :is(input.tb-input,select.tb-select){width:100%;min-width:0;height:38px;padding:0 12px;border:1px solid var(--line);border-radius:9px;background-color:var(--bg2);color:var(--tx0);font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) select.tb-select{padding-right:30px;background-image:var(--chev);background-position:right 11px center;background-size:11px;background-repeat:no-repeat;appearance:none;-webkit-appearance:none;cursor:pointer}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) :is(input.tb-input,select.tb-select):hover{border-color:var(--line2)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) :is(input.tb-input,select.tb-select):focus{border-color:color-mix(in srgb,var(--ac) 50%,var(--line2));box-shadow:0 0 0 3px var(--acsoft)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) input.tb-input::placeholder{color:var(--tx3)}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) input::-webkit-calendar-picker-indicator{cursor:pointer;opacity:.7}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) input::-webkit-calendar-picker-indicator:hover{opacity:1}
+:is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.onboarding-card,.command-palette) .inline-error{margin:12px 0 0;padding:9px 12px;border:1px solid var(--errb);border-radius:9px;background:var(--errt);color:var(--err);font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+
+/* ============ Command palette ============ */
+.command-palette-backdrop{z-index:120;display:flex;align-items:flex-start;justify-content:center;padding:min(14vh,120px) 20px 20px}
+.command-palette{width:min(600px,calc(100vw - 40px));max-height:min(620px,calc(100vh - min(14vh,120px) - 24px));display:flex;flex-direction:column;border:1px solid var(--line2);border-radius:var(--r-l);background:var(--panel);color:var(--tx0);box-shadow:var(--shbig);overflow:hidden;animation:tb-ovl-pop .18s var(--ease-out)}
+.command-palette .command-palette-search{flex:none;height:52px;display:flex;align-items:center;gap:10px;padding:0 14px 0 16px;border-bottom:1px solid var(--line);color:var(--tx3)}
+.command-palette .command-palette-search>svg{flex:none;color:var(--tx3)}
+.command-palette .command-palette-search input{flex:1;min-width:0;height:100%;padding:0;border:0;outline:0;background:transparent;color:var(--tx0);font-size:14px;caret-color:var(--ac)}
+.command-palette .command-palette-search input::placeholder{color:var(--tx3)}
+.command-palette .command-palette-search input:disabled{opacity:.7;cursor:wait}
+.command-palette .command-palette-searching{flex:none;display:inline-flex;align-items:center;gap:6px;color:var(--tx3);font:500 10.5px var(--mono);white-space:nowrap}
+.command-palette .command-palette-searching::before{content:"";width:10px;height:10px;border:1.5px solid color-mix(in srgb,var(--ac) 35%,transparent);border-top-color:var(--ac);border-radius:50%;animation:tb-spin .8s linear infinite}
+.command-palette .tb-kbd{flex:none;font-family:var(--mono);font-size:10px;line-height:1.2;color:var(--tx2);background:var(--bg3);border:1px solid var(--line2);border-bottom-width:2px;border-radius:5px;padding:2px 5px;white-space:nowrap}
+.command-palette .command-palette-error{flex:none;margin:8px 8px 0;padding:8px 11px;border:1px solid var(--errb);border-radius:9px;background:var(--errt);color:var(--err);font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+/* Degraded message search on its own is a warning (results still come from loaded threads), not a failure. */
+.command-palette .command-palette-error.is-warning{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
+.command-palette .command-palette-results{flex:1 1 auto;min-height:0;max-height:none;overflow-y:auto;overscroll-behavior:contain;padding:6px}
+.command-palette .command-palette-group{padding:10px 10px 5px;color:var(--tx3);font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;user-select:none}
+.command-palette .command-palette-group:first-child{padding-top:6px}
+.command-palette .command-palette-results>button{width:100%;min-height:46px;display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:10px;margin:0 0 1px;padding:6px 10px 6px 8px;border:0;border-radius:9px;background:transparent;color:var(--tx1);text-align:left;cursor:pointer;transition:background .1s,color .1s}
+/* Selection follows the pointer (onMouseMove), so a separate hover tint would show two highlighted rows when the keyboard moves away from a resting pointer. */
+.command-palette .command-palette-results>button:not(.selected):hover{background:transparent;color:var(--tx1)}
+.command-palette .command-palette-results>button.selected{background:var(--acsoft);color:var(--tx0)}
+.command-palette .command-palette-results>button:focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 55%,transparent);outline-offset:-2px}
+.command-palette .command-palette-results>button:disabled{opacity:.6;cursor:wait}
+.command-palette .command-palette-icon{width:28px;height:28px;display:grid;place-items:center;border:1px solid var(--line);border-radius:8px;background:var(--bg2);color:var(--tx2);transition:color .1s,background .1s,border-color .1s}
+.command-palette .command-palette-results>button.selected .command-palette-icon{border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:color-mix(in srgb,var(--ac) 12%,var(--panel));color:var(--ac)}
+.command-palette .command-palette-text{min-width:0;display:block}
+.command-palette .command-palette-results strong,.command-palette .command-palette-results small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.command-palette .command-palette-results strong{font-size:13px;font-weight:550;line-height:1.35;color:inherit}
+.command-palette .command-palette-results small{margin-top:1px;font-size:11.5px;line-height:1.35;color:var(--tx3)}
+.command-palette .command-palette-results>button.selected small{color:var(--tx2)}
+.command-palette .command-palette-results>button.kind-thread small,.command-palette .command-palette-results>button.kind-project small{font-family:var(--mono);font-size:10.5px}
+/* A message excerpt is prose, not a path: keep it in the UI font. */
+.command-palette .command-palette-results>button.message-match small{font-family:var(--font);font-size:11.5px}
+.command-palette .command-palette-empty{display:flex;flex-direction:column;align-items:center;gap:9px;padding:34px 20px;color:var(--tx3);font-size:12.5px;text-align:center}
+.command-palette .command-palette-empty svg{opacity:.55}
+.command-palette .command-palette-footer{flex:none;display:flex;align-items:center;gap:14px;padding:8px 14px;border-top:1px solid var(--line);color:var(--tx3);font-size:10.5px;white-space:nowrap;overflow:hidden}
+.command-palette .command-palette-footer>span{display:inline-flex;align-items:center;gap:4px}
+.command-palette .command-palette-footer .tb-kbd{padding:1px 5px;font-size:9.5px}
+.command-palette .command-palette-footer .command-palette-hint{margin-left:auto}
+
+/* ============ Onboarding ============ */
+.onboarding-backdrop{z-index:140;display:grid;place-items:safe center;padding:20px;overflow:auto;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+.onboarding-backdrop .onboarding-card{width:min(620px,calc(100vw - 40px));border:1px solid var(--line2);border-radius:18px;background:radial-gradient(120% 70% at 50% -18%,color-mix(in srgb,var(--ac) 13%,transparent),transparent 62%),var(--panel);color:var(--tx0);box-shadow:var(--shbig);padding:24px;animation:tb-ovl-pop .2s var(--ease-out)}
+.onboarding-card .onboarding-brand{display:flex;align-items:center;gap:14px;margin:0 0 20px}
+.onboarding-card .onboarding-mark{position:relative;width:46px;height:46px;flex:none;display:grid;place-items:center}
+.onboarding-card .onboarding-mark::before{content:"";position:absolute;inset:-12px;border-radius:50%;background:radial-gradient(closest-side,var(--acglow),transparent 72%);filter:blur(5px)}
+.onboarding-card .onboarding-brand img{position:relative;width:46px;height:46px;object-fit:contain;filter:drop-shadow(0 4px 16px var(--acglow))}
+.onboarding-card .onboarding-brand h2{margin:0;font-size:20px;font-weight:650;letter-spacing:-.03em;line-height:1.25;color:var(--tx0)}
+.onboarding-card .onboarding-brand p{margin:4px 0 0;font-size:13px;line-height:1.5;color:var(--tx2)}
+.onboarding-card .onboarding-steps{display:grid;gap:8px}
+.onboarding-card .onboarding-steps section{min-height:64px;display:grid;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;gap:12px;padding:11px 12px 11px 13px;border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2);transition:border-color .15s}
+.onboarding-card .onboarding-steps section:hover{border-color:var(--line2)}
+.onboarding-card .onboarding-steps section>.onboarding-step-icon{width:34px;height:34px;display:grid;place-items:center;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);border-radius:10px;background:var(--acsoft);color:var(--ac)}
+.onboarding-card .onboarding-steps strong{display:block;font-size:13px;font-weight:600;line-height:1.35;color:var(--tx0)}
+.onboarding-card .onboarding-steps p{display:block;margin:2px 0 0;font-size:12px;line-height:1.5;color:var(--tx2)}
+.onboarding-card .onboarding-history-step small{display:block;margin-top:5px;color:var(--tx1);font-size:11.5px;line-height:1.45}
+.onboarding-card .onboarding-history-step small.error{color:var(--err)}
+.onboarding-card .onboarding-steps .onboarding-step-action{min-height:30px;padding:5px 12px;font-size:12px}
+.onboarding-card .onboarding-steps select.onboarding-permission-select{width:auto;min-width:150px;height:32px;padding:0 30px 0 11px;border:1px solid var(--line2);border-radius:var(--r-s);background-color:var(--bg3);background-image:var(--chev);background-position:right 10px center;background-size:11px;background-repeat:no-repeat;color:var(--tx0);font-size:12.5px;font-weight:500;appearance:none;-webkit-appearance:none;cursor:pointer;outline:none;transition:border-color .15s,box-shadow .15s}
+.onboarding-card .onboarding-steps select.onboarding-permission-select:hover{border-color:color-mix(in srgb,var(--ac) 35%,var(--line2))}
+.onboarding-card .onboarding-steps select.onboarding-permission-select:focus{border-color:color-mix(in srgb,var(--ac) 50%,var(--line2));box-shadow:0 0 0 3px var(--acsoft)}
+.onboarding-card .onboarding-steps em.onboarding-step-status{width:28px;height:28px;margin-right:2px;display:grid;place-items:center;border:1px solid var(--warnb);border-radius:50%;background:var(--warnt);color:var(--warn);font:700 13px/1 var(--font);font-style:normal}
+.onboarding-card .onboarding-steps em.onboarding-step-status.ready{border-color:var(--okb);background:var(--okt);color:var(--ok)}
+/* The legacy ".onboarding-steps section>span" rule squeezed this label into the 28px icon box. */
+.onboarding-card .onboarding-steps section>.onboarding-static-workspace{width:auto!important;height:26px!important;display:inline-flex!important;align-items:center;padding:0 10px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:500 11px var(--mono)!important;white-space:nowrap}
+.onboarding-card .onboarding-action-error{margin:12px 0 0;padding:9px 12px;border:1px solid var(--errb);border-radius:9px;background:var(--errt);color:var(--err);font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.onboarding-card .onboarding-note{display:flex;align-items:center;gap:8px;margin:16px 2px 14px;color:var(--tx2);font-size:12.5px;line-height:1.5}
+.onboarding-card .onboarding-note::before{content:"";width:7px;height:7px;flex:none;border-radius:50%;background:var(--warn);box-shadow:0 0 0 3px var(--warnt)}
+.onboarding-card .onboarding-note.ready::before{background:var(--ok);box-shadow:0 0 0 3px var(--okt)}
+.onboarding-card .onboarding-finish{width:100%;height:42px;padding:0 16px;border:0;border-radius:11px;background:linear-gradient(135deg,var(--ac2),var(--ac));color:#fff;font-size:13.5px;font-weight:600;letter-spacing:-.005em;box-shadow:0 4px 18px var(--acglow);cursor:pointer;transition:filter .15s,transform .15s}
+.onboarding-card .onboarding-finish:hover:not(:disabled){filter:brightness(1.1)}
+.onboarding-card .onboarding-finish:active:not(:disabled){transform:scale(.99)}
+.onboarding-card .onboarding-finish:disabled{opacity:.6;cursor:wait;box-shadow:none}
+
+/* ============ Question modal ============ */
+.modal-backdrop .question-modal{width:min(580px,calc(100vw - 48px));max-height:min(780px,calc(100vh - 48px));overflow:auto;overscroll-behavior:contain}
+.question-modal .question-block{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;margin:0 0 16px;padding:0 0 16px;border-bottom:1px solid var(--line)}
+.question-modal .question-block:nth-last-child(1 of .question-block){margin-bottom:0;padding-bottom:0;border-bottom:0}
+.question-modal .inline-error{scroll-margin-bottom:84px}
+.question-modal .question-block label small,.question-modal .question-block label strong{display:block}
+.question-modal .question-block label small{margin:0 0 5px;color:var(--ac);font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.question-modal .question-block label strong{color:var(--tx0);font-size:14px;font-weight:600;line-height:1.45;letter-spacing:-.01em}
+.question-modal .question-options{display:grid;gap:6px}
+.question-modal .question-options button{position:relative;display:block;width:100%;padding:10px 40px 10px 13px;border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2);color:var(--tx0);font-size:13px;font-weight:550;line-height:1.4;text-align:left;cursor:pointer;transition:border-color .14s,background .14s}
+.question-modal .question-options button span{display:block;margin-top:2px;color:var(--tx2);font-size:12px;font-weight:400;line-height:1.45}
+.question-modal .question-options button::after{content:"";position:absolute;right:13px;top:50%;width:16px;height:16px;margin-top:-8px;border:1.5px solid var(--line2);border-radius:50%;background:transparent;transition:border-color .14s,background .14s}
+.question-modal .question-options.multiple button::after{border-radius:5px}
+.question-modal .question-options button:hover{border-color:var(--line2);background:var(--bg3)}
+.question-modal .question-options button.active{border-color:color-mix(in srgb,var(--ac) 50%,var(--line));background:var(--acsoft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ac) 22%,transparent)}
+.question-modal .question-options button.active::after{border-color:var(--ac);background:var(--ac);box-shadow:inset 0 0 0 3px var(--panel)}
+.question-modal .question-options.multiple button.active::after{box-shadow:none;background:var(--ac) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center/11px no-repeat}
+.question-modal .question-block input.tb-input{height:38px}
+.question-modal .question-files{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:0}
+.question-modal .question-files span{display:inline-flex;align-items:center;gap:6px;max-width:100%;height:28px;padding:0 4px 0 9px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx1);font:500 11px var(--mono)}
+.question-modal .question-files span>svg{flex:none;color:var(--tx3)}
+.question-modal .question-files span em{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-style:normal}
+/* The extension sits right after the (ellipsized) stem: "long-file-na….csv". The negative margin undoes the chip gap. */
+.question-modal .question-files span em.question-file-ext{flex:none;margin-left:-6px;overflow:visible}
+.question-modal .question-files span button{width:20px;height:20px;flex:none;display:grid;place-items:center;padding:0;border:0;border-radius:50%;background:transparent;color:var(--tx3);cursor:pointer}
+.question-modal .question-files span button:hover{background:var(--bg4);color:var(--tx0)}
+.question-modal .question-files>button.question-attach{border-style:dashed;background:transparent;color:var(--tx2)}
+.question-modal .question-files>button.question-attach:hover:not(:disabled){border-style:solid;background:var(--bg3);color:var(--tx0)}
+
+/* ============ Snooze dialog ============ */
+.modal-backdrop .snooze-dialog{width:min(440px,calc(100vw - 48px));display:grid;gap:14px;margin:0}
+.snooze-dialog .modal-head{margin:0}
+.snooze-dialog>p{margin:0;color:var(--tx2);font-size:12.5px;line-height:1.6}
+.snooze-dialog .snooze-mode-tabs{display:grid;grid-template-columns:1fr 1fr;gap:2px;padding:3px;border:1px solid var(--line);border-radius:10px;background:var(--bg3)}
+.snooze-dialog .snooze-mode-tabs button{height:30px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:var(--tx2);font-size:12px;font-weight:550;cursor:pointer;transition:color .14s,background .14s}
+.snooze-dialog .snooze-mode-tabs button:hover{color:var(--tx0)}
+.snooze-dialog .snooze-mode-tabs button.active{background:var(--bg4);color:var(--tx0);box-shadow:var(--shseg),inset 0 0 0 1px var(--line2)}
+.snooze-dialog .snooze-duration{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.snooze-dialog label{display:grid;gap:7px;color:var(--tx3);font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.snooze-dialog label :is(input,select){text-transform:none;letter-spacing:0;font-weight:500}
+.snooze-dialog .snooze-hint{margin:-4px 0 0;color:var(--tx3);font:500 11px/1.5 var(--mono)}
+.snooze-dialog .snooze-hint.invalid{color:var(--warn)}
+.snooze-dialog .modal-actions{margin-top:2px}
+.snooze-dialog>.inline-error{margin:0}
+
+/* ============ MCP / app elicitation ============ */
+.modal-backdrop .mcp-elicitation-modal{width:min(600px,calc(100vw - 48px));max-height:min(780px,calc(100vh - 48px));overflow:auto;overscroll-behavior:contain}
+.mcp-elicitation-modal .mcp-approval-hero{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0}
+.mcp-elicitation-modal .mcp-approval-hero>div{min-width:0;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2)}
+.mcp-elicitation-modal .mcp-approval-hero span{display:block;color:var(--tx3);font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.mcp-elicitation-modal .mcp-approval-hero strong{display:block;margin-top:5px;color:var(--tx0);font-size:13.5px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.mcp-elicitation-modal .mcp-approval-hero p{margin:4px 0 0;color:var(--tx2);font-size:12px;line-height:1.5}
+.mcp-elicitation-modal .mcp-elicitation-message{margin:14px 0;color:var(--tx1);font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.mcp-elicitation-modal .mcp-approval-hero+.mcp-approval-params,.mcp-elicitation-modal .mcp-approval-hero+.mcp-approval-note{margin-top:12px}
+.mcp-elicitation-modal .mcp-approval-params{display:grid;border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg0);overflow:hidden}
+.mcp-elicitation-modal .mcp-approval-params>div{display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);align-items:baseline;gap:12px;min-height:0;padding:8px 12px;border-bottom:1px solid var(--line)}
+.mcp-elicitation-modal .mcp-approval-params>div:last-child{border-bottom:0}
+.mcp-elicitation-modal .mcp-approval-params span{color:var(--tx2);font-size:12px;overflow-wrap:anywhere}
+.mcp-elicitation-modal .mcp-approval-params code{color:var(--tx1);font:11.5px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.mcp-elicitation-modal .mcp-approval-note{margin:12px 0 0;color:var(--tx3);font-size:11.5px;line-height:1.55}
+.mcp-elicitation-modal .mcp-approval-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin:18px 0 0}
+.mcp-elicitation-modal .mcp-approval-actions .mcp-cancel{margin-right:auto}
+.mcp-elicitation-modal .mcp-form-fields{display:grid;gap:14px;margin:4px 0 0}
+.mcp-elicitation-modal .mcp-form-fields>.mcp-field{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;color:var(--tx1);font-size:12.5px;font-weight:600}
+.mcp-elicitation-modal .mcp-field>.mcp-field-label{display:inline-flex;align-items:center;gap:8px;min-width:0}
+.mcp-elicitation-modal .mcp-field em{padding:1px 7px;border:1px solid var(--warnb);border-radius:99px;background:var(--warnt);color:var(--warn);font:600 10px/1.5 var(--mono);font-style:normal}
+.mcp-elicitation-modal .mcp-field>small{flex-basis:100%;margin-top:-2px;color:var(--tx3);font-size:11.5px;font-weight:400;line-height:1.45}
+.mcp-elicitation-modal .mcp-field>:is(input,select,.mcp-multiselect,.mcp-boolean){flex-basis:100%}
+.mcp-elicitation-modal .mcp-field>:is(input,select){font-weight:500}
+.mcp-elicitation-modal .mcp-multiselect{display:flex;flex-wrap:wrap;gap:6px}
+.mcp-elicitation-modal .mcp-multiselect label{display:inline-flex;align-items:center;gap:7px;margin:0;padding:6px 11px 6px 8px;border:1px solid var(--line2);border-radius:99px;background:var(--bg2);color:var(--tx1);font-size:12px;font-weight:500;cursor:pointer;transition:border-color .14s,background .14s}
+.mcp-elicitation-modal .mcp-multiselect label:hover{background:var(--bg3)}
+.mcp-elicitation-modal .mcp-multiselect label:has(input:checked),.mcp-elicitation-modal .mcp-multiselect label.selected{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2));background:var(--acsoft);color:var(--tx0)}
+.mcp-elicitation-modal :is(.mcp-multiselect,.mcp-boolean) input[type=checkbox]{width:14px;height:14px;margin:0;accent-color:var(--ac);cursor:pointer}
+.mcp-elicitation-modal .mcp-boolean{display:flex;align-items:center;gap:8px;color:var(--tx1);font-size:12.5px;font-weight:500}
+/* The field named in the validation error. */
+.mcp-elicitation-modal .mcp-field :is(input.tb-input,select.tb-select)[aria-invalid="true"]{border-color:var(--errb)!important;box-shadow:0 0 0 3px var(--errt)}
+.mcp-elicitation-modal .mcp-field.invalid>.mcp-field-label{color:var(--err)}
+.mcp-elicitation-modal .mcp-field.invalid .mcp-multiselect label:not(.selected){border-color:var(--errb)}
+.mcp-elicitation-modal .mcp-url-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;padding:9px 9px 9px 12px;border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg0)}
+.mcp-elicitation-modal .mcp-url-card code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tx1);font:11.5px var(--mono)}
+.mcp-elicitation-modal .mcp-url-card .tb-btn{min-height:30px;padding:5px 11px;font-size:12px}
+/* The response error sits right under the header (":first-of-type" never matched it: the header is the first div). */
+.mcp-elicitation-modal>.modal-head+.inline-error{margin:0 0 12px;scroll-margin-top:16px}
+/* Long questions and forms scroll: keep the answer buttons pinned to the bottom edge of the dialog, and the title and
+   close button pinned to the top (content used to scroll out under the card's top edge, taking the X with it).
+   scroll-padding keeps scrollIntoView and Tab focus clear of both pinned bars. */
+:is(.question-modal,.mcp-elicitation-modal){scroll-padding:76px 0 84px}
+:is(.question-modal,.mcp-elicitation-modal) :is(.modal-actions,.mcp-approval-actions){position:sticky;bottom:calc(-1 * var(--tb-pad));z-index:2;margin:18px calc(-1 * var(--tb-pad)) calc(-1 * var(--tb-pad));padding:14px var(--tb-pad) var(--tb-pad);border-top:1px solid var(--line);background:var(--panel)}
+:is(.question-modal,.mcp-elicitation-modal)>.modal-head{position:sticky;top:calc(-1 * var(--tb-pad));z-index:3;margin:calc(-1 * var(--tb-pad)) calc(-1 * var(--tb-pad)) 16px;padding:calc(var(--tb-pad) - 2px) var(--tb-pad) 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+.mcp-elicitation-modal.kind-verification .mcp-elicitation-message,.mcp-elicitation-modal.kind-url .mcp-elicitation-message{margin-top:0}
+
+/* ============ Inline approval prompts (App.jsx ApprovalCard / GuardianDenialCard) ============ */
+.conversation-column .inline-approval .approval-card,.inline-approval .approval-card{max-width:680px;margin:0;border:1px solid color-mix(in srgb,var(--ac) 38%,var(--line))!important;border-radius:var(--r-l)!important;background:linear-gradient(180deg,color-mix(in srgb,var(--ac) 9%,transparent),transparent 72%),var(--bg2)!important;padding:14px 16px!important;box-shadow:var(--sh1);color:var(--tx1);animation:tb-rise .26s var(--ease-out)}
+.inline-approval .approval-card .card-title{display:flex;align-items:center;gap:9px;margin:0;color:var(--tx0)}
+.inline-approval .approval-card .card-title svg{width:16px;height:16px;flex:none;color:var(--ac)}
+.inline-approval .approval-card .card-title strong{font-size:13.5px;font-weight:650;letter-spacing:-.01em;color:var(--tx0)}
+.inline-approval .approval-card p{margin:8px 0 0;color:var(--tx1);font-size:12.5px;line-height:1.6;overflow-wrap:anywhere}
+.inline-approval .approval-card p.approval-thread{display:inline-flex;align-items:center;gap:6px;margin:8px 0 0;padding:2px 9px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2);font:500 10.5px/1.6 var(--mono)}
+.inline-approval .approval-card p.approval-thread+p{margin-top:8px}
+.inline-approval .approval-card>small{display:inline-flex;margin:10px 0 0;padding:2px 9px;border:1px solid var(--warnb);border-radius:99px;background:var(--warnt);color:var(--warn);font:600 10.5px/1.6 var(--mono)}
+.inline-approval .approval-card .approval-permissions{max-height:160px;margin:10px 0 0;overflow:auto;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg0);color:var(--tx2);font:11px/1.55 var(--mono);white-space:pre-wrap}
+.inline-approval .approval-card .approval-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin:14px 0 0}
+.inline-approval .approval-card .approval-actions button{flex:0 0 auto;height:32px;padding:0 14px;border:1px solid var(--line2);border-radius:9px;background:var(--bg3);color:var(--tx1);font-size:12.5px;font-weight:550;cursor:pointer;transition:background .15s,color .15s,filter .15s,border-color .15s}
+.inline-approval .approval-card .approval-actions button:hover:not(:disabled){background:var(--bg4);color:var(--tx0)}
+.inline-approval .approval-card .approval-actions button.approve{border-color:transparent;background:linear-gradient(135deg,var(--ac2),var(--ac));color:#fff;box-shadow:0 3px 14px var(--acglow)}
+.inline-approval .approval-card .approval-actions button.approve:hover:not(:disabled){background:linear-gradient(135deg,var(--ac2),var(--ac));color:#fff;filter:brightness(1.1)}
+.inline-approval .approval-card .approval-actions button:active:not(:disabled){transform:scale(.98)}
+.inline-approval .approval-card .approval-actions button:disabled{opacity:.55;cursor:default}
+/* Auto-review denial: amber card, overriding is the risky action. */
+.conversation-column .inline-approval .approval-card.guardian-denial-card,.inline-approval .approval-card.guardian-denial-card{border-color:var(--warnb)!important;background:linear-gradient(180deg,var(--warnt),transparent 72%),var(--bg2)!important}
+.inline-approval .guardian-denial-card .card-title svg{color:var(--warn)}
+.inline-approval .guardian-denial-card .approval-actions button.approve{border-color:var(--errb);background:var(--errt);color:var(--err);box-shadow:none}
+.inline-approval .guardian-denial-card .approval-actions button.approve:hover:not(:disabled){background:color-mix(in srgb,var(--err) 16%,transparent);color:var(--err);filter:none}
+/* A very long command or reason stretched the card to hundreds of pixels and pushed the answer buttons out of view;
+   it now scrolls inside the card. pre-wrap keeps the line breaks of multi-line commands. */
+.inline-approval .approval-card>p:not(.approval-thread){max-height:min(220px,32vh);overflow:auto;overscroll-behavior:contain;white-space:pre-wrap}
+
+/* ============ Composer and thread menus (App.jsx / ThreadSidebar.jsx; base look in shell.css) ============ */
+/* A long search echoed back in "No models match “…”" is one unbreakable word: wrap it instead of widening the menu. */
+.composer-wrap .model-picker-menu>p{overflow-wrap:anywhere}
+/* The keyboard choice (accent) and the pointer hover shared one tint, so two rows looked chosen at once. */
+.composer-wrap .file-mention-menu button:hover:not(.active){background:var(--bg3);color:var(--tx0)}
+/* The menu lists at most 8 files (43px rows) but the legacy 320px cap showed 7.4 of them, so ArrowUp from the first
+   row wrapped the keyboard choice onto the hidden 8th row. Room for all 8; short windows still scroll. */
+.composer-wrap .file-mention-menu{max-height:min(362px,calc(100dvh - 210px))}
+/* Thread row "…" menu. Absolutely positioned inside the scrolling thread list, it was clipped by that list: on the last
+   rows only "Pin" showed and Archive/Delete could not be reached. Fixed and anchored to its button, it escapes the list's
+   clip (the sidebar's container-type makes the sidebar its containing block), follows the button while the list
+   scrolls, and flips above the button when there is no room below. */
+@supports (anchor-scope:all) and (position-try-fallbacks:flip-block){
+  .sidebar .thread-menu{anchor-scope:--tb-thread-menu}
+  .sidebar .thread-menu>summary{anchor-name:--tb-thread-menu}
+  .sidebar .thread-menu>.thread-menu-popover{position:fixed;position-anchor:--tb-thread-menu;inset:auto;top:anchor(bottom);right:anchor(right);margin:4px 0 0;position-try-fallbacks:flip-block;position-visibility:anchors-visible;z-index:60}
+}
+
+/* ============ Assistant selection toolbar ============ */
+.assistant-selection-cite{position:fixed;z-index:120;transform:translate(-50%,-100%);height:30px;display:flex;align-items:center;gap:6px;padding:0 11px 0 9px;border:1px solid var(--line2);border-radius:9px;background:var(--panel);color:var(--tx0);box-shadow:var(--shadow);font-size:12px;font-weight:600;cursor:pointer;animation:tb-cite-in .14s var(--ease-out);transition:background .14s,border-color .14s}
+.assistant-selection-cite svg{color:var(--ac)}
+.assistant-selection-cite::after{content:"";position:absolute;left:50%;bottom:-5px;width:8px;height:8px;margin-left:-4px;border-right:1px solid var(--line2);border-bottom:1px solid var(--line2);background:inherit;transform:rotate(45deg)}
+.assistant-selection-cite:hover:not(:disabled){border-color:color-mix(in srgb,var(--ac) 45%,var(--line2));background:var(--bg3);color:var(--tx0)}
+.assistant-selection-cite:disabled{cursor:not-allowed;opacity:1;color:var(--tx2)}
+.assistant-selection-cite:disabled svg{color:var(--tx3)}
+
+/* ============ Toasts ============ */
+/* Action error toast (App.jsx .app-action-error-toast, a child of .workspace-shell). It sits just above the composer
+   (CSS anchor positioning, so it follows the composer's height: one, two or three rows, chips, long drafts, terminal)
+   and moves below the header when a composer menu is open, when the right panel is maximized and on other pages. */
+.workspace-shell>.app-action-error-toast{position:absolute;z-index:165;top:calc(var(--top) + 12px);bottom:auto;left:var(--tb-toast-center,50%);right:auto;width:var(--tb-toast-width,min(520px,calc(100% - 32px)));transform:none;translate:-50% 0;padding:10px 14px 10px 38px;border:1px solid var(--errb);border-radius:var(--r-m);background:color-mix(in srgb,var(--err) 9%,var(--panel));color:var(--tx0);box-shadow:var(--shadow);font-size:12.5px;line-height:1.5;text-align:left;overflow-wrap:anywhere;animation:tb-toast-in .24s var(--ease-out)}
+.workspace-shell>.app-action-error-toast::before{content:"";position:absolute;left:13px;top:12px;width:16px;height:16px;background:var(--err);-webkit-mask:var(--tb-icon-alert) center/contain no-repeat;mask:var(--tb-icon-alert) center/contain no-repeat}
+.workspace-shell.right-open:not(.right-maximized){--tb-toast-center:calc((100% - var(--right-panel-width,460px))/2);--tb-toast-width:min(480px,calc(100% - var(--right-panel-width,460px) - 32px))}
+.workspace-shell.workspace-shell>.app-action-error-toast.secondary-surface-error{top:16px;bottom:auto;left:auto;right:18px;translate:none;width:min(460px,calc(100% - 36px))}
+.workspace-shell.right-open:not(.right-maximized)>.app-action-error-toast.secondary-surface-error{right:calc(var(--right-panel-width,460px) + 18px);width:min(420px,calc(100% - var(--right-panel-width,460px) - 36px))}
+
+/* Undo toast (App.jsx .thread-undo-toast, fixed to the viewport). */
+.app-shell>.thread-undo-toast{position:fixed;z-index:160;top:auto;bottom:24px;left:50%;transform:none;translate:-50% 0;min-width:0;max-width:calc(100vw - 32px);height:44px;display:flex;align-items:center;gap:10px;padding:0 7px 0 12px;border:1px solid var(--line2);border-radius:var(--r-m);background:var(--panel);color:var(--tx0);box-shadow:var(--shadow);font-size:12.5px;animation:tb-toast-in .24s var(--ease-out)}
+.app-shell>.thread-undo-toast::before{content:"";width:16px;height:16px;flex:none;background:var(--ok);-webkit-mask:var(--tb-icon-check-circle) center/contain no-repeat;mask:var(--tb-icon-check-circle) center/contain no-repeat}
+.app-shell>.thread-undo-toast span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.app-shell>.thread-undo-toast button{height:28px;flex:none;padding:0 11px;border:1px solid color-mix(in srgb,var(--ac) 40%,var(--line));border-radius:var(--r-s);background:transparent;color:var(--ac);font-size:12px;font-weight:600;cursor:pointer;transition:background .14s}
+.app-shell>.thread-undo-toast button:hover{background:var(--acsoft)}
+.app-shell>.thread-undo-toast em{flex:none;padding-right:4px;color:var(--tx3);font:500 10.5px var(--mono);font-style:normal}
+
+/* Composer-relative placement (Chromium / Electron). Fallback above: below the header, never over the composer. */
+@supports (anchor-name:--tb-composer){
+  .chat-workspace .composer-wrap{anchor-name:--tb-composer}
+  .workspace-shell:not(.right-maximized)>.app-action-error-toast:not(.secondary-surface-error){top:auto;bottom:calc(anchor(--tb-composer top,120px) + 12px);left:anchor(--tb-composer center,var(--tb-toast-center,50%))}
+  .workspace-shell:not(.right-maximized)>.app-action-error-toast.with-thread-undo:not(.secondary-surface-error){bottom:calc(anchor(--tb-composer top,120px) + 64px)}
+  .app-shell:not(:has(.workspace-shell.right-maximized))>.thread-undo-toast{bottom:calc(anchor(--tb-composer top,12px) + 12px);left:anchor(--tb-composer center,50%)}
+}
+@supports not (anchor-name:--tb-composer){
+  .app-shell:has(.chat-workspace)>.thread-undo-toast{top:calc(var(--top) + 12px);bottom:auto}
+  .workspace-shell>.app-action-error-toast.with-thread-undo:not(.secondary-surface-error){top:calc(var(--top) + 64px)}
+}
+/* Composer menus open upward over the space above the composer: keep the error below the header instead. */
+html:has(.composer-wrap :is(.file-mention-menu,.model-picker-menu,.slash-menu)) .workspace-shell.workspace-shell>.app-action-error-toast{top:calc(var(--top) + 12px);bottom:auto}
+.workspace-shell.right-maximized.right-maximized>.app-action-error-toast{top:calc(var(--top) + 12px);bottom:auto;left:50%;translate:-50% 0}
+
+/* ============ Startup failure ============ */
+.startup-failure-shell{background:radial-gradient(60% 50% at 50% 0%,color-mix(in srgb,var(--err) 7%,transparent),transparent 70%),var(--bg0)}
+.startup-failure-shell .startup-failure-card{width:min(600px,calc(100vw - 36px));gap:18px;padding:24px;border:1px solid var(--errb);border-radius:18px;background:var(--panel);box-shadow:var(--shbig);animation:tb-ovl-pop .2s var(--ease-out)}
+.startup-failure-card img{width:46px;height:46px;filter:drop-shadow(0 4px 16px var(--acglow))}
+.startup-failure-card span{display:block;margin-bottom:6px;color:var(--err);font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase}
+.startup-failure-card h1{margin:0;color:var(--tx0);font-size:20px;font-weight:650;letter-spacing:-.025em;line-height:1.3}
+.startup-failure-card p{max-height:min(320px,42vh);margin:10px 0 0;padding:9px 12px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--errb);border-radius:9px;background:var(--errt);color:var(--err);font:12px/1.55 var(--mono);overflow-wrap:anywhere;white-space:pre-wrap}
+.startup-failure-card small{display:block;margin-top:10px;color:var(--tx3);font-size:12px;line-height:1.5}
+.startup-failure-shell .startup-failure-card button{height:36px;padding:0 16px;border:0;border-radius:9px;background:linear-gradient(135deg,var(--ac2),var(--ac));color:#fff;font-size:12.5px;font-weight:600;box-shadow:0 3px 14px var(--acglow);cursor:pointer}
+.startup-failure-shell .startup-failure-card button:hover{background:linear-gradient(135deg,var(--ac2),var(--ac));filter:brightness(1.1)}
+
+/* ============ Narrow widths ============ */
+@media (max-width:900px){
+  .modal-backdrop{padding:16px}
+  :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal){--tb-pad:18px}
+  .mcp-elicitation-modal .mcp-approval-hero{grid-template-columns:1fr}
+  .command-palette .command-palette-footer .command-palette-hint{display:none}
+  .onboarding-backdrop .onboarding-card{padding:20px}
+}
+@media (max-height:700px){
+  .onboarding-card .onboarding-brand{margin-bottom:14px}
+  .onboarding-card .onboarding-steps section{min-height:56px;padding-top:8px;padding-bottom:8px}
+}
+
+/* ============ Legacy !important neutralizer ============
+   styles.css, t3-workspace.css and guardian-review.css force hard-coded colors with !important (and a few
+   higher-specificity plain rules) for built-in Light mode and custom themes. The rules below re-assert the token
+   values above for exactly those modes. Remove this section together with those legacy rules in the cleanup step. */
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.modal-backdrop,.command-palette-backdrop,.onboarding-backdrop){background:var(--ovl)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.command-palette,.question-modal,.modal-card,.mcp-elicitation-modal){background:var(--panel)!important;border-color:var(--line2)!important;color:var(--tx0)!important;box-shadow:var(--shbig)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-head{border-color:transparent!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.mcp-elicitation-modal)>.modal-head{border-color:var(--line)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-head strong{color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-head .modal-close{background:transparent!important;color:var(--tx2)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-head .modal-close:hover:not(:disabled){background:var(--bg3)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions,.onboarding-steps) .tb-btn{background:var(--bg3)!important;border-color:var(--line2)!important;color:var(--tx1)!important}
+/* The generic hover must skip primary and outline buttons: at (0,8,1) it used to beat their rules, so hovering
+   "Allow once", "Submit" or "Snooze" in light mode turned the gradient button flat grey with dark text. */
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions,.onboarding-steps) .tb-btn:not(.tb-btn--primary):not(.tb-btn--outline):hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions) .tb-btn.tb-btn--primary{background:linear-gradient(135deg,var(--ac2),var(--ac))!important;border-color:transparent!important;color:#fff!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions) .tb-btn.tb-btn--primary:hover:not(:disabled){background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;filter:brightness(1.1)}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions) .tb-btn.tb-btn--outline{background:transparent!important;border-color:color-mix(in srgb,var(--ac) 40%,var(--line))!important;color:var(--ac)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.mcp-approval-actions) .tb-btn.tb-btn--outline:hover:not(:disabled){background:var(--acsoft)!important;color:var(--ac)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) :is(input.tb-input,select.tb-select){background-color:var(--bg2)!important;border-color:var(--line)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) :is(input.tb-input,select.tb-select):focus{border-color:color-mix(in srgb,var(--ac) 50%,var(--line2))!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal) .modal-actions>span{color:var(--tx3)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.onboarding-card,.command-palette) :is(.inline-error,.command-palette-error,.onboarding-action-error){background:var(--errt)!important;border-color:var(--errb)!important;color:var(--err)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .command-palette .command-palette-error.is-warning{background:var(--warnt)!important;border-color:var(--warnb)!important;color:var(--warn)!important}
+
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .command-palette .command-palette-search input{background:transparent!important;border-color:transparent!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .command-palette .command-palette-results>button{background:transparent!important;border-color:transparent!important;color:var(--tx1)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .command-palette .command-palette-results>button:not(.selected):hover{background:transparent!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .command-palette .command-palette-results>button.selected{background:var(--acsoft)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .command-palette .command-palette-results strong{color:inherit!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .command-palette .command-palette-results small{color:var(--tx3)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .command-palette .command-palette-results>button.selected small{color:var(--tx2)!important}
+
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .onboarding-backdrop .onboarding-card{background:radial-gradient(120% 70% at 50% -18%,color-mix(in srgb,var(--ac) 13%,transparent),transparent 62%),var(--panel)!important;border-color:var(--line2)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .onboarding-card .onboarding-steps section{background:var(--bg2)!important;border-color:var(--line)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .onboarding-card .onboarding-steps select.onboarding-permission-select{background-color:var(--bg3)!important;border-color:var(--line2)!important;color:var(--tx0)!important}
+/* Legacy light rules reset the "background" shorthand with !important, which also dropped the chevron. */
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.question-modal,.snooze-dialog,.mcp-elicitation-modal,.onboarding-card) select:is(.tb-select,.onboarding-permission-select){background-image:var(--chev)!important;background-repeat:no-repeat!important;background-size:11px!important;background-position:right 10px center!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .onboarding-card .onboarding-steps section>.onboarding-static-workspace{background:var(--bg3)!important;border-color:var(--line2)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .onboarding-card .onboarding-finish{background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;border-color:transparent!important}
+
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .question-modal .question-block{border-color:var(--line)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .question-modal .question-block label strong{color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .question-modal .question-options button{background:var(--bg2)!important;border-color:var(--line)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .question-modal .question-options button:hover{background:var(--bg3)!important;border-color:var(--line2)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .question-modal .question-options button.active{background:var(--acsoft)!important;border-color:color-mix(in srgb,var(--ac) 50%,var(--line))!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .question-modal .question-options button span{color:var(--tx2)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .question-modal .question-files span{background:var(--bg3)!important;border-color:var(--line2)!important;color:var(--tx1)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .question-modal .question-files>button.question-attach{background:transparent!important}
+
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .snooze-dialog .snooze-mode-tabs button{background:transparent!important;border-color:transparent!important;color:var(--tx2)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .snooze-dialog .snooze-mode-tabs button.active{background:var(--bg1)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .snooze-dialog>p:not(.snooze-hint){color:var(--tx2)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .snooze-dialog>p.snooze-hint{color:var(--tx3)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .snooze-dialog>p.snooze-hint.invalid{color:var(--warn)!important}
+
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .mcp-elicitation-modal :is(.mcp-approval-hero>div,.mcp-approval-params,.mcp-url-card,.mcp-multiselect label){border-color:var(--line)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .mcp-elicitation-modal .mcp-elicitation-message{color:var(--tx1)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .mcp-elicitation-modal .mcp-approval-note{color:var(--tx3)!important}
+
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card .card-title{color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card p{color:var(--tx1)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card p.approval-thread{color:var(--tx2)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card>small{color:var(--warn)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card.guardian-denial-card{background:linear-gradient(180deg,var(--warnt),transparent 72%),var(--bg2)!important;border-color:var(--warnb)!important;color:var(--tx1)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card .approval-actions button{background:var(--bg3)!important;border-color:var(--line2)!important;color:var(--tx1)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card .approval-actions button:hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card .approval-actions button.approve{background:linear-gradient(135deg,var(--ac2),var(--ac))!important;border-color:transparent!important;color:#fff!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .guardian-denial-card .approval-actions button.approve{background:var(--errt)!important;border-color:var(--errb)!important;color:var(--err)!important}
+
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .file-mention-menu button:hover:not(.active){background:var(--bg3)!important;color:var(--tx0)!important}
+/* The generic light hover turned "Delete" grey; keep the danger tint it has in dark mode. */
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .sidebar .thread-menu-popover button.danger:hover{background:var(--errt)!important;color:var(--err)!important}
+
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .assistant-selection-cite{background:var(--panel)!important;border-color:var(--line2)!important;color:var(--tx0)!important;box-shadow:var(--shadow)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .assistant-selection-cite:hover:not(:disabled){background:var(--bg3)!important;border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-shell>.app-action-error-toast{background:color-mix(in srgb,var(--err) 9%,var(--panel))!important;border-color:var(--errb)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .app-shell>.thread-undo-toast{background:var(--panel)!important;border-color:var(--line2)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .app-shell>.thread-undo-toast button{background:transparent!important;border-color:color-mix(in srgb,var(--ac) 40%,var(--line))!important;color:var(--ac)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .startup-failure-shell .startup-failure-card{background:var(--panel)!important;border-color:var(--errb)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .startup-failure-card h1{color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .startup-failure-shell .startup-failure-card button{background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important}

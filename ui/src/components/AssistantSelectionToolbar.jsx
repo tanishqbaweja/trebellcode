@@ -18,6 +18,7 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
     const container=containerRef.current;
     if(!container)return;
     let frame=0;
+    const scrollHost=container.closest(".conversation-scroll");
     const clear=()=>setSelection(null);
     const update=()=>{
       cancelAnimationFrame(frame);
@@ -32,13 +33,16 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
         if(!text){clear();return}
         const rect=range.getBoundingClientRect();
         if(!rect.width&&!rect.height){clear();return}
+        // Keep the button inside the visible conversation: a selection that starts above the fold would otherwise
+        // pin it to the window top, on top of the header controls.
+        const host=(scrollHost||container).getBoundingClientRect();
+        const top=Math.max(0,host.top),bottom=Math.min(window.innerHeight,host.bottom);
         const x=Math.max(54,Math.min(window.innerWidth-54,rect.left+rect.width/2));
-        const y=Math.max(38,Math.min(window.innerHeight-8,rect.top-7));
+        const y=Math.max(top+38,Math.min(bottom-8,rect.top-7));
         setSelection({messageId:start.dataset.assistantCitationSource,text,x,y});
       });
     };
     const onKey=event=>{if(event.key==="Escape")clear()};
-    const scrollHost=container.closest(".conversation-scroll");
     document.addEventListener("selectionchange",update);
     container.addEventListener("pointerup",update);
     document.addEventListener("keydown",onKey,true);

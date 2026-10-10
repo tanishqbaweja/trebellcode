@@ -69,7 +69,7 @@ export default function RuntimeTrace({threadId=null}){
         <summary>
           <time>{timeLabel(item.at)}</time>
           <strong>{item.name}</strong>
-          <span>{item.status||item.category||"event"}</span>
+          <span data-status={String(item.status||"").toLowerCase()||undefined}>{item.status||item.category||"event"}</span>
         </summary>
         <div>
           <p>{[item.runtime,item.provider,item.threadId&&("thread "+String(item.threadId).slice(0,12)),item.turnId&&("turn "+String(item.turnId).slice(0,12))].filter(Boolean).join(" · ")||"Trebell runtime event"}</p>

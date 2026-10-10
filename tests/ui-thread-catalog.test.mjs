@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, threadCatalogRuntime, threadsFromCatalogMeta } from "../ui/src/thread-catalog.js";
+import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openThreadTitleSource, threadCatalogRuntime, threadKeptBySwitch, threadOwnerElsewhere, threadsFromCatalogMeta, threadTitle } from "../ui/src/thread-catalog.js";
 
 test("thread catalog preserves rows from other runtimes when the active runtime reloads",()=>{
   const existing=[
@@ -65,4 +65,55 @@ test("missing runtime thread errors recognize Codex rollout loss even for durabl
   assert.equal(missingRuntimeThreadError(new Error("no rollout found for thread id 01a0dea1")),true);
   assert.equal(missingRuntimeThreadError(new Error("Thread abc not found")),true);
   assert.equal(missingRuntimeThreadError(new Error("network connection failed")),false);
+});
+
+test("a thread another harness owns is named by its owner, so a harness switch neither shows nor continues it",()=>{
+  // The live tour: an OpenCode thread stayed open after the switch to Cursor, and the next message went to it with Cursor's model.
+  const opencode={id:"oc-1",runtime:"opencode",model:"opencode/big-pickle"};
+  assert.equal(threadOwnerElsewhere(opencode,{},"cursor"),"opencode");
+  assert.equal(threadOwnerElsewhere(opencode,{runtime:"opencode",runtimeInstanceId:"opencode-default"},"cursor"),"opencode");
+  assert.equal(threadOwnerElsewhere(opencode,{},"opencode"),null,"the owner's own thread stays open");
+  // Codex threads carry no runtime field: the catalog's saved owner names it.
+  assert.equal(threadOwnerElsewhere({id:"codex-1"},{runtime:"codex"},"claude"),"codex");
+  assert.equal(threadOwnerElsewhere({id:"codex-1"},{runtimeInstanceId:"codex-work"},"claude"),"codex");
+  // A thread with no owner on record belongs to the harness that shows it; no thread, or no harness, has no other owner.
+  assert.equal(threadOwnerElsewhere({id:"plain"},{},"grok"),null);
+  assert.equal(threadOwnerElsewhere(null,{},"grok"),null);
+  assert.equal(threadOwnerElsewhere(opencode,{},null),null);
+  assert.equal(threadOwnerElsewhere(opencode,undefined,"cursor"),"opencode");
+});
+
+test("the open thread's header title is the one its sidebar row shows once the first message names it",()=>{
+  // The live tour: every harness's new thread kept "New Trebell task" in the header while its row showed the first message.
+  const opened={id:"t1",name:null,preview:null,model:"haiku"};
+  assert.deepEqual(openThreadTitleSource(opened,[{id:"t1",name:null,preview:"Reply with exactly TREBELL_TOUR_OK"}]),{...opened,preview:"Reply with exactly TREBELL_TOUR_OK"});
+  assert.equal(openThreadTitleSource(opened,[{id:"t1",name:"Tour check",preview:"Reply"}]).name,"Tour check","a name the server gave later wins");
+  assert.equal(openThreadTitleSource({...opened,name:"Renamed"},[{id:"t1",name:null,preview:"Reply"}]).name,"Renamed","a rename not yet listed is kept");
+  assert.deepEqual(openThreadTitleSource(opened,[{id:"other",preview:"Other"}]),{...opened,name:null,preview:null},"another thread's row is not used");
+  assert.deepEqual(openThreadTitleSource({id:"t2",preview:"Kept"},undefined),{id:"t2",name:null,preview:"Kept"});
+  assert.equal(openThreadTitleSource(null,[{id:"t1"}]),null);
+});
+
+test("a saved thread with no name or first message is titled as its sidebar row, and only a new chat is a new task",()=>{
+  // The live tour: an Antigravity thread saved untitled showed "Untitled task" in the sidebar and "New Trebell task" in the header.
+  assert.equal(threadTitle({id:"t1",name:null,preview:null}),"Untitled task");
+  assert.equal(threadTitle(openThreadTitleSource({id:"t1",name:null,preview:null},[{id:"t1",name:null,preview:null}])),"Untitled task");
+  assert.equal(threadTitle(null),"New Trebell task");
+  assert.equal(threadTitle({id:"t1",name:null,preview:"Reply with exactly TREBELL_TOUR_OK"}),"Reply with exactly TREBELL_TOUR_OK");
+  assert.equal(threadTitle({id:"t1",name:"Tour check",preview:"Reply"}),"Tour check");
+});
+
+test("a harness switch keeps a thread of the harness it lands on that was opened while it ran, and closes the one it replaced",()=>{
+  // The live tour: a Cursor thread opened while a switch to Cursor ran was closed when the switch landed.
+  const cursor={id:"c1",runtime:"cursor"},untagged={id:"u1"};
+  assert.equal(threadKeptBySwitch(cursor,{},{switchThreadId:null,landingRuntime:"cursor",openedUnder:"cursor"}),true);
+  assert.equal(threadKeptBySwitch(cursor,{},{switchThreadId:"older",landingRuntime:"cursor",openedUnder:"codex"}),true,"the thread names its own harness");
+  assert.equal(threadKeptBySwitch(cursor,{},{switchThreadId:"c1",landingRuntime:"cursor",openedUnder:"cursor"}),false,"the thread open when the switch began is the one it replaces");
+  assert.equal(threadKeptBySwitch(cursor,{},{switchThreadId:null,landingRuntime:"opencode",openedUnder:"cursor"}),false,"a thread of another harness never stays open");
+  assert.equal(threadKeptBySwitch({id:"c2"},{runtime:"opencode"},{switchThreadId:null,landingRuntime:"cursor",openedUnder:"cursor"}),false,"its saved owner decides");
+  assert.equal(threadKeptBySwitch(untagged,{},{switchThreadId:null,landingRuntime:"grok",openedUnder:"grok"}),true,"a thread that names no harness belongs to the one it was opened under");
+  assert.equal(threadKeptBySwitch(untagged,{},{switchThreadId:null,landingRuntime:"grok",openedUnder:"codex"}),false);
+  assert.equal(threadKeptBySwitch(untagged,{runtimeInstanceId:"grok-work"},{switchThreadId:null,landingRuntime:"grok",openedUnder:"codex"}),true,"a saved profile names its harness");
+  assert.equal(threadKeptBySwitch(null,{},{landingRuntime:"cursor",openedUnder:"cursor"}),false);
+  assert.equal(threadKeptBySwitch(cursor,{},{switchThreadId:null,landingRuntime:null,openedUnder:"cursor"}),false);
 });
