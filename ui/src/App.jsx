@@ -221,7 +221,8 @@ function normalizeItem(item={}){
   if(type==="commandExecution")title=Array.isArray(item.command)?item.command.join(" "):(item.command||"Running command");
   if(type==="fileChange")title="Editing files";
   if(type==="mcpToolCall")title=(item.server?item.server+" / ":"")+(item.tool||item.name||"MCP tool");
-  if(type==="dynamicToolCall")title=(item.namespace?item.namespace+" / ":"")+(item.tool||"Dynamic tool");
+  // The relay files every harness (ACP) tool under the placeholder namespace "agent"; such a tool is shown by its own name.
+  if(type==="dynamicToolCall")title=(item.namespace&&item.namespace!=="agent"?item.namespace+" / ":"")+(item.tool||"Dynamic tool");
   if(type==="collabAgentToolCall")title="Collaboration · "+String(item.tool||"agent task").replace(/([a-z])([A-Z])/g,"$1 $2").toLowerCase();
   if(type==="subAgentActivity")title="Subagent · "+(item.kind||"activity");
   if(type==="webSearch")title=item.query||"Searching the web";
@@ -232,7 +233,9 @@ function normalizeItem(item={}){
   if(type==="enteredReviewMode")title="Reviewing changes";
   if(type==="exitedReviewMode")title="Finished review";
   const output=type==="commandExecution"?String(item.aggregatedOutput??item.output??""):"";
-  return {id:item.id||crypto.randomUUID(),kind:type,title:String(title).split("\n")[0].slice(0,160),status:item.status==="completed"?"done":item.status||"running",raw:item,output};
+  // Codex and the relay mark a running item "inProgress"; the timeline calls it running, as plan steps already do.
+  const status=item.status==="completed"?"done":item.status==="inProgress"?"running":item.status||"running";
+  return {id:item.id||crypto.randomUUID(),kind:type,title:String(title).split("\n")[0].slice(0,160),status,raw:item,output};
 }
 function presetFor(mode){
   if(mode==="full")return {sandbox:"danger-full-access",approvalPolicy:"never"};
@@ -2320,6 +2323,21 @@ export default function App(){
       const isActivityItem=!["userMessage","agentMessage"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,{currentActivity:{id:item.id,kind:item.kind,title:item.title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
       if(isCurrent&&isActivityItem)setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item]);
+    }
+    // A harness tool that is still running can name itself better as it goes (an ACP tool call first reports its bare tool
+    // name, then its kind and command); the row follows it in place.
+    else if(message.method==="item/tool/progress"&&p.item){
+      // Output-only updates stream through outputDelta; only a changed name, kind or status touches the row and the telemetry.
+      const item=normalizeItem(p.item);
+      const activity=threadTelemetryRef.current[threadId]?.currentActivity;
+      if(activity?.id===item.id&&(activity.title!==item.title||activity.kind!==item.kind))updateThreadTelemetry(threadId,{currentActivity:{...activity,kind:item.kind,title:item.title}});
+      if(isCurrent)setEvents(prev=>{
+        const index=prev.findIndex(e=>e.id===item.id);
+        if(index<0)return [...prev,item];
+        const old=prev[index];
+        if(old.title===item.title&&old.kind===item.kind&&old.status===item.status)return prev;
+        const next=prev.slice();next[index]={...old,...item,output:item.output||old.output};return next;
+      });
     }
     else if(message.method==="item/completed"&&p.item){
       let streamedCommandOutput="";
