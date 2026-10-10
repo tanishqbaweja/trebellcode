@@ -110,7 +110,7 @@ test("a turn whose checks already ran shows their outcome: failed checks start a
     const failed=page.locator(".tool-event",{hasText:"Verification failed · low risk · 1 of 3 required checks failed"});
     // A failed row shares the error styling and keeps its own status text.
     await expect(failed).toHaveClass(/status-error/);await expect(failed.locator("summary em")).toHaveText("failed");
-    const repair=page.locator(".tool-event",{hasText:"Verification failed · automatic same-thread repair started"});
+    const repair=page.locator(".tool-event",{hasText:"Automatic same-thread repair turn"});
     await expect(repair.locator("summary em")).toHaveText("running");
     harness.emit({method:"turn/started",params:{threadId:thread.id,turn:{id:"turn-repair",status:"inProgress",startedAt:Date.now()/1000}}});
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"turn-repair",status:"completed",completedAt:Date.now()/1000}}});

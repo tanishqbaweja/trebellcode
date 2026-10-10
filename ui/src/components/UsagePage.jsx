@@ -56,13 +56,13 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       const params=new URLSearchParams({days:String(days),limit:"5000"});
       for(const id of selectedEnvironments)params.append("environmentId",id);
       setData(await api("/api/usage?"+params.toString()));
-    }catch(err){setError(err.message)}finally{setLoading(false)}
+    }catch(err){setError("Could not load usage: "+(err?.message||String(err)))}finally{setLoading(false)}
   }
   async function refreshRuntimeUsage(){
     if(!["claude","opencode","cursor","grok"].includes(agentRuntime)){setRuntimeUsage({data:null,loading:false,error:""});return}
     setRuntimeUsage(current=>({...current,loading:true,error:""}));
     try{setRuntimeUsage({data:await api("/api/agent-runtime-usage"),loading:false,error:""})}
-    catch(err){setRuntimeUsage(current=>({...current,loading:false,error:err.message||String(err)}))}
+    catch(err){setRuntimeUsage(current=>({...current,loading:false,error:"Could not load subscription limits: "+(err?.message||String(err))}))}
   }
   async function refreshEnvironments(){
     setEnvironmentError("");
@@ -70,7 +70,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       const next=await api("/api/environments");
       setEnvironmentData(next);return next;
     }catch(err){
-      setEnvironmentError(err?.message||String(err)||"Could not refresh environments.");
+      setEnvironmentError("Could not refresh environments: "+(err?.message||String(err)));
       return null;
     }
   }
@@ -104,10 +104,11 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   },[rpc,rpcStatus,activeThread?.id,agentRuntime]);
   useEffect(()=>{refreshRuntimeUsage()},[agentRuntime]);
   useEffect(()=>{refreshEnvironments()},[]);
-  // The environment filter is a <details> popover: Escape or a click away from the usage toolbar closes it.
+  // The environment filter is a <details> popover: Escape or a click anywhere outside it closes it, including the toolbar's
+  // own Refresh, period and Clear controls, so the menu never stays open over the result of one of them.
   const filterRef=useRef(null);
   useEffect(()=>{
-    const onPointer=event=>{const node=filterRef.current;if(!node?.open)return;if(node.closest(".usage-toolbar")?.contains(event.target))return;node.open=false};
+    const onPointer=event=>{const node=filterRef.current;if(!node?.open)return;if(node.contains(event.target))return;node.open=false};
     const onKey=event=>{const node=filterRef.current;if(event.key!=="Escape"||!node?.open)return;node.open=false;node.querySelector("summary")?.focus()};
     document.addEventListener("pointerdown",onPointer);document.addEventListener("keydown",onKey);
     return()=>{document.removeEventListener("pointerdown",onPointer);document.removeEventListener("keydown",onKey)};
@@ -117,12 +118,23 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     for(const record of data.records||[]){const item=estimateUsageCost(record,settings);if(item){cost+=item.amount;item.estimated?estimated++:known++}const key=record.model||"Unknown model";const bucket=modelMap[key]||(modelMap[key]={tokens:0,turns:0,cost:0,costEntries:0,runtime:record.runtime});bucket.tokens+=Number(record.usage?.totalTokens||0);bucket.turns++;if(item){bucket.cost+=item.amount;bucket.costEntries++}}
     return {cost,known,estimated,models:Object.entries(modelMap).sort((a,b)=>b[1].tokens-a[1].tokens)};
   },[data,settings]);
-  const daily=Object.entries(data.daily||{}).sort((a,b)=>a[0].localeCompare(b[0]));const maxDaily=Math.max(1,...daily.map(([,value])=>Number(value.tokens||0)));
+  // Daily bars count the viewer's own calendar days, the clock the Recent turns times use. The server's daily map is keyed
+  // by UTC date, which put a turn made just after local midnight (east of UTC) on the day before.
+  const daily=useMemo(()=>{
+    const days={};
+    for(const record of data.records||[]){
+      const at=new Date(record.at);if(Number.isNaN(at.getTime()))continue;
+      const key=at.getFullYear()+"-"+String(at.getMonth()+1).padStart(2,"0")+"-"+String(at.getDate()).padStart(2,"0");
+      (days[key]||(days[key]={tokens:0})).tokens+=Number(record.usage?.totalTokens||0);
+    }
+    return Object.entries(days).sort((a,b)=>a[0].localeCompare(b[0]));
+  },[data.records]);
+  const maxDaily=Math.max(1,...daily.map(([,value])=>Number(value.tokens||0)));
   async function clear(){
     if(!confirm("Clear Trebell's locally recorded usage history? Provider account usage is not affected."))return;
     setClearing(true);setError("");
     try{await api("/api/usage",{method:"DELETE"});await refresh()}
-    catch(err){setError(err?.message||String(err)||"Could not clear local usage history.")}
+    catch(err){setError("Could not clear local usage history: "+(err?.message||String(err)))}
     finally{setClearing(false)}
   }
   async function resetCodexLimit(creditId=null){
@@ -177,7 +189,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       {runtimeUsage.error&&<div className="usage-warning"><CircleAlert size={14}/><span>{runtimeUsage.error}</span></div>}
     </section>}
     <div className="usage-summary">
-      <div><span>Total tokens</span><strong>{formatTokens(data.total?.totalTokens)}</strong><small>{(data.records||[]).length} recorded turns</small></div>
+      <div><span>Total tokens</span><strong>{formatTokens(data.total?.totalTokens)}</strong><small>{(data.records||[]).length} recorded turn{(data.records||[]).length===1?"":"s"}</small></div>
       <div><span>Input</span><strong>{formatTokens(data.total?.inputTokens)}</strong><small>{formatTokens(data.total?.cachedInputTokens)} cache read · {formatTokens(data.total?.cacheWriteInputTokens)} cache write</small></div>
       <div><span>Output</span><strong>{formatTokens(data.total?.outputTokens)}</strong><small>{formatTokens(data.total?.reasoningOutputTokens)} reasoning</small></div>
       <div><span>Cost</span><strong className={computed.known||computed.estimated||!(data.records||[]).length?undefined:"usage-stat-muted"} title={computed.known||computed.estimated||!(data.records||[]).length?undefined:"No recorded turn reported or estimated a cost"}>{computed.known||computed.estimated?`$${computed.cost.toFixed(computed.cost<1?4:2)}`:(data.records||[]).length?"—":"$0.00"}</strong><small>{computed.known} provider · {computed.estimated} estimated</small></div>
@@ -186,6 +198,6 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       <section className="capability-card"><div className="capability-card-head"><span><CalendarDays size={15} aria-hidden="true"/><strong>Daily tokens</strong></span><em>{days}d</em></div><div className="usage-bars">{daily.length?daily.map(([day,value])=><div key={day}><span>{new Date(day+"T00:00:00").toLocaleDateString(undefined,{month:"short",day:"numeric"})}</span><i><b style={{width:`${Math.max(2,Number(value.tokens||0)/maxDaily*100)}%`}}/></i><strong>{formatTokens(value.tokens)}</strong></div>):<p>No recorded usage in this period.</p>}</div></section>
       <section className="capability-card"><div className="capability-card-head"><span><Cpu size={15} aria-hidden="true"/><strong>Models</strong></span><em>{computed.models.length}</em></div><div className="usage-models">{computed.models.length?computed.models.map(([name,value])=><div key={name}><span><strong>{name}</strong><small>{runtimeLabel(value.runtime)} · {value.turns} turn{value.turns===1?"":"s"}</small></span><b>{formatTokens(value.tokens)}</b><em>{value.costEntries?`$${value.cost.toFixed(value.cost<1?4:2)}`:"—"}</em></div>):<p>No model usage recorded yet.</p>}</div></section>
     </div>
-    <section className="capability-card usage-recent"><div className="capability-card-head"><span><History size={15} aria-hidden="true"/><strong>Recent turns</strong></span><em>{Math.min(100,(data.records||[]).length)}</em></div><div className="usage-table"><div className="usage-table-head"><span>When</span><span>Environment</span><span>Harness</span><span>Model</span><span>Tokens</span><span>Cost</span></div>{(data.records||[]).slice(0,100).map(record=>{const cost=estimateUsageCost(record,settings);const environmentKey=record.environmentId||"local";return <div key={record.id}><span>{new Date(record.at).toLocaleString()}</span><span title={environmentNames[environmentKey]||environmentKey}>{environmentNames[environmentKey]||environmentKey}</span><span>{runtimeLabel(record.runtime)}</span><span title={record.model||""}>{record.model||"Unknown"}</span><span>{formatTokens(record.usage?.totalTokens)}</span><span>{cost?`${cost.estimated?"≈":""}$${cost.amount.toFixed(cost.amount<1?4:2)}`:"—"}</span></div>})}{!(data.records||[]).length&&<p className="usage-table-empty">{loading?"Loading recorded turns…":"No turns recorded in this period."}</p>}</div></section>
+    <section className="capability-card usage-recent"><div className="capability-card-head"><span><History size={15} aria-hidden="true"/><strong>Recent turns</strong></span><em>{Math.min(100,(data.records||[]).length)}</em></div><div className="usage-table"><div className="usage-table-head"><span>When</span><span>Environment</span><span>Harness</span><span>Model</span><span>Tokens</span><span>Cost</span></div>{(data.records||[]).slice(0,100).map(record=>{const cost=estimateUsageCost(record,settings);const environmentKey=record.environmentId||"local";return <div key={record.id}><span title={new Date(record.at).toLocaleString()}>{new Date(record.at).toLocaleString(undefined,{dateStyle:"short",timeStyle:"short"})}</span><span title={environmentNames[environmentKey]||environmentKey}>{environmentNames[environmentKey]||environmentKey}</span><span>{runtimeLabel(record.runtime)}</span><span title={record.model||""}>{record.model||"Unknown"}</span><span>{formatTokens(record.usage?.totalTokens)}</span><span>{cost?`${cost.estimated?"≈":""}$${cost.amount.toFixed(cost.amount<1?4:2)}`:"—"}</span></div>})}{!(data.records||[]).length&&<p className="usage-table-empty">{loading?"Loading recorded turns…":"No turns recorded in this period."}</p>}</div></section>
   </div>;
 }

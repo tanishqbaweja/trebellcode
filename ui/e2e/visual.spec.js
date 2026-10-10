@@ -254,7 +254,7 @@ test("failed turn verification automatically starts one same-thread repair",asyn
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"failed-turn",status:"completed",completedAt:Date.now()/1000,durationMs:100}}});
     await page.waitForTimeout(500);expect(requestMethods).toContain("thread/continuity/get");expect(requestMethods).toContain("thread/verification/repair");
     await expect.poll(()=>repairRequests.length).toBe(1);expect(repairRequests[0]).toMatchObject({threadId:thread.id,recordId:"verification-auto-1",auto:true});
-    await expect(page.getByText("Verification failed · automatic same-thread repair started",{exact:true})).toBeVisible();
+    await expect(page.getByText("Automatic same-thread repair turn",{exact:true})).toBeVisible();
     // The repair turn the harness returned is the running turn even before any turn/started arrives: Stop and the queue prompt show with the row.
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
     await expect(page.getByTestId("composer")).toHaveAttribute("placeholder",/Queue a follow-up|Steer the running agent/);
@@ -280,7 +280,7 @@ test("missing test verification automatically starts one same-thread check",asyn
     await page.goto("/");const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto verification continuation fixture"]')});await expect(row).toBeVisible();await row.click();await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).toBeVisible();
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"completed-turn",status:"completed",completedAt:Date.now()/1000,durationMs:100}}});
     await expect.poll(()=>continuationRequests.length).toBe(1);expect(continuationRequests[0]).toMatchObject({threadId:thread.id,recordId:"verification-continue-1",auto:true});
-    await expect(page.getByText(/Verification incomplete · automatic same-thread check started · project_tests/)).toBeVisible();
+    await expect(page.getByText(/Automatic same-thread check turn · project_tests/)).toBeVisible();
     await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"automatic-verification-continuation-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
@@ -925,6 +925,35 @@ test("MCP app responses stay visible and retryable when the runtime disconnects"
     const metrics=await modal.locator(".mcp-elicitation-modal").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({animations:"disabled",path:auditDir+"mcp-response-disconnected-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("an app approval explains Always allow only when the runtime offers it",async({page})=>{
+  test.setTimeout(30_000);
+  const thread={id:"mcp-persist-thread",name:"MCP persist fixture",preview:"MCP persist coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"mcp-persist-fixture");
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await page.getByRole("button",{name:/MCP persist fixture/}).click();
+    const base={threadId:thread.id,serverName:"fixture_app",mode:"form",requestedSchema:{type:"object",properties:{}}};
+    const modal=page.getByTestId("mcp-elicitation"),note=modal.locator(".mcp-approval-note");
+    const always=harness.request("mcpServer/elicitation/request",{...base,message:"Approve the persistent fixture action",_meta:{codex_approval_kind:"mcp_tool_call",connector_name:"Fixture App",tool_title:"Persistent fixture action",tool_name:"fixture_action",persist:["session","always"]}});
+    await expect(modal.getByRole("button",{name:"Always allow",exact:true})).toBeVisible();
+    await expect(note).toContainText("“Always allow” changes future approval behavior for this tool");
+    await page.screenshot({animations:"disabled",path:auditDir+"mcp-approval-always-allow-1280x800.png",fullPage:true});
+    await modal.getByRole("button",{name:"Always allow",exact:true}).click();
+    expect((await always).result).toMatchObject({action:"accept",_meta:{persist:"always"}});
+    await expect(modal).toBeHidden();
+    // Without an Always allow button, the note does not point at one.
+    const once=harness.request("mcpServer/elicitation/request",{...base,message:"Approve the one-off fixture action",_meta:{codex_approval_kind:"mcp_tool_call",connector_name:"Fixture App",tool_title:"One-off fixture action",tool_name:"fixture_action"}});
+    await expect(modal.getByRole("button",{name:"Allow once",exact:true})).toBeVisible();
+    await expect(modal.getByRole("button",{name:"Always allow",exact:true})).toHaveCount(0);
+    await expect(note).toHaveText("Only approve if you expect this app action.");
+    await page.screenshot({animations:"disabled",path:auditDir+"mcp-approval-once-only-1280x800.png",fullPage:true});
+    await modal.getByRole("button",{name:"Allow once",exact:true}).click();
+    expect((await once).result).toMatchObject({action:"accept",_meta:null});
   }finally{await harness.close()}
 });
 
@@ -3823,6 +3852,9 @@ test("successful history imports surface a failed thread-list refresh",async({pa
     expect(alertBox).toBeTruthy();
     expect(alertBox.y).toBeGreaterThanOrEqual(0);
     expect(alertBox.y+alertBox.height).toBeLessThanOrEqual(800);
+    // The banner keeps a gap from the imported conversation listed under it instead of reading as its first row.
+    const firstImported=await card.locator(".history-import-list>div").first().boundingBox();
+    expect(firstImported.y-(alertBox.y+alertBox.height)).toBeGreaterThanOrEqual(8);
     const metrics=await page.locator(".secondary-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({animations:"disabled",path:auditDir+"history-import-thread-refresh-error-1280x800.png",fullPage:true});
@@ -4555,8 +4587,10 @@ test("usage clear failures keep recorded usage visible",async({page,request})=>{
   await expect(page.getByRole("button",{name:"Clear local history",exact:true})).toBeEnabled();
   page.once("dialog",dialog=>dialog.accept());
   await page.getByRole("button",{name:"Clear local history",exact:true}).click();
-  await expect(page.getByRole("alert")).toContainText("Deliberate usage clear failure");
+  await expect(page.getByRole("alert")).toContainText("Could not clear local usage history: Deliberate usage clear failure");
   await expect(recent).toContainText("test/coding-fast");
+  await expect(page.locator(".usage-summary")).toContainText("1 recorded turn");
+  await expect(page.locator(".usage-summary")).not.toContainText("1 recorded turns");
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".usage-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
@@ -4585,11 +4619,39 @@ test("usage environment refresh failures preserve the last valid filter catalog"
   await page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true}).click();
   const alert=page.getByText("Deliberate usage environment refresh failure",{exact:false});
   await expect(alert).toBeVisible();
-  await expect(filter.getByText("Usage Remote Fixture",{exact:true})).toBeVisible();
+  await expect(alert).toContainText("Could not refresh environments: Deliberate usage environment refresh failure");
+  // Refresh closes the open filter menu, so the menu never covers the error that click reports.
+  await expect.poll(()=>filter.evaluate(node=>node.open)).toBe(false);
+  expect(await alert.evaluate(node=>{const rect=node.getBoundingClientRect();return node.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2))})).toBe(true);
   await expect(page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true})).toBeEnabled();
   const metrics=await page.locator(".usage-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({animations:"disabled",path:auditDir+"usage-environment-refresh-error-1280x800.png",fullPage:true});
+  // The last valid catalog is kept: reopening the filter still offers the remote environment.
+  await filter.locator("summary").click();
+  await expect(filter.getByText("Usage Remote Fixture",{exact:true})).toBeVisible();
+  await page.screenshot({animations:"disabled",path:auditDir+"usage-environment-refresh-error-filter-reopened-1280x800.png",fullPage:true});
+});
+
+test.describe("usage in a time zone east of UTC",()=>{
+  test.use({timezoneId:"Asia/Kolkata"});
+  test("usage daily bars use the viewer's calendar day, the day the turn's own time shows",async({page,request})=>{
+    test.setTimeout(30_000);
+    await prepare(page,request);
+    // 20:10 UTC on Oct 10 is 01:40 on Oct 11 in India. The server keys its daily map by UTC date, as the real one does.
+    const record={id:"usage-local-day",at:"2026-10-10T20:10:44.000Z",environmentId:null,runtime:"codex",provider:"openai",model:"test/coding-fast",usage:{inputTokens:1200,outputTokens:300,totalTokens:1500},cost:{currency:"USD",amount:0.0123}};
+    await page.route(/\/api\/usage(?:\?|$)/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({records:[record],total:{inputTokens:1200,outputTokens:300,totalTokens:1500},models:{},runtimes:{},daily:{"2026-10-10":{tokens:1500,turns:1}}})}));
+    await page.getByRole("button",{name:"Usage",exact:true}).click();
+    await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();
+    // The When cell fits its column at 1280 wide (date and minutes); the full time is its tooltip.
+    const when=page.locator(".usage-table>div:not(.usage-table-head)>span").first();
+    await expect(when).toHaveText("10/11/26, 1:40 AM");
+    await expect(when).toHaveAttribute("title","10/11/2026, 1:40:44 AM");
+    await expect(page.locator(".usage-bars>div>span")).toHaveText(["Oct 11"]);
+    await page.setViewportSize({width:1280,height:800});
+    expect(await when.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-local-day-1280x800.png",fullPage:true});
+  });
 });
 
 test("right panel tabs are functional and visually bounded",async({page,request})=>{
@@ -6445,7 +6507,7 @@ test("failed linked-thread unarchive keeps the PR and archived state intact",asy
     await expect(linked).toBeVisible();
     await linked.click();
     const alert=panel.getByRole("alert");
-    await expect(alert).toContainText("Deliberate linked thread unarchive failure");
+    await expect(alert).toContainText("Could not restore archived thread: Deliberate linked thread unarchive failure");
     await expect(alert).toBeInViewport();
     await expect(linked).toContainText("archived");
     await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Source parent fixture");

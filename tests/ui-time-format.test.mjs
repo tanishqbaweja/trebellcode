@@ -15,6 +15,15 @@ test("thread timestamps read the same in seconds and in milliseconds",()=>{
   assert.equal(relativeTime(seconds*1000,NOW_MS),"5m");
   assert.equal(relativeTime(NOW_MS/1000-7200,NOW_MS),"2h");
   assert.equal(relativeTime(NOW_MS/1000-3*86400,NOW_MS),"3d");
+  assert.equal(relativeTime(NOW_MS/1000-6*86400,NOW_MS),"6d");
+  assert.equal(relativeTime(NOW_MS/1000-7*86400,NOW_MS),"1w");
+  assert.equal(relativeTime(NOW_MS/1000-29*86400,NOW_MS),"4w");
+  assert.equal(relativeTime(NOW_MS/1000-30*86400,NOW_MS),"1mo");
+  assert.equal(relativeTime(NOW_MS/1000-364*86400,NOW_MS),"12mo");
+  assert.equal(relativeTime(NOW_MS/1000-365*86400,NOW_MS),"1y");
+  assert.equal(relativeTime(NOW_MS/1000-800*86400,NOW_MS),"2y");
+  // A thread stamped at the epoch's first second is decades old, not tens of thousands of days.
+  assert.equal(relativeTime(1,NOW_MS),Math.floor((NOW_MS/1000-1)/86400/365)+"y");
   assert.equal(relativeTime(NOW_MS/1000+30,NOW_MS),"now");
   assert.equal(relativeTime(0,NOW_MS),"");
   // A millisecond value never turns into a date tens of thousands of years ahead.

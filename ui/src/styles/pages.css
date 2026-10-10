@@ -467,6 +467,8 @@
 :root:root .capabilities-page .capability-status{margin:10px 0 0!important;font-size:12px!important;line-height:1.5;color:var(--tx1)!important}
 :root:root .capabilities-page .capability-error{margin:8px 0 0!important;font-size:12px!important;line-height:1.5;color:var(--err)!important;overflow-wrap:anywhere}
 :root:root .capabilities-page .capability-card>.provider-status-error{margin-top:10px!important}
+/* A message in the middle of a card keeps a gap from the list under it instead of reading as its first row. */
+:root:root .capabilities-page .capability-card>:is(.provider-status-error,.capability-status):not(:last-child){margin-bottom:10px!important}
 
 :root:root .capabilities-page .mcp-server-row{flex-wrap:wrap}
 /* Once a server's resources and tools are expanded, the list grows instead of nesting a scroll area around the argument inputs. */
@@ -480,6 +482,9 @@
 :root:root .capabilities-page :is(.mcp-tool input,.marketplace-add input){height:30px!important;font-family:var(--mono);font-size:11.5px!important}
 :root:root .capabilities-page .marketplace-add{display:flex;gap:8px}
 :root:root .capabilities-page .marketplace-add input{flex:1}
+/* A narrow card ends a long placeholder or value with an ellipsis instead of cutting it mid-word. */
+:root:root .capabilities-page :is(.plugin-search-controls input,.marketplace-add input),
+:root:root .capabilities-page :is(.plugin-search-controls input,.marketplace-add input)::placeholder{text-overflow:ellipsis}
 :root:root .capabilities-page .skill-roots-editor{display:grid;gap:8px;margin-top:12px;padding-top:12px;border:0!important;border-top:1px solid var(--line)!important}
 :root:root .capabilities-page .skill-roots-editor label strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important}
 :root:root .capabilities-page .skill-roots-editor label span{display:block;margin-top:3px;font-size:11.5px!important;line-height:1.5;color:var(--tx3)!important}

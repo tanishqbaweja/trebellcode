@@ -118,7 +118,7 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
       </div>
       {details.message&&<p className="mcp-elicitation-message">{details.message}</p>}
       {details.displayParams.length>0&&<div className="mcp-approval-params">{details.displayParams.map(item=><div key={item.name}><span>{item.label}</span><code>{pretty(item.value)}</code></div>)}</div>}
-      <div className="mcp-approval-note">Only approve if you expect this app action. “Always allow” changes future approval behavior for this tool, not Trebell’s global permission mode.</div>
+      <div className="mcp-approval-note">Only approve if you expect this app action.{elicitationSupportsPersist(request,"always")&&" “Always allow” changes future approval behavior for this tool, not Trebell’s global permission mode."}</div>
       <div className="mcp-approval-actions">
         <button className="tb-btn mcp-cancel" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel tool</button>
         {elicitationSupportsPersist(request,"always")&&<button className="tb-btn tb-btn--outline approve strong" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("always"))}>Always allow</button>}

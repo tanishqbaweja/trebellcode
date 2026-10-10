@@ -102,6 +102,10 @@ test("Native UI sends a compact repository seed instead of replaying source exce
     expect(userText).toContain("RefreshSession");
     expect(userText).toContain("tests/auth-refresh.test.js");
     expect(userText).not.toContain("VERY_LARGE_SOURCE_EXCERPT_SHOULD_NOT_REACH_NATIVE");
+    // The fixture provider reports no usage, so the context value stays unknown instead of reading as a measured 0 tokens.
+    await expect(page.locator(".composer-context")).toContainText(/^Context\s*—/);
+    await expect(page.locator(".composer-context")).not.toContainText("tokens");
+    await expect(page.locator(".composer-context")).toHaveAttribute("title","Context —");
     await page.setViewportSize({width:1280,height:800});
     await page.screenshot({animations:"disabled",path:auditDir+"native-context-seed-1280x800.png",fullPage:true});
   }finally{

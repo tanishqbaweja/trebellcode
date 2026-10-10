@@ -76,6 +76,8 @@ test("Trebell Native global search finds conversation text outside the loaded si
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:300,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");const hiddenRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Hidden Native history"]')});await expect(page.locator(".thread-row").first()).toBeVisible({timeout:10_000});await expect(hiddenRow).toHaveCount(0);
     await page.getByPlaceholder("Search").fill(needle);await expect(hiddenRow).toBeVisible({timeout:10_000});await expect(page.locator(".thread-row")).toHaveCount(1);
+    // A decades-old thread reads in years, not as tens of thousands of days.
+    await expect(hiddenRow.locator(".thread-main>div>span")).toHaveText(/^gpt-5\.6 · \d+y$/);
     let metrics=await page.locator(".app-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"native-global-thread-search-1600x980.png",fullPage:true});
     await page.setViewportSize({width:1280,height:800});await expect(hiddenRow).toBeVisible();metrics=await page.locator(".app-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"native-global-thread-search-1280x800.png",fullPage:true});
     expect(hidden.id).toBeTruthy();

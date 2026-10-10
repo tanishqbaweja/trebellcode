@@ -270,8 +270,8 @@ function tokenLabel(tokenUsage,price=null){
     if(Number.isFinite(inputRate)||Number.isFinite(outputRate))cost=(input*(Number.isFinite(inputRate)?inputRate:0)+output*(Number.isFinite(outputRate)?outputRate:0)+cacheRead*(Number.isFinite(Number(price.cacheReadPrice))?Number(price.cacheReadPrice):(Number.isFinite(inputRate)?inputRate:0))+cacheWrite*(Number.isFinite(Number(price.cacheWritePrice))?Number(price.cacheWritePrice):(Number.isFinite(inputRate)?inputRate:0)))/1_000_000;
   }
   const suffix=cost!=null?` · $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`:"";
-  if(total==null)return "Context —";
-  if(windowSize&&contextTokens!=null)return "Context "+Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+" input · "+total.toLocaleString()+" total"+suffix;
+  if(!(Number(total)>0))return "Context —";
+  if(windowSize&&contextTokens>0)return "Context "+Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+" input · "+total.toLocaleString()+" total"+suffix;
   return "Tokens "+total.toLocaleString()+suffix;
 }
 // The context value without the "Context" label, for places that already print the label next to a meter or in a stat cell:
@@ -281,14 +281,15 @@ function contextValueLabel(tokenUsage,price=null){
   const label=tokenLabel(tokenUsage,price);
   const total=tokenUsage?.total?.totalTokens,contextTokens=tokenUsage?.last?.inputTokens,windowSize=Number(tokenUsage?.modelContextWindow);
   const cost=/ · (\$[\d.]+)$/.exec(label)?.[1]||"";
-  if(total==null)return "—";
-  if(windowSize&&contextTokens!=null)return Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+"/"+windowSize.toLocaleString()+(cost?" · "+cost:"");
+  // A turn always sends some context, so a zero total means the provider reported no usage, not an empty window.
+  if(!(Number(total)>0))return "—";
+  if(windowSize&&contextTokens>0)return Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+"/"+windowSize.toLocaleString()+(cost?" · "+cost:"");
   return total.toLocaleString()+" tokens"+(cost?" · "+cost:"");
 }
 // The share of the model's context window the last request used, or null when the harness has not reported both numbers.
 function contextUsagePercent(tokenUsage){
   const used=tokenUsage?.last?.inputTokens,windowSize=Number(tokenUsage?.modelContextWindow);
-  if(tokenUsage?.total?.totalTokens==null||used==null||!Number.isFinite(Number(used))||!(windowSize>0))return null;
+  if(!(Number(tokenUsage?.total?.totalTokens)>0)||!(Number(used)>0)||!(windowSize>0))return null;
   return Math.max(0,Math.min(100,Math.round(Number(used)/windowSize*100)));
 }
 
@@ -2229,7 +2230,7 @@ export default function App(){
         try{
           const repair=await maybeStartAutomaticVerificationRepair({rpc:rpcRef.current,threadId,result,seen:automaticVerificationRepairSeenRef.current});
           adoptAutomaticTurn(threadId,repair);
-          if(repair.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-repair-"+repair.recordId),{id:"verification-auto-repair-"+repair.recordId,kind:"verification",title:"Verification failed · automatic same-thread repair started",status:"running",raw:{recordId:repair.recordId,turnId:repair.turn?.id||null}}]);
+          if(repair.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-repair-"+repair.recordId),{id:"verification-auto-repair-"+repair.recordId,kind:"verification",title:"Automatic same-thread repair turn",status:"running",raw:{recordId:repair.recordId,turnId:repair.turn?.id||null}}]);
         }catch(error){
           if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-repair-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification repair stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null}}]);
         }
@@ -2237,7 +2238,7 @@ export default function App(){
         try{
           const continuation=await maybeStartAutomaticVerificationContinuation({rpc:rpcRef.current,threadId,result,seen:automaticVerificationContinuationSeenRef.current});
           adoptAutomaticTurn(threadId,continuation);
-          if(continuation.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId),{id:"verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId,kind:"verification",title:"Verification incomplete · automatic same-thread check started · "+continuation.nextStepId,status:"running",raw:{recordId:continuation.recordId,nextStepId:continuation.nextStepId,turnId:continuation.turn?.id||null}}]);
+          if(continuation.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId),{id:"verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId,kind:"verification",title:"Automatic same-thread check turn · "+continuation.nextStepId,status:"running",raw:{recordId:continuation.recordId,nextStepId:continuation.nextStepId,turnId:continuation.turn?.id||null}}]);
         }catch(error){
           if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-continue-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification continuation stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null,nextStepId:result.nextAction?.nextStep?.id||null}}]);
         }
@@ -2943,7 +2944,9 @@ export default function App(){
     }
     const archived=Boolean(reference.archived||thread?.archived);
     if(archived){
-      const restored=await rpc.request("thread/unarchive",{threadId:reference.threadId});
+      let restored;
+      try{restored=await rpc.request("thread/unarchive",{threadId:reference.threadId})}
+      catch(error){throw new Error("Could not restore archived thread: "+(error?.message||String(error)),{cause:error})}
       if(!restored?.thread&&!thread)throw new Error("The agent runtime did not return the restored thread.");
       thread=restored?.thread||thread;
       if(!thread){

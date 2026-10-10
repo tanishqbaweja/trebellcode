@@ -1,6 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { Blocks, Brain, CheckCircle2, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { api } from "../api.js";
+import { agentName, countLabel, humanizeIdentifier, importResultSummary, mcpAuthLabel } from "../display-labels.js";
 import { formatBytes } from "../format-bytes.js";
 import { allowedWindowsSetupModes, windowsSandboxStatus, worldWritableWarningText } from "../windows-sandbox.js";
 
@@ -29,15 +30,6 @@ function configLayerPresentation(layer,index){
   const version=shortConfigVersion(layer?.version);
   const detail=[profile?"profile "+profile:"",file,version?"version "+version:""].filter(Boolean).join(" · ");
   return {label,detail:String(layer?.disabledReason||detail||"Loaded")};
-}
-function importResultSummary(results=[],prefix="Importing"){
-  let successes=0,failures=0;const types=[];
-  for(const result of results||[]){
-    successes+=result?.successes?.length||0;failures+=result?.failures?.length||0;
-    const type=String(result?.itemType||"").trim();if(type&&!types.includes(type))types.push(type);
-  }
-  const typeLabel=types.map(type=>type.replace(/[_-]+/g," ").toLowerCase()).join(", ");
-  return [prefix+(typeLabel?" "+typeLabel:""),successes?successes+" imported":"",failures?failures+" failed":""].filter(Boolean).join(" · ");
 }
 
 export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported,onSkillsRefresh,platform=""}){
@@ -186,18 +178,18 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       }else if(message.method==="model/rerouted"){
         const params=message.params||{};
         if(activeThread?.id&&params.threadId!==activeThread.id)return;
-        const notice={id:"reroute:"+(params.turnId||Date.now()),kind:"reroute",title:(params.fromModel||"model")+" → "+(params.toModel||"model"),detail:params.reason||"Model rerouted"};
+        const notice={id:"reroute:"+(params.turnId||Date.now()),kind:"reroute",title:(params.fromModel||"model")+" → "+(params.toModel||"model"),detail:humanizeIdentifier(params.reason)||"Model rerouted"};
         setModelNotices(current=>[notice,...current.filter(item=>item.id!==notice.id)].slice(0,5));
       }else if(message.method==="model/safetyBuffering/updated"){
         const params=message.params||{};
         if(activeThread?.id&&params.threadId!==activeThread.id)return;
-        const detail=[...(params.reasons||[]),params.fasterModel?"faster model: "+params.fasterModel:null].filter(Boolean).join(" · ");
+        const detail=[...(params.reasons||[]).map(humanizeIdentifier),params.fasterModel?"faster model: "+params.fasterModel:null].filter(Boolean).join(" · ");
         const notice={id:"safety:"+(params.turnId||Date.now()),kind:"safety",title:(params.model||"Model")+" safety buffering "+(params.showBufferingUi?"active":"cleared"),detail};
         setModelNotices(current=>[notice,...current.filter(item=>item.id!==notice.id)].slice(0,5));
       }else if(message.method==="model/verification"){
         const params=message.params||{};
         if(activeThread?.id&&params.threadId!==activeThread.id)return;
-        const notice={id:"verify:"+(params.turnId||Date.now()),kind:"verification",title:"Model access verified",detail:(params.verifications||[]).join(", ")||"Verification completed"};
+        const notice={id:"verify:"+(params.turnId||Date.now()),kind:"verification",title:"Model access verified",detail:(params.verifications||[]).map(humanizeIdentifier).join(", ")||"Verification completed"};
         setModelNotices(current=>[notice,...current.filter(item=>item.id!==notice.id)].slice(0,5));
       }else if(message.method==="configWarning"){
         const warning=message.params||{};
@@ -514,9 +506,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <ErrorLine value={errors["memory/status"]}/><ErrorLine value={errors["thread/memoryMode/set"]}/><ErrorLine value={errors["memory/reset"]}/>
       </Section>
 
-      <Section title="Codex runtime health" icon={Sparkles} count={data.diagnostics?.gauges?.length||0}>
+      <Section title="Codex runtime health" icon={Sparkles}>
         {data.diagnostics?<div className="capability-kv">
-          <div><span>Process</span><strong>PID {data.diagnostics.process?.id||"?"}</strong></div>
+          <div><span>Process</span><strong>{data.diagnostics.process?.id?"PID "+data.diagnostics.process.id:"Unavailable"}</strong></div>
           <div><span>Resident memory</span><strong>{formatBytes(data.diagnostics.process?.residentMemoryBytes)}</strong></div>
           {data.diagnostics.process?.physicalFootprintBytes!=null&&<div><span>Physical footprint</span><strong>{formatBytes(data.diagnostics.process.physicalFootprintBytes)}</strong></div>}
           <div><span>Loaded sessions</span><strong>{data.loadedThreads.length.toLocaleString()}{data.loadedThreadsMore?"+":""}</strong></div>
@@ -540,6 +532,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>}
 
       <Section title="Configuration layers" icon={ShieldCheck} count={data.config?.layers?.length||0}>
+        {data.config&&!(data.config.layers||[]).length&&<p>Codex reported no configuration layers.</p>}
         <div className="capability-list">{(data.config?.layers||[]).map((layer,index)=>{const presentation=configLayerPresentation(layer,index);return <div key={presentation.label+":"+String(layer.version||index)}><div><strong>{presentation.label}</strong><span>{presentation.detail}</span></div><em className={layer.disabledReason?"":"ok"}>{layer.disabledReason?"disabled":"active"}</em></div>})}</div>
         {configWarnings.length>0&&<div className="capability-list config-warning-list">{configWarnings.map((warning,index)=><div key={(warning.path||"global")+":"+(warning.summary||index)}><div><strong>{warning.summary||"Configuration warning"}</strong><span>{warning.details||warning.path||"Codex reported a configuration warning."}</span></div><em>warning</em></div>)}</div>}
         {runtimeNotices.length>0&&<div className="capability-list runtime-notice-list">{runtimeNotices.map(notice=><div key={notice.id}><div><strong>{notice.summary}</strong><span>{notice.details||"Reported by the Codex runtime."}</span></div><em>{notice.kind}</em></div>)}</div>}
@@ -558,13 +551,15 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Permission profiles" icon={ShieldCheck} count={data.permissions.length}>
+        {!data.permissions.length&&!errors["permissionProfile/list"]&&<p>This runtime reported no permission profiles.</p>}
         <div className="capability-list">{data.permissions.map(p=><div key={p.id}><div><strong>{p.id}</strong><span>{p.description||"Codex permission profile"}</span></div><em className={p.allowed?"ok":""}>{p.allowed?"allowed":"blocked"}</em></div>)}</div>
         <ErrorLine value={errors["permissionProfile/list"]}/>
       </Section>
 
       <Section title="MCP servers" icon={PlugZap} count={data.mcp.length}>
         <div className="capability-actions"><button onClick={reloadMcp} disabled={!!busy}><RefreshCw size={12}/> Reload MCP</button></div>
-        <div className="capability-list">{data.mcp.map(server=><div className="mcp-server-row" key={server.name}><div><strong>{server.name}</strong><span>{server.runtimeStatus||"unknown"} · {Object.keys(server.tools||{}).length} tools · {(server.resources||[]).length} resources</span></div><div className="capability-inline-actions"><em className={server.authStatus==="notLoggedIn"?"warn":server.runtimeStatus==="connected"?"ok":""}>{server.authStatus||"unknown auth"}</em>{server.authStatus==="notLoggedIn"&&<button onClick={()=>loginMcp(server.name)} disabled={!!busy}>Sign in</button>}</div>{((server.resources||[]).length>0||Object.keys(server.tools||{}).length>0)&&<details className="mcp-server-details"><summary>Resources & tools</summary>
+        {!data.mcp.length&&!errors["mcpServerStatus/list"]&&<p>No MCP servers are configured for this runtime.</p>}
+        <div className="capability-list">{data.mcp.map(server=><div className="mcp-server-row" key={server.name}><div><strong>{server.name}</strong><span>{server.runtimeStatus||"unknown"} · {countLabel(Object.keys(server.tools||{}).length,"tool")} · {countLabel((server.resources||[]).length,"resource")}</span></div><div className="capability-inline-actions"><em className={server.authStatus==="notLoggedIn"?"warn":server.runtimeStatus==="connected"?"ok":""}>{mcpAuthLabel(server.authStatus)}</em>{server.authStatus==="notLoggedIn"&&<button onClick={()=>loginMcp(server.name)} disabled={!!busy}>Sign in</button>}</div>{((server.resources||[]).length>0||Object.keys(server.tools||{}).length>0)&&<details className="mcp-server-details"><summary>Resources & tools</summary>
           {(server.resources||[]).map(resource=><div className="mcp-resource" key={resource.uri}><span>{resource.name||resource.uri}</span><button onClick={()=>readResource(server,resource)} disabled={!!busy}>Read</button></div>)}
           {Object.entries(server.tools||{}).map(([toolName,tool])=><div className="mcp-tool" key={toolName}><div><strong>{toolName}</strong><span>{tool?.description||"MCP tool"}</span></div><input value={toolArgs[server.name+":"+toolName]||""} onChange={e=>setToolArgs(prev=>({...prev,[server.name+":"+toolName]:e.target.value}))} placeholder='JSON arguments, e.g. {"query":"..."}'/><button onClick={()=>runMcpTool(server,toolName)} disabled={!!busy||!activeThread?.id}>Run</button></div>)}
         </details>}</div>)}</div>
@@ -582,13 +577,13 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Plugins" icon={Blocks} count={plugins.length}>
-        <div className="plugin-search-controls"><input value={pluginSearchTerm} onChange={e=>{setPluginSearchTerm(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}} onKeyDown={e=>{if(e.key==="Enter")searchPlugins()}} placeholder="Search plugin catalog"/><select value={pluginSearchScope} onChange={e=>{setPluginSearchScope(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}}><option value="global">Global</option><option value="workspace">Workspace</option><option value="personal">Personal</option></select><button onClick={()=>searchPlugins()} disabled={!!busy||pluginSearchTerm.trim().length<2}>{busy==="plugin:search"?"Searching…":"Search"}</button><button onClick={reconcilePlugins} disabled={!!busy}>Reconcile</button></div>
+        <div className="plugin-search-controls"><input value={pluginSearchTerm} onChange={e=>{setPluginSearchTerm(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}} onKeyDown={e=>{if(e.key==="Enter")searchPlugins()}} placeholder="Search plugins" title="Search the plugin catalog"/><select value={pluginSearchScope} onChange={e=>{setPluginSearchScope(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}}><option value="global">Global</option><option value="workspace">Workspace</option><option value="personal">Personal</option></select><button onClick={()=>searchPlugins()} disabled={!!busy||pluginSearchTerm.trim().length<2}>{busy==="plugin:search"?"Searching…":"Search"}</button><button onClick={reconcilePlugins} disabled={!!busy}>Reconcile</button></div>
         {pluginSearchResults.length>0&&<div className="capability-list plugin-search-results">{pluginSearchResults.map(result=>{const plugin=result.plugin||{};const marketplace={name:result.marketplaceName,path:result.marketplacePath};return <div key={(result.marketplaceName||"")+":"+(plugin.id||plugin.name)}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.interface?.shortDescription||plugin.interface?.longDescription||result.marketplaceName}{plugin.version?" · "+plugin.version:""}</span></div><div className="capability-inline-actions"><button onClick={()=>readPlugin(plugin,marketplace)} disabled={!!busy}>Details</button><button onClick={()=>togglePlugin({...plugin,marketplace})} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>})}</div>}
         {pluginSearchCursor&&<div className="capability-actions"><button onClick={()=>searchPlugins({append:true})} disabled={!!busy}>Load more</button></div>}
         {pluginSearchRan&&!pluginSearchResults.length&&!busy&&!errors["plugin/search"]&&<p>No plugins matched this search.</p>}
         {!pluginSearchRan&&<div className="capability-list">{plugins.map(plugin=><div key={plugin.marketplace.name+":"+plugin.id}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.marketplace.name}{plugin.version?" · "+plugin.version:""}{plugin.shareContext?.shareUrl?" · shared":""}</span></div><div className="capability-inline-actions"><button onClick={()=>readPlugin(plugin,plugin.marketplace)} disabled={!!busy}>Details</button>{plugin.source?.type==="local"&&<button onClick={()=>shareLocalPlugin(plugin)} disabled={!!busy}>{plugin.shareContext?.remotePluginId?"Update share":"Share privately"}</button>}<button onClick={()=>togglePlugin(plugin)} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>)}</div>}
         {!pluginSearchRan&&!plugins.length&&<p>No plugin catalog is available in this runtime.</p>}
-        {pluginDetail&&<div className="plugin-detail"><div className="plugin-detail-head"><div><strong>{pluginDetail.summary?.interface?.displayName||pluginDetail.summary?.name}</strong><span>{pluginDetail.marketplaceName}{pluginDetail.summary?.version?` · ${pluginDetail.summary.version}`:""}{pluginDetail.summary?.interface?.developerName?` · ${pluginDetail.summary.interface.developerName}`:""}</span></div><button onClick={()=>{setPluginDetail(null);setPluginSkillDetail(null)}}>Close</button></div>{(pluginDetail.description||pluginDetail.summary?.interface?.longDescription)&&<p>{pluginDetail.description||pluginDetail.summary.interface.longDescription}</p>}{pluginDetail.summary?.interface?.capabilities?.length>0&&<div className="capability-badges">{pluginDetail.summary.interface.capabilities.map(capability=><span className="ok" key={capability}>{capability}</span>)}</div>}<div className="plugin-detail-counts"><span>{pluginDetail.skills?.length||0} skills</span><span>{pluginDetail.hooks?.length||0} hooks</span><span>{pluginDetail.apps?.length||0} apps</span><span>{pluginDetail.mcpServers?.length||0} MCP servers</span><span>{pluginDetail.scheduledTasks?.length||0} scheduled tasks</span></div>{pluginDetail.skills?.length>0&&<div className="plugin-detail-skills">{pluginDetail.skills.map(skill=><div key={skill.name}><div><strong>{skill.interface?.displayName||skill.name}</strong><span>{skill.interface?.shortDescription||skill.shortDescription||skill.description}</span></div>{pluginDetail.summary?.remotePluginId&&pluginDetail.marketplaceName&&<button onClick={()=>readPluginSkill(skill)} disabled={!!busy}>{busy==="plugin:skill:"+skill.name?"Reading…":"Read skill"}</button>}</div>)}</div>}{pluginSkillDetail&&<details className="capability-details" open><summary>{pluginSkillDetail.name} · SKILL.md</summary><pre>{pluginSkillDetail.contents||"No skill contents were returned."}</pre></details>}</div>}
+        {pluginDetail&&<div className="plugin-detail"><div className="plugin-detail-head"><div><strong>{pluginDetail.summary?.interface?.displayName||pluginDetail.summary?.name}</strong><span>{pluginDetail.marketplaceName}{pluginDetail.summary?.version?` · ${pluginDetail.summary.version}`:""}{pluginDetail.summary?.interface?.developerName?` · ${pluginDetail.summary.interface.developerName}`:""}</span></div><button onClick={()=>{setPluginDetail(null);setPluginSkillDetail(null)}}>Close</button></div>{(pluginDetail.description||pluginDetail.summary?.interface?.longDescription)&&<p>{pluginDetail.description||pluginDetail.summary.interface.longDescription}</p>}{pluginDetail.summary?.interface?.capabilities?.length>0&&<div className="capability-badges">{pluginDetail.summary.interface.capabilities.map(capability=><span className="ok" key={capability}>{capability}</span>)}</div>}<div className="plugin-detail-counts"><span>{countLabel(pluginDetail.skills?.length,"skill")}</span><span>{countLabel(pluginDetail.hooks?.length,"hook")}</span><span>{countLabel(pluginDetail.apps?.length,"app")}</span><span>{countLabel(pluginDetail.mcpServers?.length,"MCP server")}</span><span>{countLabel(pluginDetail.scheduledTasks?.length,"scheduled task")}</span></div>{pluginDetail.skills?.length>0&&<div className="plugin-detail-skills">{pluginDetail.skills.map(skill=><div key={skill.name}><div><strong>{skill.interface?.displayName||skill.name}</strong><span>{skill.interface?.shortDescription||skill.shortDescription||skill.description}</span></div>{pluginDetail.summary?.remotePluginId&&pluginDetail.marketplaceName&&<button onClick={()=>readPluginSkill(skill)} disabled={!!busy}>{busy==="plugin:skill:"+skill.name?"Reading…":"Read skill"}</button>}</div>)}</div>}{pluginSkillDetail&&<details className="capability-details" open><summary>{pluginSkillDetail.name} · SKILL.md</summary><pre>{pluginSkillDetail.contents||"No skill contents were returned."}</pre></details>}</div>}
         {pluginMessage&&<p className="capability-status">{pluginMessage}</p>}
         <ErrorLine value={errors["plugin/list"]}/><ErrorLine value={errors["plugin/install"]}/><ErrorLine value={errors["plugin/uninstall"]}/><ErrorLine value={errors["plugin/search"]}/><ErrorLine value={errors["plugin/read"]}/><ErrorLine value={errors["plugin/skill/read"]}/><ErrorLine value={errors["plugin/reconcile"]}/><ErrorLine value={errors["plugin/share/save"]}/>
       </Section>
@@ -601,8 +596,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Marketplaces" icon={Blocks} count={data.marketplaces.length}>
-        <div className="capability-actions marketplace-add"><input value={marketplaceSource} onChange={e=>setMarketplaceSource(e.target.value)} placeholder="Git URL or local marketplace source"/><button onClick={addMarketplace} disabled={!!busy||!marketplaceSource.trim()}>Add</button><button onClick={()=>upgradeMarketplace(null)} disabled={!!busy||!data.marketplaces.length}>Upgrade all</button></div>
-        <div className="capability-list">{data.marketplaces.map(marketplace=><div key={marketplace.name}><div><strong>{marketplace.interface?.displayName||marketplace.name}</strong><span>{marketplace.path||`${(marketplace.plugins||[]).length} catalog plugins`}</span></div><div className="capability-inline-actions"><button onClick={()=>upgradeMarketplace(marketplace.name)} disabled={!!busy}>Upgrade</button>{marketplace.path&&<button onClick={()=>removeMarketplace(marketplace.name)} disabled={!!busy}>Remove</button>}</div></div>)}</div>
+        <div className="capability-actions marketplace-add"><input value={marketplaceSource} onChange={e=>setMarketplaceSource(e.target.value)} placeholder="Git URL or local path" title="Marketplace source: a Git URL or a local path"/><button onClick={addMarketplace} disabled={!!busy||!marketplaceSource.trim()}>Add</button><button onClick={()=>upgradeMarketplace(null)} disabled={!!busy||!data.marketplaces.length}>Upgrade all</button></div>
+        <div className="capability-list">{data.marketplaces.map(marketplace=><div key={marketplace.name}><div><strong>{marketplace.interface?.displayName||marketplace.name}</strong><span>{marketplace.path||countLabel((marketplace.plugins||[]).length,"catalog plugin")}</span></div><div className="capability-inline-actions"><button onClick={()=>upgradeMarketplace(marketplace.name)} disabled={!!busy}>Upgrade</button>{marketplace.path&&<button onClick={()=>removeMarketplace(marketplace.name)} disabled={!!busy}>Remove</button>}</div></div>)}</div>
         <ErrorLine value={errors["marketplace/add"]}/><ErrorLine value={errors["marketplace/remove"]}/><ErrorLine value={errors["marketplace/upgrade"]}/>
       </Section>
 
@@ -622,6 +617,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Experimental features" icon={FlaskConical} count={data.features.length}>
+        {!data.features.length&&!errors["experimentalFeature/list"]&&<p>This runtime reported no experimental features.</p>}
         <div className="capability-list feature-list">{data.features.map(feature=><div key={feature.name}><div><strong>{feature.displayName||feature.name}</strong><span>{feature.description||feature.stage}</span></div><button className={feature.enabled?"active":""} onClick={()=>toggleFeature(feature)} disabled={!!busy}>{feature.enabled?"On":"Off"}</button></div>)}</div>
         <ErrorLine value={errors["experimentalFeature/list"]}/><ErrorLine value={errors["experimentalFeature/enablement/set"]}/>
       </Section>
@@ -640,10 +636,10 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       <Section title="Import agent configuration" icon={RefreshCw} count={migrations?.items?.length||0}>
         <p>Detect reusable configuration from supported external coding agents in your home directory and this workspace.</p>
         <div className="capability-actions"><button onClick={detectExternalConfig} disabled={!!busy||!!migrationImportId}>Scan</button>{migrations?.items?.length>0&&<button onClick={importExternalConfig} disabled={!!busy||!!migrationImportId}>{migrationImportId?"Importing…":"Import "+migrations.items.length+(migrations.items.length===1?" item":" items")}</button>}</div>
-        <div className="capability-list">{(migrations?.items||[]).map((item,index)=><div key={index}><div><strong>{item.description||String(item.itemType)}</strong><span>{item.cwd||"User scope"}</span></div><em>{String(item.itemType)}</em></div>)}</div>
+        <div className="capability-list">{(migrations?.items||[]).map((item,index)=><div key={index}><div><strong>{item.description||humanizeIdentifier(item.itemType)}</strong><span>{item.cwd||"User scope"}</span></div><em>{humanizeIdentifier(item.itemType)}</em></div>)}</div>
         {(migrations?.connectors||[]).length>0&&<p>{migrations.connectors.length} connector candidate{migrations.connectors.length===1?"":"s"} detected.</p>}
         {migrationMessage&&<p className="capability-status">{migrationMessage}</p>}
-        {(migrationHistory.data||[]).length>0&&<details className="capability-details"><summary>Previous native imports · {migrationHistory.data.length}</summary><div className="capability-list migration-history-list">{migrationHistory.data.slice(0,8).map(entry=>{const successes=entry.successes?.length||0,failures=entry.failures?.length||0;return <div key={entry.importId}><div><strong>{entry.providerId||"External agent import"}</strong><span>{new Date(Number(entry.completedAtMs)||0).toLocaleString()} · {successes} imported{failures?" · "+failures+" failed":""}</span></div><em className={failures?"":"ok"}>{failures?"review":"done"}</em></div>})}</div></details>}
+        {(migrationHistory.data||[]).length>0&&<details className="capability-details"><summary>Previous native imports · {migrationHistory.data.length}</summary><div className="capability-list migration-history-list">{migrationHistory.data.slice(0,8).map(entry=>{const successes=entry.successes?.length||0,failures=entry.failures?.length||0;return <div key={entry.importId}><div><strong>{entry.providerId?agentName(entry.providerId):"External agent import"}</strong><span>{new Date(Number(entry.completedAtMs)||0).toLocaleString()} · {successes} imported{failures?" · "+failures+" failed":""}</span></div><em className={failures?"":"ok"}>{failures?"review":"done"}</em></div>})}</div></details>}
         {(migrationHistory.connectors||[]).length>0&&<details className="capability-details"><summary>Imported connector candidates · {migrationHistory.connectors.length}</summary><div className="capability-list">{migrationHistory.connectors.map(item=><div key={item.name}><div><strong>{item.name}</strong><span>{Number(item.sessionCount||0).toLocaleString()} imported session{Number(item.sessionCount||0)===1?"":"s"}</span></div><em>candidate</em></div>)}</div></details>}
         <ErrorLine value={errors["externalAgentConfig/detect"]}/><ErrorLine value={errors["externalAgentConfig/import"]}/><ErrorLine value={errors["externalAgentConfig/import/readHistories"]}/>
       </Section>

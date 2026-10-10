@@ -1,6 +1,11 @@
 import { test,expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+
+const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
+mkdirSync(auditDir,{recursive:true});
 
 async function freePort(){
   const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
@@ -81,7 +86,11 @@ test("large restored activity traces mount one bounded page at a time",async({pa
     await controls.getByRole("button",{name:"Latest"}).click();
     await expect(controls).toContainText("181–300 of 300");
     await expect(rows).toHaveCount(120);
+    await page.setViewportSize({width:1280,height:800});
     await controls.scrollIntoViewIfNeeded();
-    await page.screenshot({animations:"disabled",path:"visual-audit/large-activity-window-dark-1280x800.png",fullPage:true});
+    await expect(controls).toBeInViewport();
+    // Wait two frames so rows that content-visibility skipped before the resize have painted.
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await page.screenshot({animations:"disabled",path:auditDir+"large-activity-window-dark-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });

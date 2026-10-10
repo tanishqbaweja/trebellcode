@@ -65,15 +65,22 @@ test("external agent imports use native progress and completion notifications",a
     await page.goto("/");await page.getByRole("button",{name:"Tools",exact:true}).click();
     const card=page.locator(".capability-card").filter({has:page.getByText("Import agent configuration",{exact:true})}).first();
     await expect(card).toContainText("Previous native imports · 1");await expect(card).toContainText("Imported connector candidates · 1");
-    await card.getByRole("button",{name:"Scan"}).click();await expect(card).toContainText("Claude skills");await card.getByRole("button",{name:"Import 1 item",exact:true}).click();
-    await expect(card).toContainText("Importing skills · 1 imported");
-    await expect(card).toContainText("Import complete skills, mcp server config · 1 imported · 1 failed",{timeout:10_000});expect(postImportHistoryReads).toBe(1);
+    await card.getByRole("button",{name:"Scan"}).click();await expect(card).toContainText("Claude skills");await expect(card.locator(".capability-list>div").filter({hasText:"Claude skills"}).locator("em")).toHaveText("Skills");await card.getByRole("button",{name:"Import 1 item",exact:true}).click();
+    await expect(card).toContainText("Importing · Skills · 1 imported");
+    await expect(card).toContainText("Import complete · Skills, MCP server config · 1 imported · 1 failed",{timeout:10_000});expect(postImportHistoryReads).toBe(1);
     const importCall=calls.find(call=>call.method==="externalAgentConfig/import");expect(importCall?.params).toEqual({migrationItems:[migrationItem],source:"trebell-code"});
     await expect(card).toContainText("Previous native imports · 2");
-    await card.getByText("Previous native imports · 2",{exact:true}).click();await expect(card).toContainText("1 imported · 1 failed");
+    await card.getByText("Previous native imports · 2",{exact:true}).click();await expect(card).toContainText("1 imported · 1 failed");await expect(card.locator(".migration-history-list strong").first()).toHaveText("Claude Code");
     await card.getByText("Imported connector candidates · 1",{exact:true}).click();await expect(card).toContainText("linear");await expect(card).toContainText("3 imported sessions");
     await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"tools-native-import-history-1280x800.png",fullPage:false});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"tools-native-import-history-light-1280x800.png",fullPage:false});
     const bounds=await card.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
+    // A runtime that reports empty lists says so in each card instead of leaving the card blank under its heading.
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    const configLayers=page.locator(".capability-card").filter({has:page.getByText("Configuration layers",{exact:true})}).first();await expect(configLayers).toContainText("Codex reported no configuration layers.");
+    const permissionProfiles=page.locator(".capability-card").filter({has:page.getByText("Permission profiles",{exact:true})}).first();await expect(permissionProfiles).toContainText("This runtime reported no permission profiles.");
+    const mcpServers=page.locator(".capability-card").filter({has:page.getByText("MCP servers",{exact:true})}).first();await expect(mcpServers).toContainText("No MCP servers are configured for this runtime.");
+    const features=page.locator(".capability-card").filter({has:page.getByText("Experimental features",{exact:true})}).first();await expect(features).toContainText("This runtime reported no experimental features.");
+    await permissionProfiles.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"tools-empty-runtime-lists-1280x800.png",fullPage:false});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

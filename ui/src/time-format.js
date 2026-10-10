@@ -7,14 +7,18 @@ export function epochSeconds(value){
   return number>1e11?number/1000:number;
 }
 
-// Sidebar meta: "now", "5m", "3h", "2d". A timestamp a little in the future (clock skew) reads "now".
+// Sidebar meta: "now", "5m", "3h", "2d", "3w", "4mo", "2y". A timestamp a little in the future (clock skew) reads "now".
 export function relativeTime(value,nowMs=Date.now()){
   const epoch=epochSeconds(value);if(!epoch)return "";
   const seconds=Math.max(0,nowMs/1000-epoch);
   if(seconds<60)return "now";
   if(seconds<3600)return Math.floor(seconds/60)+"m";
   if(seconds<86400)return Math.floor(seconds/3600)+"h";
-  return Math.floor(seconds/86400)+"d";
+  const days=Math.floor(seconds/86400);
+  if(days<7)return days+"d";
+  if(days<30)return Math.floor(days/7)+"w";
+  if(days<365)return Math.floor(days/30)+"mo";
+  return Math.floor(days/365)+"y";
 }
 
 function sameDay(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate()}

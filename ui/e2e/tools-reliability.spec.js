@@ -55,7 +55,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
       else if(message.method==="skills/list")result={data:[{cwd:process.cwd(),skills:[{name:"fixture-skill",path:"C:\\fixture\\SKILL.md",enabled:true,description:"Preserved skill fixture"}]}]};
       else if(message.method==="skills/config/write")result={effectiveEnabled:false};
       else if(message.method==="permissionProfile/list"||message.method==="app/list"||message.method==="hooks/list"||message.method==="experimentalFeature/list"||message.method==="plugin/share/list")result={data:[]};
-      else if(message.method==="mcpServerStatus/list")result={data:[{name:"fixture-mcp",runtimeStatus:"connected",authStatus:"loggedIn",tools:{},resources:[]},{name:"fixture-login",runtimeStatus:"connected",authStatus:"notLoggedIn",tools:{},resources:[]}]};
+      else if(message.method==="mcpServerStatus/list")result={data:[{name:"fixture-mcp",runtimeStatus:"connected",authStatus:"loggedIn",tools:{lookup:{name:"lookup",description:"Look up a fixture record",inputSchema:{type:"object",properties:{}}}},resources:[{uri:"fixture://readme",name:"README"}]},{name:"fixture-login",runtimeStatus:"connected",authStatus:"notLoggedIn",tools:{},resources:[]}]};
       else if(message.method==="plugin/list")result={marketplaces:[{name:"Fixture Marketplace",plugins:[{id:"known-good-plugin",name:"known-good-plugin",version:"1.0.0",installed:false,availability:"available",interface:{displayName:"Known Good Plugin",shortDescription:"Preserved plugin fixture"}}]}]};
       else if(message.method==="app/installed")result={apps:[]};
       else if(message.method==="thread/loaded/list")result={data:[],nextCursor:null};
@@ -115,6 +115,17 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 
     failMcpReload=true;
     const mcp=page.locator(".capability-card").filter({hasText:"MCP servers"}).first();
+    const signedInServer=mcp.locator(".mcp-server-row").filter({hasText:"fixture-mcp"});
+    await expect(signedInServer).toContainText("connected · 1 tool · 1 resource");
+    await expect(signedInServer.locator(".capability-inline-actions>em")).toHaveText("Signed in");
+    const signInServer=mcp.locator(".mcp-server-row").filter({hasText:"fixture-login"});
+    await expect(signInServer).toContainText("connected · 0 tools · 0 resources");
+    await expect(signInServer.locator(".capability-inline-actions>em")).toHaveText("Sign-in required");
+    await expect(mcp).not.toContainText("notLoggedIn");
+    const permissionProfiles=page.locator(".capability-card").filter({has:page.getByText("Permission profiles",{exact:true})}).first();
+    await expect(permissionProfiles).toContainText("This runtime reported no permission profiles.");
+    await mcp.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-mcp-sign-in-labels-1280x800.png",fullPage:false});
     const reload=mcp.getByRole("button",{name:"Reload MCP",exact:true});
     await reload.click();
     const mcpError=mcp.getByText("Deliberate MCP reload failure",{exact:false});
@@ -146,7 +157,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 
     failMarketplaceAdd=true;
     const marketplaces=page.locator(".capability-card").filter({hasText:"Marketplaces"}).first();
-    const source=marketplaces.getByPlaceholder("Git URL or local marketplace source");
+    const source=marketplaces.getByPlaceholder("Git URL or local path");
     await source.fill("https://example.test/retry-marketplace.git");
     await marketplaces.getByRole("button",{name:"Add",exact:true}).click();
     const marketplaceError=marketplaces.getByText("Deliberate marketplace add failure",{exact:false});
