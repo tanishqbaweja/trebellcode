@@ -45,8 +45,9 @@ export async function readCursorUsageLimits({environment={},platform=process.pla
     return unavailable("unsupported","Cursor usage requires a file-based login or CURSOR_AUTH_TOKEN.",at);
   }
   if(!token&&readText&&joinPath){
+    // Cursor keeps its login in %APPDATA%\Cursor on Windows (T3 usageLimits.ts).
     const directory=platform==="win32"
-      ?String(environment.APPDATA||joinPath(home,"AppData","Roaming","Cursor"))
+      ?joinPath(String(environment.APPDATA||"").trim()||joinPath(home,"AppData","Roaming"),"Cursor")
       :platform==="darwin"?joinPath(home,".cursor"):joinPath(environment.XDG_CONFIG_HOME||joinPath(home,".config"),"cursor");
     const credentials=safeJson(await readText(joinPath(directory,"auth.json")),{})||{};
     token=String(credentials.accessToken||"").trim();
@@ -61,7 +62,8 @@ export async function readCursorUsageLimits({environment={},platform=process.pla
 
 export function grokUsageResponseToLimits(response,at=checkedAt()){
   const usedPercent=clampPercent(response?.config?.creditUsagePercent);
-  if(usedPercent==null)return unavailable("unsupported",null,at);
+  // xAI leaves the percentage out until something is metered: a successful read is an account with no usage yet (T3).
+  if(usedPercent==null)return available([],at);
   const rawType=String(response?.config?.currentPeriod?.type||"").replace(/^USAGE_PERIOD_TYPE_/,"");
   const kind=rawType==="WEEKLY"?"weekly":rawType==="MONTHLY"?"monthly":"other";
   const resetsAt=resetIso(response?.config?.currentPeriod?.end);
@@ -83,8 +85,10 @@ export async function readGrokUsageLimits({environment={},home="",readText,joinP
   const credential=credentials["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"]??credentials["https://accounts.x.ai/sign-in"];
   const token=credential?.auth_mode==="api_key"?"":String(credential?.key||"").trim();
   if(!token)return unavailable("unsupported",null,at);
+  // The login's email names the account whose quota was read, also when the read fails (T3 readGrokAccount).
+  const email=String(credential?.email||"").trim(),account=email?{account:{email}}:{};
   const result=await fetchJson(fetchImpl,"https://cli-chat-proxy.grok.com/v1/billing?format=credits",{token});
-  return result.ok?grokUsageResponseToLimits(result.data,at):unavailable("probeFailed","Grok could not read usage limits.",at);
+  return {...(result.ok?grokUsageResponseToLimits(result.data,at):unavailable("probeFailed","Grok could not read usage limits.",at)),...account};
 }
 
 export function openCodeUsageResponseToLimits(response,at=checkedAt()){
@@ -117,7 +121,38 @@ export async function readOpenCodeUsageLimits({environment={},home="",readText,j
   return result.ok?openCodeUsageResponseToLimits(result.data,at):unavailable("probeFailed","OpenCode Go could not read usage.",at);
 }
 
+// Claude Code reports its plan windows through the SDK's usage request (T3 Code's claudeUsageResponseToLimits): percentages
+// are already 0-100, the account-wide windows are keyed by rateLimitType, and model-scoped weeklies add a row each.
+const CLAUDE_USAGE_WINDOWS=Object.freeze([["five_hour","session","Session",5*60],["seven_day","weekly","Weekly",7*24*60]]);
+export function claudeUsageResponseToLimits(response,at=checkedAt()){
+  const limits=response?.rate_limits;
+  if(!response?.rate_limits_available||!limits||typeof limits!=="object")return unavailable("unsupported",null,at);
+  const windows=[];
+  for(const [id,kind,label,windowDurationMins] of CLAUDE_USAGE_WINDOWS){
+    const window=limits[id];if(typeof window?.utilization!=="number")continue;
+    const resetsAt=resetIso(window.resets_at);
+    windows.push({id,kind,label,windowDurationMins,usedPercent:clampPercent(window.utilization),...(resetsAt?{resetsAt}:{})});
+  }
+  for(const entry of Array.isArray(limits.model_scoped)?limits.model_scoped:[]){
+    if(typeof entry?.display_name!=="string"||typeof entry.utilization!=="number")continue;
+    const resetsAt=resetIso(entry.resets_at);
+    windows.push({id:"seven_day_"+entry.display_name.toLowerCase().replace(/[^a-z0-9]+/g,"_"),kind:"weekly",label:"Weekly · "+entry.display_name,windowDurationMins:7*24*60,usedPercent:clampPercent(entry.utilization),...(resetsAt?{resetsAt}:{})});
+  }
+  return available(windows,at);
+}
+
+// readCapabilities runs (or reuses) the no-prompt Claude Code capability probe, which asks the CLI for its plan usage.
+export async function readClaudeUsageLimits({readCapabilities}={}){
+  const at=checkedAt();
+  if(typeof readCapabilities!=="function")return unavailable("unsupported",null,at);
+  let probe;
+  try{probe=await readCapabilities()}catch{return unavailable("probeFailed","Claude Code could not read usage limits.",at)}
+  if(!probe?.usage)return probe?.usageError?unavailable("probeFailed","Claude Code could not read usage limits.",at):unavailable("unsupported",null,at);
+  return claudeUsageResponseToLimits(probe.usage,probe.checkedAt||at);
+}
+
 export async function readAgentRuntimeUsage(runtime,options={}){
+  if(runtime==="claude")return readClaudeUsageLimits(options);
   if(runtime==="cursor")return readCursorUsageLimits(options);
   if(runtime==="grok")return readGrokUsageLimits(options);
   if(runtime==="opencode")return readOpenCodeUsageLimits(options);

@@ -17,8 +17,9 @@ async function captureConsole(fn){
   finally{console.log=originalLog;console.error=originalError;process.exitCode=previousExitCode}
 }
 
-test("Trebell paths are isolated from ~/.codex", () => {
+test("Trebell paths are isolated from ~/.codex", t => {
   const root = mkdtempSync(join(tmpdir(), "trebell-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const env = { ...process.env, TREBELL_HOME: root };
   assert.equal(trebellHome(env), root);
   assert.equal(codexHome(env), join(root, "codex"));
@@ -100,8 +101,9 @@ test("standalone Codex inherited process stays hidden on Windows",()=>{
   assert.doesNotMatch(source,/windowsHide:\s*false/);
 });
 
-test("standalone Codex child environment preserves Codex-native credentials without unrelated host secrets",()=>{
+test("standalone Codex child environment preserves Codex-native credentials without unrelated host secrets",t=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-codex-env-"));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
   const env=codexChildEnvironment({
     PATH:process.env.PATH||"/usr/bin",
     HOME:root,

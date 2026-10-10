@@ -27,6 +27,9 @@ export function attachCodexRelay(httpServer, {
   handleRequest = null,
   handleServerRequest = null,
   transformClientMessage = null,
+  // Synchronous (message, {targetKey, targetUrl, requestUpstream}) => message: rewrites a Codex notification before the
+  // renderer gets it, so notifications keep their order.
+  transformServerMessage = null,
   path = "/api/codex/ws",
   enabled = () => true,
   authorize = () => true,
@@ -160,6 +163,10 @@ export function attachCodexRelay(httpServer, {
               const [relayId]=route;context.serverRequestRoutes.delete(relayId);
               sendBrowser({...message,params:{...message.params,requestId:relayId}});return;
             }
+          }
+          if(transformServerMessage&&message?.method&&!Object.prototype.hasOwnProperty.call(message,"id")){
+            try{message=transformServerMessage(message,{targetKey:record.key,targetUrl:record.url,requestUpstream})||message}
+            catch(error){log("Codex notification hook failed: "+error.message)}
           }
           sendBrowser(message);
         });

@@ -84,13 +84,15 @@ test("harness text limits, model choice and refusal helpers stay within the read
   assert.equal(HARNESS_TEXT_TIMEOUT_MS,90_000);
   assert.equal(harnessTextTimeout(),90_000);assert.equal(harnessTextTimeout(600_000),90_000,"the timeout never exceeds 90 seconds");assert.equal(harnessTextTimeout(500),500);
   assert.equal(claudeTextModel(["gpt-5.6-sol","sonnet"]),"sonnet");assert.equal(claudeTextModel(["claude-opus-4-8"]),"claude-opus-4-8");assert.equal(claudeTextModel(["openai/gpt-y","test/coding-fast"]),null);
+  assert.equal(claudeTextModel(["fable"]),"fable");assert.equal(claudeTextModel(["default"]),"default");assert.equal(claudeTextModel(["opus[1m]"]),"opus[1m]");
   assert.deepEqual(declineCodexServerRequest({id:1,method:"item/commandExecution/requestApproval",params:{command:"git diff"}}),{decision:"decline"});
   assert.deepEqual(declineCodexServerRequest({id:2,method:"item/fileChange/requestApproval",params:{}}),{decision:"decline"});
   assert.deepEqual(declineCodexServerRequest({id:3,method:"execCommandApproval",params:{command:["git","diff"]}}),{decision:{denied:{rejection:"rejected by Trebell policy"}}});
   assert.deepEqual(declineCodexServerRequest({id:4,method:"item/permissions/requestApproval",params:{permissions:{network:true}}}),{permissions:{},scope:"turn"});
   assert.deepEqual(declineCodexServerRequest({id:5,method:"mcpServer/elicitation/request",params:{}}),{action:"decline",content:null,_meta:null});
   assert.throws(()=>declineCodexServerRequest({id:6,method:"item/tool/call",params:{}}),/does not service item\/tool\/call/);
-  assert.deepEqual(denyAcpRequest("session/request_permission",{options:[{optionId:"ok",kind:"allow_always"},{optionId:"no",kind:"reject_always"}]}),{outcome:{outcome:"selected",optionId:"no"}});
+  assert.deepEqual(denyAcpRequest("session/request_permission",{options:[{optionId:"ok",kind:"allow_always"},{optionId:"no",kind:"reject_always"}]}),{outcome:{outcome:"cancelled"}},"a reject-always answer would be saved beyond this request, so it is cancelled instead");
+  assert.deepEqual(denyAcpRequest("session/request_permission",{options:[{optionId:"ok",kind:"allow_once"},{optionId:"no",kind:"reject_once"}]}),{outcome:{outcome:"selected",optionId:"no"}});
   assert.deepEqual(denyAcpRequest("session/request_permission",{options:[{optionId:"ok",kind:"allow_once"}]}),{outcome:{outcome:"cancelled"}});
   assert.throws(()=>denyAcpRequest("fs/write_text_file",{path:"x"}),error=>error.code===-32000&&/read-only/.test(error.message));
   const modes=ids=>({modes:{currentModeId:ids[0],availableModes:ids.map(id=>({id,name:id}))}});
@@ -208,6 +210,20 @@ test("Claude adapter runs one tool-less turn without hooks, MCP servers or a sav
   assert.equal(Object.prototype.hasOwnProperty.call(seen[1].options,"model"),false,"another runtime's model falls back to Claude's default");
   const failing=()=>(async function*(){yield {type:"result",subtype:"success",is_error:true,result:"Invalid API key · Please run /login"}})();
   await assert.rejects(()=>generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",deps:{claudeQuery:failing}}),/^Error: Claude Code could not write the Git text: Invalid API key/);
+  // Claude's API-error frame is never the Git text; an error Claude does not retry is explained in its own words.
+  const modelError="There's an issue with the selected model (claude-nonexistent-9). It may not exist or you may not have access to it.";
+  const unknownModel=()=>(async function*(){
+    yield {type:"assistant",error:"model_not_found",message:{content:[{type:"text",text:modelError}]}};
+    yield {type:"result",subtype:"success",is_error:true,terminal_reason:"api_error",api_error_status:404,result:modelError};
+  })();
+  await assert.rejects(()=>generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",deps:{claudeQuery:unknownModel}}),error=>error.message==="Claude Code could not write the Git text: "+modelError);
+  const signedOut=()=>(async function*(){
+    yield {type:"assistant",error:"authentication_failed",message:{content:[{type:"text",text:"Invalid API key"}]}};
+    yield {type:"result",subtype:"success",is_error:true,terminal_reason:"api_error",api_error_status:401,result:"Invalid API key"};
+  })();
+  await assert.rejects(()=>generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",deps:{claudeQuery:signedOut}}),/Run `claude auth login`/);
+  const diagnostic=()=>(async function*(){yield {type:"result",subtype:"error_during_execution",is_error:true,errors:["[ede_diagnostic] result_type=user","Claude Code process exited"]}})();
+  await assert.rejects(()=>generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",deps:{claudeQuery:diagnostic}}),error=>error.message==="Claude Code could not write the Git text: Claude Code process exited");
 });
 
 test("Claude adapter aborts its query when the caller cancels",async()=>{
@@ -438,7 +454,8 @@ test("ACP adapter works in an empty folder in Cursor's read-only ask mode, offer
     const record=await acp.record();
     assertScratchFolder(record.sessionCwd,acp.root);assert.equal(resolve(record.cwd),resolve(record.sessionCwd),"the process also starts in the empty folder");
     assert.deepEqual(manager.calls.acpArgs,[{mode:"read-only",cwd:record.sessionCwd}]);
-    assert.deepEqual(record.initialize.clientCapabilities,{fs:{readTextFile:false,writeTextFile:false},terminal:false});
+    // Cursor lists its base model ids (the ids in Trebell's model list) only to a client with the parameterized model picker.
+    assert.deepEqual(record.initialize.clientCapabilities,{fs:{readTextFile:false,writeTextFile:false},terminal:false,_meta:{parameterizedModelPicker:true}});
     assert.equal(record.setMode,"ask","Cursor runs in its read-only ask mode, never its default agent mode");
     assert.ok(record.order.indexOf("session/set_mode")<record.order.indexOf("session/prompt"),"the mode is set before the prompt");
     assert.deepEqual(record.permission,{outcome:{outcome:"selected",optionId:"no"}},"permission requests are rejected without prompting");

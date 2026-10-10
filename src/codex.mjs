@@ -74,7 +74,7 @@ async function runInherited(command, args, env) {
 export async function runCodex({ model, forwarded = [], env = process.env } = {}) {
   const command = codexBin(env);
   if (!existsSync(command) && !env.TREBELL_CODEX_BIN) {
-    throw new Error(`Codex runtime was not installed at ${command}. Run npm install in Trebell Code.`);
+    throw new Error("Codex CLI was not found. Install it with npm install -g @openai/codex, then run codex login.");
   }
 
   const args = codexArgs({ model, forwarded });

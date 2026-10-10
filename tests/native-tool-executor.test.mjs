@@ -177,3 +177,16 @@ test("Native agent loop receives only the repository observation, not gateway in
     assert.equal(result.text,"Found it.");assert.equal(result.toolCalls,1);
   }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test("Native asks no approval for a repository call that cannot run, and asks once for one that can",async()=>{
+  const confirms=[],calls=[];
+  const contextEngine={gitHistory(args){calls.push(args);return {commits:[]}}};
+  const executor=createNativeToolExecutor({contextEngine,root:"/repo",policyContext:{permissionProfile:"supervised",runtime:"native"},confirm:async({call})=>{confirms.push(call.arguments);return true}});
+  const tooBig=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_history",arguments:{limit:1000}}});
+  assert.equal(tooBig.success,false);assert.match(tooBig.error,/too_big/);assert.ok(tooBig.error.includes("\nInput schema for git_history: "),tooBig.error);
+  const unknown=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_log",arguments:{}}});
+  assert.equal(unknown.success,false);assert.match(unknown.error,/^Unknown or non-advanced repository capability: git_log\./);
+  assert.deepEqual(confirms,[],"a call that cannot run is never put to the person");assert.deepEqual(calls,[]);
+  assert.deepEqual(await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_history",arguments:{limit:5}}}),{commits:[]});
+  assert.equal(confirms.length,1);assert.deepEqual(calls,[{root:"/repo",io:null,path:"",limit:5}]);
+});

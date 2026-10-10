@@ -69,3 +69,29 @@ test("AgentThreadStore metadata reads stay transcript-free and current without S
     store.finishTurn(thread.id,turn.id);assert.equal(store.getMetadata(thread.id).status.type,"idle");assert.equal(storageGets,2);assert.equal(store.get(thread.id).turns.length,1);assert.equal(storageGets,3);
   }finally{await rm(home,{recursive:true,force:true})}
 });
+
+test("a thread saved with no title is titled by its first message at startup, and keeps its place in the list",async()=>{
+  // The live tour: every harness thread saved before a new thread took its first message as its title was listed as "Untitled task",
+  // and a later turn would have titled it by that later message.
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-untitled-")),env={...process.env,TREBELL_HOME:home};
+  try{
+    const first=new AgentThreadStore(env);
+    const untitled=first.create({runtime:"cursor",cwd:home,providerSessionId:"cursor-1"});
+    first.finishTurn(untitled.id,first.addTurn(untitled.id,{inputText:"  Run this shell command and tell me its output:\n node -e \"console.log('trebell-tour')\"  "}).id);
+    first.finishTurn(untitled.id,first.addTurn(untitled.id,{inputText:"Reply with exactly TREBELL_TOUR_RESUMED"}).id);
+    const short=first.create({runtime:"grok",cwd:home,providerSessionId:"grok-1"});
+    first.finishTurn(short.id,first.addTurn(short.id,{inputText:"Reply with exactly TREBELL_TOUR_OK"}).id);
+    const named=first.create({runtime:"cursor",cwd:home,providerSessionId:"cursor-2",name:"Kept name"});
+    first.finishTurn(named.id,first.addTurn(named.id,{inputText:"Other words"}).id);
+    const empty=first.create({runtime:"grok",cwd:home,providerSessionId:""});
+    const order=store=>Object.fromEntries(store.list().map(thread=>[thread.id,thread.updatedAt])),before=order(first);
+    const reopened=new AgentThreadStore(env);
+    assert.equal(reopened.getMetadata(untitled.id).preview,"Run this shell command and tell me its output: nod...","its first message, on one line, at most 50 characters");
+    assert.equal(reopened.getMetadata(short.id).preview,"Reply with exactly TREBELL_TOUR_OK");
+    assert.equal(reopened.getMetadata(named.id).name,"Kept name");assert.equal(reopened.getMetadata(named.id).preview,null,"a named thread is left as it is");
+    assert.equal(reopened.getMetadata(empty.id).preview,null,"a thread with no message stays untitled");
+    assert.deepEqual(order(reopened),before,"no thread moves in the list (its updated time is kept)");
+    assert.equal(reopened.get(untitled.id).turns.length,2,"the transcript is untouched");
+    assert.equal(new AgentThreadStore(env).getMetadata(untitled.id).preview,"Run this shell command and tell me its output: nod...","the title is saved");
+  }finally{await rm(home,{recursive:true,force:true})}
+});

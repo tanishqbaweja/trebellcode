@@ -285,3 +285,41 @@ test("Codex relay uses Trebell thread routing hints without forwarding them upst
     assert.equal(Object.prototype.hasOwnProperty.call(reset||{},"params"),false);
   }finally{try{session?.client.close()}catch{}relay.close();await Promise.all([work.close(),personal.close(),new Promise(resolve=>relayHttp.close(resolve))])}
 });
+
+test("Codex relay lets the server rewrite Codex notifications in order, with responses and requests untouched",async()=>{
+  const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const upstreamSeen=[];
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>ws.on("message",raw=>{
+    const message=JSON.parse(String(raw));upstreamSeen.push(message);
+    if(message.method==="thread/goal/get"){ws.send(JSON.stringify({id:message.id,result:{goal:{objective:"From Codex"}}}));return}
+    if(message.method!=="go")return;
+    ws.send(JSON.stringify({method:"thread/goal/updated",params:{threadId:"t1",goal:{objective:"Ship",status:"active"}}}));
+    ws.send(JSON.stringify({method:"boom",params:{threadId:"t1"}}));
+    ws.send(JSON.stringify({id:message.id,result:{ok:true}}));
+    ws.send(JSON.stringify({method:"turn/completed",params:{threadId:"t1",turn:{id:"u1",status:"completed"}}}));
+  }));
+  await new Promise(resolve=>upstreamHttp.listen(0,"127.0.0.1",resolve));
+  const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});const transformed=[],lookups=[],logs=[];
+  const relay=attachCodexRelay(relayHttp,{targetUrl:`ws://127.0.0.1:${upstreamHttp.address().port}`,log:text=>logs.push(text),transformServerMessage:(message,{requestUpstream})=>{
+    transformed.push(message.method);
+    if(message.method==="boom")throw new Error("hook broke");
+    if(message.method==="turn/completed")lookups.push(requestUpstream("thread/goal/get",{threadId:"t1"}));
+    if(message.method==="thread/goal/updated")return {...message,params:{...message.params,goal:{...message.params.goal,constraints:["Trebell guidance"]}}};
+    return message;
+  }});
+  await new Promise(resolve=>relayHttp.listen(0,"127.0.0.1",resolve));
+  try{
+    const client=new WebSocket(`ws://127.0.0.1:${relayHttp.address().port}/api/codex/ws`);await new Promise((resolve,reject)=>{client.once("open",resolve);client.once("error",reject)});
+    const received=[];client.on("message",data=>received.push(JSON.parse(String(data))));
+    client.send(JSON.stringify({id:7,method:"go",params:{}}));
+    for(let attempt=0;attempt<100&&received.length<4;attempt++)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.deepEqual(received.map(item=>item.method||("response "+item.id)),["thread/goal/updated","boom","response 7","turn/completed"],"order is kept");
+    assert.deepEqual(received[0].params.goal,{objective:"Ship",status:"active",constraints:["Trebell guidance"]});
+    assert.deepEqual(received[2].result,{ok:true});
+    assert.deepEqual(transformed,["thread/goal/updated","boom","turn/completed"],"only notifications pass the hook");
+    assert.ok(logs.some(text=>/notification hook failed: hook broke/.test(text)),"a failing hook logs and the notification still arrives");
+    assert.deepEqual(await lookups[0],{goal:{objective:"From Codex"}},"the hook can ask Codex on the same connection");
+    assert.equal(received.some(item=>String(item.id||"").startsWith("trebell-internal-")),false,"the hook's own request never reaches the renderer");
+    client.close();
+  }finally{relay.close();upstreamWss.close();await new Promise(resolve=>relayHttp.close(resolve));await new Promise(resolve=>upstreamHttp.close(resolve))}
+});

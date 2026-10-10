@@ -119,6 +119,19 @@ export class SqliteAgentThreadStore{
       return rows.map(row=>threadFromRow(row,[]));
     });
   }
+  // The first message of each thread saved with no title (search_title holds a thread's name, else its title).
+  untitledFirstMessages(){
+    return this.#withDb(db=>{
+      const turns=db.prepare("SELECT payload_json FROM agent_turns WHERE thread_id=? ORDER BY COALESCE(started_at,0) ASC,rowid ASC LIMIT 5"),out=[];
+      for(const row of db.prepare("SELECT id FROM agent_threads WHERE search_title=''").all()){
+        for(const turnRow of turns.all(String(row.id))){
+          const message=(turnFromRow(turnRow)?.items||[]).find(item=>item?.type==="userMessage"),text=message?visibleSearchText(message).trim():"";
+          if(text){out.push({id:String(row.id),text});break}
+        }
+      }
+      return out;
+    });
+  }
   activeThreadIds(){
     return this.#withDb(db=>db.prepare("SELECT DISTINCT thread_id FROM agent_turns WHERE lower(COALESCE(status,'')) IN ('inprogress','running','starting')").all().map(row=>String(row.thread_id)));
   }

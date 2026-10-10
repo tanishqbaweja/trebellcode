@@ -354,7 +354,10 @@ test("harness catalogs report the OpenCode preferred model as their default mode
     return {id:instance?.id||`${kind}-default`,kind,name:kind,available:true,installed:true,authenticated:true,version:"fixture"};
   };
   AgentRuntimeManager.prototype.models=async function(instanceOrKind,options){
-    if((typeof instanceOrKind==="string"?instanceOrKind:instanceOrKind?.kind)!=="opencode")return originalModels.call(this,instanceOrKind,options);
+    const kind=typeof instanceOrKind==="string"?instanceOrKind:instanceOrKind?.kind;
+    // Claude Code's own model list (its capability probe), with "default" as Claude Code's default model.
+    if(kind==="claude")return {models:["default","haiku"],metadata:[{id:"default",provider:"claude",agent:"Claude Code"},{id:"haiku",provider:"claude",agent:"Claude Code"}],source:"live",preferred:"default",inventory:{commands:[{name:"review"}],agents:[{name:"Plan"}]}};
+    if(kind!=="opencode")return originalModels.call(this,instanceOrKind,options);
     const models=["fixture/other","fixture/preferred"];
     return {models,metadata:models.map(id=>({id,provider:"opencode",agent:"OpenCode"})),source:"live-connected",preferred:"fixture/preferred",connectedProviders:["fixture"]};
   };
@@ -370,8 +373,54 @@ test("harness catalogs report the OpenCode preferred model as their default mode
     const opencodeModels=await fetch(gui.url+"/api/models").then(r=>r.json());
     assert.equal(opencodeModels.agentRuntime,"opencode");assert.equal(opencodeModels.defaultModel,"fixture/preferred");
     const claude=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime:"claude",instanceId:"claude-default"})}).then(r=>r.json());
-    assert.equal(claude.selectedRuntime,"claude");assert.ok(claude.catalog.models.length>=1);assert.equal(claude.catalog.defaultModel,null);
+    assert.equal(claude.selectedRuntime,"claude");assert.deepEqual(claude.catalog.models,["default","haiku"]);assert.equal(claude.catalog.defaultModel,"default");
+    assert.deepEqual(claude.catalog.inventory,{commands:[{name:"review"}],agents:[{name:"Plan"}]},"a new chat's slash commands and agents come with the catalog");
   }finally{
+    if(gui)await gui.close();
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    AgentRuntimeManager.prototype.models=originalModels;
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+test("a model list still loading when the harness switches is named for the harness it was asked for",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-catalog-switch-race-"));
+  const originalProbe=AgentRuntimeManager.prototype.probe,originalModels=AgentRuntimeManager.prototype.models;
+  let openCodeLists=0,release=()=>{},reached=()=>{};
+  const gate=new Promise(resolve=>{release=resolve}),waiting=new Promise(resolve=>{reached=resolve});
+  AgentRuntimeManager.prototype.probe=async function(instanceOrKind){
+    const instance=typeof instanceOrKind==="string"?this.instances().find(item=>item.id===instanceOrKind||item.kind===instanceOrKind):instanceOrKind;
+    const kind=instance?.kind||String(instanceOrKind||"codex");
+    return {id:instance?.id||`${kind}-default`,kind,name:kind,available:true,installed:true,authenticated:true,version:"fixture"};
+  };
+  AgentRuntimeManager.prototype.models=async function(instanceOrKind,options){
+    const kind=typeof instanceOrKind==="string"?instanceOrKind:instanceOrKind?.kind;
+    if(kind==="opencode"){
+      // The list the switch to OpenCode loads answers at once; the next one is still loading when the user switches to Cursor.
+      if(++openCodeLists>1){reached();await gate}
+      return {models:["opencode/slow"],metadata:[{id:"opencode/slow",provider:"opencode",agent:"OpenCode"}],source:"live-connected",preferred:"opencode/slow"};
+    }
+    if(kind==="cursor")return {models:["default"],metadata:[{id:"default",provider:"cursor",agent:"Cursor"}],source:"live",preferred:"default"};
+    return originalModels.call(this,instanceOrKind,options);
+  };
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1"};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const select=runtime=>fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime,instanceId:runtime+"-default"})}).then(r=>r.json());
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:true,env});
+    assert.equal((await select("opencode")).selectedRuntime,"opencode");
+    const loading=fetch(gui.url+"/api/models").then(r=>r.json());
+    await waiting;
+    const cursor=await select("cursor");
+    assert.equal(cursor.selectedRuntime,"cursor");assert.deepEqual(cursor.catalog.models,["default"]);
+    release();
+    const stale=await loading;
+    assert.equal(stale.agentRuntime,"opencode","OpenCode's list is never shown as Cursor's");assert.deepEqual(stale.models,["opencode/slow"]);
+    const current=await fetch(gui.url+"/api/models").then(r=>r.json());
+    assert.equal(current.agentRuntime,"cursor");assert.deepEqual(current.models,["default"]);assert.equal(current.defaultModel,"default");
+  }finally{
+    release();
     if(gui)await gui.close();
     AgentRuntimeManager.prototype.probe=originalProbe;
     AgentRuntimeManager.prototype.models=originalModels;

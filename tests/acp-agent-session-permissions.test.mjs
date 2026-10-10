@@ -24,8 +24,11 @@ test("ACP edits mode auto-allows only explicitly classified edit permissions",()
 });
 
 test("ACP full, auto, supervised and read-only modes preserve their approval contract",()=>{
-  assert.equal(acpPermissionChoice(options,"full",null),"always");
-  assert.equal(acpPermissionChoice(options,"auto","execute"),"always");
+  // An automatic yes is allow-once: an always answer can outlive the session (Grok saves it for the project; T3 picks
+  // allow_once first). Allow-always is used only when the agent offers nothing else.
+  assert.equal(acpPermissionChoice(options,"full",null),"once");
+  assert.equal(acpPermissionChoice(options,"auto","execute"),"once");
+  assert.equal(acpPermissionChoice(options.filter(option=>option.kind!=="allow_once"),"full",null),"always");
   assert.equal(acpPermissionChoice(options,"supervised","edit"),null);
   assert.equal(acpPermissionChoice(options,"read-only","read"),"reject");
 });
@@ -64,7 +67,9 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
   }finally{const terminals=session.terminals;await session.close().catch(()=>{});await terminals.shutdown().catch(()=>{});await rm(root,{recursive:true,force:true})}
 });
 
-test("ACP terminal execution is denied in edits mode unless Trebell approval allows it",async()=>{
+// No harness is offered the client's terminal (T3: ACP agents run their own shell behind their own permission requests),
+// so a terminal/create request is refused outright: nothing runs and no second approval card appears.
+test("ACP terminal requests are refused without running anything, since no harness is offered the client's terminal",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-permission-")),fixture=join(root,"fake-acp.mjs"),marker=join(root,"executed.txt");
   await writeFile(fixture,String.raw`
 import readline from "node:readline";
@@ -88,8 +93,10 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
   const terminals=new TerminalManager({persist:false}),approvals=[],updates=[];
   const session=new AcpAgentSession({runtime:"fixture",command:process.execPath,args:[fixture],cwd:root,terminals,permissionMode:"edits",onPermission:async request=>{approvals.push(request);return "decline"},onUpdate:update=>updates.push(update)});
   try{
-    await session.start();await session.prompt([{type:"text",text:"run"}]);
-    assert.equal(approvals.length,1);assert.equal(approvals[0].params.toolCall.kind,"execute");
+    const started=await session.start();
+    assert.equal(started.initialize.protocolVersion,1);
+    await session.prompt([{type:"text",text:"run"}]);
+    assert.equal(approvals.length,0,"a request for a service the harness was not offered never reaches the user");
     assert.ok(updates.some(item=>item.update?.content?.text==="DENIED"));
     await assert.rejects(()=>access(marker));
   }finally{await session.close().catch(()=>{});await terminals.shutdown().catch(()=>{});await rm(root,{recursive:true,force:true})}

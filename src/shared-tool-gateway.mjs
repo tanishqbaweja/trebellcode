@@ -201,7 +201,9 @@ function uncertainExternalOutcome(authorization,value){
   return value?.uncertain===true||transportOutcomeUncertain(value);
 }
 
-export function createSharedToolGateway({execute,confirm=null,environment=process.env,onEvent=null,contextForCall=null,resolveDefinition=platformToolDefinition}={}){
+// validate(call) checks what policy cannot, such as a capability's own input schema, before anyone is asked to approve the call: a call
+// that cannot run fails with its error instead of after the person approved it. It throws to reject the call.
+export function createSharedToolGateway({execute,validate=null,confirm=null,environment=process.env,onEvent=null,contextForCall=null,resolveDefinition=platformToolDefinition}={}){
   if(typeof execute!=="function")throw new Error("Shared tool gateway requires an execute function.");
   return {
     authorize(call,context={}){
@@ -213,6 +215,15 @@ export function createSharedToolGateway({execute,confirm=null,environment=proces
       const authorization=authorizePlatformToolCall(call,resolvedContext,resolveDefinition),trace={namespace:names.namespace,name:names.name,decision:authorization.decision,reason:authorization.reason||null,riskLevel:authorization.action?.riskLevel||authorization.definition?.policy?.riskLevel||null};
       event(onEvent,{name:"shared_tool.policy",status:authorization.decision.toLowerCase(),data:trace});
       if(authorization.decision===POLICY_REJECT)return {success:false,decision:POLICY_REJECT,error:authorization.reason,authorization};
+      const prepared={...call,namespace:names.namespace,name:names.name,arguments:authorization.arguments||normalizedWorkspaceArguments(names.namespace,names.name,call.arguments,resolvedContext),definition:authorization.definition,authorization,context:resolvedContext};
+      if(typeof validate==="function"){
+        try{await validate(prepared)}
+        catch(error){
+          const safeMessage=redactSecretValue(String(error?.message||error),{environment});
+          event(onEvent,{name:"shared_tool.completed",status:"failed",data:{...trace,durationMs:0,success:false,uncertain:false,validation:true,error:safeMessage}});
+          return {success:false,decision:authorization.decision,authorization,error:safeMessage,uncertain:false,retrySafe:authorization.action?.idempotent===true};
+        }
+      }
       if(authorization.decision===POLICY_CONFIRM){
         if(typeof confirm!=="function")return {success:false,decision:POLICY_CONFIRM,confirmationRequired:true,error:authorization.reason,authorization};
         event(onEvent,{name:"shared_tool.confirmation_requested",status:"pending",data:trace});
@@ -227,9 +238,7 @@ export function createSharedToolGateway({execute,confirm=null,environment=proces
       event(onEvent,{name:"shared_tool.started",status:"running",data:trace});
       const started=performance.now();
       try{
-        const raw=await execute({
-          ...call,namespace:names.namespace,name:names.name,arguments:authorization.arguments||normalizedWorkspaceArguments(names.namespace,names.name,call.arguments,resolvedContext),definition:authorization.definition,authorization,context:resolvedContext,
-        });
+        const raw=await execute(prepared);
         const result=redactSecretValue(raw,{environment,maxDepth:12,maxArray:500,maxFields:1000});
         const success=result?.success!==false;
         const uncertain=!success&&uncertainExternalOutcome(authorization,result);

@@ -1,17 +1,23 @@
-import { access, readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, posix, resolve } from "node:path";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { existsSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, posix, resolve, win32 } from "node:path";
 import spawn from "cross-spawn";
 import { codexBin, codexHome, trebellHome } from "./paths.mjs";
-import { resolveCodexHomeLayout } from "./codex-home-layout.mjs";
+import { prepareCodexHome, resolveCodexHomeLayout } from "./codex-home-layout.mjs";
 import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
 import { sharedRuntimeCapabilities } from "./runtime-capabilities.mjs";
 import { withoutSecretEnvironment } from "./secret-redactor.mjs";
 import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 import { installAntigravityRuntime, readAntigravityAuthState, readAntigravityInstall } from "./antigravity-runtime-installer.mjs";
 import { discoverOpenCodeModelCatalog } from "./opencode-agent-session.mjs";
-import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
+import { resolveWindowsCommandShim, windowsCommandShimTarget } from "./windows-command-shim.mjs";
+import { codexAccountStatus, readCodexAccount } from "./codex-account-probe.mjs";
+import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
+import { defaultAcpClientCapabilities } from "./acp-client.mjs";
+import { acpProbeSession, acpSessionModelCatalog, antigravityModelCatalog, antigravitySeedCatalog, cursorModelCatalog, GROK_INITIALIZE_META, grokModelCatalog, withAcpProbe } from "./acp-model-catalog.mjs";
+import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
+import { acpCommandsFromAvailable } from "./acp-agent-session.mjs";
 
 const RUNTIMES=Object.freeze({
   native:{id:"native",name:"Trebell Native",protocol:"native",command:null,multipleInstances:false,managed:true},
@@ -27,17 +33,31 @@ export function runtimeCapabilities(kind){
   return sharedRuntimeCapabilities(normalizeAgentRuntime(kind));
 }
 
+const CODEX_ACCOUNT_REUSE_MS=60_000;
+// An ACP harness's model list is kept this long once it has models (T3 keeps Cursor's for 30 minutes per version).
+const ACP_MODEL_LIST_REUSE_MS=30*60_000;
 const INSTALLABLE_PACKAGES=Object.freeze({
+  codex:"@openai/codex",
   claude:"@anthropic-ai/claude-code",
-  opencode:"@opencode/cli",
+  // OpenCode 1.x ships as opencode-ai and 2.x as @opencode/cli (T3 openCodeUpdateFor). Trebell Code's OpenCode harness speaks the
+  // 1.x server API, so it installs and updates 1.x only, and never moves an install between the two: 2.x converts OpenCode's shared
+  // database in place.
+  opencode:"opencode-ai",
 });
+// A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start makes one)
+// reuses the last read of the same binary and version, and makes one only when there is none.
+const OPENCODE_CATALOG_REUSE_MS=10_000;
+const OPENCODE_STATUS_TIMEOUT_MS=20_000;
+const OPENCODE_2X_MESSAGE="OpenCode 2.x is not supported yet: Trebell Code runs OpenCode 1.x. Use OpenCode 1.x (the opencode-ai npm package), or point this OpenCode profile's binary at a 1.x build.";
+const OPENCODE_NPM_REGISTRY_LATEST="https://registry.npmjs.org/opencode-ai/latest";
 
 const RUNTIME_COMPATIBILITY=Object.freeze({
   opencode:Object.freeze({
-    recommendedRange:">=1.14.19",
+    recommendedRange:">=1.14.19 <2.0.0",
     ranges:Object.freeze([
       Object.freeze({range:"<1.14.19",status:"broken"}),
-      Object.freeze({range:">=1.14.19",status:"supported"}),
+      Object.freeze({range:">=2.0.0",status:"unsupported",message:OPENCODE_2X_MESSAGE}),
+      Object.freeze({range:">=1.14.19 <2.0.0",status:"supported"}),
     ]),
   }),
 });
@@ -112,13 +132,57 @@ export function parseOpenCodeAuthList(output){
   const connected=(Number.isFinite(credentials)?credentials:0)+(Number.isFinite(environment)?environment:0);
   return {connected,authenticated:known&&connected>0?true:null};
 }
+// T3 Code's OpenCode status message, from the connected providers OpenCode's server lists.
+export function openCodeStatusMessage(connected,{external=false}={}){
+  const count=Math.max(0,Number(connected)||0);
+  if(count>0)return `${count} upstream provider${count===1?"":"s"} connected through ${external?"the configured OpenCode server":"OpenCode"}.`;
+  return external?"Connected to the configured OpenCode server, but it did not report any connected upstream providers.":"OpenCode is available, but it did not report any connected upstream providers.";
+}
+// Where a command runs from, as cross-spawn finds it: the path itself, or the first match on PATH (with PATHEXT on Windows).
+export function commandOnPath(command,{env=process.env,platform=process.platform,exists=existsSync}={}){
+  const value=String(command||"").trim();if(!value)return null;
+  const windows=platform==="win32",paths=windows?win32:posix;
+  const extensions=windows?String(env?.PATHEXT||".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean):[];
+  const named=base=>windows&&!extensions.some(extension=>base.toLowerCase().endsWith(extension.toLowerCase()))?extensions.map(extension=>base+extension):[base];
+  if(/[\\/]/.test(value))return named(value).find(candidate=>exists(candidate))||null;
+  for(const folder of String(env?.PATH||"").split(windows?";":":").filter(Boolean))for(const candidate of named(paths.join(folder,value)))if(exists(candidate))return candidate;
+  return null;
+}
+// Who installed the OpenCode at a real path, judged from the path as T3 Code judges an update (openCodeUpdateFor): OpenCode's own
+// installer keeps it in ~/.opencode/bin and updates it with `opencode upgrade`; npm keeps a global opencode-ai in
+// <prefix>/node_modules/opencode-ai beside its opencode shims on Windows, and in <prefix>/lib/node_modules/opencode-ai elsewhere. Any
+// other path (OpenCode 2.x's @opencode/cli, another package manager, a project's node_modules) is not Trebell's to update.
+export function openCodeInstallOwner(path,{platform=process.platform,exists=existsSync}={}){
+  const raw=String(path||""),lower=raw.replaceAll("\\","/").toLowerCase();
+  if(/\/\.opencode\/bin\/opencode(?:\.exe)?$/.test(lower))return {method:"native"};
+  const segment=platform==="win32"?"/node_modules/opencode-ai/":"/lib/node_modules/opencode-ai/",index=lower.lastIndexOf(segment);
+  if(index<0||lower.slice(0,index).includes("/node_modules/"))return null;
+  const prefix=index===0?"/":raw.slice(0,index);
+  if(platform==="win32"&&!["opencode.cmd","opencode"].some(name=>exists(win32.join(prefix,name))))return null;
+  return {method:"npm",prefix};
+}
+// npm leaves a command another package installed alone (EEXIST, unless forced), so it cannot update opencode-ai while the opencode
+// command in its prefix runs something else, such as OpenCode 2.x's @opencode/cli. Returns that package (or file), or null.
+export function openCodeCommandHolder(prefix,{platform=process.platform,read=path=>readFileSync(path,"utf8"),readLink=readlinkSync}={}){
+  const windows=platform==="win32",paths=windows?win32:posix,root=String(prefix||"");
+  const own=paths.join(root,windows?"node_modules":"lib/node_modules","opencode-ai").toLowerCase()+paths.sep;
+  let target=null;
+  if(windows)target=windowsCommandShimTarget(win32.join(root,"opencode.cmd"),{platform,allowScripts:true,read,exists:()=>true});
+  else{
+    const command=posix.join(root,"bin","opencode");
+    try{target=posix.resolve(posix.dirname(command),readLink(command))}catch(error){if(error?.code!=="ENOENT")target=command}
+  }
+  if(!target||target.toLowerCase().startsWith(own))return null;
+  const parts=paths.relative(root,target).split(/[\\/]/),index=parts[0]===".."?-1:parts.indexOf("node_modules");
+  return (index>=0?parts.slice(index+1,parts[index+1]?.startsWith("@")?index+3:index+2).join("/"):"")||target;
+}
 export function runtimeCompatibility(kind,version){
   const policy=RUNTIME_COMPATIBILITY[normalizeAgentRuntime(kind)];if(!policy)return null;
   const parsed=parsedSemver(version);
   const normalized=parsed?parsed.raw:null;
   const matched=normalized?policy.ranges.find(item=>satisfiesSimpleRange(normalized,item.range)):null;
   const status=matched?.status||"unknown";
-  const message=status==="broken"
+  const message=matched?.message?matched.message:status==="broken"
     ?`This ${RUNTIMES[normalizeAgentRuntime(kind)]?.name||kind} version is known to be incompatible with Trebell Code. Use ${policy.recommendedRange}.`
     :status==="unsupported"
       ?`This ${RUNTIMES[normalizeAgentRuntime(kind)]?.name||kind} version is outside Trebell Code's supported range. Use ${policy.recommendedRange}.`
@@ -183,7 +247,7 @@ export function runtimeExecutableCandidates(kind,{env=process.env,platform=proce
 }
 
 export class AgentRuntimeManager{
-  constructor({state,env=process.env,environments=null,platform=process.platform,arch=process.arch,fetchImpl=globalThis.fetch}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.arch=arch;this.fetchImpl=fetchImpl}
+  constructor({state,env=process.env,environments=null,platform=process.platform,arch=process.arch,fetchImpl=globalThis.fetch,claudeCapabilitiesCache=claudeCapabilities}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.arch=arch;this.fetchImpl=fetchImpl;this.claudeCapabilitiesCache=claudeCapabilitiesCache}
   definitions(){return Object.values(RUNTIMES).map(item=>({...item,capabilities:runtimeCapabilities(item.id)}))}
   capabilities(instanceOrKind=this.activeInstance()){
     const kind=typeof instanceOrKind==="string"
@@ -327,7 +391,8 @@ export class AgentRuntimeManager{
       },
       writeText:async(path,content)=>{
         const candidate=pathFor(path);const encoded=Buffer.from(String(content??""),"utf8").toString("base64");
-        const script='printf %s "$1" | base64 -d > "$2"';
+        // An agent may write a file into a folder that does not exist yet (ACP fs/write_text_file creates it).
+        const script='mkdir -p "$(dirname "$2")" && printf %s "$1" | base64 -d > "$2"';
         const result=await this.environments.executeArgv(profile.id,{command:"sh",args:["-lc",script,"trebell",encoded,candidate],cwd:"",timeoutMs:30_000});
         if(result.exitCode!==0)throw new Error(result.stderr||`Could not write remote file ${candidate}`);
       },
@@ -343,6 +408,26 @@ export class AgentRuntimeManager{
       return {ok:result.exitCode===0,code:result.exitCode,error:result.timedOut?"probe timed out":null,stdout:result.stdout||"",stderr:result.stderr||""};
     }
     return run(this.executable(instance),args,{env:this.childEnv(instance),cwd:cwd||process.cwd(),timeoutMs});
+  }
+  // One short-lived `codex app-server` per profile answers account/read. Ready answers are reused briefly because the
+  // bootstrap payload probes the active profile on every request; concurrent probes share one process.
+  #codexAccounts=new Map();
+  async #codexAccount(instance,environmentId=undefined){
+    const profile=this.activeEnvironment(environmentId),spawner=this.processSpawner(instance,environmentId);
+    const command=this.executable(instance,{environmentId}),env=spawner?null:this.childEnv(instance);
+    const key=[profile?.id||"local",instance.id,command,env?.CODEX_HOME||""].join("|"),cached=this.#codexAccounts.get(key);
+    if(cached?.pending)return await cached.pending;
+    if(cached&&Date.now()-cached.at<CODEX_ACCOUNT_REUSE_MS)return cached.value;
+    const spawnAppServer=spawner?args=>spawner({args}):args=>spawn(command,args,{env,cwd:process.cwd(),windowsHide:true,stdio:["pipe","pipe","pipe"]});
+    // A local probe runs in the home the profile's app-server runs in (gui-server startAppServer): a shadow home is linked to
+    // its shared home first, so Codex reads the profile's config there and never fills the shadow home with folders of its own
+    // (its skills) where the shared home's links belong.
+    const home=spawner?Promise.resolve():prepareCodexHome({homePath:String(instance.homePath||"").trim()||null,shadowHomePath:String(instance.shadowHomePath||"").trim()||null,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
+    const pending=home.then(()=>readCodexAccount({spawnAppServer,platform:this.platform})).then(result=>({result}),error=>({error:error?.message||String(error)}));
+    this.#codexAccounts.set(key,{pending});
+    const value=await pending;
+    if(value.result&&codexAccountStatus(value.result.account).ready)this.#codexAccounts.set(key,{at:Date.now(),value});else this.#codexAccounts.delete(key);
+    return value;
   }
   async #runCommand(command,args,{timeoutMs=120000,cwd=null,environmentId=undefined}={}){
     const profile=this.activeEnvironment(environmentId);
@@ -382,6 +467,7 @@ export class AgentRuntimeManager{
       const status=await this.probe(instance,{environmentId:null});
       return {ok:true,runtime:"antigravity",managed:"acp-registry",targetVersion:installed.version,status};
     }
+    if(target.runtime==="opencode")return await this.#installOpenCode(environmentId);
     const npm=await this.#runCommand("npm",["--version"],{timeoutMs:8000,environmentId});
     if(!npm.ok)throw new Error("npm is required to install this harness in the selected environment. Install Node.js/npm there first.");
     let packageSpec=target.packageName,targetVersion=null,compatibility=null;
@@ -402,6 +488,87 @@ export class AgentRuntimeManager{
     const status=await this.probe(instance,{environmentId});
     return {ok:true,runtime:target.runtime,packageName:target.packageName,targetVersion,compatibility,status,output:(result.stdout||result.stderr||"").trim().slice(-2000)};
   }
+  // What installing or updating OpenCode runs, decided without changing anything (T3 openCodeUpdateFor): an OpenCode from its own
+  // installer updates with `opencode upgrade <version>`, npm's global opencode-ai through npm into the same prefix, and a machine (or
+  // remote environment) without OpenCode gets opencode-ai through npm. The target is the newest opencode-ai release, which must be a
+  // supported 1.x. OpenCode 2.x, and an OpenCode Trebell cannot tell who installed, are left alone.
+  async openCodeInstallPlan({environmentId=undefined}={}){
+    const instances=this.instances();
+    const instance=instances.find(item=>item.kind==="opencode"&&item.id==="opencode-default")||instances.find(item=>item.kind==="opencode")||defaultInstance("opencode");
+    const checked=await this.#run(instance,["--version"],{timeoutMs:6000,environmentId});
+    const installed=checked.ok?runtimeCompatibility("opencode",(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null):null;
+    if(installed?.status==="unsupported")throw new Error(`This OpenCode is ${installed.version}. Trebell Code neither updates OpenCode 2.x nor installs 1.x beside it, because OpenCode 2.x converts OpenCode's shared database in place. ${OPENCODE_2X_MESSAGE}`);
+    const local=checked.ok&&!this.processSpawner(instance,environmentId)?this.#openCodeInstall(instance):null;
+    if(local&&!local.owner)throw new Error(`Trebell Code updates an OpenCode installed by npm (opencode-ai) or by OpenCode's own installer, and could not tell how ${local.binary} was installed. Update it the way you installed it.`);
+    const holder=local?.owner.method==="npm"?openCodeCommandHolder(local.owner.prefix,{platform:this.platform}):null;
+    if(holder)throw new Error(`npm cannot update opencode-ai in ${local.owner.prefix}: the opencode command there runs ${holder}, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode 1.x, uninstall ${holder}, or run npm install -g opencode-ai --force yourself (the opencode command then runs OpenCode 1.x).`);
+    const native=local?.owner.method==="native";
+    let targetVersion=null;
+    if(native){
+      let latest=null;
+      try{const response=await this.fetchImpl(OPENCODE_NPM_REGISTRY_LATEST,{headers:{accept:"application/json"},signal:AbortSignal.timeout(15_000)});if(response?.ok)latest=await response.json()}catch{}
+      targetVersion=typeof latest?.version==="string"?latest.version.trim():null;
+      if(!targetVersion)throw new Error("Trebell Code could not read the newest OpenCode release from the npm registry. Nothing was installed.");
+    }else{
+      const npm=await this.#runCommand("npm",["--version"],{timeoutMs:8000,environmentId});
+      if(!npm.ok)throw new Error("npm is required to install this harness in the selected environment. Install Node.js/npm there first.");
+      const viewed=await this.#runCommand("npm",["view",INSTALLABLE_PACKAGES.opencode,"version","--json"],{timeoutMs:20_000,environmentId});
+      if(!viewed.ok)throw new Error((viewed.stderr||viewed.stdout||"Could not determine the compatible runtime version").trim().slice(-1000));
+      try{targetVersion=String(JSON.parse(String(viewed.stdout||"").trim()))}catch{targetVersion=String(viewed.stdout||"").trim().replace(/^["']|["']$/g,"")}
+    }
+    const compatibility=runtimeCompatibility("opencode",targetVersion);
+    if(!targetVersion||!compatibility?.version||["broken","unsupported","unknown"].includes(compatibility.status))throw new Error(compatibility?.message||("Trebell could not verify that OpenCode "+targetVersion+" is compatible. Nothing was installed."));
+    // npm 12 skips install scripts unless allowed, and opencode-ai's script puts its binary in place (T3 allows that one package's).
+    const step=native
+      ?{command:local.binary,args:["upgrade",compatibility.version]}
+      :{command:"npm",args:["install","-g",...(local?["--prefix",local.owner.prefix]:[]),"--allow-scripts="+INSTALLABLE_PACKAGES.opencode,INSTALLABLE_PACKAGES.opencode+"@"+compatibility.version]};
+    return {instance,method:native?"native":"npm",binary:local?.binary||null,installedVersion:installed?.version||null,targetVersion:compatibility.version,compatibility,...step};
+  }
+  async #installOpenCode(environmentId){
+    const plan=await this.openCodeInstallPlan({environmentId});
+    const result={runtime:"opencode",packageName:INSTALLABLE_PACKAGES.opencode,method:plan.method,targetVersion:plan.targetVersion,compatibility:plan.compatibility};
+    if(plan.installedVersion===plan.targetVersion)return {ok:true,...result,status:await this.probe(plan.instance,{environmentId}),output:`OpenCode ${plan.targetVersion} is already the newest OpenCode 1.x release.`};
+    const ran=await this.#runCommand(plan.command,plan.args,{timeoutMs:180_000,environmentId});
+    if(!ran.ok)throw new Error((ran.stderr||ran.stdout||("Could not install OpenCode "+plan.targetVersion)).trim().slice(-2000));
+    // The OpenCode this profile runs must now report the version installed.
+    const status=await this.probe(plan.instance,{environmentId}),running=parsedSemver(status.version)?.raw||null;
+    if(running!==plan.targetVersion)throw new Error(`OpenCode ${plan.targetVersion} was installed, but the OpenCode this profile runs (${status.binary||plan.binary||"opencode"}) ${running?"still reports "+running:"did not start: "+(status.message||"no answer")}.`);
+    return {ok:true,...result,status,output:(ran.stdout||ran.stderr||"").trim().slice(-2000)};
+  }
+  // Where the OpenCode a local profile runs really is, and who installed it there.
+  #openCodeInstall(instance){
+    const command=this.executable(instance),found=commandOnPath(command,{env:this.childEnv(instance),platform:this.platform});
+    let binary=found?resolveWindowsCommandShim(found,{platform:this.platform}):null;
+    if(binary)try{binary=realpathSync(binary)}catch{}
+    return {binary:binary||command,owner:binary?openCodeInstallOwner(binary,{platform:this.platform}):null};
+  }
+  #openCodeCatalogs=new Map();
+  // OpenCode's own answer for a profile (its connected models and providers, and its commands, skills and agents), from one managed
+  // server or the profile's server, kept per binary and version. Readers at the same time share one read; a failed read is not kept.
+  async #openCodeCatalog(instance,{version=null,reuseMs=OPENCODE_CATALOG_REUSE_MS}={}){
+    const command=this.executable(instance),key=[instance.id,command,instance.serverUrl||"",version||""].join("|"),cached=this.#openCodeCatalogs.get(key);
+    if(cached?.pending)return await cached.pending;
+    if(cached&&Date.now()-cached.at<reuseMs)return cached.value;
+    const pending=discoverOpenCodeModelCatalog({command,cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null});
+    this.#openCodeCatalogs.set(key,{pending});
+    try{
+      const value=await pending;
+      this.#openCodeCatalogs.set(key,{at:Date.now(),value});return value;
+    }catch(error){
+      if(this.#openCodeCatalogs.get(key)?.pending===pending)this.#openCodeCatalogs.delete(key);
+      throw error;
+    }
+  }
+  // A status check's provider list: the last one read for this binary and version, or a new read, which may take this long.
+  async #openCodeStatusCatalog(instance,version){
+    let timer;
+    try{
+      return await Promise.race([
+        this.#openCodeCatalog(instance,{version,reuseMs:Number.POSITIVE_INFINITY}),
+        new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error(`OpenCode did not answer within ${OPENCODE_STATUS_TIMEOUT_MS/1000} seconds.`)),OPENCODE_STATUS_TIMEOUT_MS);timer.unref?.()}),
+      ]);
+    }finally{clearTimeout(timer)}
+  }
   acpArgs(instance,permissionMode="supervised",cwd=process.cwd()){
     if(instance.kind==="cursor"){
       if(permissionMode==="full")return ["--force","acp"];
@@ -411,7 +578,8 @@ export class AgentRuntimeManager{
     if(instance.kind==="grok"){
       if(permissionMode==="full")return ["agent","--always-approve","stdio"];
       if(permissionMode==="auto")return ["--permission-mode","auto","agent","stdio"];
-      if(permissionMode==="edits")return ["--permission-mode","acceptEdits","agent","stdio"];
+      // `grok agent` has no accept-edits mode (it treats acceptEdits as asking, T3 grokAcpSpawnArgs): it asks, and Trebell
+      // answers its edit requests itself in the edits mode.
       return ["--permission-mode","default","agent","stdio"];
     }
     if(instance.kind==="opencode")return [];
@@ -424,11 +592,16 @@ export class AgentRuntimeManager{
     if(instance.kind==="native")return {id:instance.id,kind:"native",name:def.name,available:true,installed:true,authenticated:null,protocol:"native",managed:true,version:null,binary:null,message:"Built into Trebell Code"};
     if(instance.kind==="codex"){
       const checked=await this.#run(instance,["--version"],{timeoutMs:6000,environmentId});
-      if(!checked.ok)return {id:instance.id,kind:"codex",name:def.name,available:false,installed:false,authenticated:false,protocol:"codex",version:null,binary:this.executable(instance),message:(checked.stderr||checked.error||"Codex CLI is unavailable").trim().slice(0,500)};
-      const auth=await this.#run(instance,["login","status"],{timeoutMs:8000,environmentId});
-      const authText=((auth.stdout||"")+"\n"+(auth.stderr||"")).trim(),authenticated=auth.ok&&/logged in/i.test(authText);
+      if(!checked.ok){
+        const missing=/ENOENT|not found|not recognized/i.test(String(checked.error||checked.stderr||""));
+        return {id:instance.id,kind:"codex",name:def.name,available:false,installed:false,authenticated:false,protocol:"codex",version:null,binary:this.executable(instance,{environmentId}),message:missing?"Codex CLI was not found. Install it (npm install -g @openai/codex), then sign in with codex login.":(checked.stderr||checked.error||"Codex CLI is unavailable").trim().slice(0,500)};
+      }
       const version=(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null;
-      return {id:instance.id,kind:"codex",name:def.name,available:authenticated,installed:true,authenticated,protocol:"codex",version,binary:this.executable(instance),message:authenticated?(authText||"Ready"):"Codex is installed but not authenticated. Run codex login."};
+      // Readiness is Codex's own account/read answer (T3 accountProbeStatus), so non-OpenAI model providers need no login.
+      const probed=await this.#codexAccount(instance,environmentId);
+      if(probed.error)return {id:instance.id,kind:"codex",name:def.name,available:false,installed:true,authenticated:null,protocol:"codex",version,binary:this.executable(instance,{environmentId}),message:("Codex app-server account check failed: "+probed.error).slice(0,500)};
+      const status=codexAccountStatus(probed.result.account);
+      return {id:instance.id,kind:"codex",name:def.name,available:status.ready,installed:true,authenticated:status.authenticated,protocol:"codex",version,binary:this.executable(instance,{environmentId}),message:status.message,account:{type:status.authType,label:status.label}};
     }
     const command=this.executable(instance);
     if(instance.kind==="antigravity"&&!this.activeEnvironment(environmentId)){
@@ -454,7 +627,7 @@ export class AgentRuntimeManager{
     if(instance.kind==="claude"){
       const auth=await this.#run(instance,["auth","status"],{timeoutMs:8000,environmentId});
       try{account=JSON.parse(auth.stdout||"{}");authenticated=Boolean(account.loggedIn)}catch{authenticated=auth.ok}
-      if(!authenticated)message="Claude Code is installed but not authenticated";
+      if(!authenticated)message="Claude Code is not authenticated. Run `claude auth login` and try again.";
     }else if(instance.kind==="cursor"){
       let about=await this.#run(instance,["about","--format","json"],{timeoutMs:8000,environmentId});
       const unsupported=/unknown (?:option|argument)|unexpected argument|unrecognized (?:option|argument)/i.test(String(about.stdout||"")+"\n"+String(about.stderr||""));
@@ -473,6 +646,17 @@ export class AgentRuntimeManager{
         if(authenticated===false)message="Grok CLI is installed but not logged in. Run grok login.";
         else if(authenticated==null)message="Grok CLI is installed, but Trebell could not verify its authentication status.";
       }
+    }else if(instance.kind==="opencode"&&!this.processSpawner(instance,environmentId)){
+      const versionLine=(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null,compatibility=runtimeCompatibility("opencode",versionLine);
+      const unavailable=message=>({id:instance.id,kind:instance.kind,name:def.name,available:false,installed:true,authenticated:null,protocol:def.protocol,managed:false,binary:command,version:versionLine,account:null,message,...(compatibility?{compatibility}:{})});
+      // OpenCode 2.x serves another API (T3 Code drives it through a separate adapter), so nothing more runs on it.
+      if(compatibility?.status==="unsupported")return unavailable(compatibility.message);
+      // T3 Code's status check: the upstream providers OpenCode's own server reports connected (a managed server, or the profile's).
+      let catalog;
+      try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null)}
+      catch(error){return unavailable(("OpenCode could not list its providers: "+(error?.message||String(error))).slice(0,500))}
+      const connected=Array.isArray(catalog?.connectedProviders)?catalog.connectedProviders.length:0;
+      authenticated=connected>0?true:null;account={connectedProviders:connected};message=openCodeStatusMessage(connected,{external:Boolean(instance.serverUrl)});
     }else if(instance.kind==="opencode"&&!instance.serverUrl){
       const auth=await this.#run(instance,["auth","list"],{timeoutMs:10_000,environmentId});
       if(auth.ok){
@@ -495,25 +679,125 @@ export class AgentRuntimeManager{
     if(instance.kind==="codex")return {models:[],metadata:[],source:"codex"};
     const status=await this.probe(instance,{environmentId});if(!status.available)return {models:[],metadata:[],source:"unavailable",error:status.message};
     if(instance.kind==="opencode"){
-      if(!this.activeEnvironment(environmentId)){
-        const catalog=await discoverOpenCodeModelCatalog({command:this.executable(instance,{environmentId}),cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null});
-        return {models:catalog.models,metadata:catalog.metadata,source:catalog.source,preferred:catalog.preferred,connectedProviders:catalog.connectedProviders};
+      // Where the relay runs OpenCode through its SDK (the profile runs on this machine): the model list, and the commands, skills and
+      // agents a new chat offers before its first message (T3 Code's provider snapshot).
+      if(!this.processSpawner(instance,environmentId)){
+        const catalog=await this.#openCodeCatalog(instance,{version:status.compatibility?.version||null});
+        return {models:catalog.models,metadata:catalog.metadata,source:catalog.source,preferred:catalog.preferred,connectedProviders:catalog.connectedProviders,inventory:catalog.inventory};
       }
-      const result=await this.#run(instance,["models"],{timeoutMs:30_000,environmentId});
-      const models=(result.stdout||"").split(/\r?\n/).map(line=>line.trim()).filter(line=>/^[^\s]+\/[^\s]+$/.test(line));
-      return {models:[...new Set(models)],metadata:[...new Set(models)].map(id=>({id,provider:"opencode",agent:"OpenCode"})),source:"live"};
+      // A remote OpenCode runs over ACP: its list is a session's model option, whose current value is OpenCode's default.
+      return this.#acpModelList(instance,status,environmentId,"OpenCode",()=>this.#openCodeAcpModels(instance,environmentId));
     }
     if(instance.kind==="claude"){
-      const models=["sonnet","opus","haiku"];
-      return {models,metadata:models.map(id=>({id,provider:"claude",agent:"Claude Code"})),source:"aliases"};
+      // The models Claude Code itself lists in its initialize answer, "default" (its own default model) first, as T3 Code reads them.
+      let probe;
+      try{probe=await this.claudeCapabilities(instance,{environmentId})}
+      catch(error){return {models:[],metadata:[],source:"unavailable",error:"Claude Code could not list its models: "+(error?.message||String(error))}}
+      const catalog=claudeModelCatalog(probe);
+      // The same probe's slash commands and agents fill the composer's menus before a new chat's first message (T3 Code's
+      // provider slash commands); a thread's own folder probe replaces them once it starts.
+      return {models:catalog.models,metadata:catalog.metadata,preferred:catalog.preferred,source:"live",inventory:{commands:Array.isArray(probe?.commands)?probe.commands:[],agents:Array.isArray(probe?.agents)?probe.agents:[]}};
     }
-    if(instance.kind==="cursor")return {models:["cursor-default"],metadata:[{id:"cursor-default",provider:"cursor",agent:"Cursor",dynamic:true}],source:"session"};
-    if(instance.kind==="grok")return {models:["grok-build"],metadata:[{id:"grok-build",provider:"grok",agent:"Grok Build",dynamic:true}],source:"session"};
-    if(instance.kind==="antigravity")return {models:["antigravity-default"],metadata:[{id:"antigravity-default",provider:"antigravity",agent:"Antigravity",dynamic:true}],source:"session"};
+    // Cursor lists its models with display names and per-model effort to a client with the parameterized model picker
+    // (T3's ACP-era Cursor discovery); Grok Build lists them in its initialize answer (T3 discoverGrokMetadataViaAcpInitialize),
+    // with its slash commands, which a new chat's menu shows before its thread exists (T3 grokSlashCommandsFromInitialize).
+    if(instance.kind==="cursor")return this.#acpModelList(instance,status,environmentId,"Cursor",()=>withAcpProbe({
+      ...this.#acpProbeOptions(instance,environmentId),capabilities:{...defaultAcpClientCapabilities(),_meta:{parameterizedModelPicker:true}},
+    },async client=>cursorModelCatalog(await client.request("cursor/list_available_models",{},60_000))));
+    if(instance.kind==="grok")return this.#acpModelList(instance,status,environmentId,"Grok Build",()=>withAcpProbe({
+      ...this.#acpProbeOptions(instance,environmentId),meta:GROK_INITIALIZE_META,
+    },(_client,initialized)=>({...grokModelCatalog(initialized),inventory:{commands:acpCommandsFromAvailable(initialized?._meta?.availableCommands,"grok")}})));
+    if(instance.kind==="antigravity")return this.#antigravityModels(instance,environmentId);
     return {models:[],metadata:[],source:"unknown"};
+  }
+  #acpModelLists=new Map();
+  // One ACP harness's model list, read where the profile runs and kept per profile, environment and harness version once it
+  // has models; a failure is reported (never replaced by a stand-in list) and read again next time.
+  async #acpModelList(instance,status,environmentId,label,load){
+    const key=[instance.kind,instance.id,this.activeEnvironment(environmentId)?.id||"local",status?.version||""].join("|"),cached=this.#acpModelLists.get(key);
+    let catalog;
+    try{
+      if(cached?.pending)catalog=await cached.pending;
+      else if(cached&&Date.now()-cached.at<ACP_MODEL_LIST_REUSE_MS)catalog=cached.value;
+      else{
+        const pending=load();this.#acpModelLists.set(key,{pending});
+        try{catalog=await pending}finally{if(this.#acpModelLists.get(key)?.pending===pending)this.#acpModelLists.delete(key)}
+        if(catalog?.models?.length)this.#acpModelLists.set(key,{at:Date.now(),value:catalog});
+      }
+    }catch(error){return {models:[],metadata:[],source:"unavailable",error:`${label} could not list its models: ${error?.message||String(error)}`}}
+    if(!catalog?.models?.length)return {models:[],metadata:[],source:"unavailable",error:`${label} did not list any models.`};
+    return {models:catalog.models,metadata:catalog.metadata,preferred:catalog.preferred,source:"live",...(catalog.inventory?{inventory:catalog.inventory}:{})};
+  }
+  // How a short-lived listing process starts: where the profile runs, in the asking (supervised) launch mode; a local
+  // Antigravity unpacks into a Trebell-owned temp folder from its own install folder, as its sessions do.
+  #acpProbeOptions(instance,environmentId){
+    const spawnProcess=this.processSpawner(instance,environmentId),command=this.executable(instance,{environmentId}),env=this.childEnv(instance);
+    const local=!spawnProcess,cwd=local?process.cwd():(this.remoteIo(null,environmentId)?.root||"/");
+    return {
+      command,args:instance.kind==="opencode"?["acp"]:this.acpArgs(instance,"supervised",cwd),cwd,env,spawnProcess,
+      processCwd:instance.kind==="antigravity"&&local&&command?dirname(command):null,
+      runTempRoot:instance.kind==="antigravity"&&local?acpRuntimeTempRoot(env,"antigravity"):null,
+      timeoutMs:instance.kind==="antigravity"?90_000:60_000,
+    };
+  }
+  // A throwaway OpenCode session's model option; the session is deleted afterwards (over ACP when OpenCode offers it,
+  // otherwise with its CLI once the ACP process has stopped, as the Git text session is).
+  async #openCodeAcpModels(instance,environmentId){
+    let sessionId=null,deleted=false;
+    try{
+      return await withAcpProbe(this.#acpProbeOptions(instance,environmentId),async(client,initialized)=>{
+        const opened=await acpProbeSession(client,initialized,{cwd:client.cwd,timeoutMs:60_000});
+        sessionId=opened.sessionId;deleted=opened.deleted;
+        return acpSessionModelCatalog(opened.setup,{provider:"opencode",agent:"OpenCode"});
+      });
+    }finally{
+      if(sessionId&&!deleted)await this.runCli(instance,["session","delete",sessionId],{environmentId,timeoutMs:15_000}).catch(()=>{});
+    }
+  }
+  #antigravityModelLists=new Map();#antigravityRefreshes=new Map();#modelListeners=new Set();
+  // Hears that a harness's model list changed after it was served, so an open composer can take the new list (T3 publishes
+  // provider snapshots as they change). Returns the unsubscribe function.
+  onModelsChanged(listener){
+    if(typeof listener!=="function")return()=>{};
+    this.#modelListeners.add(listener);return()=>{this.#modelListeners.delete(listener)};
+  }
+  // Antigravity's list comes from its sessions (T3 buildAntigravityModelsFromSession): every session start reports it here.
+  rememberAcpSessionModels(instance,setup,{environmentId=undefined}={}){
+    if(instance?.kind!=="antigravity")return;
+    const catalog=antigravityModelCatalog(setup);if(!catalog.models.length)return;
+    const environment=this.activeEnvironment(environmentId)?.id||null,key=[instance.id,environment||"local"].join("|");
+    const served=this.#antigravityModelLists.get(key)||antigravitySeedCatalog(),signature=list=>JSON.stringify([list.models,list.preferred||null,list.metadata||[]]);
+    this.#antigravityModelLists.set(key,catalog);
+    if(signature(served)===signature(catalog))return;
+    for(const listener of [...this.#modelListeners]){try{listener({runtime:"antigravity",instanceId:instance.id,environmentId:environment})}catch{}}
+  }
+  // Until a session has reported the account's list, T3's manifest list stands in and one throwaway local session reads the
+  // real list in the background. Each launch unpacks Antigravity's bundle (about 1 GB), so listing never starts it again
+  // (T3 AntigravityDriver: status checks never spawn; sessions and refreshes do).
+  #antigravityModels(instance,environmentId){
+    const key=[instance.id,this.activeEnvironment(environmentId)?.id||"local"].join("|"),known=this.#antigravityModelLists.get(key);
+    if(known)return {models:known.models,metadata:known.metadata,preferred:known.preferred,source:"session"};
+    if(!this.#antigravityRefreshes.has(key)&&!this.processSpawner(instance,environmentId)){
+      const refresh=(async()=>{
+        const folder=await mkdtemp(join(tmpdir(),"trebell-antigravity-models-"));
+        try{
+          const setup=await withAcpProbe(this.#acpProbeOptions(instance,environmentId),async(client,initialized)=>(await acpProbeSession(client,initialized,{cwd:folder,timeoutMs:90_000})).setup);
+          this.rememberAcpSessionModels(instance,setup,{environmentId});
+        }finally{await rm(folder,{recursive:true,force:true,maxRetries:10,retryDelay:200}).catch(()=>{})}
+      })().catch(()=>{});
+      this.#antigravityRefreshes.set(key,refresh);
+    }
+    return {...antigravitySeedCatalog(),source:"manifest"};
+  }
+  // Claude Code's no-prompt capability probe (models, commands, agents, account and plan usage), run where the profile runs and
+  // shared for five minutes.
+  claudeCapabilities(instance,{environmentId=undefined,cwd=null,includeUsage=true,fresh=false}={}){
+    const profile=this.activeEnvironment(environmentId),spawnProcess=this.processSpawner(instance,environmentId);
+    return this.claudeCapabilitiesCache.load({command:this.executable(instance,{environmentId}),cwd,env:this.childEnv(instance),spawnProcess,scope:spawnProcess?String(profile?.id||""):"",includeUsage},{fresh});
   }
   async usageLimits(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
+    if(instance.kind==="claude")return readAgentRuntimeUsage("claude",{readCapabilities:()=>this.claudeCapabilities(instance,{environmentId})});
     const profile=this.activeEnvironment(environmentId);
     if(profile&&profile.type!=="local"&&this.environments){
       const names=["HOME","XDG_CONFIG_HOME","XDG_DATA_HOME","AGENT_CLI_CREDENTIAL_STORE","CURSOR_AUTH_TOKEN","CURSOR_API_KEY","CURSOR_API_ENDPOINT","XAI_API_KEY","GROK_AUTH","GROK_HOME","GROK_OIDC_ISSUER","GROK_OIDC_CLIENT_ID","GROK_OAUTH2_ISSUER","GROK_OAUTH2_CLIENT_ID","GROK_OAUTH2_PRINCIPAL_TYPE","GROK_OAUTH2_PRINCIPAL_ID","GROK_AUTH_PROVIDER_COMMAND","GROK_LOCAL_AUTH","GROK_CLI_CHAT_PROXY_BASE_URL","GROK_MODELS_BASE_URL","GROK_CONFIG","GROK_CONFIG_PATH","OPENCODE_AUTH_CONTENT","OPENCODE_API_KEY"];
@@ -547,7 +831,8 @@ export class AgentRuntimeManager{
       const {environment,...safe}=instance;
       return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys)};
     });
-    const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,canAuthenticate:["codex","claude","cursor","grok","opencode","antigravity"].includes(def.id)}));
+    const installCommand=id=>id==="opencode"?"npm install -g "+INSTALLABLE_PACKAGES.opencode+" (OpenCode 1.x), or opencode upgrade for an OpenCode from its own installer":INSTALLABLE_PACKAGES[id]?"npm install -g "+INSTALLABLE_PACKAGES[id]:null;
+    const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,installCommand:installCommand(def.id),canAuthenticate:["codex","claude","cursor","grok","opencode","antigravity"].includes(def.id)}));
     const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),capabilities:this.capabilities(active),definitions,instances:publicInstances,statuses};
   }
 }
