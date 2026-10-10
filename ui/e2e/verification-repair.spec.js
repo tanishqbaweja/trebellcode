@@ -78,6 +78,12 @@ test("failed verification can start a same-thread repair turn from continuity",a
     await repair.getByRole("button",{name:"Repair failed verification",exact:true}).click();
     await expect.poll(()=>harness.repairRequests()).toBe(1);
     await expect(panel.getByText("Repair turn started on this thread.")).toBeVisible();
+    // The started repair holds the button, so the same failure cannot be repaired twice at once.
+    const started=repair.getByRole("button",{name:"Repair started",exact:true});await expect(started).toBeDisabled();
+    await expect.poll(()=>harness.repairRequests()).toBe(1);
+    // The narrow Workspace cell names the folder; the full path is in its tooltip.
+    const workspaceCell=panel.getByTestId("continuity-derived").locator("div").filter({hasText:"Workspace"}).locator("strong");
+    await expect(workspaceCell).toHaveText(process.cwd().split(/[\\/]+/).filter(Boolean).pop());await expect(workspaceCell).toHaveAttribute("title",process.cwd());
     await page.setViewportSize({width:1280,height:800});
     await repair.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"verification-repair-dark-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});

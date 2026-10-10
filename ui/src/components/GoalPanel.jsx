@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from "react";
+import React,{useEffect,useRef,useState} from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, Pause, Play, RefreshCw, Target, Trash2 } from "lucide-react";
 import { startSameThreadVerificationRepair } from "../verification-repair.js";
 import { verificationEvidenceMeta, verificationEvidenceSummary, verificationEvidenceView } from "../verification-evidence-view.js";
@@ -54,6 +54,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [artifactsCreated,setArtifactsCreated]=useState("");
   const [pendingNextActions,setPendingNextActions]=useState("");
   const [repairStatus,setRepairStatus]=useState("");
+  const [repairStartedFor,setRepairStartedFor]=useState(null);
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
   useEffect(()=>{
@@ -75,7 +76,13 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     setArtifactsCreated(lines(continuity?.notes?.artifactsCreated));
     setPendingNextActions(lines(continuity?.notes?.pendingNextActions));
   },[continuity?.notes?.completedWork,continuity?.notes?.unresolvedFailures,continuity?.notes?.importantDecisions,continuity?.notes?.artifactsCreated,continuity?.notes?.pendingNextActions]);
-  useEffect(()=>{setDetailsOpen(false);setAdvancedBudgetOpen(false);setContinuityOpen(false);setVerificationOpen(false);setVerificationEvidence(null);setVerificationEvidenceError("");setRepairStatus("")},[thread?.id]);
+  useEffect(()=>{setDetailsOpen(false);setAdvancedBudgetOpen(false);setContinuityOpen(false);setVerificationOpen(false);setVerificationEvidence(null);setVerificationEvidenceError("");setRepairStatus("");setRepairStartedFor(null)},[thread?.id]);
+  // A started repair holds the button until its turn ends or the thread records a newer verification, so one failure
+  // is not repaired twice at once.
+  const threadRunning=thread?.status?.type==="active",threadWasRunning=useRef(threadRunning);
+  const verificationKey=continuity?.verification?String(continuity.verification.status)+":"+String(continuity.verification.updatedAt||""):"";
+  const repairStarted=repairStartedFor!=null&&repairStartedFor===verificationKey;
+  useEffect(()=>{if(threadWasRunning.current&&!threadRunning)setRepairStartedFor(null);threadWasRunning.current=threadRunning},[threadRunning]);
   useEffect(()=>{
     if(!rpc||rpcStatus!=="connected"||!thread?.id){setVerificationEvidence(null);setVerificationEvidenceLoading(false);return}
     let disposed=false;setVerificationEvidenceLoading(true);setVerificationEvidenceError("");
@@ -133,7 +140,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     if(!rpc)return;setBusy("verification-repair");setError("");setRepairStatus("");
     try{
       const result=await startSameThreadVerificationRepair({rpc,thread});
-      setRepairStatus(result?.turn?.id?"Repair turn started on this thread.":"Repair request started.");
+      setRepairStatus(result?.turn?.id?"Repair turn started on this thread.":"Repair request started.");setRepairStartedFor(verificationKey);
     }catch(e){setError(e.message||String(e))}finally{setBusy("")}
   }
   // Codex's own goal statuses (usageLimited, budgetLimited) read as words rather than Codex's identifiers.
@@ -144,7 +151,9 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const advancedBudgetCount=[goal?.turnBudget,goal?.toolCallBudget,goal?.childAgentBudget,goal?.costBudgetUsd].filter(value=>value!=null).length;
   const continuityNoteCount=["completedWork","unresolvedFailures","importantDecisions","artifactsCreated","pendingNextActions"].reduce((sum,key)=>sum+(continuity?.notes?.[key]?.length||0),0);
   const verificationLabel=continuity?.verification?[continuity.verification.status,continuity.verification.risk].filter(Boolean).join(" · "):"No verification recorded";
-  const workspaceLabel=continuity?.workspace?.branch||continuity?.workspace?.cwd||"No workspace metadata";
+  // The cell is narrow, so a folder shows by its own name (what tells checkouts apart); the full path is in the tooltip.
+  const workspaceCwd=String(continuity?.workspace?.cwd||"");
+  const workspaceLabel=continuity?.workspace?.branch||workspaceCwd.split(/[\\/]+/).filter(Boolean).pop()||"No workspace metadata";
   return <div className="goal-panel" data-testid="goal-panel">
     <div className="goal-panel-head"><Target size={19}/><div><strong>Thread goal</strong><span>Durable objective stored with this thread, independent of the chat transcript.</span></div><em className={"goal-status status-"+String(status).replace(/[^a-z]/gi,"").toLowerCase()}>{status}</em></div>
     {error&&<div className="inline-error">{error}</div>}
@@ -186,7 +195,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
       <summary><span><strong>Continuity state</strong><small>{continuityNoteCount?continuityNoteCount+" explicit note"+(continuityNoteCount===1?"":"s"):"Derived facts only"}{continuity?.meaningful?" · durable state available":""}</small></span><ChevronDown size={14}/></summary>
       <div className="goal-details-body continuity-body">
         <div className="continuity-derived" data-testid="continuity-derived">
-          <div><span>Workspace</span><strong>{workspaceLabel}</strong></div>
+          <div><span>Workspace</span><strong title={[continuity?.workspace?.branch,workspaceCwd].filter(Boolean).join(" · ")||undefined}>{workspaceLabel}</strong></div>
           <div><span>Verification</span><strong>{verificationLabel}</strong></div>
           <div><span>Completed turns</span><strong>{Number(continuity?.completedTurnIds?.length||0)}</strong></div>
           <div><span>Unresolved / recent failures</span><strong>{Number(continuity?.unresolvedFailures?.length||0)+Number(continuity?.recentFailures?.length||0)}</strong></div>
@@ -206,7 +215,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
             </>}
           </div>
         </details>
-        {continuity?.verification?.status==="failed"&&<div className="verification-repair-card" data-testid="verification-repair-card"><div><strong>Verification needs repair</strong><span>Start a same-thread repair turn with the persisted failed-step evidence. No second reviewer model is spawned.</span></div><button type="button" onClick={repairVerification} disabled={!!busy}>{busy==="verification-repair"?"Starting…":"Repair failed verification"}</button></div>}
+        {continuity?.verification?.status==="failed"&&<div className="verification-repair-card" data-testid="verification-repair-card"><div><strong>Verification needs repair</strong><span>Start a same-thread repair turn with the persisted failed-step evidence. No second reviewer model is spawned.</span></div><button type="button" onClick={repairVerification} disabled={!!busy||repairStarted||threadRunning} title={!repairStarted&&threadRunning?"A repair can start once the running turn ends":undefined}>{busy==="verification-repair"?"Starting…":repairStarted?"Repair started":"Repair failed verification"}</button></div>}
         {repairStatus&&<div className="verification-repair-status">{repairStatus}</div>}
         <label>Completed work <span>(one per line)</span><textarea aria-label="Completed work" value={completedWork} onChange={e=>setCompletedWork(e.target.value)} placeholder={"Implemented the parser\nAdded regression tests"}/></label>
         <label>Unresolved failures <span>(one per line)</span><textarea aria-label="Unresolved failures" value={unresolvedFailures} onChange={e=>setUnresolvedFailures(e.target.value)} placeholder={"Preview still fails on Windows"}/></label>
