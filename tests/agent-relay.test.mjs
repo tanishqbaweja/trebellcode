@@ -959,3 +959,8 @@ test("Stop withdraws an OpenCode thread's waiting approval card and answers Open
     await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true});
   }
 });
+
+test("an attached audio file reaches every harness by its saved path, as T3 Code names the attachments it does not send as content",async()=>{
+  const prompt=await contextualAgentPrompt([{type:"text",text:"Transcribe this"},{type:"localAudio",path:"/recordings/memo 1.mp3"}]);
+  assert.deepEqual(prompt.map(part=>({type:part.type,text:part.text})),[{type:"text",text:"Transcribe this"},{type:"text",text:'[Attached audio "memo 1.mp3" is saved at: /recordings/memo 1.mp3]'}]);
+});
