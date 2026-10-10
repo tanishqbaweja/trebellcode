@@ -1245,14 +1245,41 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
       {path:"src/auth/session.js",name:"RefreshSession",kind:"class",line:8,signature:"export class RefreshSession",parser:"babel",score:100},
       {path:"tests/auth-refresh.test.js",name:"refreshesExpiredSession",kind:"function",line:6,signature:"export function refreshesExpiredSession()",parser:"babel",score:45},
     ]})}));
-    await page.route(/\/api\/context\/files\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({query:"session",filesDiscovered:164,indexedFiles:138,data:[
+    const contextFiles=[
       {path:"src/auth/session.js",score:95,indexedSource:true,extension:".js"},
-      {path:"tests/auth-refresh.test.js",score:61,indexedSource:true,extension:".js"},
-    ]})}));
-    await page.route(/\/api\/context\/search\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({query:"rotateRefreshToken",source:"git-grep",data:[
-      {path:"src/auth/session.js",line:10,text:"return rotateRefreshToken(token);"},
-      {path:"src/auth/token.js",line:12,text:"export function rotateRefreshToken(token) {"},
-    ]})}));
+      {path:"src/auth/token.js",score:60,indexedSource:true,extension:".js"},
+      {path:"docs/session-guide.md",score:75,indexedSource:false,extension:".md"},
+      {path:"docs/api.rst",score:60,indexedSource:false,extension:".rst"},
+    ];
+    await page.route(/\/api\/context\/files\?/,route=>{
+      const q=String(new URL(route.request().url()).searchParams.get("q")||"").toLowerCase();
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({query:q,filesDiscovered:164,indexedFiles:138,data:contextFiles.filter(item=>item.path.toLowerCase().includes(q))})});
+    });
+    // Code search returns indexed source first, then docs and configuration that have no code relations.
+    const codeMatches={
+      rotateRefreshToken:[
+        {path:"src/auth/session.js",line:10,text:"return rotateRefreshToken(token);"},
+        {path:"src/auth/token.js",line:12,text:"export function rotateRefreshToken(token) {"},
+        {path:"docs/api.rst",line:4,text:".. function:: rotateRefreshToken(token)"},
+      ],
+      "refresh window":[{path:"docs/api.rst",line:9,text:"   The refresh window is five minutes."}],
+      "retired endpoint":[{path:"docs/retired.rst",line:2,text:"The retired endpoint was removed."}],
+    };
+    await page.route(/\/api\/context\/search\?/,route=>{
+      const q=new URL(route.request().url()).searchParams.get("q")||"";
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({query:q,source:"git-grep",data:codeMatches[q]||[]})});
+    });
+    const docsText={
+      "docs/api.rst":["API","===","",".. function:: rotateRefreshToken(token)","","   Rotates a refresh token and returns the new pair.","","Refresh window","   The refresh window is five minutes."],
+      "docs/session-guide.md":["# Session guide","","Sessions rotate their refresh token before it expires."],
+    };
+    const sourceRequests=[];
+    await page.route(/\/api\/context\/source\?/,route=>{
+      const search=new URL(route.request().url()).searchParams,file=search.get("file")||"",lines=docsText[file];sourceRequests.push(Object.fromEntries(search));
+      if(!lines)return route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:"Context file is not indexed: "+file})});
+      const start=Number(search.get("startLine")||1),end=Math.min(lines.length,start+Number(search.get("maxLines")||200)-1);
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:file,startLine:start,endLine:end,totalLines:lines.length,content:lines.slice(start-1,end).join("\n"),truncated:end<lines.length})});
+    });
     await page.route(/\/api\/context\/map\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({query:"",indexedFiles:138,graphEdges:412,data:[
       {path:"src/auth/session.js",score:82.2,centrality:.19,incoming:2,outgoing:1,definitions:[{name:"RefreshSession",kind:"class",line:8}]},
       {path:"src/auth/token.js",score:56.1,centrality:.14,incoming:1,outgoing:0,definitions:[{name:"rotateRefreshToken",kind:"function",line:12}]},
@@ -1271,6 +1298,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await page.route(/\/api\/context\/code-actions\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:"src/auth/session.js",supported:true,engine:"typescript",semantic:true,diagnostics:[{code:"TS2322",line:8,column:14,severity:"error",message:"Type mismatch"}],actions:[{fixName:"fixRefresh",description:"Convert refresh token to string",requiresCommand:false,commands:[],changes:[{file:"src/auth/session.js",textChanges:[{path:"src/auth/session.js",line:8,column:14,length:5,newText:"String(token)",newTextTruncated:false}]}]}]})}));
     await page.route(/\/api\/context\/relations\?/,route=>{
       const file=new URL(route.request().url()).searchParams.get("file")||"";
+      if(file.startsWith("docs/"))return route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:"Context file is not indexed: "+file})});
       const body=file==="src/auth/session.js"
         ?{path:file,parser:"babel",definitions:[{name:"RefreshSession",kind:"class",line:8}],imports:[{specifier:"./token.js",target:"src/auth/token.js"}],importers:[{path:"src/server.js",specifier:"./auth/session.js"},{path:"tests/auth-refresh.test.js",specifier:"../src/auth/session.js"}],referencedSymbols:[{name:"rotateRefreshToken",target:"src/auth/token.js",count:1}],referencedBy:[{name:"RefreshSession",path:"src/server.js",count:1},{name:"RefreshSession",path:"tests/auth-refresh.test.js",count:2}],relatedTests:["tests/auth-refresh.test.js"],indexedFiles:138}
         :{path:file,parser:"babel",definitions:[],imports:[],importers:[],referencedSymbols:[],referencedBy:[],relatedTests:[],indexedFiles:138};
@@ -1340,6 +1368,60 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await explorer.getByLabel("Search repository code").fill("rotateRefreshToken");
     await explorer.getByRole("button",{name:"Search",exact:true}).click();
     await expect(explorer.getByRole("button",{name:/src\/auth\/session\.js:10/}).first()).toContainText("return rotateRefreshToken(token);");
+    // A docs row has no code relations: clicking it shows its text around the match instead of a not-indexed error.
+    const docsRow=explorer.getByRole("button",{name:/docs\/api\.rst:4/});
+    await docsRow.click();
+    const preview=explorer.getByTestId("context-file-preview");
+    await expect(preview).toContainText("docs/api.rst");
+    await expect(preview).toContainText("repository text file · no code relations");
+    await expect(preview.locator(".match")).toHaveText(/\.\. function:: rotateRefreshToken\(token\)/);
+    await expect(preview).toContainText("Rotates a refresh token and returns the new pair.");
+    await expect(explorer.getByRole("alert")).toHaveCount(0);
+    await expect(explorer.getByTestId("context-file-relations")).toHaveCount(0);
+    expect(sourceRequests.at(-1).file).toBe("docs/api.rst");
+    expect(Number(sourceRequests.at(-1).startLine)).toBeLessThanOrEqual(4);
+    await expect(docsRow).toContainText("repository file");
+    await expect(explorer.getByRole("button",{name:/src\/auth\/session\.js:10/})).not.toContainText("repository file");
+    const previewMetrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(previewMetrics.scroll).toBeLessThanOrEqual(previewMetrics.client+1);
+    await preview.scrollIntoViewIfNeeded();
+    await page.screenshot({path:auditDir+"context-inspector-docs-preview-1280x800.png",fullPage:true});
+    await explorer.screenshot({path:auditDir+"context-inspector-docs-preview-explorer.png"});
+    // An indexed source row keeps its relations view.
+    await explorer.getByRole("button",{name:/src\/auth\/session\.js:10/}).click();
+    await expect(explorer.getByTestId("context-file-relations")).toContainText("2 importers");
+    await expect(explorer.getByTestId("context-file-relations")).toContainText("src/auth/token.js");
+    await expect(preview).toHaveCount(0);
+    await explorer.getByTestId("context-file-relations").scrollIntoViewIfNeeded();
+    await page.screenshot({path:auditDir+"context-inspector-source-relations-1280x800.png",fullPage:true});
+    await explorer.screenshot({path:auditDir+"context-inspector-source-relations-explorer.png"});
+    // When only docs match, the text says no indexed source matched; with no match at all it covers both kinds.
+    await explorer.getByLabel("Search repository code").fill("refresh window");
+    await explorer.getByRole("button",{name:"Search",exact:true}).click();
+    await expect(explorer.getByRole("button",{name:/docs\/api\.rst:9/})).toContainText("repository file");
+    await expect(explorer).toContainText("No indexed source matched “refresh window”; showing matches in repository text files.");
+    await explorer.screenshot({path:auditDir+"context-inspector-docs-only-explorer.png"});
+    await explorer.getByLabel("Search repository code").fill("absent term");
+    await explorer.getByRole("button",{name:"Search",exact:true}).click();
+    await expect(explorer).toContainText("No source or text matches found “absent term”.");
+    // A listed file that can no longer be read still reports the error.
+    await explorer.getByLabel("Search repository code").fill("retired endpoint");
+    await explorer.getByRole("button",{name:"Search",exact:true}).click();
+    await explorer.getByRole("button",{name:/docs\/retired\.rst:2/}).click();
+    await expect(explorer.getByRole("alert")).toContainText("Context file is not indexed: docs/retired.rst");
+    await expect(preview).toHaveCount(0);
+    await explorer.screenshot({path:auditDir+"context-inspector-missing-file-explorer.png"});
+    // Files mode opens a repository file the same way.
+    await explorer.getByRole("button",{name:"Files",exact:true}).click();
+    await explorer.getByLabel("Search repository files").fill("session");
+    await explorer.getByRole("button",{name:"Search",exact:true}).click();
+    const guideRow=explorer.getByRole("button",{name:/docs\/session-guide\.md/});
+    await expect(guideRow).toContainText("repository file");
+    await guideRow.click();
+    await expect(preview).toContainText("Sessions rotate their refresh token before it expires.");
+    await expect(explorer.getByRole("alert")).toHaveCount(0);
+    expect(sourceRequests.at(-1)).toMatchObject({file:"docs/session-guide.md",startLine:"1"});
+    await explorer.screenshot({path:auditDir+"context-inspector-files-preview-explorer.png"});
     await explorer.getByRole("button",{name:"Architecture",exact:true}).click();
     const architecture=explorer.getByTestId("context-architecture-view");
     await expect(architecture).toContainText("138 indexed · 412 relations");
