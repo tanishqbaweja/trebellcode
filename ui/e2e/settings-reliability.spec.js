@@ -1,6 +1,6 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
-import { mkdir,writeFile } from "node:fs/promises";
+import { mkdir,rm,writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { e2eHome } from "./test-home.js";
@@ -20,6 +20,12 @@ async function openSettings(page,request,name,settings={}){
   await page.getByRole("button",{name:"Settings",exact:true}).click();
 }
 async function savedSettings(request){return (await (await request.get("/api/state")).json()).settings}
+
+// The mock server keeps settings and published themes for the whole run: leave the theme state as the specs after this one expect it.
+test.afterEach(async({request})=>{
+  await rm(join(e2eHome(),"themes","reliability-published.json"),{force:true});
+  await request.post("/api/settings",{data:{appearance:"dark",appearanceMode:"dark",customThemes:[],environmentThemeSelections:{}}});
+});
 
 test("manual diagnostics refresh failures preserve the last valid runtime log",async({page,request})=>{
   test.setTimeout(30_000);
