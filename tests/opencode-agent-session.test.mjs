@@ -689,3 +689,72 @@ test("an OpenCode server that fails to start is not left running and its passwor
   const child=session.server.child;await session.close();
   await eventually(()=>child.exitCode!==null||child.signalCode!==null,{message:"the incompatible OpenCode server kept running"});
 });
+
+// OpenCode 1.x answers every prompt sent to a busy session when the session's loop ends, all with the loop's last message.
+function heldPrompts(){
+  const held=[],arrived=[];
+  const route=({body,json})=>{held.push({body,json});for(const wake of arrived.splice(0))wake()};
+  const count=n=>held.length>=n?Promise.resolve():new Promise(resolve=>{const check=()=>held.length>=n?resolve():arrived.push(check);arrived.push(check)});
+  return {held,route,count};
+}
+const answer=(id,parentID,text)=>({info:{id,parentID,role:"assistant",tokens:{}},parts:[{id:`prt_${id}`,type:"text",text}]});
+
+test("a message steered into an OpenCode turn joins the busy session with the turn's model, agent and instructions, and the turn ends with the loop's last answer (T3 Code's steerTurn)",async()=>{
+  const prompts=heldPrompts(),fixture=await fakeOpenCode({routes:{"POST /session/ses_fixture/message":prompts.route}});
+  const {session,updates}=await startedSession(fixture);
+  try{
+    const turn=session.prompt([{type:"text",text:"Count to 40"}],{agent:"plan"});
+    await prompts.count(1);
+    const steered=await session.steer([{type:"text",text:"Then say B"},{type:"resource_link",uri:"file:///repo/notes%20%231.md",name:"notes #1.md"}]);
+    await prompts.count(2);
+    const [first,second]=prompts.held.map(entry=>entry.body);
+    assert.deepEqual(steered,{accepted:true,pending:0,providerMessageId:second.messageID});
+    assert.ok(second.messageID>first.messageID,"OpenCode orders the steered message after the turn's own");
+    assert.deepEqual({model:second.model,agent:second.agent,system:second.system},{model:first.model,agent:"plan",system:first.system});
+    assert.deepEqual(second.parts,[{type:"text",text:"Then say B"},{type:"file",mime:"text/markdown",filename:"notes #1.md",url:"file:///repo/notes%20%231.md"}]);
+    // The loop took the steered message at its next step; both prompts are answered with its last message.
+    for(const entry of prompts.held)entry.json(200,answer("msg_a2",second.messageID,"1..40 B"));
+    const result=await turn;
+    assert.deepEqual({stopReason:result.stopReason,providerMessageId:result.providerMessageId,assistantMessageId:result.assistantMessageId},{stopReason:"end_turn",providerMessageId:first.messageID,assistantMessageId:"msg_a2"},"the rewind point stays at the turn's first message");
+    assert.equal(updates.filter(update=>update.sessionUpdate==="agent_message_chunk").map(update=>update.content.text).join(""),"1..40 B");
+    await assert.rejects(()=>session.steer([{type:"text",text:"too late"}]),/no running turn/);
+  }finally{await session.close();await fixture.close()}
+});
+
+test("a message steered into an OpenCode turn as its loop ends is answered by the next loop, and the turn waits for that answer",async()=>{
+  const prompts=heldPrompts(),fixture=await fakeOpenCode({routes:{"POST /session/ses_fixture/message":prompts.route}});
+  const {session}=await startedSession(fixture);
+  try{
+    let settled=false;const turn=session.prompt([{type:"text",text:"Fix the parser"}]).finally(()=>{settled=true});
+    await prompts.count(1);await session.steer([{type:"text",text:"and add a test"}]);await prompts.count(2);
+    const [first,second]=prompts.held;
+    first.json(200,answer("msg_a1",first.body.messageID,"Fixed."));
+    await delay(150);
+    assert.equal(settled,false,"the turn is not over while the steered message waits for its answer");
+    second.json(200,answer("msg_a2",second.body.messageID,"Test added."));
+    const result=await turn;
+    assert.deepEqual({providerMessageId:result.providerMessageId,assistantMessageId:result.assistantMessageId},{providerMessageId:first.body.messageID,assistantMessageId:"msg_a2"});
+  }finally{await session.close();await fixture.close()}
+});
+
+test("a steered message OpenCode refuses leaves the OpenCode turn's answer and tells the user, and a stopped steered turn ends as cancelled",async()=>{
+  const prompts=heldPrompts(),fixture=await fakeOpenCode({routes:{"POST /session/ses_fixture/message":prompts.route}});
+  const {session,updates}=await startedSession(fixture);
+  try{
+    const turn=session.prompt([{type:"text",text:"Fix the parser"}]);
+    await prompts.count(1);await session.steer([{type:"text",text:"and add a test"}]);await prompts.count(2);
+    prompts.held[1].json(400,{name:"BadRequest",data:{message:"Session ses_fixture is busy"}});
+    prompts.held[0].json(200,answer("msg_a1",prompts.held[0].body.messageID,"Fixed."));
+    const result=await turn;
+    assert.deepEqual({stopReason:result.stopReason,assistantMessageId:result.assistantMessageId},{stopReason:"end_turn",assistantMessageId:"msg_a1"});
+    assert.deepEqual(updates.filter(update=>update.sessionUpdate==="runtime_error").map(update=>update.message),["OpenCode did not take the message sent during the turn: Session ses_fixture is busy"]);
+
+    const stopped=session.prompt([{type:"text",text:"Refactor"}]);
+    await prompts.count(3);await session.steer([{type:"text",text:"keep the API"}]);await prompts.count(4);
+    await session.cancel();
+    for(const entry of prompts.held.slice(2))entry.json(200,ABORTED_REPLY);
+    const cancelled=await stopped;
+    assert.deepEqual({stopReason:cancelled.stopReason,providerMessageId:cancelled.providerMessageId},{stopReason:"cancelled",providerMessageId:prompts.held[2].body.messageID});
+    await assert.rejects(()=>session.steer([{type:"text",text:"after stop"}]),/no running turn/);
+  }finally{await session.close();await fixture.close()}
+});

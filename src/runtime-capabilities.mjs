@@ -41,7 +41,7 @@ const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
     nativeQueue:true,nativeHistoryPagination:true,steering:true,runtimeProfileSwitching:true,projectOwnership:true,
   }),
   claude:Object.freeze({fork:true,rewind:true,compaction:true,mcpInjection:true,languageIntelligence:true,usageReporting:true,runtimeProfileSwitching:true,detachedTasks:true,multiModelFanout:true,delegation:true,steering:true,collaborationModes:true}),
-  opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,languageIntelligence:true,usageReporting:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
+  opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,languageIntelligence:true,usageReporting:true,detachedTasks:true,multiModelFanout:true,delegation:true,steering:true}),
   // Cursor's plan mode is the composer's Plan mode (T3's interaction mode: plan or agent); Read only runs in its ask mode.
   // ACP harnesses run their own file and shell tools (T3); only Antigravity reads and writes files through Trebell.
   cursor:Object.freeze({fork:"runtime",mcpInjection:true,detachedTasks:true,multiModelFanout:true,delegation:true,collaborationModes:true}),

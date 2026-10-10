@@ -1567,11 +1567,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }
     if(method==="turn/steer"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
-      if(thread.runtime==="claude"){
-        // Claude Code takes the message into the running turn at once (T3 Code's steerTurn: a "now" priority user message).
-        const activeTurn=[...(thread.turns||[])].reverse().find(turn=>turn?.status==="inProgress");if(!activeTurn)throw new Error("Claude Code has no active turn to steer.");
-        if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error("The active Claude Code turn changed before steering could be applied.");
-        const session=sessions.get(thread.id);if(!(session instanceof ClaudeAgentSession))throw new Error("The active Claude Code session is unavailable for steering.");
+      // Claude Code and OpenCode take the message into the running turn at once (T3 Code's steerTurn): Claude Code as a "now" priority
+      // user message, OpenCode as a message sent into its busy session. OpenCode in a remote environment runs over ACP, which has none.
+      const steerable=thread.runtime==="claude"?ClaudeAgentSession:thread.runtime==="opencode"&&!(sessions.get(thread.id) instanceof AcpAgentSession)?OpenCodeAgentSession:null;
+      if(steerable){
+        const label=runtimeHarnessLabel(thread.runtime);
+        const activeTurn=[...(thread.turns||[])].reverse().find(turn=>turn?.status==="inProgress");if(!activeTurn)throw new Error(`${label} has no active turn to steer.`);
+        if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error(`The active ${label} turn changed before steering could be applied.`);
+        const session=sessions.get(thread.id);if(!(session instanceof steerable))throw new Error(`The active ${label} session is unavailable for steering.`);
         const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{},{runtime:thread.runtime}));
         const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env})}]};
         threadStore.addItem(thread.id,activeTurn.id,item);emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});

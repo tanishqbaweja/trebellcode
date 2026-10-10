@@ -16,6 +16,16 @@ import { normalizePermissionKind, normalizePermissionMode, permissionDisposition
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 
 const MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".pdf":"application/pdf",".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"audio/mp4",".md":"text/markdown",".json":"application/json",".txt":"text/plain"};
+function openCodeBodyParts(parts){
+  return parts.map(part=>{
+    if(part.type==="text")return {type:"text",text:String(part.text||"")};
+    if(part.type==="image")return {type:"file",mime:part.mimeType||"image/png",url:`data:${part.mimeType||"image/png"};base64,${part.data}`};
+    if(part.type==="resource_link"){
+      const path=fileUriPath(part.uri)||"";return {type:"file",mime:MIME[extname(path).toLowerCase()]||"text/plain",filename:part.name||undefined,url:part.uri};
+    }
+    return {type:"text",text:JSON.stringify(part)};
+  });
+}
 
 // OpenCode errors arrive as {name,data:{message}}, {message} or, from a server that is not OpenCode's JSON API, as a web page. Some
 // carry the server's stack trace after the message; only the message is shown.
@@ -456,18 +466,13 @@ export class OpenCodeAgentSession{
   setReasoningEffort(value){this.variant=typeof value==="string"&&value.trim()?value.trim():null;return this.variant}
   async prompt(parts,{agent=null}={}){
     const given=Array.isArray(parts)?parts:[];
-    const bodyParts=given.map(part=>{
-      if(part.type==="text")return {type:"text",text:String(part.text||"")};
-      if(part.type==="image")return {type:"file",mime:part.mimeType||"image/png",url:`data:${part.mimeType||"image/png"};base64,${part.data}`};
-      if(part.type==="resource_link"){
-        const path=fileUriPath(part.uri)||"";return {type:"file",mime:MIME[extname(path).toLowerCase()]||"text/plain",filename:part.name||undefined,url:part.uri};
-      }
-      return {type:"text",text:JSON.stringify(part)};
-    });
+    const bodyParts=openCodeBodyParts(given);
     const selected=toProviderModel(this.model,this.modelMap),modelId=selected?`${selected.providerID}/${selected.modelID}`:null;
     const variant=this.variant&&(this.modelVariants.get(modelId)||[]).includes(this.variant)?this.variant:null;
+    // A message steered into the turn is sent with the turn's model, agent, level and instructions.
+    const options={...(selected?{model:selected}:{}),...(agent?{agent}:{}),...(variant?{variant}:{}),system:runtimeInstructions({harness:"OpenCode",model:this.model})};
     // Trebell names the user message, so the turn's rewind point is known even when OpenCode never answers.
-    const messageID=this.#nextMessageId(),turn=this.#beginPrompt(modelId);
+    const messageID=this.#nextMessageId(),turn=this.#beginPrompt(modelId,options);
     const cancelled={stopReason:"cancelled",providerMessageId:messageID,assistantMessageId:null,raw:null};
     let response;
     try{
@@ -479,12 +484,19 @@ export class OpenCodeAgentSession{
         // user's text after the command as its arguments and only their attachments as parts.
         const request=command
           ?this.client.session.command({path,query,body:{messageID,command:command.name,arguments:command.arguments,...(modelId?{model:modelId}:{}),...(agent?{agent}:{}),...(variant?{variant}:{}),parts:bodyParts.filter(part=>part.type==="file")},fetch:openCodeLongRequestFetch})
-          :this.client.session.prompt({path,query,body:{messageID,...(selected?{model:selected}:{}),...(agent?{agent}:{}),...(variant?{variant}:{}),system:runtimeInstructions({harness:"OpenCode",model:this.model}),parts:bodyParts},fetch:openCodeLongRequestFetch});
-        request.catch(()=>{});
+          :this.client.session.prompt({path,query,body:{messageID,...options,parts:bodyParts},fetch:openCodeLongRequestFetch});
+        request.catch(()=>{});turn.sent();
         response=await Promise.race([request,turn.stopped]);
+        // OpenCode answers every prompt of a busy session once its loop ends, all with the loop's last message. A steered message that
+        // came as the loop was ending starts the next loop, which the turn waits for too. The last answer is the turn's.
+        for(let index=0;index<turn.steers.length&&response!==PROMPT_STOPPED&&!response?.error&&!response?.data?.info?.error;index++){
+          const answer=await Promise.race([turn.steers[index].request.catch(error=>({transportError:error})),turn.stopped]);
+          if(answer===PROMPT_STOPPED||turn.cancelled||turn.stopError){response=PROMPT_STOPPED;break}
+          if(answer?.data)response=answer;else this.#steerRefused(answer);
+        }
       }
     }catch(error){response={transportError:error}}
-    finally{turn.done=true;clearTimeout(turn.timer)}
+    finally{turn.done=true;turn.sent();clearTimeout(turn.timer)}
     try{
       if(turn.stopError)throw Object.assign(turn.stopError,{providerMessageId:messageID});
       if(response===PROMPT_STOPPED)return cancelled;
@@ -497,7 +509,8 @@ export class OpenCodeAgentSession{
         throw this.#failure(turn,turn.sessionError||answer||"OpenCode rejected the request",messageID);
       }
     }finally{if(this.activePrompt===turn)this.activePrompt=null}
-    const result=response?.data,info=result?.info||{},providerMessageId=info.parentID||messageID;
+    // The answer of a steered turn is to its last message; the turn's rewind point stays at its first.
+    const result=response?.data,info=result?.info||{},providerMessageId=turn.steers.length?messageID:info.parentID||messageID;
     this.#noteMessage(info.id,"assistant");this.#noteMessage(providerMessageId,"user");
     if(info.error){
       if(turn.cancelled||info.error?.name==="MessageAbortedError")return {...cancelled,providerMessageId,assistantMessageId:info.id||null,raw:result};
@@ -512,6 +525,21 @@ export class OpenCodeAgentSession{
     // A session error during a turn that still finished is not lost: it is shown once the turn is done.
     if(turn.sessionError&&!this.#recentlyReported(turn.sessionError)){this.#remember(turn.sessionError);this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:turn.sessionError}})}
     return {stopReason:"end_turn",providerMessageId,assistantMessageId:info.id||null,raw:result};
+  }
+  // A message sent while a turn runs joins it (T3 Code's steerTurn): it goes into the busy session, whose loop takes it at its next
+  // step, and the turn ends once it is answered.
+  async steer(parts){
+    const turn=this.activePrompt,ended=()=>this.activePrompt!==turn||turn.done||turn.cancelled||turn.stopError;
+    if(!turn||ended())throw new Error("OpenCode has no running turn to steer.");
+    const bodyParts=openCodeBodyParts(Array.isArray(parts)?parts:[]);
+    if(!bodyParts.length)throw new Error("OpenCode steering needs text or an attachment.");
+    // The turn's own message is sent first, so the steered one follows it.
+    await turn.started;
+    if(ended())throw new Error("The OpenCode turn ended before the message could join it.");
+    const messageID=this.#nextMessageId();this.#noteMessage(messageID,"user");
+    const request=this.client.session.prompt({path:{id:this.sessionId},query:{directory:this.cwd},body:{messageID,...turn.options,parts:bodyParts},fetch:openCodeLongRequestFetch});
+    request.catch(()=>{});turn.steers.push({messageID,request});
+    return {accepted:true,pending:0,providerMessageId:messageID};
   }
   async setModel(model){if(toProviderModel(model,this.modelMap))this.model=model;return {modelId:this.model}}
   async cancel(){
@@ -565,10 +593,15 @@ export class OpenCodeAgentSession{
     await Promise.race([this.eventTask||Promise.resolve(),new Promise(resolve=>setTimeout(resolve,1000))]).catch(()=>{});
   }
 
-  #beginPrompt(model){
-    let release;const stopped=new Promise(resolve=>{release=()=>resolve(PROMPT_STOPPED)});
-    const turn={model,stopped,release,timer:null,done:false,cancelled:false,stopError:null,sessionError:null,awaitingError:false,sessionErrorArrived:null};
+  #beginPrompt(model,options){
+    let release,sent;const stopped=new Promise(resolve=>{release=()=>resolve(PROMPT_STOPPED)}),started=new Promise(resolve=>{sent=resolve});
+    const turn={model,options,stopped,release,started,sent,steers:[],timer:null,done:false,cancelled:false,stopError:null,sessionError:null,awaitingError:false,sessionErrorArrived:null};
     this.activePrompt=turn;return turn;
+  }
+  // OpenCode refused a steered message, or lost it as its loop ended. The turn goes on, and the user learns the message was not taken.
+  #steerRefused(answer){
+    const text=answer?.transportError?this.#transportText(answer.transportError):openCodeErrorText(answer?.error)||"OpenCode rejected the request";
+    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:`OpenCode did not take the message sent during the turn: ${text}`}});
   }
   // Waits briefly for OpenCode's session.error after a prompt it answered with a generic error.
   async #lateSessionError(turn){
