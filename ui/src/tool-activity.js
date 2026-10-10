@@ -59,14 +59,16 @@ export function searchToolLabel(input){
 }
 
 // The row name for a dynamic (harness or Native) tool call, or undefined when the tool's own name is the best there is.
+// An edit or write that failed or was declined is named by what it attempted ("Write notes.txt"): the row never claims a
+// change that did not happen. A search whose arguments name no query, files or folder is T3's "Searched files".
 export function dynamicToolLabel(item={}){
   const input=asRecord(item.arguments)??asRecord(item.input)??{};
   const action=classifyToolCall({namespace:item.namespace,tool:item.tool,kind:item.kind});
-  const path=firstString(input,PATH_KEYS);
+  const path=firstString(input,PATH_KEYS),attempted=item.status==="failed"||item.status==="declined";
   if(action==="read")return `Read ${path||"file"}`;
-  if(action==="edit")return path?`Edited ${path}`:undefined;
-  if(action==="write")return path?`Wrote ${path}`:undefined;
-  if(action==="search")return searchToolLabel(input);
+  if(action==="edit")return path?`${attempted?"Edit":"Edited"} ${path}`:undefined;
+  if(action==="write")return path?`${attempted?"Write":"Wrote"} ${path}`:undefined;
+  if(action==="search")return searchToolLabel(input)||(Object.keys(input).length?"Searched files":undefined);
   if(action==="command")return commandLine(input);
   return undefined;
 }
