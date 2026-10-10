@@ -4120,6 +4120,44 @@ test("workspace diff refresh failures preserve the last valid diff",async({page,
   await page.screenshot({path:auditDir+"workspace-diff-refresh-error-1280x800.png",fullPage:true});
 });
 
+test("workspace diff lines wrap by default, can scroll instead, and the choice is remembered",async({page,request})=>{
+  test.setTimeout(30_000);
+  const longLine="+  return String(text).toLowerCase().replace(/[^a-z0-9]+/g, \"-\").replace(/^-+|-+$/g, \"\"); // trims dashes at both ends of the slug";
+  await page.route(/\/api\/workspace\/diff\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    status:" M src/slug.js",
+    diff:"diff --git a/src/slug.js b/src/slug.js\n--- a/src/slug.js\n+++ b/src/slug.js\n@@ -1,3 +1,3 @@\n export function slugify(text) {\n-  return String(text).toLowerCase().replace(/[^a-z0-9]+/g, \"-\");\n"+longLine+"\n }",
+  })}));
+  await prepare(page,request);
+  const openDiff=async()=>{
+    const panel=page.getByTestId("right-panel");
+    if(!await panel.isVisible())await page.getByTestId("right-panel-toggle").click();
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Diff",exact:true}).click();
+    await expect(panel.locator(".git-diff")).toContainText("trims dashes at both ends");
+    return panel;
+  };
+  let panel=await openDiff();
+  const diff=panel.locator(".git-diff"),size=()=>diff.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  // Wrapped by default, as in T3 Code: the whole change reads without scrolling sideways, in the code's own characters.
+  await expect(diff).toHaveClass(/\bwrap\b/);
+  await expect(panel.getByRole("button",{name:"Disable diff line wrapping"})).toHaveAttribute("aria-pressed","true");
+  let metrics=await size();expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  expect(await diff.evaluate(node=>getComputedStyle(node).fontVariantLigatures)).toBe("none");
+  await page.screenshot({path:auditDir+"workspace-diff-wrapped-dark-1280x800.png"});
+  await panel.getByRole("button",{name:"Disable diff line wrapping"}).click();
+  await expect(panel.getByRole("button",{name:"Enable diff line wrapping"})).toHaveAttribute("aria-pressed","false");
+  await expect(diff).not.toHaveClass(/\bwrap\b/);
+  metrics=await size();expect(metrics.scroll).toBeGreaterThan(metrics.client);
+  // The panel itself still never scrolls sideways; only the diff does.
+  const body=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(body.scroll).toBeLessThanOrEqual(body.client+1);
+  await page.reload();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  panel=await openDiff();
+  await expect(panel.locator(".git-diff")).not.toHaveClass(/\bwrap\b/);
+  await panel.getByRole("button",{name:"Enable diff line wrapping"}).click();
+  await expect(panel.locator(".git-diff")).toHaveClass(/\bwrap\b/);
+});
+
 test("workspace file open failures preserve the current valid file",async({page,request})=>{
   test.setTimeout(30_000);
   await page.route(/\/api\/workspace\/tree\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({

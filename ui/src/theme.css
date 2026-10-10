@@ -156,6 +156,9 @@
 :root{font-family:var(--font)}
 html,body{background:var(--bg0);color:var(--tx0)}
 body{font-family:var(--font);font-size:13.5px;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-feature-settings:"cv11","ss01"}
+/* Code shows the characters it holds: JetBrains Mono's ligatures would draw |- as one glyph and -> as an arrow. The font
+   shorthand in code rules resets this property, hence !important. */
+:where(code,pre,kbd,samp){font-variant-ligatures:none!important}
 button,input,textarea,select{font-family:inherit}
 code,kbd,pre,samp,.mono{font-family:var(--mono)}
 input::placeholder,textarea::placeholder{color:var(--tx3)}

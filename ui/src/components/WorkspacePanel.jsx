@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useState} from "react";
-import { Check, FileCode2, FileDiff, FileImage, FileText, Folder, Music2, Paperclip, RefreshCw, Save, Search, Video, X } from "lucide-react";
+import { Check, FileCode2, FileDiff, FileImage, FileText, Folder, Music2, Paperclip, RefreshCw, Save, Search, Video, WrapText, X } from "lucide-react";
 import Prism from "prismjs";
 import { api } from "../api.js";
 import { WORKSPACE_CHANGED_PAGE_SIZE, WORKSPACE_DIFF_CHUNK_CHARS, WORKSPACE_TREE_PAGE_SIZE, workspaceListWindow, workspaceTextWindow } from "../workspace-view-window.js";
@@ -10,6 +10,9 @@ const IMAGE_EXT=new Set(["png","jpg","jpeg","gif","webp","bmp","svg","ico"]);
 const VIDEO_EXT=new Set(["mp4","webm","mov"]);
 const AUDIO_EXT=new Set(["mp3","wav","m4a","ogg","flac"]);
 const TABLE_EXT=new Set(["csv","tsv"]);
+// Diff lines wrap by default, as in T3 Code; the choice is remembered in this browser.
+const DIFF_WRAP_KEY="trebell.diffWordWrap";
+function readDiffWrap(){try{return localStorage.getItem(DIFF_WRAP_KEY)!=="false"}catch{return true}}
 
 function extension(name=""){return name.split(".").pop()?.toLowerCase()||""}
 function previewKind(name=""){
@@ -124,6 +127,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [treeLimit,setTreeLimit]=useState(WORKSPACE_TREE_PAGE_SIZE);
   const [changedLimit,setChangedLimit]=useState(WORKSPACE_CHANGED_PAGE_SIZE);
   const [diffLimit,setDiffLimit]=useState(WORKSPACE_DIFF_CHUNK_CHARS);
+  const [wrapDiff,setWrapDiff]=useState(readDiffWrap);
+  function toggleDiffWrap(){setWrapDiff(value=>{const next=!value;try{localStorage.setItem(DIFF_WRAP_KEY,String(next))}catch{}return next})}
   function params(values={}){
     const query=new URLSearchParams(values);
     query.set("environmentId",environmentId||"");
@@ -245,7 +250,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
 
   const editable=Boolean(file&&["text","html","markdown","table"].includes(file.kind));
   return <div className="workspace-panel">
-    <div className="panel-tabs"><div className="workspace-seg"><button className={tab==="files"?"active":""} onClick={()=>setTab("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>{setTab("diff");refreshDiff()}}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}</div><button className="workspace-refresh" aria-label="Refresh workspace files" title="Refresh files and changes" onClick={()=>{refreshTree();if(allowDiff)refreshDiff()}}><RefreshCw size={13}/></button></div>
+    <div className="panel-tabs"><div className="workspace-seg"><button className={tab==="files"?"active":""} onClick={()=>setTab("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>{setTab("diff");refreshDiff()}}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}</div>{tab==="diff"&&changedPaths.length>0&&<button className={"workspace-refresh workspace-wrap"+(wrapDiff?" active":"")} aria-pressed={wrapDiff} aria-label={wrapDiff?"Disable diff line wrapping":"Enable diff line wrapping"} title={wrapDiff?"Disable line wrapping":"Enable line wrapping"} onClick={toggleDiffWrap}><WrapText size={13}/></button>}<button className="workspace-refresh" aria-label="Refresh workspace files" title="Refresh files and changes" onClick={()=>{refreshTree();if(allowDiff)refreshDiff()}}><RefreshCw size={13}/></button></div>
     {tab==="files"&&<div className="workspace-files">
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
@@ -256,7 +261,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     {tab==="diff"&&(changedPaths.length?<div className={"changes-view"+(diffPanelError?" has-action-error":"")}>
       {diffPanelError&&<div className="inline-error workspace-diff-error" role="alert">{diffPanelError}</div>}
       <div className="changed-files">{changedWindow.visible.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>changeReviewed(path,!reviewedFiles.includes(path))} disabled={actionBusy==="reviewed:"+path} aria-label={path} title={path+(reviewedFiles.includes(path)?" · reviewed. Click to mark as not reviewed":" · click to mark as reviewed")}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span><ChangedFilePath path={path}/></button><em className="changed-file-code" data-kind={statusKind(changedCodes.get(path))} title={changedCodes.get(path)==="??"?"Untracked file (git status ??)":"Git status "+(changedCodes.get(path)||"M")}>{changedCodes.get(path)==="??"?"U":changedCodes.get(path)||"M"}</em><button className="review-comment" title="Add review comment as context" onClick={()=>addReviewComment(path)} disabled={actionBusy==="comment:"+path}>+</button></div>)}{changedWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setChangedLimit(limit=>limit+WORKSPACE_CHANGED_PAGE_SIZE)}>Show {changedWindow.nextCount} more changed files</button><span>{changedWindow.shown} of {changedWindow.total} mounted</span></div>}</div>
-      <div className="workspace-diff-preview"><pre className="git-diff" data-testid="workspace-diff-preview">{diffLines}</pre>{diffWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setDiffLimit(limit=>limit+WORKSPACE_DIFF_CHUNK_CHARS)}>Show more diff</button><span>{Math.round(diffWindow.shown/1000)}k of {Math.round(diffWindow.total/1000)}k characters shown</span></div>}</div>
+      <div className="workspace-diff-preview"><pre className={"git-diff"+(wrapDiff?" wrap":"")} data-testid="workspace-diff-preview">{diffLines}</pre>{diffWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setDiffLimit(limit=>limit+WORKSPACE_DIFF_CHUNK_CHARS)}>Show more diff</button><span>{Math.round(diffWindow.shown/1000)}k of {Math.round(diffWindow.total/1000)}k characters shown</span></div>}</div>
     </div>:<div className={"changes-empty"+((diffError||diff.error)?" error":"")}><FileDiff size={20}/><strong>{(diffError||diff.error)?"Could not load changes":"Working tree clean"}</strong><span>{diffError||diff.error||"No unstaged changes to review."}</span></div>)}
   </div>;
 }
