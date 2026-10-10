@@ -12,6 +12,9 @@ import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 const execFileAsync=promisify(execFile);
 const SKIP=new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist","coverage","vendor"]);
 const SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs",".py",".rs",".go",".java",".kt",".kts",".cs",".c",".h",".cc",".cpp",".cxx",".hpp",".hh",".rb",".php",".swift",".vue",".svelte"]);
+// Non-source text files (docs, templates, configuration, changelogs) that search_code reads on demand, per file
+// and per search. Files beyond either bound are skipped and reported, so such a search never claims to be complete.
+const SEARCH_TEXT_MAX_BYTES=1_048_576,SEARCH_TEXT_TOTAL_BYTES=8_388_608;
 const BABEL_SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs"]);
 const PYTHON_SOURCE_EXTENSIONS=new Set([".py",".pyi"]);
 const GO_SOURCE_EXTENSIONS=new Set([".go"]);
@@ -483,15 +486,26 @@ async function gitState(root,{signal=null,environment=process.env}={}){
   }catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);return {isGit:false,head:null,changed:new Set(),status:"",diff:""}}
 }
 
+// git grep arguments for a repository, or with --no-index for a plain directory (git exits 128 outside a
+// repository). Both skip binary and ignored files, and the SKIP directories are excluded by pathspec so
+// git never reads them (a plain directory has no .gitignore to keep node_modules out).
+const GIT_GREP_SKIP_PATHSPECS=[...SKIP].map(name=>`:(exclude,glob)**/${name}/**`);
+function gitGrepArgs(root,{query,regex=false,caseSensitive=false,noIndex=false}={}){
+  const args=["-C",root,"grep",...(noIndex?["--no-index"]:[]),"-l","-z","-I",...(noIndex?[]:["--untracked"]),"--exclude-standard"];
+  if(!caseSensitive)args.push("-i");args.push(regex?"-E":"-F","-e",String(query||""),"--",".",...GIT_GREP_SKIP_PATHSPECS);
+  return args;
+}
+
 async function localMatchingFiles(root,{query,regex=false,caseSensitive=false,limit=120,environment=process.env}={}){
-  const args=["-C",root,"grep","-l","-z","-I","--untracked","--exclude-standard"];
-  if(!caseSensitive)args.push("-i");args.push(regex?"-E":"-F","-e",String(query||""),"--");
-  try{
-    const {stdout}=await execFileAsync("git",args,{env:environment,windowsHide:true,maxBuffer:4*1024*1024,timeout:20_000});
-    return String(stdout||"").split("\0").filter(Boolean).map(slash).filter(indexablePath).slice(0,Math.max(1,Math.min(500,Number(limit)||120)));
-  }catch(error){
-    if(Number(error?.code)===1)return [];
-    throw error;
+  for(const noIndex of [false,true]){
+    try{
+      const {stdout}=await execFileAsync("git",gitGrepArgs(root,{query,regex,caseSensitive,noIndex}),{env:environment,windowsHide:true,maxBuffer:4*1024*1024,timeout:20_000});
+      return String(stdout||"").split("\0").filter(Boolean).map(slash).filter(indexablePath).slice(0,Math.max(1,Math.min(500,Number(limit)||120)));
+    }catch(error){
+      if(Number(error?.code)===1)return [];
+      if(Number(error?.code)===128&&!noIndex)continue;
+      throw error;
+    }
   }
 }
 
@@ -702,13 +716,15 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
   const absolute=posix.normalize(String(root||"/"));
   const run=options=>environments.executeArgv(environmentId,options);
   const runInput=options=>environments.executeArgvInput(environmentId,options);
+  // executeArgv strips NUL bytes from output, so NUL-delimited listings use the stdin variant, which returns raw output.
+  const runListing=options=>runInput({...options,input:""});
   const discoverFiles=async({signal=null}={})=>{
     throwIfContextAborted(signal);
-    const git=await run({command:"git",args:["-C",absolute,"ls-files","-co","--exclude-standard","-z"],cwd:"",timeoutMs:20_000,maxOutput:16*1024*1024});
+    const git=await runListing({command:"git",args:["-C",absolute,"ls-files","-co","--exclude-standard","-z"],cwd:"",timeoutMs:20_000,maxOutput:16*1024*1024});
     throwIfContextAborted(signal);
     if(git.exitCode===0)return String(git.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/\\/g,"/")).filter(indexablePath);
     const args=[".","(","-name",".git","-o","-name","node_modules","-o","-name","target","-o","-name","dist","-o","-name","build","-o","-name",".next","-o","-name",".cache","-o","-name","desktop-dist","-o","-name","coverage","-o","-name","vendor",")","-prune","-o","-type","f","-print0"];
-    const found=await run({command:"find",args,cwd:absolute,timeoutMs:25_000,maxOutput:16*1024*1024});
+    const found=await runListing({command:"find",args,cwd:absolute,timeoutMs:25_000,maxOutput:16*1024*1024});
     throwIfContextAborted(signal);
     if(found.exitCode!==0)throw new Error(found.stderr||"Could not list remote workspace for context indexing");
     return String(found.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/^\.\//,"")).filter(indexablePath);
@@ -759,9 +775,8 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     return {isGit:true,head:head.exitCode===0?String(head.stdout||"").trim()||null:null,changed,status:rawStatus.slice(0,12_000),statusFingerprint:createHash("sha256").update(rawStatus).digest("hex").slice(0,20),diff:diff.exitCode===0?String(diff.stdout||"").slice(0,16_000):""};
   };
   const searchPaths=async({query,regex=false,caseSensitive=false,limit=120}={})=>{
-    const args=["-C",absolute,"grep","-l","-z","-I","--untracked","--exclude-standard"];
-    if(!caseSensitive)args.push("-i");args.push(regex?"-E":"-F","-e",String(query||""),"--");
-    const result=await run({command:"git",args,cwd:"",timeoutMs:25_000,maxOutput:4*1024*1024});
+    let result=await runListing({command:"git",args:gitGrepArgs(absolute,{query,regex,caseSensitive}),cwd:"",timeoutMs:25_000,maxOutput:4*1024*1024});
+    if(result.exitCode===128)result=await runListing({command:"git",args:gitGrepArgs(absolute,{query,regex,caseSensitive,noIndex:true}),cwd:"",timeoutMs:25_000,maxOutput:4*1024*1024});
     if(result.exitCode===1)return [];
     if(result.exitCode!==0)throw new Error(result.stderr||"Could not search remote repository text");
     return String(result.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/\\/g,"/")).filter(indexablePath).slice(0,Math.max(1,Math.min(500,Number(limit)||120)));
@@ -856,7 +871,7 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     changedSince:async(fromHead,toHead,{signal=null}={})=>{
       throwIfContextAborted(signal);
       if(!fromHead||!toHead||fromHead===toHead)return new Set();
-      const result=await run({command:"git",args:["-C",absolute,"diff","--name-only","-z",String(fromHead),String(toHead),"--"],cwd:"",timeoutMs:25_000,maxOutput:16*1024*1024});
+      const result=await runListing({command:"git",args:["-C",absolute,"diff","--name-only","-z",String(fromHead),String(toHead),"--"],cwd:"",timeoutMs:25_000,maxOutput:16*1024*1024});
       throwIfContextAborted(signal);
       if(result.exitCode!==0)throw new Error(result.stderr||"Could not compare remote Git revisions for context indexing");
       return new Set(String(result.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/\\/g,"/")));
@@ -1506,33 +1521,57 @@ export class ContextEngine{
     const {contextIo,index}=await this.#indexed(root,io),resultLimit=Math.max(1,Math.min(200,Number(limit)||80)),candidateLimit=Math.max(40,Math.min(240,resultLimit*3));
     const foldedNeedle=caseSensitive?needle:needle.toLowerCase();
     const matchesLine=line=>regex?expression.test(line):(caseSensitive?line.includes(needle):line.toLowerCase().includes(foldedNeedle));
-    let candidates=[],source="index-sample",complete=false;
+    let candidates=[],source="index-sample",complete=false,skippedLargeFiles=0;
     if(typeof contextIo.searchPaths==="function"){
       try{
-        const found=await contextIo.searchPaths({query:needle,regex:Boolean(regex),caseSensitive:Boolean(caseSensitive),limit:candidateLimit+1});
-        complete=found.length<=candidateLimit;candidates=found.slice(0,candidateLimit).filter(path=>index.files.has(path));source="git-grep";
+        // Indexed source first, then the other matching text files (docs, templates, configuration). Those used
+        // to be dropped while the result still claimed to be complete.
+        const requestLimit=Math.min(500,candidateLimit*2),found=await contextIo.searchPaths({query:needle,regex:Boolean(regex),caseSensitive:Boolean(caseSensitive),limit:requestLimit+1});
+        const listed=found.slice(0,requestLimit),indexed=listed.filter(path=>index.files.has(path)),other=listed.filter(path=>!index.files.has(path));
+        const readable=[];
+        if(other.length){
+          const metadata=typeof contextIo.metadata==="function"?await contextIo.metadata(other):null;
+          let budget=SEARCH_TEXT_TOTAL_BYTES;
+          for(const path of other){
+            const size=Number(metadata?.get?.(path)?.size);
+            if(Number.isFinite(size)&&size<=SEARCH_TEXT_MAX_BYTES&&size<=budget){readable.push(path);budget-=size}
+          }
+          skippedLargeFiles=other.length-readable.length;
+        }
+        const ordered=[...indexed,...readable];
+        candidates=ordered.slice(0,candidateLimit);complete=found.length<=requestLimit&&!skippedLargeFiles&&ordered.length<=candidateLimit;source="git-grep";
       }catch{}
     }
     if(source!=="git-grep")candidates=[...index.files.values()].filter(entry=>String(entry.sample||"").split(/\r?\n/).some(matchesLine)).map(entry=>entry.relativePath).slice(0,candidateLimit);
-    const contents=await contextIo.readMany(candidates),data=[];let matchedFiles=0;
+    const contents=await contextIo.readMany(candidates),data=[];let matchedFiles=0,fileCapped=false;
     for(const path of candidates){
       const content=contents.get(path);if(typeof content!=="string")continue;
       const lines=content.split(/\r?\n/);let fileMatches=0;
       for(let lineIndex=0;lineIndex<lines.length;lineIndex++){
         if(!matchesLine(lines[lineIndex]))continue;
+        // A 21st matching line means this file's rows were cut, so the result is not complete.
+        if(fileMatches>=20){fileCapped=true;break}
         if(fileMatches++===0)matchedFiles++;
         data.push({path,line:lineIndex+1,text:lines[lineIndex].slice(0,600)});
-        if(fileMatches>=20||data.length>=resultLimit)break;
+        if(data.length>=resultLimit)break;
       }
       if(data.length>=resultLimit)break;
     }
-    return {query:needle,regex:Boolean(regex),caseSensitive:Boolean(caseSensitive),data,indexedFiles:index.files.size,matchedFiles,source,complete:complete&&data.length<resultLimit,truncated:!complete||data.length>=resultLimit};
+    return {query:needle,regex:Boolean(regex),caseSensitive:Boolean(caseSensitive),data,indexedFiles:index.files.size,matchedFiles,source,complete:complete&&!fileCapped&&data.length<resultLimit,truncated:!complete||fileCapped||data.length>=resultLimit,...(skippedLargeFiles?{skippedLargeFiles}:{})};
   }
 
   async readSourceRange({root,path,startLine=1,endLine=null,maxLines=200,io=null}={}){
     const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
-    if(!index.files.has(requested))throw new Error(`Context file is not indexed: ${path}`);
+    // Besides indexed source, any discovered (non-ignored) text file in the workspace can be read, so the docs,
+    // templates and configuration that search_code returns are readable through the same tool.
+    if(!index.files.has(requested)){
+      // The inventory can be reused or capped while search_code greps the live tree, so recheck a miss.
+      if(!(index.paths||[]).includes(requested)&&!(await contextIo.discoverFiles()).includes(requested))throw new Error(`Context file is not indexed: ${path}`);
+      const size=Number((typeof contextIo.metadata==="function"?await contextIo.metadata([requested]):null)?.get?.(requested)?.size);
+      if(!Number.isFinite(size)||size>SEARCH_TEXT_MAX_BYTES)throw new Error(`Context file is not indexed and is too large to read as text: ${path}`);
+    }
     const contents=await contextIo.readMany([requested]),content=contents.get(requested);if(typeof content!=="string")throw new Error(`Could not read context file: ${path}`);
+    if(!index.files.has(requested)&&content.includes("\u0000"))throw new Error(`Context file is binary: ${path}`);
     const lines=content.split(/\r?\n/),start=Math.max(1,Math.trunc(Number(startLine)||1)),lineCap=Math.max(1,Math.min(400,Math.trunc(Number(maxLines)||200)));
     if(start>Math.max(1,lines.length))throw new Error(`Source range starts after the end of ${requested}`);
     const requestedEnd=endLine==null?start+lineCap-1:Math.max(start,Math.trunc(Number(endLine)||start));let end=Math.min(lines.length,requestedEnd,start+lineCap-1);

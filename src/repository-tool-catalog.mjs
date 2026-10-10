@@ -81,8 +81,8 @@ export const REPOSITORY_TOOL_DEFINITIONS=Object.freeze([
   definition("organize_imports","organizeImports","Ask the project-local TypeScript language service for bounded non-mutating import-organization edits for one indexed JS/TS file.",{path:z.string().min(1),limit:z.number().int().min(1).max(500).optional()},"typescript organize imports remove unused imports sort imports refactor edits"),
   definition("rename_preview","renamePreview","Ask the project-local TypeScript language service to validate a semantic rename and return the exact bounded edits without changing files.",{path:z.string().min(1),line:z.number().int().min(1),column:z.number().int().min(1).optional(),newName:z.string().min(1).max(256),limit:z.number().int().min(1).max(500).optional()},"typescript semantic rename symbol refactor preview exact edits"),
   definition("symbol_references","symbolReferences","Find bounded repository occurrences of a symbol, marking known definition lines and whether locations are AST- or text-backed.",{name:z.string().min(1).max(256),path:z.string().min(1).optional(),limit:z.number().int().min(1).max(200).optional()},"repository symbol references usages occurrences"),
-  definition("search_code","searchCode","Search indexed source with bounded literal/regex matching.",{query:z.string().min(1).max(1000),regex:z.boolean().optional(),caseSensitive:z.boolean().optional(),limit:z.number().int().min(1).max(200).optional()},"repository code text exact regex search"),
-  definition("read_source","readSource","Read bounded lines from an indexed source file.",{path:z.string().min(1),startLine:z.number().int().min(1).optional(),endLine:z.number().int().min(1).optional(),maxLines:z.number().int().min(1).max(400).optional()},"repository source lines range"),
+  definition("search_code","searchCode","Search repository text, source first, with bounded literal/regex matching.",{query:z.string().min(1).max(1000),regex:z.boolean().optional(),caseSensitive:z.boolean().optional(),limit:z.number().int().min(1).max(200).optional()},"repository code text exact regex search"),
+  definition("read_source","readSource","Read bounded lines from a repository text file.",{path:z.string().min(1),startLine:z.number().int().min(1).optional(),endLine:z.number().int().min(1).optional(),maxLines:z.number().int().min(1).max(400).optional()},"repository source lines range"),
   definition("git_context","gitContext","Read bounded current Git status, changed paths, HEAD, and workspace diff.",{},"repository git diff status changes"),
   definition("git_history","gitHistory","Read bounded repository or file Git history.",{path:z.string().min(1).optional(),limit:z.number().int().min(1).max(100).optional()},"repository git history commits file history"),
   definition("git_blame","gitBlame","Read bounded line-level Git blame for an indexed source file.",{path:z.string().min(1),startLine:z.number().int().min(1).optional(),endLine:z.number().int().min(1).optional(),maxLines:z.number().int().min(1).max(200).optional()},"repository git blame authors commits lines"),
@@ -107,12 +107,20 @@ export function repositoryToolInputJsonSchema(definition){
 }
 
 // Compact argument signature such as git_blame{path,startLine?,endLine?,maxLines?}: required keys bare,
-// optional keys with "?", enum values inline. It is derived from the same JSON Schema that discover returns,
-// so the invoke description cannot drift from the real input schemas.
+// optional keys with "?", arrays as "[]", object keys nested in braces, enum values inline. It is derived from
+// the same JSON Schema that discover returns, so the invoke description cannot drift from the real input schemas.
+function schemaKeySignature(schema){
+  const required=new Set(schema?.required||[]);
+  return Object.entries(schema?.properties||{}).map(([key,property])=>key+(required.has(key)?"":"?")
+    +(property?.type==="array"?"[]":"")
+    // Only objects that declare keys get braces; `{}` would read like a no-argument capability, so a free-form
+    // record such as verification_assess's plan stays bare.
+    +(property?.type==="object"&&Object.keys(property.properties||{}).length?"{"+schemaKeySignature(property)+"}":"")
+    +(Array.isArray(property?.enum)?":"+property.enum.join("|"):"")).join(",");
+}
+
 function repositoryToolSignature(definition){
-  const schema=repositoryToolInputJsonSchema(definition),required=new Set(schema.required||[]);
-  const keys=Object.entries(schema.properties||{}).map(([key,property])=>key+(required.has(key)?"":"?")+(Array.isArray(property?.enum)?":"+property.enum.join("|"):""));
-  return definition.name+"{"+keys.join(",")+"}";
+  return definition.name+"{"+schemaKeySignature(repositoryToolInputJsonSchema(definition))+"}";
 }
 
 // Built once at module load from the frozen catalog in catalog order, with no clock, locale, or environment

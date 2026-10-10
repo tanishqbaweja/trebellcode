@@ -17,7 +17,7 @@ import {
 } from "../src/repository-tool-catalog.mjs";
 
 // Pinned on purpose: this text sits in every Native request's cached tool prefix, so any change must be deliberate.
-const EXPECTED_INVOKE_DESCRIPTION="Call an advanced repository capability directly by name; discovery is optional. Capabilities (args, ?=optional): repo_map{query?,limit?}, project_commands{limit?}, verification_plan{paths?,riskHints?,capabilities?}, verification_assess{plan,evidence?}, verification_next{plan,evidence?}, file_relations{path}, related_tests{path?,name?,limit?}, symbol_references{name,path?,limit?}, git_context{}, git_history{path?,limit?}, git_blame{path,startLine?,endLine?,maxLines?}, knowledge_list{query?,limit?,includeUnverified?}, knowledge_context{query?,limit?,refresh?}; JS/TS only: call_hierarchy{name,path?,limit?}, diagnostics{path,limit?,semantic?}, language_symbol{path,line,column?,operation:definition|references|quick_info|callers|callees,limit?}, code_actions{path,line,column?,limit?,codes?}, organize_imports{path,limit?}, rename_preview{path,line,column?,newName,limit?}. Use trebell_repo/discover for a full input schema.";
+const EXPECTED_INVOKE_DESCRIPTION="Call an advanced repository capability directly by name; discovery is optional. Capabilities (args, ?=optional): repo_map{query?,limit?}, project_commands{limit?}, verification_plan{paths?[],riskHints?[],capabilities?{diagnostics?,semanticDiagnostics?}}, verification_assess{plan,evidence?[]}, verification_next{plan,evidence?[]}, file_relations{path}, related_tests{path?,name?,limit?}, symbol_references{name,path?,limit?}, git_context{}, git_history{path?,limit?}, git_blame{path,startLine?,endLine?,maxLines?}, knowledge_list{query?,limit?,includeUnverified?}, knowledge_context{query?,limit?,refresh?}; JS/TS only: call_hierarchy{name,path?,limit?}, diagnostics{path,limit?,semantic?}, language_symbol{path,line,column?,operation:definition|references|quick_info|callers|callees,limit?}, code_actions{path,line,column?,limit?,codes?[]}, organize_imports{path,limit?}, rename_preview{path,line,column?,newName,limit?}. Use trebell_repo/discover for a full input schema.";
 
 test("repository tool catalog is unique, read-only, and includes deterministic verification control",()=>{
   const names=REPOSITORY_TOOL_DEFINITIONS.map(item=>item.name);
@@ -70,9 +70,11 @@ test("repository tool catalog serializes into one Codex dynamic-tool namespace",
 
 test("progressive Native repository catalog keeps common tools small and discovers advanced capabilities on demand",()=>{
   const [namespace]=repositoryDynamicToolNamespace({progressive:true});
-  // 3300 includes the ~0.9 KB one-hop capability index in the invoke description (2365 bytes before it).
-  assert.ok(JSON.stringify(namespace).length<=3300,"progressive repository gateway should stay within its recurring wire-size budget");
-  assert.ok(Buffer.byteLength(REPOSITORY_INVOKE_TOOL.description,"utf8")<=960,"the invoke capability index is sent with every Native request; keep it compact");
+  // 3340 includes the ~1 KB one-hop capability index in the invoke description (2365 bytes before it). The index
+  // grew by ~50 bytes when array and nested-object argument shapes became visible, after a model sent an array
+  // where verification_plan expects a capabilities object.
+  assert.ok(JSON.stringify(namespace).length<=3340,"progressive repository gateway should stay within its recurring wire-size budget");
+  assert.ok(Buffer.byteLength(REPOSITORY_INVOKE_TOOL.description,"utf8")<=990,"the invoke capability index is sent with every Native request; keep it compact");
   const names=namespace.tools.map(item=>item.name);
   assert.ok(names.includes("discover"));
   assert.ok(names.includes("invoke"));
@@ -128,7 +130,25 @@ test("invoke description lists every advanced capability with its exact required
   assert.deepEqual([...ADVANCED_REPOSITORY_TOOL_NAMES],REPOSITORY_TOOL_DEFINITIONS.map(item=>item.name).filter(name=>!CORE_REPOSITORY_TOOL_NAMES.includes(name)));
   const description=REPOSITORY_INVOKE_TOOL.description,[general,scoped]=description.split("; JS/TS only: ");
   assert.ok(scoped,"JS/TS-only capabilities should be grouped after the general ones");
-  const signatures=text=>[...text.matchAll(/([a-z_]+)\{([^}]*)\}/g)].map(match=>({name:match[1],keys:match[2]?match[2].split(","):[]}));
+  // Balanced-brace parse: top-level keys only, without their [] and nested {...} shape markers.
+  const signatures=text=>{
+    const out=[];let parsedUntil=0;
+    for(const match of text.matchAll(/([a-z_]+)\{/g)){
+      if(match.index<parsedUntil||(match.index>0&&/[a-zA-Z_?]/.test(text[match.index-1])))continue;
+      let depth=1,index=match.index+match[0].length,key="",keys=[];
+      for(;index<text.length&&depth>0;index++){
+        const char=text[index];
+        if(char==="{"){depth++;continue}
+        if(char==="}"){depth--;continue}
+        if(depth===1&&char===","){keys.push(key);key="";continue}
+        if(depth===1)key+=char;
+      }
+      if(key)keys.push(key);
+      parsedUntil=index;
+      out.push({name:match[1],keys:keys.map(item=>item.replace(/\[\]$/,""))});
+    }
+    return out;
+  };
   assert.deepEqual(signatures(general).map(item=>item.name),ADVANCED_REPOSITORY_TOOL_NAMES.filter(name=>!JS_TS_ONLY_REPOSITORY_TOOL_NAMES.includes(name)));
   assert.deepEqual(signatures(scoped).map(item=>item.name),ADVANCED_REPOSITORY_TOOL_NAMES.filter(name=>JS_TS_ONLY_REPOSITORY_TOOL_NAMES.includes(name)));
   for(const {name,keys} of signatures(description)){

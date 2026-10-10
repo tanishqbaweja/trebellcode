@@ -536,8 +536,8 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   ]);
   const versions=new Map([...files.keys()].map(path=>[path,"v1"]));let status="",metadataCalls=0,contentCalls=0,discoverCalls=0;
   const ok=stdout=>({exitCode:0,stdout,stderr:"",timedOut:false});
-  const environments={
-    async executeArgv(_id,{command,args=[]}){
+  const respond=async(command,args)=>{
+    {
       if(command==="git"&&args.includes("ls-files")){discoverCalls++;return ok([...files.keys()].join("\0")+"\0")}
       if(command==="git"&&args.includes("grep")){
         const pattern=String(args[args.indexOf("-e")+1]||"").toLowerCase();
@@ -567,9 +567,14 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
         return files.has(relativePath)?ok(files.get(relativePath)):({exitCode:1,stdout:"",stderr:"missing",timedOut:false});
       }
       return {exitCode:1,stdout:"",stderr:"unexpected "+command,timedOut:false};
-    },
+    }
+  };
+  const environments={
+    // Like EnvironmentManager: executeArgv cleans output (drops NUL bytes), while executeArgvInput returns it raw.
+    async executeArgv(_id,{command,args=[]}){const result=await respond(command,args);return {...result,stdout:String(result.stdout).replace(/\u0000/g,"").replace(/\r/g,"").trimEnd()}},
     async executeArgvInput(_id,{command,args=[],input=""}){
-      assert.equal(command,"bash");const script=String(args[1]||"");
+      if(command!=="bash")return respond(command,args);
+      const script=String(args[1]||"");
       const paths=String(input).split("\0").filter(Boolean).map(path=>path.replace(/^\.\//,""));
       if(script.includes("stat -c")){
         metadataCalls++;
@@ -688,4 +693,120 @@ test("context excerpts fall back to the full file when a relevant symbol is beyo
   assert.equal(fullReads,1);
   assert.match(packet.injection,/distantTarget/);
   assert.ok(packet.items.some(item=>item.path==="src/large.js"));
+});
+
+test("code search returns docs and configuration after source matches, and read_source reads them",async()=>{
+  const root=await fixture();
+  try{
+    await mkdir(join(root,"doc"),{recursive:true});
+    await writeFile(join(root,"doc","events.rst"),"Events\n======\n\n.. event:: source-read (app, docname, source)\n\n   Emitted when a source file has been read.\n","utf8");
+    await writeFile(join(root,"src","events.py"),"def emit(events, docname, source):\n    events.emit('source-read', docname, source)\n","utf8");
+    await writeFile(join(root,"huge.log"),"source-read\n"+"x".repeat(1_100_000),"utf8");
+    await writeFile(join(root,"image.bin"),Buffer.concat([Buffer.from([0,1,2]),Buffer.from("source-read","utf8")]));
+    await execFileAsync("git",["add","."],{cwd:root});
+    const engine=new ContextEngine();
+    const result=await engine.searchCode({root,query:"source-read",limit:20});
+    assert.equal(result.source,"git-grep");
+    assert.deepEqual(result.data.map(item=>item.path),["src/events.py","doc/events.rst"],"indexed source first, then docs; binary files are skipped");
+    assert.equal(result.skippedLargeFiles,1);
+    assert.equal(result.complete,false,"a matching file that was too large to read keeps the search from claiming completeness");
+    const doc=await engine.readSourceRange({root,path:"doc/events.rst",startLine:4,maxLines:3});
+    assert.match(doc.content,/event:: source-read \(app, docname, source\)/);
+    await assert.rejects(()=>engine.readSourceRange({root,path:"huge.log"}),/too large/i);
+    await assert.rejects(()=>engine.readSourceRange({root,path:"image.bin"}),/binary/i);
+    await assert.rejects(()=>engine.readSourceRange({root,path:"../outside.rst"}),/not indexed/i);
+    await rm(join(root,"huge.log"));
+    const clean=await engine.searchCode({root,query:"source-read",limit:20});
+    assert.equal(clean.complete,true);
+    assert.equal(clean.skippedLargeFiles,undefined);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("code search covers a plain directory without Git through git grep --no-index",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-context-plain-"));
+  try{
+    await mkdir(join(root,"app"),{recursive:true});
+    await writeFile(join(root,"app","main.py"),"PORT = 8080\n","utf8");
+    await writeFile(join(root,"app","config.yaml"),"port: 8080\n","utf8");
+    const engine=new ContextEngine({env:{...process.env,GIT_CEILING_DIRECTORIES:tmpdir()}});
+    const result=await engine.searchCode({root,query:"8080",limit:10});
+    assert.equal(result.source,"git-grep");
+    assert.deepEqual(result.data.map(item=>item.path),["app/main.py","app/config.yaml"]);
+    assert.equal(result.complete,true);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("code search reports a file cut at the per-file cap as incomplete, but not a file with exactly the cap",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-context-cap-"));
+  try{
+    await mkdir(join(root,"docs"),{recursive:true});await mkdir(join(root,"node_modules","pkg"),{recursive:true});
+    await writeFile(join(root,"main.py"),"frobnicate()\n","utf8");
+    await writeFile(join(root,"docs","api.rst"),Array.from({length:25},(_,index)=>`frobnicate ${index}`).join("\n")+"\n","utf8");
+    await writeFile(join(root,"docs","exact.rst"),Array.from({length:20},(_,index)=>`exactly ${index}`).join("\n")+"\n","utf8");
+    await writeFile(join(root,"node_modules","pkg","index.js"),"frobnicate(); exactly();\n","utf8");
+    const engine=new ContextEngine({env:{...process.env,GIT_CEILING_DIRECTORIES:tmpdir()}});
+    const capped=await engine.searchCode({root,query:"frobnicate",limit:80});
+    assert.equal(capped.source,"git-grep");
+    assert.equal(capped.data.filter(item=>item.path==="docs/api.rst").length,20);
+    assert.equal(capped.complete,false,"rows cut at the per-file cap must not be reported as complete");
+    assert.equal(capped.truncated,true);
+    assert.ok(!capped.data.some(item=>item.path.startsWith("node_modules/")));
+    const exact=await engine.searchCode({root,query:"exactly",limit:80});
+    assert.deepEqual([...new Set(exact.data.map(item=>item.path))],["docs/exact.rst"]);
+    assert.equal(exact.data.length,20);
+    assert.equal(exact.complete,true,"exactly the cap is not a cut");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("read_source reads a file that appeared under an untracked directory after the path inventory was built",async()=>{
+  const root=await fixture();
+  try{
+    await mkdir(join(root,"notes"),{recursive:true});
+    await writeFile(join(root,"notes","first.md"),"first note\n","utf8");
+    const engine=new ContextEngine();
+    const before=await engine.searchCode({root,query:"note",limit:10});
+    assert.deepEqual(before.data.map(item=>item.path),["notes/first.md"]);
+    await writeFile(join(root,"notes","second.md"),"second note\n","utf8");
+    const after=await engine.searchCode({root,query:"note",limit:10});
+    assert.ok(after.data.some(item=>item.path==="notes/second.md"),"git grep searches the live tree");
+    const read=await engine.readSourceRange({root,path:"notes/second.md"});
+    assert.match(read.content,/second note/,"git status still shows only ?? notes/, so the reused inventory must be rechecked");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("remote listings keep their NUL separators and a plain remote directory falls back to git grep --no-index",async()=>{
+  const root="/srv/plain";
+  const files=new Map([["app/main.py","PORT = 8080\n"],["app/config.yaml","port: 8080\n"],["node_modules/pkg/index.js","8080\n"]]);
+  const ok=stdout=>({exitCode:0,stdout,stderr:"",timedOut:false}),notRepo={exitCode:128,stdout:"",stderr:"fatal: not a git repository",timedOut:false};
+  const grepCalls=[];
+  const respond=(command,args)=>{
+    if(command==="find")return ok([...files.keys()].filter(path=>!path.startsWith("node_modules/")).map(path=>"./"+path).join("\0")+"\0");
+    if(command==="git"&&args.includes("grep")){
+      grepCalls.push(args);if(!args.includes("--no-index"))return notRepo;
+      const pattern=String(args[args.indexOf("-e")+1]||"").toLowerCase();
+      const matches=[...files].filter(([path,content])=>!path.startsWith("node_modules/")&&content.toLowerCase().includes(pattern)).map(([path])=>path);
+      return matches.length?ok(matches.join("\0")+"\0"):{exitCode:1,stdout:"",stderr:"",timedOut:false};
+    }
+    if(command==="git")return notRepo;
+    return {exitCode:1,stdout:"",stderr:"unexpected "+command,timedOut:false};
+  };
+  const environments={
+    // EnvironmentManager.executeArgv returns cleaned text: NUL bytes and carriage returns removed, trailing space trimmed.
+    async executeArgv(_id,{command,args=[]}){const result=respond(command,args);return {...result,stdout:String(result.stdout).replace(/\u0000/g,"").replace(/\r/g,"").trimEnd()}},
+    async executeArgvInput(_id,{command,args=[],input=""}){
+      if(command!=="bash")return respond(command,args);
+      const script=String(args[1]||""),paths=String(input).split("\0").filter(Boolean).map(path=>path.replace(/^\.\//,"")).filter(path=>files.has(path));
+      if(script.includes("stat -c"))return ok(paths.map(path=>[Buffer.byteLength(files.get(path),"utf8"),"v1",Buffer.from(path,"utf8").toString("base64")].join("\t")).join("\n")+"\n");
+      return ok(paths.map(path=>[Buffer.from(path,"utf8").toString("base64"),Buffer.from(files.get(path),"utf8").toString("base64")].join("\t")).join("\n")+"\n");
+    },
+  };
+  const io=createRemoteContextIo({environments,environmentId:"ssh-plain",root});
+  assert.deepEqual(await io.discoverFiles(),["app/main.py","app/config.yaml"]);
+  const engine=new ContextEngine();
+  const result=await engine.searchCode({root,io,query:"8080",limit:10});
+  assert.equal(result.source,"git-grep");
+  assert.deepEqual(result.data.map(item=>item.path),["app/main.py","app/config.yaml"]);
+  assert.equal(result.complete,true);
+  assert.deepEqual(grepCalls.map(args=>args.includes("--no-index")),[false,true],"exit 128 outside a repository retries with --no-index");
+  for(const args of grepCalls)assert.ok(args.includes(":(exclude,glob)**/node_modules/**"),"SKIP directories are excluded by pathspec");
 });

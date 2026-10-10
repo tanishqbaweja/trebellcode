@@ -149,3 +149,32 @@ test("Native system prompt describes only dynamically exposed specialized capabi
   assert.doesNotMatch(prompt,/isolated browser/i);
   assert.match(prompt,/Permission profile: read-only/);
 });
+
+test("Native leaves repository tests and fixtures alone unless asked or they pin the reported wrong behavior",()=>{
+  const prompt=nativeSystemPrompt({permissionMode:"full",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]});
+  const rule=prompt.split("\n").filter(line=>line.startsWith("- Do not add or modify repository tests"));
+  assert.equal(rule.length,1);
+  assert.match(rule[0],/test fixtures, or test data unless the user or the repository's instructions ask for tests/);
+  assert.match(rule[0],/an existing test asserts behavior caused by the defect the task reports, in which case update only those expectations instead of special-casing the fix to keep them passing/);
+  assert.match(rule[0],/temporary checks outside the repository's test files, and delete the temporary files you created before finishing/);
+  assert.ok(prompt.indexOf("- Make the smallest coherent fix")<prompt.indexOf(rule[0]),"the rule sits with the scope rules, before verification guidance");
+  assert.ok(prompt.indexOf(rule[0])<prompt.indexOf("- After a successful exact edit"));
+});
+
+test("Native keeps every reported symptom and same-cause variant in scope",()=>{
+  const prompt=nativeSystemPrompt({permissionMode:"full",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]});
+  const rule=prompt.split("\n").filter(line=>line.startsWith("- Every symptom shown in the user's report or reproduction is in scope"));
+  assert.equal(rule.length,1);
+  assert.match(rule[0],/unless the user excludes it/);
+  assert.match(rule[0],/same cause in another operand, argument position, or sibling entry point, fix that too; it is part of the requested fix, not speculative hardening/);
+});
+
+test("Native runs the whole covering test module on its final revision and treats filtered runs as focused evidence",()=>{
+  const prompt=nativeSystemPrompt({permissionMode:"full",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]});
+  const rule=prompt.split("\n").filter(line=>line.startsWith("- When an existing test file or module covers source you edited"));
+  assert.equal(rule.length,1);
+  assert.match(rule[0],/run that whole file or module on your final revision before finishing, giving a slow run a larger timeout_ms/);
+  assert.match(rule[0],/selecting individual tests within it by -k, node id, or test name is focused evidence, not regression evidence/);
+  assert.match(rule[0],/Once it and your focused checks pass, add further checks only for a named requirement, a reported input form, or a case another rule calls for that they did not exercise/);
+  assert.ok(prompt.indexOf("- After a successful exact edit")<prompt.indexOf(rule[0]),"it follows the post-edit batching rule");
+});
