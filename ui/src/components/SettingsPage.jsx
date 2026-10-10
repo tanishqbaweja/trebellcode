@@ -31,7 +31,7 @@ function ShortcutInput({value,onChange}){
 }
 const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity"];
 
-export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,entry:settingsEntry=null,onSectionChange}){
+export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
   const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||"general");
   const [settingsSearch,setSettingsSearch]=useState("");
   const [workspaceScope,setWorkspaceScope]=useState({environmentId:settings.activeEnvironmentId||"local",projectId:""});
@@ -77,6 +77,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [themeDraft,setThemeDraft]=useState(null);
   const [themeMessage,setThemeMessage]=useState("");
   const themeImportRef=useRef(null);
+  const [panelAnimationDraft,setPanelAnimationDraft]=useState(null);
+  const panelAnimationSaveRef=useRef(null);
+  const settingsRef=useRef(settings);settingsRef.current=settings;
   const selected=settings.modelProvider||DEFAULT_MODEL_PROVIDER;
   const providerOptions=providerInfo?.providers?.length
     ?providerInfo.providers.map(item=>({id:item.id,name:item.name||modelProviderLabel(item.id),official:Boolean(item.official)}))
@@ -96,7 +99,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   function updateKeybinding(command,patch){
     const found=keybindingRules.some(rule=>rule.command===command);
     const next=found?keybindingRules.map(rule=>rule.command===command?{...rule,...patch}:rule):[...keybindingRules,{command,key:String(patch.key||""),when:String(patch.when||"projectOpen && !modalOpen")}];
-    return save({keybindingRules:next});
+    return saveSetting({keybindingRules:next});
   }
 
   async function loadProviders({strict=false}={}){
@@ -255,6 +258,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     if("customModels" in patch)await onProviderUpdated?.({refreshBootstrap:false});
     return next;
   }
+  // save() rejects so a caller can undo its own work (an MCP draft, background mode). Controls with nothing to undo save through here:
+  // the alert shows the failure and the rejection is not left unhandled. It resolves to the saved settings, or to undefined on failure.
+  function saveSetting(patch){return save(patch).catch(error=>{setSettingsError(current=>current||error?.message||String(error)||"Could not save settings.")})}
   function mcpArgs(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean).slice(0,64)}
   function mcpSavedMessage(action="updated"){
     return selectedAgent==="native"
@@ -297,10 +303,12 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       setSettingsError(error?.message||String(error)||"Could not update background mode.");
     }
   }
+  // A theme note answers the last theme action, so choosing another theme clears it instead of leaving it under the new choice.
+  function selectTheme(appearance){setThemeMessage("");return saveSetting({appearance})}
   async function selectEnvironmentTheme(theme){
     if(!theme?.publishedId||!environmentThemeCatalog?.environmentKey)return;
     const selections={...(settings.environmentThemeSelections||{}),[environmentThemeCatalog.environmentKey]:theme.publishedId};
-    await save({environmentThemeSelections:selections});
+    setThemeMessage("");await saveSetting({environmentThemeSelections:selections});
   }
   async function refreshPublishedThemes(){
     if(environmentThemeRefreshing)return;
@@ -312,16 +320,23 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   async function stopFollowingEnvironmentTheme(){
     if(!environmentThemeCatalog?.environmentKey)return;
     const selections={...(settings.environmentThemeSelections||{})};delete selections[environmentThemeCatalog.environmentKey];
-    await save({environmentThemeSelections:selections});
+    setThemeMessage("");await saveSetting({environmentThemeSelections:selections});
   }
   async function duplicateEnvironmentTheme(theme){
     if(!theme)return;
     const copy=normalizeCustomTheme({...theme,name:`${theme.name} copy`},{id:`custom-${crypto.randomUUID()}`});
     const selections={...(settings.environmentThemeSelections||{})};delete selections[environmentThemeCatalog.environmentKey];
     const current=Array.isArray(settings.customThemes)?settings.customThemes:[];
-    await save({customThemes:[...current,copy],appearance:copy.id,environmentThemeSelections:selections});
+    if(!await saveSetting({customThemes:[...current,copy],appearance:copy.id,environmentThemeSelections:selections}))return;
     setThemeDraft(copy);setThemeMessage("Published theme duplicated as an editable local theme.");
   }
+  // A drag fires an input event per step: the thumb follows a local draft and one save goes out once the slider settles (or Settings closes).
+  function dragPanelAnimation(value){
+    setPanelAnimationDraft(value);clearTimeout(panelAnimationSaveRef.current?.timer);
+    panelAnimationSaveRef.current={timer:setTimeout(flushPanelAnimation,300),save:()=>saveSetting({panelAnimationMs:value}).then(()=>setPanelAnimationDraft(current=>current===value?null:current))};
+  }
+  function flushPanelAnimation(){const pending=panelAnimationSaveRef.current;if(!pending)return;clearTimeout(pending.timer);panelAnimationSaveRef.current=null;pending.save()}
+  useEffect(()=>flushPanelAnimation,[]);
   function createTheme(){
     const light=(settings.appearanceMode||"system")==="light";
     setThemeDraft({id:`custom-${crypto.randomUUID()}`,name:"Custom theme",appearance:light?"light":"dark",canvas:light?"#f3f5f9":"#0c0f16",accent:"#9c6cff",colors:{}});setThemeMessage("");
@@ -335,8 +350,14 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   }
   async function removeTheme(theme){
     const current=Array.isArray(settings.customThemes)?settings.customThemes:[];const patch={customThemes:current.filter(item=>item.id!==theme.id)};
-    if(settings.appearance===theme.id)patch.appearance="dark";
-    await save(patch);if(themeDraft?.id===theme.id)setThemeDraft(null);setThemeMessage("Theme removed.");
+    const index=current.findIndex(item=>item.id===theme.id),selected=settings.appearance===theme.id;
+    if(selected)patch.appearance="dark";
+    setThemeMessage("");if(!await saveSetting(patch))return;
+    if(themeDraft?.id===theme.id)setThemeDraft(null);
+    // The delete is immediate and the app's undo toast offers it back, as for archived threads: Undo restores the theme in its place, selected again if it was.
+    // It saves through save() so a failed restore reaches the toast's "Undo failed" report even after Settings is closed.
+    const restore=()=>{const latest=(Array.isArray(settingsRef.current.customThemes)?settingsRef.current.customThemes:[]).filter(item=>item.id!==theme.id);latest.splice(index<0?latest.length:index,0,theme);return save({customThemes:latest,...(selected?{appearance:theme.id}:{})})};
+    if(onOfferUndo)onOfferUndo(`Theme “${theme.name}” deleted`,restore);else setThemeMessage("Theme removed.");
   }
   async function importThemeFile(event){
     const file=event.target.files?.[0];event.target.value="";if(!file)return;
@@ -363,11 +384,12 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     for(const key of ["inputPrice","outputPrice","cacheReadPrice","cacheWritePrice"])if(entry[key]!=null&&(!Number.isFinite(entry[key])||entry[key]<0)){showAgentMessage("Custom model prices must be numbers of 0 or more.",true);return}
     const current=Array.isArray(settings.customModels)?settings.customModels:[];
     const next=[...current.filter(item=>!(item.id===id&&item.runtime===selectedAgent&&(!selectedManagedInference||item.provider===selected))),entry];
-    await save({customModels:next});setModelDraft({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});setCustomModelEditorOpen(false);showAgentMessage("Custom model saved.");
+    if(!await saveSetting({customModels:next}))return;
+    setModelDraft({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});setCustomModelEditorOpen(false);showAgentMessage("Custom model saved.");
   }
   async function removeCustomModel(item){
     const current=Array.isArray(settings.customModels)?settings.customModels:[];
-    await save({customModels:current.filter(candidate=>!(candidate.id===item.id&&candidate.runtime===item.runtime&&candidate.provider===item.provider))});
+    await saveSetting({customModels:current.filter(candidate=>!(candidate.id===item.id&&candidate.runtime===item.runtime&&candidate.provider===item.provider))});
   }
   async function saveProviderKey(){
     showProviderMessage("Saving…");
@@ -411,7 +433,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       const key=checks[index]?.[0];
       if(key==="update"){
         if(result.status==="fulfilled")setUpdate(result.value);
-        else if(!update)setUpdate({error:result.reason?.message||String(result.reason),...(result.reason?.data?.current?{current:result.reason.data.current}:{})});
+        else if(!update||update.error)setUpdate({error:result.reason?.message||String(result.reason),...(result.reason?.data?.current?{current:result.reason.data.current}:{})});
       }else if(key==="diagnostics"){
         if(result.status==="fulfilled")setDiagnostics(result.value);
         else if(!diagnostics)setDiagnostics({error:result.reason?.message||String(result.reason)});
@@ -424,6 +446,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     if(includeBrowser&&window.trebellDesktop?.browser?.importSources)loadBrowserImportSources();
     return failures.length===0;
   }
+  // Retries only the GitHub release check, which fails on its own (a rate limit, no network) without anything else in General failing.
+  function checkRelease(){return refresh({includeRuntime:false,includeDiagnostics:false,includeStorage:false,includeDesktopUpdates:false,includeSnapshots:false,includeBrowser:false})}
   async function loadStorageInfo({strict=false}={}){
     try{
       const info=await api("/api/storage-cleanup");
@@ -435,12 +459,17 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       return fallback;
     }
   }
-  async function saveStorageRetention(key,raw){
-    const text=String(raw??"").trim();
-    const value=text?Math.max(1,Math.min(3650,Math.trunc(Number(text)||0))):null;
+  async function saveStorageRetention(key,input){
+    // Under 1 day means off, as the server and the worktree "After inactive days" field read it: clamping 0 (typed to mean off) or -5 up
+    // to 1 day made them the most aggressive cleanup. The field then shows what is saved: blank for off, 3650 for anything above it, and the
+    // old value after a failed save, so it never reads "off" while a cleanup is still set.
+    const text=String(input.value??"").trim(),days=text?Math.trunc(Number(text)):NaN;
+    const value=Number.isFinite(days)&&days>=1?Math.min(3650,days):null;
     const current=settings.storageCleanup||{};
-    await save({storageCleanup:{...current,[key]:value||null}});
-    await loadStorageInfo();
+    if(value===(current[key]??null)){input.value=value??"";return}
+    const saved=await saveSetting({storageCleanup:{...current,[key]:value}});
+    input.value=(saved?saved.storageCleanup?.[key]:current[key])??"";
+    if(saved)await loadStorageInfo();
   }
   async function runStorageCleanup(){
     setStorageBusy(true);setStorageMessage("Running safe cleanup…");
@@ -551,6 +580,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const scopedMcpServers=(settings.mcpServers||[]).filter(item=>item.runtime===selectedAgent&&(item.environmentId||null)===mcpEnvironmentId);
   const desktopAvailable=Boolean(window.trebellDesktop);
   const reducedMotion=Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+  const panelAnimationMs=panelAnimationDraft??Math.max(0,Math.min(400,Number(settings.panelAnimationMs)||0));
   const settingsSections=[
     ["general",Settings2,"General","Everyday behavior, notifications and updates"],
     ["agents",Bot,"Agents & models","Harnesses, providers and model configuration"],
@@ -667,7 +697,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         <h3><Cloud size={14} aria-hidden="true"/> Model provider</h3>
         <p>Choose the API that Trebell Native calls directly. This changes model inference, not the harness: Trebell Native still owns the thread, tools and agent loop.</p>
         <label>Provider
-          <select data-testid="provider-selector" value={selected} disabled={providerSwitching} onChange={e=>save({modelProvider:e.target.value})}>
+          <select data-testid="provider-selector" value={selected} disabled={providerSwitching} onChange={e=>saveSetting({modelProvider:e.target.value})}>
             {providerOptions.map(item=><option key={item.id} value={item.id}>{item.name}{item.official?" · official":""}</option>)}
           </select>
         </label>
@@ -714,13 +744,13 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         {mcpMessage&&<p className={/failed|error/i.test(mcpMessage)?"provider-status-error":"provider-note"}>{mcpMessage}</p>}
       </div>}
       {settingsSection==="agents"&&<div className="settings-card" {...targetProps("agents-runtime")}><h3><Server size={14} aria-hidden="true"/> Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available?"ready":"not ready"}</strong>{selectedManagedInference&&<><br/>{selectedAgent==="codex"&&<>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/></>}Inference: <strong>{modelProviderLabel(runtime?.provider||selected)}</strong></>}</p><button onClick={()=>refresh({reportErrors:true,includeUpdate:false})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>}
-      {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-followups")}><h3><MessageSquareText size={14} aria-hidden="true"/> Follow-up behavior</h3>{selectedAgentCapabilities.steering?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">{selectedAgent==="native"?"Steer current turn at the next safe boundary":"Steer current turn immediately"}</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. This runtime does not expose in-flight steering.</p>}</div>}
+      {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-followups")}><h3><MessageSquareText size={14} aria-hidden="true"/> Follow-up behavior</h3>{selectedAgentCapabilities.steering?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>saveSetting({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">{selectedAgent==="native"?"Steer current turn at the next safe boundary":"Steer current turn immediately"}</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. This runtime does not expose in-flight steering.</p>}</div>}
       {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-context-management")}>
         <h3><Layers size={14} aria-hidden="true"/> Context management</h3>
         <p>When the selected harness supports compaction, Trebell can compact an existing thread just before sending the next message. It waits for compaction to finish before the new turn starts.</p>
-        <label className="check-row"><input type="checkbox" checked={settings.autoCompactContext===true} onChange={e=>save({autoCompactContext:e.target.checked})}/><span><strong>Compact long threads automatically</strong><small>Prevents a nearly-full context window from crowding out the next response.</small></span></label>
+        <label className="check-row"><input type="checkbox" checked={settings.autoCompactContext===true} onChange={e=>saveSetting({autoCompactContext:e.target.checked})}/><span><strong>Compact long threads automatically</strong><small>Prevents a nearly-full context window from crowding out the next response.</small></span></label>
         <label>Compact when context reaches
-          <select value={String(settings.autoCompactThresholdPercent??85)} disabled={settings.autoCompactContext!==true} onChange={e=>save({autoCompactThresholdPercent:Number(e.target.value)})}>
+          <select value={String(settings.autoCompactThresholdPercent??85)} disabled={settings.autoCompactContext!==true} onChange={e=>saveSetting({autoCompactThresholdPercent:Number(e.target.value)})}>
             <option value="80">80%</option><option value="85">85%</option><option value="90">90%</option><option value="95">95%</option>
           </select>
         </label>
@@ -731,11 +761,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         <p>Automatic cleanup is opt-in. Trebell only removes its own local attachment cache, stopped terminal history, and managed worktrees that already pass the safe worktree cleanup rules. User project files and Git branches are never deleted by these retention fields.</p>
         <div className="environment-two">
           <label>Attachment cache retention
-            <input key={"attachment-retention-"+(settings.storageCleanup?.attachmentsAfterDays??"off")} type="number" min="1" max="3650" defaultValue={settings.storageCleanup?.attachmentsAfterDays??""} placeholder="Off" onBlur={event=>saveStorageRetention("attachmentsAfterDays",event.target.value)}/>
-            <small>Days · blank means off</small>
+            <input key={"attachment-retention-"+(settings.storageCleanup?.attachmentsAfterDays??"off")} type="number" min="1" max="3650" defaultValue={settings.storageCleanup?.attachmentsAfterDays??""} placeholder="Off" onBlur={event=>saveStorageRetention("attachmentsAfterDays",event.target)}/>
+            <small>Days · blank or 0 means off</small>
           </label>
           <label>Stopped terminal history
-            <input key={"terminal-retention-"+(settings.storageCleanup?.terminalHistoryAfterDays??"off")} type="number" min="1" max="3650" defaultValue={settings.storageCleanup?.terminalHistoryAfterDays??""} placeholder="Off" onBlur={event=>saveStorageRetention("terminalHistoryAfterDays",event.target.value)}/>
+            <input key={"terminal-retention-"+(settings.storageCleanup?.terminalHistoryAfterDays??"off")} type="number" min="1" max="3650" defaultValue={settings.storageCleanup?.terminalHistoryAfterDays??""} placeholder="Off" onBlur={event=>saveStorageRetention("terminalHistoryAfterDays",event.target)}/>
             <small>Days · running terminals are never pruned</small>
           </label>
         </div>
@@ -744,7 +774,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         {storageMessage&&<p className={/failed|error/i.test(storageMessage)?"provider-status-error":"provider-note"}>{storageMessage}</p>}
       </div>}
       {settingsSection==="desktop"&&selectedAgentCapabilities.dynamicTools&&desktopTools.computer&&<div className="settings-card"><h3><MonitorCog size={14} aria-hidden="true"/> Computer use</h3><p>The active runtime can use Trebell's Windows desktop tools. Screenshots are read-only; mouse and keyboard control are exposed only when the current thread is in <strong>Full access</strong> mode. This keeps desktop automation explicit instead of silently escalating permissions.</p></div>}
-      {settingsSection==="appearance"&&<div className="settings-card theme-settings" {...targetProps("appearance-theme")}><h3><Palette size={14} aria-hidden="true"/> Appearance</h3><p>Appearance controls light/dark behavior. Theme controls the palette independently. Trebell themes and VS Code color-theme JSON can be imported.</p><div className="settings-field" role="group" aria-label="Mode"><span aria-hidden="true">Mode</span><div className="appearance-options">{["system","light","dark"].map(v=><button key={v} className={(settings.appearanceMode||"dark")===v?"active":""} onClick={()=>save({appearanceMode:v})}>{v}</button>)}</div></div><label>Panel animations <span>{Math.max(0,Math.min(400,Number(settings.panelAnimationMs)||0))} ms</span><input aria-label="Panel animations" type="range" min="0" max="400" step="25" style={{"--fill":Math.max(0,Math.min(400,Number(settings.panelAnimationMs)||0))/4+"%"}} value={Math.max(0,Math.min(400,Number(settings.panelAnimationMs)||0))} onChange={e=>save({panelAnimationMs:Number(e.target.value)})}/></label><p>Sidebar, right panel and terminal movement uses this duration. Operating-system reduced motion always disables it.</p><div className="settings-field" role="group" aria-label="Theme"><span aria-hidden="true">Theme</span><div className="appearance-options">{[["dark","Trebell"],["midnight","Midnight"],["black","Black"]].map(([value,label])=><button key={value} className={(settings.appearance||"dark")===value?"active":""} onClick={()=>save({appearance:value})}>{label}</button>)}{(settings.customThemes||[]).map(theme=><button key={theme.id} className={settings.appearance===theme.id?"active":""} onClick={()=>save({appearance:theme.id})}>{theme.name}</button>)}</div></div><div className="theme-actions"><button onClick={createTheme}>Create theme</button><button onClick={()=>themeImportRef.current?.click()}>Import JSON</button>{(settings.customThemes||[]).find(theme=>theme.id===settings.appearance)&&<><button onClick={()=>setThemeDraft((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Edit selected</button><button onClick={()=>exportTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Export selected</button><button onClick={()=>removeTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Delete selected</button></>}<input ref={themeImportRef} type="file" accept=".json,application/json" hidden onChange={importThemeFile}/></div>{themeDraft&&<div className="theme-editor"><label>Name<input value={themeDraft.name||""} onChange={e=>setThemeDraft({...themeDraft,name:e.target.value})}/></label><div className="theme-editor-grid"><label>Base appearance<select value={themeDraft.appearance||"dark"} onChange={e=>setThemeDraft({...themeDraft,appearance:e.target.value})}><option value="dark">Dark</option><option value="light">Light</option></select></label><label>Canvas<input type="color" value={themeDraft.canvas||"#0c0f16"} onChange={e=>setThemeDraft({...themeDraft,canvas:e.target.value})}/></label><label>Accent<input type="color" value={themeDraft.accent||"#9c6cff"} onChange={e=>setThemeDraft({...themeDraft,accent:e.target.value})}/></label></div><div className="theme-editor-actions"><button className="setting-action" onClick={saveTheme}>Save & apply</button><button onClick={()=>setThemeDraft(null)}>Close editor</button></div></div>}{themeMessage&&<p className={/failed|error/i.test(themeMessage)?"provider-status-error":"provider-note"}>{themeMessage}</p>}</div>}
+      {settingsSection==="appearance"&&<div className="settings-card theme-settings" {...targetProps("appearance-theme")}><h3><Palette size={14} aria-hidden="true"/> Appearance</h3><p>Appearance controls light/dark behavior. Theme controls the palette independently. Trebell themes and VS Code color-theme JSON can be imported.</p><div className="settings-field" role="group" aria-label="Mode"><span aria-hidden="true">Mode</span><div className="appearance-options">{["system","light","dark"].map(v=><button key={v} className={(settings.appearanceMode||"dark")===v?"active":""} onClick={()=>saveSetting({appearanceMode:v})}>{v}</button>)}</div></div><label>Panel animations <span>{panelAnimationMs} ms</span><input aria-label="Panel animations" type="range" min="0" max="400" step="25" style={{"--fill":panelAnimationMs/4+"%"}} value={panelAnimationMs} onChange={e=>dragPanelAnimation(Number(e.target.value))}/></label><p>Sidebar, right panel and terminal movement uses this duration. Operating-system reduced motion always disables it.</p><div className="settings-field" role="group" aria-label="Theme"><span aria-hidden="true">Theme</span><div className="appearance-options">{[["dark","Trebell"],["midnight","Midnight"],["black","Black"]].map(([value,label])=><button key={value} className={(settings.appearance||"dark")===value?"active":""} onClick={()=>selectTheme(value)}>{label}</button>)}{(settings.customThemes||[]).map(theme=><button key={theme.id} className={settings.appearance===theme.id?"active":""} onClick={()=>selectTheme(theme.id)}>{theme.name}</button>)}</div></div><div className="theme-actions"><button onClick={createTheme}>Create theme</button><button onClick={()=>themeImportRef.current?.click()}>Import JSON</button>{(settings.customThemes||[]).find(theme=>theme.id===settings.appearance)&&<><button onClick={()=>setThemeDraft((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Edit selected</button><button onClick={()=>exportTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Export selected</button><button onClick={()=>removeTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Delete selected</button></>}<input ref={themeImportRef} type="file" accept=".json,application/json" hidden onChange={importThemeFile}/></div>{themeDraft&&<div className="theme-editor"><label>Name<input value={themeDraft.name||""} onChange={e=>setThemeDraft({...themeDraft,name:e.target.value})}/></label><div className="theme-editor-grid"><label>Base appearance<select value={themeDraft.appearance||"dark"} onChange={e=>setThemeDraft({...themeDraft,appearance:e.target.value})}><option value="dark">Dark</option><option value="light">Light</option></select></label><label>Canvas<input type="color" value={themeDraft.canvas||"#0c0f16"} onChange={e=>setThemeDraft({...themeDraft,canvas:e.target.value})}/></label><label>Accent<input type="color" value={themeDraft.accent||"#9c6cff"} onChange={e=>setThemeDraft({...themeDraft,accent:e.target.value})}/></label></div><div className="theme-editor-actions"><button className="setting-action" onClick={saveTheme}>Save & apply</button><button onClick={()=>setThemeDraft(null)}>Close editor</button></div></div>}{themeMessage&&<p className={/failed|error/i.test(themeMessage)?"provider-status-error":"provider-note"}>{themeMessage}</p>}</div>}
       {settingsSection==="appearance"&&<div className="settings-card environment-theme-settings" {...targetProps("appearance-environment")}>
         <h3><Paintbrush size={14} aria-hidden="true"/> Environment themes</h3>
         <p><strong>{environmentThemeCatalog.environmentName||"Local machine"}</strong> can publish theme JSON files from <code>{environmentThemeCatalog.directory||"the environment theme directory"}</code>. Published themes stay owned by that environment, so edits on the machine can flow into Trebell after refresh.</p>
@@ -758,14 +788,14 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           {environmentThemes.find(theme=>theme.publishedId===settings.environmentThemeSelections?.[environmentThemeCatalog.environmentKey])&&<button onClick={()=>duplicateEnvironmentTheme(environmentThemes.find(theme=>theme.publishedId===settings.environmentThemeSelections?.[environmentThemeCatalog.environmentKey]))}>Duplicate as editable</button>}
         </div>
       </div>}
-      {settingsSection==="general"&&window.trebellDesktop?.notify&&<div className="settings-card"><h3><Bell size={14} aria-hidden="true"/> Desktop notifications</h3><label className="toggle-line"><input type="checkbox" checked={settings.notifications!==false} onChange={e=>save({notifications:e.target.checked})}/> Notify when turns finish or need attention</label><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.notificationSound)} onChange={e=>save({notificationSound:e.target.checked})}/> Allow notification sound</label></div>}
-      {settingsSection==="workspace"&&<div className="settings-card"><h3><GitPullRequest size={14} aria-hidden="true"/> Pull request lifecycle</h3><p>When every pull request linked to a thread has a fresh synced terminal state (merged or closed), move the idle thread to Settled. Open, unsynced, running, and archived threads are never auto-settled.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.autoSettleMergedThreads)} onChange={e=>save({autoSettleMergedThreads:e.target.checked})}/> Auto-settle threads after all linked reviews finish</label></div>}
-      {settingsSection==="general"&&<div className="settings-card"><h3><RotateCcw size={14} aria-hidden="true"/> Restart recovery</h3><p>When Trebell restarts during active work, reconnect saved provider sessions and continue the interrupted turn. Codex uses native promptless continuation; other supported harnesses resume their saved session and continue from there. Off by default to avoid unexpected background work after a restart.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.continueThreadsAfterRestart)} onChange={e=>save({continueThreadsAfterRestart:e.target.checked})}/> Continue supported active threads after restarts</label></div>}
+      {settingsSection==="general"&&window.trebellDesktop?.notify&&<div className="settings-card"><h3><Bell size={14} aria-hidden="true"/> Desktop notifications</h3><label className="toggle-line"><input type="checkbox" checked={settings.notifications!==false} onChange={e=>saveSetting({notifications:e.target.checked})}/> Notify when turns finish or need attention</label><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.notificationSound)} onChange={e=>saveSetting({notificationSound:e.target.checked})}/> Allow notification sound</label></div>}
+      {settingsSection==="workspace"&&<div className="settings-card"><h3><GitPullRequest size={14} aria-hidden="true"/> Pull request lifecycle</h3><p>When every pull request linked to a thread has a fresh synced terminal state (merged or closed), move the idle thread to Settled. Open, unsynced, running, and archived threads are never auto-settled.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.autoSettleMergedThreads)} onChange={e=>saveSetting({autoSettleMergedThreads:e.target.checked})}/> Auto-settle threads after all linked reviews finish</label></div>}
+      {settingsSection==="general"&&<div className="settings-card"><h3><RotateCcw size={14} aria-hidden="true"/> Restart recovery</h3><p>When Trebell restarts during active work, reconnect saved provider sessions and continue the interrupted turn. Codex uses native promptless continuation; other supported harnesses resume their saved session and continue from there. Off by default to avoid unexpected background work after a restart.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.continueThreadsAfterRestart)} onChange={e=>saveSetting({continueThreadsAfterRestart:e.target.checked})}/> Continue supported active threads after restarts</label></div>}
       {settingsSection==="desktop"&&window.trebellDesktop?.browser?.importSources&&<div className="settings-card browser-profile-settings"><h3><Globe2 size={14} aria-hidden="true"/> Browser profiles</h3><p>Copy a supported browser session into Trebell Agent Browser. This is a one-time local copy; the source browser and Trebell stay separate afterward.</p>{browserImport.sources?.length?<>{browserImport.sources.map(source=><div className="browser-import-source" key={source.id}><div><strong>{source.name}</strong><span>{source.profiles?.length||0} profile{source.profiles?.length===1?"":"s"}{source.running?" · running":""}</span></div>{source.running&&<em>Close {source.name} before importing</em>}</div>)}<label>Profile<select value={browserImportProfile} onChange={e=>setBrowserImportProfile(e.target.value)}>{browserImport.sources.flatMap(source=>(source.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{source.name} · {profile.name}</option>))}</select></label><div className="provider-key-actions"><button className="setting-action" onClick={importBrowserProfile} disabled={browserImportBusy||!browserImportProfile||browserImport.sources.some(source=>source.running&&source.profiles?.some(profile=>profile.id===browserImportProfile))}>{browserImportBusy?"Importing…":"Import selected profile"}</button><button onClick={()=>loadBrowserImportSources()} disabled={browserImportBusy}><RefreshCw size={12}/> Rescan</button></div></>:<p className="provider-note">No directly importable browser profile was found. On Windows, Trebell supports Firefox and Helium. Other Chromium browsers use app-bound encryption and are intentionally not imported; JSON cookie import remains available in Agent Browser.</p>}<p className={browserImportMessage&&/close|failed|error/i.test(browserImportMessage)?"provider-status-error":"provider-note"}>{browserImportMessage}</p></div>}
       {settingsSection==="desktop"&&window.trebellDesktop?.snapshots&&<div className="settings-card snapshot-settings"><h3><Camera size={14} aria-hidden="true"/> SnapShots</h3><p>Capture the foreground window from anywhere and attach it to the current draft. Captures are stored locally until Trebell successfully attaches them.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(snapshotInfo.enabled)} onChange={e=>configureSnapshots({enabled:e.target.checked})}/> Enable global SnapShot shortcut</label><label>Shortcut<input value={snapshotInfo.shortcut||""} onChange={e=>setSnapshotInfo(info=>({...info,shortcut:e.target.value}))} onBlur={()=>snapshotInfo.enabled&&configureSnapshots({shortcut:snapshotInfo.shortcut})} placeholder="CommandOrControl+Shift+S"/></label><label className="toggle-line"><input type="checkbox" checked={Boolean(snapshotInfo.includeText)} onChange={e=>configureSnapshots({includeText:e.target.checked})}/> Include accessibility text and control positions</label><label className="toggle-line"><input type="checkbox" checked={snapshotInfo.playSound!==false} onChange={e=>configureSnapshots({playSound:e.target.checked})}/> Play capture sound</label>{snapshotInfo.playSound!==false&&<label>Capture sound<select value={snapshotInfo.sound||"soft-pop"} onChange={e=>configureSnapshots({sound:e.target.value})}><option value="soft-pop">Soft pop</option><option value="camera-shutter">Camera shutter</option></select></label>}<label className="toggle-line"><input type="checkbox" checked={snapshotInfo.flash!==false} onChange={e=>configureSnapshots({flash:e.target.checked})}/> Flash captured window</label><label className="toggle-line"><input type="checkbox" checked={snapshotInfo.animations!==false} onChange={e=>configureSnapshots({animations:e.target.checked})}/> Animate capture feedback</label><p className="provider-note">App text is off by default because visible UI can contain sensitive information. Sound, flash and animation are local capture feedback only. {snapshotInfo.pending?`${snapshotInfo.pending} capture${snapshotInfo.pending===1?"":"s"} waiting to attach. `:""}</p>{snapshotMessage&&<p className={["Saving…","SnapShots ready.","SnapShots disabled."].includes(snapshotMessage)?"provider-note":"provider-status-error"}>{snapshotMessage}</p>}<div className="provider-key-actions"><button onClick={()=>window.trebellDesktop.snapshots.capture().catch(error=>setSnapshotMessage(error.message))}>Capture now</button><button onClick={()=>configureSnapshots({shortcut:snapshotInfo.shortcut})} disabled={!snapshotInfo.enabled}>Save shortcut</button></div></div>}
       {settingsSection==="desktop"&&window.trebellDesktop?.background&&<div className="settings-card"><h3><Power size={14} aria-hidden="true"/> Background mode</h3><p>Keep Trebell's local harness running in the system tray after the window closes, and start it automatically when you sign in.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.backgroundMode)} onChange={e=>setBackgroundMode(e.target.checked)}/> Keep Trebell running in background</label></div>}
       <div className="settings-card keybindings-settings" hidden={settingsSection!=="shortcuts"}><h3><Keyboard size={14} aria-hidden="true"/> Keyboard shortcuts</h3><p>Shortcuts can be conditional. For example, <code>threadOpen && !modalOpen</code> means “only when a thread is open and no dialog is covering the app.”</p>{settingsSection==="shortcuts"&&KEYBINDING_COMMANDS.map(command=>{const rule=keybindingRules.find(item=>item.command===command.id);return <div className="keybinding-row" key={command.id}><strong>{command.label}</strong><label>Shortcut<ShortcutInput value={rule?.key||""} onChange={value=>updateKeybinding(command.id,{key:value})}/></label><label>When<input value={rule?.when||""} placeholder="Always" title={rule?.when||undefined} onChange={e=>updateKeybinding(command.id,{when:e.target.value})}/></label></div>})}{settingsSection==="shortcuts"&&projectScripts.length>0&&<><h4>Project actions</h4>{projectScripts.map(script=>{const command="script."+script.id+".run";const rule=keybindingRules.find(item=>item.command===command);return <div className="keybinding-row" key={command}><strong>Run {script.name}</strong><label>Shortcut<ShortcutInput value={rule?.key||""} onChange={value=>updateKeybinding(command,{key:value})}/></label><label>When<input value={rule?.when||"projectOpen && !modalOpen"} title={rule?.when||"projectOpen && !modalOpen"} onChange={e=>updateKeybinding(command,{when:e.target.value})}/></label></div>})}</>}<p className="provider-note">Available contexts: chatFocus, terminalFocus, terminalOpen, previewFocus, textInputFocus, modelPickerOpen, projectOpen, threadOpen, pullRequestOpen, running, modalOpen, rightPanelOpen, desktop. Combine them with <code>!</code>, <code>&&</code>, <code>||</code> and parentheses. Blank shortcuts stay unbound until you assign one.</p></div>
-      <div className="settings-card update-settings" hidden={settingsSection!=="general"}><h3><Download size={14} aria-hidden="true"/> Updates</h3>{desktopUpdate?.supported?<><p>Current: <strong>{desktopUpdate.currentVersion||update?.current||"unknown"}</strong>{desktopUpdate.availableVersion&&<><br/>Available: <strong>{desktopUpdate.availableVersion}</strong></>}<br/>Status: <strong>{updateStatusLabel}</strong></p>{desktopUpdate.status==="downloading"&&<div className="update-progress"><span style={{width:`${Math.max(0,Math.min(100,desktopUpdate.percent||0))}%`}}/></div>}{desktopUpdate.status==="downloading"&&<p className="provider-note">{Math.round(desktopUpdate.percent||0)}% downloaded</p>}{desktopUpdate.error&&<p className="provider-status-error">{desktopUpdate.error}</p>}<div className="provider-key-actions"><button onClick={checkDesktopUpdate} disabled={["checking","downloading","installing"].includes(desktopUpdate.status)}><RefreshCw size={12}/> Check now</button>{desktopUpdate.status==="available"&&<button className="setting-action" onClick={downloadDesktopUpdate}><Download size={12}/> Download update</button>}{desktopUpdate.status==="downloaded"&&<button className="setting-action" onClick={installDesktopUpdate}>Restart & install</button>}</div>{desktopUpdate.status==="downloaded"&&!settings.continueThreadsAfterRestart&&<p className="provider-note">Restart recovery is off. Finish active work first, or enable Restart recovery before installing.</p>}</>:<>{update?.latest?<p>Current: <strong>{update.current}</strong><br/>Latest: <strong>{String(update.latest).replace(/^v(?=\d)/,"")}</strong></p>:<p className={update?.error?"provider-status-error":undefined}>{update?.error||"Checking releases…"}</p>}{update?.url&&<button onClick={()=>window.open(update.url,"_blank")}><Download size={13}/> Open latest release</button>}{desktopUpdate?.status==="development"&&<p className="provider-note">In-app installation is available in packaged Trebell builds.</p>}</>}</div>
+      <div className="settings-card update-settings" hidden={settingsSection!=="general"}><h3><Download size={14} aria-hidden="true"/> Updates</h3>{desktopUpdate?.supported?<><p>Current: <strong>{desktopUpdate.currentVersion||update?.current||"unknown"}</strong>{desktopUpdate.availableVersion&&<><br/>Available: <strong>{desktopUpdate.availableVersion}</strong></>}<br/>Status: <strong>{updateStatusLabel}</strong></p>{desktopUpdate.status==="downloading"&&<div className="update-progress"><span style={{width:`${Math.max(0,Math.min(100,desktopUpdate.percent||0))}%`}}/></div>}{desktopUpdate.status==="downloading"&&<p className="provider-note">{Math.round(desktopUpdate.percent||0)}% downloaded</p>}{desktopUpdate.error&&<p className="provider-status-error">{desktopUpdate.error}</p>}<div className="provider-key-actions"><button onClick={checkDesktopUpdate} disabled={["checking","downloading","installing"].includes(desktopUpdate.status)}><RefreshCw size={12}/> Check now</button>{desktopUpdate.status==="available"&&<button className="setting-action" onClick={downloadDesktopUpdate}><Download size={12}/> Download update</button>}{desktopUpdate.status==="downloaded"&&<button className="setting-action" onClick={installDesktopUpdate}>Restart & install</button>}</div>{desktopUpdate.status==="downloaded"&&!settings.continueThreadsAfterRestart&&<p className="provider-note">Restart recovery is off. Finish active work first, or enable Restart recovery before installing.</p>}</>:<>{update?.latest?<p>Current: <strong>{update.current}</strong><br/>Latest: <strong>{String(update.latest).replace(/^v(?=\d)/,"")}</strong></p>:<p className={update?.error?"provider-status-error":undefined}>{update?.error||"Checking releases…"}</p>}{update?.error&&<button onClick={checkRelease} disabled={loading}><RefreshCw size={12}/> {loading?"Checking…":"Check again"}</button>}{update?.url&&<button onClick={()=>window.open(update.url,"_blank")}><Download size={13}/> Open latest release</button>}{desktopUpdate?.status==="development"&&<p className="provider-note">In-app installation is available in packaged Trebell builds.</p>}</>}</div>
       <div className="settings-card" hidden={settingsSection!=="diagnostics"}><h3><Stethoscope size={14} aria-hidden="true"/> Diagnostics</h3><p>Runtime and project diagnostics are local to this machine.</p><div className="diag-badges"><span className={runtime?.agentRuntimeStatus?.available?"ok":""}><Activity size={12}/> {selectedAgentStatus?.name||selectedAgent}</span>{selectedManagedInference&&<span className={diagnostics?.runtime?.providerReady?"ok":""}><ShieldCheck size={12}/> {MODEL_PROVIDER_LABELS[diagnostics?.runtime?.provider||selected]||"Provider"}</span>}</div></div>
     </div>
     {/* The log refresh leaves out the GitHub release check: its failures (such as a rate limit) are shown in General and are not diagnostics failures. */}
