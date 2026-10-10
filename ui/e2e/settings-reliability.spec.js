@@ -203,6 +203,39 @@ test("deleting a custom theme offers the app's undo toast and Undo puts it back"
   await page.screenshot({path:auditDir+"settings-theme-delete-undone.png"});
 });
 
+test("a failed theme Undo is reported by the app's error toast once Settings is closed, and by the Settings alert while open",async({page,request})=>{
+  const pageErrors=[];
+  page.on("pageerror",error=>pageErrors.push(String(error?.message||error)));
+  const warm={id:"custom-reliability-undo-failure",name:"Warm paper",appearance:"light",canvas:"#f4efe6",accent:"#b0582f",colors:{}};
+  const toast=page.getByTestId("thread-undo-toast"),appError=page.getByTestId("app-action-error");
+  const failSaves=()=>page.route(/\/api\/settings$/,route=>route.request().method()==="POST"
+    ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate theme undo failure"})})
+    :route.continue());
+  await openSettings(page,request,"Theme Undo Failure Workspace",{customThemes:[warm],appearance:warm.id,environmentThemeSelections:{}});
+  await page.getByRole("button",{name:/Appearance/}).click();
+  await page.getByRole("button",{name:"Delete selected",exact:true}).click();
+  await expect(toast).toContainText("Theme “Warm paper” deleted");
+  // Undo from another page: the Settings alert is gone with Settings, so the app's error toast says so.
+  await page.getByRole("button",{name:"History",exact:true}).click();
+  await failSaves();
+  await toast.getByRole("button",{name:"Undo",exact:true}).click();
+  await expect(appError).toContainText("Undo failed: Deliberate theme undo failure");
+  expect((await savedSettings(request)).customThemes).toEqual([]);
+  await page.screenshot({path:auditDir+"settings-theme-undo-failed-after-leaving.png"});
+  await page.unroute(/\/api\/settings$/);
+  // Undo on Settings: the Settings alert reports it, without a second app toast.
+  await openSettings(page,request,"Theme Undo Failure Workspace",{customThemes:[warm],appearance:warm.id,environmentThemeSelections:{}});
+  await page.getByRole("button",{name:/Appearance/}).click();
+  await page.getByRole("button",{name:"Delete selected",exact:true}).click();
+  await expect(toast).toContainText("Theme “Warm paper” deleted");
+  await failSaves();
+  await toast.getByRole("button",{name:"Undo",exact:true}).click();
+  await expect(page.locator(".settings-action-error")).toContainText("Deliberate theme undo failure");
+  await page.waitForTimeout(300);
+  await expect(appError).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
 test("a theme note clears once another theme is chosen",async({page,request})=>{
   const published=join(e2eHome(),"themes");
   await mkdir(published,{recursive:true});
