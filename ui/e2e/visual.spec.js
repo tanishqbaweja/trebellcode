@@ -1422,6 +1422,16 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(explorer.getByRole("alert")).toHaveCount(0);
     expect(sourceRequests.at(-1)).toMatchObject({file:"docs/session-guide.md",startLine:"1"});
     await explorer.screenshot({path:auditDir+"context-inspector-files-preview-explorer.png"});
+    // Switching mode waits for an opened row or a search, so neither lands its result in the next mode.
+    const codeMode=explorer.getByRole("button",{name:"Code",exact:true});
+    for(const [pattern,act] of [[/\/api\/context\/relations\?/,()=>guideRow.click()],[/\/api\/context\/files\?/,()=>explorer.getByRole("button",{name:"Search",exact:true}).click()]]){
+      let open;const gate=new Promise(resolve=>{open=resolve}),held=async route=>{await gate;await route.fallback()};
+      await page.route(pattern,held);await act();
+      await expect(codeMode).toBeDisabled();await codeMode.click({force:true});
+      open();await expect(codeMode).toBeEnabled();await page.unroute(pattern,held);
+      await expect(explorer.getByRole("button",{name:"Files",exact:true})).toHaveClass(/active/);
+    }
+    await expect(guideRow).toContainText("repository file");
     await explorer.getByRole("button",{name:"Architecture",exact:true}).click();
     const architecture=explorer.getByTestId("context-architecture-view");
     await expect(architecture).toContainText("138 indexed · 412 relations");

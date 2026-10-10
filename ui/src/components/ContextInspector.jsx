@@ -43,7 +43,8 @@ function ContextExplorer({root,environmentId=null}){
     files:{label:"Files",placeholder:"Find files, e.g. session",endpoint:"/api/context/files",empty:"No repository files matched"},
     code:{label:"Code",placeholder:"Search source text, e.g. return token",endpoint:"/api/context/search",empty:"No source or text matches found"},
   }[mode];
-  function chooseMode(next){if(next===mode)return;setMode(next);setResults([]);setSearched(false);setSelected(null);setRelations(null);setPreview(null);setDiagnostics(null);setFixes(null);setError("")}
+  // A search or an opened row still in flight would land its result in the next mode, so switching waits for it.
+  function chooseMode(next){if(next===mode||busy)return;setMode(next);setResults([]);setSearched(false);setSelected(null);setRelations(null);setPreview(null);setDiagnostics(null);setFixes(null);setError("")}
   // Code rows carry no indexed flag, and the index picks source files by extension, so one exact Files lookup per
   // extension marks the docs and configuration rows. A failed lookup only leaves rows unmarked.
   async function markCodeRows(rows){
@@ -108,7 +109,7 @@ function ContextExplorer({root,environmentId=null}){
   const diagnosticRows=diagnostics?[...(diagnostics.diagnostics||[]),...(diagnostics.semanticDiagnostics||[])]:[];
   return <section className="context-explorer" data-testid="context-explorer">
     <div className="context-inspector-section-head"><strong>Repository explorer</strong><span>deterministic index</span></div>
-    <div className="context-explorer-modes" role="group" aria-label="Repository search mode">{["symbols","files","code"].map(item=><button type="button" key={item} className={mode===item?"active":""} onClick={()=>chooseMode(item)}>{({symbols:"Symbols",files:"Files",code:"Code"})[item]}</button>)}</div>
+    <div className="context-explorer-modes" role="group" aria-label="Repository search mode">{["symbols","files","code"].map(item=><button type="button" key={item} className={mode===item?"active":""} onClick={()=>chooseMode(item)} disabled={Boolean(busy)}>{({symbols:"Symbols",files:"Files",code:"Code"})[item]}</button>)}</div>
     <form className="context-explorer-search" onSubmit={search}>
       <input aria-label={`Search repository ${mode}`} value={query} onChange={event=>setQuery(event.target.value)} placeholder={modeMeta.placeholder}/>
       <button type="submit" disabled={!query.trim()||Boolean(busy)}>{busy==="search"?"Searching…":"Search"}</button>
