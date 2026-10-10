@@ -650,7 +650,7 @@ function formQuestions(params){
   }));
 }
 
-export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null}={}){
+export function attachAgentRelay(server,{runtimeManager,threadStore,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null}={}){
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
   const socketContexts=new Set();
@@ -930,9 +930,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,capabilityScope:environmentId||"",autoCompactWindow:instance.autoCompactWindow||null,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,persistedTurns:((threadStore.get(thread.id)||thread).turns||[]).some(turn=>turn?.providerMessageId||turn?.providerUserMessageId),onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),mcpServers:claudeMcpServers})
       :instance.kind==="opencode"
       ?(remoteIo
-        ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers})
+        ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers})
         :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp}))
-      :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),argsForPermission:mode=>runtimeManager.acpArgs(instance,mode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,runTempRoot:instance.kind==="antigravity"&&!remoteIo?acpRuntimeTempRoot(runtimeManager.childEnv(instance),"antigravity"):null,attachmentsDir:instance.kind==="antigravity"&&!remoteIo?join(trebellHome(runtimeManager.env||process.env),"attachments"):null,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
+      :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),argsForPermission:mode=>runtimeManager.acpArgs(instance,mode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,runTempRoot:instance.kind==="antigravity"&&!remoteIo?acpRuntimeTempRoot(runtimeManager.childEnv(instance),"antigravity"):null,attachmentsDir:instance.kind==="antigravity"&&!remoteIo?join(trebellHome(runtimeManager.env||process.env),"attachments"):null,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
     // A Cursor thread runs in the Plan mode it last ran in until a turn names another (also after a restart).
     if(runtime instanceof AcpAgentSession&&instance.kind==="cursor")runtime.setCollaborationMode((threadMetadata(thread.id)||thread)?.settings?.collaborationMode?.mode||"default");
     let started;

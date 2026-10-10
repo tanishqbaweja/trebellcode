@@ -44,12 +44,6 @@ function inside(root,candidate){
   return rel===""||(!rel.startsWith("..")&&!isAbsolute(rel));
 }
 
-function boundedPath(root,path){
-  const candidate=resolve(path);
-  if(!inside(root,candidate))throw Object.assign(new Error(`Path is outside the active workspace: ${path}`),{code:-32602});
-  return candidate;
-}
-
 // T3 AntigravityClientFiles: a path the harness asks for resolves through links, its last part included, before it is
 // checked against the session's roots (the workspace and Trebell's attachments folder), so a link inside the workspace
 // cannot read or write through to a file outside them. A missing file (a new write) is checked by its nearest existing
@@ -287,8 +281,8 @@ function requestedModel(runtime,model){
 }
 
 export class AcpAgentSession{
-  constructor({runtime,command,args=[],cwd,processCwd=null,env=process.env,terminals,permissionMode="supervised",onUpdate,onPermission,onQuestion=null,onElicitation,onWakeTurn=null,argsForPermission=null,runTempRoot=null,version="0.0.0",spawnProcess=null,remoteIo=null,mcpServers=[],attachmentsDir=null}={}){
-    this.runtime=runtime;this.command=command;this.args=[...(args||[])];this.cwd=remoteIo?String(cwd||remoteIo.root||"/"):resolve(cwd||process.cwd());this.env=env;this.terminals=terminals;
+  constructor({runtime,command,args=[],cwd,processCwd=null,env=process.env,permissionMode="supervised",onUpdate,onPermission,onQuestion=null,onElicitation,onWakeTurn=null,argsForPermission=null,runTempRoot=null,version="0.0.0",spawnProcess=null,remoteIo=null,mcpServers=[],attachmentsDir=null}={}){
+    this.runtime=runtime;this.command=command;this.args=[...(args||[])];this.cwd=remoteIo?String(cwd||remoteIo.root||"/"):resolve(cwd||process.cwd());this.env=env;
     // Trebell saves pasted text and uploads outside the workspace. Antigravity checks every path against its own allowed
     // folders, so T3 grants it the attachments folder (additionalDirectories) and serves its client files there too.
     this.attachmentsDir=runtime==="antigravity"&&!remoteIo&&text(attachmentsDir)?resolve(attachmentsDir):null;
@@ -296,9 +290,8 @@ export class AcpAgentSession{
     this.argsForPermission=typeof argsForPermission==="function"?argsForPermission:null;this.runTempRoot=runTempRoot||null;
     this.spawnProcess=spawnProcess;this.remoteIo=remoteIo;this.processCwd=processCwd?resolve(processCwd):null;
     this.mcpServers=Array.isArray(mcpServers)?mcpServers.map(server=>({...server,args:[...(server.args||[])],env:(server.env||[]).map(item=>({...item}))})):[];
-    this.client=null;this.sessionId=null;this.initializeResult=null;this.sessionSetup=null;this.terminalIds=new Set();this.model=null;
+    this.client=null;this.sessionId=null;this.initializeResult=null;this.sessionSetup=null;this.model=null;
     this.runtimeContextSent=false;
-    this.remoteTerminals=new Map();
     this.label=runtimeHarnessLabel(runtime);
     this.dead=false;this.deadError=null;this.closing=false;this.starting=false;this.loading=false;
     this.activePrompt=null;this.wake=null;this.userWaits=new Set();this.tools=new Map();this.todos=new Map();
@@ -770,9 +763,6 @@ export class AcpAgentSession{
 
   async close(){
     this.closing=true;this.#cancelUserWaits();this.#finishWake("cancelled");
-    for(const [id,entry] of this.remoteTerminals){try{entry.child.kill("SIGTERM")}catch{}this.remoteTerminals.delete(id)}
-    for(const id of this.terminalIds)await this.terminals?.close(id).catch(()=>{});
-    this.terminalIds.clear();
     if(this.client&&this.sessionId&&!this.dead&&!this.client.closed)await this.client.closeSession(this.sessionId).catch(()=>{});
     await this.client?.stop().catch(()=>{});
   }
@@ -812,49 +802,6 @@ export class AcpAgentSession{
       }
       if(method==="cursor/update_todos"){this.#emitTodos(params?.todos,params?.merge===true);return {}}
       if(method==="cursor/task"||method==="cursor/generate_image")return {};
-    }
-    if(method==="terminal/create"){
-      const options=[{kind:"allow_once",optionId:"allow",name:"Allow"},{kind:"reject_once",optionId:"reject",name:"Reject"}];
-      const toolCall={title:String(params.command||"Run command"),toolCallId:params.toolCallId||null,rawInput:{command:params.command,args:params.args,cwd:params.cwd||this.cwd},kind:"execute"};
-      let selectedOption=acpPermissionChoice(options,this.permissionMode,"execute",{action:String(params.command||"Run command"),rawInput:toolCall.rawInput,workspace:this.cwd,requestedPath:params.cwd||this.cwd});
-      if(!selectedOption){
-        const decision=await this.#waitForUser(()=>this.onPermission?.({method,params:{...params,toolCall},options,approvalOptions:acpApprovalOptions(this.runtime,options)}));
-        selectedOption=decision===CANCELLED?null:acpDecisionOption(this.runtime,options,decision||"decline");
-      }
-      if(selectedOption!=="allow")throw Object.assign(new Error("Terminal command was denied"),{code:-32000});
-      if(this.remoteIo){
-        const id=`remote-terminal-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-        const child=this.remoteIo.spawn({command:String(params.command||""),args:Array.isArray(params.args)?params.args:[],cwd:params.cwd||this.cwd});
-        const entry={child,buffer:"",running:true,exitCode:null,signal:null,waiters:[]};this.remoteTerminals.set(id,entry);
-        const append=chunk=>{entry.buffer=(entry.buffer+String(chunk)).slice(-2*1024*1024)};child.stdout?.on("data",append);child.stderr?.on("data",append);
-        child.once("exit",(code,signal)=>{entry.running=false;entry.exitCode=code;entry.signal=signal;for(const resolve of entry.waiters.splice(0))resolve({exitCode:code,signal})});
-        this.terminalIds.add(id);return {terminalId:id};
-      }
-      if(!this.terminals)throw new Error("Terminal service is unavailable");
-      const cwd=params.cwd?boundedPath(this.cwd,params.cwd):this.cwd;
-      const env=Object.fromEntries((params.env||[]).map(item=>[String(item.name),String(item.value)]));
-      const session=await this.terminals.create({cwd,name:`${this.runtime} agent`,shell:String(params.command||""),args:Array.isArray(params.args)?params.args:[],env});
-      this.terminalIds.add(session.id);
-      return {terminalId:session.id};
-    }
-    if(method==="terminal/output"){
-      if(this.remoteIo){const session=this.remoteTerminals.get(params.terminalId);if(!session)throw Object.assign(new Error("Terminal not found"),{code:-32002});return {output:session.buffer||"",truncated:false,...(!session.running?{exitStatus:{exitCode:session.exitCode??0,signal:session.signal??null}}:{})}}
-      const session=this.terminals?.snapshot(params.terminalId);
-      if(!session)throw Object.assign(new Error("Terminal not found"),{code:-32002});
-      return {output:session.buffer||"",truncated:false,...(!session.running?{exitStatus:{exitCode:session.exitCode??0,signal:null}}:{})};
-    }
-    if(method==="terminal/wait_for_exit"){
-      if(this.remoteIo){const session=this.remoteTerminals.get(params.terminalId);if(!session)throw Object.assign(new Error("Terminal not found"),{code:-32002});if(!session.running)return {exitCode:session.exitCode??null,signal:session.signal??null};return await new Promise(resolve=>session.waiters.push(resolve))}
-      const result=await this.terminals?.waitForExit(params.terminalId,{timeoutMs:30*60_000});
-      return {exitCode:result?.exitCode??null,signal:result?.signal??null};
-    }
-    if(method==="terminal/kill"){
-      if(this.remoteIo){const session=this.remoteTerminals.get(params.terminalId);if(session){try{session.child.kill("SIGTERM")}catch{}this.remoteTerminals.delete(params.terminalId)}this.terminalIds.delete(params.terminalId);return {}}
-      await this.terminals?.close(params.terminalId);this.terminalIds.delete(params.terminalId);return {};
-    }
-    if(method==="terminal/release"){
-      if(this.remoteIo){const session=this.remoteTerminals.get(params.terminalId);if(session?.running){try{session.child.kill("SIGTERM")}catch{}}this.remoteTerminals.delete(params.terminalId);this.terminalIds.delete(params.terminalId);return {}}
-      await this.terminals?.close(params.terminalId);this.terminalIds.delete(params.terminalId);return {};
     }
     throw Object.assign(new Error(`Unsupported ACP client request: ${method}`),{code:-32601});
   }
