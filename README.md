@@ -10,7 +10,7 @@ Support for Codex, Claude Code, OpenCode, and other runtimes is useful for conve
 
 **Working desktop MVP · Apache-2.0 · Node.js 22+ · Windows release + macOS/Linux packaging**
 
-![Trebell Code desktop workspace](docs/assets/trebell-code-workspace.png)
+![Trebell Code workspace: Trebell Native fixes a bug, runs the tests, verifies the change and shows the diff](docs/assets/trebell-code-workspace.png)
 
 ## Why Trebell
 
