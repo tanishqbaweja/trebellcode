@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, query, renameSession } from "@anthropic-ai/claude-agent-sdk";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
+import { fileUriPath } from "./file-uri.mjs";
 import { normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
@@ -106,7 +107,7 @@ export function claudeUserContent(parts=[]){
       const mimeType=String(part.mimeType||part.mime_type||"").trim().toLowerCase();
       if(!CLAUDE_IMAGE_TYPES.has(mimeType))throw new Error(`Unsupported Claude image attachment type '${mimeType||"unknown"}'`);
       images.push({type:"image",source:{type:"base64",media_type:mimeType,data:String(part.data||"")}});
-    }else if(part?.type==="resource_link")links.push({type:"text",text:`Attached file: ${String(part.uri||"").replace(/^file:\/\//,"")}`});
+    }else if(part?.type==="resource_link")links.push({type:"text",text:`Attached file: ${fileUriPath(part.uri)??String(part.uri||"")}`});
     else if(part?.type==="text"){const text=String(part.text||"");if(text)texts.push({type:"text",text})}
     else if(part)texts.push({type:"text",text:JSON.stringify(part)});
   }

@@ -146,13 +146,13 @@ test("Claude user content sends images as base64 blocks and keeps the user's tex
   const content=claudeUserContent([
     {type:"text",text:"<trebell_context>ctx</trebell_context>"},
     {type:"image",mimeType:"image/png",data:"iVBORw0KGgo="},
-    {type:"resource_link",uri:"file://C:/repo/a.js",name:"a.js"},
+    {type:"resource_link",uri:"file:///C:/my%20repo/a.js",name:"a.js"},
     {type:"text",text:"/review what is in the picture?"},
   ]);
   assert.deepEqual(content,[
     {type:"image",source:{type:"base64",media_type:"image/png",data:"iVBORw0KGgo="}},
     {type:"text",text:"<trebell_context>ctx</trebell_context>"},
-    {type:"text",text:"Attached file: C:/repo/a.js"},
+    {type:"text",text:"Attached file: C:\\my repo\\a.js"},
     {type:"text",text:"/review what is in the picture?"},
   ]);
   assert.throws(()=>claudeUserContent([{type:"image",mimeType:"image/bmp",data:"Qk0="}]),/Unsupported Claude image attachment type 'image\/bmp'/);

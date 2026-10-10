@@ -30,7 +30,17 @@ test("ACP full, auto, supervised and read-only modes preserve their approval con
   assert.equal(acpPermissionChoice(options,"auto","execute"),"once");
   assert.equal(acpPermissionChoice(options.filter(option=>option.kind!=="allow_once"),"full",null),"always");
   assert.equal(acpPermissionChoice(options,"supervised","edit"),null);
-  assert.equal(acpPermissionChoice(options,"read-only","read"),"reject");
+  assert.equal(acpPermissionChoice(options,"read-only","edit"),"reject");
+  assert.equal(acpPermissionChoice(options,"read-only","execute"),"reject");
+});
+
+test("ACP read, search and think requests are allowed unasked in every mode, Read Only included (T3 acpReadDisposition)",()=>{
+  for(const mode of ["supervised","edits","auto","read-only","full"]){
+    for(const kind of ["read","search","think"])assert.equal(acpPermissionChoice(options,mode,kind),"once",`${mode} ${kind}`);
+  }
+  // Only the ACP read kinds are reads: other labels that merely sound like reads keep the mode's answer.
+  assert.equal(acpPermissionChoice(options,"read-only","grep"),"reject");
+  assert.equal(acpPermissionChoice(options,"supervised","grep"),null);
 });
 
 test("ACP harness prompts append bounded Trebell runtime context once per session without replacing user messages",async()=>{
