@@ -788,12 +788,13 @@ export class OpenCodeAgentSession{
       return;
     }
     // OpenCode 1.x streams a text or reasoning part as message.part.delta events between the part's first update (empty) and its last
-    // (the full text). Reasoning is the model's thinking, not its reply.
+    // (the full text). Reasoning is the model's thinking, not its reply; each reasoning part is a thought of its own (its id is the
+    // thought's message id), as T3 Code keeps one reasoning item per OpenCode part.
     if(event.type==="message.part.delta"){
       if(p.field!=="text"||typeof p.delta!=="string"||!p.delta)return;
       const sessionUpdate=this.assistantTextParts.has(p.partID)?"agent_message_chunk":this.reasoningParts.has(p.partID)?"agent_thought_chunk":null;if(!sessionUpdate)return;
       this.partText.set(p.partID,(this.partText.get(p.partID)||"")+p.delta);
-      this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate,content:{type:"text",text:p.delta}}});
+      this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate,content:{type:"text",text:p.delta},...(sessionUpdate==="agent_thought_chunk"?{messageId:p.partID}:{})}});
       return;
     }
     if(event.type==="message.part.updated"){
@@ -812,7 +813,7 @@ export class OpenCodeAgentSession{
         const previous=this.partText.get(part.id)||"",text=typeof part.text==="string"?part.text:null;
         const delta=text!==null&&text.startsWith(previous)?text.slice(previous.length):typeof p.delta==="string"?p.delta:text||"";
         this.partText.set(part.id,text??previous+delta);
-        if(part.type==="reasoning")this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_thought_chunk",content:{type:"text",text:delta}}});
+        if(part.type==="reasoning")this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_thought_chunk",content:{type:"text",text:delta},messageId:part.id}});
         else if(delta)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:delta}}});
       }else if(part.type==="tool"){
         const status=part.state?.status==="running"?"in_progress":part.state?.status==="completed"?"completed":part.state?.status==="error"?"failed":"pending";

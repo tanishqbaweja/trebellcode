@@ -1,4 +1,5 @@
-const MESSAGE_ITEM_TYPES=new Set(["userMessage","agentMessage"]);
+// The conversation shows these itself (a finished thought is a row of it), so the restored activity leaves them out.
+const MESSAGE_ITEM_TYPES=new Set(["userMessage","agentMessage","reasoning"]);
 
 function entryTurnId(entry){
   return entry?.turnId||null;

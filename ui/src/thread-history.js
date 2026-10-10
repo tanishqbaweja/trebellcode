@@ -1,3 +1,5 @@
+import { reasoningHistoryMessage } from "./reasoning-text.js";
+
 export function messageText(item){
   if(typeof item?.text==="string")return item.text;
   if(Array.isArray(item?.content))return item.content.map(entry=>entry?.text||entry?.input_text||"").join("");
@@ -13,6 +15,8 @@ export function historyFromTurns(turns=[],checkpointByTurn={}){
         if(text)out.push({id:item.id,role:"user",text,turnId:turn.id,checkpointId:checkpointByTurn[turn.id]?.id||null});
       }else if(item?.type==="agentMessage"&&item.text?.trim()){
         out.push({id:item.id,role:"assistant",text:item.text,turnId:turn.id});
+      }else if(item?.type==="reasoning"){
+        const thought=reasoningHistoryMessage(item,turn.id);if(thought)out.push(thought);
       }
     }
   }
@@ -29,6 +33,8 @@ export function historyFromItemEntries(entries=[],checkpointByTurn={}){
       if(text)out.push({id:item.id,role:"user",text,turnId,checkpointId:checkpointByTurn[turnId]?.id||null});
     }else if(item.type==="agentMessage"&&item.text?.trim()){
       out.push({id:item.id,role:"assistant",text:item.text,turnId});
+    }else if(item.type==="reasoning"){
+      const thought=reasoningHistoryMessage(item,turnId);if(thought)out.push(thought);
     }
   }
   return out;

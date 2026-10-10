@@ -69,6 +69,8 @@ import { codexReasoningEffortLabel } from "../../src/codex-model-catalog.mjs";
 import { goalAdditionalContext } from "../../src/goal-state.mjs";
 import { codexErrorNotice, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal, parseCodexGoalCommand } from "./codex-turn-options.js";
 import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayHarness, serviceTierPickerTitle } from "./harness-turn-options.js";
+import ReasoningRow from "./components/ReasoningRow.jsx";
+import { reasoningHistoryMessage, reasoningItemText } from "./reasoning-text.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -278,6 +280,7 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initial
     {events.length>visible.size&&<div className="timeline-window-controls"><span>{visible.start+1}–{visible.end} of {visible.total}</span><div><button disabled={!visible.hasOlder} onClick={()=>setWindowEnd(previousActivityWindowEnd(visible))}>Earlier</button><button disabled={!visible.hasNewer} onClick={()=>setWindowEnd(nextActivityWindowEnd(visible))}>Newer</button>{!visible.latest&&<button onClick={()=>setWindowEnd(null)}>Latest</button>}</div></div>}
     {visible.items.map(event=>{
       const id=String(event.id),streamedOutput=commandOutputs.get(id)||"",progress=mcpProgress.get(id);
+      if(event.kind==="reasoning")return <ReasoningRow key={event.id} id={id} text={streamedOutput||reasoningItemText(event.raw)} active={event.status==="running"}/>;
       let rowEvent=!event.output&&streamedOutput?{...event,output:streamedOutput}:event;
       if(progress)rowEvent={...rowEvent,title:progress.title||rowEvent.title,raw:{...(rowEvent.raw||{}),progress:progress.raw||progress}};
       return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={openWorkspace}/>;
@@ -306,6 +309,7 @@ function ThreadFindBar({state,inputRef,onQuery,onPrevious,onNext,onClose}){
 
 const ConversationMessageRow=memo(function ConversationMessageRow({message,activeFind,allowRevert,projectPath,environmentId,threadId,onEditFromHere,heading="",outcomeLabel="",outcomeTone=""}){
   const parsed=useMemo(()=>message.role==="user"?null:parseVisualizationMessage(message.text),[message.role,message.text]);
+  if(message.role==="reasoning")return <ReasoningRow id={message.id} messageId={message.id} text={message.text}/>;
   if(message.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="user-bubble"><p>{message.text}</p>{allowRevert&&message.turnId&&<button className="message-action" onClick={()=>onEditFromHere(message)}>Edit from here</button>}</div></div>;
   return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text" data-assistant-citation-source={message.id}>{parsed.text}</div>}{(parsed?.visualizations||[]).map((visualization,index)=>{
     const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
@@ -2258,7 +2262,7 @@ export default function App(){
     }
     else if(message.method==="item/completed"&&p.item){
       let streamedCommandOutput="";
-      if(isCurrent&&p.item.type==="commandExecution"){
+      if(isCurrent&&(p.item.type==="commandExecution"||p.item.type==="reasoning")){
         const commandId=String(p.item.id||"command");
         commandStreamBufferRef.current?.flushKey(commandId);
         streamedCommandOutput=commandOutputRef.current.get(commandId)||"";
@@ -2279,7 +2283,9 @@ export default function App(){
           setMessages(prev=>prev.some(message=>message.id===id)?prev:[...prev,{id,role:"user",text:draft.draftText||draft.text,turnId:p.turnId||null}]);
         }
         if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);resetAssistantStream()}
-        if(isActivityItem)setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item,output:item.output||streamedCommandOutput||e.output}:e):[...prev,{...item,output:item.output||streamedCommandOutput}]);
+        // A finished thought leaves the live activity for the conversation, where a reopened thread shows it too.
+        if(p.item.type==="reasoning"){const thought=reasoningHistoryMessage(p.item,p.turnId,streamedCommandOutput);setEvents(prev=>prev.filter(e=>e.id!==item.id));if(thought)setMessages(prev=>prev.some(m=>m.id===thought.id)?prev:[...prev,thought])}
+        else if(isActivityItem)setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item,output:item.output||streamedCommandOutput||e.output}:e):[...prev,{...item,output:item.output||streamedCommandOutput}]);
       }
     }
     else if(message.method==="item/autoApprovalReview/started"){
@@ -2314,6 +2320,9 @@ export default function App(){
     }
     else if(message.method==="item/agentMessage/delta"&&isCurrent)appendAssistantStream(p.delta||p.text||"");
     else if(message.method==="item/commandExecution/outputDelta"&&isCurrent)commandStreamBufferRef.current?.push(p.itemId||"command",p.delta||"");
+    // A thought streams like command output, by its item id (Codex's summary parts and raw text, a relay harness's thinking).
+    else if((message.method==="item/reasoning/summaryTextDelta"||message.method==="item/reasoning/textDelta")&&isCurrent&&p.itemId)commandStreamBufferRef.current?.push(p.itemId,p.delta||"");
+    else if(message.method==="item/reasoning/summaryPartAdded"&&isCurrent&&p.itemId&&Number(p.summaryIndex)>0)commandStreamBufferRef.current?.push(p.itemId,"\n\n");
     else if(message.method==="item/mcpToolCall/progress"){
       if(threadId)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?{...current.currentActivity,title:p.message||current.currentActivity.title}:current.currentActivity,lastActivityAt:Date.now()}),{render:rightPanelOpen&&rightPanelTab==="agents"});
       if(isCurrent&&p.itemId){
@@ -3724,7 +3733,7 @@ export default function App(){
     return result.proof;
   }
   async function renameThread(){if(!rpc||!activeThread)return;const name=await askText("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
-  async function shareThread(){const text=messages.map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
+  async function shareThread(){const text=messages.filter(m=>m.role!=="reasoning").map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
   async function startReview(){
     if(!rpc||!activeThread?.id)throw new Error("Start or open a thread before reviewing.");
     const result=await rpc.request("review/start",{threadId:activeThread.id,target:{type:"uncommittedChanges"}});

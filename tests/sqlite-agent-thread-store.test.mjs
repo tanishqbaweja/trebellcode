@@ -95,3 +95,17 @@ test("a thread saved with no title is titled by its first message at startup, an
     assert.equal(new AgentThreadStore(env).getMetadata(untitled.id).preview,"Run this shell command and tell me its output: nod...","the title is saved");
   }finally{await rm(home,{recursive:true,force:true})}
 });
+
+test("a thread keeps a reasoning item's start and end within a bound, and redacts it like other stored text",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-reasoning-bound-")),secret="reasoning-secret-that-must-not-survive",env={...process.env,TREBELL_HOME:home,REASONING_SECRET:secret};
+  try{
+    const store=new AgentThreadStore(env),thread=store.create({runtime:"cursor",cwd:home}),turn=store.addTurn(thread.id,{inputText:"think"});
+    const long="FIRST "+"a".repeat(100*1024)+" LAST";
+    store.addItem(thread.id,turn.id,{type:"reasoning",id:"r-long",summary:[],content:[long]});
+    store.addItem(thread.id,turn.id,{type:"reasoning",id:"r-secret",summary:["Using "+secret],content:[]});
+    const [stored,redacted]=store.get(thread.id).turns[0].items.filter(item=>item.type==="reasoning");
+    assert.ok(stored.content[0].length<=64*1024,"the stored text is bounded");
+    assert.ok(stored.content[0].startsWith("FIRST ")&&stored.content[0].endsWith(" LAST"),"it keeps the thought's start and end");
+    assert.deepEqual(redacted.summary,["Using [redacted]"]);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
