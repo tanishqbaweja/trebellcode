@@ -219,6 +219,41 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .turn-outcome.tone-err{border-color:var(--errb);background:var(--errt);color:var(--err)}
 .conversation-column .turn-outcome svg{flex:none}
 .conversation-column .assistant-message-text::selection{background:color-mix(in srgb,var(--ac) 32%,transparent);color:var(--tx0)}
+/* Markdown in replies (ChatMarkdown): blocks keep the reply's rhythm, code reads as code, and wide tables and code scroll
+   inside the reply instead of widening the conversation. */
+.conversation-column .chat-markdown{white-space:normal;overflow-wrap:anywhere}
+.conversation-column .chat-markdown ::selection{background:color-mix(in srgb,var(--ac) 32%,transparent);color:var(--tx0)}
+.conversation-column .chat-markdown>:first-child{margin-top:0}
+.conversation-column .chat-markdown>:last-child{margin-bottom:0}
+.conversation-column .chat-markdown :is(p,ul,ol,blockquote,table,.chat-markdown-code){margin:0 0 10px}
+.conversation-column .chat-markdown :is(ul,ol){padding-left:22px}
+.conversation-column .chat-markdown li{margin:3px 0}
+.conversation-column .chat-markdown li>:is(p,ul,ol){margin:3px 0 0}
+.conversation-column .chat-markdown li>p:first-child{margin-top:0}
+.conversation-column .chat-markdown li::marker{color:var(--tx3)}
+.conversation-column .chat-markdown :is(h1,h2,h3,h4,h5,h6){margin:16px 0 8px;color:var(--tx0);font-weight:600;line-height:1.35;letter-spacing:-.01em}
+.conversation-column .chat-markdown h1{font-size:18px}
+.conversation-column .chat-markdown h2{font-size:16px}
+.conversation-column .chat-markdown h3{font-size:14.5px}
+.conversation-column .chat-markdown :is(h4,h5,h6){font-size:13.5px}
+.conversation-column .chat-markdown :is(strong,b){color:var(--tx0);font-weight:600}
+.conversation-column .chat-markdown a{color:var(--ac);text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--ac) 40%,transparent);text-underline-offset:2px}
+.conversation-column .chat-markdown a:hover{text-decoration-color:var(--ac)}
+.conversation-column .chat-markdown-link-text{text-decoration:underline dotted;text-decoration-color:var(--line2);text-underline-offset:2px}
+.conversation-column .chat-markdown :not(pre)>code{padding:1px 5px;border:1px solid var(--line);border-radius:5px;background:var(--bg3);color:var(--tx0);font:500 .88em/1.5 var(--mono);white-space:break-spaces}
+.conversation-column .chat-markdown blockquote{padding:2px 12px;border-left:2px solid var(--line2);color:var(--tx2)}
+.conversation-column .chat-markdown hr{margin:14px 0;border:0;border-top:1px solid var(--line)}
+.conversation-column .chat-markdown table{display:block;width:max-content;max-width:100%;overflow-x:auto;border-collapse:collapse;font-size:12.5px;line-height:1.5}
+.conversation-column .chat-markdown :is(th,td){padding:5px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}
+.conversation-column .chat-markdown th{background:var(--bg2);color:var(--tx0);font-weight:600}
+.conversation-column .chat-markdown input[type=checkbox]{margin:0 6px 0 0;vertical-align:-1px;accent-color:var(--ac)}
+.conversation-column .chat-markdown li:has(>input[type=checkbox]){list-style:none;margin-left:-18px}
+.conversation-column .chat-markdown-code{border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg0);overflow:hidden}
+.conversation-column .chat-markdown-code-head{display:flex;align-items:center;justify-content:space-between;height:28px;padding:0 5px 0 12px;border-bottom:1px solid var(--line);background:var(--bg2);color:var(--tx3);font:500 10.5px/1 var(--mono)}
+.conversation-column .chat-markdown-code-head button{width:24px;height:22px;display:grid;place-items:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--tx2);cursor:pointer}
+.conversation-column .chat-markdown-code-head button:hover{background:var(--bg3);color:var(--tx0)}
+.conversation-column .chat-markdown-code pre{margin:0;padding:10px 12px;overflow-x:auto;white-space:pre;overflow-wrap:normal;color:var(--tx1);font:400 12px/1.6 var(--mono);tab-size:2}
+.conversation-column .chat-markdown-code pre code{padding:0;border:0;background:none;color:inherit;font:inherit}
 .conversation-column .user-row.find-active .user-bubble,.conversation-column .history-assistant.find-active>div:last-child{outline:1px solid color-mix(in srgb,var(--ac) 70%,transparent);box-shadow:0 0 0 3px var(--acsoft);border-radius:12px}
 .conversation-column .inline-visualization-card{border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2)}
 
