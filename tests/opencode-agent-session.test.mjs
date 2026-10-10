@@ -323,6 +323,7 @@ test("OpenCode's reasoning text streams as the model's thinking, apart from its 
     fixture.emit({type:"message.part.delta",properties:{sessionID:"ses_fixture",messageID:"msg_a1",partID:"prt_r",field:"text",delta:"options"}});
     fixture.emit({type:"message.part.updated",properties:{sessionID:"ses_fixture",part:{id:"prt_r",messageID:"msg_a1",sessionID:"ses_fixture",type:"reasoning",text:"Weighing options."}}});
     await eventually(()=>of("agent_thought_chunk")==="Weighing options.",{message:"the reasoning text did not stream"});
+    assert.deepEqual([...new Set(updates.filter(update=>update.sessionUpdate==="agent_thought_chunk").map(update=>update.messageId))],["prt_r"],"each reasoning part is a thought of its own");
     pending(200,{info:{id:"msg_a1",parentID:"msg_u1",role:"assistant",tokens:{}},parts:[{id:"prt_1",type:"text",text:"Answer"}]});
     await running;
     assert.equal(of("agent_message_chunk"),"Answer");

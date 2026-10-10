@@ -1,0 +1,17 @@
+/* A harness's thinking: one quiet line that opens to the whole text (T3 Code's work-log reasoning row). Only tokens both the
+   current and the restyled theme.css define, each with the dark default as its fallback. */
+.reasoning-row{min-width:0;color:var(--tx2,#7e7e8a);font-size:12.5px;line-height:1.5}
+.conversation-history .reasoning-row{margin:0 0 10px 32px}
+.reasoning-row .reasoning-toggle{width:100%;min-width:0;min-height:30px;display:grid;grid-template-columns:18px auto minmax(0,1fr) auto;align-items:center;gap:9px;padding:0 7px;border:0;border-radius:var(--r-s,8px);background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.reasoning-row .reasoning-toggle:hover:not(:disabled){background:var(--surf,rgba(255,255,255,.026));color:var(--tx1,#b6b6c2)}
+.reasoning-row .reasoning-toggle:disabled{cursor:default}
+.reasoning-row .reasoning-toggle:focus-visible{outline:2px solid var(--ac,#8b7cff);outline-offset:-2px}
+.reasoning-row .reasoning-icon{display:grid;place-items:center;color:var(--tx3,#54545e)}
+.reasoning-row.active .reasoning-icon{color:var(--ac,#8b7cff);animation:reasoning-pulse 1.4s ease-in-out infinite}
+.reasoning-row .reasoning-label{font-weight:550;white-space:nowrap}
+.reasoning-row .reasoning-preview{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:400}
+.reasoning-row .reasoning-chevron{color:var(--tx3,#54545e);transition:transform .15s}
+.reasoning-row.open .reasoning-chevron{transform:rotate(90deg)}
+.reasoning-row .reasoning-text{max-height:420px;overflow:auto;margin:2px 7px 8px 15px;padding:2px 0 2px 19px;border-left:1px solid var(--line2,#2c2c36);color:var(--tx2,#7e7e8a);white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}
+@keyframes reasoning-pulse{50%{opacity:.4}}
+@media (prefers-reduced-motion:reduce){.reasoning-row.active .reasoning-icon{animation:none}}

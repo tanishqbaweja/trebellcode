@@ -8,6 +8,7 @@ function textLength(message){
 export function estimateConversationMessageHeight(message){
   const length=textLength(message);
   if(message?.role==="user")return Math.max(54,Math.min(360,54+Math.ceil(length/90)*18));
+  if(message?.role==="reasoning")return 40;
   return Math.max(92,Math.min(560,92+Math.ceil(length/88)*20));
 }
 

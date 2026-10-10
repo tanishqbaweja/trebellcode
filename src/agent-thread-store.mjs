@@ -6,6 +6,7 @@ import { SqliteAgentThreadStore } from "./sqlite-agent-thread-store.mjs";
 
 function clone(value){return JSON.parse(JSON.stringify(value))}
 const TERMINAL_TOOL_STATUSES=new Set(["completed","failed","cancelled","canceled","rejected","declined","skipped"]);
+const REASONING_PART_LIMIT=64*1024;
 
 function recoveryToolSummary(item={}){
   return {
@@ -37,6 +38,8 @@ function persistedItem(item,environment){
   }
   if(Object.prototype.hasOwnProperty.call(next,"arguments"))next.arguments=redactSecretValue(boundDiagnosticValue(next.arguments,{maxChars:128*1024,maxFields:768,maxDepth:12}),{environment,maxDepth:12,maxArray:200,maxFields:768});
   if(Object.prototype.hasOwnProperty.call(next,"contentItems"))next.contentItems=redactSecretValue(boundDiagnosticValue(next.contentItems,{maxChars:128*1024,maxFields:768,maxDepth:12}),{environment,maxDepth:12,maxArray:200,maxFields:768});
+  // A harness can think at length: each part of a reasoning item keeps its start and its end.
+  if(next.type==="reasoning")for(const key of ["summary","content"])if(Array.isArray(next[key]))next[key]=next[key].map(part=>typeof part==="string"?redactSecretText(boundDiagnosticText(part,REASONING_PART_LIMIT),{environment}):part);
   return next;
 }
 

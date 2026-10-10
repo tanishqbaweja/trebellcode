@@ -28,6 +28,25 @@ test("paginated Codex item entries retain turn ownership and checkpoint links",(
   ]);
 });
 
+test("a thread's thoughts are conversation rows in their place, and a thought without text is none",()=>{
+  const turns=[{id:"t1",items:[
+    {id:"u1",type:"userMessage",text:"hello"},
+    {id:"r1",type:"reasoning",summary:[],content:["Weighing the options."]},
+    {id:"tool",type:"commandExecution"},
+    {id:"r-empty",type:"reasoning",summary:[],content:[]},
+    {id:"rs_2",type:"reasoning",summary:["**Answering**"],content:[]},
+    {id:"a1",type:"agentMessage",text:"hi"},
+  ]}];
+  const expected=[
+    {id:"u1",role:"user",text:"hello",turnId:"t1",checkpointId:null},
+    {id:"r1",role:"reasoning",text:"Weighing the options.",turnId:"t1"},
+    {id:"rs_2",role:"reasoning",text:"**Answering**",turnId:"t1"},
+    {id:"a1",role:"assistant",text:"hi",turnId:"t1"},
+  ];
+  assert.deepEqual(historyFromTurns(turns),expected);
+  assert.deepEqual(historyFromItemEntries(turns[0].items.map(item=>({turnId:"t1",item}))),expected);
+});
+
 test("prepending an overlapping history page does not duplicate messages",()=>{
   const earlier=[{id:"a",text:"old"},{id:"b",text:"middle"}],current=[{id:"b",text:"middle"},{id:"c",text:"new"}];
   assert.deepEqual(mergeHistoryMessages(earlier,current).map(item=>item.id),["a","b","c"]);

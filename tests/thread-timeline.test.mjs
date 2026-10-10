@@ -7,9 +7,10 @@ test("timeline activity excludes conversation messages and keeps tool order",()=
     {type:"item",turnId:"t1",item:{id:"user",type:"userMessage",text:"hello"}},
     {type:"item",turnId:"t1",item:{id:"cmd",type:"commandExecution",command:"npm test",status:"completed",aggregatedOutput:"ok"}},
     {type:"item",turnId:"t1",item:{id:"file",type:"fileChange",status:"completed",changes:[]}},
+    {type:"item",turnId:"t1",item:{id:"thought",type:"reasoning",summary:["Planning"],content:[]}},
     {type:"item",turnId:"t1",item:{id:"agent",type:"agentMessage",text:"done"}},
   ];
-  assert.deepEqual(timelineActivityItems(entries,"t1").map(item=>item.id),["cmd","file"]);
+  assert.deepEqual(timelineActivityItems(entries,"t1").map(item=>item.id),["cmd","file"],"a thought is a conversation row, not restored activity");
 });
 
 test("latest-turn timeline pages backwards only until that turn start",async()=>{

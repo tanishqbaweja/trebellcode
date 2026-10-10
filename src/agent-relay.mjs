@@ -656,6 +656,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const socketContexts=new Set();
   const recoveryInFlight=new Set();
   const liveToolOutput=new Map();
+  // The reasoning segment each thread's harness is thinking in: {id,turnId,messageId,text}.
+  const liveReasoning=new Map();
   const pendingDelegations=new Map();
   const promptSettlements=new Set();
   // Antigravity sessions report the account's model list to the runtime manager when they start and when their model option changes.
@@ -686,6 +688,22 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   function clearLiveToolOutput(threadId){
     const prefix=String(threadId||"")+":";
     for(const key of liveToolOutput.keys())if(key.startsWith(prefix))liveToolOutput.delete(key);
+  }
+  // A harness's thinking streams as one Codex-shaped reasoning item per run of thought chunks; the run ends at the reply's text,
+  // a tool call, a thought of another message or the turn's end (T3 Code's ACP adapter closes its reasoning segment there), and
+  // the thread keeps its text.
+  const reasoningItem=live=>({type:"reasoning",id:live.id,summary:[],content:[live.text]});
+  function appendReasoning(threadId,turnId,text,messageId){
+    let live=liveReasoning.get(threadId);
+    if(live&&(live.turnId!==turnId||(messageId&&live.messageId&&messageId!==live.messageId))){endReasoning(threadId);live=null}
+    if(!live){live={id:"reasoning-"+randomUUID(),turnId,messageId:messageId||null,text:""};liveReasoning.set(threadId,live);emit("item/started",{threadId,turnId,item:reasoningItem(live),startedAtMs:Date.now()})}
+    live.text+=text;live.messageId||=messageId||null;
+    emit("item/reasoning/textDelta",{threadId,turnId,itemId:live.id,delta:text,contentIndex:0});
+  }
+  function endReasoning(threadId,turnId=null){
+    const live=liveReasoning.get(threadId);if(!live||(turnId&&live.turnId!==turnId))return;liveReasoning.delete(threadId);
+    const item=reasoningItem(live);threadStore.addItem(threadId,live.turnId,item);
+    emit("item/completed",{threadId,turnId:live.turnId,item,completedAtMs:Date.now()});
   }
   function durableGoal(threadId){
     const raw=state?.threadMeta?.(threadId)?.goal;if(!raw)return null;
@@ -982,7 +1000,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       threadStore.updateTurn(thread.id,turn.id,{modelTurns:Math.max(0,Math.floor(count))});
     };
     const settlement=promptPromise.then(result=>{
-      persistUsage(result);persistModelTurns(result?.raw?.modelTurns);
+      endReasoning(thread.id,turn.id);persistUsage(result);persistModelTurns(result?.raw?.modelTurns);
       const providerMessageId=result?.providerMessageId||result?.userMessageId||null;
       const providerUserMessageId=result?.userMessageId||null;
       if(providerMessageId||providerUserMessageId)threadStore.updateTurn(thread.id,turn.id,{...(providerMessageId?{providerMessageId}:{}),...(providerUserMessageId?{providerUserMessageId}:{})});
@@ -991,6 +1009,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadMetadata(thread.id)?.status||{type:"idle"}});
       if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
     }).catch(error=>{
+      endReasoning(thread.id,turn.id);
       if(error?.code==="CLAUDE_REWIND_REJECTED"){
         // The next turn rebuilds the Claude session from the thread's restored provider state.
         if(sessions.get(thread.id)===session){sessions.delete(thread.id);void session.close?.().catch(()=>{})}
@@ -1058,12 +1077,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   function handleUpdate(threadId,params){
     const update=params?.update||{};const thread=threadStore.get(threadId);if(!thread)return;const turnId=thread.turns?.at(-1)?.id||null;
     const type=update.sessionUpdate;
+    if(type==="tool_call"||type==="tool_call_update")endReasoning(threadId);
     if(type==="agent_message_chunk"){
       const session=sessions.get(threadId),text=agentTextAfterToolCall(session,update.content?.type==="text"?update.content.text||"":"");
+      if(text)endReasoning(threadId);
       if(text&&turnId)emit("item/agentMessage/delta",{threadId,turnId,delta:text});
       if(session)session.__assistant=(session.__assistant||"")+text;
     }else if(type==="agent_thought_chunk"){
-      if(turnId)emit("item/reasoning/activity",{threadId,turnId,active:true});
+      const text=update.content?.type==="text"?String(update.content.text||""):"";
+      if(text&&turnId&&thread.turns.at(-1).status==="inProgress")appendReasoning(threadId,turnId,text,update.messageId?String(update.messageId):null);
     }else if(type==="tool_call"){
       const toolSession=sessions.get(threadId);if(toolSession)toolSession.__assistantBreak=true;
       const key=threadId+":"+String(update.toolCallId||"");

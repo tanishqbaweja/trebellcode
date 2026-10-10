@@ -706,6 +706,55 @@ test("the relay starts a new paragraph where a harness goes on with its reply af
   }
 });
 
+test("a harness's thinking reaches the client as Codex reasoning items, one per run of thoughts, and stays with the thread",async()=>{
+  const update=value=>'send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:'+JSON.stringify(value)+'}});';
+  const thought=(text,messageId)=>update({sessionUpdate:"agent_thought_chunk",content:{type:"text",text},...(messageId?{messageId}:{})});
+  const agent=FAKE_ACP_AGENT.replace('send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:"TREBELL_TOUR_OK"}}}});',[
+    thought("Weighing "),thought("the options."),thought(""),
+    update({sessionUpdate:"agent_message_chunk",content:{type:"text",text:"Checking."}}),
+    thought("Running the check."),
+    update({sessionUpdate:"tool_call",toolCallId:"call-1",title:"node -e",kind:"execute",status:"completed"}),
+    thought("Reading the output.","msg-1"),thought("Now answering.","msg-2"),
+    update({sessionUpdate:"agent_message_chunk",content:{type:"text",text:" Done."}}),
+    thought("Last words."),
+  ].join("\n    "));
+  assert.notEqual(agent,FAKE_ACP_AGENT);
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-reasoning-")),fixture=join(root,"fake-acp.mjs"),recorded=join(root,"prompts.jsonl");
+  await writeFile(fixture,agent,"utf8");
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager:fakeAcpRuntimeManager(fixture,recorded),threadStore,terminals:{},state:memoryThreadState(),version:"test"});
+  const port=await listen(server),ws=await connect("ws://127.0.0.1:"+port+"/api/agent/ws"),rpc=request(ws);
+  const seen=[];ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method)seen.push(message)});
+  try{
+    const started=await rpc("thread/start",{cwd:root,approvalPolicy:"on-request",sandbox:"workspace-write"});
+    const completed=turnCompleted(ws);
+    const {turn}=await rpc("turn/start",{threadId:started.thread.id,input:[{type:"text",text:"Think, check, answer"}]});
+    assert.equal((await completed).turn.status,"completed");
+    const reasoning=method=>seen.filter(message=>message.method===method&&(message.params.item?.type==="reasoning"||method==="item/reasoning/textDelta")).map(message=>message.params);
+    const texts=["Weighing the options.","Running the check.","Reading the output.","Now answering.","Last words."];
+    const begun=reasoning("item/started"),finished=reasoning("item/completed"),deltas=reasoning("item/reasoning/textDelta");
+    assert.equal(begun.length,5,"a run of thoughts begins one item; a reply, a tool call or another message's thought ends it");
+    assert.deepEqual(finished.map(params=>params.item),begun.map((params,index)=>({type:"reasoning",id:params.item.id,summary:[],content:[texts[index]]})),"each item ends with its full text, in Codex's shape");
+    assert.equal(new Set(begun.map(params=>params.item.id)).size,5);
+    assert.ok(begun.every(params=>params.threadId===started.thread.id&&params.turnId===turn.id));
+    assert.deepEqual(deltas.map(params=>[params.itemId,params.delta,params.contentIndex,params.turnId]),[
+      [begun[0].item.id,"Weighing ",0,turn.id],[begun[0].item.id,"the options.",0,turn.id],[begun[1].item.id,"Running the check.",0,turn.id],
+      [begun[2].item.id,"Reading the output.",0,turn.id],[begun[3].item.id,"Now answering.",0,turn.id],[begun[4].item.id,"Last words.",0,turn.id],
+    ],"each chunk streams as a text delta of its item; an empty chunk sends nothing");
+    const order=seen.map(message=>message.method==="item/completed"&&message.params.item.type==="reasoning"?"thought":message.method==="item/agentMessage/delta"?"reply":message.method==="item/started"&&message.params.item.type!=="reasoning"?"tool":null).filter(Boolean);
+    assert.deepEqual(order,["thought","reply","thought","tool","thought","thought","reply","thought"],"a thought ends before what ends it reaches the client");
+    assert.equal(seen.filter(message=>message.method==="item/completed"&&message.params.item.type==="reasoning").at(-1)?.params.item.content[0],"Last words.","the turn's end closes its last thought");
+    assert.ok(seen.findIndex(message=>message.method==="item/completed"&&message.params.item?.content?.[0]==="Last words.")<seen.findIndex(message=>message.method==="turn/completed"));
+    const items=threadStore.get(started.thread.id).turns[0].items;
+    assert.deepEqual(items.map(item=>item.type==="reasoning"?item.content[0]:item.type),["userMessage",texts[0],texts[1],"commandExecution",texts[2],texts[3],texts[4],"agentMessage"],"the thread keeps each thought where it happened");
+    const resumed=await rpc("thread/resume",{threadId:started.thread.id});
+    assert.deepEqual(resumed.thread.turns[0].items.filter(item=>item.type==="reasoning").map(item=>item.content[0]),texts,"a reopened thread has its thoughts");
+  }finally{
+    try{ws.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+  }
+});
+
 test("a reopened ACP harness thread shows its transcript without starting the harness, and its next turn resumes the conversation",async()=>{
   // The live tour: reopening a Cursor thread after a restart waited for Cursor to start and load the conversation, a blank
   // screen for half a minute. T3 Code opens a provider session lazily, with the thread's next turn.
