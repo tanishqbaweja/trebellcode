@@ -30,6 +30,18 @@ test("event journal persists bounded lifecycle metadata while redacting secrets"
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("event journal leaves a thought's token stream out, as it does a reply's, and keeps the finished thought",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-events-reasoning-"));
+  try{
+    const journal=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
+    for(const method of ["item/reasoning/textDelta","item/reasoning/summaryTextDelta","item/reasoning/activity"])for(let index=0;index<3;index++)journal.recordProtocol({runtime:"cursor",method,params:{threadId:"thread-1",turnId:"turn-1",itemId:"reasoning-1",delta:"thinking "+index}});
+    journal.recordProtocol({runtime:"cursor",method:"item/completed",params:{threadId:"thread-1",turnId:"turn-1",item:{type:"reasoning",id:"reasoning-1",summary:[],content:["thinking 0thinking 1thinking 2"]}}});
+    await journal.flush();
+    assert.deepEqual(journal.list({threadId:"thread-1"}).map(item=>item.name),["item/completed"]);
+    await journal.close();
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("event journal keeps its in-memory trace ring bounded",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-events-"));
   try{
