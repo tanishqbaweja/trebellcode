@@ -401,6 +401,26 @@ test("official OpenAI defaults to current-turn reasoning context while preservin
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("official OpenAI sends the shipped low text verbosity for GPT-5.5+ text models and keeps explicit choices",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-verbosity-")),bodies=[];
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+      const body=JSON.parse(init.body||"{}");bodies.push(body);
+      return Response.json({id:`resp-verbosity-${bodies.length}`,model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{input_tokens:2,output_tokens:1,total_tokens:3}});
+    }});
+    manager.setKey("openai","oa-key");
+    const turn=extra=>manager.turn("openai",{messages:[{role:"user",content:"continue"}],tools:[],reasoningEffort:"max",...extra}).then(()=>bodies.at(-1));
+    for(const model of ["gpt-6-luna","gpt-6","gpt-5.6-terra","gpt-5.5"])assert.deepEqual((await turn({model})).text,{verbosity:"low"},model);
+    for(const model of ["gpt-5.4","gpt-5","gpt-4.1","o3","gpt-6-pro","gpt-5.6-codex","gpt-5.6-chat-latest","gpt-6-search-api","gpt-6-audio","gpt-6-realtime"])assert.equal(Object.prototype.hasOwnProperty.call(await turn({model}),"text"),false,model);
+    assert.deepEqual((await turn({model:"gpt-6-luna",textVerbosity:"medium"})).text,{verbosity:"medium"});
+    assert.deepEqual((await turn({model:"gpt-5.4",textVerbosity:"high"})).text,{verbosity:"high"});
+    assert.equal(Object.prototype.hasOwnProperty.call(await turn({model:"gpt-6-luna",textVerbosity:"default"}),"text"),false);
+    const schema={type:"object",additionalProperties:false,properties:{status:{type:"string"}},required:["status"]};
+    assert.deepEqual((await turn({model:"gpt-6-luna",responseJsonSchema:{name:"trebell_gate",strict:true,schema}})).text,{format:{type:"json_schema",name:"trebell_gate",strict:true,schema}});
+    assert.deepEqual((await turn({model:"gpt-6-luna"})).reasoning,{effort:"max",context:"current_turn"});
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI Responses flattens Trebell namespaces into standard function tools and restores them on tool calls",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));let seen=null;
   const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(url,init={})=>{

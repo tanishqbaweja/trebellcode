@@ -192,6 +192,19 @@ function officialOpenAiExplicitCacheBreakpointsSupported(model=""){
   const major=Number(match[1]||0),minor=Number(match[2]||0);
   return major>5||(major===5&&minor>=6);
 }
+// The model metadata that OpenAI ships with Codex gives GPT-5.5 and later text models a default verbosity of "low",
+// and Codex sends it on every request. Codex, pro, chat, search, audio and realtime variants are left at the API default. An explicit
+// request.textVerbosity ("low", "medium" or "high") wins, and "default" omits the field. Structured-output control
+// turns keep the API default, because their schema already bounds the output.
+function officialOpenAiTextVerbosity(request={}){
+  const explicit=String(request.textVerbosity??"").trim().toLowerCase();
+  if(explicit)return ["low","medium","high"].includes(explicit)?explicit:null;
+  if(request.responseJsonSchema)return null;
+  const model=String(request.model||"").trim().toLowerCase(),match=model.match(/(?:^|\/)gpt-(\d+)(?:\.(\d+))?/);
+  if(!match||/codex|chat|search|audio|realtime|(?:^|[^a-z0-9])pro(?:[^a-z0-9]|$)/.test(model))return null;
+  const major=Number(match[1]||0),minor=Number(match[2]||0);
+  return major>5||(major===5&&minor>=5)?"low":null;
+}
 function normalizedOpenAiPromptCacheDiagnostics(body={}){
   const value=body?.prompt_cache_diagnostics;
   if(!value||typeof value!=="object")return null;
@@ -262,7 +275,7 @@ function preSerializedChatMessages(messages=[],cache=null){
   return `[${parts.join(",")}]`;
 }
 function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKeyForBody=null,responsesOptions=null){
-  const explicitReasoningContext=String(request.reasoningContext||"").trim(),effectiveRequest=explicitReasoningContext?request:{...request,reasoningContext:"current_turn"};
+  const explicitReasoningContext=String(request.reasoningContext||"").trim(),effectiveRequest={...(explicitReasoningContext?request:{...request,reasoningContext:"current_turn"}),textVerbosity:officialOpenAiTextVerbosity(request)};
   const explicitCacheBreakpoints=officialOpenAiExplicitCacheBreakpointsSupported(effectiveRequest.model),body=providerTurnToResponses(effectiveRequest,{preserveInstructionOrder:true,flattenToolCallNames:true,toolResultCacheBreakpoints:explicitCacheBreakpoints,...(responsesOptions&&typeof responsesOptions==="object"?responsesOptions:{})});
   const tools=Array.isArray(toolManifest?.tools)?toolManifest.tools:officialOpenAiTools(effectiveRequest.tools);body.tools=tools;
   const contextManagement=(Array.isArray(effectiveRequest.contextManagement)?effectiveRequest.contextManagement:[])
