@@ -55,6 +55,7 @@ test("a turn's first reply carries the harness heading and its last reply carrie
   const messages=[
     {id:"u1",role:"user",text:"Fix it",turnId:"t1"},
     {id:"a1",role:"assistant",text:"Looking",turnId:"t1"},
+    {id:"r1",role:"reasoning",text:"Reading the test",turnId:"t1"},
     {id:"a2",role:"assistant",text:"Fixed",turnId:"t1"},
     {id:"u2",role:"user",text:"Again",turnId:"t2"},
     {id:"a3",role:"assistant",text:"Stopping",turnId:"t2"},
@@ -66,7 +67,7 @@ test("a turn's first reply carries the harness heading and its last reply carrie
   assert.deepEqual(rows.get("a2"),{heading:"",outcomeLabel:"done · 2.5s",outcomeTone:"ok"});
   assert.deepEqual(rows.get("a3"),{heading:"Codex",outcomeLabel:"stopped",outcomeTone:"warn"});
   assert.deepEqual(rows.get("a4"),{heading:"Codex",outcomeLabel:"",outcomeTone:""});
-  assert.equal(rows.has("u1"),false);
+  assert.equal(rows.has("u1"),false);assert.equal(rows.has("r1"),false);
   assert.equal(assistantRowDecorations(messages,{harnessLabel:"",turnInfo:null,threadId:"th"}).size,0);
   assert.equal(permissionModeLabel("unknown"),"");
 });
