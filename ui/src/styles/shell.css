@@ -13,11 +13,18 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .window-bar .window-controls button{color:var(--tx2)}
 .window-bar .window-controls button:hover{background:var(--bg3);color:var(--tx0)}
 .window-bar .window-controls .window-close:hover{background:#c42b3b;color:#fff}
+.app-shell>.window-controls-pinned{position:fixed;top:0;right:0;z-index:200;height:32px;display:flex;-webkit-app-region:no-drag}
+.app-shell>.window-controls-pinned button{width:42px;height:32px;border:0;border-radius:0;background:transparent;color:var(--tx2);font-size:12px;cursor:default}
+.app-shell>.window-controls-pinned button:hover{background:var(--bg3);color:var(--tx0)}
+.app-shell>.window-controls-pinned .window-close:hover{background:#c42b3b;color:#fff}
+/* Keyboard-focused separators show the same accent line as a drag. */
+.layout-resizer:focus{outline:none}
+.layout-resizer:focus-visible::after{opacity:.8;background:var(--ac)}
 .layout-resizer::after{background:var(--line2)}
 .layout-resizer:hover::after,.layout-resizing .layout-resizer::after{background:var(--ac)}
 
 /* ============ Sidebar ============ */
-.app-shell>.sidebar{background:var(--bg1);border-right:1px solid var(--line);color:var(--tx0)}
+.app-shell>.sidebar{background:var(--bg1);border-right:1px solid var(--line);color:var(--tx0);container:tbsidebar/inline-size}
 .sidebar .sidebar-titlebar{height:var(--top);padding:0 10px 0 10px;gap:6px}
 .sidebar .sidebar-brand{min-width:0;gap:9px;padding:4px;border-radius:var(--r-s);color:var(--tx0);background:transparent}
 .sidebar .sidebar-brand .brand-mark{width:26px;height:26px;flex:none;filter:drop-shadow(0 2px 8px var(--acglow))}
@@ -27,7 +34,18 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .sidebar .sidebar-new-thread,.sidebar .sidebar-bulk-toggle{width:28px;height:28px;border:0;border-radius:var(--r-s);display:grid;place-items:center;background:transparent;color:var(--tx2);transition:background .15s,color .15s}
 .sidebar .sidebar-new-thread:hover,.sidebar .sidebar-bulk-toggle:hover{background:var(--bg3);color:var(--tx0)}
 
-.sidebar .sidebar-thread-tools{gap:6px;padding:2px 10px 10px 12px}
+/* "Search or jump to…" opens the command palette (threads, projects, commands); the field below only filters threads. */
+.sidebar .sidebar-palette-button{width:calc(100% - 24px);height:34px;flex:none;margin:2px 12px 6px;display:flex;align-items:center;gap:8px;padding:0 6px 0 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg2);color:var(--tx2);font-size:12.5px;text-align:left;cursor:pointer;transition:border-color .15s,color .15s}
+.sidebar .sidebar-palette-button:hover{border-color:var(--line2);color:var(--tx1)}
+.sidebar .sidebar-palette-button svg{flex:none}
+.sidebar .sidebar-palette-button span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar .sidebar-palette-button kbd{flex:none}
+.sidebar .sidebar-thread-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 6px;padding:2px 10px 8px 12px}
+.sidebar .sidebar-threads-label{grid-column:1;grid-row:1;min-width:0;margin:0;padding:6px 4px 2px;display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:600;line-height:16px;letter-spacing:.09em;text-transform:uppercase;color:var(--tx2)}
+.sidebar .sidebar-threads-count{font-weight:500;letter-spacing:.04em;color:var(--tx3)}
+.sidebar .sidebar-thread-tools .search-box{grid-column:1/-1;grid-row:2;height:30px;gap:7px;padding:0 8px}
+.sidebar .sidebar-thread-tools .search-box input{font-size:12px}
+.sidebar .sidebar-thread-tools .sidebar-bulk-toggle{grid-column:2;grid-row:1;width:24px;height:24px;margin-top:4px;border-radius:7px}
 .sidebar .search-box{height:34px;flex:1;min-width:0;gap:8px;padding:0 9px;border:1px solid var(--line);border-radius:9px;background:var(--bg2);color:var(--tx2);transition:border-color .15s,box-shadow .15s,color .15s}
 .sidebar .search-box:hover{border-color:var(--line2);background:var(--bg2);color:var(--tx1)}
 .sidebar .search-box:focus-within{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2));background:var(--bg2);box-shadow:0 0 0 3px var(--acsoft);color:var(--tx1)}
@@ -80,7 +98,15 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 
 /* Destinations: a labelled list (the labels are already in the DOM, previously hidden). */
 .sidebar .sidebar-footer{padding:0;border-top:1px solid var(--line)}
-.sidebar .sidebar-utilities{display:flex;flex-direction:column;gap:1px;padding:8px;border-bottom:1px solid var(--line)}
+.sidebar .sidebar-utilities{display:flex;flex-direction:column;align-items:stretch;gap:6px;padding:8px;border-bottom:1px solid var(--line)}
+.sidebar .sidebar-nav-primary{display:flex;flex-direction:column;gap:1px}
+/* Secondary destinations: a compact two-column grid; their shortcuts stay in the tooltip. */
+/* Two columns at the default width; a sidebar too narrow for "Environments" in a half-width cell gets one column, and a
+   very wide one gets three. */
+.sidebar .sidebar-nav-secondary{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:1px 2px;padding-top:6px;border-top:1px solid var(--line)}
+.sidebar .sidebar-nav-secondary .sidebar-utility{min-height:30px;padding:6px;gap:6px}
+.sidebar .sidebar-nav-secondary .sidebar-utility span{font-size:12.5px}
+.sidebar .sidebar-nav-secondary .sidebar-utility-kbd{display:none}
 .sidebar .sidebar-utility{width:100%;height:auto;min-height:32px;display:flex;align-items:center;justify-content:flex-start;gap:10px;padding:7px 10px;border:0;border-radius:9px;background:transparent;color:var(--tx1);font-size:13px;font-weight:500;text-align:left;transition:background .14s,color .14s}
 .sidebar .sidebar-utility svg{width:16px;height:16px;flex:none;color:var(--tx2);transition:color .14s}
 .sidebar .sidebar-utility span{display:block;min-width:0;font-size:13px;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -88,10 +114,22 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .sidebar .sidebar-utility:hover svg{color:var(--tx1)}
 .sidebar .sidebar-utility.active{background:var(--bg3);color:var(--tx0)}
 .sidebar .sidebar-utility.active svg{color:var(--ac)}
+.sidebar .sidebar-utility .sidebar-utility-kbd{margin-left:auto;flex:none}
+/* Browser and Agents open inspector tabs: "open" is an outline with a dot, so it never reads as a second current page. */
+.sidebar .sidebar-utility.panel-open{background:transparent;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ac) 38%,var(--line2));color:var(--tx0)}
+.sidebar .sidebar-utility.panel-open:hover{background:var(--bg2)}
+.sidebar .sidebar-utility.panel-open::after{content:"";width:6px;height:6px;margin-left:auto;flex:none;border-radius:50%;background:var(--ac);box-shadow:0 0 0 3px var(--acsoft)}
 @media (max-height:720px){
-  .sidebar .sidebar-utilities{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px}
+  .sidebar .sidebar-utilities{gap:4px;padding:6px 8px}
   .sidebar .sidebar-utility{min-height:30px;padding:6px 9px;gap:8px}
   .sidebar .sidebar-utility span{font-size:12.5px}
+  .sidebar .sidebar-nav-primary{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:1px 2px}
+  .sidebar .sidebar-nav-primary .sidebar-utility-kbd{display:none}
+}
+/* Narrow sidebars (small windows, or dragged near the 210px minimum): the shortcut hints give their room to the labels;
+   the shortcuts stay in aria-keyshortcuts and in the nav buttons' tooltips. */
+@container tbsidebar (max-width:236px){
+  .sidebar .sidebar-palette-button kbd,.sidebar .sidebar-nav-primary .sidebar-utility-kbd{display:none}
 }
 
 /* Harness / provider card */
@@ -166,6 +204,13 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .history-assistant .agent-star.small{width:28px;height:28px;display:grid;place-items:center;border:1px solid color-mix(in srgb,var(--ac) 35%,transparent);border-radius:9px;background:var(--acsoft);color:var(--ac);box-shadow:none}
 .conversation-column .history-assistant .agent-star.small svg{width:14px;height:14px}
 .conversation-column .assistant-message-text{padding-top:4px;font-size:13.5px;line-height:1.7;color:var(--tx1)}
+.conversation-column .history-assistant-body{min-width:0}
+.conversation-column .assistant-heading{padding-top:5px;font-size:12.5px;font-weight:550;line-height:18px;color:var(--tx1)}
+.conversation-column .assistant-heading+.assistant-message-text{padding-top:6px}
+.conversation-column .turn-outcome{display:inline-flex;align-items:center;gap:5px;margin-top:10px;padding:3px 8px;border:1px solid var(--okb);border-radius:99px;background:var(--okt);color:var(--ok);font:500 10.5px/1.3 var(--mono)}
+.conversation-column .turn-outcome.tone-warn{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
+.conversation-column .turn-outcome.tone-err{border-color:var(--errb);background:var(--errt);color:var(--err)}
+.conversation-column .turn-outcome svg{flex:none}
 .conversation-column .assistant-message-text::selection{background:color-mix(in srgb,var(--ac) 32%,transparent);color:var(--tx0)}
 .conversation-column .user-row.find-active .user-bubble,.conversation-column .history-assistant.find-active>div:last-child{outline:1px solid color-mix(in srgb,var(--ac) 70%,transparent);box-shadow:0 0 0 3px var(--acsoft);border-radius:12px}
 .conversation-column .inline-visualization-card{border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2)}
@@ -214,6 +259,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* ============ Empty-state hero ============ */
 .conversation-column .welcome{min-height:calc(100vh - 296px);padding:24px 24px 40px}
 .app-shell.desktop-shell .conversation-column .welcome{min-height:calc(100vh - 328px)}
+.main-frame.terminal-open .conversation-column .welcome{min-height:0;padding:16px 24px 20px}
+.main-frame.terminal-open .conversation-column .welcome-mark{width:44px;height:44px;margin-bottom:14px}
+.main-frame.terminal-open .conversation-column .welcome-mark img{width:44px;height:44px}
+.main-frame.terminal-open .conversation-column .welcome h1{font-size:22px}
 .conversation-column .welcome-mark{width:62px;height:62px;margin:0 auto 22px;position:relative;display:grid;place-items:center;border:0;border-radius:0;background:none;animation:tb-float 5.5s ease-in-out infinite}
 .conversation-column .welcome-mark::before{content:"";position:absolute;inset:-16px;border-radius:50%;background:radial-gradient(closest-side,var(--acglow),transparent 72%);filter:blur(6px)}
 .conversation-column .welcome-mark img{position:relative;width:62px;height:62px;filter:drop-shadow(0 6px 22px var(--acglow))}
@@ -273,6 +322,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .composer-status>span{min-width:0;overflow-wrap:anywhere}
 .composer-wrap .composer-status>span:first-child{color:var(--tx2)}
 .composer-wrap .composer-status.error,.composer-wrap .composer-status.error>span:first-child{color:var(--err)}
+.composer-wrap .context-meter{display:inline-block;width:74px;height:4px;margin-right:8px;position:relative;top:-1px;vertical-align:middle;border-radius:3px;background:var(--bg4);overflow:hidden}
+.composer-wrap .context-meter i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--ac2),var(--ac));transition:width .5s var(--ease-out)}
+.composer-wrap .context-meter.high i{background:var(--warn)}
+.composer-wrap .context-meter.full i{background:var(--err)}
 .composer-wrap .context-compact-btn{height:20px;margin-left:8px;padding:0 7px;border:1px solid var(--line2);border-radius:6px;background:var(--bg3);color:var(--tx1);font:500 10.5px var(--font)}
 .composer-wrap .context-compact-btn:hover{background:var(--bg4);color:var(--tx0)}
 
@@ -283,7 +336,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .context-chip.kind-review{--chip:var(--warn)}
 .composer-wrap .context-chip.kind-browser{--chip:var(--info)}
 .composer-wrap .context-chip strong{font-size:11px;font-weight:600}
-.composer-wrap .context-chip small{color:var(--tx3);font:10px var(--mono)}
+.composer-wrap .context-chip small{min-width:0;color:var(--tx3);font:10px var(--mono)}
+.composer-wrap .context-chip{max-width:min(420px,100%);min-width:0}
+.composer-wrap .context-chip :is(svg,strong,button){flex:none}
 .composer-wrap .context-chip button{width:18px;height:18px;color:var(--tx2)}
 .composer-wrap .context-chip button:hover{background:var(--bg3);color:var(--tx0)}
 .composer-wrap .attachment-shelf>span{height:26px;gap:6px;padding:0 6px 0 9px;border:1px solid var(--line2);border-radius:var(--r-s);background:var(--bg2);color:var(--tx1);font-size:11px;box-shadow:var(--sh1)}
@@ -295,6 +350,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .slash-menu{padding:6px;width:min(360px,calc(100vw - 48px))}
 .composer-wrap .slash-menu button{min-height:34px;grid-template-columns:104px minmax(0,1fr);gap:8px;padding:5px 9px;border-radius:8px;background:transparent;color:var(--tx1)}
 .composer-wrap .slash-menu button:hover{background:var(--bg3)}
+.composer-wrap .slash-menu button.active{background:var(--acsoft);color:var(--tx0)}
 .composer-wrap .slash-menu strong{color:var(--ac);font:500 11.5px var(--mono)}
 .composer-wrap .slash-menu span{color:var(--tx2);font-size:11.5px}
 .composer-wrap .file-mention-menu{padding:6px}
@@ -412,3 +468,4 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap :is(.slash-menu button,.model-picker-menu>button,.model-runtime-profiles>button):hover{background:var(--bg3)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .file-mention-menu button:is(:hover,.active),:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap :is(.model-picker-menu>button,.model-runtime-profiles>button).selected{background:var(--acsoft)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .file-mention-menu small{color:var(--tx3)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .slash-menu button.active{background:var(--acsoft)!important;color:var(--tx0)!important}

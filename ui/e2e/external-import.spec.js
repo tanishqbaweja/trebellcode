@@ -65,7 +65,7 @@ test("external agent imports use native progress and completion notifications",a
     await page.goto("/");await page.getByRole("button",{name:"Tools",exact:true}).click();
     const card=page.locator(".capability-card").filter({has:page.getByText("Import agent configuration",{exact:true})}).first();
     await expect(card).toContainText("Previous native imports · 1");await expect(card).toContainText("Imported connector candidates · 1");
-    await card.getByRole("button",{name:"Scan"}).click();await expect(card).toContainText("Claude skills");await card.getByRole("button",{name:"Import 1 items"}).click();
+    await card.getByRole("button",{name:"Scan"}).click();await expect(card).toContainText("Claude skills");await card.getByRole("button",{name:"Import 1 item",exact:true}).click();
     await expect(card).toContainText("Importing skills · 1 imported");
     await expect(card).toContainText("Import complete skills, mcp server config · 1 imported · 1 failed",{timeout:10_000});expect(postImportHistoryReads).toBe(1);
     const importCall=calls.find(call=>call.method==="externalAgentConfig/import");expect(importCall?.params).toEqual({migrationItems:[migrationItem],source:"trebell-code"});

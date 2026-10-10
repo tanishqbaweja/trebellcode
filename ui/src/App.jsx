@@ -4,22 +4,23 @@ import {
   Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
   ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Mic, Camera, History,
-  PanelRight, PanelBottom, PanelLeftOpen, Command, Target, Play, Search
+  PanelRight, PanelBottom, PanelLeftOpen, Command, Target, Play, Search, Sun, Moon
 } from "lucide-react";
 import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
-import RightPanel from "./components/RightPanel.jsx";
+import RightPanel, { askText } from "./components/RightPanel.jsx";
 import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInPicker from "./components/OpenInPicker.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
-import { resolveKeybinding } from "./keybindings.js";
+import { normalizeKeybindingRules, resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
 import { historyFromItemEntries, historyFromTurns, mergeHistoryMessages, resumedActiveTurnId } from "./thread-history.js";
+import { assistantRowDecorations, mergeTurnOutcomes, permissionModeLabel, turnInfoKey, turnOutcomeStatus } from "./turn-outcome.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
@@ -28,7 +29,7 @@ import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./f
 import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-message-search.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
 import { captureHistoryPrependAnchor, captureThreadScrollPosition, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
-import { DEFAULT_LAYOUT, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
+import { DEFAULT_LAYOUT, LAYOUT_LIMITS, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
 import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary, guardianDeniedEvent } from "./guardian-review.js";
@@ -172,6 +173,8 @@ function attachmentDisplayName(path){
   return name.replace(/^\d{10,}-[0-9a-f]{8}-(?=.)/i,"");
 }
 // Replaces the activity row with the event's id, or adds the event.
+// Failures the worktree setup card already shows (the activity list does not repeat them).
+const WORKTREE_CARD_ERRORS=new WeakSet();
 function upsertEvent(events,event){return events.some(item=>item.id===event.id)?events.map(item=>item.id===event.id?{...item,...event}:item):[...events,event]}
 function historyFromThread(thread,checkpointByTurn={}){
   return historyFromTurns(thread?.turns||[],checkpointByTurn);
@@ -228,6 +231,12 @@ function tokenLabel(tokenUsage,price=null){
   if(total==null)return "Context —";
   if(windowSize&&contextTokens!=null)return "Context "+Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+" input · "+total.toLocaleString()+" total"+suffix;
   return "Tokens "+total.toLocaleString()+suffix;
+}
+// The share of the model's context window the last request used, or null when the harness has not reported both numbers.
+function contextUsagePercent(tokenUsage){
+  const used=tokenUsage?.last?.inputTokens,windowSize=Number(tokenUsage?.modelContextWindow);
+  if(tokenUsage?.total?.totalTokens==null||used==null||!Number.isFinite(Number(used))||!(windowSize>0))return null;
+  return Math.max(0,Math.min(100,Math.round(Number(used)/windowSize*100)));
 }
 
 function EventIcon({event}){
@@ -295,13 +304,13 @@ function ThreadFindBar({state,inputRef,onQuery,onPrevious,onNext,onClose}){
   </div>;
 }
 
-const ConversationMessageRow=memo(function ConversationMessageRow({message,activeFind,allowRevert,projectPath,environmentId,threadId,onEditFromHere}){
+const ConversationMessageRow=memo(function ConversationMessageRow({message,activeFind,allowRevert,projectPath,environmentId,threadId,onEditFromHere,heading="",outcomeLabel="",outcomeTone=""}){
   const parsed=useMemo(()=>message.role==="user"?null:parseVisualizationMessage(message.text),[message.role,message.text]);
   if(message.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="user-bubble"><p>{message.text}</p>{allowRevert&&message.turnId&&<button className="message-action" onClick={()=>onEditFromHere(message)}>Edit from here</button>}</div></div>;
-  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div>{parsed?.text&&<div className="assistant-message-text" data-assistant-citation-source={message.id}>{parsed.text}</div>}{(parsed?.visualizations||[]).map((visualization,index)=>{
+  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text" data-assistant-citation-source={message.id}>{parsed.text}</div>}{(parsed?.visualizations||[]).map((visualization,index)=>{
     const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
     return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
-  })}</div></div>;
+  })}{outcomeLabel&&<span className={"turn-outcome tone-"+(outcomeTone||"ok")} data-testid="turn-outcome">{outcomeTone==="err"?<X size={11} aria-hidden="true"/>:outcomeTone==="warn"?<CircleStop size={11} aria-hidden="true"/>:<Check size={11} aria-hidden="true"/>}{outcomeLabel}</span>}</div></div>;
 },sameConversationMessageRowProps);
 
 const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,rootRef,forceMount=false,initialMount=false,renderMessage}){
@@ -332,10 +341,12 @@ const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,roo
   return <div ref={ref} className={"conversation-virtual-chunk"+(mounted?" mounted":" placeholder")} data-virtual-chunk={chunk.key} style={mounted?undefined:{height:placeholderHeight}}>{mounted?chunk.messages.map(renderMessage):null}</div>;
 });
 
-const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,activeFindItemId=null,scrollContainerRef=null}){
+const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,activeFindItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null}){
   const historyRef=useRef(null);
   const virtualized=shouldVirtualizeConversation(messages),chunks=useMemo(()=>virtualized?conversationVirtualChunks(messages):[],[messages,virtualized]),forcedChunk=virtualized?conversationChunkIndexForMessage(chunks,activeFindItemId):-1;
-  const renderMessage=useCallback(message=><ConversationMessageRow
+  // A turn's first reply names the harness (and the mode this window sent it with); its last reply says how it ended.
+  const decorations=useMemo(()=>assistantRowDecorations(messages,{harnessLabel,turnInfo,threadId}),[messages,harnessLabel,turnInfo,threadId]);
+  const renderMessage=useCallback(message=>{const decoration=decorations.get(String(message.id));return <ConversationMessageRow
     key={message.id}
     message={message}
     activeFind={String(message.id)===String(activeFindItemId||"")}
@@ -344,7 +355,10 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
     environmentId={environmentId}
     threadId={threadId}
     onEditFromHere={onEditFromHere}
-  />,[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere]);
+    heading={decoration?.heading||""}
+    outcomeLabel={decoration?.outcomeLabel||""}
+    outcomeTone={decoration?.outcomeTone||""}
+  />},[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations]);
   return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={loadingEarlier} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{virtualized
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :messages.map(renderMessage)}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
@@ -356,12 +370,23 @@ function ApprovalCard({request,onResolve,threadLabel=""}){
   const permissions=request.method==="item/permissions/requestApproval";
   const network=permissions?p.permissions?.network:null;const fileSystem=permissions?p.permissions?.fileSystem:null;
   const title=permissions?"Additional access requested":request.method.includes("fileChange")||request.method==="applyPatchApproval"?"File changes need approval":p.networkApprovalContext?.host?"Network access needs approval":"Command needs approval";
-  const detail=permissions?[network&&"Network access",fileSystem&&"Filesystem access"].filter(Boolean).join(" + "):(p.networkApprovalContext?.host?`${p.networkApprovalContext.protocol||"network"}://${p.networkApprovalContext.host}`:p.reason||p.command||p.path||request.method);
+  // The command is shown even when the harness gives a reason, so nobody approves "Run the tests" without seeing what runs.
+  const commandText=Array.isArray(p.command)?p.command.map(part=>String(part)).join(" "):typeof p.command==="string"?p.command:"";
+  const networkTarget=p.networkApprovalContext?.host?`${p.networkApprovalContext.protocol||"network"}://${p.networkApprovalContext.host}`:"";
+  const detail=permissions?[network&&"Network access",fileSystem&&"Filesystem access"].filter(Boolean).join(" + "):(networkTarget||p.reason||commandText||p.path||request.method);
+  const showCommand=!permissions&&Boolean(commandText.trim())&&detail!==commandText;
   const approvalOptions=Array.isArray(p.approvalOptions)?p.approvalOptions.filter(option=>option&&typeof option.decision==="string"&&option.label):[];
-  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}<p>{detail||p.reason||request.method}</p>{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}{approvalOptions.filter(option=>option.warning).map(option=><small key={"warning-"+option.decision}>{option.label}: {option.warning}</small>)}<div className="approval-actions">{approvalOptions.length
+  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}<p>{detail||p.reason||request.method}</p>{showCommand&&<pre className="approval-command" data-testid="approval-command"><code>{commandText}</code></pre>}{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}{approvalOptions.filter(option=>option.warning).map(option=><small key={"warning-"+option.decision}>{option.label}: {option.warning}</small>)}<div className="approval-actions">{approvalOptions.length
     // An ACP harness's own choices, in its order and wording (T3 grokApprovalOptions / antigravityApprovalOptions).
     ?approvalOptions.map(option=><button key={option.decision} className={option.decision==="accept"?"approve":undefined} onClick={()=>onResolve(request,option.decision)}>{option.label}</button>)
     :<><button onClick={()=>onResolve(request,"decline")}>Deny</button><button onClick={()=>onResolve(request,"acceptForSession")}>Allow session</button><button className="approve" onClick={()=>onResolve(request,"accept")}>Allow once</button></>}</div></div>;
+}
+// The undo toast's remaining seconds, counting down with the timer that removes it. Hidden from the live region so it is
+// not announced every second.
+function UndoCountdown({expiresAt}){
+  const [now,setNow]=useState(()=>Date.now());
+  useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),250);return()=>clearInterval(timer)},[expiresAt]);
+  return <em aria-hidden="true">{Math.max(1,Math.ceil((Number(expiresAt)-now)/1000))}s</em>;
 }
 function GuardianDenialCard({review,busy,onApprove,onDismiss}){
   if(!review)return null;
@@ -370,6 +395,12 @@ function GuardianDenialCard({review,busy,onApprove,onDismiss}){
   return <div className="approval-card guardian-denial-card" data-testid="guardian-denial-card"><div className="card-title"><ShieldCheck size={16}/><strong>Auto review denied this action</strong></div><p>{detail}</p>{review.review?.rationale&&<p>{review.review.rationale}</p>}{risk&&<small>Risk assessment: {risk}</small>}<div className="approval-actions"><button onClick={()=>onDismiss(review)} disabled={busy}>Dismiss</button><button className="approve" onClick={()=>onApprove(review)} disabled={busy}>{busy?"Allowing…":"Allow anyway"}</button></div></div>;
 }
 
+// Scrolls a menu just enough to show its keyboard-highlighted row (without scrolling anything around the menu).
+function keepActiveOptionVisible(menu){
+  const active=menu?.querySelector("button.active");if(!active)return;
+  const top=active.offsetTop,bottom=top+active.offsetHeight;
+  if(top<menu.scrollTop)menu.scrollTop=top;else if(bottom>menu.scrollTop+menu.clientHeight)menu.scrollTop=bottom-menu.clientHeight;
+}
 const SLASH_COMMANDS=[
   ["/compact","Compact conversation context"],
   ["/ps","Show agent background processes"],
@@ -397,7 +428,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   const [mentionItems,setMentionItems]=useState([]);
   const [mentionIndex,setMentionIndex]=useState(0);
   const [mentionBusy,setMentionBusy]=useState(false);
-  const composerRef=useRef(null);
+  const [slashIndex,setSlashIndex]=useState(0);
+  const [slashDismissed,setSlashDismissed]=useState(null);
+  const composerRef=useRef(null),slashMenuRef=useRef(null),mentionMenuRef=useRef(null),modelMenuRef=useRef(null),modelButtonRef=useRef(null);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
   useLayoutEffect(()=>{resizeTextarea(composerRef.current,{min:40,max:160})},[prompt]);
   useEffect(()=>{onModelPickerOpenChange?.(modelOpen)},[modelOpen,onModelPickerOpenChange]);
@@ -409,7 +442,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
       if(target instanceof Element&&target.closest(".model-picker-wrap"))return;
       setModelOpen(false);
     };
-    const keyDown=event=>{if(event.key==="Escape")setModelOpen(false)};
+    const keyDown=event=>{
+      if(event.key!=="Escape")return;
+      // Escape from inside the list hands focus back to the picker button instead of dropping it on the page.
+      const inside=document.activeElement instanceof Element&&Boolean(document.activeElement.closest(".model-picker-menu"));
+      setModelOpen(false);if(inside)modelButtonRef.current?.focus();
+    };
     window.addEventListener("pointerdown",pointerDown,true);
     window.addEventListener("keydown",keyDown,true);
     return()=>{window.removeEventListener("pointerdown",pointerDown,true);window.removeEventListener("keydown",keyDown,true)};
@@ -439,6 +477,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
     },120);
     return()=>{disposed=true;clearTimeout(timer)};
   },[activeMention?.query,onFileMentionSearch]);
+  const contextPercent=contextUsagePercent(tokenUsage);
   const priceConfig=(settings.customModels||[]).find(item=>item.id===model&&item.runtime===agentRuntime&&(!runtimeCapabilities.managedInference||item.provider===provider))||null;
   function dictate(){
     if(!speechSupported||listening)return;
@@ -468,7 +507,20 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
       requestAnimationFrame(()=>{composerRef.current?.focus();composerRef.current?.setSelectionRange(next.caret,next.caret)});
     }finally{setMentionBusy(false)}
   }
+  function chooseSlash(cmd){
+    onPromptEdit?.();setPrompt(cmd+" ");setSlashIndex(0);
+    requestAnimationFrame(()=>{const node=composerRef.current;if(!node)return;node.focus();const end=node.value.length;node.setSelectionRange(end,end);setCaret(end)});
+  }
   function keyDown(e){
+    if(slashMenuOpen){
+      if(e.key==="ArrowDown"){e.preventDefault();setSlashIndex((slashActive+1)%slashItems.length);return}
+      if(e.key==="ArrowUp"){e.preventDefault();setSlashIndex((slashActive-1+slashItems.length)%slashItems.length);return}
+      if(e.key==="Escape"){e.preventDefault();setSlashDismissed(prompt);return}
+      const chosen=slashItems[slashActive]?.[0];
+      if(e.key==="Tab"&&!e.shiftKey&&chosen){e.preventDefault();chooseSlash(chosen);return}
+      // Enter sends a command typed out in full; on a partial word ("/pl") it completes the highlighted command instead.
+      if(e.key==="Enter"&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&chosen&&chosen.toLowerCase()!==prompt.trim().toLowerCase()){e.preventDefault();chooseSlash(chosen);return}
+    }
     if(activeMention&&mentionItems.length){
       if(e.key==="ArrowDown"){e.preventDefault();setMentionIndex(index=>(index+1)%mentionItems.length);return}
       if(e.key==="ArrowUp"){e.preventDefault();setMentionIndex(index=>(index-1+mentionItems.length)%mentionItems.length);return}
@@ -511,6 +563,13 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
     return true;
   };
   const slashItems=slashOpen?allSlash.filter(([cmd])=>cmd.startsWith(slashQuery.split(/\s/)[0])&&slashAvailable(cmd)):[];
+  // The menu picks the command word: it closes once a space follows it, on Escape, and after a command is chosen.
+  const slashMenuOpen=slashOpen&&!/\s/.test(prompt)&&slashItems.length>0&&slashDismissed!==prompt;
+  const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0;
+  useEffect(()=>{setSlashIndex(0)},[slashQuery]);
+  // Keyboard choices stay in view in short windows, where the menus scroll.
+  useEffect(()=>{keepActiveOptionVisible(slashMenuRef.current)},[slashActive,slashMenuOpen]);
+  useEffect(()=>{keepActiveOptionVisible(mentionMenuRef.current)},[mentionIndex,mentionItems]);
   const contextPaths=new Set((contextChips||[]).map(chip=>chip.path));
   const promptTooLong=prompt.length>MAX_COMPOSER_CHARS;
   const chosenModels=selectedModels.length?selectedModels:(model?[model]:[]);
@@ -544,6 +603,23 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   const modelOptionDescriptors=supportedModelOptions(modelMeta?.[model]||{});
   const modelOptionPicks=configuredModelOptions(settings,agentRuntime,provider,model,modelMeta?.[model]||{});
   const providerLabel=modelProviderLabel(provider)||"provider";
+  function modelOptionButtons(){return [...(modelMenuRef.current?.querySelectorAll(":scope > button:not(:disabled)")||[])]}
+  // Arrow keys reach the model list from the picker button and the search box, and move between its options.
+  function focusModelOption(which){
+    const pick=()=>{const options=modelOptionButtons();if(!options.length)return false;(which==="last"?options.at(-1):which==="first"?options[0]:(options.find(option=>option.classList.contains("selected"))||options[0])).focus();return true};
+    if(!pick())requestAnimationFrame(pick);
+  }
+  function modelPickerKeyDown(event){
+    if((event.key!=="ArrowDown"&&event.key!=="ArrowUp")||!models.length)return;
+    event.preventDefault();if(!modelOpen)setModelOpen(true);
+    focusModelOption(event.key==="ArrowUp"?"last":"current");
+  }
+  function modelMenuKeyDown(event){
+    if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;
+    const options=modelOptionButtons(),index=options.indexOf(document.activeElement);if(!options.length||index<0)return;
+    event.preventDefault();
+    options[event.key==="Home"?0:event.key==="End"?options.length-1:event.key==="ArrowDown"?(index+1)%options.length:(index-1+options.length)%options.length].focus();
+  }
   function pickModel(event,id){
     const next=nextModelSelection(chosenModels,id,{shiftKey:event.shiftKey,allowMulti:allowMultiModel});
     onSelectedModels?.(next);if(!next.includes(model))setModel(next[0]||id);
@@ -564,9 +640,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
     :modelProviderRuntime?`Configure ${providerLabel} in Settings…`
     :`Configure ${agentRuntimeLabel} in Settings…`;
   return <div className={"composer-wrap"+(prompt.length>=32768?" long-draft":"")} onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
-    {slashOpen&&slashItems.length>0&&<div className="slash-menu">{slashItems.map(([cmd,desc])=><button key={cmd} onMouseDown={e=>{e.preventDefault();setPrompt(cmd+" ")}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
-    {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu">{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
-    {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
+    {slashMenuOpen&&<div className="slash-menu" ref={slashMenuRef}>{slashItems.map(([cmd,desc],index)=><button key={cmd} type="button" className={index===slashActive?"active":undefined} onMouseDown={e=>{e.preventDefault();chooseSlash(cmd)}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
+    {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef}>{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
+    {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={[[chip.label,chip.detail].filter(Boolean).join(" · "),chip.path].filter(Boolean).join("\n")}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
     <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/>{attachmentDisplayName(path)}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
     <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={composerPlaceholder} disabled={!providerReady||submitting||openingThread}/>
     <div className="composer-bar"><div className="composer-left">
@@ -581,12 +657,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
     </div><div className="composer-right">
       {setupRequired?<button className="login-btn" onClick={onConfigureProvider}>{configureLabel}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
-        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError||"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>event.stopPropagation()} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
+        <div className="model-picker-wrap"><button ref={modelButtonRef} data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} onKeyDown={modelPickerKeyDown} aria-haspopup="true" aria-expanded={modelOpen&&models.length>0?"true":"false"} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError||"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu" ref={modelMenuRef} onKeyDown={modelMenuKeyDown}>{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>{event.stopPropagation();if(event.key==="ArrowDown"){event.preventDefault();focusModelOption("first")}}} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
-      <button data-testid="send" className="send-btn" onClick={()=>onSend?.(prompt)} disabled={!providerReady||!transportReady||Boolean(runtimeSwitchLabel)||Boolean(modelBlocker)||submitting||openingThread||!prompt.trim()||promptTooLong} title={runtimeSwitchLabel||(!transportReady?transportMessage:modelBlocker||undefined)}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
+      <button data-testid="send" className="send-btn" aria-label={running&&!steerFollowUps?"Queue follow-up":running?"Steer agent":"Send message"} onClick={()=>onSend?.(prompt)} disabled={!providerReady||!transportReady||Boolean(runtimeSwitchLabel)||Boolean(modelBlocker)||submitting||openingThread||!prompt.trim()||promptTooLong} title={runtimeSwitchLabel||(!transportReady?transportMessage:modelBlocker||undefined)}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
-    <div className={"composer-status"+(promptTooLong||transportError||(modelBlocker?!modelsLoading:modelError)?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:runtimeSwitchLabel?<span data-testid="composer-runtime-switch" className="composer-transport">{runtimeSwitchLabel} · your draft stays here until it is ready.</span>:!transportReady?<span data-testid="composer-transport" className="composer-transport">{transportMessage}{transportError?". Your draft is kept.":" · your draft stays here until it connects."}{transportError&&<button className="context-compact-btn" type="button" onClick={onRetryTransport} title={"Reconnect to "+agentRuntimeLabel}>Retry</button>}</span>:modelBlocker?<span data-testid="composer-model-status" className="composer-transport">{modelBlocker}{!modelsLoading&&!setupRequired&&onConfigureProvider&&<button className="context-compact-btn" type="button" onClick={onConfigureProvider} title={configureLabel+" in Settings"}>{configureLabel}</button>}</span>:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups</span></div>
+    <div className={"composer-status"+(promptTooLong||transportError||(modelBlocker?!modelsLoading:modelError)?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:runtimeSwitchLabel?<span data-testid="composer-runtime-switch" className="composer-transport">{runtimeSwitchLabel} · your draft stays here until it is ready.</span>:!transportReady?<span data-testid="composer-transport" className="composer-transport">{transportMessage}{transportError?". Your draft is kept.":" · your draft stays here until it connects."}{transportError&&<button className="context-compact-btn" type="button" onClick={onRetryTransport} title={"Reconnect to "+agentRuntimeLabel}>Retry</button>}</span>:modelBlocker?<span data-testid="composer-model-status" className="composer-transport">{modelBlocker}{!modelsLoading&&!setupRequired&&onConfigureProvider&&<button className="context-compact-btn" type="button" onClick={onConfigureProvider} title={configureLabel+" in Settings"}>{configureLabel}</button>}</span>:modelError||<>{contextPercent!=null&&<span className={"context-meter"+(contextPercent>=90?" full":contextPercent>=75?" high":"")} role="meter" aria-label="Context window used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={contextPercent}><i style={{width:contextPercent+"%"}}/></span>}{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups</span></div>
   </div>;
 });
 
@@ -598,6 +674,9 @@ export default function App(){
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]);
   const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
   const assistantStreamBufferRef=useRef(null);
+  // Per thread and turn: the mode this window sent the turn with, and how and how fast it ended (see turn-outcome.js).
+  const [turnInfo,setTurnInfo]=useState({});const turnClockRef=useRef(new Map());
+  const [resolvedMode,setResolvedMode]=useState(()=>typeof document!=="undefined"&&document.documentElement.dataset.mode==="light"?"light":"dark");
   if(!assistantStreamBufferRef.current)assistantStreamBufferRef.current=createTextFrameBuffer({
     schedule:callback=>requestAnimationFrame(callback),
     cancel:handle=>cancelAnimationFrame(handle),
@@ -715,6 +794,27 @@ export default function App(){
     setSection(target.section||"chat");
   }
   useEffect(()=>{try{localStorage.setItem("trebell-layout-v1",JSON.stringify(layoutPrefs))}catch{}},[layoutPrefs]);
+  // The largest size a pane may take in this window; the pointer and keyboard resizers share these limits.
+  function layoutMaximum(kind){
+    if(kind==="sidebar")return Math.max(210,Math.min(420,window.innerWidth-620));
+    if(kind==="right")return Math.max(340,Math.min(820,window.innerWidth-(sidebarOpen?layoutPrefs.sidebarWidth:0)-480));
+    return Math.max(190,Math.min(620,window.innerHeight-260));
+  }
+  // Arrow keys move a separator (Shift for bigger steps): the sidebar grows rightward, the inspector leftward and the terminal
+  // upward; Home and End jump to the smallest and largest size.
+  function resizeLayoutFromKeyboard(kind,event){
+    const key={sidebar:"sidebarWidth",right:"rightPanelWidth",terminal:"terminalHeight"}[kind];if(!key)return;
+    const grow={sidebar:"ArrowRight",right:"ArrowLeft",terminal:"ArrowUp"}[kind],shrink={sidebar:"ArrowLeft",right:"ArrowRight",terminal:"ArrowDown"}[kind];
+    const step=event.shiftKey?64:16,min=LAYOUT_LIMITS[key][0],max=layoutMaximum(kind),current=layoutPrefs[key];
+    const target=event.key===grow?current+step:event.key===shrink?current-step:event.key==="Home"?min:event.key==="End"?max:null;
+    if(target==null)return;
+    event.preventDefault();
+    setLayoutPrefs(prev=>({...prev,[key]:Math.min(max,clampLayoutValue(key,target))}));
+  }
+  function layoutSeparatorProps(kind){
+    const key={sidebar:"sidebarWidth",right:"rightPanelWidth",terminal:"terminalHeight"}[kind];
+    return {tabIndex:0,"aria-valuemin":LAYOUT_LIMITS[key][0],"aria-valuemax":layoutMaximum(kind),"aria-valuenow":layoutPrefs[key],onKeyDown:event=>resizeLayoutFromKeyboard(kind,event)};
+  }
   function beginLayoutResize(kind,event){
     if(event.button!==0)return;
     event.preventDefault();
@@ -800,7 +900,7 @@ export default function App(){
       const requested=["system","light","dark"].includes(settings.appearanceMode)?settings.appearanceMode:"system";
       const resolved=requested==="system"?(media?.matches===false?"light":"dark"):requested;
       const custom=environmentThemes.find(theme=>theme.publishedId===selectedEnvironmentThemeId)||(settings.customThemes||[]).find(theme=>theme.id===settings.appearance);
-      root.dataset.theme=custom?.id||settings.appearance||"dark";root.dataset.mode=resolved;root.dataset.customTheme=custom?"true":"false";root.dataset.environmentTheme=custom?.published?"true":"false";root.style.colorScheme=resolved;
+      root.dataset.theme=custom?.id||settings.appearance||"dark";root.dataset.mode=resolved;root.dataset.customTheme=custom?"true":"false";root.dataset.environmentTheme=custom?.published?"true":"false";root.style.colorScheme=resolved;setResolvedMode(resolved);
       const variableNames=["--theme-canvas","--theme-foreground","--bg","--panel","--panel2","--line","--muted","--muted2","--purple","--purple2","--green","--theme-error","--theme-warning","--theme-terminal-selection"];
       for(const name of variableNames)root.style.removeProperty(name);
       if(custom){for(const [name,value] of Object.entries(themeCssVariables(custom,resolved)))root.style.setProperty(name,value)}
@@ -2120,6 +2220,7 @@ export default function App(){
     else if(message.method==="thread/reverted"&&isCurrent)reloadActiveThread();
     else if(message.method==="turn/started"){
       const id=p.turn?.id||p.turnId;
+      const clockKey=turnInfoKey(threadId,id);if(clockKey&&!turnClockRef.current.has(clockKey))turnClockRef.current.set(clockKey,Date.now());
       updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:Date.now(),lastActivityAt:Date.now()});
       if(isCurrent){
         setRunning(true);setActiveTurnId(id);
@@ -2128,6 +2229,15 @@ export default function App(){
     }
     else if(message.method==="turn/completed"){
       const completedTurnId=p.turn?.id||p.turnId||null,completedAtMs=p.turn?.completedAt?Number(p.turn.completedAt)*1000:Date.now();
+      // The reply's "done · 3.2s": measured here when this window saw the turn start, else the harness's own duration.
+      const outcomeKey=turnInfoKey(threadId,completedTurnId),outcomeStatus=turnOutcomeStatus(p.turn?.status||"completed");
+      if(outcomeKey){
+        const startedAtMs=turnClockRef.current.get(outcomeKey);turnClockRef.current.delete(outcomeKey);
+        const measuredMs=startedAtMs?Math.max(0,Date.now()-startedAtMs):null,reportedMs=Number(p.turn?.durationMs);
+        const durationMs=measuredMs||(Number.isFinite(reportedMs)&&reportedMs>0?reportedMs:null);
+        // A repeated completion (a replay after a reconnect) keeps the time measured the first time.
+        if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:{...prev[outcomeKey],status:outcomeStatus,durationMs:prev[outcomeKey]?.durationMs??durationMs??null}}));
+      }
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
       // A failed Codex turn ends with its error (T3 Code); an active Codex goal goes on with a turn Codex starts itself.
@@ -2348,7 +2458,7 @@ export default function App(){
   }
   function offerThreadUndo(label,undo){
     if(threadUndoTimerRef.current)clearTimeout(threadUndoTimerRef.current);
-    const id=crypto.randomUUID();threadUndoRef.current={id,undo};setThreadUndo({id,label});
+    const id=crypto.randomUUID();threadUndoRef.current={id,undo};setThreadUndo({id,label,expiresAt:Date.now()+5000});
     threadUndoTimerRef.current=setTimeout(()=>{if(threadUndoRef.current?.id===id){threadUndoRef.current=null;setThreadUndo(null)}},5000);
   }
   async function undoThreadAction(){
@@ -2574,8 +2684,8 @@ export default function App(){
       if(resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
         const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
-        setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",loading:false});
-      }else{setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
+        if(page.kind!=="items")setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,page.data||[]));setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",loading:false});
+      }else{setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex")applyProviderInventory(harnessInventory(runtimeInventoryRef.current,resumed.thread.providerMeta))
     }
     if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
@@ -2642,6 +2752,7 @@ export default function App(){
         ?historyFromItemEntries([...(page?.data||[])].reverse(),checkpointByTurn)
         :historyFromTurns([...(page?.data||[])].reverse(),checkpointByTurn);
       if(earlier.length&&node&&prependSnapshot)pendingHistoryPrependRef.current={threadId,...prependSnapshot};
+      if(!historyPage.itemPaging)setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
       if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
       setHistoryPage({threadId,nextCursor:page?.nextCursor||null,paginated:true,itemPaging:Boolean(historyPage.itemPaging),loading:false});
     }catch(error){
@@ -2676,6 +2787,7 @@ export default function App(){
       if(!found.some(message=>String(message.id)===itemId)&&occurrence.turnCursor){
         const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
         found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn));
+        setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
       }
       if(activeThreadRef.current?.id!==threadId||(expectedSeq!=null&&expectedSeq!==threadFindSeqRef.current))return;
       if(found.length)setMessages(current=>mergeHistoryMessages(found,current));
@@ -2824,6 +2936,7 @@ export default function App(){
       return worktree;
     }catch(error){
       setWorktreeSetup(prev=>({...prev,phase:"failed",detail:error.message||String(error)}));
+      if(error&&typeof error==="object")WORKTREE_CARD_ERRORS.add(error);
       throw error;
     }
   }
@@ -3018,6 +3131,7 @@ export default function App(){
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
       if(goalActivation)await activateCodexGoal(goalActivation);
+      if(turnId){const key=turnInfoKey(thread.id,turnId),mode=permissionModeLabel(permissionModeOverride||permissionMode);if(key&&mode)setTurnInfo(prev=>({...prev,[key]:{...prev[key],mode}}))}
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
     }catch(error){
       setMessages(prev=>prev.filter(message=>message.id!==clientId));
@@ -3288,7 +3402,7 @@ export default function App(){
       }finally{setRunning(false)}
       return;
     }
-    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);setRunning(false);setEvents([{id:"send-error",kind:"error",title:e.message,status:"done",raw:{}}])});
+    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);setRunning(false);setEvents(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e)?[]:[{id:"send-error",kind:"error",title:e.message,status:"done",raw:{}}])});
   }
   async function send(promptOverride=null){
     if(openingThreadRef.current)return;
@@ -3609,7 +3723,7 @@ export default function App(){
     if(!result?.proof)throw new Error("Codex did not return a verification proof.");
     return result.proof;
   }
-  async function renameThread(){if(!rpc||!activeThread)return;const name=prompt("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
+  async function renameThread(){if(!rpc||!activeThread)return;const name=await askText("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
   async function shareThread(){const text=messages.map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
   async function startReview(){
     if(!rpc||!activeThread?.id)throw new Error("Start or open a thread before reviewing.");
@@ -3825,6 +3939,12 @@ export default function App(){
   const sidebarNavigate=useLatestCallback(navigateSection);
   const sidebarOpenThread=useLatestCallback(openThread);
   const sidebarNewThread=useLatestCallback(newChat);
+  const sidebarOpenPalette=useCallback(()=>setPaletteOpen(true),[]);
+  // The sidebar shows the user's own keybindings (Settings > Shortcuts), not the defaults.
+  const sidebarShortcuts=useMemo(()=>{
+    const rules=normalizeKeybindingRules(settings);const key=command=>rules.find(rule=>rule.command===command)?.key||"";
+    return {newChat:key("newChat"),commandPalette:key("commandPalette"),projects:key("projects"),settings:key("settings"),environments:key("environments"),previewToggle:key("previewToggle")};
+  },[settings.keybindingRules,settings.keyboardShortcuts]);
   const sidebarThreadAction=useLatestCallback(threadAction);
   const sidebarMoveThread=useLatestCallback(moveThreadOrder);
   const sidebarBulkAction=useLatestCallback(bulkAction);
@@ -3838,7 +3958,7 @@ export default function App(){
     {id:"files",label:"Files",detail:"Browse and edit the workspace",onRun:()=>openRightPanel("files")},
     ...(!projectlessMode?[{id:"diff",label:"Changes",detail:"Inspect the current Git diff",onRun:()=>openRightPanel("diff")},{id:"git",label:"Source control",detail:gitInfo?.branch||"Git and pull requests",onRun:()=>openRightPanel("source")}]:[]),
     ...(!projectlessMode?[{id:"context",label:"Trebell context",detail:"Inspect repository context supplied to the latest turn",onRun:()=>openRightPanel("context")}]:[]),
-    ...(activeThread?.id?[{id:"link-pr",label:"Link pull request",detail:"Attach a hosted review to this thread",onRun:async()=>{const url=prompt("Pull request URL");if(url)await linkPullRequestUrl(url,"manual")}}]:[]),
+    ...(activeThread?.id?[{id:"link-pr",label:"Link pull request",detail:"Attach a hosted review to this thread",onRun:async()=>{const url=await askText("Pull request URL");if(url)await linkPullRequestUrl(url,"manual")}}]:[]),
     {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:"Ctrl+Shift+T",onRun:()=>setPanel("terminal")},
     ...((currentProject?.scripts||[]).map(script=>({id:"project-action:"+script.id,label:"Run "+script.name,detail:script.command,onRun:()=>runProjectAction(script)}))),
     {id:"browser",label:"Browser",detail:window.trebellDesktop?.browser?"Open Trebell Agent Browser":"Open hosted preview and local dev-server tools",onRun:()=>openRightPanel("preview")},
@@ -3940,14 +4060,13 @@ export default function App(){
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
-    <ThreadSidebar runtimeStarting={!runtimeKnown} section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab}/>
-    {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
+    <ThreadSidebar runtimeStarting={!runtimeKnown} section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab} onOpenPalette={sidebarOpenPalette} shortcuts={sidebarShortcuts}/>
+    {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" {...layoutSeparatorProps("sidebar")} onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>
       <main className={"main-frame"+(panel==="terminal"?" terminal-open":"")}>
         <div className="window-bar">
           <span className="window-drag-space"/>
-          {window.trebellDesktop?.minimize&&window.trebellDesktop?.maximize&&window.trebellDesktop?.close&&<div className="window-controls"><button onClick={()=>window.trebellDesktop.minimize()}>—</button><button onClick={()=>window.trebellDesktop.maximize()}>□</button><button className="window-close" onClick={()=>window.trebellDesktop.close()}>×</button></div>}
         </div>
 
         {(section==="chat"||section==="new")&&<div className="chat-workspace">
@@ -3968,6 +4087,7 @@ export default function App(){
               <button data-testid="terminal-toggle" className={"header-control icon-only "+(panel==="terminal"?"active":"")} onClick={()=>setPanel(panel==="terminal"?null:"terminal")} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               {activeThread?.id&&<button className={"header-control icon-only "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
               <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
+              <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance")} aria-label={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"} title={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
               <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
             </div>
           </header>
@@ -3977,7 +4097,7 @@ export default function App(){
           <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId} scrollContainerRef={conversationScrollRef}/>
+              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId} scrollContainerRef={conversationScrollRef}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {shownApproval&&<div className="inline-approval"><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
@@ -3995,7 +4115,7 @@ export default function App(){
   <Composer starting={!runtimeKnown} prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(openingThreadId)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={openProviderSettings} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelOption={composerModelOption} onModelPickerOpenChange={setModelPickerOpen} codexThread={agentRuntime==="codex"&&activeThread?.id&&codexThreadState?.threadId===activeThread.id?codexThreadState:null}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
-            <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>
+            <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" {...layoutSeparatorProps("terminal")} onPointerDown={event=>beginLayoutResize("terminal",event)}/>
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
             <DeferredSurface label="Loading terminal…" compact><TerminalPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} onAttachExcerpt={attachExcerpt}/></DeferredSurface>
           </div>}
@@ -4014,15 +4134,16 @@ export default function App(){
         </div></div>}
       </main>
 
-      {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("right",event)}/>}
+      {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" {...layoutSeparatorProps("right")} onPointerDown={event=>beginLayoutResize("right",event)}/>}
       {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","context","source"]:[]} hiddenTabs={runtimeCapabilities.delegation?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact>{rightPanelContent()}</DeferredSurface></RightPanel>}
       {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")+(section!=="chat"?" secondary-surface-error":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     </div>
 
+    {window.trebellDesktop?.minimize&&window.trebellDesktop?.maximize&&window.trebellDesktop?.close&&<div className="window-controls window-controls-pinned"><button onClick={()=>window.trebellDesktop.minimize()} title="Minimize">—</button><button onClick={()=>window.trebellDesktop.maximize()} title="Maximize">□</button><button className="window-close" onClick={()=>window.trebellDesktop.close()} title="Close">×</button></div>}
     {elicitations.length>0&&(()=>{const verification=userVerificationAvailability({runtime:agentRuntime,remote:Boolean(workspaceEnvironmentId)});return <Suspense fallback={null}><McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={verification.available} verificationUnavailableReason={verification.reason}/></Suspense>})()}
     {!elicitations.length&&question?.request&&<Suspense fallback={null}><QuestionModal request={question.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/></Suspense>}
     {snoozeRequest&&<Suspense fallback={null}><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/></Suspense>}
-    {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><em>5s</em></div>}
+    {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><UndoCountdown expiresAt={threadUndo.expiresAt}/></div>}
     {paletteOpen&&<Suspense fallback={null}><CommandPalette open onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></Suspense>}
     {initialLoaded&&settings.onboardingComplete===false&&<Suspense fallback={null}><OnboardingModal open projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={managedInference?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/></Suspense>}
   </div>;

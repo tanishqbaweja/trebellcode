@@ -1,7 +1,7 @@
 import React,{memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import {
   Archive, BarChart3, Bot, Clock3, Folder, Globe2, History,
-  GitPullRequest, MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
+  GitPullRequest, MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose, SquarePen
 } from "lucide-react";
 import { formatSnoozeUntil } from "../thread-snooze.js";
 import { threadReferenceValues } from "../thread-references.js";
@@ -29,6 +29,21 @@ function threadCanFork(thread,runtimeCapabilities={}){
 
 const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,runAction,agentRuntime="codex",runtimeCapabilities={}}){
   const menuRef=useRef(null);
+  const [menuOpen,setMenuOpen]=useState(false);
+  // One row menu is open at a time, and it closes like other menus: Escape (focus returns to its button) or a click outside it.
+  useEffect(()=>{
+    const menu=menuRef.current;if(!menuOpen||!menu)return;
+    for(const other of document.querySelectorAll("details.thread-menu[open]"))if(other!==menu)other.open=false;
+    const pointerDown=event=>{if(!menu.contains(event.target))menu.open=false};
+    const keyDown=event=>{
+      if(event.key!=="Escape"||!menu.open)return;
+      event.preventDefault();event.stopPropagation();
+      menu.open=false;menu.querySelector("summary")?.focus();
+    };
+    document.addEventListener("pointerdown",pointerDown,true);
+    document.addEventListener("keydown",keyDown,true);
+    return()=>{document.removeEventListener("pointerdown",pointerDown,true);document.removeEventListener("keydown",keyDown,true)};
+  },[menuOpen]);
   const section=thread.section?.name||"Active";
   const rowRuntime=threadCatalogRuntime(thread,meta,agentRuntime),foreignRuntime=rowRuntime!==agentRuntime;
   const rowRuntimeLabel=({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[rowRuntime]||rowRuntime);
@@ -53,7 +68,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
         <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model||rowRuntimeLabel)+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
-    <details ref={menuRef} className="thread-menu">
+    <details ref={menuRef} className="thread-menu" onToggle={event=>setMenuOpen(event.currentTarget.open)}>
       <summary title="Thread actions"><MoreHorizontal size={13}/></summary>
       <div className="thread-menu-popover">
         {foreignRuntime?<button onClick={()=>runMenuAction(()=>onOpen(thread))}>Open in {rowRuntimeLabel}</button>:<>
@@ -111,16 +126,35 @@ const SidebarVirtualChunk=memo(function SidebarVirtualChunk({chunk,rootRef,force
   return <div ref={ref} className={"sidebar-virtual-chunk"+(mounted?" mounted":" placeholder")} data-sidebar-chunk={chunk.key} style={mounted?undefined:{height:placeholderHeight}}>{mounted?chunk.items.map(renderRow):null}</div>;
 });
 
-function UtilityButton({Icon,label,active,onClick}){
-  return <button className={active?"sidebar-utility active":"sidebar-utility"} onClick={onClick} aria-label={label} title={label}>
-    <Icon size={15}/><span>{label}</span>
+const MAC_PLATFORM=typeof navigator!=="undefined"&&/Mac|iPhone|iPad/i.test(navigator.userAgentData?.platform||navigator.platform||"");
+// A keybinding as the sidebar shows it: "Mod+Shift+P" reads "Ctrl+Shift+P" (or "⌘+Shift+P" on macOS).
+export function shortcutHint(value,mac=MAC_PLATFORM){
+  const parts=String(value||"").split("+").map(part=>part.trim()).filter(Boolean);
+  if(!parts.length)return "";
+  const names={mod:mac?"⌘":"Ctrl",ctrl:"Ctrl",control:"Ctrl",cmd:"⌘",command:"⌘",meta:"⌘",shift:"Shift",alt:mac?"⌥":"Alt",option:"⌥"};
+  return parts.map(part=>names[part.toLowerCase()]||(part.length===1?part.toUpperCase():part)).join("+");
+}
+// The same keybinding in aria-keyshortcuts form ("Control+Shift+P").
+function ariaShortcut(value,mac=MAC_PLATFORM){
+  const parts=String(value||"").split("+").map(part=>part.trim()).filter(Boolean);
+  if(!parts.length)return undefined;
+  const names={mod:mac?"Meta":"Control",ctrl:"Control",control:"Control",cmd:"Meta",command:"Meta",meta:"Meta",shift:"Shift",alt:"Alt",option:"Alt"};
+  return parts.map(part=>names[part.toLowerCase()]||(part.length===1?part.toUpperCase():part)).join("+");
+}
+// Page destinations are marked current; Browser and Agents open inspector tabs, so they show a pressed "panel open" state instead of the
+// page highlight (both can be on at once, for example the Projects page with the Browser panel open).
+function UtilityButton({Icon,label,active,onClick,shortcut="",panel=false}){
+  const hint=shortcutHint(shortcut);
+  return <button className={"sidebar-utility"+(active?" active":"")+(panel?" panel-toggle":"")+(panel&&active?" panel-open":"")} onClick={onClick} aria-label={label} title={hint?label+" · "+hint:label} aria-keyshortcuts={ariaShortcut(shortcut)} aria-pressed={panel?Boolean(active):undefined} aria-current={!panel&&active?"page":undefined}>
+    <Icon size={15}/><span>{label}</span>{hint&&<kbd className="tb-kbd sidebar-utility-kbd" aria-hidden="true">{hint}</kbd>}
   </button>;
 }
 
 const ThreadSidebar=memo(function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
   selectedIds,setSelectedIds,onBulkAction,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="codex",threadMeta={},onCollapse,
-  rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={},onOpenProviderSettings,runtimeStarting=false
+  rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={},onOpenProviderSettings,runtimeStarting=false,
+  onOpenPalette,shortcuts={}
 }){
   const searchRef=useRef(null);
   const sectionsRef=useRef(null);
@@ -155,10 +189,15 @@ const ThreadSidebar=memo(function ThreadSidebar({
       <div className="sidebar-title-actions"><button className="sidebar-new-thread" onClick={onCollapse} aria-label="Collapse sidebar" title="Collapse sidebar · Ctrl+B"><PanelLeftClose size={15}/></button><button className="sidebar-new-thread" onClick={()=>runAction(onNew)} aria-label="New thread" title="New thread"><Plus size={16}/></button></div>
     </div>
 
+    {onOpenPalette&&<button type="button" className="sidebar-palette-button" onClick={onOpenPalette} aria-label="Search or jump to" aria-keyshortcuts={ariaShortcut(shortcuts.commandPalette)} title="Search threads, projects and commands">
+      <Search size={14}/><span>Search or jump to…</span>{shortcutHint(shortcuts.commandPalette)&&<kbd className="tb-kbd" aria-hidden="true">{shortcutHint(shortcuts.commandPalette)}</kbd>}
+    </button>}
+
     <div className="sidebar-thread-tools">
+      <h3 className="sidebar-threads-label">Threads<span className="sidebar-threads-count">{threads.length}</span></h3>
       <div className="search-box">
-        <Search size={14}/>
-        <input ref={searchRef} value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search"/>
+        <Search size={13}/>
+        <input ref={searchRef} value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Escape"&&query){e.preventDefault();setQuery("")}}} placeholder="Search threads" aria-label="Search threads"/>
         {query&&<button onClick={()=>setQuery("")} aria-label="Clear search">×</button>}
       </div>
       <button className="sidebar-bulk-toggle" onClick={()=>setSelectedIds(bulk?new Set():new Set(threads.filter(thread=>threadCatalogRuntime(thread,threadMeta[thread.id]||{},agentRuntime)===agentRuntime).slice(0,1).map(t=>t.id)))} title="Thread actions" aria-label="Thread actions">
@@ -185,16 +224,21 @@ const ThreadSidebar=memo(function ThreadSidebar({
     </div>
 
     <div className="sidebar-footer">
-      <div className="sidebar-utilities">
-        <UtilityButton Icon={Folder} label="Projects" active={section==="projects"} onClick={()=>setSection("projects")}/>
-        <UtilityButton Icon={Globe2} label="Browser" active={rightPanelOpen&&rightPanelTab==="preview"} onClick={()=>setSection("preview")}/>
-        {runtimeCapabilities.delegation&&<UtilityButton Icon={Bot} label="Agents" active={rightPanelOpen&&rightPanelTab==="agents"} onClick={()=>setSection("agents")}/>}
-        <UtilityButton Icon={History} label="History" active={section==="history"} onClick={()=>setSection("history")}/>
-        <UtilityButton Icon={BarChart3} label="Usage" active={section==="usage"} onClick={()=>setSection("usage")}/>
-        {runtimeCapabilities.harnessTools&&<UtilityButton Icon={Wrench} label="Tools" active={section==="tools"} onClick={()=>setSection("tools")}/>}
-        <UtilityButton Icon={Server} label="Environments" active={section==="environments"} onClick={()=>setSection("environments")}/>
-        <UtilityButton Icon={Settings} label="Settings" active={section==="settings"} onClick={()=>setSection("settings")}/>
-      </div>
+      <nav className="sidebar-utilities" aria-label="Destinations">
+        <div className="sidebar-nav-primary">
+          <UtilityButton Icon={SquarePen} label="New task" shortcut={shortcuts.newChat} active={(section==="chat"||section==="new")&&!activeThreadId} onClick={()=>runAction(onNew)}/>
+          <UtilityButton Icon={Folder} label="Projects" shortcut={shortcuts.projects} active={section==="projects"} onClick={()=>setSection("projects")}/>
+          <UtilityButton Icon={Settings} label="Settings" shortcut={shortcuts.settings} active={section==="settings"} onClick={()=>setSection("settings")}/>
+        </div>
+        <div className="sidebar-nav-secondary">
+          <UtilityButton Icon={Globe2} label="Browser" panel shortcut={shortcuts.previewToggle} active={rightPanelOpen&&rightPanelTab==="preview"} onClick={()=>setSection("preview")}/>
+          {runtimeCapabilities.delegation&&<UtilityButton Icon={Bot} label="Agents" panel active={rightPanelOpen&&rightPanelTab==="agents"} onClick={()=>setSection("agents")}/>}
+          <UtilityButton Icon={History} label="History" active={section==="history"} onClick={()=>setSection("history")}/>
+          <UtilityButton Icon={BarChart3} label="Usage" active={section==="usage"} onClick={()=>setSection("usage")}/>
+          {runtimeCapabilities.harnessTools&&<UtilityButton Icon={Wrench} label="Tools" active={section==="tools"} onClick={()=>setSection("tools")}/>}
+          <UtilityButton Icon={Server} label="Environments" shortcut={shortcuts.environments} active={section==="environments"} onClick={()=>setSection("environments")}/>
+        </div>
+      </nav>
       <button className="sidebar-provider" onClick={()=>managedInference&&onOpenProviderSettings?onOpenProviderSettings():setSection("settings")} title={runtimeStarting?"Trebell is starting its agent harness":"Configure "+runtimeLabel}><span className="provider-dot"/><div><strong>{runtimeLabel}</strong><span>{managedInference?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
     </div>
   </aside>;

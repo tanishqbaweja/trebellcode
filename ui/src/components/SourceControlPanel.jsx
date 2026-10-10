@@ -145,8 +145,8 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
         catch(e){if(!textRequests.finish(text)){ownsBusy=false;return}setError(e.message||String(e),"writer");return}
         if(!textRequests.finish(text)){ownsBusy=false;return}
       }
-      const title=prompt("PR title",suggested.title||commitMessage||"Trebell Code changes");if(!title)return;
-      const body=prompt("PR description",suggested.body||"");if(body==null)return;
+      const title=await askText("PR title",suggested.title||commitMessage||"Trebell Code changes");if(!title)return;
+      const body=await askText("PR description",suggested.body||"");if(body==null)return;
       const d=await api("/api/source-control/pr",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,title:title.trim(),body})});
       const issues=[];
       if(d.url){

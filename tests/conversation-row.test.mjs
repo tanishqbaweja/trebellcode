@@ -29,3 +29,13 @@ test("conversation row memoization rerenders for visible or navigation changes",
   assert.equal(sameConversationMessageRowProps(base,props(base.message,{projectPath:"/other"})),false);
   assert.equal(sameConversationMessageRowProps(base,props(base.message,{threadId:"thread-2"})),false);
 });
+
+test("conversation row memoization rerenders when the turn heading or outcome pill changes",()=>{
+  const base=props({id:"m1",role:"assistant",text:"Answer",turnId:"turn-1"},{heading:"Codex"});
+  assert.equal(sameConversationMessageRowProps(base,props(base.message,{heading:"Codex"})),true);
+  assert.equal(sameConversationMessageRowProps(base,props(base.message,{heading:"Codex · Supervised"})),false);
+  assert.equal(sameConversationMessageRowProps(base,props(base.message,{heading:"Codex",outcomeLabel:"done · 2.1s",outcomeTone:"ok"})),false);
+  const done=props(base.message,{heading:"Codex",outcomeLabel:"stopped",outcomeTone:"warn"});
+  assert.equal(sameConversationMessageRowProps(done,props(base.message,{heading:"Codex",outcomeLabel:"stopped",outcomeTone:"err"})),false);
+  assert.equal(sameConversationMessageRowProps(props(base.message),props(base.message,{heading:"",outcomeLabel:""})),true);
+});

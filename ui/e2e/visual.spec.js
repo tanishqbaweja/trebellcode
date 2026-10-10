@@ -3757,15 +3757,18 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     await expect(page.locator("[data-message-id]")).toHaveCount(130);
     for(const ws of sockets)ws.send(JSON.stringify({method:"turn/started",params:{threadId:thread.id,turn:{id:"opencode-running-turn",status:"inProgress"}}}));
     const composer=page.getByTestId("composer");
-    await expect(composer).toHaveAttribute("placeholder","Queue a follow-up…");
-    await expect(page.locator(".composer-status")).toContainText("Queue follow-ups");
-    await composer.fill("Queue this while OpenCode is busy");
+    // OpenCode steers a busy turn the way T3 Code does (a4cd8196 made it advertise steering), so with followUpMode "steer" the
+    // follow-up goes into the running turn instead of the queue.
+    await expect(composer).toHaveAttribute("placeholder","Steer the running agent…");
+    await expect(page.locator(".composer-status")).toContainText("Steer follow-ups");
+    await composer.fill("Steer this while OpenCode is busy");
     await composer.press("Enter");
-    const queued=page.locator(".queued-message").filter({hasText:"Queue this while OpenCode is busy"});
-    await expect(queued).toBeVisible();
-    await expect(queued.getByRole("button",{name:"Send now",exact:true})).toBeDisabled();
-    expect(requests.some(item=>item.method==="turn/steer")).toBe(false);
-    await page.screenshot({path:auditDir+"opencode-queue-fallback-1280x800.png",fullPage:true});
+    await expect.poll(()=>requests.filter(item=>item.method==="turn/steer").map(item=>({threadId:item.params.threadId,expectedTurnId:item.params.expectedTurnId,input:item.params.input}))).toEqual([{threadId:thread.id,expectedTurnId:"opencode-running-turn",input:[{type:"text",text:"Steer this while OpenCode is busy",textElements:[]}]}]);
+    await expect(composer).toHaveValue("");
+    await expect(page.locator(".queued-message")).toHaveCount(0);
+    await page.locator(".conversation-scroll").evaluate(node=>{node.scrollTop=node.scrollHeight});
+    await expect(page.locator(".user-row").filter({hasText:"Steer this while OpenCode is busy"})).toBeVisible();
+    await page.screenshot({path:auditDir+"opencode-steer-follow-up-1280x800.png",fullPage:true});
     await expect(page.getByRole("button",{name:"Load earlier messages",exact:true})).toHaveCount(0);
     expect(requests.filter(item=>item.method==="thread/items/list").map(item=>item.params.cursor)).toEqual(["latest","older"]);
     await page.setViewportSize({width:1280,height:800});
