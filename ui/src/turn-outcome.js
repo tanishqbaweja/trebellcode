@@ -78,9 +78,9 @@ export function turnOutcomePill(info){
 }
 
 // Per assistant message id: the heading its row shows (first reply of a turn) and the outcome pill (last reply of a
-// finished turn). Consecutive replies of one turn form a group; a user message in between starts a new group.
+// finished turn). Consecutive replies of one turn form a group; a user message in between starts a new group, a thought does not.
 export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=null,threadId=null}={}){
-  const out=new Map();const list=Array.isArray(messages)?messages:[];
+  const out=new Map();const list=(Array.isArray(messages)?messages:[]).filter(message=>message?.role!=="reasoning");
   for(let index=0;index<list.length;index++){
     const message=list[index];if(message?.role!=="assistant")continue;
     const turnId=message.turnId||null;
