@@ -78,7 +78,7 @@ test("completed turns automatically plan verification while failed turns do not"
     await expect(page.getByText("Verification planned · medium risk · 3 required checks · next diagnostics",{exact:true})).toBeVisible();
     await page.setViewportSize({width:1280,height:800});
     await page.getByText("Verification planned · medium risk · 3 required checks · next diagnostics",{exact:true}).scrollIntoViewIfNeeded();
-    await page.screenshot({path:auditDir+"turn-verification-planned-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"turn-verification-planned-dark-1280x800.png",fullPage:true});
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"turn-failed",status:"failed",completedAt:Date.now()/1000}}});
     await page.waitForTimeout(250);expect(requests.length).toBe(1);
   }finally{await harness.close()}
@@ -120,6 +120,6 @@ test("a turn whose checks already ran shows their outcome: failed checks start a
     // Nothing is left looking as if it still waits.
     await expect(page.locator(".tool-event.kind-verification summary em",{hasText:/^(pending|running)$/})).toHaveCount(0);
     await verified.scrollIntoViewIfNeeded();
-    await page.screenshot({path:auditDir+"turn-verification-outcome-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"turn-verification-outcome-dark-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });

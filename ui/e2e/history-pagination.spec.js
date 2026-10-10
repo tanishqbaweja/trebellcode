@@ -102,25 +102,31 @@ test("Codex thread history opens from bounded item pages and loads older items o
     expect(initialItems?.params).toEqual({threadId:thread.id,cursor:"latest-items",limit:100,sortDirection:"desc"});
     expect(calls.some(call=>call.method==="thread/turns/list")).toBe(false);
     const restoredCommand=page.locator(".tool-event").filter({hasText:"npm test -- --runInBand"});await expect(restoredCommand).toBeVisible();await restoredCommand.locator("summary").click();await expect(restoredCommand).toContainText("20 tests passed");
+    // The expanded command shows the command and its output once each, not again inside a raw event dump.
+    await expect(restoredCommand.locator(".tool-json")).toHaveCount(0);
     const timelineCall=calls.find(call=>call.method==="thread/timeline/list"&&call.params?.threadId===thread.id);expect(timelineCall?.params).toEqual({threadId:thread.id,cursor:null,limit:100});
-    await page.setViewportSize({width:1280,height:800});await restoredCommand.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"chat-restored-activity-1280x800.png",fullPage:false});await page.setViewportSize({width:1600,height:980});
+    await page.setViewportSize({width:1280,height:800});await restoredCommand.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"chat-restored-activity-1280x800.png",fullPage:false});await page.setViewportSize({width:1600,height:980});
     await page.keyboard.press("Control+f");
     const findBar=page.getByTestId("thread-find-bar");await expect(findBar).toBeVisible();
     const findInput=page.getByTestId("thread-find-input");await findInput.fill("needle");
     await expect(findBar.locator(".thread-find-count")).toHaveText("1 / 2+");
     await expect(page.locator('[data-message-id="user-3"]')).toHaveClass(/find-active/);
     const directTurn=calls.find(call=>call.method==="thread/items/list"&&call.params?.turnId==="turn-3");expect(directTurn?.params).toEqual({threadId:thread.id,turnId:"turn-3",cursor:null,limit:100,sortDirection:"asc"});
-    await page.screenshot({path:auditDir+"chat-thread-find-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-thread-find-1600x980.png",fullPage:true});
     await findBar.getByRole("button",{name:"Next match"}).click();await expect(findBar.locator(".thread-find-count")).toHaveText("2 / 2+");await expect(page.locator('[data-message-id="assistant-15"]')).toHaveClass(/find-active/);
     await findBar.getByRole("button",{name:"Next match"}).click();await expect(findBar.locator(".thread-find-count")).toHaveText("3 / 3");await expect(page.locator('[data-message-id="assistant-18"]')).toHaveClass(/find-active/);
     expect(calls.some(call=>call.method==="thread/searchOccurrences"&&call.params?.cursor==="find-page-2")).toBe(true);
     await page.setViewportSize({width:1280,height:800});
     const findBox=await findBar.boundingBox(),workspaceBox=await page.locator(".chat-workspace").boundingBox();expect(findBox).toBeTruthy();expect(workspaceBox).toBeTruthy();expect(findBox.x+findBox.width).toBeLessThanOrEqual(workspaceBox.x+workspaceBox.width+1);
-    await page.screenshot({path:auditDir+"chat-thread-find-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-thread-find-1280x800.png",fullPage:true});
     await page.setViewportSize({width:1600,height:980});
     await findBar.getByRole("button",{name:"Close find"}).click();await expect(findBar).toBeHidden();
     const scroller=page.locator(".conversation-scroll");await scroller.evaluate(node=>{node.scrollTop=0});
-    await page.screenshot({path:auditDir+"chat-paginated-history-1600x980.png",fullPage:true});
+    // Rows use content-visibility:auto, so ones that were off screen paint on the next frame after the jump: wait two frames
+    // so the capture shows the history at the top rather than the frame before those rows paint.
+    await expect(page.locator('[data-message-id="user-3"]')).toBeInViewport();
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-paginated-history-1600x980.png",fullPage:true});
     const before=await scroller.evaluate(node=>{
       const root=node.getBoundingClientRect();
       const anchor=[...node.querySelectorAll("[data-message-id]")].find(row=>{const rect=row.getBoundingClientRect();return rect.bottom>root.top&&rect.top<root.bottom});
@@ -136,7 +142,7 @@ test("Codex thread history opens from bounded item pages and loads older items o
       return {top:node.scrollTop,height:node.scrollHeight,anchorFound:Boolean(anchor),anchorOffset:anchor?anchor.getBoundingClientRect().top-root.top:null};
     },before.anchorId);
     expect(after.height).toBeGreaterThan(before.height);expect(after.top).toBeGreaterThan(0);expect(after.anchorFound).toBe(true);expect(Math.abs(Number(after.anchorOffset)-Number(before.anchorOffset))).toBeLessThan(4);
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-paginated-history-loaded-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"chat-paginated-history-loaded-1280x800.png",fullPage:true});
 
     await page.getByRole("button",{name:/Legacy history fixture/}).click();
     await expect(page.getByText(/User Message 99 history/)).toBeVisible();

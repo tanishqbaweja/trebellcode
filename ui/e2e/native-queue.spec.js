@@ -71,9 +71,9 @@ test("Trebell Native project threads use the durable runtime follow-up queue",as
     const queued=page.locator(".queued-message");await expect(queued).toContainText("Queued in Trebell Native");await expect(queued).toContainText("Queued project follow-up");
     const persistedWhileRunning=state.threadMeta(thread.id);expect(persistedWhileRunning.queuedSubmissions).toHaveLength(1);expect(persistedWhileRunning.trebellQueue||[]).toHaveLength(0);
     let metrics=await page.locator(".workspace-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"native-project-durable-queue-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"native-project-durable-queue-1600x980.png",fullPage:true});
     await page.setViewportSize({width:1280,height:800});await expect(queued).toBeVisible();metrics=await page.locator(".workspace-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"native-project-durable-queue-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"native-project-durable-queue-1280x800.png",fullPage:true});
     releaseFirstResolve();await secondStarted;await expect(queued).toHaveCount(0,{timeout:10_000});
     for(let attempt=0;attempt<100&&(state.threadMeta(thread.id).queuedSubmissions||[]).length;attempt++)await new Promise(resolve=>setTimeout(resolve,20));
     expect(state.threadMeta(thread.id).queuedSubmissions||[]).toHaveLength(0);expect(providerCalls).toBe(2);

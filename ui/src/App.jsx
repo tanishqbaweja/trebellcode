@@ -47,6 +47,7 @@ import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
+import { threadMoveAvailability, threadOrderGroup } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { userVerificationAvailability } from "./mcp-elicitation.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
@@ -326,7 +327,8 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initial
   },[events.length,windowEnd]);
   if(!events.length&&!assistantText)return null;
   const visible=activityWindow(events,{end:windowEnd});
-  return <div className="agent-block"><div className="agent-heading"><div className="agent-star"><Sparkles size={16}/></div><span>Trebell agent activity</span></div><div className="timeline">
+  // A reply that streams without any tool or reasoning step has no activity to list, so it shows only its text.
+  return <div className="agent-block">{events.length>0&&<><div className="agent-heading"><div className="agent-star"><Sparkles size={16}/></div><span>Trebell agent activity</span></div><div className="timeline">
     {events.length>visible.size&&<div className="timeline-window-controls"><span>{visible.start+1}–{visible.end} of {visible.total}</span><div><button disabled={!visible.hasOlder} onClick={()=>setWindowEnd(previousActivityWindowEnd(visible))}>Earlier</button><button disabled={!visible.hasNewer} onClick={()=>setWindowEnd(nextActivityWindowEnd(visible))}>Newer</button>{!visible.latest&&<button onClick={()=>setWindowEnd(null)}>Latest</button>}</div></div>}
     {visible.items.map(event=>{
       const id=String(event.id),streamedOutput=commandOutputs.get(id)||"",progress=mcpProgress.get(id);
@@ -335,13 +337,15 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initial
       if(progress)rowEvent={...rowEvent,title:progress.title||rowEvent.title,raw:{...(rowEvent.raw||{}),progress:progress.raw||progress}};
       return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={openWorkspace}/>;
     })}
-  </div>{assistantText&&<div className="assistant-answer chat-markdown"><ChatMarkdown text={assistantText}/></div>}</div>;
+  </div></>}{assistantText&&<div className="assistant-answer chat-markdown"><ChatMarkdown text={assistantText}/></div>}</div>;
 }));
 
+// An expanded row shows what the step did: its command, output or changes. The raw event is shown only for a step that has
+// none of those (an MCP call, for example), not as a third copy of the command under its output.
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
   const [expanded,setExpanded]=useState(false);
   return <details className={"tool-event status-"+(toolEventFailed(event)?"error":event.status)+" kind-"+(event.kind||"event")} onToggle={toggle=>setExpanded(toggle.currentTarget.open)}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
-    {expanded&&<div className="tool-event-body">{event.raw?.command&&<pre>{Array.isArray(event.raw.command)?event.raw.command.join(" "):event.raw.command}</pre>}{event.output&&<pre>{event.output}</pre>}{event.raw?.changes&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre></div>}
+    {expanded&&<div className="tool-event-body">{event.raw?.command&&<pre>{Array.isArray(event.raw.command)?event.raw.command.join(" "):event.raw.command}</pre>}{event.output&&<pre>{event.output}</pre>}{event.raw?.changes&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}{!(event.raw?.command||event.output||event.raw?.changes)&&<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre>}</div>}
   </details>;
 });
 function ThreadFindBar({state,inputRef,onQuery,onPrevious,onNext,onClose}){
@@ -688,6 +692,8 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   const modelBlocker=runtimeSwitchLabel||modelReady||running?"":modelsLoading?"Loading models…":modelError||"No models available — check Settings";
   // While Trebell is starting it does not know which harness to set up yet: the model picker waits for the catalog instead.
   const configureLabel="Configure "+(modelProviderRuntime?providerLabel:agentRuntimeLabel),setupRequired=!starting&&!providerReady&&!models.length;
+  // While a turn runs the same Send button queues or steers; its label and tooltip name which (the icon stays the send icon).
+  const sendLabel=running&&!steerFollowUps?"Queue follow-up":running?"Steer agent":"Send message";
   // starting: Trebell's first load has not yet said which harness runs, so the composer names none.
   const composerPlaceholder=openingThread?"Opening thread…":submitting?"Sending…":starting?"Starting Trebell Code…"
     :providerReady?(runtimeSwitchLabel||(!transportReady?transportMessage:running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"))
@@ -711,10 +717,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
     </div><div className="composer-right">
       {setupRequired?<button className="login-btn" onClick={onConfigureProvider}>{configureLabel}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
-        <div className="model-picker-wrap"><button ref={modelButtonRef} data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} onKeyDown={modelPickerKeyDown} aria-haspopup="true" aria-expanded={modelOpen&&models.length>0?"true":"false"} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError||"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu" ref={modelMenuRef} onKeyDown={modelMenuKeyDown}>{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>{event.stopPropagation();if(event.key==="ArrowDown"){event.preventDefault();focusModelOption("first")}}} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
+        <div className="model-picker-wrap"><button ref={modelButtonRef} data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} onKeyDown={modelPickerKeyDown} aria-haspopup="true" aria-expanded={modelOpen&&models.length>0?"true":"false"} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError?"Models unavailable":"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu" ref={modelMenuRef} onKeyDown={modelMenuKeyDown}>{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>{event.stopPropagation();if(event.key==="ArrowDown"){event.preventDefault();focusModelOption("first")}}} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
-      <button data-testid="send" className="send-btn" aria-label={running&&!steerFollowUps?"Queue follow-up":running?"Steer agent":"Send message"} onClick={()=>onSend?.(prompt)} disabled={!providerReady||!transportReady||Boolean(runtimeSwitchLabel)||Boolean(modelBlocker)||submitting||openingThread||!prompt.trim()||promptTooLong} title={runtimeSwitchLabel||(!transportReady?transportMessage:modelBlocker||undefined)}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
+      <button data-testid="send" className="send-btn" aria-label={sendLabel} onClick={()=>onSend?.(prompt)} disabled={!providerReady||!transportReady||Boolean(runtimeSwitchLabel)||Boolean(modelBlocker)||submitting||openingThread||!prompt.trim()||promptTooLong} title={runtimeSwitchLabel||(!transportReady?transportMessage:modelBlocker||sendLabel)}><Send size={16}/></button>
     </div></div>
     <div className={"composer-status"+(promptTooLong||transportError||(modelBlocker?!modelsLoading:modelError)?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:runtimeSwitchLabel?<span data-testid="composer-runtime-switch" className="composer-transport">{runtimeSwitchLabel} · your draft stays here until it is ready.</span>:!transportReady?<span data-testid="composer-transport" className="composer-transport">{transportMessage}{transportError?". Your draft is kept.":" · your draft stays here until it connects."}{transportError&&<button className="context-compact-btn" type="button" onClick={onRetryTransport} title={"Reconnect to "+agentRuntimeLabel}>Retry</button>}</span>:modelBlocker?<span data-testid="composer-model-status" className="composer-transport">{modelBlocker}{!modelsLoading&&!setupRequired&&onConfigureProvider&&<button className="context-compact-btn" type="button" onClick={onConfigureProvider} title={configureLabel+" in Settings"}>{configureLabel}</button>}</span>:modelError||<span className="composer-context" title={tokenLabel(tokenUsage,priceConfig)}>Context{" "}<span className={"context-meter"+(contextPercent==null?" unknown":contextPercent>=90?" full":contextPercent>=75?" high":"")} {...(contextPercent!=null?{role:"meter","aria-label":"Context window used","aria-valuemin":0,"aria-valuemax":100,"aria-valuenow":contextPercent}:{"aria-hidden":"true"})}><i style={{width:(contextPercent||0)+"%"}}/></span>{contextValueLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</span>}</span><span className="composer-hints">{prompt.length>=MAX_COMPOSER_CHARS*0.8&&!promptTooLong&&<span className="composer-draft-count">{prompt.length.toLocaleString()} / {MAX_COMPOSER_CHARS.toLocaleString()} chars · </span>}{canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups<kbd className="tb-kbd" aria-hidden="true">Enter</kbd></span></div>
   </div>;
@@ -2203,6 +2209,12 @@ export default function App(){
     if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,ownedRequest(message,client)]);desktopNotify("Approval required",message.params?.reason||message.params?.command||"Trebell Code is waiting for permission.");return}
     client.reject(message.id,-32601,"Unsupported Trebell client request: "+message.method);
   }
+  // An automatic repair or check runs as a new turn of the open thread: the window treats it as running from the moment the
+  // harness returns it (as startReview does), so the composer offers Stop with the "started" row, before turn/started arrives.
+  function adoptAutomaticTurn(threadId,started){
+    const turn=started?.started?started.turn:null;
+    if(turn?.id&&turn.status!=="completed"&&activeThreadRef.current?.id===threadId){setRunning(true);setActiveTurnId(turn.id)}
+  }
   async function planCompletedTurnEvidence(threadId,turnId){
     if(!threadId||!turnId)return;
     try{
@@ -2216,6 +2228,7 @@ export default function App(){
       if(result?.nextAction?.action==="repair"&&rpcRef.current){
         try{
           const repair=await maybeStartAutomaticVerificationRepair({rpc:rpcRef.current,threadId,result,seen:automaticVerificationRepairSeenRef.current});
+          adoptAutomaticTurn(threadId,repair);
           if(repair.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-repair-"+repair.recordId),{id:"verification-auto-repair-"+repair.recordId,kind:"verification",title:"Verification failed · automatic same-thread repair started",status:"running",raw:{recordId:repair.recordId,turnId:repair.turn?.id||null}}]);
         }catch(error){
           if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-repair-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification repair stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null}}]);
@@ -2223,6 +2236,7 @@ export default function App(){
       }else if(result?.nextAction?.action==="verify"&&rpcRef.current){
         try{
           const continuation=await maybeStartAutomaticVerificationContinuation({rpc:rpcRef.current,threadId,result,seen:automaticVerificationContinuationSeenRef.current});
+          adoptAutomaticTurn(threadId,continuation);
           if(continuation.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId),{id:"verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId,kind:"verification",title:"Verification incomplete · automatic same-thread check started · "+continuation.nextStepId,status:"running",raw:{recordId:continuation.recordId,nextStepId:continuation.nextStepId,turnId:continuation.turn?.id||null}}]);
         }catch(error){
           if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-continue-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification continuation stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null,nextStepId:result.nextAction?.nextStep?.id||null}}]);
@@ -2399,7 +2413,8 @@ export default function App(){
     }
     else if(message.method==="guardianWarning"){
       if(isCurrent){
-        setEvents(prev=>[...prev,{id:"guardian-warning-"+Date.now(),kind:"error",title:p.message||"Auto review warning",status:"done",raw:p}]);
+        // A guardian warning is a warning about the auto-review policy, not a failed step: it reads as the strict-review row does.
+        setEvents(prev=>[...prev,{id:"guardian-warning-"+Date.now(),kind:"autoReview",title:p.message||"Auto review warning",status:"warning",raw:p}]);
         desktopNotify("Auto review warning",p.message||"Codex reported an auto-review warning.");
       }
     }
@@ -2636,7 +2651,7 @@ export default function App(){
       return;
     }
   }
-  async function moveThreadOrder(thread,direction){const group=threads.filter(t=>(t.section?.name||"Active")===(thread.section?.name||"Active"));const index=group.findIndex(t=>t.id===thread.id);const targetIndex=index+direction;if(targetIndex<0||targetIndex>=group.length)return;const before=direction<0?group[targetIndex].id:(group[targetIndex+1]?.id||null);await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:before});await loadThreads(rpc,{strict:true})}
+  async function moveThreadOrder(thread,direction){const group=threadOrderGroup(threads,thread);const index=group.findIndex(t=>t.id===thread.id);const targetIndex=index+direction;if(targetIndex<0||targetIndex>=group.length)return;const before=direction<0?group[targetIndex].id:(group[targetIndex+1]?.id||null);await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:before});await loadThreads(rpc,{strict:true})}
   async function bulkAction(action){
     const selected=[...selectedThreadIds].map(id=>threads.find(thread=>thread.id===id)).filter(Boolean);if(!selected.length)return;
     if(action==="snooze"){setSnoozeRequest({threads:selected,bulk:true});return}
@@ -3170,7 +3185,7 @@ export default function App(){
       try{await updateThreadMeta(thread.id,{trebellContext:stored,trebellContextError:null,trebellContextPressure:null},{strict:true})}
       catch(error){showActionError(error,"Repository context was injected but its inspector state could not be saved")}
       contextTaskRef.current.set(thread.id,continuityTask);
-      if(!background)setEvents(prev=>[...prev,{id:"context-"+deliveredPacket.id,kind:"context",title:`Trebell context · ${deliveredPacket.items?.length||0} files · ~${deliveredPacket.tokenEstimate||0} tokens`,status:"done",raw:{contextId:deliveredPacket.id,items:deliveredPacket.items?.length||0,tokenEstimate:deliveredPacket.tokenEstimate||0}}]);
+      if(!background)setEvents(prev=>[...prev,{id:"context-"+deliveredPacket.id,kind:"context",title:`Trebell context · ${deliveredPacket.items?.length||0} file${(deliveredPacket.items?.length||0)===1?"":"s"} · ~${deliveredPacket.tokenEstimate||0} tokens`,status:"done",raw:{contextId:deliveredPacket.id,items:deliveredPacket.items?.length||0,tokenEstimate:deliveredPacket.tokenEstimate||0}}]);
       return deliveredPacket;
     }catch(error){
       const detail=error?.message||String(error)||"Unknown context error";
@@ -4076,6 +4091,7 @@ export default function App(){
   },[settings.keybindingRules,settings.keyboardShortcuts]);
   const sidebarThreadAction=useLatestCallback(threadAction);
   const sidebarMoveThread=useLatestCallback(moveThreadOrder);
+  const threadMoves=useMemo(()=>threadMoveAvailability(threads),[threads]);
   const sidebarBulkAction=useLatestCallback(bulkAction);
   const sidebarCollapse=useLatestCallback(()=>setSidebarOpen(false));
   const completedEvents=events.filter(event=>event.status==="done").length;
@@ -4132,7 +4148,8 @@ export default function App(){
     return <div className="runtime-surface">
       <section className="runtime-summary">
         {(()=>{const transport=bootstrap.mock?{label:"Ready · replies use the direct provider route",tone:"ok"}:rpcStatus==="connected"?{label:"Connected locally",tone:"ok"}:transportStatusCopy(rpcStatus);return <div><span className={"runtime-dot tone-"+transport.tone+(transport.tone==="ok"?" online":"")}/><div><strong>{running?"Agent working":agentRuntimeLabel+" harness"}</strong><span>{transport.label}</span></div></div>})()}
-        <small>{completedEvents}/{events.length||1} current activity steps complete</small>
+        {/* Steps are counted only when there are some: an idle runtime has no step pending. */}
+        <small data-testid="runtime-activity-steps">{events.length?`${completedEvents}/${events.length} current activity ${events.length===1?"step":"steps"} complete`:"No activity yet"}</small>
       </section>
       <ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/>
       <section className="runtime-grid">
@@ -4183,13 +4200,19 @@ export default function App(){
     </div>
   </div>;
 
+  // The sidebar runtime card's dot follows the harness connection as the composer and the Runtime panel report it: green only
+  // while connected and set up, amber while starting or (re)connecting, red after a failed connection.
+  const sidebarConnection=bootstrap.mock?{tone:"ok",label:"Ready"}:!runtimeKnown?{tone:"warn",label:"Starting"}
+    :rpcStatus==="connected"?(providerReady?{tone:"ok",label:"Connected"}:{tone:"off",label:"Setup required"})
+    :rpcStatus==="error"?{tone:"err",label:"Connection failed"}
+    :{tone:"warn",label:transportConnectedRef.current?"Reconnecting…":"Connecting…"};
   const layoutStyle={
     "--sidebar-width":layoutPrefs.sidebarWidth+"px",
     "--right-panel-width":rightPanelWidth+"px",
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
-    <ThreadSidebar runtimeStarting={!runtimeKnown} section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab} onOpenPalette={sidebarOpenPalette} shortcuts={sidebarShortcuts}/>
+    <ThreadSidebar runtimeStarting={!runtimeKnown} connection={sidebarConnection} threadMoves={threadMoves} section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab} onOpenPalette={sidebarOpenPalette} shortcuts={sidebarShortcuts}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" {...layoutSeparatorProps("sidebar")} onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>
@@ -4211,9 +4234,9 @@ export default function App(){
             <div className="workspace-header-actions">
               {gitInfo?.isGit&&<button className="header-control branch-control" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
               {!projectlessMode&&!workspaceRemote&&<OpenInPicker path={projectPath}/>}
-              {(currentProject?.scripts||[]).length>0&&(()=>{const script=(currentProject.scripts||[]).find(item=>item.id===currentProject.preferredScriptId)||currentProject.scripts[0];return <button className="header-control" onClick={()=>runUserAction(()=>runProjectAction(script),"Project action failed")} title={script.command}><Play size={13}/><span>{script.name}</span></button>})()}
-              {activeThread?.id&&gitInfo?.isGit&&<button className="header-control" onClick={()=>runUserAction(startReview,"Could not start review")} title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
-              {running&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")}><CircleStop size={14}/><span>Stop</span></button>}
+              {(currentProject?.scripts||[]).length>0&&(()=>{const script=(currentProject.scripts||[]).find(item=>item.id===currentProject.preferredScriptId)||currentProject.scripts[0];return <button className="header-control script-control" onClick={()=>runUserAction(()=>runProjectAction(script),"Project action failed")} aria-label={script.name} title={script.command}><Play size={13}/><span>{script.name}</span></button>})()}
+              {activeThread?.id&&gitInfo?.isGit&&<button className="header-control review-control" onClick={()=>runUserAction(startReview,"Could not start review")} aria-label="Review" title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
+              {running&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label="Stop" title="Stop the running turn"><CircleStop size={14}/><span>Stop</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only "+(panel==="terminal"?"active":"")} onClick={()=>setPanel(panel==="terminal"?null:"terminal")} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               {activeThread?.id&&<button className={"header-control icon-only "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
               <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>

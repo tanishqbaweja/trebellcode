@@ -43,5 +43,5 @@ test("thousand-thread sidebar mounts bounded rows while search and active-thread
   await expect(page.locator('.thread-main[title="Thread 0999"]')).toBeVisible({timeout:5000});
   expect(await rows.count()).toBeLessThan(180);
 
-  await page.screenshot({path:"visual-audit/thousand-thread-sidebar-dark-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:"visual-audit/thousand-thread-sidebar-dark-1280x800.png",fullPage:true});
 });

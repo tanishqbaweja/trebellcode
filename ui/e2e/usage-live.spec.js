@@ -82,8 +82,8 @@ test("Usage page refreshes native Codex account and quota updates live",async({p
     await unavailable.click();
     await expect(card).toContainText("rateLimits: Deliberate rate-limit refresh failure");
     await expect(page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true})).toBeEnabled();
-    await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"usage-live-codex-1280x800.png",fullPage:false});
-    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"usage-live-codex-light-1280x800.png",fullPage:false});
+    await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"usage-live-codex-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"usage-live-codex-light-1280x800.png",fullPage:false});
   }finally{
     relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))]);
   }

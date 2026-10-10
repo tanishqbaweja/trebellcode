@@ -82,6 +82,6 @@ test("large restored activity traces mount one bounded page at a time",async({pa
     await expect(controls).toContainText("181–300 of 300");
     await expect(rows).toHaveCount(120);
     await controls.scrollIntoViewIfNeeded();
-    await page.screenshot({path:"visual-audit/large-activity-window-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:"visual-audit/large-activity-window-dark-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });

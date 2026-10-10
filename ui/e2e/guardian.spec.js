@@ -56,8 +56,8 @@ test("Codex auto-review denial can be explicitly overridden through the native R
     await expect(page.getByText("Additional safety checks are running; some tool calls may take extra time",{exact:true})).toBeVisible();
     notificationSocket.send(JSON.stringify({method:"item/autoApprovalReview/completed",params:{threadId:thread.id,turnId:"turn-1",startedAtMs:startedAt,completedAtMs:completedAt,reviewId:"review-1",targetItemId:"cmd-1",decisionSource:"agent",review:{status:"denied",riskLevel:"high",userAuthorization:"low",rationale:"Deleting this file needs explicit user approval."},action}}));
     const card=page.getByTestId("guardian-denial-card");await expect(card).toBeVisible();await expect(card).toContainText("Auto review denied this action");await expect(card).toContainText("Deleting this file needs explicit user approval.");await expect(card).toContainText("Risk assessment: high");
-    await page.screenshot({path:auditDir+"chat-auto-review-denied-1600x980.png",fullPage:true});
-    await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"chat-auto-review-denied-light-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-auto-review-denied-1600x980.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"chat-auto-review-denied-light-1280x800.png",fullPage:true});
     await page.setViewportSize({width:1600,height:980});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     await card.getByRole("button",{name:"Allow anyway"}).click();await expect(card).toHaveCount(0);
     const approve=calls.find(call=>call.method==="thread/approveGuardianDeniedAction");expect(approve?.params).toEqual({
@@ -67,8 +67,10 @@ test("Codex auto-review denial can be explicitly overridden through the native R
     await expect(page.getByText("Auto review denial overridden by user")).toBeVisible();
     notificationSocket.send(JSON.stringify({method:"guardianWarning",params:{threadId:thread.id,message:"Auto review policy is running in degraded mode."}}));
     await expect(page.getByText("Auto review policy is running in degraded mode.",{exact:true})).toBeVisible();
+    const guardianWarningRow=page.locator(".tool-event").filter({hasText:"Auto review policy is running in degraded mode."});
+    await expect(guardianWarningRow).toHaveClass(/status-warning/);await expect(guardianWarningRow.locator("summary em")).toHaveText("warning");
     await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="light"});const bounds=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
-    await page.screenshot({path:auditDir+"chat-auto-review-override-light-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-auto-review-override-light-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     notificationSocket.send(JSON.stringify({id:"approval-disconnect",method:"item/commandExecution/requestApproval",params:{threadId:thread.id,turnId:"turn-disconnect",itemId:"cmd-disconnect",command:["echo","retry"],reason:"Keep this approval retryable"}}));
     const retryApproval=page.locator(".approval-card").filter({hasText:"Keep this approval retryable"});
@@ -80,6 +82,6 @@ test("Codex auto-review denial can be explicitly overridden through the native R
     await expect(actionError).toBeInViewport();
     await expect(retryApproval).toBeVisible();
     await expect(retryApproval.getByRole("button",{name:"Allow once",exact:true})).toBeEnabled();
-    await page.screenshot({path:auditDir+"approval-response-disconnected-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"approval-response-disconnected-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

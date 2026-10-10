@@ -52,15 +52,15 @@ test("Windows sandbox readiness and async setup use native Codex RPCs",async({pa
     const card=page.locator(".capability-card").filter({hasText:"Windows sandbox"});await expect(card).toContainText("Not configured");
     const unelevated=card.getByRole("button",{name:"Set up unelevated"}),elevated=card.getByRole("button",{name:"Set up elevated"});
     await expect(unelevated).toBeEnabled();await expect(elevated).toBeDisabled();
-    await page.screenshot({path:auditDir+"tools-windows-sandbox-not-configured-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-windows-sandbox-not-configured-1600x980.png",fullPage:true});
     await unelevated.click();await expect(card).toContainText(/setup started/i);await expect(card.getByRole("button",{name:"Setting up…"})).toBeDisabled();
     expect(calls.find(call=>call.method==="windowsSandbox/setupStart")?.params).toEqual({mode:"unelevated",cwd:process.cwd()});
-    await page.screenshot({path:auditDir+"tools-windows-sandbox-setting-up-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-windows-sandbox-setting-up-1600x980.png",fullPage:true});
     readiness="ready";setupSocket.send(JSON.stringify({method:"windowsSandbox/setupCompleted",params:{mode:setupMode,success:true,error:null}}));
     await expect(card).toContainText("Ready",{timeout:5000});await expect(card.getByRole("button",{name:/Set up/})).toHaveCount(0);
     const socket=[...sockets][0];socket.send(JSON.stringify({method:"windows/worldWritableWarning",params:{samplePaths:["C:\\Temp\\Everyone"],extraCount:2,failedScan:false}}));
     await expect(card).toContainText(/cannot be protected/i);await expect(card).toContainText(/C:\\Temp\\Everyone/);
     await page.setViewportSize({width:1280,height:800});const bounds=await page.locator(".capabilities-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
-    await page.screenshot({path:auditDir+"tools-windows-sandbox-ready-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-windows-sandbox-ready-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

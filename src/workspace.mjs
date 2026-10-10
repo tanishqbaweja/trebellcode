@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { basename, join, posix, resolve } from "node:path";
+import { basename, join, posix, resolve, sep } from "node:path";
 
 const execFileAsync = promisify(execFile);
 const SKIP = new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist"]);
@@ -138,7 +138,8 @@ export async function workspaceTree(root, { depth = 3, limit = 500 } = {}) {
       result.push({
         name: entry.name,
         path: full,
-        relativePath: full.slice(absolute.length + (absolute.endsWith("/") || absolute.endsWith("\\") ? 0 : 1)),
+        // "/" on every platform, as git ls-files and remote trees report it, so a Windows path reads src/a.js, not src\a.js.
+        relativePath: full.slice(absolute.length + (absolute.endsWith("/") || absolute.endsWith("\\") ? 0 : 1)).split(sep).join("/"),
         isDirectory: entry.isDirectory(),
         isFile: entry.isFile(),
         depth: level,

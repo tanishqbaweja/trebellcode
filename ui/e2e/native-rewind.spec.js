@@ -53,10 +53,10 @@ test("Trebell Native can rewind conversation and files in a managed worktree",as
     const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native managed rewind"]')});await expect(row).toBeVisible({timeout:10_000});await row.locator(".thread-main").click();
     await expect(page.getByText("Rewind this Native work",{exact:true})).toBeVisible({timeout:10_000});const edit=page.getByRole("button",{name:"Edit from here",exact:true});await expect(edit).toBeVisible();
     await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".workspace-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"native-managed-rewind-before-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"native-managed-rewind-before-1280x800.png",fullPage:true});
     await edit.click();await expect(page.getByTestId("composer")).toHaveValue("Rewind this Native work");await expect(page.locator(".user-row")).toHaveCount(0);
     expect(dialogText).toMatch(/restore workspace files/i);expect(restoreBody).toEqual({id:checkpoint.id,threadId:thread.id});expect(threadStore.get(thread.id).turns).toHaveLength(0);
-    await page.screenshot({path:auditDir+"native-managed-rewind-after-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"native-managed-rewind-after-1280x800.png",fullPage:true});
   }finally{
     await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true});
   }

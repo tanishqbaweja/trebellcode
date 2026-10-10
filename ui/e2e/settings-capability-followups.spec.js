@@ -32,7 +32,7 @@ test("follow-up settings obey runtime steering capability instead of runtime nam
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".settings-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-capability-steering-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-capability-steering-1280x800.png",fullPage:true});
 });
 
 test("computer-use settings follow runtime and desktop capabilities instead of Codex branding",async({page})=>{
@@ -55,7 +55,7 @@ test("computer-use settings follow runtime and desktop capabilities instead of C
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".settings-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-native-computer-capability-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-native-computer-capability-1280x800.png",fullPage:true});
 });
 
 test("Codex runtime panel does not advertise Native-only background process controls",async({page})=>{
@@ -80,7 +80,9 @@ test("Codex runtime panel does not advertise Native-only background process cont
   const capability=panel.getByTestId("runtime-capabilities").locator(".runtime-capability-grid>div").filter({hasText:"Background processes"});
   await expect(capability).toContainText("not exposed");
   await expect(panel.getByTestId("agent-background-terminals")).toHaveCount(0);
+  // No thread has run anything: the summary says so instead of counting a step that does not exist ("0/1").
+  await expect(panel.getByTestId("runtime-activity-steps")).toHaveText("No activity yet");
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"codex-background-process-capability-truth-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"codex-background-process-capability-truth-1280x800.png",fullPage:true});
 });

@@ -133,7 +133,7 @@ test("startup failures never become a fake empty mock workspace",async({page})=>
   await expect(startupError).toContainText("normal workspace was not opened with fake or empty data");
   await expect(page.getByTestId("composer")).toHaveCount(0);
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"startup-bootstrap-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"startup-bootstrap-error-1280x800.png",fullPage:true});
   allowStartup=true;
   await startupError.getByRole("button",{name:"Retry startup",exact:true}).click();
   await expect.poll(()=>bootstrapCalls).toBeGreaterThanOrEqual(2);
@@ -161,7 +161,7 @@ test("startup partial failures stay visible",async({page})=>{
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"startup-partial-data-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"startup-partial-data-error-1280x800.png",fullPage:true});
 });
 
 test("startup launches independent model theme and project requests before core state resolves",async({page})=>{
@@ -229,7 +229,7 @@ test("browser tasks add only the browser specialized tool group",async({page})=>
     await composer.fill("Fix the responsive CSS layout and verify it with a browser screenshot");await page.getByTestId("send").click();
     await expect.poll(()=>starts.length).toBe(1);expect(starts[0]).toEqual(["trebell_browser"]);
     await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"lazy-tool-exposure-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"lazy-tool-exposure-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -255,8 +255,11 @@ test("failed turn verification automatically starts one same-thread repair",asyn
     await page.waitForTimeout(500);expect(requestMethods).toContain("thread/continuity/get");expect(requestMethods).toContain("thread/verification/repair");
     await expect.poll(()=>repairRequests.length).toBe(1);expect(repairRequests[0]).toMatchObject({threadId:thread.id,recordId:"verification-auto-1",auto:true});
     await expect(page.getByText("Verification failed · automatic same-thread repair started",{exact:true})).toBeVisible();
+    // The repair turn the harness returned is the running turn even before any turn/started arrives: Stop and the queue prompt show with the row.
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
+    await expect(page.getByTestId("composer")).toHaveAttribute("placeholder",/Queue a follow-up|Steer the running agent/);
     await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"automatic-verification-repair-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"automatic-verification-repair-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -278,7 +281,7 @@ test("missing test verification automatically starts one same-thread check",asyn
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"completed-turn",status:"completed",completedAt:Date.now()/1000,durationMs:100}}});
     await expect.poll(()=>continuationRequests.length).toBe(1);expect(continuationRequests[0]).toMatchObject({threadId:thread.id,recordId:"verification-continue-1",auto:true});
     await expect(page.getByText(/Verification incomplete · automatic same-thread check started · project_tests/)).toBeVisible();
-    await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({path:auditDir+"automatic-verification-continuation-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"automatic-verification-continuation-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -305,11 +308,11 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   await expect(composer.getByRole("button",{name:"Web",exact:true})).toHaveCount(0);
   await expect(composer.getByRole("button",{name:"Files",exact:true})).toHaveCount(0);
   await expect(composer.getByRole("button",{name:"Skills",exact:true})).toHaveCount(0);
-  await page.screenshot({path:auditDir+"chat-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-1600x980.png",fullPage:true});
   const modelPicker=page.getByTestId("model-picker");
   await modelPicker.click();
   await expect(page.locator(".model-picker-menu")).toBeVisible();
-  await page.screenshot({path:auditDir+"chat-model-picker-open-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-model-picker-open-1600x980.png",fullPage:true});
   await page.keyboard.press("Escape");
   await expect(page.locator(".model-picker-menu")).toBeHidden();
   await modelPicker.click();
@@ -322,13 +325,13 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   const multilineHeight=(await box(composerInput)).height;
   expect(multilineHeight).toBeGreaterThan(shortHeight+15);
   expect(multilineHeight).toBeLessThanOrEqual(160);
-  await page.screenshot({path:auditDir+"chat-composer-multiline-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-composer-multiline-1600x980.png",fullPage:true});
   await composerInput.fill(Array.from({length:40},(_,index)=>`Long draft line ${index+1} with enough content to exercise bounded composer growth.`).join("\n"));
   const cappedHeight=(await box(composerInput)).height;
   expect(cappedHeight).toBeGreaterThanOrEqual(158);
   expect(cappedHeight).toBeLessThanOrEqual(160);
   expect(await composerInput.evaluate(node=>getComputedStyle(node).overflowY)).toBe("auto");
-  await page.screenshot({path:auditDir+"chat-composer-capped-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-composer-capped-1600x980.png",fullPage:true});
   await composerInput.fill("");
   expect((await box(composerInput)).height).toBeLessThanOrEqual(shortHeight+1);
 
@@ -369,7 +372,7 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   await page.mouse.up();
   const terminalAfter=await box(terminal);
   expect(terminalAfter.height).toBeGreaterThan(terminalBefore.height+45);
-  await page.screenshot({path:auditDir+"chat-resized-panels-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-resized-panels-1600x980.png",fullPage:true});
 
   await page.getByTestId("terminal-toggle").click();
   await page.getByTestId("right-panel-toggle").click();
@@ -380,7 +383,7 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   await page.mouse.up();
   expect(Math.abs((await box(sidebar)).width-sidebarBefore.width)).toBeLessThanOrEqual(2);
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"chat-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-1280x800.png",fullPage:true});
   await expect(page.locator(".workspace-mode")).toHaveValue("current");
   await expect(modelPicker).not.toContainText("/");
   const compactOverflow=await composerBar.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
@@ -426,7 +429,7 @@ test("branch review polling sleeps on secondary pages and refreshes when chat re
   await page.setViewportSize({width:1280,height:800});
   const settingsMetrics=await page.locator(".secondary-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(settingsMetrics.scroll).toBeLessThanOrEqual(settingsMetrics.client+1);
-  await page.screenshot({path:auditDir+"branch-review-polling-paused-settings-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"branch-review-polling-paused-settings-1280x800.png",fullPage:true});
   await page.getByRole("button",{name:"Threads",exact:true}).click();
   await expect.poll(()=>branchReviewCalls).toBeGreaterThan(0);
   await page.getByRole("button",{name:"Settings",exact:true}).click();
@@ -462,7 +465,7 @@ test("snoozed threads use the next deadline instead of a permanent polling loop"
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"snooze-deadline-wake-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"snooze-deadline-wake-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -499,7 +502,7 @@ test("rare overlays load on demand instead of inflating chat startup",async({pag
     await expect.poll(()=>assets.some(url=>url.includes("SnoozeDialog-"))).toBe(true);
     await page.setViewportSize({width:1280,height:800});
     const snoozeMetrics=await snooze.locator(".snooze-dialog").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(snoozeMetrics.scroll).toBeLessThanOrEqual(snoozeMetrics.client+1);
-    await page.screenshot({path:auditDir+"snooze-dialog-lazy-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"snooze-dialog-lazy-1280x800.png",fullPage:true});
     await snooze.getByRole("button",{name:"Close snooze dialog"}).click();await expect(snooze).toBeHidden();
     await page.keyboard.press("Control+k");const palette=page.getByTestId("command-palette");await expect(palette).toBeVisible();
     await expect.poll(()=>assets.some(url=>url.includes("CommandPalette-"))).toBe(true);
@@ -565,7 +568,7 @@ test("ACP MCP settings persist runtime-scoped stdio servers",async({page})=>{
   await expect(card.getByRole("button",{name:"Enable",exact:true})).toBeVisible();
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".settings-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-acp-mcp-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-acp-mcp-1280x800.png",fullPage:true});
 });
 
 test("Trebell Native HTTP MCP settings persist only a bearer environment reference",async({page})=>{
@@ -591,8 +594,8 @@ test("Trebell Native HTTP MCP settings persist only a bearer environment referen
   const card=page.locator('[data-setting-target="agents-mcp"]');await expect(card).toBeVisible();await expect(card).toContainText("local stdio or Streamable HTTP MCP servers");
   await card.getByRole("button",{name:"Add MCP server",exact:true}).click();await card.getByLabel("MCP server name").fill("Remote docs");await card.getByLabel("MCP server transport").selectOption("http");
   await card.getByLabel("MCP server URL").fill("https://mcp.example.test/mcp");await card.getByLabel("MCP bearer token environment variable").fill("MCP_ACCESS_TOKEN");
-  await expect(card).toContainText("stores only the variable name");await page.setViewportSize({width:1280,height:800});await card.screenshot({path:auditDir+"settings-native-http-mcp-editor-dark-1280x800.png"});
-  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await card.screenshot({path:auditDir+"settings-native-http-mcp-editor-light-1280x800.png"});
+  await expect(card).toContainText("stores only the variable name");await page.setViewportSize({width:1280,height:800});await card.screenshot({animations:"disabled",path:auditDir+"settings-native-http-mcp-editor-dark-1280x800.png"});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await card.screenshot({animations:"disabled",path:auditDir+"settings-native-http-mcp-editor-light-1280x800.png"});
   await card.getByRole("button",{name:"Save MCP server",exact:true}).click();const saved=settingsPosts.at(-1)?.mcpServers?.[0];
   expect(saved).toMatchObject({name:"Remote docs",runtime:"native",environmentId:null,enabled:true,type:"http",url:"https://mcp.example.test/mcp",bearerTokenEnv:"MCP_ACCESS_TOKEN"});expect(saved).not.toHaveProperty("token");expect(saved).not.toHaveProperty("bearerToken");expect(JSON.stringify(settingsPosts)).not.toContain("fixture-http-secret");
   await expect(card).toContainText("Remote docs");await expect(card).toContainText("bearer from MCP_ACCESS_TOKEN");
@@ -607,12 +610,12 @@ test("composer file mentions search the workspace and attach the selected file",
   await expect(menu).toBeVisible();
   const packageFile=menu.getByRole("button").filter({hasText:"package.json"}).first();
   await expect(packageFile).toBeVisible();
-  await page.screenshot({path:auditDir+"chat-file-mention-menu-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-file-mention-menu-1600x980.png",fullPage:true});
   await packageFile.click();
   await expect(menu).toBeHidden();
   await expect(page.getByTestId("context-chips")).toContainText("package.json");
   await expect(composer).toHaveValue(/Review @package\.json /);
-  await page.screenshot({path:auditDir+"chat-file-mention-attached-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-file-mention-attached-1600x980.png",fullPage:true});
 
   await page.getByTestId("context-chip").filter({hasText:"package.json"}).getByTitle("Remove context").click();
   await composer.fill("Open @pack");
@@ -631,7 +634,7 @@ test("composer file mentions search the workspace and attach the selected file",
   const mentionBox=await box(page.getByTestId("file-mention-menu")),mainBox=await box(page.locator(".main-frame"));
   expect(mentionBox.x).toBeGreaterThanOrEqual(mainBox.x);
   expect(mentionBox.x+mentionBox.width).toBeLessThanOrEqual(mainBox.x+mainBox.width+1);
-  await page.screenshot({path:auditDir+"light-chat-file-mention-menu-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"light-chat-file-mention-menu-1280x800.png",fullPage:true});
 });
 
 test("composer file mention failures stay visible and keep the mention retryable",async({page,request})=>{
@@ -653,7 +656,7 @@ test("composer file mention failures stay visible and keep the mention retryable
   await page.setViewportSize({width:1280,height:800});
   const alertBox=await box(alert),menuBox=await box(menu);
   expect(alertBox.y+alertBox.height).toBeLessThanOrEqual(menuBox.y-4);
-  await page.screenshot({path:auditDir+"chat-file-mention-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-file-mention-error-1280x800.png",fullPage:true});
 });
 
 test("composer file mentions use fuzzy shared workspace search",async({page,request})=>{
@@ -673,7 +676,7 @@ test("composer file mentions use fuzzy shared workspace search",async({page,requ
     const menu=page.getByTestId("file-mention-menu");await expect(menu).toBeVisible();
     const match=menu.getByRole("button").filter({hasText:"UserCard.jsx"}).first();await expect(match).toBeVisible();
     await expect(menu).not.toContainText("compareUsers.js");
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-fuzzy-file-mention-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"chat-fuzzy-file-mention-1280x800.png",fullPage:true});
     await match.click();await expect(page.getByTestId("context-chips")).toContainText("UserCard.jsx");await expect(composer).toHaveValue(/Inspect @src[\\/]components[\\/]UserCard\.jsx /);
   }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
@@ -692,10 +695,10 @@ test("workspace panel refreshes from live RPC file-change notifications",async({
     await page.evaluate(()=>window.dispatchEvent(new CustomEvent("trebell:rpc-notification",{detail:{method:"item/fileChange/patchUpdated",params:{}}})));
     await expect(panel).toContainText("agent-created.txt");
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"workspace-live-file-refresh-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"workspace-live-file-refresh-1280x800.png",fullPage:true});
     await request.post("/api/settings",{data:{appearance:"light",appearanceMode:"light"}});
     await page.reload();await page.getByTestId("right-panel-toggle").click();await expect(page.getByTestId("right-panel")).toContainText("agent-created.txt");
-    await page.screenshot({path:auditDir+"workspace-live-file-refresh-light-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"workspace-live-file-refresh-light-1280x800.png",fullPage:true});
   }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
@@ -709,11 +712,11 @@ test("navigation history shortcuts visibly restore prior app surfaces",async({pa
 
   await page.keyboard.press("Control+[");
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
-  await page.screenshot({path:auditDir+"navigation-back-projects-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"navigation-back-projects-1600x980.png",fullPage:true});
 
   await page.keyboard.press("Control+]");
   await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
-  await page.screenshot({path:auditDir+"navigation-forward-settings-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"navigation-forward-settings-1600x980.png",fullPage:true});
 });
 
 test("project lifecycle hooks are explicit, editable, and visually readable",async({page,request})=>{
@@ -735,8 +738,8 @@ test("project lifecycle hooks are explicit, editable, and visually readable",asy
   await expect(card.locator(".project-hook-row")).toContainText("Lint gate");await expect(card.locator(".project-hook-row")).toContainText("Required verification");expect(lastSaved.hooks).toHaveLength(1);expect(lastSaved.hooks[0].event).toBe("verification.required");expect(lastSaved.hooks[0].failureMode).toBe("block");
   await card.locator(".project-hook-row").getByTitle("Edit hook").click();await editor.locator("select").first().selectOption("source-control.before");await editor.getByPlaceholder(/Optional actions/).fill("push, git.commit");await editor.getByLabel("On failure").selectOption("warn");await clickCurrentSave();
   const row=card.locator(".project-hook-row");await expect(row).toContainText("Before source control");await expect(row).toContainText("push, git.commit");await expect(row.locator("b")).toHaveText("warn");expect(lastSaved.hooks[0].actions).toEqual(["push","git.commit"]);
-  await page.setViewportSize({width:1280,height:800});const metrics=await card.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await row.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"project-lifecycle-hooks-dark-1280x800.png",fullPage:true});
-  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await expect.poll(()=>row.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");await page.screenshot({path:auditDir+"project-lifecycle-hooks-light-1280x800.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});const metrics=await card.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await row.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"project-lifecycle-hooks-dark-1280x800.png",fullPage:true});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await expect.poll(()=>row.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");await page.screenshot({animations:"disabled",path:auditDir+"project-lifecycle-hooks-light-1280x800.png",fullPage:true});
   await row.getByTitle("Delete hook").click();await expect(card.getByText("No automatic lifecycle hooks are installed for this project.")).toBeVisible();expect(lastSaved.hooks).toEqual([]);
 });
 
@@ -752,7 +755,7 @@ test("browser attach button uploads files without the desktop bridge",async({pag
   await expect(page.locator(".attachment-shelf span")).toHaveText(/browser-attachment\.txt/);
   await expect(page.locator(".attachment-shelf span")).not.toContainText(/^\d{10,}-/);
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"browser-file-attachment-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"browser-file-attachment-1280x800.png",fullPage:true});
 });
 
 test("browser file attachment failures stay visible without fake attachments",async({page,request})=>{
@@ -771,7 +774,7 @@ test("browser file attachment failures stay visible without fake attachments",as
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".composer-wrap").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"composer-attachment-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"composer-attachment-error-1280x800.png",fullPage:true});
 });
 
 test("oversized pasted text stays in the draft when attachment creation fails",async({page,request})=>{
@@ -795,7 +798,7 @@ test("oversized pasted text stays in the draft when attachment creation fails",a
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   const alertBox=await box(alert),composerBox=await box(page.locator(".composer-wrap"));
   expect(alertBox.y+alertBox.height).toBeLessThanOrEqual(composerBox.y-4);
-  await page.screenshot({path:auditDir+"composer-pasted-text-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"composer-pasted-text-error-1280x800.png",fullPage:true});
 });
 
 test("agent question failures keep attachments and answers retryable",async({page})=>{
@@ -851,7 +854,7 @@ test("agent question failures keep attachments and answers retryable",async({pag
     await page.setViewportSize({width:1280,height:800});
     const bounds=await modal.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
-    await page.screenshot({path:auditDir+"question-attachment-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"question-attachment-error-1280x800.png",fullPage:true});
     const answer=modal.getByPlaceholder("Custom answer…");
     await answer.fill("Retry this answer");
     relay.close();await page.waitForTimeout(80);
@@ -860,7 +863,7 @@ test("agent question failures keep attachments and answers retryable",async({pag
     await expect(answer).toHaveValue("Retry this answer");
     await expect(modal).toBeVisible();
     await expect(modal.getByRole("button",{name:"Submit",exact:true})).toBeEnabled();
-    await page.screenshot({path:auditDir+"question-response-disconnected-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"question-response-disconnected-1280x800.png",fullPage:true});
   }finally{
     relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();
     await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))]);
@@ -891,7 +894,7 @@ test("approval responses stay visible and retryable when the runtime disconnects
     expect(approvalBox.y+approvalBox.height).toBeLessThanOrEqual(scrollBox.y+scrollBox.height);
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"approval-response-disconnected-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"approval-response-disconnected-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -921,7 +924,7 @@ test("MCP app responses stay visible and retryable when the runtime disconnects"
     await expect(modal.getByRole("button",{name:"Allow once",exact:true})).toBeEnabled();
     const metrics=await modal.locator(".mcp-elicitation-modal").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"mcp-response-disconnected-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"mcp-response-disconnected-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -948,7 +951,7 @@ test("ACP URL elicitation opens only after consent and completes out of band",as
     await page.setViewportSize({width:1280,height:800});
     const metrics=await modal.locator(".mcp-elicitation-modal").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"acp-url-elicitation-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"acp-url-elicitation-1280x800.png",fullPage:true});
     await modal.getByRole("button",{name:"Open & continue",exact:true}).click();
     const response=await responsePromise;
     expect(response.result).toEqual({action:"accept",_meta:null});
@@ -976,14 +979,14 @@ test("command palette keeps failed actions visible with useful feedback",async({
   await expect(palette).toBeVisible();
   await expect(palette.getByRole("alert")).toContainText("Deliberate project action failure");
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"command-palette-action-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"command-palette-action-error-1280x800.png",fullPage:true});
   await page.keyboard.press("Escape");
   await expect(palette).toBeHidden();
   const headerAction=page.locator(".workspace-header").getByRole("button",{name:"Broken action",exact:true});
   await expect(headerAction).toBeVisible();
   await headerAction.click();
   await expect(page.getByTestId("app-action-error")).toContainText("Project action failed: Deliberate project action failure");
-  await page.screenshot({path:auditDir+"header-project-action-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"header-project-action-error-1280x800.png",fullPage:true});
 });
 
 test("command palette refresh failures preserve the last valid project catalog",async({page,request})=>{
@@ -1014,7 +1017,7 @@ test("command palette refresh failures preserve the last valid project catalog",
   await page.setViewportSize({width:1280,height:800});
   const metrics=await palette.locator(".command-palette").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"command-palette-data-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"command-palette-data-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("thread message search reports degraded reads and retries without caching failure",async({page})=>{
@@ -1046,7 +1049,7 @@ test("thread message search reports degraded reads and retries without caching f
     await expect(page.locator(".sidebar-empty")).toContainText("No matching threads.");
     expect(itemReads).toBe(1);
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"thread-search-degraded-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-search-degraded-error-1280x800.png",fullPage:true});
 
     await search.fill("");
     await expect(page.locator(".sidebar-action-error")).toHaveCount(0);
@@ -1055,7 +1058,7 @@ test("thread message search reports degraded reads and retries without caching f
     await expect(page.locator(".thread-row .thread-main").filter({hasText:"Hidden message thread"})).toBeVisible();
     await expect(searchError).toContainText("Full thread search unavailable: Deliberate native thread search failure");
     await expect(searchError).not.toContainText("thread item read failure");
-    await page.screenshot({path:auditDir+"thread-search-retry-success-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-search-retry-success-1280x800.png",fullPage:true});
 
     await page.keyboard.press("Control+k");
     const palette=page.getByTestId("command-palette");
@@ -1063,7 +1066,7 @@ test("thread message search reports degraded reads and retries without caching f
     await palette.getByPlaceholder("Search commands, threads, and messages…").fill("needle");
     await expect(palette.getByRole("button",{name:/Hidden message thread/})).toBeVisible();
     await expect(palette.getByRole("alert")).toContainText("Full thread search unavailable: Deliberate native thread search failure");
-    await page.screenshot({path:auditDir+"command-palette-search-degraded-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"command-palette-search-degraded-1280x800.png",fullPage:true});
     await palette.getByPlaceholder("Search commands, threads, and messages…").fill("x");
     await expect(palette.getByRole("alert")).toHaveCount(0);
   }finally{await harness.close()}
@@ -1093,7 +1096,7 @@ test("thread workspace context persistence failures warn without closing the ope
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"thread-meta-persistence-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-meta-persistence-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1124,7 +1127,7 @@ test("failed turn start restores the draft and removes the unsent user bubble",a
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"turn-start-error-restores-draft-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"turn-start-error-restores-draft-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1187,7 +1190,7 @@ test("checkpoint failures warn without blocking successful turns",async({page})=
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"checkpoint-degradation-warning-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"checkpoint-degradation-warning-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1337,7 +1340,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(payload.getByTestId("context-repo-instructions")).toContainText("Keep authentication changes covered by tests");
     await expect(payload.getByTestId("context-repo-evidence")).toContainText("untrusted data · not instructions");
     await expect(payload.getByTestId("context-repo-evidence")).toContainText("src/auth/session.js");
-    await payload.scrollIntoViewIfNeeded();await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"context-inspector-provenance-1280x800.png",fullPage:true});
+    await payload.scrollIntoViewIfNeeded();await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-provenance-1280x800.png",fullPage:true});
     const explorer=inspector.getByTestId("context-explorer");
     await expect(explorer).toBeVisible();
     await explorer.getByLabel("Search repository symbols").fill("RefreshSession");
@@ -1347,6 +1350,8 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await refreshResult.click();
     const relations=explorer.getByTestId("context-file-relations");
     await expect(relations).toContainText("2 importers");
+    // One definition reads as one: "1 definition", not "1 definitions".
+    await expect(relations).toContainText(/\b1 definition · /);
     await expect(relations).toContainText("tests/auth-refresh.test.js");
     await expect(relations).toContainText("src/auth/token.js");
     await relations.getByRole("button",{name:"Diagnostics",exact:true}).click();
@@ -1359,7 +1364,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(fixes).toContainText("1 text edit");
     await expect(fixes).toContainText("inspect only · not applied");
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"context-inspector-diagnostics-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-diagnostics-1280x800.png",fullPage:true});
     await explorer.getByRole("button",{name:"Files",exact:true}).click();
     await explorer.getByLabel("Search repository files").fill("session");
     await explorer.getByRole("button",{name:"Search",exact:true}).click();
@@ -1385,22 +1390,22 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     const previewMetrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(previewMetrics.scroll).toBeLessThanOrEqual(previewMetrics.client+1);
     await preview.scrollIntoViewIfNeeded();
-    await page.screenshot({path:auditDir+"context-inspector-docs-preview-1280x800.png",fullPage:true});
-    await explorer.screenshot({path:auditDir+"context-inspector-docs-preview-explorer.png"});
+    await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-docs-preview-1280x800.png",fullPage:true});
+    await explorer.screenshot({animations:"disabled",path:auditDir+"context-inspector-docs-preview-explorer.png"});
     // An indexed source row keeps its relations view.
     await explorer.getByRole("button",{name:/src\/auth\/session\.js:10/}).click();
     await expect(explorer.getByTestId("context-file-relations")).toContainText("2 importers");
     await expect(explorer.getByTestId("context-file-relations")).toContainText("src/auth/token.js");
     await expect(preview).toHaveCount(0);
     await explorer.getByTestId("context-file-relations").scrollIntoViewIfNeeded();
-    await page.screenshot({path:auditDir+"context-inspector-source-relations-1280x800.png",fullPage:true});
-    await explorer.screenshot({path:auditDir+"context-inspector-source-relations-explorer.png"});
+    await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-source-relations-1280x800.png",fullPage:true});
+    await explorer.screenshot({animations:"disabled",path:auditDir+"context-inspector-source-relations-explorer.png"});
     // When only docs match, the text says no indexed source matched; with no match at all it covers both kinds.
     await explorer.getByLabel("Search repository code").fill("refresh window");
     await explorer.getByRole("button",{name:"Search",exact:true}).click();
     await expect(explorer.getByRole("button",{name:/docs\/api\.rst:9/})).toContainText("repository file");
     await expect(explorer).toContainText("No indexed source matched “refresh window”; showing matches in repository text files.");
-    await explorer.screenshot({path:auditDir+"context-inspector-docs-only-explorer.png"});
+    await explorer.screenshot({animations:"disabled",path:auditDir+"context-inspector-docs-only-explorer.png"});
     await explorer.getByLabel("Search repository code").fill("absent term");
     await explorer.getByRole("button",{name:"Search",exact:true}).click();
     await expect(explorer).toContainText("No source or text matches found “absent term”.");
@@ -1410,7 +1415,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await explorer.getByRole("button",{name:/docs\/retired\.rst:2/}).click();
     await expect(explorer.getByRole("alert")).toContainText("Context file is not indexed: docs/retired.rst");
     await expect(preview).toHaveCount(0);
-    await explorer.screenshot({path:auditDir+"context-inspector-missing-file-explorer.png"});
+    await explorer.screenshot({animations:"disabled",path:auditDir+"context-inspector-missing-file-explorer.png"});
     // Files mode opens a repository file the same way.
     await explorer.getByRole("button",{name:"Files",exact:true}).click();
     await explorer.getByLabel("Search repository files").fill("session");
@@ -1421,7 +1426,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(preview).toContainText("Sessions rotate their refresh token before it expires.");
     await expect(explorer.getByRole("alert")).toHaveCount(0);
     expect(sourceRequests.at(-1)).toMatchObject({file:"docs/session-guide.md",startLine:"1"});
-    await explorer.screenshot({path:auditDir+"context-inspector-files-preview-explorer.png"});
+    await explorer.screenshot({animations:"disabled",path:auditDir+"context-inspector-files-preview-explorer.png"});
     // Switching mode waits for an opened row or a search, so neither lands its result in the next mode.
     const codeMode=explorer.getByRole("button",{name:"Code",exact:true});
     for(const [pattern,act] of [[/\/api\/context\/relations\?/,()=>guideRow.click()],[/\/api\/context\/files\?/,()=>explorer.getByRole("button",{name:"Search",exact:true}).click()]]){
@@ -1449,7 +1454,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(verification).toContainText("npm run ui:test:visual");
     await expect(verification).toContainText("browser_interaction");
     await expect(verification).toContainText("Frontend behavior needs screenshot/visual verification");
-    await page.screenshot({path:auditDir+"context-inspector-verification-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-verification-1280x800.png",fullPage:true});
     const statTops=await inspector.locator(".context-inspector-stats>div").evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
     // The redesign's larger stat tiles sit in two full rows of three, never a ragged row with a lone tile.
     const statRows=[...statTops.reduce((rows,top)=>rows.set(top,(rows.get(top)||0)+1),new Map()).values()];
@@ -1457,8 +1462,13 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await page.setViewportSize({width:1280,height:800});
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"context-inspector-explorer-1280x800.png",fullPage:true});
-    await page.screenshot({path:auditDir+"context-inspector-1280x800.png",fullPage:true});
+    // With the 520px inspector open at 1280px the header still names the open thread: labelled actions go icon-only first.
+    const headerTitle=page.locator(".workspace-header .thread-title-button strong");
+    await expect(headerTitle).toBeVisible();
+    expect((await headerTitle.boundingBox()).width).toBeGreaterThanOrEqual(56);
+    await expect(page.locator(".workspace-header .review-control")).toHaveAccessibleName("Review");
+    await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-explorer-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-1280x800.png",fullPage:true});
 
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"context-engine-turn-1",status:"completed"}}});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
@@ -1473,7 +1483,9 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(inspector.getByRole("alert")).toContainText("Latest context refresh failed");
     await expect(inspector.getByRole("alert")).toContainText("The last successful packet is shown below");
     await expect(inspector).toContainText("src/auth/session.js");
-    await page.screenshot({path:auditDir+"context-inspector-refresh-error-1280x800.png",fullPage:true});
+    // The panel was left scrolled down at the explorer; the failure notice is still on screen, pinned to the top of the panel.
+    await expect(inspector.getByRole("alert")).toBeInViewport();
+    await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-refresh-error-1280x800.png",fullPage:true});
 
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"context-engine-turn-2",status:"completed"}}});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
@@ -1488,10 +1500,11 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(page.locator(".tool-event").filter({hasText:"Trebell context skipped"})).toContainText("8,000");
     await expect(inspector.getByRole("status")).toContainText("Latest turn preserved response space");
     await expect(inspector.getByRole("status")).toContainText("7,000 context tokens remained");
+    await expect(inspector.getByRole("status")).toBeInViewport();
     await expect(inspector).toContainText("src/auth/session.js");
     const pressureMetrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(pressureMetrics.scroll).toBeLessThanOrEqual(pressureMetrics.client+1);
-    await page.screenshot({path:auditDir+"context-inspector-pressure-skip-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-pressure-skip-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1531,7 +1544,7 @@ test("automatic context compaction completes before the next turn starts",async(
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"automatic-context-compaction-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"automatic-context-compaction-1280x800.png",fullPage:true});
 
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"auto-compact-turn-1",status:"completed"}}});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
@@ -1543,7 +1556,7 @@ test("automatic context compaction completes before the next turn starts",async(
     expect(order.slice(-2)).toEqual(["compact-request-2","turn-start-2"]);
     await expect(page.locator(".user-bubble").filter({hasText:"Still send this even if automatic compaction fails"})).toBeVisible();
     await expect(page.locator(".tool-event.kind-error").filter({hasText:"Automatic context compaction failed; continuing"})).toContainText("Deliberate automatic compaction failure");
-    await page.screenshot({path:auditDir+"automatic-context-compaction-fallback-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"automatic-context-compaction-fallback-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1571,7 +1584,7 @@ test("live assistant streaming survives page navigation without root-owned strea
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"stream-isolation-navigation-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"stream-isolation-navigation-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1607,7 +1620,7 @@ test("live command output survives page navigation without root-owned event chur
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"command-stream-isolation-navigation-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"command-stream-isolation-navigation-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1642,7 +1655,7 @@ test("MCP progress updates one live activity row and survives page navigation",a
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"mcp-progress-isolation-navigation-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"mcp-progress-isolation-navigation-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1666,7 +1679,7 @@ test("repeated turn diff updates replace one activity row instead of growing the
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"diff-update-isolation-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"diff-update-isolation-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1705,7 +1718,7 @@ test("token telemetry stays thread-local and catches up after hidden-page update
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"token-telemetry-isolation-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"token-telemetry-isolation-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1734,7 +1747,7 @@ test("direct fallback never drops attachments or failed text sends",async({page,
   expect(directCalls).toBe(0);
   await expect(page.getByText("Direct fallback cannot send attachments or context. Reconnect the agent harness and retry.",{exact:false})).toBeVisible();
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"direct-fallback-attachment-preserved-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"direct-fallback-attachment-preserved-1280x800.png",fullPage:true});
 
   await shelf.locator("span button").first().click();
   await expect(shelf.locator("span")).toHaveCount(0);
@@ -1747,7 +1760,7 @@ test("direct fallback never drops attachments or failed text sends",async({page,
   await expect(page.getByTestId("send")).toBeEnabled();
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"direct-fallback-http-error-restores-draft-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"direct-fallback-http-error-restores-draft-1280x800.png",fullPage:true});
 });
 
 test("failed automatic local queue starts keep the follow-up retryable",async({page})=>{
@@ -1795,7 +1808,7 @@ test("failed automatic local queue starts keep the follow-up retryable",async({p
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"local-queue-auto-start-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"local-queue-auto-start-error-1280x800.png",fullPage:true});
     await queued.getByRole("button",{name:"Send now",exact:true}).click();
     await expect.poll(()=>turnStarts).toBe(3);
     await expect(page.locator(".queued-message").filter({hasText:"Keep this queued follow-up"})).toHaveCount(0);
@@ -1855,7 +1868,7 @@ test("background attachment refresh failures preserve linked pull requests",asyn
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".workspace-header").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"linked-pr-attachment-refresh-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"linked-pr-attachment-refresh-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1881,7 +1894,7 @@ test("activity timeline restore failures stay visible without blocking thread op
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"timeline-restore-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"timeline-restore-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -1961,7 +1974,7 @@ test("opening a thread surfaces persistent-state read failures without leaking t
     expect(errorBox.y).toBeGreaterThanOrEqual(0);
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"thread-persistent-read-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-persistent-read-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2055,14 +2068,14 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     await expect(panel.getByText("5 explicit notes · durable state available")).toBeVisible();
     const metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"goal-budget-exhausted-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"goal-budget-exhausted-dark-1280x800.png",fullPage:true});
 
     await panel.locator(".goal-budget-details>summary").click();
     await expect(panel.getByLabel("Turn budget")).toBeVisible();
     await expect(panel.getByLabel("Tool-call budget")).toBeVisible();
     await expect(panel.getByLabel("Child-agent budget")).toBeVisible();
     await expect(panel.getByLabel("Cost budget")).toBeVisible();
-    await page.screenshot({path:auditDir+"goal-budget-advanced-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"goal-budget-advanced-dark-1280x800.png",fullPage:true});
     await panel.locator(".goal-budget-details>summary").click();
 
     await panel.locator(".goal-details:not(.goal-budget-details):not(.goal-continuity-details)>summary").click();
@@ -2072,11 +2085,11 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     const expandedMetrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(expandedMetrics.scroll).toBeLessThanOrEqual(expandedMetrics.client+1);
     const detailMetrics=await panel.locator(".goal-details:not(.goal-budget-details):not(.goal-continuity-details)").evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight}));expect(detailMetrics.scroll).toBeLessThanOrEqual(detailMetrics.client+1);
     await validationField.scrollIntoViewIfNeeded();
-    await page.screenshot({path:auditDir+"goal-budget-guardrails-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"goal-budget-guardrails-dark-1280x800.png",fullPage:true});
 
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
     await expect.poll(()=>panel.getByLabel("Objective",{exact:true}).evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");
-    await page.screenshot({path:auditDir+"goal-budget-guardrails-light-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"goal-budget-guardrails-light-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     await panel.locator(".goal-details:not(.goal-budget-details):not(.goal-continuity-details)>summary").click();
 
@@ -2086,13 +2099,13 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     const verification=panel.getByTestId("verification-evidence");await expect(verification).toContainText("2/2 required checks passed · verified");await verification.locator("summary").click();
     await expect(verification).toContainText("diagnostics");await expect(verification).toContainText("project_tests");await expect(verification).toContainText("harness-diagnostics");await expect(verification).toContainText("runtime-trace · exit 0");await expect(verification).toContainText("1 path");await expect(verification).not.toContainText("TOP_SECRET_OUTPUT");await expect(verification).not.toContainText("PRIVATE_STDERR");await expect(verification).not.toContainText("TOP_SECRET_COMMAND");await expect(verification).not.toContainText("TOP_SECRET_ASSESSMENT");
     const evidenceMetrics=await verification.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(evidenceMetrics.scroll).toBeLessThanOrEqual(evidenceMetrics.client+1);
-    await verification.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"goal-verification-evidence-dark-1280x800.png",fullPage:true});
-    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await expect.poll(()=>verification.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");await page.screenshot({path:auditDir+"goal-verification-evidence-light-1280x800.png",fullPage:true});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    await verification.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"goal-verification-evidence-dark-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await expect.poll(()=>verification.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");await page.screenshot({animations:"disabled",path:auditDir+"goal-verification-evidence-light-1280x800.png",fullPage:true});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     await expect(panel.getByLabel("Completed work",{exact:true})).toHaveValue("Implemented durable goal RPCs");
     await expect(panel.getByLabel("Important decisions",{exact:true})).toHaveValue("Keep continuity provider-neutral");
     await expect(panel.getByLabel("Pending next actions",{exact:true})).toHaveValue("Run release smoke test");
     await panel.locator(".goal-continuity-details>summary").scrollIntoViewIfNeeded();
-    await page.screenshot({path:auditDir+"goal-continuity-top-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"goal-continuity-top-dark-1280x800.png",fullPage:true});
     await panel.getByLabel("Pending next actions",{exact:true}).fill("Run release smoke test\nPublish release notes");
     await panel.getByRole("button",{name:"Save continuity",exact:true}).click();
     await expect(panel.getByText("6 explicit notes · durable state available")).toBeVisible();
@@ -2100,14 +2113,14 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     const continuityMetrics=await panel.locator(".goal-continuity-details").evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight,width:node.clientWidth,scrollWidth:node.scrollWidth}));
     expect(continuityMetrics.scroll).toBeLessThanOrEqual(continuityMetrics.client+1);expect(continuityMetrics.scrollWidth).toBeLessThanOrEqual(continuityMetrics.width+1);
     await panel.getByLabel("Pending next actions",{exact:true}).scrollIntoViewIfNeeded();
-    await page.screenshot({path:auditDir+"goal-continuity-bottom-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"goal-continuity-bottom-dark-1280x800.png",fullPage:true});
     await panel.locator(".goal-continuity-details>summary").click();
 
     await panel.getByRole("spinbutton",{name:/Token budget/}).fill("15000");
     await panel.getByRole("button",{name:"Update goal",exact:true}).click();
     await expect(panel.getByTestId("goal-budget-alert")).toHaveCount(0);
     await expect(panel.getByText("3,000 remaining")).toBeVisible();
-    await page.screenshot({path:auditDir+"goal-budget-recovered-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"goal-budget-recovered-dark-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2145,7 +2158,7 @@ test("restart recovery never continues an unverified interrupted turn",async({pa
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"restart-recovery-verification-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"restart-recovery-verification-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2168,7 +2181,7 @@ test("restart recovery surfaces uncertain tool state without automatic continuat
     expect(continuationStarts).toBe(0);
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"restart-recovery-uncertain-tool-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"restart-recovery-uncertain-tool-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2189,7 +2202,7 @@ test("restart recovery catalog failures stay visible without blocking the harnes
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"restart-recovery-catalog-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"restart-recovery-catalog-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2231,7 +2244,7 @@ test("restart recovery API failures remain visible without unsafe continuation",
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"restart-recovery-api-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"restart-recovery-api-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2264,7 +2277,7 @@ test("automatic source-control sync failures stay visible while retrying",async(
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"source-control-background-sync-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"source-control-background-sync-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2298,7 +2311,7 @@ test("completed turns surface failed thread-list refreshes",async({page})=>{
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"turn-completion-thread-refresh-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"turn-completion-thread-refresh-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2333,7 +2346,7 @@ test("thread sections and collaboration refresh failures stay visible",async({pa
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"capability-refresh-errors-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"capability-refresh-errors-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2365,7 +2378,7 @@ test("thread context Git metadata failures stay visible without blocking open",a
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"thread-context-git-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-context-git-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2396,7 +2409,7 @@ test("runtime server requests use the latest permission mode",async({page})=>{
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"server-request-latest-permission-mode-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"server-request-latest-permission-mode-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2465,13 +2478,16 @@ test("Agents refresh failures preserve the last valid thread list",async({page})
     const alert=agents.getByRole("alert");
     await expect(alert).toContainText("Deliberate agent thread refresh failure");
     await expect(agents).toContainText("Preserved delegated agent");
+    // The open delegated agent is grouped as the open agent, not listed among the other agents.
+    await expect(agents.locator(".agent-group").filter({has:page.locator("h4",{hasText:"Open agent"})})).toContainText("Preserved delegated agent");
+    await expect(agents.locator(".agent-group h4",{hasText:"Other agents"})).toHaveCount(0);
     await expect(row).toBeVisible();
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.getByTestId("right-panel").locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await alert.scrollIntoViewIfNeeded();
     await expect(alert).toBeInViewport();
-    await page.screenshot({path:auditDir+"agents-thread-refresh-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"agents-thread-refresh-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -2529,10 +2545,10 @@ test("model delegation tool starts a bounded child and surfaces it in Agents",as
     await expect(agents.getByLabel("Delegation isolation")).toHaveValue("inherit");
     const metrics=await agents.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"delegation-child-agent-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"delegation-child-agent-dark-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
     await expect.poll(()=>agents.locator(".delegate-card").evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");
-    await page.screenshot({path:auditDir+"delegation-child-agent-light-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"delegation-child-agent-light-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     await agents.getByLabel("Delegated task").fill("Run the manual smoke audit");
     await agents.getByLabel("Delegation permissions").selectOption("workspace-write");
@@ -2579,7 +2595,7 @@ test("terminal failures keep backend and visible session state in sync",async({p
   await expect(drawer.getByRole("alert")).toContainText("Deliberate terminal attachment failure");
   await expect(drawer).toBeVisible();
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"terminal-attach-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"terminal-attach-error-1280x800.png",fullPage:true});
   await page.unroute(/\/api\/attachments\/text$/);
 
   await page.route("**/api/terminal/sessions*",route=>{
@@ -2600,7 +2616,7 @@ test("terminal failures keep backend and visible session state in sync",async({p
   await expect(drawer.locator(".terminal-pane")).toHaveCount(1);
   await page.unroute("**/api/terminal/sessions");
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"terminal-action-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"terminal-action-error-1280x800.png",fullPage:true});
 });
 
 test("slash menu only advertises commands that can run in the current context",async({page,request})=>{
@@ -2618,7 +2634,7 @@ test("slash menu only advertises commands that can run in the current context",a
     await expect(menu.getByText(command,{exact:true})).toBeVisible();
   }
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"slash-menu-new-task-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"slash-menu-new-task-1280x800.png",fullPage:true});
 
   await composer.fill("");
   await page.getByRole("button",{name:"Projects",exact:true}).click();
@@ -2634,7 +2650,7 @@ test("slash menu only advertises commands that can run in the current context",a
   await expect(generalMenu.getByText("/terminal",{exact:true})).toBeVisible();
   await expect(generalMenu.getByText("/preview",{exact:true})).toBeVisible();
   await expect(generalMenu.getByText("/goal",{exact:true})).toBeVisible();
-  await page.screenshot({path:auditDir+"slash-menu-general-chat-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"slash-menu-general-chat-1280x800.png",fullPage:true});
 });
 
 test("settings page visual audit",async({page,request})=>{
@@ -2690,29 +2706,29 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.locator(".browser-profile-settings")).toHaveCount(0);
   await expect(page.locator(".snapshot-settings")).toHaveCount(0);
   await expect(page.locator(".keybinding-row")).toHaveCount(0);
-  await page.screenshot({path:auditDir+"settings-general-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-general-1600x980.png",fullPage:true});
 
   const settingsSearch=page.getByLabel("Search settings");
   await settingsSearch.fill("command palette");
   const settingsSearchResults=page.getByTestId("settings-search-results");
   const commandPaletteResult=settingsSearchResults.getByRole("button",{name:/Command palette/});
   await expect(commandPaletteResult).toBeVisible();
-  await page.screenshot({path:auditDir+"settings-search-command-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-search-command-1600x980.png",fullPage:true});
   await commandPaletteResult.click();
   await expect(page.getByRole("heading",{name:"Keyboard shortcuts"})).toBeVisible();
   const commandPaletteRow=page.locator(".keybinding-row").filter({hasText:"Command palette"}).first();
   await expect(commandPaletteRow).toBeInViewport();
   await expect(commandPaletteRow).toHaveClass(/settings-search-hit/);
-  await page.screenshot({path:auditDir+"settings-search-command-target-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-search-command-target-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/Agents & models/}).click();
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeVisible();
   await expect(page.getByRole("heading",{name:"Model provider"})).toHaveCount(0);
   await expect(page.getByLabel("Model ID")).toHaveCount(0);
-  await page.screenshot({path:auditDir+"settings-agents-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-agents-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Add custom model",exact:true}).click();
   await expect(page.getByLabel("Model ID")).toBeVisible();
-  await page.screenshot({path:auditDir+"settings-agents-add-model-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-agents-add-model-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Cancel",exact:true}).click();
   await expect(page.getByLabel("Model ID")).toHaveCount(0);
 
@@ -2723,16 +2739,20 @@ test("settings page visual audit",async({page,request})=>{
   await expect(scopeSentence).toContainText("Applying settings for");
   await expect(scopeSentence.getByLabel("Project scope")).toHaveValue("");
   await expect(page.locator(".scoped-settings-targets")).toHaveCount(0);
-  await page.screenshot({path:auditDir+"settings-workspace-1600x980.png",fullPage:true});
+  // The two cleanups do different things, and each button says which.
+  await expect(page.getByRole("button",{name:"Clean up worktrees now",exact:true})).toBeVisible();
+  await expect(page.getByRole("button",{name:"Clean up storage now",exact:true})).toBeVisible();
+  await expect(page.getByRole("button",{name:"Run safe cleanup now",exact:true})).toHaveCount(0);
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-workspace-1600x980.png",fullPage:true});
   await scopeSentence.getByLabel("Project scope").selectOption({label:"Visual Audit Workspace"});
   await expect(page.getByTestId("scoped-settings-card").getByLabel("Permissions")).toHaveValue("__inherit__");
   await expect(scopeSentence).toContainText("Visual Audit Workspace");
-  await page.screenshot({path:auditDir+"settings-workspace-project-scope-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-workspace-project-scope-1600x980.png",fullPage:true});
   await scopeSentence.getByLabel("Project scope").selectOption("");
 
   await page.getByRole("button",{name:/Appearance/}).click();
   await expect(page.getByRole("heading",{name:"Appearance",level:3})).toBeVisible();
-  await page.screenshot({path:auditDir+"settings-appearance-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-appearance-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/Desktop/}).click();
   await expect(page.getByRole("heading",{name:"Background mode"})).toBeVisible();
@@ -2740,36 +2760,38 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.getByRole("heading",{name:"SnapShots"})).toBeVisible();
   await expect(page.locator(".browser-profile-settings")).toHaveCount(1);
   await expect(page.locator(".snapshot-settings")).toHaveCount(1);
-  await page.screenshot({path:auditDir+"settings-desktop-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-desktop-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/Shortcuts/}).click();
   await expect(page.getByRole("heading",{name:"Keyboard shortcuts"})).toBeVisible();
   await expect(page.locator(".keybinding-row")).not.toHaveCount(0);
-  await page.screenshot({path:auditDir+"settings-shortcuts-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-shortcuts-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/Diagnostics/}).click();
   await expect(page.getByRole("heading",{name:"Diagnostics",level:3})).toBeVisible();
   await expect(page.getByText("Runtime log",{exact:true})).toBeVisible();
   await expect(page.getByText("No runtime activity yet",{exact:true})).toBeVisible();
-  await page.screenshot({path:auditDir+"settings-diagnostics-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/General/}).click();
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"settings-general-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-general-1280x800.png",fullPage:true});
   const compact=await pageShell.evaluate(node=>({clientWidth:node.clientWidth,scrollWidth:node.scrollWidth}));
   expect(compact.scrollWidth).toBeLessThanOrEqual(compact.clientWidth+1);
   await page.setViewportSize({width:1024,height:700});
   const zoomLike=await pageShell.evaluate(node=>({clientWidth:node.clientWidth,scrollWidth:node.scrollWidth}));
   expect(zoomLike.scrollWidth).toBeLessThanOrEqual(zoomLike.clientWidth+1);
-  await page.screenshot({path:auditDir+"settings-general-effective-zoom-1024x700.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-general-effective-zoom-1024x700.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   await page.getByRole("button",{name:/Workspace/}).click();
   await expect(page.getByRole("heading",{name:"Storage cleanup"})).toBeVisible();
-  await page.screenshot({path:auditDir+"settings-workspace-light-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-workspace-light-1280x800.png",fullPage:true});
   await page.getByRole("button",{name:/Diagnostics/}).click();
   await expect(page.getByText("No runtime activity yet",{exact:true})).toBeVisible();
-  await page.screenshot({path:auditDir+"settings-diagnostics-light-1280x800.png",fullPage:true});
+  // In light mode the settings search is one field: its input stays transparent inside the search box.
+  expect(await page.getByRole("textbox",{name:"Search settings"}).evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-light-1280x800.png",fullPage:true});
   const compactLight=await pageShell.evaluate(node=>({clientWidth:node.clientWidth,scrollWidth:node.scrollWidth}));
   expect(compactLight.scrollWidth).toBeLessThanOrEqual(compactLight.clientWidth+1);
 });
@@ -2800,7 +2822,7 @@ test("desktop background mode rolls back when settings persistence fails",async(
   const settings=page.locator(".settings-page");
   const metrics=await settings.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-background-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-background-error-1280x800.png",fullPage:true});
 });
 
 test("desktop bridge read failures stay visible instead of looking like defaults",async({page,request})=>{
@@ -2808,7 +2830,7 @@ test("desktop bridge read failures stay visible instead of looking like defaults
   await page.addInitScript(()=>{
     Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
       updates:{get:async()=>{throw new Error("Deliberate desktop update read failure")},onState:()=>()=>{}},
-      browser:{importSources:async()=>{throw new Error("Deliberate browser profile scan failure")}},
+      browser:{importSources:async()=>{if(window.__browserScanFails!==false)throw new Error("Deliberate browser profile scan failure");return {sources:[],platform:"win32"}}},
       snapshots:{
         get:async()=>{throw new Error("Deliberate SnapShot settings read failure")},
         pending:async()=>{throw new Error("Deliberate pending SnapShot read failure")},
@@ -2822,16 +2844,33 @@ test("desktop bridge read failures stay visible instead of looking like defaults
   await prepare(page,request);
   await expect(page.getByTestId("app-action-error")).toContainText("Could not load pending SnapShots: Deliberate pending SnapShot read failure");
   await page.getByRole("button",{name:"Settings",exact:true}).click();
+  // On a page other than chat the toast sits below the page header, so the header buttons stay visible and clickable.
+  const pageToast=page.getByTestId("app-action-error");
+  if(await pageToast.count()){
+    const toastBox=await pageToast.boundingBox(),topbarBox=await page.locator(".main-frame>.page-topbar").boundingBox();
+    expect(toastBox.y).toBeGreaterThanOrEqual(topbarBox.y+topbarBox.height-1);
+  }
   await expect(page.locator(".settings-action-error")).toContainText("Could not load desktop update state: Deliberate desktop update read failure");
   await page.getByRole("button",{name:/Desktop/}).click();
   await expect(page.getByRole("heading",{name:"Browser profiles"})).toBeVisible();
   await expect(page.getByText("Could not scan browser profiles: Deliberate browser profile scan failure",{exact:true})).toBeVisible();
+  // A failed scan is an error with a way to retry, not the "nothing found" note a successful empty scan shows.
+  const browserProfiles=page.locator(".browser-profile-settings");
+  await expect(browserProfiles.getByRole("alert")).toHaveText("Could not scan browser profiles: Deliberate browser profile scan failure");
+  await expect(browserProfiles).not.toContainText("No directly importable browser profile was found");
+  await expect(browserProfiles.getByRole("button",{name:"Rescan"})).toBeEnabled();
   await expect(page.getByRole("heading",{name:"SnapShots"})).toBeVisible();
   await expect(page.getByText(/Could not load SnapShot settings: Deliberate SnapShot settings read failure/)).toBeVisible();
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".settings-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-desktop-read-errors-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-desktop-read-errors-1280x800.png",fullPage:true});
+  // Once a scan works, Rescan replaces the failure with the real result.
+  await page.evaluate(()=>{window.__browserScanFails=false});
+  await page.locator(".browser-profile-settings").getByRole("button",{name:"Rescan"}).click();
+  await expect(page.locator(".browser-profile-settings").getByRole("alert")).toHaveCount(0);
+  await expect(page.locator(".browser-profile-settings")).toContainText("No directly importable browser profile was found");
+  await page.locator(".browser-profile-settings").screenshot({animations:"disabled",path:auditDir+"settings-browser-profiles-rescanned-1280x800.png"});
 });
 
 test("published theme refresh failures keep the last valid catalog visible",async({page,request})=>{
@@ -2856,7 +2895,7 @@ test("published theme refresh failures keep the last valid catalog visible",asyn
   await expect(page.getByText("No valid published themes found.",{exact:false})).toHaveCount(0);
   const metrics=await page.locator(".settings-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-theme-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-theme-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("Claude runtime profile editor exposes real auto-compaction settings",async({page,request})=>{
@@ -2906,8 +2945,8 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await page.setViewportSize({width:1280,height:800});
   const mcpMetrics=await claudeMcp.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(mcpMetrics.scroll).toBeLessThanOrEqual(mcpMetrics.client+1);
-  await claudeMcp.screenshot({path:auditDir+"settings-claude-mcp-card-1280x800.png"});
-  await page.screenshot({path:auditDir+"settings-claude-mcp-1280x800.png",fullPage:true});
+  await claudeMcp.screenshot({animations:"disabled",path:auditDir+"settings-claude-mcp-card-1280x800.png"});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-claude-mcp-1280x800.png",fullPage:true});
   await page.getByRole("button",{name:"Add profile",exact:true}).click();
   const editor=page.locator(".runtime-profile-editor");
   await expect(editor).toBeVisible();
@@ -2922,9 +2961,9 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await expect(editor).toContainText("Values are read from the parent process at launch time and are not stored in the profile.");
   const metrics=await editor.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-claude-profile-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-claude-profile-1600x980.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"settings-claude-profile-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-claude-profile-1280x800.png",fullPage:true});
   await editor.getByRole("button",{name:"Save profile",exact:true}).click();
   await expect(editor).toHaveCount(0);
   expect(savedProfile?.approvedEnvironmentKeys).toEqual(["HTTPS_PROXY","AWS_SECRET_ACCESS_KEY"]);
@@ -2935,7 +2974,11 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await expect(agentsTab).toBeVisible();
   await agentsTab.click();
   await expect(page.locator(".agents-page")).toContainText("Manual delegation is available");
-  await page.screenshot({path:auditDir+"claude-right-panel-manual-delegation-1280x800.png",fullPage:true});
+  // The catalog mismatch is explained once, in the composer footer; the picker itself still reads as a model control.
+  await expect(page.locator(".composer-status")).toContainText("The model catalog came back for");
+  await expect(page.getByTestId("model-picker")).toContainText("Models unavailable");
+  await expect(page.getByTestId("model-picker")).not.toContainText("The model catalog came back for");
+  await page.screenshot({animations:"disabled",path:auditDir+"claude-right-panel-manual-delegation-1280x800.png",fullPage:true});
 });
 
 test("runtime switch waits for matching bootstrap transport before reconnecting",async({page})=>{
@@ -3319,7 +3362,11 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await expect(providerStatus).toContainText("API key required");
   await page.setViewportSize({width:1280,height:800});
   await providerCard.scrollIntoViewIfNeeded();
-  await page.screenshot({path:auditDir+"settings-native-official-openai-1280x800.png",fullPage:true});
+  await expect(page.getByTestId("save-provider-key")).toBeVisible();
+  // The first capture after a viewport resize can miss a freshly composited layer (the half-opaque Save button): let two
+  // frames paint first.
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-native-official-openai-1280x800.png",fullPage:true});
   await providerSelect.selectOption("anthropic");
   await expect(providerCard).toHaveAttribute("aria-busy","false");
   await expect(providerSelect).toHaveValue("anthropic");
@@ -3345,15 +3392,15 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await page.setViewportSize({width:1600,height:980});
   await mcpCard.scrollIntoViewIfNeeded();
   let metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-native-runtime-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-native-runtime-1600x980.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
   await mcpCard.scrollIntoViewIfNeeded();
   metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-native-runtime-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-native-runtime-1280x800.png",fullPage:true});
   await page.setViewportSize({width:1024,height:720});
   await mcpCard.scrollIntoViewIfNeeded();
   metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-native-runtime-1024x720.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-native-runtime-1024x720.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
   await page.getByRole("button",{name:/General/}).click();
   const followups=page.locator('[data-setting-target="general-followups"]');
@@ -3363,7 +3410,7 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await followupSelect.selectOption("steer");
   await expect(followupSelect).toHaveValue("steer");
   metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-native-steering-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-native-steering-1280x800.png",fullPage:true});
 });
 
 test("Trebell Native fork and rewind stay usable and visually honest",async({page})=>{
@@ -3399,19 +3446,19 @@ test("Trebell Native fork and rewind stay usable and visually honest",async({pag
     const sourceRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native fork fixture"]')});
     await expect(sourceRow).toBeVisible({timeout:10_000});await sourceRow.hover();await sourceRow.locator(".thread-menu summary").click();
     const forkButton=sourceRow.getByRole("button",{name:"Fork thread",exact:true});await expect(forkButton).toBeVisible();
-    await page.screenshot({path:auditDir+"native-thread-fork-menu-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"native-thread-fork-menu-1600x980.png",fullPage:true});
     await forkButton.click();
     await expect(sourceRow.locator("details")).toHaveJSProperty("open",false);
     const forkRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native fork fixture (fork)"]')});
     await expect(forkRow).toBeVisible({timeout:10_000});
     await expect(page.getByText("Keep parser behavior",{exact:true})).toBeVisible({timeout:10_000});
     const editFromHere=page.getByRole("button",{name:"Edit from here",exact:true});await expect(editFromHere).toBeVisible();
-    await page.screenshot({path:auditDir+"native-forked-thread-rewind-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"native-forked-thread-rewind-1600x980.png",fullPage:true});
     await editFromHere.click();
     await expect(page.getByTestId("composer")).toHaveValue("Keep parser behavior");await expect(page.locator(".user-row")).toHaveCount(0);
     const forked=threadStore.list("native").find(item=>item.forkedFromId===thread.id);expect(forked).toBeTruthy();expect(forked.turns).toHaveLength(0);
     await page.setViewportSize({width:1280,height:800});const workspace=page.locator(".workspace-shell");const metrics=await workspace.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"native-rewound-thread-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"native-rewound-thread-1280x800.png",fullPage:true});
   }finally{
     await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(home,{recursive:true,force:true});
   }
@@ -3437,34 +3484,36 @@ test("major workspace surfaces render their real destinations without horizontal
   await expect(generalChatCard).toBeVisible();
   expect(await generalChatCard.evaluate(node=>getComputedStyle(node).display)).toBe("grid");
   await assertNoHorizontalOverflow(".secondary-page");
-  await page.screenshot({path:auditDir+"projects-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"projects-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:"History",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Thread history",level:1})).toBeVisible();
   await expect.poll(async()=>await page.locator(".history-thread-row").count()+await page.locator(".history-empty").count()).toBeGreaterThan(0);
   await assertNoHorizontalOverflow(".secondary-page");
-  await page.screenshot({path:auditDir+"history-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"history-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:"Usage",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();
   await assertNoHorizontalOverflow(".secondary-page");
-  await page.screenshot({path:auditDir+"usage-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"usage-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:"Tools",exact:true}).click();
   await expect(page.locator("main")).toContainText(/Harness capabilities|Codex harness is not connected/);
   const toolsEmpty=page.locator(".capabilities-empty-state");
   if(await toolsEmpty.count())expect((await toolsEmpty.boundingBox()).height).toBeLessThan(230);
   await assertNoHorizontalOverflow(".secondary-page");
-  await page.screenshot({path:auditDir+"tools-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"tools-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:"Environments",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Environments",level:2})).toBeVisible();
   await expect(page.locator(".environments-page")).toContainText("Run the active coding-agent runtime");
+  // The shot shows discovered host capabilities, not the "Checking" rows shown while discovery runs.
+  await expect(page.getByTestId("host-discovery-pending")).toHaveCount(0,{timeout:15_000});
   const addEnvironment=page.locator(".environment-create .primary");
   await expect(addEnvironment).toBeVisible();
   expect(await addEnvironment.evaluate(node=>getComputedStyle(node).backgroundColor)).not.toBe("rgb(221, 223, 226)");
   await assertNoHorizontalOverflow(".secondary-page");
-  await page.screenshot({path:auditDir+"environments-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"environments-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:"Agents",exact:true}).click();
   await expect(page.getByTestId("right-panel")).toBeVisible();
@@ -3472,10 +3521,10 @@ test("major workspace surfaces render their real destinations without horizontal
   const agentEmpty=page.locator(".agent-empty-state");
   await expect(agentEmpty).toBeVisible();
   expect((await agentEmpty.boundingBox()).height).toBeLessThan(230);
-  await page.screenshot({path:auditDir+"agents-panel-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"agents-panel-1600x980.png",fullPage:true});
 
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"agents-panel-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"agents-panel-1280x800.png",fullPage:true});
 });
 
 test("thread history pages older threads without expanding the sidebar",async({page})=>{
@@ -3523,13 +3572,13 @@ test("thread history pages older threads without expanding the sidebar",async({p
     await page.setViewportSize({width:1280,height:800});
     const chatMetrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(chatMetrics.scroll).toBeLessThanOrEqual(chatMetrics.client+1);
-    await page.screenshot({path:auditDir+"thread-history-old-thread-active-1280x800.png",fullPage:false});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-history-old-thread-active-1280x800.png",fullPage:false});
     await page.getByRole("button",{name:"History",exact:true}).click();
     await expect(page.locator(".history-thread-row")).toHaveCount(130);
     await expect(page.getByRole("button",{name:"Load older threads",exact:true})).toHaveCount(0);
     const metrics=await page.locator(".history-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"thread-history-pagination-1280x800.png",fullPage:false});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-history-pagination-1280x800.png",fullPage:false});
   }finally{await harness.close()}
 });
 
@@ -3558,10 +3607,10 @@ test("project and environment configuration forms stay readable when expanded",a
   await expect(projectCard.locator(".project-action-editor")).toBeVisible();
   const projectMetrics=await projectCard.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(projectMetrics.scroll).toBeLessThanOrEqual(projectMetrics.client+1);
-  await page.screenshot({path:auditDir+"projects-expanded-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"projects-expanded-1600x980.png",fullPage:true});
 
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"projects-expanded-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"projects-expanded-1280x800.png",fullPage:true});
 
   await page.route(/\/api\/environments$/,async route=>{
     if(route.request().method()!=="GET")return route.continue();
@@ -3581,7 +3630,7 @@ test("project and environment configuration forms stay readable when expanded",a
   await addCard.getByLabel("User").fill("trebell");
   const envMetrics=await addCard.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(envMetrics.scroll).toBeLessThanOrEqual(envMetrics.client+1);
-  await page.screenshot({path:auditDir+"environments-ssh-form-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"environments-ssh-form-1280x800.png",fullPage:true});
 });
 
 test("project refresh and removal failures preserve the existing project card",async({page,request})=>{
@@ -3610,7 +3659,7 @@ test("project refresh and removal failures preserve the existing project card",a
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".projects-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"projects-action-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"projects-action-error-1280x800.png",fullPage:true});
 });
 
 test("project detail refresh failures preserve known Git metadata",async({page,request})=>{
@@ -3621,11 +3670,13 @@ test("project detail refresh failures preserve known Git metadata",async({page,r
   const projectCard=page.locator(".project-card.active");
   await expect(projectCard).toBeVisible();
   const detail=projectCard.locator(".project-open small");
+  // The card names this checkout's branch, or "detached HEAD" for a checkout on a bare commit, once Git has answered.
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const info=await (await request.get("/api/git/info?path="+encodeURIComponent(boot.cwd))).json();
+  expect(info.isGit).toBe(true);
+  const branch=info.branch||"detached HEAD";
+  await expect(detail).toContainText(branch+" · ");
   await expect(detail).not.toContainText("not a Git checkout");
-  const before=(await detail.textContent())||"";
-  const branch=before.split(" · ")[0].trim();
-  expect(branch).not.toBe("");
-  expect(branch).not.toBe("not a Git checkout");
 
   await page.route(url=>url.pathname==="/api/git/info"&&url.searchParams.has("path"),route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate project Git detail refresh failure"})}));
   await page.getByRole("button",{name:"Refresh projects",exact:true}).click();
@@ -3637,7 +3688,7 @@ test("project detail refresh failures preserve known Git metadata",async({page,r
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".projects-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"projects-detail-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"projects-detail-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("project polling failures preserve active clone cards and stay visible",async({page})=>{
@@ -3675,7 +3726,7 @@ test("project polling failures preserve active clone cards and stay visible",asy
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".projects-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"projects-poll-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"projects-poll-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("clone progress polling failures keep the last known job visible",async({page})=>{
@@ -3703,7 +3754,10 @@ test("clone progress polling failures keep the last known job visible",async({pa
   await page.setViewportSize({width:1280,height:800});
   const metrics=await banner.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"clone-progress-refresh-error-1280x800.png",fullPage:true});
+  // Readable at the chat's own scale: the phase, the note, the error, the percentage and Cancel are all 11.5px or larger.
+  const sizes=await banner.evaluate(node=>[...node.querySelectorAll("strong,span,em,button")].map(item=>parseFloat(getComputedStyle(item).fontSize)));
+  expect(Math.min(...sizes)).toBeGreaterThanOrEqual(11.5);
+  await page.screenshot({animations:"disabled",path:auditDir+"clone-progress-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("clone completion surfaces failed Git metadata refreshes",async({page})=>{
@@ -3728,7 +3782,7 @@ test("clone completion surfaces failed Git metadata refreshes",async({page})=>{
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"clone-complete-git-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"clone-complete-git-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("successful history imports surface a failed thread-list refresh",async({page})=>{
@@ -3771,7 +3825,7 @@ test("successful history imports surface a failed thread-list refresh",async({pa
     expect(alertBox.y+alertBox.height).toBeLessThanOrEqual(800);
     const metrics=await page.locator(".secondary-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"history-import-thread-refresh-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"history-import-thread-refresh-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -3830,7 +3884,7 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     await expect.poll(()=>requests.some(item=>item.method==="turn/start")).toBe(true);
     await expect(page.getByRole("button",{name:/OpenCode detached task fixture/})).toBeVisible();
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"opencode-detached-task-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"opencode-detached-task-1280x800.png",fullPage:true});
     await page.getByRole("button",{name:/OpenCode bounded history/}).click();
     await page.getByTestId("right-panel-toggle").click();
     const runtimePanel=page.getByTestId("right-panel");
@@ -3840,7 +3894,7 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     await expect(runtimeCapabilities.locator(".runtime-capability-grid>div").filter({hasText:"Background processes"})).toContainText("not exposed");
     await expect(runtimePanel.getByTestId("agent-background-terminals")).toHaveCount(0);
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"opencode-detached-capability-matrix-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"opencode-detached-capability-matrix-1280x800.png",fullPage:true});
     await page.getByTestId("right-panel-toggle").click();
     await expect(page.locator("[data-message-id]")).toHaveCount(100);
     const resume=requests.find(item=>item.method==="thread/resume");
@@ -3861,13 +3915,13 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     await expect(page.locator(".queued-message")).toHaveCount(0);
     await page.locator(".conversation-scroll").evaluate(node=>{node.scrollTop=node.scrollHeight});
     await expect(page.locator(".user-row").filter({hasText:"Steer this while OpenCode is busy"})).toBeVisible();
-    await page.screenshot({path:auditDir+"opencode-steer-follow-up-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"opencode-steer-follow-up-1280x800.png",fullPage:true});
     await expect(page.getByRole("button",{name:"Load earlier messages",exact:true})).toHaveCount(0);
     expect(requests.filter(item=>item.method==="thread/items/list").map(item=>item.params.cursor)).toEqual(["latest","older"]);
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".conversation-history").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"opencode-bounded-history-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"opencode-bounded-history-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -3936,7 +3990,7 @@ test("OpenCode multi-model fan-out keeps remote worktrees in the active environm
     expect(projectPosts.filter(body=>body.path!==root).every(body=>body.environmentId===environmentId)).toBe(true);
     expect(rpcCalls.filter(item=>item.method==="thread/start").every(item=>item.params.cwd.startsWith(root+"-trebell-"))).toBe(true);
     await expect(page.getByRole("button",{name:/Remote fan-out 1/})).toBeVisible();await expect(page.getByRole("button",{name:/Remote fan-out 2/})).toBeVisible();
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"opencode-remote-multimodel-fanout-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"opencode-remote-multimodel-fanout-1280x800.png",fullPage:true});
   }finally{for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>wsHttp.close(resolve))}
 });
 
@@ -3968,7 +4022,7 @@ test("automatic pull failures stay visible without blocking project open",async(
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"project-auto-pull-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"project-auto-pull-error-1280x800.png",fullPage:true});
 });
 
 test("background Git polling failures preserve the last valid repository state",async({page,request})=>{
@@ -3990,7 +4044,7 @@ test("background Git polling failures preserve the last valid repository state",
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"git-polling-failure-preserves-state-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"git-polling-failure-preserves-state-1280x800.png",fullPage:true});
 });
 
 test("Git polling sleeps on secondary pages and refreshes when chat returns",async({page,request})=>{
@@ -4031,7 +4085,7 @@ test("switching workspaces clears Git state from the previous project",async({pa
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"project-switch-clears-old-git-state-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"project-switch-clears-old-git-state-1280x800.png",fullPage:true});
   }finally{
     await request.post("/api/projects",{data:{path:baseBootstrap.cwd,activate:true}}).catch(()=>{});
     if(targetProject?.id)await request.delete("/api/projects?id="+encodeURIComponent(targetProject.id)).catch(()=>{});
@@ -4061,7 +4115,7 @@ test("General chat start failures stay on Projects with visible feedback",async(
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".projects-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"general-chat-start-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"general-chat-start-error-1280x800.png",fullPage:true});
 });
 
 test("cross-environment project activation rolls back when project activation fails",async({page,request})=>{
@@ -4108,7 +4162,26 @@ test("cross-environment project activation rolls back when project activation fa
   const projects=page.locator(".projects-page");
   const metrics=await projects.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"projects-environment-rollback-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"projects-environment-rollback-error-1280x800.png",fullPage:true});
+});
+
+test("environments page says it is checking the host until discovery answers",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  let release;const answered=new Promise(resolve=>{release=resolve});
+  await page.route(/\/api\/environments(?:\?.*)?$/,async route=>{if(route.request().method()==="GET")await answered;return route.continue()});
+  await page.getByRole("button",{name:"Environments",exact:true}).click();
+  const pending=page.getByTestId("host-discovery-pending");
+  await expect(pending).toContainText("Checking for distributions…");
+  await expect(page.locator(".capability-list")).not.toContainText("Unavailable");
+  await expect(page.locator(".capabilities-toolbar p")).toContainText("on this host, inside WSL");
+  await expect(page.locator(".environment-list")).not.toContainText("LOCAL ·");
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({animations:"disabled",path:auditDir+"environments-discovery-pending-1280x800.png",fullPage:true});
+  release();
+  await expect(pending).toHaveCount(0,{timeout:15_000});
+  await expect(page.locator(".capability-list")).toContainText(/Ready|Unavailable/);
+  await page.screenshot({animations:"disabled",path:auditDir+"environments-discovery-done-1280x800.png",fullPage:true});
 });
 
 test("environment refresh and removal failures preserve the existing environment",async({page,request})=>{
@@ -4127,17 +4200,20 @@ test("environment refresh and removal failures preserve the existing environment
   });
 
   await page.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true}).click();
-  const status=page.getByRole("status");
-  await expect(status).toContainText("Deliberate environment refresh failure");
+  // Failures are errors (the red banner), not the neutral notice that reports "Environment removed.".
+  const failure=page.locator(".environments-page").getByRole("alert");
+  await expect(failure).toContainText("Deliberate environment refresh failure");
+  await expect(failure).toHaveClass(/inline-error/);
+  await expect(page.locator(".environments-page").getByRole("status")).toHaveCount(0);
   await expect(environmentRow).toBeVisible();
 
   await environmentRow.getByRole("button",{name:"Remove Failure SSH",exact:true}).click();
-  await expect(status).toContainText("Deliberate environment removal failure");
+  await expect(failure).toContainText("Deliberate environment removal failure");
   await expect(environmentRow).toBeVisible();
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".environments-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"environments-action-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"environments-action-error-1280x800.png",fullPage:true});
 });
 
 test("workspace file refresh and save failures stay visible without lying about state",async({page,request})=>{
@@ -4180,7 +4256,7 @@ test("workspace file refresh and save failures stay visible without lying about 
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"workspace-file-action-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-file-action-error-1280x800.png",fullPage:true});
 });
 
 test("workspace diff refresh failures preserve the last valid diff",async({page,request})=>{
@@ -4209,7 +4285,7 @@ test("workspace diff refresh failures preserve the last valid diff",async({page,
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"workspace-diff-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("workspace diff lines wrap by default, can scroll instead, and the choice is remembered",async({page,request})=>{
@@ -4234,7 +4310,7 @@ test("workspace diff lines wrap by default, can scroll instead, and the choice i
   await expect(panel.getByRole("button",{name:"Disable diff line wrapping"})).toHaveAttribute("aria-pressed","true");
   let metrics=await size();expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   expect(await diff.evaluate(node=>getComputedStyle(node).fontVariantLigatures)).toBe("none");
-  await page.screenshot({path:auditDir+"workspace-diff-wrapped-dark-1280x800.png"});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-wrapped-dark-1280x800.png"});
   await panel.getByRole("button",{name:"Disable diff line wrapping"}).click();
   await expect(panel.getByRole("button",{name:"Enable diff line wrapping"})).toHaveAttribute("aria-pressed","false");
   await expect(diff).not.toHaveClass(/\bwrap\b/);
@@ -4278,7 +4354,7 @@ test("workspace file open failures preserve the current valid file",async({page,
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"workspace-file-open-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-file-open-error-1280x800.png",fullPage:true});
 });
 
 test("Diff review actions roll back and stay visible when persistence fails",async({page})=>{
@@ -4368,7 +4444,7 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
     await page.setViewportSize({width:1280,height:800});
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"workspace-diff-action-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-action-error-1280x800.png",fullPage:true});
     await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Runtime",exact:true}).click();
     const capabilities=panel.getByTestId("runtime-capabilities");
     await expect(capabilities).toContainText("Runtime capability matrix");
@@ -4395,7 +4471,7 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
     await expect(trace.getByRole("alert")).toContainText("Deliberate trace refresh failure");
     await expect(trace).toContainText("Last valid trace is kept below");
     await expect(trace).toContainText("item/completed");
-    await page.screenshot({path:auditDir+"runtime-capability-matrix-opencode-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"runtime-capability-matrix-opencode-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -4422,7 +4498,7 @@ test("open externally failures stay visible beside the editor picker",async({pag
   const header=page.locator(".workspace-header");
   const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"open-in-editor-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"open-in-editor-error-1280x800.png",fullPage:true});
 });
 
 test("failed workspace activation leaves the current project untouched",async({page,request})=>{
@@ -4446,7 +4522,7 @@ test("failed workspace activation leaves the current project untouched",async({p
   await expect(crumb).toHaveAttribute("title",beforeTitle||"");
   await expect(page.getByTestId("composer")).toBeVisible();
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"workspace-activation-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-activation-error-1280x800.png",fullPage:true});
 });
 
 test("usage clear failures keep recorded usage visible",async({page,request})=>{
@@ -4484,7 +4560,7 @@ test("usage clear failures keep recorded usage visible",async({page,request})=>{
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".usage-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"usage-clear-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"usage-clear-error-1280x800.png",fullPage:true});
 });
 
 test("usage environment refresh failures preserve the last valid filter catalog",async({page,request})=>{
@@ -4513,7 +4589,7 @@ test("usage environment refresh failures preserve the last valid filter catalog"
   await expect(page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true})).toBeEnabled();
   const metrics=await page.locator(".usage-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"usage-environment-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"usage-environment-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("right panel tabs are functional and visually bounded",async({page,request})=>{
@@ -4551,10 +4627,10 @@ test("right panel tabs are functional and visually bounded",async({page,request}
       await packageFile.click();
       await expect(panel.locator(".file-head strong")).toContainText("package.json");
       await expect(panel.locator(".syntax-view")).toBeVisible();
-      await page.screenshot({path:auditDir+"panel-files-open-1600x980.png",fullPage:true});
+      await page.screenshot({animations:"disabled",path:auditDir+"panel-files-open-1600x980.png",fullPage:true});
       await panel.getByRole("button",{name:"Edit",exact:true}).click();
       await expect(panel.locator(".file-editor")).toBeVisible();
-      await page.screenshot({path:auditDir+"panel-files-edit-1600x980.png",fullPage:true});
+      await page.screenshot({animations:"disabled",path:auditDir+"panel-files-edit-1600x980.png",fullPage:true});
       await panel.getByRole("button",{name:"Cancel",exact:true}).click();
       await search.fill("");
     }
@@ -4581,12 +4657,12 @@ test("right panel tabs are functional and visually bounded",async({page,request}
       await expect(page.locator('.sidebar-utility[aria-label="Agents"]')).toHaveClass(/active/);
     }
     await assertPanelBounded();
-    await page.screenshot({path:auditDir+"panel-"+slug+"-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"panel-"+slug+"-1600x980.png",fullPage:true});
   }
   await page.setViewportSize({width:1280,height:800});
   await tabStrip.getByRole("button",{name:"Browser",exact:true}).click();
   await assertPanelBounded();
-  await page.screenshot({path:auditDir+"panel-browser-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"panel-browser-1280x800.png",fullPage:true});
   await page.setViewportSize({width:1600,height:980});
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   await tabStrip.getByRole("button",{name:"Agents",exact:true}).click();
@@ -4597,7 +4673,7 @@ test("right panel tabs are functional and visually bounded",async({page,request}
     fleet:getComputedStyle(node.querySelector(".agent-fleet-stats span")).backgroundColor,
   }));
   for(const value of Object.values(agentsLight))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
-  await page.screenshot({path:auditDir+"panel-agents-light-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"panel-agents-light-1600x980.png",fullPage:true});
 });
 
 test("Agent Browser action failures stay visible instead of disappearing",async({page,request})=>{
@@ -4622,7 +4698,7 @@ test("Agent Browser action failures stay visible instead of disappearing",async(
   await openAgentBrowser.click();
   await expect(panel.getByRole("alert")).toContainText("Deliberate Agent Browser navigation failure");
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"agent-browser-action-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"agent-browser-action-error-1280x800.png",fullPage:true});
 });
 
 test("preview server refresh failures preserve the last discovered server",async({page,request})=>{
@@ -4649,7 +4725,7 @@ test("preview server refresh failures preserve the last discovered server",async
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await alert.scrollIntoViewIfNeeded();
   await expect(alert).toBeInViewport();
-  await page.screenshot({path:auditDir+"preview-server-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"preview-server-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("Agent Browser annotation attachment failures keep the note for retry",async({page,request})=>{
@@ -4682,7 +4758,7 @@ test("Agent Browser annotation attachment failures keep the note for retry",asyn
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"agent-browser-annotation-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"agent-browser-annotation-error-1280x800.png",fullPage:true});
 });
 
 test("populated chat and overlays remain visually usable",async({page,request})=>{
@@ -4707,7 +4783,7 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   const conversation=page.locator(".conversation-column");
   const chatMetrics=await conversation.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(chatMetrics.scroll).toBeLessThanOrEqual(chatMetrics.client+1);
-  await page.screenshot({path:auditDir+"chat-populated-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-populated-1600x980.png",fullPage:true});
 
   const assistantText=page.locator(".assistant-message-text").last();
   await page.setViewportSize({width:1280,height:800});
@@ -4720,19 +4796,19 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   const citeSelection=page.getByTestId("assistant-selection-cite");
   await expect(citeSelection).toBeVisible();
   await expect(page.getByRole("button",{name:"Cite response",exact:true})).toHaveCount(0);
-  await page.screenshot({path:auditDir+"chat-assistant-selection-cite-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-assistant-selection-cite-1600x980.png",fullPage:true});
   await citeSelection.click();
   const citationChip=page.getByTestId("context-chip").filter({hasText:"Assistant excerpt"});
   await expect(citationChip).toBeVisible();
   await expect(composer).toHaveValue(/cited assistant excerpt/i);
-  await page.screenshot({path:auditDir+"chat-assistant-selection-context-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-assistant-selection-context-1600x980.png",fullPage:true});
   await citationChip.getByTitle("Remove context").click();
   await composer.fill("");
 
   await page.keyboard.press("Control+k");
   const palette=page.getByTestId("command-palette");
   await expect(palette).toBeVisible();
-  await page.screenshot({path:auditDir+"chat-command-palette-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-command-palette-1600x980.png",fullPage:true});
   await page.keyboard.press("Escape");
   await expect(palette).toBeHidden();
 
@@ -4744,7 +4820,7 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   const compose=await box(page.locator(".composer-wrap"));
   expect(compose.x).toBeGreaterThanOrEqual(main.x);
   expect(compose.x+compose.width).toBeLessThanOrEqual(main.x+main.width+1);
-  await page.screenshot({path:auditDir+"chat-populated-panels-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-populated-panels-1600x980.png",fullPage:true});
 
   await page.setViewportSize({width:1280,height:800});
   const compactChat=await conversation.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
@@ -4753,7 +4829,7 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   expect(compactRight.y).toBeGreaterThan(compactLeft.y+10);
   expect((await box(page.locator(".permission-picker").first())).width).toBeGreaterThanOrEqual(100);
   expect((await box(page.locator(".workspace-mode"))).width).toBeGreaterThanOrEqual(125);
-  await page.screenshot({path:auditDir+"chat-populated-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-populated-1280x800.png",fullPage:true});
 });
 
 test("failed assistant citations keep the selected excerpt available for retry",async({page,request})=>{
@@ -4782,7 +4858,7 @@ test("failed assistant citations keep the selected excerpt available for retry",
   await expect(composer).toHaveValue("Keep this draft");
   await expect(alert).toBeInViewport();
   await expect(cite).toBeInViewport();
-  await page.screenshot({path:auditDir+"assistant-citation-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"assistant-citation-error-1280x800.png",fullPage:true});
 });
 
 test("onboarding and license surfaces are visually intentional",async({page,request})=>{
@@ -4797,12 +4873,12 @@ test("onboarding and license surfaces are visually intentional",async({page,requ
   const onboardingBox=await box(dialog);
   expect(onboardingBox.width).toBeLessThanOrEqual(660);
   expect(onboardingBox.height).toBeLessThan(page.viewportSize().height-30);
-  await page.screenshot({path:auditDir+"onboarding-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"onboarding-1600x980.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
   const compactOnboarding=await box(dialog);
   expect(compactOnboarding.width).toBeLessThanOrEqual(660);
   expect(compactOnboarding.height).toBeLessThanOrEqual(770);
-  await page.screenshot({path:auditDir+"onboarding-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"onboarding-1280x800.png",fullPage:true});
   await onboarding.getByRole("button",{name:"Finish setup"}).click();
   await expect(onboarding).toBeHidden();
 
@@ -4824,12 +4900,12 @@ test("onboarding and license surfaces are visually intentional",async({page,requ
   expect(licenseMetrics.scroll).toBeLessThanOrEqual(licenseMetrics.client+1);
   const toolbarBox=await box(page.locator(".licenses-toolbar")),licenseLayoutBox=await box(page.locator(".licenses-layout"));
   expect(licenseLayoutBox.y-(toolbarBox.y+toolbarBox.height)).toBeLessThanOrEqual(16);
-  await page.screenshot({path:auditDir+"licenses-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"licenses-1280x800.png",fullPage:true});
   const firstLicense=page.locator(".licenses-list > button").first();
   await expect(firstLicense).toBeVisible();
   await firstLicense.click();
   await expect(page.locator(".license-detail pre")).toBeVisible();
-  await page.screenshot({path:auditDir+"licenses-detail-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"licenses-detail-1280x800.png",fullPage:true});
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   const lightLicenseSurfaces=await page.evaluate(()=>({
     search:getComputedStyle(document.querySelector(".licenses-search")).backgroundColor,
@@ -4838,7 +4914,7 @@ test("onboarding and license surfaces are visually intentional",async({page,requ
     text:getComputedStyle(document.querySelector(".license-detail pre")).backgroundColor,
   }));
   for(const value of Object.values(lightLicenseSurfaces))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
-  await page.screenshot({path:auditDir+"licenses-detail-light-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"licenses-detail-light-1280x800.png",fullPage:true});
 });
 
 test("onboarding finish failures stay visible and keep setup open",async({page,request})=>{
@@ -4860,7 +4936,7 @@ test("onboarding finish failures stay visible and keep setup open",async({page,r
   const dimensions=await dialog.evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight,width:node.getBoundingClientRect().width}));
   expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.client+1);
   expect(dimensions.width).toBeLessThanOrEqual(660);
-  await page.screenshot({path:auditDir+"onboarding-finish-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"onboarding-finish-error-1280x800.png",fullPage:true});
 });
 
 test("onboarding completion surfaces a failed thread-list refresh",async({page})=>{
@@ -4889,7 +4965,7 @@ test("onboarding completion surfaces a failed thread-list refresh",async({page})
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"onboarding-thread-refresh-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"onboarding-thread-refresh-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -4909,7 +4985,7 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   for(const value of appearanceButtons)expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.getByLabel("Search settings").fill("command palette");
   await expect(page.getByTestId("settings-search-results").getByRole("button",{name:/Command palette/})).toBeVisible();
-  await page.screenshot({path:auditDir+"light-settings-search-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"light-settings-search-1600x980.png",fullPage:true});
   await page.getByLabel("Search settings").press("Escape");
   await page.getByRole("button",{name:/Workspace/}).click();
   await expect(page.getByTestId("settings-scope-sentence")).toBeVisible();
@@ -4924,7 +5000,7 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   expect(workspaceLight.heading).toBe("rgb(22, 22, 27)");
   expect(workspaceLight.cleanup).toBe("rgb(244, 244, 247)");
   expect(workspaceLight.action).toBe("rgb(234, 234, 240)");
-  await page.screenshot({path:auditDir+"light-settings-workspace-scope-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"light-settings-workspace-scope-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Threads"}).click();
   const shell=await page.evaluate(()=>({
     sidebar:getComputedStyle(document.querySelector(".sidebar")).backgroundColor,
@@ -4934,7 +5010,7 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   expect(shell.sidebar).not.toBe("rgb(17, 18, 20)");
   expect(shell.main).not.toBe("rgb(11, 12, 14)");
   expect(shell.composer).toMatch(/^rgba?\(255, 255, 255/);
-  await page.screenshot({path:auditDir+"light-chat-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"light-chat-1600x980.png",fullPage:true});
   await page.getByTestId("composer").fill("Give me a short light-mode citation fixture.");
   await page.getByTestId("send").click();
   const lightAssistant=page.locator(".assistant-message-text").last();
@@ -4943,14 +5019,14 @@ test("light mode stays visually coherent across workspace and panels",async({pag
     const selection=window.getSelection();selection.removeAllRanges();selection.selectAllChildren(node);document.dispatchEvent(new Event("selectionchange"));
   });
   await expect(page.getByTestId("assistant-selection-cite")).toBeVisible();
-  await page.screenshot({path:auditDir+"light-chat-assistant-selection-cite-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"light-chat-assistant-selection-cite-1600x980.png",fullPage:true});
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("assistant-selection-cite")).toBeHidden();
   await page.getByTestId("right-panel-toggle").click();
   await expect(page.getByTestId("right-panel")).toBeVisible();
-  await page.screenshot({path:auditDir+"light-chat-panel-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"light-chat-panel-1600x980.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"light-chat-panel-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"light-chat-panel-1280x800.png",fullPage:true});
   await page.setViewportSize({width:1600,height:980});
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
@@ -4962,12 +5038,12 @@ test("light mode stays visually coherent across workspace and panels",async({pag
     general:getComputedStyle(document.querySelector(".general-chat-card")).backgroundColor,
   }));
   expect(projectLight.general).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
-  await page.screenshot({path:auditDir+"light-projects-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"light-projects-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Environments",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Environments",level:2})).toBeVisible();
   const environmentLight=await page.locator(".environment-grid .capability-card").first().evaluate(node=>getComputedStyle(node).backgroundColor);
   expect(environmentLight).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
-  await page.screenshot({path:auditDir+"light-environments-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"light-environments-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Threads",exact:true}).click();
   await page.getByRole("button",{name:"History",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Thread history",level:1})).toBeVisible();
@@ -4976,7 +5052,7 @@ test("light mode stays visually coherent across workspace and panels",async({pag
     document.querySelector(".history-empty button"),
   ].filter(Boolean).map(node=>getComputedStyle(node).backgroundColor));
   for(const value of historyButtonColors)expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
-  await page.screenshot({path:auditDir+"light-history-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"light-history-1600x980.png",fullPage:true});
 });
 
 test("custom theme stays coherent across chat panel and command palette",async({page,request})=>{
@@ -5010,10 +5086,10 @@ test("custom theme stays coherent across chat panel and command palette",async({
     palette:getComputedStyle(document.querySelector(".command-palette")).backgroundColor,
   }));
   for(const value of Object.values(themedSurfaces))expect(value).toBeTruthy();
-  await page.screenshot({path:auditDir+"custom-theme-chat-panel-palette-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"custom-theme-chat-panel-palette-1600x980.png",fullPage:true});
   await page.keyboard.press("Escape");
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"custom-theme-chat-panel-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"custom-theme-chat-panel-1280x800.png",fullPage:true});
 });
 
 test("provider switching reuses its response without depending on bootstrap refresh",async({page})=>{
@@ -5060,7 +5136,7 @@ test("provider switching reuses its response without depending on bootstrap refr
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"provider-switch-no-bootstrap-refresh-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"provider-switch-no-bootstrap-refresh-1280x800.png",fullPage:true});
 });
 
 test("provider switch failure rolls back optimistic selection without a fallback refresh storm",async({page})=>{
@@ -5097,7 +5173,7 @@ test("provider switch failure rolls back optimistic selection without a fallback
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"provider-switch-failure-rollback-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"provider-switch-failure-rollback-1280x800.png",fullPage:true});
 });
 
 test("provider key save reuses the returned catalog without refetching models or bootstrap",async({page})=>{
@@ -5124,7 +5200,7 @@ test("provider key save reuses the returned catalog without refetching models or
   await expect(page.getByTestId("provider-status")).toContainText("API key saved");
   expect(modelCalls).toBe(before.modelCalls);expect(bootstrapCalls).toBe(before.bootstrapCalls);
   await page.getByRole("button",{name:"Threads",exact:true}).click();await expect(page.getByTestId("model-picker")).toContainText("Coding Fast");await expect(page.getByTestId("model-picker")).toBeEnabled();
-  await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({path:auditDir+"provider-key-save-reuses-catalog-1280x800.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"provider-key-save-reuses-catalog-1280x800.png",fullPage:true});
 });
 
 test("switching Trebell Native inference provider preserves the active chat and sidebar threads",async({page})=>{
@@ -5187,7 +5263,7 @@ test("switching Trebell Native inference provider preserves the active chat and 
     await expect(page.getByTestId("command-palette").getByText("Copy conversation",{exact:true})).toBeVisible();
     await page.keyboard.press("Escape");
     const before=await page.locator(".thread-main").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("title")||node.textContent.trim()));
-    await page.screenshot({path:auditDir+"provider-switch-threads-before-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"provider-switch-threads-before-1600x980.png",fullPage:true});
 
     await page.getByRole("button",{name:"Settings",exact:true}).click();
     await page.getByRole("button",{name:/Agents & models/}).click();
@@ -5220,7 +5296,7 @@ test("switching Trebell Native inference provider preserves the active chat and 
     expect(listCalls).toHaveLength(1);
     for(const call of listCalls)expect(Object.prototype.hasOwnProperty.call(call.params||{},"modelProviders")).toBe(false);
     expect(rpcMessages.filter(message=>message.method==="threadSection/create")).toHaveLength(0);
-    await page.screenshot({path:auditDir+"provider-switch-threads-after-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"provider-switch-threads-after-1600x980.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -5277,15 +5353,15 @@ test("sidebar thread action failures stay visible and keep the thread in place",
     await page.setViewportSize({width:1280,height:800});
     const sidebar=page.locator(".sidebar");const metrics=await sidebar.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"thread-sidebar-action-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-sidebar-action-error-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
     const light=await alert.evaluate(node=>({background:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color}));
     expect(light.background).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
-    await page.screenshot({path:auditDir+"thread-sidebar-action-error-light-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-sidebar-action-error-light-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark";document.documentElement.dataset.customTheme="true"});
     const custom=await alert.evaluate(node=>({background:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color,border:getComputedStyle(node).borderColor}));
     expect(custom.background).toBeTruthy();expect(custom.color).toBeTruthy();expect(custom.border).toBeTruthy();
-    await page.screenshot({path:auditDir+"thread-sidebar-action-error-custom-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-sidebar-action-error-custom-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark";document.documentElement.dataset.customTheme="false"});
     await row.locator("details").evaluate(node=>{node.open=false});
     await row.locator(".thread-main").click();
@@ -5293,14 +5369,14 @@ test("sidebar thread action failures stay visible and keep the thread in place",
     await page.keyboard.press("Control+Alt+P");
     const globalError=page.getByTestId("app-action-error");
     await expect(globalError).toContainText("Could not update thread: Deliberate thread pin failure");
-    await page.screenshot({path:auditDir+"global-action-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"global-action-error-1280x800.png",fullPage:true});
     for(const ws of sockets)ws.send(JSON.stringify({method:"turn/started",params:{threadId:thread.id,turn:{id:"running-turn"}}}));
     const stopButton=page.getByRole("button",{name:"Stop",exact:true});
     await expect(stopButton).toBeVisible();
     await stopButton.click();
     await expect(globalError).toContainText("Could not stop turn: Deliberate interrupt failure");
     await expect(stopButton).toBeVisible();
-    await page.screenshot({path:auditDir+"stop-action-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"stop-action-error-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -5359,7 +5435,7 @@ test("delegated agent open failures stay visible in the Agents panel",async({pag
     await page.setViewportSize({width:1280,height:800});
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"agents-open-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"agents-open-error-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -5422,7 +5498,7 @@ test("failed background work restores the draft when stash saving also fails",as
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".composer-wrap").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"background-stash-failure-restored-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"background-stash-failure-restored-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -5485,7 +5561,7 @@ test("uncertain background work warns before a stashed retry",async({page})=>{
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"background-uncertain-stash-warning-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"background-uncertain-stash-warning-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -5544,7 +5620,7 @@ test("background thread verification failures remain uncertain",async({page})=>{
     await expect(warning).toContainText("Check for an existing thread before retrying");
     expect(threadListCalls).toBeGreaterThanOrEqual(1);
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"background-verification-uncertain-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"background-verification-uncertain-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -5590,7 +5666,7 @@ test("stash shortcut keeps save and restore failures retryable",async({page})=>{
     await expect(globalError).toContainText("Could not stash or restore draft: Deliberate stash save failure");
     await expect(composer).toHaveValue(draft);
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"stash-save-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"stash-save-error-1280x800.png",fullPage:true});
 
     await composer.fill("");
     phase="load-fail";
@@ -5605,7 +5681,7 @@ test("stash shortcut keeps save and restore failures retryable",async({page})=>{
     await expect(composer).toHaveValue("");
     const metrics=await page.locator(".composer-wrap").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"stash-restore-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"stash-restore-error-1280x800.png",fullPage:true});
 
     phase="success";
     await composer.press("Control+S");
@@ -5666,7 +5742,7 @@ test("worktree setup monitor failures stop promptly and restore the unsent draft
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await setup.scrollIntoViewIfNeeded();
     await expect(setup).toBeInViewport();
-    await page.screenshot({path:auditDir+"worktree-setup-monitor-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"worktree-setup-monitor-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -5726,7 +5802,7 @@ test("non-blocking worktree setup monitor failures stay visible after the turn s
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await setup.scrollIntoViewIfNeeded();
-    await page.screenshot({path:auditDir+"background-worktree-setup-monitor-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"background-worktree-setup-monitor-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -5793,7 +5869,7 @@ test("non-blocking worktree setup failures stay visible after the turn starts",a
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await setup.scrollIntoViewIfNeeded();
-    await page.screenshot({path:auditDir+"worktree-background-setup-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"worktree-background-setup-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -5857,7 +5933,7 @@ test("background worktree registration failures warn without blocking the task",
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"background-worktree-registration-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"background-worktree-registration-error-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -5918,7 +5994,7 @@ test("delegated agent open failures stay visible without leaving the parent thre
     await page.setViewportSize({width:1280,height:800});
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"agents-open-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"agents-open-error-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -5980,7 +6056,7 @@ test("non-Codex agent picker rolls back when the runtime rejects the change",asy
     await expect(picker).toHaveValue("alpha");
     await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Provider agent fixture");
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"provider-agent-change-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"provider-agent-change-error-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -6035,7 +6111,7 @@ test("populated source control and pull request detail stay usable",async({page,
   await expect(panel.locator(".sc-toolbar select").first()).toHaveValue("feature/ui-polish");
   await expect(panel.getByRole("button",{name:"Add worktree",exact:true})).toHaveCount(0);
   await expect(panel.getByRole("button",{name:/#142 Polish Trebell desktop interaction states/})).toBeVisible();
-  await page.screenshot({path:auditDir+"source-control-populated-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-populated-1600x980.png",fullPage:true});
 
   await panel.getByRole("button",{name:/#142 Polish Trebell desktop interaction states/}).click();
   await expect(panel.getByRole("heading",{name:/#142 Polish Trebell desktop interaction states/})).toBeVisible();
@@ -6052,7 +6128,7 @@ test("populated source control and pull request detail stay usable",async({page,
   await reviewDraft.fill("Please address the remaining resize edge case.");
   await composer.getByRole("tab",{name:"Comment",exact:true}).click();
   await expect(commentDraft).toHaveValue("Looks good overall; leaving one note.");
-  await page.screenshot({path:auditDir+"source-control-pr-composer-comment-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pr-composer-comment-1600x980.png",fullPage:true});
   await composer.locator(".pr-composer-submit button").click();
   await expect.poll(()=>prActions.length).toBe(1);
   expect(prActions[0]).toMatchObject({action:"comment",number:142,body:"Looks good overall; leaving one note."});
@@ -6062,13 +6138,13 @@ test("populated source control and pull request detail stay usable",async({page,
   await reopened.getByRole("tab",{name:"Review",exact:true}).click();
   await expect(reopened.getByLabel("Review summary")).toHaveValue("Please address the remaining resize edge case.");
   await expect(reopened.getByLabel("Review verdict")).toHaveValue("REQUEST_CHANGES");
-  await page.screenshot({path:auditDir+"source-control-pr-composer-review-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pr-composer-review-1600x980.png",fullPage:true});
   await reopened.locator(".pr-composer-submit button").click();
   await expect.poll(()=>prActions.length).toBe(2);
   expect(prActions[1]).toMatchObject({action:"review",number:142,event:"REQUEST_CHANGES",body:"Please address the remaining resize edge case."});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"source-control-pr-detail-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pr-detail-1600x980.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
   await panel.getByRole("button",{name:/#142 Polish Trebell desktop interaction states/}).click();
   await expect(panel.getByRole("heading",{name:/#142 Polish Trebell desktop interaction states/})).toBeInViewport();
@@ -6079,9 +6155,9 @@ test("populated source control and pull request detail stay usable",async({page,
   const compactComposerBox=await box(compactComposer),panelBodyBox=await box(panel.locator(".context-panel-body"));
   expect(compactComposerBox.x).toBeGreaterThanOrEqual(panelBodyBox.x);
   expect(compactComposerBox.x+compactComposerBox.width).toBeLessThanOrEqual(panelBodyBox.x+panelBodyBox.width+1);
-  await page.screenshot({path:auditDir+"source-control-pr-composer-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pr-composer-1280x800.png",fullPage:true});
   await compactComposer.getByRole("button",{name:"Close pull request composer"}).click();
-  await page.screenshot({path:auditDir+"source-control-pr-detail-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pr-detail-1280x800.png",fullPage:true});
   await page.setViewportSize({width:1600,height:980});
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   const lightSurfaces=()=>panel.evaluate(node=>({
@@ -6094,7 +6170,7 @@ test("populated source control and pull request detail stay usable",async({page,
   }));
   // The redesign's buttons fade their background (transition), so the surfaces are read once the switch has settled.
   await expect.poll(async()=>Object.entries(await lightSurfaces()).filter(([,value])=>/rgb\((?:1[0-9]|2[0-5]),/.test(value)).map(([name])=>name)).toEqual([]);
-  await page.screenshot({path:auditDir+"source-control-pr-detail-light-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pr-detail-light-1600x980.png",fullPage:true});
 });
 
 test("Forgejo repository publishing is exposed with a clear owner path prompt",async({page,request})=>{
@@ -6120,7 +6196,7 @@ test("Forgejo repository publishing is exposed with a clear owner path prompt",a
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"source-control-forgejo-publish-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-forgejo-publish-1280x800.png",fullPage:true});
   page.once("dialog",async dialog=>{
     expect(dialog.message()).toContain("owner/repository or repository");
     await dialog.dismiss();
@@ -6164,13 +6240,13 @@ test("source control keeps the PR visible when loading full details fails",async
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"source-control-pr-detail-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pr-detail-error-1280x800.png",fullPage:true});
   failPrRefresh=true;
   await panel.getByRole("button",{name:"Refresh pull requests",exact:true}).click();
   await expect(panel.getByRole("alert")).toContainText("Deliberate PR list refresh failure");
   await expect(prButton).toBeVisible();
   await expect(prButton).toHaveClass(/active/);
-  await page.screenshot({path:auditDir+"source-control-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("linked pull-request auto-sync failures preserve the last valid links",async({page})=>{
@@ -6218,7 +6294,7 @@ test("linked pull-request auto-sync failures preserve the last valid links",asyn
     await page.setViewportSize({width:1280,height:800});
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"source-control-linked-pr-sync-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"source-control-linked-pr-sync-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -6260,7 +6336,7 @@ test("source control preserves viewed files when the same PR refresh fails",asyn
   await expect(panel.getByRole("button",{name:"Mark unviewed ui/src/App.jsx",exact:true})).toBeVisible();
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"source-control-viewed-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-viewed-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("source control does not leak viewed markers between pull requests",async({page,request})=>{
@@ -6307,7 +6383,7 @@ test("source control does not leak viewed markers between pull requests",async({
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"source-control-viewed-pr-isolation-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-viewed-pr-isolation-1280x800.png",fullPage:true});
 });
 
 test("failed linked-thread unarchive keeps the PR and archived state intact",async({page})=>{
@@ -6376,7 +6452,7 @@ test("failed linked-thread unarchive keeps the PR and archived state intact",asy
     await page.setViewportSize({width:1280,height:800});
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"linked-thread-unarchive-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"linked-thread-unarchive-error-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -6433,7 +6509,7 @@ test("linked-thread read failures report the runtime error instead of claiming t
     await page.setViewportSize({width:1280,height:800});
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    await page.screenshot({path:auditDir+"linked-thread-read-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"linked-thread-read-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -6471,7 +6547,7 @@ test("failed worktree open stays in the current project and reports the error",a
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"worktree-open-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"worktree-open-error-1280x800.png",fullPage:true});
 });
 
 test("Add worktree reports native folder picker failures",async({page,request})=>{
@@ -6510,7 +6586,7 @@ test("Add worktree reports native folder picker failures",async({page,request})=
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"worktree-picker-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"worktree-picker-error-1280x800.png",fullPage:true});
 });
 
 test("failed PR attachment stays in source control with visible feedback",async({page,request})=>{
@@ -6543,7 +6619,7 @@ test("failed PR attachment stays in source control with visible feedback",async(
   await expect(alert).toBeInViewport();
   await expect(panel.getByRole("heading",{name:/#88 Attachment failure fixture/})).toBeVisible();
   await page.setViewportSize({width:1280,height:800});
-  await page.screenshot({path:auditDir+"source-control-attach-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-attach-error-1280x800.png",fullPage:true});
 });
 
 test("Claude thread can switch compatible account profiles from the model picker",async({page})=>{
@@ -6615,14 +6691,17 @@ test("Claude thread can switch compatible account profiles from the model picker
     await claudeRow.hover();
     await claudeRow.locator(".thread-menu summary").click();
     await expect(claudeRow.getByRole("button",{name:"Fork thread",exact:true})).toBeVisible();
-    await page.screenshot({path:auditDir+"claude-thread-fork-menu-1600x980.png",fullPage:true});
+    // The only thread in its section has nowhere to move: both move items are disabled instead of doing nothing.
+    await expect(claudeRow.getByRole("button",{name:"Move up",exact:true})).toBeDisabled();
+    await expect(claudeRow.getByRole("button",{name:"Move down",exact:true})).toBeDisabled();
+    await page.screenshot({animations:"disabled",path:auditDir+"claude-thread-fork-menu-1600x980.png",fullPage:true});
     await claudeRow.locator("details").evaluate(node=>{node.open=false});
     await claudeRow.locator(".thread-main").click();
     const picker=page.getByTestId("model-picker");
     await expect(picker).toBeEnabled();
     await expect(picker).toContainText("Claude Work");
     await expect(page.getByRole("button",{name:"Compact",exact:true})).toBeVisible();
-    await page.screenshot({path:auditDir+"chat-claude-compact-context-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-claude-compact-context-1600x980.png",fullPage:true});
     await picker.click();
     const profilesMenu=page.locator(".model-runtime-profiles");
     await expect(profilesMenu).toBeVisible();
@@ -6633,25 +6712,25 @@ test("Claude thread can switch compatible account profiles from the model picker
     await expect(signedOut).toBeDisabled();
     await expect(signedOut).toContainText("Sign-in required");
     await expect(profilesMenu.getByRole("button",{name:/Claude Personal/})).toHaveCount(0);
-    await page.screenshot({path:auditDir+"chat-claude-profile-picker-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-claude-profile-picker-1600x980.png",fullPage:true});
 
     await profilesMenu.getByRole("button",{name:/Claude Router/}).click();
     await expect(picker).toContainText("Claude Router");
     await picker.click();
     await expect(profilesMenu.getByRole("button",{name:/Claude Router/})).toHaveClass(/selected/);
-    await page.screenshot({path:auditDir+"chat-claude-profile-switched-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-claude-profile-switched-1600x980.png",fullPage:true});
     await page.setViewportSize({width:1280,height:800});
     await expect(page.locator(".composer-bar")).toBeVisible();
     const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
-    await page.screenshot({path:auditDir+"chat-claude-profile-switched-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-claude-profile-switched-1280x800.png",fullPage:true});
     await picker.click();
     await page.getByTestId("right-panel-toggle").click();
     const panel=page.getByTestId("right-panel");
     await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Runtime",exact:true}).click();
     const capabilities=panel.getByTestId("runtime-capabilities");
     await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Runtime profiles"})).toContainText("available");
-    await page.screenshot({path:auditDir+"runtime-capability-matrix-claude-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"runtime-capability-matrix-claude-1280x800.png",fullPage:true});
   }finally{
     await relay.close();
     await new Promise(resolve=>relayServer.close(()=>resolve()));
@@ -6740,10 +6819,10 @@ test("Codex thread can switch compatible account profiles from the model picker"
     await expect(profilesMenu.getByRole("button",{name:/Codex Work/})).toHaveClass(/selected/);
     await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toBeEnabled();
     const signedOut=profilesMenu.getByRole("button",{name:/Codex Signed Out/});await expect(signedOut).toBeDisabled();await expect(signedOut).toContainText("Sign-in required");
-    await page.screenshot({path:auditDir+"chat-codex-profile-picker-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-codex-profile-picker-1600x980.png",fullPage:true});
     await profilesMenu.getByRole("button",{name:/Codex Personal/}).click();await expect(picker).toContainText("Codex Personal");
     await picker.click();await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toHaveClass(/selected/);
-    await page.screenshot({path:auditDir+"chat-codex-profile-switched-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-codex-profile-switched-1600x980.png",fullPage:true});
     failSkillsRefresh=true;
     await profilesMenu.getByRole("button",{name:/Codex Work/}).click();
     const profileError=page.getByTestId("app-action-error");
@@ -6756,7 +6835,7 @@ test("Codex thread can switch compatible account profiles from the model picker"
     await picker.click();
     await page.setViewportSize({width:1280,height:800});
     const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
-    await page.screenshot({path:auditDir+"chat-codex-profile-switched-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-codex-profile-switched-1280x800.png",fullPage:true});
     await profilesMenu.getByRole("button",{name:/Codex Broken/}).click();
     await expect(profileError).toContainText("Could not switch Codex profile: Deliberate runtime profile failure");
     await expect(profileError).toBeInViewport();
@@ -6767,14 +6846,14 @@ test("Codex thread can switch compatible account profiles from the model picker"
     const errorLayout=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(errorLayout.scroll).toBeLessThanOrEqual(errorLayout.client+1);
     const errorBox=await box(profileError),menuBox=await box(page.locator(".model-picker-menu"));
     expect(errorBox.y+errorBox.height).toBeLessThanOrEqual(menuBox.y-4);
-    await page.screenshot({path:auditDir+"chat-codex-profile-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-codex-profile-error-1280x800.png",fullPage:true});
     failProfileRefresh=true;
     for(const ws of upstreamSockets)ws.send(JSON.stringify({method:"thread/runtimeInstance/updated",params:{threadId:thread.id,runtimeInstanceId:currentInstanceId}}));
     await expect(profileError).toContainText("Could not refresh runtime profiles: Deliberate runtime profile refresh failure");
     await expect(picker).toContainText("Codex Personal");
     await expect(profilesMenu).toBeVisible();
     await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toHaveClass(/selected/);
-    await page.screenshot({path:auditDir+"chat-codex-profile-refresh-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-codex-profile-refresh-error-1280x800.png",fullPage:true});
     failProfileRefresh=false;
     await page.setViewportSize({width:1600,height:980});
     await picker.click();
@@ -6806,7 +6885,7 @@ test("Codex thread can switch compatible account profiles from the model picker"
     await expect(memoryCard.getByRole("button",{name:"Confirm reset"})).toBeVisible();
     await expect(memoryCard).toContainText("Click Confirm reset");
     expect(upstreamMessages.some(message=>message.method==="memory/reset")).toBe(false);
-    await page.screenshot({path:auditDir+"tools-codex-memory-confirm-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-codex-memory-confirm-1600x980.png",fullPage:true});
     await memoryCard.getByRole("button",{name:"Confirm reset"}).click();
     await expect(memoryCard).toContainText("Codex memory was reset.");
     await expect.poll(()=>clientMessages.some(message=>message.method==="memory/reset"&&message.params?._trebellThreadId===thread.id)).toBe(true);
@@ -6815,7 +6894,7 @@ test("Codex thread can switch compatible account profiles from the model picker"
     expect(Object.prototype.hasOwnProperty.call(upstreamReset||{},"params")).toBe(false);
     await page.setViewportSize({width:1280,height:800});
     const toolsMetrics=await page.locator(".secondary-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(toolsMetrics.scroll).toBeLessThanOrEqual(toolsMetrics.client+1);
-    await page.screenshot({path:auditDir+"tools-codex-memory-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-codex-memory-1280x800.png",fullPage:true});
 
     await page.getByRole("button",{name:"Threads",exact:true}).click();
     await expect(picker).toBeVisible();
@@ -6840,7 +6919,7 @@ test("app navigation history moves across pages and right-panel tabs",async({pag
   await page.keyboard.press("[");
   await page.keyboard.up("Control");
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
-  await page.screenshot({path:auditDir+"navigation-back-projects-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"navigation-back-projects-1600x980.png",fullPage:true});
 
   await page.keyboard.down("Control");
   await page.keyboard.press("]");
@@ -6860,7 +6939,7 @@ test("app navigation history moves across pages and right-panel tabs",async({pag
   await page.keyboard.press("[");
   await page.keyboard.up("Control");
   await expect(tabs.getByRole("button",{name:"Files",exact:true})).toHaveClass(/active/);
-  await page.screenshot({path:auditDir+"navigation-back-files-panel-1600x980.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"navigation-back-files-panel-1600x980.png",fullPage:true});
 
   await page.keyboard.down("Control");
   await page.keyboard.press("]");

@@ -348,6 +348,11 @@
 :root:root .context-panel .context-inspector-stats strong{display:block;margin-top:4px;font:600 13px/1.2 var(--mono);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 :root:root .context-panel .context-inspector-warning{display:grid;gap:3px;padding:10px 12px;border:1px solid var(--errb)!important;border-radius:var(--r-m);background:var(--errt)!important;color:var(--err)!important}
 :root:root .context-panel .context-inspector-pressure{display:grid;gap:3px;padding:10px 12px;border:1px solid var(--warnb)!important;border-radius:var(--r-m);background:var(--warnt)!important;color:var(--warn)!important}
+/* A failed refresh or a skipped injection qualifies everything under it, so the notice stays at the top of the panel at any
+   scroll position (the panel keeps its scroll when the notice appears), on an opaque fill over the scrolled rows. */
+:root:root .context-panel :is(.context-inspector-warning,.context-inspector-pressure){position:sticky;top:0;z-index:3;box-shadow:0 6px 14px color-mix(in srgb,var(--bg1) 80%,transparent)}
+:root:root .context-panel .context-inspector-warning{background:color-mix(in srgb,var(--err) 9%,var(--bg1))!important}
+:root:root .context-panel .context-inspector-pressure{background:color-mix(in srgb,var(--warn) 9%,var(--bg1))!important}
 :root:root .context-panel :is(.context-inspector-warning,.context-inspector-pressure) strong{font-size:12px;font-weight:600}
 :root:root .context-panel :is(.context-inspector-warning,.context-inspector-pressure) span{font-size:11.5px;line-height:1.5;color:var(--tx1);overflow-wrap:anywhere}
 :root:root .context-panel .context-inspector-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)!important}

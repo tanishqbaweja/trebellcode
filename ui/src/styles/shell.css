@@ -94,7 +94,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .sidebar .thread-menu>summary:hover,.sidebar .thread-menu[open]>summary{background:var(--bg3);color:var(--tx0)}
 .sidebar .thread-menu-popover{top:30px;width:164px;padding:5px;gap:1px;border:1px solid var(--line2);border-radius:11px;background:var(--panel);box-shadow:var(--shbig)}
 .sidebar .thread-menu-popover button{height:30px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:var(--tx1);font-size:12px;text-align:left}
-.sidebar .thread-menu-popover button:hover{background:var(--bg3);color:var(--tx0)}
+.sidebar .thread-menu-popover button:hover:not(:disabled){background:var(--bg3);color:var(--tx0)}
+.sidebar .thread-menu-popover button:disabled{color:var(--tx3);cursor:default}
 .sidebar .thread-menu-popover button.danger{color:var(--err)}
 .sidebar .thread-menu-popover button.danger:hover{background:var(--errt);color:var(--err)}
 .sidebar .sidebar-empty{padding:26px 14px;color:var(--tx3);font-size:12px;line-height:1.7;text-align:center}
@@ -107,8 +108,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .sidebar .sidebar-nav-primary{display:flex;flex-direction:column;gap:1px}
 /* Secondary destinations: a compact two-column grid; their shortcuts stay in the tooltip. */
 /* Two columns at the default width; a sidebar too narrow for "Environments" in a half-width cell gets one column, and a
-   very wide one gets three. */
-.sidebar .sidebar-nav-secondary{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:1px 2px;padding-top:6px;border-top:1px solid var(--line)}
+   very wide one gets three. ThreadSidebar measures the longest name into --tb-destination-min, in the font that renders. */
+.sidebar .sidebar-nav-secondary{display:grid;grid-template-columns:repeat(auto-fit,minmax(var(--tb-destination-min,122px),1fr));gap:1px 2px;padding-top:6px;border-top:1px solid var(--line)}
 /* Same left inset and icon gap as the primary destinations, so the icons line up in one column. */
 .sidebar .sidebar-nav-secondary .sidebar-utility{min-height:30px;padding:6px 4px 6px 10px;gap:9px}
 .sidebar .sidebar-nav-secondary .sidebar-utility span{font-size:12.5px}
@@ -143,6 +144,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .sidebar .sidebar-provider{width:calc(100% - 20px);height:auto;min-height:0;margin:10px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);color:var(--tx0);text-align:left;transition:border-color .15s,background .15s}
 .sidebar .sidebar-provider:hover{border-color:var(--line2);background:var(--bg3)}
 .sidebar .sidebar-provider .provider-dot{width:7px;height:7px;margin:0 1px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--okt);animation:tb-pulse 2.6s infinite}
+.sidebar .sidebar-provider .provider-dot:is(.tone-warn,.tone-err,.tone-off){animation:none}
+.sidebar .sidebar-provider .provider-dot.tone-warn{background:var(--warn);box-shadow:0 0 0 3px var(--warnt)}
+.sidebar .sidebar-provider .provider-dot.tone-err{background:var(--err);box-shadow:0 0 0 3px var(--errt)}
+.sidebar .sidebar-provider .provider-dot.tone-off{background:var(--tx3);box-shadow:0 0 0 3px color-mix(in srgb,var(--tx3) 18%,transparent)}
 .sidebar .sidebar-provider>div{min-width:0}
 .sidebar .sidebar-provider strong{display:block;font-size:12px;font-weight:600;color:var(--tx0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sidebar .sidebar-provider>div>span{display:block;margin-top:1px;font-size:10.5px;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -203,7 +208,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 
 .conversation-column .user-row{margin:0 0 22px}
 .conversation-column .user-bubble{max-width:min(76%,620px);padding:10px 15px;border:1px solid color-mix(in srgb,var(--ac) 22%,var(--line2));border-radius:14px 14px 4px 14px;background:linear-gradient(135deg,var(--bub1),var(--bub2));box-shadow:var(--sh1)}
-.conversation-column .user-bubble p{margin:0;font-size:13.5px;line-height:1.55;color:var(--tx0)}
+/* A user message shows exactly as it was typed: its line breaks, blank lines and indentation stay. */
+.conversation-column .user-bubble p{margin:0;font-size:13.5px;line-height:1.55;color:var(--tx0);white-space:pre-wrap;overflow-wrap:anywhere}
 .conversation-column .user-bubble .message-action{display:block;margin:6px 0 0 auto;padding:0;border:0;background:none;color:var(--tx3);font-size:11px}
 .conversation-column .user-bubble .message-action:hover{color:var(--ac);text-decoration:none}
 
@@ -254,6 +260,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .chat-markdown-code-head button:hover{background:var(--bg3);color:var(--tx0)}
 .conversation-column .chat-markdown-code pre{margin:0;padding:10px 12px;overflow-x:auto;white-space:pre;overflow-wrap:normal;color:var(--tx1);font:400 12px/1.6 var(--mono);tab-size:2}
 .conversation-column .chat-markdown-code pre code{padding:0;border:0;background:none;color:inherit;font:inherit}
+/* Rows skip painting outside their box (content-visibility:auto, t3-workspace.css); the row holding the active match is on
+   screen, so it paints normally and its ring is not clipped to a sliver. */
+.conversation-history>:is(.user-row,.history-assistant).find-active{content-visibility:visible}
 .conversation-column .user-row.find-active .user-bubble,.conversation-column .history-assistant.find-active>div:last-child{outline:1px solid color-mix(in srgb,var(--ac) 70%,transparent);box-shadow:0 0 0 3px var(--acsoft);border-radius:12px}
 .conversation-column .inline-visualization-card{border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2)}
 
@@ -285,6 +294,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .timeline-window-controls{margin:0 0 6px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg1);color:var(--tx3);font:10.5px var(--mono)}
 .conversation-column .timeline-window-controls button{height:24px;padding:0 8px;border:1px solid var(--line2);border-radius:7px;background:var(--bg3);color:var(--tx1);font-size:11px}
 .conversation-column .agent-block .assistant-answer{margin:12px 0 0;padding:0;font-size:13.5px;line-height:1.7;color:var(--tx1)}
+.conversation-column .agent-block .assistant-answer:first-child{margin-top:0}
 .conversation-column .history-page-control button{height:30px;padding:0 12px;border:1px solid var(--line2);border-radius:99px;background:var(--bg2);color:var(--tx1);font-size:12px}
 .conversation-column .history-page-control button:hover:not(:disabled){background:var(--bg3);color:var(--tx0)}
 
@@ -297,6 +307,22 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .queued-message-actions{gap:6px}
 .conversation-column .queued-message button{height:26px;padding:0 10px;border:1px solid var(--line2);border-radius:7px;background:var(--bg3);color:var(--tx1);font-size:11.5px}
 .conversation-column .queued-message button:hover:not(:disabled){background:var(--bg4);color:var(--tx0)}
+
+/* ============ Clone progress banner ============ */
+/* Above the conversation while a project clones (App.jsx .clone-banner): the same type scale and tokens as the rest of the
+   chat, instead of the 7-8px text it had before the redesign. */
+.chat-workspace .clone-banner{margin:10px 16px 0;padding:10px 12px;gap:12px;grid-template-columns:minmax(0,1fr) minmax(90px,180px) auto auto;border:1px solid color-mix(in srgb,var(--ac) 30%,var(--line2));border-radius:var(--r-m);background:color-mix(in srgb,var(--ac) 6%,var(--bg2));box-shadow:var(--sh1)}
+.chat-workspace .clone-banner>div{gap:3px}
+.chat-workspace .clone-banner strong{font-size:12.5px;font-weight:600;color:var(--tx0)}
+.chat-workspace .clone-banner span{font-size:12px;line-height:1.45;color:var(--tx2)}
+.chat-workspace .clone-banner .clone-refresh-error{color:var(--err)}
+.chat-workspace .clone-banner i{height:6px;background:var(--bg4)}
+.chat-workspace .clone-banner i b{background:var(--ac)}
+.chat-workspace .clone-banner em{min-width:34px;font:500 11.5px/1 var(--mono);color:var(--tx2)}
+.chat-workspace .clone-banner button{height:28px;padding:0 10px;gap:5px;border:1px solid var(--line2);border-radius:var(--r-s);background:var(--bg3);color:var(--tx1);font-size:12px;font-weight:500;cursor:pointer;transition:background .14s,color .14s}
+.chat-workspace .clone-banner button:hover{background:var(--bg4);color:var(--tx0)}
+.chat-workspace .clone-banner:is(.failed,.cancelled){border-color:var(--errb);background:color-mix(in srgb,var(--err) 7%,var(--bg2))}
+.chat-workspace .clone-banner:is(.failed,.cancelled) strong{color:var(--err)}
 
 /* ============ Empty-state hero ============ */
 .conversation-column .welcome{min-height:calc(100vh - 296px);padding:24px 24px 40px;justify-content:safe center}
@@ -550,9 +576,15 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 @container tbheader (max-width:440px){
   .workspace-header .project-crumb span{max-width:9ch}
 }
+/* Labelled actions give up their labels before the thread title is squeezed out: branch, Review and the project action at
+   560px, Stop at 460px. Each keeps its icon, tooltip and accessible name. */
 @container tbheader (max-width:560px){
-  .workspace-header .header-control.branch-control{width:30px;padding:0;justify-content:center}
-  .workspace-header .header-control.branch-control span{display:none}
+  .workspace-header .header-control:is(.branch-control,.review-control,.script-control){width:30px;padding:0;justify-content:center}
+  .workspace-header .header-control:is(.branch-control,.review-control,.script-control) span{display:none}
+}
+@container tbheader (max-width:460px){
+  .workspace-header .header-control.stop-control{width:30px;padding:0;justify-content:center}
+  .workspace-header .header-control.stop-control span{display:none}
 }
 
 /* Composer footer: "Context" with a meter that is always drawn (dashed while the window size is unknown) and the token

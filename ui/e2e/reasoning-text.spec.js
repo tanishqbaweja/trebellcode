@@ -54,6 +54,14 @@ const FIRST_TURN={id:"turn-1",status:"completed",items:[
   {type:"agentMessage",id:"assistant-1",text:"I'll look into the login handler."},
 ]};
 const THOUGHT="**Inspecting the login handler**\n\nThe timeout is 30 s in `src/auth.js`, so the slow part must be the token refresh.\nNext I will read the refresh call and time it";
+// The opened thought is rendered: the heading is bold, the path is code, and no Markdown markers show.
+async function expectRenderedThought(text){
+  await expect(text.locator("strong")).toHaveText("Inspecting the login handler");
+  await expect(text.locator("code")).toHaveText("src/auth.js");
+  await expect(text).toContainText("so the slow part must be the token refresh.");
+  await expect(text).not.toContainText("**");
+  await expect(text).not.toContainText("`");
+}
 
 test("a relay harness's thinking streams as a quiet Thinking row, opens to its text, and stays after a reload",async({page})=>{
   test.setTimeout(45_000);
@@ -78,7 +86,7 @@ test("a relay harness's thinking streams as a quiet Thinking row, opens to its t
 
     await live.locator(".reasoning-toggle").click();
     await expect(live.locator(".reasoning-toggle")).toHaveAttribute("aria-expanded","true");
-    await expect(live.getByTestId("reasoning-text")).toHaveText(THOUGHT);
+    await expectRenderedThought(live.getByTestId("reasoning-text"));
     await page.screenshot({path:join(shotsDir,"reasoning-relay-streaming-expanded-1280x800.png"),fullPage:true,animations:"disabled"});
 
     // The thought ends at the reply: it becomes a conversation row (still open) above the answer.
@@ -91,7 +99,7 @@ test("a relay harness's thinking streams as a quiet Thinking row, opens to its t
     const kept=page.locator(".conversation-history [data-testid=reasoning-row]");
     await expect(kept).toHaveCount(1);await expect(live).toHaveCount(0);
     await expect(kept.locator(".reasoning-label")).toHaveText("Thought");
-    await expect(kept.getByTestId("reasoning-text")).toHaveText(THOUGHT);
+    await expectRenderedThought(kept.getByTestId("reasoning-text"));
     await expect(page.locator(".assistant-message-text").last()).toHaveText(answer.text);
     const order=await page.locator(".conversation-history").evaluate(node=>[...node.querySelectorAll(".user-bubble,.reasoning-row,.assistant-message-text")].map(row=>row.classList.contains("reasoning-row")?"thought":row.classList.contains("user-bubble")?"user":"answer"));
     expect(order).toEqual(["user","answer","user","thought","answer"]);
@@ -108,7 +116,7 @@ test("a relay harness's thinking streams as a quiet Thinking row, opens to its t
     await expect(restored.getByTestId("reasoning-text")).toHaveCount(0);
     await page.screenshot({path:join(shotsDir,"reasoning-relay-after-reload-collapsed-1280x800.png"),fullPage:true,animations:"disabled"});
     await restored.locator(".reasoning-toggle").click();
-    await expect(restored.getByTestId("reasoning-text")).toHaveText(THOUGHT);
+    await expectRenderedThought(restored.getByTestId("reasoning-text"));
     await page.screenshot({path:join(shotsDir,"reasoning-relay-after-reload-expanded-1280x800.png"),fullPage:true,animations:"disabled"});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
     await page.screenshot({path:join(shotsDir,"reasoning-relay-after-reload-expanded-light-1280x800.png"),fullPage:true,animations:"disabled"});
@@ -132,7 +140,9 @@ test("Codex's reasoning summary parts stream into one Thinking row and settle in
     const live=page.locator(".agent-block [data-testid=reasoning-row]");
     await expect(live.locator(".reasoning-preview")).toHaveText("Timing the refresh");
     await live.locator(".reasoning-toggle").click();
-    await expect(live.getByTestId("reasoning-text")).toHaveText("**Reading the handler**\n\nIt awaits the refresh.\n\n**Timing the refresh**");
+    await expect(live.getByTestId("reasoning-text").locator("strong")).toHaveText(["Reading the handler","Timing the refresh"]);
+    await expect(live.getByTestId("reasoning-text")).toContainText("It awaits the refresh.");
+    await expect(live.getByTestId("reasoning-text")).not.toContainText("**");
     await page.screenshot({path:join(shotsDir,"reasoning-codex-streaming-expanded-1280x800.png"),fullPage:true,animations:"disabled"});
     // An empty encrypted-only reasoning item shows nothing once it ends.
     harness.push("item/started",{turnId:"turn-2",item:{type:"reasoning",id:"rs_empty",summary:[],content:[]},startedAtMs:Date.now()});

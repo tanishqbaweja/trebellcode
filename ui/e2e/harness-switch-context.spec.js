@@ -208,7 +208,7 @@ test("a Git text error from the previous harness clears on a harness switch, and
     await expect(alert).toHaveCount(0);
     await backToThreads(page);
     await expect(alert).toHaveCount(0);
-    await page.screenshot({path:auditDir+"harness-switch-git-text-error-cleared-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-switch-git-text-error-cleared-1600x980.png",fullPage:true});
 
     await expect(generate).toBeEnabled();await generate.click();
     await expect(message).toHaveValue("Grok Build fixture commit message");
@@ -295,7 +295,7 @@ test("a thread announced before thread/start answers is listed once while its tu
     await expect(page.locator(".thread-row")).toHaveCount(1);
     await expect(approval.getByTestId("approval-thread")).toHaveCount(0);
     await expect(composer).toHaveAttribute("placeholder","Queue a follow-up…");
-    await page.screenshot({path:auditDir+"harness-switch-waiting-approval-single-row-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-switch-waiting-approval-single-row-1600x980.png",fullPage:true});
 
     const answers=[["Deny","decline"],["Allow session","acceptForSession"],["Allow once","accept"]];
     for(const [index,[button,decision]] of answers.entries()){
@@ -348,7 +348,7 @@ test("a harness switch drops the previous socket's open approval, and the new ha
     const cursorThread=relay.threads.find(item=>item.runtime==="cursor");
     await expect(page.locator(`.thread-row[data-thread-id="${cursorThread.id}"]`)).toHaveCount(1);
     await expect(composer).toHaveAttribute("placeholder","Queue a follow-up…");
-    await page.screenshot({path:auditDir+"harness-switch-new-harness-approval-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-switch-new-harness-approval-1600x980.png",fullPage:true});
 
     await approval.getByRole("button",{name:"Allow once",exact:true}).click();
     await expect.poll(()=>relay.responses.length,{timeout:10_000}).toBe(1);
@@ -430,7 +430,7 @@ async function expectPickerModels(page,labels,{screenshot=null}={}){
   const picker=page.getByTestId("model-picker");await expect(picker).toBeEnabled({timeout:15_000});await picker.click();
   const menu=page.locator(".model-picker-menu");await expect(menu).toBeVisible();
   await expect(menu.locator("> button strong")).toHaveText(labels);
-  if(screenshot)await page.screenshot({path:auditDir+screenshot,fullPage:true});
+  if(screenshot)await page.screenshot({animations:"disabled",path:auditDir+screenshot,fullPage:true});
   await picker.click();await expect(menu).toBeHidden();
 }
 
@@ -460,7 +460,7 @@ test("an opened harness thread shows the model it runs on and resumes on it, not
     expect(resumed.map(call=>call.params.threadId)).toContain(heavy.id);
     // The thread resumes on its own model: the composer's model is not sent along to replace it.
     expect(resumed.filter(call=>Object.prototype.hasOwnProperty.call(call.params,"model"))).toEqual([]);
-    await page.screenshot({path:auditDir+"harness-thread-model-on-open-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-thread-model-on-open-1600x980.png",fullPage:true});
     await page.locator(`.thread-row[data-thread-id="${standard.id}"] .thread-main`).click();
     await expect(chosenModel(page)).toHaveText("Grok Build Fixture",{timeout:15_000});
 
@@ -519,7 +519,7 @@ test("a thread of another harness that cannot open leaves no thread of the previ
     await expect(page.locator(".thread-row.active")).toHaveCount(0);
     await expect(page.getByText("Fixture reply from opencode: done",{exact:true})).toHaveCount(0);
     await expect(page.locator(".sidebar-provider strong")).toContainText("Cursor");
-    await page.screenshot({path:auditDir+"harness-foreign-thread-open-failed-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-foreign-thread-open-failed-1600x980.png",fullPage:true});
     await composer.fill("Second task.");await expect(send).toBeEnabled();await send.click();
     await expect(page.getByText("Fixture reply from cursor: done",{exact:true})).toBeVisible({timeout:15_000});
     expect(relay.calls("thread/start").map(call=>call.runtime)).toEqual(["opencode","cursor"]);
@@ -581,7 +581,7 @@ test("Trebell shows the harness that runs and its threads while that harness sti
     await page.locator(`.thread-row[data-thread-id="${saved.id}"] .thread-main`).click();
     await expect(page.getByText("Saved Cursor reply.",{exact:true})).toBeVisible({timeout:15_000});
     await expect(page.getByTestId("composer-model-status")).toHaveText("Loading models…");
-    await page.screenshot({path:auditDir+"harness-startup-models-loading-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-startup-models-loading-1600x980.png",fullPage:true});
     // The list lands on the model the open thread runs on, not the list's own default; Trebell asked for it once.
     release();
     await expect(chosenModel(page)).toHaveText("Cursor Fixture",{timeout:15_000});
@@ -613,14 +613,14 @@ test("Settings names the harness that runs while Trebell is still starting, and 
     await expect(page.getByText(/is the active coding-agent harness/)).toHaveCount(0);
     await expect(page.getByRole("button",{name:/^Configure /})).toHaveCount(0);
     await expect(page.getByTestId("model-picker")).toBeDisabled();
-    await page.screenshot({path:auditDir+"harness-first-load-pending-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-first-load-pending-1600x980.png",fullPage:true});
     await page.getByRole("button",{name:"Settings",exact:true}).click();
     await page.getByRole("button",{name:/Agents & models/}).click();
     const option=name=>page.locator(".agent-runtime-option").filter({hasText:name});
     await expect(option("Cursor").getByText("Active",{exact:true})).toBeVisible({timeout:15_000});
     await expect(option("Grok Build").getByText("Switch",{exact:true})).toBeVisible();
     expect(server.counts.state).toBe(1);
-    await page.screenshot({path:auditDir+"harness-settings-before-first-load-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-settings-before-first-load-1600x980.png",fullPage:true});
     // The person switches to Grok before the first load returns; the server moves at once and answers once Grok runs.
     await option("Grok Build").locator("button").first().click();
     await expect.poll(()=>server.runtime).toBe("grok");
@@ -639,7 +639,7 @@ test("Settings names the harness that runs while Trebell is still starting, and 
     await expect(page.locator(".thread-row.active")).toHaveAttribute("data-thread-id",saved.id);
     await expect(page.getByText("Saved Grok Build reply.",{exact:true})).toBeVisible();
     await expect(chosenModel(page)).toHaveText("Grok Heavy Fixture",{timeout:15_000});
-    await page.screenshot({path:auditDir+"harness-thread-kept-across-switch-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-thread-kept-across-switch-1600x980.png",fullPage:true});
     const composer=page.getByTestId("composer"),send=page.getByTestId("send");
     await composer.fill("Follow-up.");await expect(send).toBeEnabled();await send.click();
     await expect(page.getByText("Fixture reply from grok: done",{exact:true})).toBeVisible({timeout:15_000});

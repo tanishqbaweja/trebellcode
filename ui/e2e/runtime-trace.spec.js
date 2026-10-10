@@ -84,9 +84,9 @@ test("runtime trace filters by turn and preserves last-known-good data on refres
     const metrics=await trace.locator(".runtime-trace-filters").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     fail=true;await trace.getByRole("button",{name:"Refresh execution trace"}).click();
-    await expect(trace.getByRole("alert")).toContainText("Deliberate trace refresh failure");
+    await expect(trace.getByRole("alert")).toContainText("Deliberate trace refresh failure. Last valid trace is kept below.");
     await expect(trace).toContainText("knowledge.refreshed");
     await page.setViewportSize({width:1280,height:800});await trace.scrollIntoViewIfNeeded();
-    await page.screenshot({path:auditDir+"runtime-trace-filters-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"runtime-trace-filters-dark-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });

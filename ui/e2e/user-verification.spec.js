@@ -49,8 +49,8 @@ test("Codex MCP user verification uses the native signed-device proof flow",asyn
     await page.goto("/");await page.getByRole("button",{name:/Verification fixture/}).click();
     notificationSocket.send(JSON.stringify({id:71,method:"mcpServer/elicitation/request",params:{threadId:thread.id,serverName:"codex_apps",mode:"openai/userVerification",title:"Confirm sensitive action",description:"Use your local device verification to continue.",challenge:"Y2hhbGxlbmdl"}}));
     const modal=page.getByTestId("mcp-elicitation");await expect(modal).toBeVisible();await expect(modal).toContainText("Confirm sensitive action");await expect(modal).toContainText("Use your local device verification to continue.");await expect(modal.getByRole("button",{name:"Verify with device"})).toBeVisible();
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"mcp-user-verification-1280x800.png",fullPage:true});
-    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"mcp-user-verification-light-1280x800.png",fullPage:true});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"mcp-user-verification-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"mcp-user-verification-light-1280x800.png",fullPage:true});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     await modal.getByRole("button",{name:"Verify with device"}).click();
     await expect(modal).toHaveCount(0);
     await expect.poll(()=>calls.filter(call=>call.method==="userVerification/verify").length).toBe(1);
@@ -70,6 +70,6 @@ test("Codex MCP user verification uses the native signed-device proof flow",asyn
     await expect(approval).toBeVisible();
     await expect(allowOnce).toBeEnabled();
     await expect(alert).toBeInViewport();
-    await page.screenshot({path:auditDir+"mcp-response-disconnected-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"mcp-response-disconnected-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

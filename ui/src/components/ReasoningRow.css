@@ -13,5 +13,11 @@
 .reasoning-row .reasoning-chevron{color:var(--tx3,#54545e);transition:transform .15s}
 .reasoning-row.open .reasoning-chevron{transform:rotate(90deg)}
 .reasoning-row .reasoning-text{max-height:420px;overflow:auto;margin:2px 7px 8px 15px;padding:2px 0 2px 19px;border-left:1px solid var(--line2,#2c2c36);color:var(--tx2,#7e7e8a);white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}
+/* Rendered Markdown: blocks keep their own spacing, and a single line break inside a paragraph stays a line break, since a
+   model's thinking often puts one thought per line. */
+.reasoning-row .reasoning-text.chat-markdown{white-space:normal}
+.reasoning-row .reasoning-text.chat-markdown :is(p,li){white-space:pre-line}
+.reasoning-row .reasoning-text.chat-markdown :is(p,ul,ol,blockquote,.chat-markdown-code){margin:0 0 8px}
+.reasoning-row .reasoning-text.chat-markdown>:last-child{margin-bottom:0}
 @keyframes reasoning-pulse{50%{opacity:.4}}
 @media (prefers-reduced-motion:reduce){.reasoning-row.active .reasoning-icon{animation:none}}

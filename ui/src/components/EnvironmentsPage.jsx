@@ -6,17 +6,22 @@ export default function EnvironmentsPage(){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
   const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
   const [busy,setBusy]=useState("");
-  const [message,setMessage]=useState("");
-  const localPlatform=data.capabilities?.local?.platform||"local";
-  const localPlatformLabel={win32:"Windows",linux:"Linux",darwin:"macOS"}[localPlatform]||"Local";
+  // A notice reports what an action did; an error says what failed and is styled as one.
+  const [message,setMessageState]=useState({text:"",tone:"notice"});
+  const setMessage=(text,tone="notice")=>setMessageState({text:String(text||""),tone});
+  const setError=text=>setMessage(text,"error");
+  // Host discovery (ssh -V, wsl --list) can take seconds: until /api/environments first answers, the page says it is checking
+  // instead of showing its starting values (no WSL, no SSH, no platform) as results.
+  const [discovery,setDiscovery]=useState("checking");
+  const localPlatformLabel={win32:"Windows",linux:"Linux",darwin:"macOS"}[data.capabilities?.local?.platform]||"";
   // The port is kept as typed so the field can be cleared and retyped; it is sent as a number.
   // A TCP port is a whole number from 1 to 65535; anything else would be saved and only fail at connect time.
   const portNumber=String(draft.port).trim()===""?NaN:Number(draft.port);
   const portInvalid=draft.type==="ssh"&&!(Number.isInteger(portNumber)&&portNumber>=1&&portNumber<=65535);
 
   async function refresh({reportErrors=false}={}){
-    try{setData(await api("/api/environments"));if(reportErrors)setMessage("");return true}
-    catch(error){if(reportErrors)setMessage("Could not refresh environments: "+(error?.message||String(error)));return false}
+    try{setData(await api("/api/environments"));setDiscovery("done");if(reportErrors)setMessage("");return true}
+    catch(error){setDiscovery(state=>state==="done"?"done":"failed");if(reportErrors)setError("Could not refresh environments: "+(error?.message||String(error)));return false}
   }
   useEffect(()=>{refresh({reportErrors:true})},[]);
 
@@ -27,7 +32,7 @@ export default function EnvironmentsPage(){
       await api("/api/environments",{method:"POST",body});
       setDraft({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
       await refresh();
-    }catch(e){setMessage(e.message)}finally{setBusy("")}
+    }catch(e){setError(e.message)}finally{setBusy("")}
   }
   async function remove(id){
     setBusy("remove:"+id);setMessage("");
@@ -35,7 +40,7 @@ export default function EnvironmentsPage(){
       await api("/api/environments?id="+encodeURIComponent(id),{method:"DELETE"});
       await refresh();
       setMessage("Environment removed.");
-    }catch(e){setMessage("Could not remove environment: "+(e.message||String(e)))}
+    }catch(e){setError("Could not remove environment: "+(e.message||String(e)))}
     finally{setBusy("")}
   }
   async function setEnabled(id,enabled){
@@ -46,7 +51,7 @@ export default function EnvironmentsPage(){
       await refresh();
       setMessage(enabled?"Environment switched on.":"Environment switched off. Its configuration is still saved.");
       if(wasActive&&!enabled&&result.activeEnvironmentId!==id)setTimeout(()=>window.location.reload(),120);
-    }catch(e){setMessage(e.message)}finally{setBusy("")}
+    }catch(e){setError(e.message)}finally{setBusy("")}
   }
   async function activate(id){
     setBusy("activate:"+(id||"local"));setMessage("");
@@ -58,23 +63,23 @@ export default function EnvironmentsPage(){
       const ready=result.agentRuntimeReady??result.appServerReady;
       setMessage(ready?`Environment switched for ${runtimeName}. Reconnecting…`:`Environment selected, but ${runtimeName} is not ready.`);
       setTimeout(()=>window.location.reload(),120);
-    }catch(e){setMessage(e.message)}finally{setBusy("")}
+    }catch(e){setError(e.message)}finally{setBusy("")}
   }
   async function probe(id){
     setBusy("probe:"+id);setMessage("");
-    try{const r=await api("/api/environment/probe",{method:"POST",body:{id}});setMessage((r.ok?"Connected":"Probe failed")+" · "+(r.stdout||r.stderr||"").trim())}
-    catch(e){setMessage(e.message)}finally{setBusy("")}
+    try{const r=await api("/api/environment/probe",{method:"POST",body:{id}});setMessage((r.ok?"Connected":"Probe failed")+" · "+(r.stdout||r.stderr||"").trim(),r.ok?"notice":"error")}
+    catch(e){setError(e.message)}finally{setBusy("")}
   }
   return <div className="environments-page">
-    <div className="capabilities-toolbar"><div><h2>Environments</h2><p>Run the active coding-agent runtime on this {localPlatformLabel} host, inside WSL when available, or on an SSH machine.</p></div><button onClick={()=>refresh({reportErrors:true})} disabled={!!busy}><RefreshCw size={13}/> Refresh</button></div>
-    {message&&<div className="inline-status" role="status" aria-live="polite">{message}</div>}
+    <div className="capabilities-toolbar"><div><h2>Environments</h2><p>Run the active coding-agent runtime on this {localPlatformLabel?localPlatformLabel+" ":""}host, inside WSL when available, or on an SSH machine.</p></div><button onClick={()=>refresh({reportErrors:true})} disabled={!!busy}><RefreshCw size={13}/> Refresh</button></div>
+    {message.text&&(message.tone==="error"?<div className="inline-error" role="alert">{message.text}</div>:<div className="inline-status" role="status" aria-live="polite">{message.text}</div>)}
     <div className="environment-grid">
       <section className="capability-card">
         <div className="capability-card-head"><span><Laptop2 size={15}/><strong>Configured environments</strong></span><em title={"Local machine and "+data.profiles.length+" saved"}>{data.profiles.length+1}</em></div>
         <div className="environment-list">
-          <div><div><strong>Local machine</strong><span>{localPlatformLabel.toUpperCase()} · {window.trebellDesktop?"Trebell desktop host":"Trebell host"}</span></div><div>{!data.activeEnvironmentId?<em className="ok">Active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
+          <div><div><strong>Local machine</strong><span>{localPlatformLabel?localPlatformLabel.toUpperCase()+" · ":""}{window.trebellDesktop?"Trebell desktop host":"Trebell host"}</span></div><div>{!data.activeEnvironmentId?<em className="ok">Active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
           {data.profiles.map(profile=>{const enabled=profile.enabled!==false;return <div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}{enabled?"":" · switched off"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">Agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy||!enabled}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy||!enabled}>Test</button><button onClick={()=>setEnabled(profile.id,!enabled)} disabled={!!busy}>{enabled?"Switch off":"Switch on"}</button><button className="danger" aria-label={"Remove "+profile.name} onClick={()=>remove(profile.id)} disabled={!!busy||data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>})}</div>
-        {!data.profiles.length&&<p>No saved remote environments. The local {localPlatformLabel} agent is active by default.</p>}
+        {!data.profiles.length&&<p>No saved remote environments. The local {localPlatformLabel?localPlatformLabel+" ":""}agent is active by default.</p>}
       </section>
       <section className="capability-card environment-create">
         <div className="capability-card-head"><span><Plus size={15}/><strong>Add environment</strong></span></div>
@@ -91,8 +96,13 @@ export default function EnvironmentsPage(){
         <div className="capability-card-head"><span><Server size={15}/><strong>Host capabilities</strong></span></div>
         <div className="capability-list">
           <div><div><strong>Local</strong><span>This machine</span></div><em className="ok">Ready</em></div>
-          <div><div><strong>WSL</strong><span>{data.capabilities?.wsl?.distros?.join(", ")||data.capabilities?.wsl?.error||"No distributions detected"}</span></div><em className={data.capabilities?.wsl?.available?"ok":""}>{data.capabilities?.wsl?.available?"Ready":"Unavailable"}</em></div>
-          <div><div><strong>SSH</strong><span>{data.capabilities?.ssh?.version||data.capabilities?.ssh?.error||"OpenSSH client"}</span></div><em className={data.capabilities?.ssh?.available?"ok":""}>{data.capabilities?.ssh?.available?"Ready":"Unavailable"}</em></div>
+          {discovery==="done"?<>
+            <div><div><strong>WSL</strong><span>{data.capabilities?.wsl?.distros?.join(", ")||data.capabilities?.wsl?.error||"No distributions detected"}</span></div><em className={data.capabilities?.wsl?.available?"ok":""}>{data.capabilities?.wsl?.available?"Ready":"Unavailable"}</em></div>
+            <div><div><strong>SSH</strong><span>{data.capabilities?.ssh?.version||data.capabilities?.ssh?.error||"OpenSSH client"}</span></div><em className={data.capabilities?.ssh?.available?"ok":""}>{data.capabilities?.ssh?.available?"Ready":"Unavailable"}</em></div>
+          </>:<>
+            <div data-testid="host-discovery-pending"><div><strong>WSL</strong><span>{discovery==="checking"?"Checking for distributions…":"Not checked: host discovery failed"}</span></div><em>{discovery==="checking"?"Checking":"Unknown"}</em></div>
+            <div><div><strong>SSH</strong><span>{discovery==="checking"?"Checking for an OpenSSH client…":"Not checked: host discovery failed"}</span></div><em>{discovery==="checking"?"Checking":"Unknown"}</em></div>
+          </>}
         </div>
       </section>
     </div>

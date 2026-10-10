@@ -61,7 +61,7 @@ test("manual diagnostics refresh failures preserve the last valid runtime log",a
   await expect(refresh).toBeEnabled();
   const metrics=await page.locator(".settings-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"settings-diagnostics-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("Codex runtime diagnostics show unavailable state instead of assuming readiness",async({page,request})=>{
@@ -100,7 +100,11 @@ test("storage cleanup retention treats zero, negative and too-large days like th
   await expect(attachments).toHaveAttribute("placeholder","Off");
   await terminals.fill("-5");await terminals.press("Tab");
   await expect(terminals).toHaveValue("");
-  await page.locator(".storage-settings").screenshot({path:auditDir+"settings-storage-retention-zero-is-off.png"});
+  // Small caches show their size in a unit that keeps it readable, never "0.0 MB" for a cache that holds files.
+  const storageSummary=page.locator(".storage-settings .provider-note").filter({hasText:"cached attachment"});
+  await expect(storageSummary).not.toContainText("0.0 MB");
+  await expect(storageSummary).toContainText(/cached attachments? · \d+(\.\d)? (B|KB|MB|GB)/);
+  await page.locator(".storage-settings").screenshot({animations:"disabled",path:auditDir+"settings-storage-retention-zero-is-off.png"});
   expect((await savedSettings(request)).storageCleanup).toEqual({attachmentsAfterDays:null,terminalHistoryAfterDays:null});
   // Real day counts keep saving, and the server's 3650-day ceiling shows in the field.
   await attachments.fill("14");await attachments.press("Tab");
@@ -117,7 +121,7 @@ test("storage cleanup retention treats zero, negative and too-large days like th
   await expect(page.locator(".settings-action-error")).toContainText("Deliberate retention save failure");
   await expect(attachments).toHaveValue("14");
   expect((await savedSettings(request)).storageCleanup.attachmentsAfterDays).toBe(14);
-  await page.locator(".storage-settings").screenshot({path:auditDir+"settings-storage-retention-failed-save-keeps-value.png"});
+  await page.locator(".storage-settings").screenshot({animations:"disabled",path:auditDir+"settings-storage-retention-failed-save-keeps-value.png"});
 });
 
 test("failed saves from inline settings controls stay in the alert without unhandled rejections",async({page,request})=>{
@@ -145,7 +149,7 @@ test("failed saves from inline settings controls stay in the alert without unhan
   await expect(alert).toContainText("Deliberate inline save failure");
   await expect(page.getByLabel("Model ID")).toHaveValue("fixture-model-x");
   await page.waitForTimeout(300);
-  await page.screenshot({path:auditDir+"settings-inline-save-failure-no-unhandled-rejection.png"});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-inline-save-failure-no-unhandled-rejection.png"});
   expect(pageErrors).toEqual([]);
 });
 
@@ -163,7 +167,7 @@ test("the panel animation slider follows a drag and saves once with the final va
   const dragged=Number(await slider.inputValue());
   expect(dragged).toBeGreaterThan(0);
   await expect(label).toContainText(dragged+" ms");
-  await page.locator(".theme-settings").screenshot({path:auditDir+"settings-panel-animation-mid-drag.png"});
+  await page.locator(".theme-settings").screenshot({animations:"disabled",path:auditDir+"settings-panel-animation-mid-drag.png"});
   expect(saves).toEqual([]);
   await page.mouse.up();
   await expect.poll(()=>saves.length).toBe(1);
@@ -178,7 +182,7 @@ test("the panel animation slider follows a drag and saves once with the final va
   await page.waitForTimeout(600);
   expect(saves).toEqual([dragged,dragged-50]);
   await expect(slider).toHaveValue(String(dragged-50));
-  await page.locator(".theme-settings").screenshot({path:auditDir+"settings-panel-animation-saved-once.png"});
+  await page.locator(".theme-settings").screenshot({animations:"disabled",path:auditDir+"settings-panel-animation-saved-once.png"});
   // Leaving Settings before the slider settles still saves the last value.
   await slider.press("ArrowRight");await slider.press("ArrowRight");await slider.press("ArrowRight");await slider.press("ArrowRight");
   await page.getByRole("button",{name:"History",exact:true}).click();
@@ -199,14 +203,14 @@ test("deleting a custom theme offers the app's undo toast and Undo puts it back"
   await expect(themes.getByRole("button",{name:"Warm paper",exact:true})).toHaveCount(0);
   await expect(page.locator(".theme-settings")).not.toContainText("Theme removed.");
   await expect.poll(async()=>(await savedSettings(request)).customThemes.map(item=>item.id)).toEqual([slate.id]);
-  await page.screenshot({path:auditDir+"settings-theme-delete-undo-toast.png"});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-theme-delete-undo-toast.png"});
   await toast.getByRole("button",{name:"Undo",exact:true}).click();
   await expect(toast).toHaveCount(0);
   await expect(themes.getByRole("button",{name:"Warm paper",exact:true})).toHaveClass(/active/);
   await expect(themes.getByRole("button")).toHaveText(["Trebell","Midnight","Black","Warm paper","Slate night"]);
   await expect.poll(async()=>{const saved=await savedSettings(request);return {ids:saved.customThemes.map(item=>item.id),appearance:saved.appearance}}).toEqual({ids:[warm.id,slate.id],appearance:warm.id});
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.customTheme)).toBe("true");
-  await page.screenshot({path:auditDir+"settings-theme-delete-undone.png"});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-theme-delete-undone.png"});
 });
 
 test("Undo of a theme delete keeps a theme chosen after the delete",async({page,request})=>{
@@ -226,7 +230,77 @@ test("Undo of a theme delete keeps a theme chosen after the delete",async({page,
   await expect(themes.getByRole("button",{name:"Midnight",exact:true})).toHaveClass(/active/);
   await expect(themes.getByRole("button",{name:"Warm paper",exact:true})).not.toHaveClass(/active/);
   await expect.poll(async()=>{const saved=await savedSettings(request);return {ids:saved.customThemes.map(item=>item.id),appearance:saved.appearance}}).toEqual({ids:[warm.id],appearance:"midnight"});
-  await page.screenshot({path:auditDir+"settings-theme-undo-keeps-later-choice.png"});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-theme-undo-keeps-later-choice.png"});
+});
+
+// Contrast of a token or of an element as the page paints it: colors come from getComputedStyle (rgb() or, for
+// color-mix() tokens, color(srgb ...)), and an element's backdrop is its translucent backgrounds laid over the first opaque one.
+const contrastScript=()=>{
+  const parse=value=>{const numbers=(String(value).match(/[\d.]+/g)||[]).map(Number);const srgb=String(value).startsWith("color(");return {rgb:numbers.slice(0,3).map(channel=>srgb?channel*255:channel),alpha:numbers.length>3?numbers[3]:1}};
+  const over=(top,bottom)=>top.rgb.map((channel,index)=>channel*top.alpha+bottom[index]*(1-top.alpha));
+  const luminance=rgb=>{const [r,g,b]=rgb.map(channel=>{const c=channel/255;return c<=.03928?c/12.92:Math.pow((c+.055)/1.055,2.4)});return .2126*r+.7152*g+.0722*b};
+  const ratio=(a,b)=>{const x=luminance(a)+.05,y=luminance(b)+.05;return Math.round((x>y?x/y:y/x)*100)/100};
+  const backdrop=element=>{const layers=[];for(let node=element;node;node=node.parentElement){const layer=parse(getComputedStyle(node).backgroundColor);if(layer.alpha>0)layers.push(layer);if(layer.alpha>=1)break}let fill=[255,255,255];for(const layer of layers.reverse())fill=over(layer,fill);return fill};
+  const probe=document.createElement("div");document.body.append(probe);
+  const token=name=>{probe.style.color=`var(${name})`;return parse(getComputedStyle(probe).color).rgb};
+  window.__contrast={
+    tokens(texts,fills){const result={};for(const text of texts)result[text]=Math.min(...fills.map(fill=>ratio(token(text),token(fill))));return result},
+    painted(element,pseudo){const fill=backdrop(element);return ratio(over(parse(getComputedStyle(element,pseudo).color),fill),fill)},
+  };
+};
+async function expectReadablePalette(page,label){
+  await page.evaluate(contrastScript);
+  const lowest=await page.evaluate(()=>window.__contrast.tokens(["--tx0","--tx1","--tx2","--tx3","--ac","--ok","--err","--warn"],["--bg0","--bg1","--bg2","--bg3"]));
+  const floors={"--tx0":7,"--tx1":4.5,"--tx2":4.5,"--tx3":3.8,"--ac":3,"--ok":4.5,"--err":4.5,"--warn":4.5};
+  for(const [name,floor] of Object.entries(floors))expect(lowest[name],`${label}: ${name} is ${lowest[name]}:1 on its lightest fill`).toBeGreaterThanOrEqual(floor);
+  // The tiers still read as tiers: primary over secondary over tertiary.
+  expect(lowest["--tx0"]).toBeGreaterThan(lowest["--tx1"]);expect(lowest["--tx1"]).toBeGreaterThan(lowest["--tx2"]);expect(lowest["--tx2"]).toBeGreaterThan(lowest["--tx3"]);
+  return lowest;
+}
+
+test("a custom theme stays readable in the other mode: muted text, the accent and status colors all keep their contrast",async({page,request})=>{
+  const warm={id:"custom-contrast-warm",name:"Warm paper",appearance:"light",canvas:"#f4efe6",accent:"#b0582f",colors:{}};
+  const darkPlus={id:"custom-contrast-dark-plus",name:"Dark Plus",appearance:"dark",canvas:"#1e1e1e",accent:"#007fd4",colors:{foreground:"#d4d4d4",error:"#f14c4c",warning:"#cca700",success:"#73c991"}};
+  await openSettings(page,request,"Theme Contrast Workspace",{customThemes:[warm,darkPlus],appearance:warm.id,environmentThemeSelections:{}});
+  await page.getByRole("button",{name:/Appearance/}).click();
+  const themes=page.getByRole("group",{name:"Theme"}),modes=page.getByRole("group",{name:"Mode"});
+  await expect(themes.getByRole("button",{name:"Warm paper",exact:true})).toHaveClass(/active/);
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("dark");
+  // The light theme in Dark mode: a dark canvas, not the mid-gray one it used to get, under readable description text.
+  const canvas=await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--theme-canvas").trim());
+  expect(canvas).toBe("#272625");
+  await expectReadablePalette(page,"Warm paper in Dark mode");
+  const description=page.locator(".theme-settings>p").filter({hasText:"Appearance controls light/dark behavior"});
+  await expect(description).toContainText("Appearance controls light/dark behavior");
+  expect(await description.evaluate(element=>window.__contrast.painted(element))).toBeGreaterThanOrEqual(4.5);
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-theme-light-custom-in-dark-mode.png"});
+  // The same theme in its own Light mode keeps its canvas and accent.
+  await modes.getByRole("button",{name:"light",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
+  expect(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--theme-canvas").trim())).toBe("#f4efe6");
+  expect(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--purple").trim())).toBe("#b0582f");
+  await expectReadablePalette(page,"Warm paper in Light mode");
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-theme-light-custom-in-light-mode.png"});
+  // A dark theme in Light mode: its light foreground is darkened until it reads instead of vanishing into the light canvas.
+  await themes.getByRole("button",{name:"Dark Plus",exact:true}).click();
+  await expect(themes.getByRole("button",{name:"Dark Plus",exact:true})).toHaveClass(/active/);
+  await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--theme-canvas").trim())).toBe("#e9e9e9");
+  await expectReadablePalette(page,"Dark Plus in Light mode");
+  expect(await description.evaluate(element=>window.__contrast.painted(element))).toBeGreaterThanOrEqual(4.5);
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-theme-dark-custom-in-light-mode.png"});
+  // Back in the chat with the light theme in Dark mode: the composer placeholder and header breadcrumb (tertiary text) read.
+  await themes.getByRole("button",{name:"Warm paper",exact:true}).click();
+  await modes.getByRole("button",{name:"dark",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--theme-canvas").trim())).toBe("#272625");
+  await expect.poll(async()=>{const saved=await savedSettings(request);return {appearance:saved.appearance,mode:saved.appearanceMode}}).toEqual({appearance:warm.id,mode:"dark"});
+  await page.getByRole("button",{name:"New thread",exact:true}).click();
+  const composer=page.getByTestId("composer");
+  await expect(composer).toBeVisible();
+  expect(await composer.evaluate(element=>window.__contrast.painted(element,"::placeholder"))).toBeGreaterThanOrEqual(3.8);
+  const breadcrumb=page.locator(".workspace-header .workspace-breadcrumb").first();
+  await expect(breadcrumb).toBeVisible();
+  expect(await breadcrumb.evaluate(element=>window.__contrast.painted(element))).toBeGreaterThanOrEqual(3.8);
+  await page.screenshot({animations:"disabled",path:auditDir+"chat-light-custom-theme-in-dark-mode.png"});
 });
 
 test("a failed theme Undo is reported by the app's error toast once Settings is closed, and by the Settings alert while open",async({page,request})=>{
@@ -247,7 +321,7 @@ test("a failed theme Undo is reported by the app's error toast once Settings is 
   await toast.getByRole("button",{name:"Undo",exact:true}).click();
   await expect(appError).toContainText("Undo failed: Deliberate theme undo failure");
   expect((await savedSettings(request)).customThemes).toEqual([]);
-  await page.screenshot({path:auditDir+"settings-theme-undo-failed-after-leaving.png"});
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-theme-undo-failed-after-leaving.png"});
   await page.unroute(/\/api\/settings$/);
   // Undo on Settings: the Settings alert reports it, without a second app toast.
   await openSettings(page,request,"Theme Undo Failure Workspace",{customThemes:[warm],appearance:warm.id,environmentThemeSelections:{}});
@@ -276,7 +350,7 @@ test("a theme note clears once another theme is chosen",async({page,request})=>{
   await page.locator(".environment-theme-settings").getByRole("button",{name:"Reliability Published",exact:true}).click();
   await expect(page.locator(".environment-theme-settings").getByRole("button",{name:"Reliability Published",exact:true})).toHaveClass(/active/);
   await expect(card).not.toContainText("Theme saved and applied.");
-  await page.locator(".settings-grid").screenshot({path:auditDir+"settings-theme-note-cleared.png"});
+  await page.locator(".settings-grid").screenshot({animations:"disabled",path:auditDir+"settings-theme-note-cleared.png"});
 });
 
 test("a failed release check in General can be retried on its own",async({page,request})=>{
@@ -291,13 +365,13 @@ test("a failed release check in General can be retried on its own",async({page,r
   await expect(updates).toContainText("GitHub release check failed (403)");
   const retry=updates.getByRole("button",{name:"Check again",exact:true});
   await expect(retry).toBeVisible();
-  await updates.screenshot({path:auditDir+"settings-release-check-failed-retry.png"});
+  await updates.screenshot({animations:"disabled",path:auditDir+"settings-release-check-failed-retry.png"});
   await retry.click();
   await expect(updates).toContainText("Latest: 1.6.1");
   await expect(retry).toHaveCount(0);
   expect(releaseChecks).toBe(2);
   expect(otherChecks).toEqual([]);
-  await updates.screenshot({path:auditDir+"settings-release-check-retried.png"});
+  await updates.screenshot({animations:"disabled",path:auditDir+"settings-release-check-retried.png"});
 });
 
 test("the Runtime card refresh does not report a failing release check as a diagnostics failure",async({page,request})=>{
@@ -314,5 +388,5 @@ test("the Runtime card refresh does not report a failing release check as a diag
   await page.waitForTimeout(300);
   await expect(page.locator(".settings-action-error")).toHaveCount(0);
   expect(releaseChecks).toBe(checksBefore);
-  await runtimeCard.screenshot({path:auditDir+"settings-runtime-card-refresh-ignores-release-check.png"});
+  await runtimeCard.screenshot({animations:"disabled",path:auditDir+"settings-runtime-card-refresh-ignores-release-check.png"});
 });

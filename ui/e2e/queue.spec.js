@@ -103,7 +103,7 @@ test("Codex follow-ups use the native persistent queue",async({page})=>{
     await expect(page.getByTestId("app-action-error")).toContainText("Could not send queued follow-up: fixture steer rejection · Queue was restored, but refresh failed: fixture queue refresh rejection.");
     await expect(refreshRecovery).toBeVisible();
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"chat-native-queue-refresh-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-native-queue-refresh-error-1280x800.png",fullPage:true});
     await refreshRecovery.getByRole("button",{name:"Send now"}).click();
     await expect(refreshRecovery).toHaveCount(0);
     expect(queue.some(entry=>JSON.stringify(entry.input).includes("Keep backend queue identity fresh"))).toBe(false);
@@ -115,19 +115,19 @@ test("Codex follow-ups use the native persistent queue",async({page})=>{
     await expect(page.locator(".queued-message")).toHaveCount(2);
     await expect(page.locator(".queued-message").filter({hasText:"Recover me if send-now restore fails"})).toHaveCount(0);
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"chat-native-queue-restore-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-native-queue-restore-error-1280x800.png",fullPage:true});
     await composer.fill("");
-    await page.screenshot({path:auditDir+"chat-native-queue-1600x980.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-native-queue-1600x980.png",fullPage:true});
     await page.setViewportSize({width:1280,height:800});
     const queueCardOverflow=await page.locator(".queued-message").nth(0).evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(queueCardOverflow.scroll).toBeLessThanOrEqual(queueCardOverflow.client+1);
-    await page.screenshot({path:auditDir+"chat-native-queue-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-native-queue-1280x800.png",fullPage:true});
     await page.locator(".queued-message").nth(0).getByRole("button",{name:"Send now"}).click();
     await expect(page.locator(".queued-message")).toHaveCount(1);await expect.poll(()=>calls.some(call=>call.method==="turn/steer")).toBe(true);
 
     await page.reload();await page.getByRole("button",{name:/Codex queue fixture/}).click();await expect(page.locator(".queued-message")).toHaveCount(1);await expect(page.locator(".queued-message")).toContainText("First queued follow-up");
     await page.locator(".queued-message").getByRole("button",{name:"Send now"}).click();await expect(page.locator(".queued-message")).toHaveCount(0);
     await expect.poll(()=>calls.some(call=>call.method==="thread/queue/start")).toBe(true);await expect(page.locator(".user-bubble")).toContainText("First queued follow-up");
-    await page.screenshot({path:auditDir+"chat-native-queue-started-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-native-queue-started-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });
 
@@ -194,7 +194,7 @@ test("Codex project follow-ups persist in Trebell and rebuild repository context
     await expect(composer).toHaveValue("Do not lose this queued draft");
     await expect(page.locator(".tool-event.kind-error").filter({hasText:"Could not queue follow-up"})).toContainText("Deliberate Trebell queue persistence failure");
     await expect(page.locator(".queued-message")).toHaveCount(0);
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-project-queue-persistence-error-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"chat-project-queue-persistence-error-1280x800.png",fullPage:true});
     failQueuePersist=false;
     await composer.fill("Queued project follow-up");await page.getByTestId("send").click();
     const queued=page.locator(".queued-message").filter({hasText:"Queued project follow-up"});await expect(queued).toBeVisible();
@@ -205,7 +205,7 @@ test("Codex project follow-ups persist in Trebell and rebuild repository context
     const restoredQueue=page.locator(".queued-message").filter({hasText:"Queued project follow-up"});await expect(restoredQueue).toBeVisible();
     await page.waitForTimeout(350);expect(calls.filter(call=>call.method==="turn/start").length).toBe(1);
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-project-queue-restored-running-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"chat-project-queue-restored-running-1280x800.png",fullPage:true});
     thread.status={type:"idle"};
     notify("turn/completed",{threadId:thread.id,turn:{id:"project-turn-1",status:"completed"}});
     await expect.poll(()=>calls.filter(call=>call.method==="turn/start").length).toBe(2);
@@ -214,6 +214,8 @@ test("Codex project follow-ups persist in Trebell and rebuild repository context
     expect(secondTurn.params.additionalContext?.["trebell.repo_evidence"]?.value).toContain("FRESH_CONTEXT_2");
     await expect(restoredQueue).toHaveCount(0);await expect.poll(()=>meta.trebellQueue?.length||0).toBe(0);
     expect(calls.some(call=>call.method==="thread/queue/start")).toBe(false);
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-project-persistent-context-queue-1280x800.png",fullPage:true});
+    // A one-file packet reads "1 file".
+    await expect(page.locator(".tool-event").filter({hasText:"Trebell context ·"}).last()).toContainText("Trebell context · 1 file · ~32 tokens");
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"chat-project-persistent-context-queue-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

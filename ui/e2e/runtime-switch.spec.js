@@ -163,7 +163,7 @@ test("a harness switch clears the old model, blocks sends until the new catalog 
     expect(relay.calls("thread/start","turn/start")).toEqual([]);
     expect(server.counts.direct).toBe(0);
     await expect(composer).toHaveValue(draft);
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"runtime-switch-loading-models-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"runtime-switch-loading-models-1280x800.png",fullPage:true});
 
     releaseCatalog();
     await expect(picker).toContainText("OpenCode Fixture Fast",{timeout:15_000});
@@ -343,7 +343,7 @@ test("an empty harness model catalog disables Send and tells the user to check S
     await expect(composer).toHaveValue(draft);
     const modelReads=server.counts.models;await page.waitForTimeout(1500);
     expect(server.counts.models-modelReads,"an empty catalog must not be re-requested in a loop").toBeLessThanOrEqual(1);
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"runtime-empty-catalog-send-disabled-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"runtime-empty-catalog-send-disabled-1280x800.png",fullPage:true});
   }finally{await close()}
 });
 
@@ -367,7 +367,7 @@ test("a failed provider model catalog disables Send, shows the provider error an
     await expect(composer).toHaveValue(draft);
     const modelReads=server.counts.models;await page.waitForTimeout(1500);
     expect(server.counts.models-modelReads,"a failed catalog must not be re-requested in a loop").toBeLessThanOrEqual(1);
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"runtime-provider-catalog-error-send-disabled-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"runtime-provider-catalog-error-send-disabled-1280x800.png",fullPage:true});
     await configure.click();
     await expect(page.getByTestId("provider-settings-card")).toBeVisible();
   }finally{await close()}
@@ -406,7 +406,7 @@ test("re-opening Settings shows the cached harness list immediately while it ref
     await expect(refreshing).toBeVisible();
     await expect(list).toHaveAttribute("aria-busy","true");
     expect(server.counts.runtimeReadsDone).toBe(doneBefore);
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"settings-cached-harness-list-refreshing-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"settings-cached-harness-list-refreshing-1280x800.png",fullPage:true});
 
     releaseReads();
     await expect(opencode).toContainText("1.1.0-refreshed");

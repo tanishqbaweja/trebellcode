@@ -53,5 +53,5 @@ test("large project lists paint before bounded enrichment finishes",async({page}
   await page.getByRole("button",{name:"Show 24 more"}).click();
   await expect(page.locator(".project-card")).toHaveCount(48);
   await page.locator(".secondary-page").evaluate(node=>{node.scrollTop=0});
-  await page.screenshot({path:"visual-audit/projects-bounded-enrichment-dark-1280x800.png"});
+  await page.screenshot({animations:"disabled",path:"visual-audit/projects-bounded-enrichment-dark-1280x800.png"});
 });

@@ -55,8 +55,8 @@ test("changing models during a running Codex turn updates the live turn",async({
     expect(calls.find(call=>call.method==="experimentalFeature/list")?.params).toEqual({limit:200,threadId:thread.id});
     const update=calls.find(call=>call.method==="turn/settings/update");expect(update?.params).toEqual({threadId:thread.id,turnId:"turn-live",model:"model-b"});
     await expect(page.getByText("Running turn switched to Model B",{exact:true})).toBeVisible();
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-live-model-switch-1280x800.png",fullPage:true});
-    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"chat-live-model-switch-light-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"chat-live-model-switch-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"chat-live-model-switch-light-1280x800.png",fullPage:true});
     const bounds=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});featureEnabled=false;
     notificationSocket.send(JSON.stringify({method:"turn/completed",params:{threadId:thread.id,turn:{id:"turn-live",status:"completed",completedAt:Date.now()/1000}}}));

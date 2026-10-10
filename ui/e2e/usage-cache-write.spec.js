@@ -23,5 +23,5 @@ test("Usage page exposes cache reads and cache writes from recorded token teleme
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".usage-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"usage-cache-write-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"usage-cache-write-1280x800.png",fullPage:true});
 });

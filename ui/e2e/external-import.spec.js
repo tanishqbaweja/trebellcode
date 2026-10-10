@@ -72,8 +72,8 @@ test("external agent imports use native progress and completion notifications",a
     await expect(card).toContainText("Previous native imports · 2");
     await card.getByText("Previous native imports · 2",{exact:true}).click();await expect(card).toContainText("1 imported · 1 failed");
     await card.getByText("Imported connector candidates · 1",{exact:true}).click();await expect(card).toContainText("linear");await expect(card).toContainText("3 imported sessions");
-    await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"tools-native-import-history-1280x800.png",fullPage:false});
-    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"tools-native-import-history-light-1280x800.png",fullPage:false});
+    await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"tools-native-import-history-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"tools-native-import-history-light-1280x800.png",fullPage:false});
     const bounds=await card.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

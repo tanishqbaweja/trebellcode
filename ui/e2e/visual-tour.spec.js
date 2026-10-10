@@ -66,7 +66,7 @@ async function capture(page, name, testInfo) {
   await expect(page.locator(".tb-skeleton, [aria-busy=true]").filter({ visible: true })).toHaveCount(0, { timeout: 15_000 });
   await expect(page.getByText(/checking…|^\s*Loading\b/i).filter({ visible: true })).toHaveCount(0, { timeout: 15_000 });
   await page.waitForTimeout(250);
-  await page.screenshot({ path: outDir + name + ".png" });
+  await page.screenshot({animations:"disabled", path: outDir + name + ".png" });
   const issues = await audit(page);
   report.push({ name, issues });
   if (issues.length) testInfo.annotations.push({ type: "layout", description: `${name}: ${issues.join("; ")}` });
@@ -202,7 +202,7 @@ test("tour light start paints light from the first frame", async ({ page, reques
   await page.reload({ waitUntil: "domcontentloaded" });
   const first = await page.evaluate(() => document.documentElement.dataset.mode || "");
   await page.waitForTimeout(300);
-  await page.screenshot({ path: outDir + "light-1280x800-00-startup-300ms.png" });
+  await page.screenshot({animations:"disabled", path: outDir + "light-1280x800-00-startup-300ms.png" });
   const settled = await page.evaluate(() => ({ mode: document.documentElement.dataset.mode, background: getComputedStyle(document.body).backgroundColor }));
   expect(first).toBe("light");
   expect(settled.mode).toBe("light");

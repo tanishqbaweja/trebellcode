@@ -1,19 +1,13 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { Blocks, Brain, CheckCircle2, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { api } from "../api.js";
+import { formatBytes } from "../format-bytes.js";
 import { allowedWindowsSetupModes, windowsSandboxStatus, worldWritableWarningText } from "../windows-sandbox.js";
 
 function Section({title,icon:Icon,count,children}){
   return <section className="capability-card"><div className="capability-card-head"><span><Icon size={15}/><strong>{title}</strong></span>{Number.isFinite(count)&&<em>{count}</em>}</div>{children}</section>;
 }
 function ErrorLine({value}){return value?<p className="capability-error">{value}</p>:null}
-function formatBytes(value){
-  const bytes=Number(value);if(!Number.isFinite(bytes)||bytes<0)return "Unavailable";
-  if(bytes<1024)return bytes+" B";
-  const units=["KB","MB","GB","TB"];let scaled=bytes,index=-1;
-  do{scaled/=1024;index++}while(scaled>=1024&&index<units.length-1);
-  return (scaled>=100?Math.round(scaled):scaled.toFixed(1))+" "+units[index];
-}
 function titleCaseWords(value){
   return String(value||"").trim().split(/[-_\s]+/).filter(Boolean).map(part=>part.slice(0,1).toUpperCase()+part.slice(1)).join(" ");
 }

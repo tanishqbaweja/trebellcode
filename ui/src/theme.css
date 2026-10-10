@@ -110,7 +110,9 @@
   --bg4:color-mix(in srgb,var(--panel2) 88%,var(--theme-foreground));
   --line2:color-mix(in srgb,var(--line) 78%,var(--theme-foreground));
   --tx0:var(--theme-foreground);
-  --tx1:color-mix(in srgb,var(--theme-foreground) 80%,var(--theme-canvas));
+  /* Between the foreground and --muted (about 80% foreground over the canvas when --muted is unadjusted), so it stays above
+     --muted after themeCssVariables() raises --muted to its contrast floor. */
+  --tx1:color-mix(in srgb,var(--theme-foreground) 60%,var(--muted));
   --tx2:var(--muted);
   --tx3:var(--muted2);
   --ac:var(--purple); --ac2:var(--purple2);
@@ -131,8 +133,6 @@
 }
 :root:root[data-custom-theme="true"][data-mode="light"]{
   color-scheme:light;
-  /* Theme success colors default to a bright green; darken it toward the foreground so status text stays legible. */
-  --ok:color-mix(in srgb,var(--green) 55%,var(--theme-foreground)); --dadd:var(--ok);
   --glow-opacity:.45;
   --grain:.016;
   --shadow:0 8px 28px rgba(25,25,50,.10);

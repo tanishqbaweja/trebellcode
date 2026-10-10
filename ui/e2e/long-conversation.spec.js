@@ -109,7 +109,7 @@ test("long conversations keep only nearby message chunks mounted",async({page})=
     expect(await rows.count()).toBeLessThan(180);
 
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"long-conversation-virtualized-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"long-conversation-virtualized-dark-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -140,7 +140,7 @@ test("the newest message stays in view when the view shrinks, and a view scrolle
     await expect(page.getByTestId("drawer")).toBeVisible();
     await expect.poll(distanceFromEnd).toBeLessThanOrEqual(1);
     await expect.poll(newestInView).toBe(true);
-    await page.screenshot({path:auditDir+"conversation-follows-end-terminal-open-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"conversation-follows-end-terminal-open-dark-1280x800.png",fullPage:true});
 
     await page.setViewportSize({width:1280,height:700});
     await expect.poll(distanceFromEnd).toBeLessThanOrEqual(1);
@@ -166,7 +166,7 @@ test("the newest message stays in view when the view shrinks, and a view scrolle
     await page.waitForTimeout(300);
     expect(await firstRowInView()).toEqual(reading);
     expect(await distanceFromEnd()).toBeGreaterThan(400);
-    await page.screenshot({path:auditDir+"conversation-keeps-place-terminal-open-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"conversation-keeps-place-terminal-open-dark-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
@@ -206,6 +206,6 @@ test("loading earlier virtualized history preserves the visible anchor",async({p
     expect(afterScrollTop).toBeGreaterThan(beforeScrollTop+500);
     expect(await rows.count()).toBeLessThan(180);
 
-    await page.screenshot({path:auditDir+"long-conversation-prepend-preserved-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"long-conversation-prepend-preserved-dark-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });

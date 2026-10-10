@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { baseProjectRecord, enrichProjectRecords, mapWithConcurrency, summarizeProjectRefreshErrors } from "../ui/src/project-enrichment.js";
+import { baseProjectRecord, enrichProjectRecords, mapWithConcurrency, projectGitLabel, summarizeProjectRefreshErrors } from "../ui/src/project-enrichment.js";
+
+test("a project card names the branch, a detached HEAD, or a folder outside Git, and nothing before Git answers",()=>{
+  assert.equal(projectGitLabel({isGit:true,branch:"main"}),"main");
+  assert.equal(projectGitLabel({isGit:true,branch:""}),"detached HEAD");
+  assert.equal(projectGitLabel({isGit:true,branch:null}),"detached HEAD");
+  assert.equal(projectGitLabel({isGit:false,branch:null}),"not a Git checkout");
+  assert.equal(projectGitLabel(null),"");
+  assert.equal(projectGitLabel(undefined),"");
+});
 
 test("bounded project enrichment never exceeds the requested worker concurrency",async()=>{
   let active=0,maxActive=0;

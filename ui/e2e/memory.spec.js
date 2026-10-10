@@ -62,7 +62,7 @@ test("Codex memory status and controls use native app-server RPCs",async({page})
     await expect.poll(()=>calls.some(call=>call.method==="memory/reset")).toBe(true);
     expect(calls.find(call=>call.method==="memory/status")?.params).toEqual({minConsolidatedThreads:20});
     expect(Object.prototype.hasOwnProperty.call(calls.find(call=>call.method==="memory/reset")||{},"params")).toBe(false);
-    await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"tools-memory-controls-1280x800.png",fullPage:false});
-    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"tools-memory-controls-light-1280x800.png",fullPage:false});
+    await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"tools-memory-controls-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"tools-memory-controls-light-1280x800.png",fullPage:false});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

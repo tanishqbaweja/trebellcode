@@ -128,7 +128,7 @@ function ContextExplorer({root,environmentId=null}){
     </button>)}</div>}
     {view==="architecture"&&viewData&&<div className="context-explorer-view" data-testid="context-architecture-view">
       <div><strong>Architecture map</strong><span>{viewData.indexedFiles??0} indexed · {viewData.graphEdges??0} relations</span></div>
-      {(viewData.data||[]).slice(0,12).map(item=><button type="button" key={item.path} onClick={()=>inspect(item.path)}><span><b>{item.path}</b><small>{item.incoming||0} incoming · {item.outgoing||0} outgoing · {(item.definitions||[]).length} definitions</small></span><em>{Number(item.centrality||0).toFixed(3)}</em></button>)}
+      {(viewData.data||[]).slice(0,12).map(item=><button type="button" key={item.path} onClick={()=>inspect(item.path)}><span><b>{item.path}</b><small>{item.incoming||0} incoming · {item.outgoing||0} outgoing · {(item.definitions||[]).length} definition{(item.definitions||[]).length===1?"":"s"}</small></span><em>{Number(item.centrality||0).toFixed(3)}</em></button>)}
       {!(viewData.data||[]).length&&<p className="context-explorer-empty">No indexed source files are available for the architecture map.</p>}
     </div>}
     {view==="commands"&&viewData&&<div className="context-explorer-view" data-testid="context-command-view">
@@ -150,7 +150,7 @@ function ContextExplorer({root,environmentId=null}){
       <pre>{String(preview.content??"").split("\n").map((text,index)=><span key={index} className={preview.startLine+index===preview.line?"match":undefined}><i>{preview.startLine+index}</i>{text}</span>)}</pre>
     </div>}
     {relations&&<div className="context-explorer-relations" data-testid="context-file-relations">
-      <div><strong>{relations.path}</strong><span>{relations.definitions?.length||0} definitions · {relations.importers?.length||0} importers</span></div>
+      <div><strong>{relations.path}</strong><span>{relations.definitions?.length||0} definition{(relations.definitions?.length||0)===1?"":"s"} · {relations.importers?.length||0} importer{(relations.importers?.length||0)===1?"":"s"}</span></div>
       <p className="context-explorer-relation-actions"><button type="button" onClick={loadDiagnostics} disabled={Boolean(busy)}>{busy==="diagnostics"?"Checking…":diagnostics?"Refresh diagnostics":"Diagnostics"}</button>{diagnostics&&<span>{diagnostics.semantic?`${diagnostics.semanticEngine||"semantic"} + ${diagnostics.engine||"parser"}`:(diagnostics.engine||"parser")}</span>}</p>
       {(relations.relatedTests||[]).length>0&&<p><b>Related tests</b>{relations.relatedTests.map(path=><button type="button" key={path} onClick={()=>inspect(path)}>{path}</button>)}</p>}
       {relationPaths.length>0&&<p><b>Related files</b>{relationPaths.map(path=><button type="button" key={path} onClick={()=>inspect(path)}>{path}</button>)}</p>}

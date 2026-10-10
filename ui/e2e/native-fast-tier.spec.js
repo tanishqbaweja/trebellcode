@@ -37,5 +37,5 @@ test("Trebell Native exposes and persists OpenAI Fast independently from Max thi
   }).toBe("fast");
   await expect(thinking).toHaveValue("max");
   await expect(modelPicker).toContainText("GPT-6 Luna");
-  await page.screenshot({path:"test-results/native-fast-tier.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:"test-results/native-fast-tier.png",fullPage:true});
 });

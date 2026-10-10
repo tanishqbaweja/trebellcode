@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, MessageSquareText, Pencil, Play, Plus, RefreshCw, Search, Settings2, SquareTerminal, Trash2, Workflow, X } from "lucide-react";
 import { api } from "../api.js";
-import { baseProjectRecord, enrichProjectRecords, summarizeProjectRefreshErrors } from "../project-enrichment.js";
+import { baseProjectRecord, enrichProjectRecords, projectGitLabel, summarizeProjectRefreshErrors } from "../project-enrichment.js";
 import { PROJECT_PAGE_SIZE, projectGroupCounts, projectGroupKey, projectWindow } from "../project-window.js";
 import { startVisibilityPoll } from "../visibility-poll.js";
 
@@ -375,7 +375,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.totalCount} checkout{group.totalCount===1?"":"s"}</span></div></div>
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id}>
-        <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.environment?.name||"Local machine"} · {p.path}</span><small>{p.environment?.type!=="local"?"remote workspace · "+new Date(p.lastOpenedAt).toLocaleString():p.managedWorktree?.cleanedAt?"managed worktree cleaned · click to restore":(p.git?.branch||"not a Git checkout")+" · "+new Date(p.lastOpenedAt).toLocaleString()}</small></div></button>
+        <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.environment?.name||"Local machine"} · {p.path}</span><small>{p.environment?.type!=="local"?"remote workspace · "+new Date(p.lastOpenedAt).toLocaleString():p.managedWorktree?.cleanedAt?"managed worktree cleaned · click to restore":[projectGitLabel(p.git),new Date(p.lastOpenedAt).toLocaleString()].filter(Boolean).join(" · ")}</small></div></button>
         <button className="project-remove" aria-label={"Remove "+p.name} onClick={()=>removeProject(p)} disabled={busy}><Trash2 size={13}/></button>
         {p.cloneJob&&p.cloneJob.status!=="completed"&&<div className={"project-clone-status "+p.cloneJob.status}><div><strong>{p.cloneJob.phase||"Cloning repository"}</strong><span>{p.cloneJob.status==="failed"?(p.cloneJob.error||"Clone failed"):p.cloneJob.status==="cancelled"?"Clone cancelled":Math.round(p.cloneJob.progress||0)+"%"}</span></div>{["running","cancelling"].includes(p.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(p.cloneJob.progress)||0)+"%"}}/></i>}<div>{p.cloneJob.status==="running"&&<button onClick={()=>cloneAction(p,"cancel")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(p.cloneJob.status)&&<button onClick={()=>cloneAction(p,"retry")}><RefreshCw size={11}/> Retry</button>}</div></div>}
         <div className="project-overrides">

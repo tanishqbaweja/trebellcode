@@ -4,6 +4,14 @@ function defaultSuggested(){
   return {scripts:[],t3:{present:false},packageManager:null};
 }
 
+// What a project card says about its checkout: the branch, a detached HEAD, or that the folder is not a Git checkout.
+// Nothing until the Git probe has answered, instead of calling a checkout that is still loading "not a Git checkout".
+export function projectGitLabel(git){
+  if(!git)return "";
+  if(!git.isGit)return "not a Git checkout";
+  return git.branch||"detached HEAD";
+}
+
 export function baseProjectRecord(project,previous=null){
   const scripts=Array.isArray(project?.scripts)?project.scripts:[];
   const remoteEnvironment=Boolean(project?.environment?.type&&project.environment.type!=="local");

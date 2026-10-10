@@ -99,7 +99,7 @@ test("large source control collections mount bounded windows",async({page,reques
   await right.scrollIntoViewIfNeeded();
   const metrics=await right.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"source-control-windowing-dark-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-windowing-dark-1280x800.png",fullPage:true});
 });
 
 test("source control keeps the last-known Git version visible during diagnostics refresh",async({page,request})=>{
@@ -166,5 +166,5 @@ test("linked thread refresh failures retain last-known-good data for the same pu
   await page.getByTestId("right-panel-toggle").click();const right=page.getByTestId("right-panel");await right.getByRole("button",{name:"Git",exact:true}).click();
   const prButton=right.getByRole("button",{name:/#7 Reliability PR/});await expect(prButton).toBeVisible();await prButton.click();await expect(right.getByText("Stable review thread")).toBeVisible();
   await prButton.click();await expect(right.getByText("Stable review thread")).toBeVisible();await expect(right.getByText(/Deliberate reverse-link refresh failure/)).toBeVisible();expect(reverseReads).toBe(2);
-  await page.setViewportSize({width:1280,height:800});await right.scrollIntoViewIfNeeded();const metrics=await right.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({path:auditDir+"source-control-linked-thread-refresh-failure-1280x800.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});await right.scrollIntoViewIfNeeded();const metrics=await right.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"source-control-linked-thread-refresh-failure-1280x800.png",fullPage:true});
 });

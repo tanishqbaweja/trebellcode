@@ -50,7 +50,7 @@ test("History pages older Trebell catalog rows even without a connected runtime"
   const load=page.getByRole("button",{name:"Load older threads"});await expect(load).toBeVisible();await load.click();
   await expect.poll(()=>catalogReads).toBe(1);await expect(history.getByRole("button",{name:/Older C/})).toBeVisible();await expect(load).toHaveCount(0);
   await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".history-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"history-catalog-pagination-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"history-catalog-pagination-1280x800.png",fullPage:true});
 });
 
 test("connected runtime history refresh preserves the independent Trebell catalog cursor",async({page})=>{

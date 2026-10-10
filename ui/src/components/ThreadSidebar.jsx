@@ -21,7 +21,7 @@ function threadCanFork(thread,runtimeCapabilities={}){
   return thread?.providerMeta?.initialize?.agentCapabilities?.sessionCapabilities?.fork!=null;
 }
 
-const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,runAction,agentRuntime="codex",runtimeCapabilities={}}){
+const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,canMoveUp=false,canMoveDown=false,runAction,agentRuntime="codex",runtimeCapabilities={}}){
   const menuRef=useRef(null);
   const [menuOpen,setMenuOpen]=useState(false);
   // One row menu is open at a time, and it closes like other menus: Escape (focus returns to its button) or a click outside it.
@@ -70,8 +70,8 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
           <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Snoozed"?"active":"snooze"))}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
           <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Settled"?"active":"settle"))}>{section==="Settled"?"Un-settle":"Settle"}</button>
           {threadCanFork(thread,runtimeCapabilities)&&<button onClick={()=>runMenuAction(()=>onAction(thread,"fork"))}>Fork thread</button>}
-          <button onClick={()=>runMenuAction(()=>onMove(thread,-1))}>Move up</button>
-          <button onClick={()=>runMenuAction(()=>onMove(thread,1))}>Move down</button>
+          <button disabled={!canMoveUp} onClick={()=>runMenuAction(()=>onMove(thread,-1))}>Move up</button>
+          <button disabled={!canMoveDown} onClick={()=>runMenuAction(()=>onMove(thread,1))}>Move down</button>
         </>}
         <button onClick={()=>runMenuAction(()=>copy(references.threadId))}>Copy thread ID</button>
         {references.branch&&<button onClick={()=>runMenuAction(()=>copy(references.branch))}>Copy branch</button>}
@@ -143,7 +143,7 @@ function UtilityButton({Icon,label,active,onClick,shortcut="",panel=false}){
 const ThreadSidebar=memo(function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
   selectedIds,setSelectedIds,onBulkAction,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="codex",threadMeta={},onCollapse,
-  rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={},onOpenProviderSettings,runtimeStarting=false,
+  rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={},onOpenProviderSettings,runtimeStarting=false,connection={tone:"ok",label:""},threadMoves=null,
   onOpenPalette,shortcuts={}
 }){
   const searchRef=useRef(null);
@@ -156,6 +156,27 @@ const ThreadSidebar=memo(function ThreadSidebar({
   // An earlier failure belongs to the harness that was active then; after a switch it describes nothing on screen. (An action that
   // itself switches harness, like opening another harness's thread, still reports its own failure: that lands after this reset.)
   useEffect(()=>{setActionError("")},[agentRuntime]);
+  // The secondary grid's narrowest cell is what its longest destination name needs in the font this machine renders (Inter
+  // when installed, else the system font), so a sidebar too narrow for two whole names gets one column instead of cutting one
+  // ("Environme…"). Names are hidden in the icon-only row, which keeps the last measurement.
+  const secondaryNavRef=useRef(null);
+  useLayoutEffect(()=>{
+    const nav=secondaryNavRef.current;if(!nav)return;
+    let frame=0;
+    const measure=()=>{
+      let widest=0;
+      for(const item of nav.children){
+        const name=item.querySelector(":scope>span");if(!name?.offsetParent)continue;
+        const style=getComputedStyle(item);
+        widest=Math.max(widest,name.getBoundingClientRect().left-item.getBoundingClientRect().left+name.scrollWidth+parseFloat(style.paddingRight)+parseFloat(style.borderRightWidth));
+      }
+      if(widest)nav.style.setProperty("--tb-destination-min",Math.ceil(widest+1)+"px");
+    };
+    measure();
+    const observer=new ResizeObserver(()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(measure)});observer.observe(nav);
+    document.fonts?.ready?.then(measure);
+    return ()=>{observer.disconnect();cancelAnimationFrame(frame)};
+  },[runtimeCapabilities.delegation,runtimeCapabilities.harnessTools]);
   useEffect(()=>{
     const focus=()=>{searchRef.current?.focus();searchRef.current?.select?.()};
     window.addEventListener("trebell:sidebar-search",focus);
@@ -169,7 +190,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
   const runtimeLabel=runtimeStarting?"Starting…":{native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
   const toggle=useCallback(id=>{const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)},[selectedIds,setSelectedIds]);
   const firstGroupName=THREAD_GROUP_NAMES.find(name=>groups[name]?.length)||null;
-  const renderRow=useCallback(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>,[threadMeta,activeThreadId,bulk,selectedIds,onOpen,toggle,onThreadAction,onMove,runAction,agentRuntime,runtimeCapabilities]);
+  const renderRow=useCallback(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} canMoveUp={Boolean(threadMoves?.get(t.id)?.up)} canMoveDown={Boolean(threadMoves?.get(t.id)?.down)} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>,[threadMeta,activeThreadId,bulk,selectedIds,onOpen,toggle,onThreadAction,onMove,threadMoves,runAction,agentRuntime,runtimeCapabilities]);
 
   return <aside className="sidebar">
     <div className="sidebar-titlebar">
@@ -220,7 +241,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
           <UtilityButton Icon={Folder} label="Projects" shortcut={shortcuts.projects} active={section==="projects"} onClick={()=>setSection("projects")}/>
           <UtilityButton Icon={Settings} label="Settings" shortcut={shortcuts.settings} active={section==="settings"||section==="licenses"} onClick={()=>setSection("settings")}/>
         </div>
-        <div className="sidebar-nav-secondary">
+        <div className="sidebar-nav-secondary" ref={secondaryNavRef}>
           <UtilityButton Icon={Globe2} label="Browser" panel shortcut={shortcuts.previewToggle} active={rightPanelOpen&&rightPanelTab==="preview"} onClick={()=>setSection("preview")}/>
           {runtimeCapabilities.delegation&&<UtilityButton Icon={Bot} label="Agents" panel active={rightPanelOpen&&rightPanelTab==="agents"} onClick={()=>setSection("agents")}/>}
           <UtilityButton Icon={History} label="History" active={section==="history"} onClick={()=>setSection("history")}/>
@@ -229,7 +250,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
           <UtilityButton Icon={Server} label="Environments" shortcut={shortcuts.environments} active={section==="environments"} onClick={()=>setSection("environments")}/>
         </div>
       </nav>
-      <button className="sidebar-provider" onClick={()=>managedInference&&onOpenProviderSettings?onOpenProviderSettings():setSection("settings")} title={runtimeStarting?"Trebell is starting its agent harness":"Configure "+runtimeLabel}><span className="provider-dot"/><div><strong>{runtimeLabel}</strong><span>{managedInference?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
+      <button className="sidebar-provider" onClick={()=>managedInference&&onOpenProviderSettings?onOpenProviderSettings():setSection("settings")} title={runtimeStarting?"Trebell is starting its agent harness":[connection.label,"Configure "+runtimeLabel].filter(Boolean).join(" · ")}><span className={"provider-dot tone-"+(connection.tone||"off")} data-testid="sidebar-provider-dot" aria-hidden="true"/><div><strong>{runtimeLabel}</strong><span>{managedInference?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
     </div>
   </aside>;
 });

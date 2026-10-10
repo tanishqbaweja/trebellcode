@@ -65,14 +65,14 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     await page.getByRole("button",{name:/ACP progress fixture/}).click();
     const composer=page.getByTestId("composer");await expect(composer).toBeEnabled();await composer.fill("Run the fixture command");await page.getByTestId("send").click();
     const streamed=page.locator(".tool-event").filter({hasText:"Fixture build"});await expect(streamed).toBeVisible();await streamed.locator("summary").click();
-    await expect(streamed).toContainText("phase one");await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"agent-tool-progress-running-1280x800.png",fullPage:true});
+    await expect(streamed).toContainText("phase one");await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"agent-tool-progress-running-1280x800.png",fullPage:true});
     await expect(streamed).toContainText("phase two");
     await expect(streamed.locator("summary")).toContainText("done");
     const quick=page.locator(".tool-event").filter({hasText:"Quick check"});await expect(quick.locator("summary")).toContainText("done");
     await expect(page.locator(".assistant-message-text")).toContainText("Fixture finished.");
     await expect(page.locator(".tool-event.kind-commandExecution")).toHaveCount(2);
     await expect(page.locator(".tool-event").filter({hasText:"Agent activity"})).toHaveCount(0);
-    await page.screenshot({path:auditDir+"agent-tool-progress-complete-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"agent-tool-progress-complete-1280x800.png",fullPage:true});
   }finally{
     await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
   }

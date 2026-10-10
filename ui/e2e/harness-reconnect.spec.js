@@ -76,7 +76,7 @@ test("a send while the harness transport is down keeps the draft, never falls ba
     expect(directCalls).toBe(0);
     expect(harness.requests.some(message=>message.method==="thread/start"||message.method==="turn/start")).toBe(false);
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"harness-reconnecting-keeps-draft-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-reconnecting-keeps-draft-1280x800.png",fullPage:true});
 
     harness.accept();
     await expect(transport).toHaveCount(0,{timeout:15_000});

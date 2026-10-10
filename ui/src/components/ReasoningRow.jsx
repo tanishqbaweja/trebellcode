@@ -1,6 +1,7 @@
 import React,{memo,useState} from "react";
 import { Brain, ChevronRight } from "lucide-react";
 import { reasoningPreview } from "../reasoning-text.js";
+import ChatMarkdown from "./ChatMarkdown.jsx";
 import "./ReasoningRow.css";
 
 // A row the person opened stays open when its finished thought moves from the live activity into the conversation.
@@ -19,7 +20,8 @@ const ReasoningRow=memo(function ReasoningRow({id,messageId,text="",active=false
       <span className="reasoning-preview">{open?"":line}</span>
       {body&&<ChevronRight className="reasoning-chevron" size={13} aria-hidden="true"/>}
     </button>
-    {open&&body&&<div className="reasoning-text" data-testid="reasoning-text">{body}</div>}
+    {/* The opened thought reads as formatted text, as its one-line preview already does (no literal ** or backticks). */}
+    {open&&body&&<div className="reasoning-text chat-markdown" data-testid="reasoning-text"><ChatMarkdown text={body}/></div>}
   </div>;
 });
 

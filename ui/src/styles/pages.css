@@ -111,6 +111,7 @@
 :root:root .environments-page>.inline-status,
 :root:root .usage-page .provider-note{max-width:none;margin:0 0 14px!important;padding:10px 14px!important;border:1px solid var(--line2)!important;border-radius:var(--r-m)!important;background:var(--bg2)!important;color:var(--tx1)!important;font-size:12.5px!important;line-height:1.5!important;white-space:pre-wrap;overflow-wrap:anywhere}
 :root:root .usage-page .provider-note{margin:0!important}
+:root:root .environments-page>.inline-error{margin:0 0 14px!important}
 
 /* ============ Projects ============ */
 :root:root .projects-page{display:grid;gap:14px;container:pg/inline-size}
@@ -828,6 +829,7 @@
 :root:root .environments-page .environment-list>div{flex-wrap:wrap;row-gap:8px}
 :root:root .environments-page .environment-list>div>div:last-child{flex:0 0 auto;flex-wrap:nowrap;margin-left:auto}
 
-/* One light field style across Settings, Projects, Environments, Usage and Tools: white with the firmer line. */
-:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]),select,textarea){background-color:var(--bg1)!important;border-color:var(--line2)!important}
-:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]),select,textarea):focus{border-color:var(--ac)!important}
+/* One light field style across Settings, Projects, Environments, Usage and Tools: white with the firmer line. The settings
+   search input is not a field of its own: its search box is the field (settings.css). */
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):not(.settings-search-box>input),select,textarea){background-color:var(--bg1)!important;border-color:var(--line2)!important}
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):not(.settings-search-box>input),select,textarea):focus{border-color:var(--ac)!important}

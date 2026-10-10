@@ -17,6 +17,19 @@ import {
 
 const execFileAsync=promisify(execFile);
 
+test("a folder without Git lists and finds files by forward-slash relative paths on every platform",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-tree-"));
+  try{
+    await workspaceWriteFile(join(dir,"src","components","UserCard.jsx"),"export const UserCard=()=>null;\n");
+    const result=await workspaceSearch(dir,"UserCard");
+    assert.equal(result.source,"tree");
+    assert.equal(result.items[0].relativePath,"src/components/UserCard.jsx");
+    assert.equal(result.items[0].path,join(dir,"src","components","UserCard.jsx"));
+    const tree=await environmentWorkspaceTree(dir,{depth:3,limit:20});
+    assert.deepEqual(tree.entries.map(item=>item.relativePath),["src","src/components","src/components/UserCard.jsx"]);
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
+
 test("workspace search and write are backed by real files",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-"));
   try{

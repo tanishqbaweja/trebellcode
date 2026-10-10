@@ -57,8 +57,8 @@ test("project recipe slash command starts a bounded turn with stricter permissio
     const composer=page.getByTestId("composer");await composer.fill("/fi");
     const recipeButton=page.locator(".slash-menu button").filter({hasText:"/fix-ci"});await expect(recipeButton).toBeVisible();
     await expect(recipeButton).toContainText("Repair the failing CI workflow.");
-    await page.screenshot({path:auditDir+"project-recipe-slash-menu-dark-1280x800.png",fullPage:true});
-    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"project-recipe-slash-menu-light-1280x800.png",fullPage:true});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    await page.screenshot({animations:"disabled",path:auditDir+"project-recipe-slash-menu-dark-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"project-recipe-slash-menu-light-1280x800.png",fullPage:true});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
 
     await composer.fill("/fix-ci Linux runner only");await page.getByTestId("send").click();
     await expect.poll(()=>calls.filter(call=>call.method==="thread/goal/set").length,{timeout:15_000}).toBe(2);
@@ -76,6 +76,6 @@ test("project recipe slash command starts a bounded turn with stricter permissio
     expect(turnCall.params.input[0].text).toContain("Linux runner only");
     await expect(page.locator("select.permission-picker")).toHaveValue("edits");
     await expect(page.getByText("Fix the failing CI job.",{exact:false}).first()).toBeVisible();
-    await page.screenshot({path:auditDir+"project-recipe-running-dark-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"project-recipe-running-dark-1280x800.png",fullPage:true});
   }finally{for(const client of wss.clients)try{client.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}
 });

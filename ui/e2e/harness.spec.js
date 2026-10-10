@@ -414,7 +414,7 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await expectModelCatalog(page,["test/coding-fast","test/coding-large"]);
   await expect(page.locator(".sidebar-provider")).toContainText("OpenAI API inference");
 
-  await page.screenshot({path:"test-results/trebell-code-ui.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:"test-results/trebell-code-ui.png",fullPage:true});
 });
 
 test("onboarding can import matching local conversation history",async({page,request})=>{

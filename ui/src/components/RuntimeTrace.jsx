@@ -63,7 +63,7 @@ export default function RuntimeTrace({threadId=null}){
         <option value="all">All time</option><option value="15m">Last 15m</option><option value="1h">Last hour</option><option value="24h">Last 24h</option>
       </select>
     </div>
-    {error&&<div className="runtime-trace-error" role="alert"><strong>Trace refresh failed.</strong><span>{error}{items.length?" Last valid trace is kept below.":""}</span></div>}
+    {error&&<div className="runtime-trace-error" role="alert"><strong>Trace refresh failed.</strong><span>{/[.!?]$/.test(String(error).trim())?error:error+"."}{items.length?" Last valid trace is kept below.":""}</span></div>}
     <div className="runtime-trace-list">
       {items.map(item=><details className="runtime-trace-row" key={item.id}>
         <summary>

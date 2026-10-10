@@ -35,7 +35,7 @@ test("successful project removal reports a follow-up refresh failure as partial 
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".projects-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"project-remove-partial-success-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"project-remove-partial-success-1280x800.png",fullPage:true});
 });
 
 test("successful Git push reports a follow-up repository refresh failure as partial success",async({page,request})=>{
@@ -68,5 +68,5 @@ test("successful Git push reports a follow-up repository refresh failure as part
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"source-control-push-partial-success-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-push-partial-success-1280x800.png",fullPage:true});
 });

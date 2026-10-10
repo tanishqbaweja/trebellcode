@@ -60,12 +60,12 @@ test("local Trebell projects become native Codex project ownership for existing 
     const created=calls.find(call=>call.method==="project/create");expect(created?.params).toEqual({name:trebellProject.name,roots:[{path:cwd}],metadata:{trebellManaged:"true",trebellProjectId:trebellProject.id},idempotencyKey:"trebell-code:"+trebellProject.id});
     const assigned=calls.find(call=>call.method==="thread/metadata/update");expect(assigned?.params).toEqual({threadId:thread.id,projectId:nativeProject.id});
     await expect(page.getByRole("button",{name:basename(cwd),exact:true})).toBeVisible();
-    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-native-project-identity-1280x800.png",fullPage:true});
-    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"chat-native-project-identity-light-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"chat-native-project-identity-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"chat-native-project-identity-light-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.getByRole("button",{name:"New thread"}).click();await page.getByTestId("composer").fill("Start a project-linked thread.");await page.getByTestId("send").click();
     await expect.poll(()=>calls.filter(call=>call.method==="thread/start").length).toBe(1);
     const started=calls.find(call=>call.method==="thread/start");expect(started?.params?.projectId).toBe(nativeProject.id);expect(calls.filter(call=>call.method==="project/create").length).toBe(1);
-    await page.screenshot({path:auditDir+"chat-native-project-new-thread-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"chat-native-project-new-thread-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });
 
@@ -121,7 +121,7 @@ test("Codex project identity sync failures warn without blocking thread open or 
     await expect(alert).toBeInViewport();
     await expect(page.getByTestId("composer")).toBeVisible();
     await page.setViewportSize({width:1280,height:800});
-    await page.screenshot({path:auditDir+"codex-project-sync-open-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"codex-project-sync-open-error-1280x800.png",fullPage:true});
 
     await page.getByRole("button",{name:"New thread",exact:true}).click();
     const composer=page.getByTestId("composer");
@@ -133,6 +133,6 @@ test("Codex project identity sync failures warn without blocking thread open or 
     await expect(page.locator(".thread-row.active")).toContainText("New thread without native project");
     await expect(page.getByTestId("composer")).toBeVisible();
     await expect(alert).toContainText("Could not sync runtime project identity: Deliberate Codex project sync failure");
-    await page.screenshot({path:auditDir+"codex-project-sync-new-thread-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"codex-project-sync-new-thread-error-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

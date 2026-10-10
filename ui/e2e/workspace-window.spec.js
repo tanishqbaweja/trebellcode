@@ -41,7 +41,7 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   await expect(right.locator("[data-workspace-entry]")).toHaveCount(240);
   await right.locator(".tree-list").evaluate(node=>{node.scrollTop=node.scrollHeight});
   await expect(right.getByRole("button",{name:"Show 120 more files"})).toBeVisible();
-  await page.screenshot({path:auditDir+"workspace-tree-windowing-dark-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-tree-windowing-dark-1280x800.png",fullPage:true});
 
   await right.getByRole("button",{name:"Diff",exact:true}).click();
   await expect(right.locator(".changed-file-row")).toHaveCount(80);
@@ -60,7 +60,7 @@ test("large workspace trees and diffs render bounded progressive windows",async(
 
   const metrics=await right.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"workspace-windowing-dark-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-windowing-dark-1280x800.png",fullPage:true});
 
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   await right.locator(".workspace-panel .panel-tabs").getByRole("button",{name:"Files",exact:true}).click();
@@ -68,5 +68,5 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   const lightMore=right.getByRole("button",{name:"Show 120 more files"});
   await expect(lightMore).toBeVisible();
   expect(await lightMore.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");
-  await page.screenshot({path:auditDir+"workspace-tree-windowing-light-1280x800.png",fullPage:true});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-tree-windowing-light-1280x800.png",fullPage:true});
 });

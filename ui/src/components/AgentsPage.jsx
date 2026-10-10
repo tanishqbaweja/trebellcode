@@ -52,7 +52,9 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,onD
   const activeProjectless=Boolean(activeThread?.id&&threadMeta[activeThread.id]?.projectless);
   const children=useMemo(()=>threads.filter(t=>parentIdOf(t)),[threads,threadMeta]);
   const currentChildren=useMemo(()=>activeThread?.id?children.filter(t=>parentIdOf(t)===activeThread.id):[],[children,activeThread?.id,threadMeta]);
-  const otherChildren=useMemo(()=>activeThread?.id?children.filter(t=>parentIdOf(t)!==activeThread.id):children,[children,activeThread?.id,threadMeta]);
+  // An open delegated agent is its own group: it is neither a child of the thread on screen nor one of the "other" agents.
+  const openAgentThreads=useMemo(()=>activeThread?.id?children.filter(t=>t.id===activeThread.id):[],[children,activeThread?.id]);
+  const otherChildren=useMemo(()=>activeThread?.id?children.filter(t=>parentIdOf(t)!==activeThread.id&&t.id!==activeThread.id):children,[children,activeThread?.id,threadMeta]);
   const [modes,setModes]=useState([]);
   const [selected,setSelected]=useState("");
   const [busy,setBusy]=useState(false);
@@ -179,6 +181,7 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,onD
       {!activeThread?.id?<p>Start or open a thread to select a collaboration mode.</p>:modes.length?<div className="collaboration-modes">{modes.map(mask=><button key={mask.name} className={selected===mask.name?"active":""} onClick={()=>applyMode(mask)} disabled={busy}><strong>{mask.name}</strong><span>{mask.mode||"default"}{mask.model?" · "+mask.model:""}{mask.reasoning_effort?" · "+mask.reasoning_effort:""}</span></button>)}</div>:<p>No provider-native collaboration presets were reported by this runtime.</p>}
     </section>
     {error&&<p className="provider-status-error" role="alert">{error}</p>}
+    {openAgentThreads.length>0&&<section className="agent-group"><h4>Open agent <span>{openAgentThreads.length}</span></h4>{renderAgents(openAgentThreads)}</section>}
     {currentChildren.length>0&&<section className="agent-group"><h4>Current thread <span>{currentChildren.length}</span></h4>{renderAgents(currentChildren)}</section>}
     {otherChildren.length>0&&<section className="agent-group"><h4>{activeThread?.id?"Other agents":"All agents"} <span>{otherChildren.length}</span></h4>{renderAgents(otherChildren)}</section>}
     {children.length===0&&<div className="agent-empty-state"><Bot size={18}/><strong>No delegated agents yet</strong><span>Native subagents or Trebell-managed child tasks will appear here with their live status and ownership.</span></div>}

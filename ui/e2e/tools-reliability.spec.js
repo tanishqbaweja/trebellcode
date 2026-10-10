@@ -102,7 +102,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     await pluginError.scrollIntoViewIfNeeded();
     await expect(pluginError).toBeInViewport();
     await expect(plugins.getByText("Known Good Plugin",{exact:true})).toBeInViewport();
-    await page.screenshot({path:auditDir+"tools-plugin-refresh-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-plugin-refresh-error-1280x800.png",fullPage:true});
 
     failPlugins=false;failPluginInstall=true;
     const install=plugins.getByRole("button",{name:"Install",exact:true});
@@ -122,7 +122,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     await expect(reload).toBeEnabled();
     await mcpError.scrollIntoViewIfNeeded();
     await expect(mcpError).toBeInViewport();
-    await page.screenshot({path:auditDir+"tools-action-errors-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-action-errors-1280x800.png",fullPage:true});
 
     failMcpLogin=true;
     const signIn=mcp.getByRole("button",{name:"Sign in",exact:true});
@@ -142,7 +142,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     await expect(skills.getByRole("button",{name:"Off",exact:true})).toBeEnabled();
     await skillsError.scrollIntoViewIfNeeded();
     await expect(skillsError).toBeInViewport();
-    await page.screenshot({path:auditDir+"tools-skills-refresh-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-skills-refresh-error-1280x800.png",fullPage:true});
 
     failMarketplaceAdd=true;
     const marketplaces=page.locator(".capability-card").filter({hasText:"Marketplaces"}).first();
@@ -155,7 +155,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     await expect(marketplaces.getByRole("button",{name:"Add",exact:true})).toBeEnabled();
     await marketplaceError.scrollIntoViewIfNeeded();
     await expect(marketplaceError).toBeInViewport();
-    await page.screenshot({path:auditDir+"tools-marketplace-action-error-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-marketplace-action-error-1280x800.png",fullPage:true});
   }finally{
     for(const socket of sockets)try{socket.terminate()}catch{}
     wss.close();await new Promise(resolve=>http.close(resolve));

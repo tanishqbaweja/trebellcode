@@ -79,9 +79,9 @@ test("failed verification can start a same-thread repair turn from continuity",a
     await expect.poll(()=>harness.repairRequests()).toBe(1);
     await expect(panel.getByText("Repair turn started on this thread.")).toBeVisible();
     await page.setViewportSize({width:1280,height:800});
-    await repair.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"verification-repair-dark-1280x800.png",fullPage:true});
+    await repair.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"verification-repair-dark-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
     await expect.poll(()=>repair.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 248, 240)");
-    await page.screenshot({path:auditDir+"verification-repair-light-1280x800.png",fullPage:true});
+    await page.screenshot({animations:"disabled",path:auditDir+"verification-repair-light-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });

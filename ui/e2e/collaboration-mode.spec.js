@@ -67,8 +67,8 @@ test("desktop Codex collaboration mode uses native Plan and Default settings",as
     await expect.poll(()=>calls.filter(call=>call.method==="turn/start").length).toBe(1);
     expect(calls.find(call=>call.method==="turn/start")?.params?.collaborationMode).toEqual({mode:"plan",settings:{model:"test/coding-fast",reasoning_effort:"medium",developer_instructions:null}});
 
-    await page.setViewportSize({width:1600,height:980});await page.screenshot({path:auditDir+"chat-collaboration-plan-1600x980.png",fullPage:true});
-    await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"chat-collaboration-plan-light-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1600,height:980});await page.screenshot({animations:"disabled",path:auditDir+"chat-collaboration-plan-1600x980.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"chat-collaboration-plan-light-1280x800.png",fullPage:true});
     const bounds=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });
