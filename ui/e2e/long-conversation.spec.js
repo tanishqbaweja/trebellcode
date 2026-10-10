@@ -113,6 +113,63 @@ test("long conversations keep only nearby message chunks mounted",async({page})=
   }finally{await harness.close()}
 });
 
+test("the newest message stays in view when the view shrinks, and a view scrolled up stays where it was",async({page})=>{
+  test.setTimeout(30_000);
+  await page.setViewportSize({width:1280,height:800});
+  const cwd=process.cwd(),now=Date.now()/1000,turns=makeTurns(40);
+  const thread={id:"resize-follow-thread",name:"Resize follow",preview:"80 messages",cwd,model:"test/coding-fast",status:{type:"idle"},createdAt:now-600,updatedAt:now,turns};
+  const meta={[thread.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id:thread.id,name:thread.name,preview:thread.preview,cwd,model:thread.model,createdAt:thread.createdAt,updatedAt:thread.updatedAt,status:{type:"idle"},runtime:"codex",provider:"openai"}}};
+  const harness=await startHarness(thread);
+  try{
+    await installFixtureRoutes(page,{thread,meta,harness,cwd});
+    await page.goto("/");
+    await page.locator('.thread-main[title="Resize follow"]').click();
+
+    const scroll=page.locator(".conversation-scroll"),newest=page.locator('[data-message-id="assistant-39"]'),composer=page.locator(".composer-wrap");
+    const distanceFromEnd=()=>scroll.evaluate(node=>Math.round(node.scrollHeight-node.clientHeight-node.scrollTop));
+    // The newest message is wholly on screen: inside the view and above the composer floating over its foot.
+    const newestInView=async()=>{
+      const message=await newest.boundingBox(),view=await scroll.boundingBox(),compose=await composer.boundingBox();
+      return Boolean(message&&view&&compose)&&message.y>=view.y-1&&message.y+message.height<=Math.min(view.y+view.height,compose.y)+1;
+    };
+    await expect(newest).toBeVisible();
+    await expect.poll(distanceFromEnd).toBeLessThanOrEqual(1);
+    await expect.poll(newestInView).toBe(true);
+
+    await page.getByTestId("terminal-toggle").click();
+    await expect(page.getByTestId("drawer")).toBeVisible();
+    await expect.poll(distanceFromEnd).toBeLessThanOrEqual(1);
+    await expect.poll(newestInView).toBe(true);
+    await page.screenshot({path:auditDir+"conversation-follows-end-terminal-open-dark-1280x800.png",fullPage:true});
+
+    await page.setViewportSize({width:1280,height:700});
+    await expect.poll(distanceFromEnd).toBeLessThanOrEqual(1);
+    await expect.poll(newestInView).toBe(true);
+    await page.setViewportSize({width:1280,height:800});
+    await page.getByTestId("terminal-toggle").click();
+    await expect(page.getByTestId("drawer")).toHaveCount(0);
+    await expect.poll(distanceFromEnd).toBeLessThanOrEqual(1);
+
+    // Read further up, then open the terminal again: the messages being read keep their place.
+    await scroll.evaluate(node=>{node.scrollTop=Math.round((node.scrollHeight-node.clientHeight)/2);node.dispatchEvent(new Event("scroll",{bubbles:true}))});
+    await expect.poll(distanceFromEnd).toBeGreaterThan(400);
+    const firstRowInView=()=>scroll.evaluate(node=>{
+      const top=node.getBoundingClientRect().top;
+      const row=[...node.querySelectorAll("[data-message-id]")].find(element=>element.getBoundingClientRect().top>=top);
+      return row?{id:row.dataset.messageId,top:Math.round(row.getBoundingClientRect().top),scrollTop:Math.round(node.scrollTop)}:null;
+    });
+    // Rows scrolled into view take their real height over the next frames (content-visibility); read once they hold still.
+    let reading=null;
+    await expect.poll(async()=>{const before=await firstRowInView();await page.waitForTimeout(150);reading=await firstRowInView();return Boolean(reading)&&JSON.stringify(before)===JSON.stringify(reading)}).toBe(true);
+    await page.getByTestId("terminal-toggle").click();
+    await expect(page.getByTestId("drawer")).toBeVisible();
+    await page.waitForTimeout(300);
+    expect(await firstRowInView()).toEqual(reading);
+    expect(await distanceFromEnd()).toBeGreaterThan(400);
+    await page.screenshot({path:auditDir+"conversation-keeps-place-terminal-open-dark-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("loading earlier virtualized history preserves the visible anchor",async({page})=>{
   test.setTimeout(30_000);
   await page.setViewportSize({width:1280,height:800});
