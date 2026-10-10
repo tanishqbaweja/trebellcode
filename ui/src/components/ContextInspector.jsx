@@ -15,6 +15,12 @@ function scoreLabel(item,highest){
   return "supporting";
 }
 
+// Same rule as node:path extname, which the context index uses to pick source files.
+function extensionOf(path){
+  const base=String(path||"").split("/").pop(),dot=base.lastIndexOf(".");
+  return dot>0?base.slice(dot).toLowerCase():"";
+}
+
 function ContextExplorer({root,environmentId=null}){
   const [mode,setMode]=useState("symbols");
   const [query,setQuery]=useState("");
@@ -22,32 +28,50 @@ function ContextExplorer({root,environmentId=null}){
   const [searched,setSearched]=useState(false);
   const [selected,setSelected]=useState(null);
   const [relations,setRelations]=useState(null);
+  const [preview,setPreview]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [fixes,setFixes]=useState(null);
   const [view,setView]=useState(null);
   const [viewData,setViewData]=useState(null);
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
-  useEffect(()=>{setMode("symbols");setQuery("");setResults([]);setSearched(false);setSelected(null);setRelations(null);setDiagnostics(null);setFixes(null);setView(null);setViewData(null);setBusy("");setError("")},[root,environmentId]);
+  useEffect(()=>{setMode("symbols");setQuery("");setResults([]);setSearched(false);setSelected(null);setRelations(null);setPreview(null);setDiagnostics(null);setFixes(null);setView(null);setViewData(null);setBusy("");setError("")},[root,environmentId]);
   if(!root)return null;
   const params=extra=>{const value=new URLSearchParams({path:root,...extra});if(environmentId)value.set("environmentId",environmentId);return value};
   const modeMeta={
     symbols:{label:"Symbols",placeholder:"Search symbols, e.g. ContextEngine",endpoint:"/api/context/symbols",empty:"No indexed symbols matched"},
     files:{label:"Files",placeholder:"Find files, e.g. session",endpoint:"/api/context/files",empty:"No repository files matched"},
-    code:{label:"Code",placeholder:"Search source text, e.g. return token",endpoint:"/api/context/search",empty:"No source matches found"},
+    code:{label:"Code",placeholder:"Search source text, e.g. return token",endpoint:"/api/context/search",empty:"No source or text matches found"},
   }[mode];
-  function chooseMode(next){if(next===mode)return;setMode(next);setResults([]);setSearched(false);setSelected(null);setRelations(null);setDiagnostics(null);setFixes(null);setError("")}
+  function chooseMode(next){if(next===mode)return;setMode(next);setResults([]);setSearched(false);setSelected(null);setRelations(null);setPreview(null);setDiagnostics(null);setFixes(null);setError("")}
+  // Code rows carry no indexed flag, and the index picks source files by extension, so one exact Files lookup per
+  // extension marks the docs and configuration rows. A failed lookup only leaves rows unmarked.
+  async function markCodeRows(rows){
+    const firstByExtension=new Map();for(const item of rows)if(!firstByExtension.has(extensionOf(item.path)))firstByExtension.set(extensionOf(item.path),item.path);
+    const indexed=new Map(await Promise.all([...firstByExtension].map(async([extension,path])=>{
+      try{const found=(await api("/api/context/files?"+params({q:path,limit:"1"}))).data?.find(item=>item.path===path);return [extension,found?Boolean(found.indexedSource):null]}
+      catch{return [extension,null]}
+    })));
+    return rows.map(item=>indexed.get(extensionOf(item.path))===false?{...item,indexedSource:false}:item);
+  }
   async function search(event){
     event?.preventDefault?.();const value=query.trim();if(!value||busy)return;
-    setBusy("search");setError("");setSelected(null);setRelations(null);
-    try{const response=await api(modeMeta.endpoint+"?"+params({q:value,limit:"40"}));setResults(response.data||[]);setSearched(true)}
+    setBusy("search");setError("");setSelected(null);setRelations(null);setPreview(null);
+    try{const response=await api(modeMeta.endpoint+"?"+params({q:value,limit:"40"}));setResults(mode==="code"?await markCodeRows(response.data||[]):response.data||[]);setSearched(true)}
     catch(searchError){setResults([]);setSearched(true);setError(searchError.message||String(searchError))}
     finally{setBusy("")}
   }
-  async function inspect(path){
-    if(!path||busy)return;setBusy("relations");setError("");setSelected(path);setRelations(null);setDiagnostics(null);setFixes(null);
+  async function inspect(path,line=null){
+    if(!path||busy)return;setBusy("relations");setError("");setSelected(path);setRelations(null);setPreview(null);setDiagnostics(null);setFixes(null);
     try{setRelations(await api("/api/context/relations?"+params({file:path})))}
-    catch(relationError){setError(relationError.message||String(relationError))}
+    catch(relationError){
+      const message=relationError.message||String(relationError);
+      // Docs and configuration that Files and Code search list are text, not indexed source, so they have no
+      // relations: show their lines around the match. A file that cannot be read still reports its error.
+      if(!/not indexed/i.test(message)){setError(message);return}
+      try{setPreview({...await api("/api/context/source?"+params({file:path,startLine:String(Math.max(1,(Number(line)||1)-4)),maxLines:"24"})),line:Number(line)||null})}
+      catch(sourceError){setError(sourceError.message||String(sourceError))}
+    }
     finally{setBusy("")}
   }
   async function loadDiagnostics(){
@@ -79,7 +103,7 @@ function ContextExplorer({root,environmentId=null}){
     ...(relations.referencedBy||[]).map(item=>item.path),
   ])].filter(path=>path!==relations.path).slice(0,16):[];
   const resultLabel=item=>mode==="symbols"?item.name:mode==="files"?item.path:`${item.path}:${item.line}`;
-  const resultDetail=item=>mode==="symbols"?`${item.kind} · ${item.path}:${item.line}`:mode==="files"?`${item.indexedSource?"indexed source":"repository file"}${item.extension?` · ${item.extension}`:""}`:String(item.text||"").trim();
+  const resultDetail=item=>mode==="symbols"?`${item.kind} · ${item.path}:${item.line}`:mode==="files"?`${item.indexedSource?"indexed source":"repository file"}${item.extension?` · ${item.extension}`:""}`:`${item.indexedSource===false?"repository file · ":""}${String(item.text||"").trim()}`;
   const resultMeta=item=>mode==="symbols"?(item.parser||"index"):mode==="files"?String(item.score??""):item.line?`L${item.line}`:"match";
   const diagnosticRows=diagnostics?[...(diagnostics.diagnostics||[]),...(diagnostics.semanticDiagnostics||[])]:[];
   return <section className="context-explorer" data-testid="context-explorer">
@@ -97,7 +121,8 @@ function ContextExplorer({root,environmentId=null}){
     </div>
     {error&&<p className="context-explorer-error" role="alert">{error}</p>}
     {searched&&!results.length&&!error&&<p className="context-explorer-empty">{modeMeta.empty} “{query.trim()}”.</p>}
-    {results.length>0&&<div className="context-explorer-results" aria-label={`Repository ${mode} results`}>{results.map((item,index)=><button type="button" key={`${mode}:${item.path}:${item.line||0}:${item.name||""}:${index}`} className={selected===item.path?"active":""} onClick={()=>inspect(item.path)} disabled={busy==="relations"}>
+    {mode==="code"&&results.length>0&&results.every(item=>item.indexedSource===false)&&<p className="context-explorer-empty">No indexed source matched “{query.trim()}”; showing matches in repository text files.</p>}
+    {results.length>0&&<div className="context-explorer-results" aria-label={`Repository ${mode} results`}>{results.map((item,index)=><button type="button" key={`${mode}:${item.path}:${item.line||0}:${item.name||""}:${index}`} className={selected===item.path?"active":""} onClick={()=>inspect(item.path,item.line)} disabled={busy==="relations"}>
       <span><strong>{resultLabel(item)}</strong><small>{resultDetail(item)}</small></span><em>{resultMeta(item)}</em>
     </button>)}</div>}
     {view==="architecture"&&viewData&&<div className="context-explorer-view" data-testid="context-architecture-view">
@@ -118,6 +143,11 @@ function ContextExplorer({root,environmentId=null}){
       {!(viewData.steps||[]).length&&<p className="context-explorer-empty">No verification steps were planned for the current change set.</p>}
     </div>}
     {selected&&busy==="relations"&&<p className="context-explorer-empty">Tracing imports and references for {selected}…</p>}
+    {preview&&<div className="context-explorer-relations context-explorer-preview" data-testid="context-file-preview">
+      <div><strong>{preview.path}</strong><span>repository text file · no code relations</span></div>
+      <p className="context-explorer-empty">Not indexed source, so imports, references and diagnostics do not apply. Lines {preview.startLine}–{preview.endLine} of {preview.totalLines}{preview.line?" around the match":""}.</p>
+      <pre>{String(preview.content??"").split("\n").map((text,index)=><span key={index} className={preview.startLine+index===preview.line?"match":undefined}><i>{preview.startLine+index}</i>{text}</span>)}</pre>
+    </div>}
     {relations&&<div className="context-explorer-relations" data-testid="context-file-relations">
       <div><strong>{relations.path}</strong><span>{relations.definitions?.length||0} definitions · {relations.importers?.length||0} importers</span></div>
       <p className="context-explorer-relation-actions"><button type="button" onClick={loadDiagnostics} disabled={Boolean(busy)}>{busy==="diagnostics"?"Checking…":diagnostics?"Refresh diagnostics":"Diagnostics"}</button>{diagnostics&&<span>{diagnostics.semantic?`${diagnostics.semanticEngine||"semantic"} + ${diagnostics.engine||"parser"}`:(diagnostics.engine||"parser")}</span>}</p>
