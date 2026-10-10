@@ -476,12 +476,12 @@ test("Antigravity is granted Trebell's attachments folder, its client files stay
   await writeFile(join(attachments,"1-ab-pasted-context.txt"),"The secret word is PERIWINKLE.\n","utf8");
   await writeFile(join(attachments,"2-cd-report.pdf"),"%PDF-1.4","utf8");
   const pasted=join(attachments,"1-ab-pasted-context.txt"),pdf=join(attachments,"2-cd-report.pdf");
-  await session.prompt([{type:"text",text:"what is the secret word?"},{type:"resource_link",uri:`file://${pasted.replace(/\\/g,"/")}`,name:"1-ab-pasted-context.txt"},{type:"resource_link",uri:`file://${pdf.replace(/\\/g,"/")}`,name:"2-cd-report.pdf"}]);
+  await session.prompt([{type:"text",text:"what is the secret word?"},{type:"resource_link",uri:pathToFileURL(pasted).href,name:"1-ab-pasted-context.txt"},{type:"resource_link",uri:pathToFileURL(pdf).href,name:"2-cd-report.pdf"}]);
   const log=await fx.log();
   assert.deepEqual(requested(log,"session/new")[0].params.additionalDirectories,[attachments],"the attachments folder is granted, as T3 grants it");
   const sent=requested(log,"session/prompt")[0].params.prompt;
   assert.deepEqual(sent[1],{type:"resource",resource:{uri:pathToFileURL(pasted).href,mimeType:"text/plain",text:"The secret word is PERIWINKLE.\n"}},"the pasted text goes as embedded content");
-  assert.deepEqual(sent[2],{type:"resource_link",uri:`file://${pdf.replace(/\\/g,"/")}`,name:"2-cd-report.pdf"},"other files stay links");
+  assert.deepEqual(sent[2],{type:"resource_link",uri:pathToFileURL(pdf).href,name:"2-cd-report.pdf"},"other files stay links");
   const replies=log.filter(entry=>entry.reply==="fs/read_text_file").map(entry=>entry.message);
   assert.deepEqual(replies[0],{content:"The secret word is PERIWINKLE.\n"},"a file in the attachments folder is served");
   assert.equal(replies[1].error?.code,-32602,"a file outside the workspace and the attachments folder is refused");

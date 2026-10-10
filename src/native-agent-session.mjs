@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { fileUriPath } from "./file-uri.mjs";
 import { runNativeAgentTurn } from "./native-agent-loop.mjs";
 import { platformToolDefinition, platformToolParallelSafe } from "./platform-tool-catalog.mjs";
 import { attachNativePromptProvenance, NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
@@ -119,7 +120,7 @@ function promptMessage(prompt=[]){
       if(Array.isArray(meta?.userParts)&&!userParts.length)userParts=meta.userParts.map(value=>String(value||""));
     }
     else if(item?.type==="image"&&item.data&&item.mimeType)content.push({type:"image_url",image_url:{url:`data:${item.mimeType};base64,${item.data}`}});
-    else if(item?.type==="resource_link"&&item.uri)content.push({type:"text",text:`Attached resource: ${item.name||item.uri} (${item.uri})`});
+    else if(item?.type==="resource_link"&&item.uri)content.push({type:"text",text:`Attached resource: ${item.name||item.uri} (${fileUriPath(item.uri)??item.uri})`});
   }
   return attachNativePromptProvenance({role:"user",content:content.length===1&&content[0].type==="text"?content[0].text:content},{userParts,contextText,contextEntries});
 }

@@ -7,6 +7,7 @@ import { acpApplyValue, acpConfigChoices, acpConfigSelect, acpReadOnlyMode, acpS
 import { cursorEffortOption, cursorEffortValue, cursorFastOption, cursorSwitchValue, GROK_INITIALIZE_META } from "./acp-model-catalog.mjs";
 import { acpToolFrame, mergeAcpToolUpdate } from "./acp-tool-state.mjs";
 import { CursorTransportFailure } from "./cursor-transport-failure.mjs";
+import { fileUriPath } from "./file-uri.mjs";
 import { normalizeModelOptionValues } from "./model-options.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
@@ -82,9 +83,8 @@ const ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES=1024*1024,ANTIGRAVITY_MAX_EMBEDDED_B
 export async function antigravityPromptParts(parts){
   const out=[];let total=0;
   for(const part of Array.isArray(parts)?parts:[]){
-    const uri=String(part?.type==="resource_link"?part.uri||"":"");
-    // Trebell writes file links as file://<path> (agent-relay acpPrompt).
-    const path=/^file:\/\//i.test(uri)?resolve(uri.replace(/^file:\/\//i,"")):null,extension=path?extname(path).toLowerCase():"";
+    // Trebell writes file links as percent-encoded file: URLs (agent-relay acpPrompt).
+    const path=part?.type==="resource_link"?fileUriPath(part.uri):null,extension=path?extname(path).toLowerCase():"";
     let embedded=null;
     if(path&&ANTIGRAVITY_TEXT_EXTENSIONS.has(extension)){
       const info=await stat(path).catch(()=>null);
@@ -121,11 +121,15 @@ function optionOfKind(options,kind,optionId=undefined){
   return (Array.isArray(options)?options:[]).find(option=>option?.kind===kind&&text(option.optionId)&&(optionId===undefined||text(option.optionId)===optionId))?.optionId||null;
 }
 
+// Reads follow the sandbox alone and never ask (T3 acpReadDisposition): every Trebell mode lets the agent read,
+// Read Only included, so ACP read, search and think requests are allowed unasked. Other kinds follow the mode.
+const ACP_READ_KINDS=new Set(["read","search","think"]);
+
 // The agent's allow-once answer when Trebell's policy allows the request; allow-always only when the
 // agent offers no allow-once, because an always answer can outlive the session (Grok saves it for
 // the whole project). A denial uses reject-once for the same reason (T3 selectAutoApprovedPermissionOption).
 export function acpPermissionChoice(options=[],mode="supervised",kind=null,policyInput={}){
-  const disposition=permissionDisposition(mode,normalizePermissionKind(kind),{readOnlyAllowsRead:false,...policyInput});
+  const disposition=ACP_READ_KINDS.has(kind)?"allow":permissionDisposition(mode,normalizePermissionKind(kind),{readOnlyAllowsRead:false,...policyInput});
   if(disposition==="allow")return optionOfKind(options,"allow_once")||optionOfKind(options,"allow_always");
   if(disposition==="deny")return optionOfKind(options,"reject_once");
   return null;

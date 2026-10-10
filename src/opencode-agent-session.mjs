@@ -10,6 +10,7 @@ import { Readable } from "node:stream";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { createOpencodeClient as createOpencodeV2Client } from "@opencode-ai/sdk/v2";
 import spawn from "cross-spawn";
+import { fileUriPath } from "./file-uri.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
@@ -459,7 +460,7 @@ export class OpenCodeAgentSession{
       if(part.type==="text")return {type:"text",text:String(part.text||"")};
       if(part.type==="image")return {type:"file",mime:part.mimeType||"image/png",url:`data:${part.mimeType||"image/png"};base64,${part.data}`};
       if(part.type==="resource_link"){
-        const path=String(part.uri||"").replace(/^file:\/\//,"");return {type:"file",mime:MIME[extname(path).toLowerCase()]||"text/plain",filename:part.name||undefined,url:part.uri};
+        const path=fileUriPath(part.uri)||"";return {type:"file",mime:MIME[extname(path).toLowerCase()]||"text/plain",filename:part.name||undefined,url:part.uri};
       }
       return {type:"text",text:JSON.stringify(part)};
     });

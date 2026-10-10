@@ -4,6 +4,7 @@ import { basename, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { AcpAgentSession } from "./acp-agent-session.mjs";
 import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
+import { fileUri } from "./file-uri.mjs";
 import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
@@ -166,7 +167,7 @@ async function acpPrompt(input=[]){
       const data=await readFile(item.path);
       out.push({type:"image",mimeType:mime,data:data.toString("base64")});
     }else if(item?.type==="mention"){
-      out.push({type:"resource_link",uri:`file://${String(item.path||"").replace(/\\/g,"/")}`,name:String(item.name||item.path||"file")});
+      out.push({type:"resource_link",uri:fileUri(item.path),name:String(item.name||item.path||"file")});
     }
   }
   return out;
