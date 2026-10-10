@@ -227,6 +227,9 @@
 .inline-approval .approval-card p.approval-thread{display:inline-flex;align-items:center;gap:6px;margin:8px 0 0;padding:2px 9px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2);font:500 10.5px/1.6 var(--mono)}
 .inline-approval .approval-card p.approval-thread+p{margin-top:8px}
 .inline-approval .approval-card>small{display:inline-flex;margin:10px 0 0;padding:2px 9px;border:1px solid var(--warnb);border-radius:99px;background:var(--warnt);color:var(--warn);font:600 10.5px/1.6 var(--mono)}
+/* The command being approved, shown even when the harness also gives a reason. */
+.approval-card .approval-command{max-height:140px;margin:8px 0 0;overflow:auto;padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:var(--bg0);color:var(--tx0);font:11.5px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.approval-card .approval-command code{padding:0;border:0;background:none;color:inherit;font:inherit}
 .inline-approval .approval-card .approval-permissions{max-height:160px;margin:10px 0 0;overflow:auto;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg0);color:var(--tx2);font:11px/1.55 var(--mono);white-space:pre-wrap}
 .inline-approval .approval-card .approval-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin:14px 0 0}
 .inline-approval .approval-card .approval-actions button{flex:0 0 auto;height:32px;padding:0 14px;border:1px solid var(--line2);border-radius:9px;background:var(--bg3);color:var(--tx1);font-size:12.5px;font-weight:550;cursor:pointer;transition:background .15s,color .15s,filter .15s,border-color .15s}

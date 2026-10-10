@@ -9,5 +9,8 @@ export function sameConversationMessageRowProps(previous,next){
     &&previous.projectPath===next.projectPath
     &&previous.environmentId===next.environmentId
     &&previous.threadId===next.threadId
-    &&previous.onEditFromHere===next.onEditFromHere;
+    &&previous.onEditFromHere===next.onEditFromHere
+    &&(previous.heading||"")===(next.heading||"")
+    &&(previous.outcomeLabel||"")===(next.outcomeLabel||"")
+    &&(previous.outcomeTone||"")===(next.outcomeTone||"");
 }

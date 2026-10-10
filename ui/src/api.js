@@ -8,7 +8,11 @@ export async function api(path, options={}) {
   const text=await response.text();
   let data=null;
   try{data=text?JSON.parse(text):{};}catch{data={raw:text};}
-  if(!response.ok) throw new Error(data?.error || data?.message || `HTTP ${response.status}`);
+  if(!response.ok){
+    const error=new Error(data?.error || data?.message || `HTTP ${response.status}`);
+    error.status=response.status;error.data=data;
+    throw error;
+  }
   return data;
 }
 export function wsUrl(path){

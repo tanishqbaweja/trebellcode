@@ -45,6 +45,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const agentInfoSeqRef=useRef(0);
   const [agentMessage,setAgentMessage]=useState("");
   const [agentMessageTarget,setAgentMessageTarget]=useState(null);
+  const [agentMessageError,setAgentMessageError]=useState(false);
+  const [providerMessageError,setProviderMessageError]=useState(false);
+  const [savingInstance,setSavingInstance]=useState(false);
+  const showAgentMessage=(text,error=false)=>{setAgentMessage(text);setAgentMessageError(Boolean(error))};
+  const showProviderMessage=(text,error=false)=>{setProviderMessage(text);setProviderMessageError(Boolean(error))};
   const [agentSelectionOverride,setAgentSelectionOverride]=useState(null);
   const [installingAgent,setInstallingAgent]=useState(null);
   const [authenticatingAgent,setAuthenticatingAgent]=useState(null);
@@ -122,14 +127,14 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   async function selectAgentRuntime(kind,instanceId=null){
     setAgentSelectionOverride(kind);
     setAgentMessageTarget(kind);
-    setAgentMessage("Switching…");
+    showAgentMessage("Switching…");
     try{
       const result=await switchRuntime({runtime:kind,instanceId,resetThread:true},()=>api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:kind,instanceId}}));
       setAgentInfo(result);
-      setAgentMessage(`${result.selected?.status?.name||kind} selected.`);
+      showAgentMessage(`${result.selected?.status?.name||kind} selected.`);
     }catch(error){
       // The selection falls back to the harness that is still active, so the failure is reported there instead of on the runtime that failed.
-      setAgentMessageTarget(null);setAgentMessage(`Could not switch to ${(agentInfo?.definitions||[]).find(item=>item.id===kind)?.name||kind}: ${error.message}`);
+      setAgentMessageTarget(null);showAgentMessage(`Could not switch to ${(agentInfo?.definitions||[]).find(item=>item.id===kind)?.name||kind}: ${error.message}`,true);
     }
     finally{setAgentSelectionOverride(null)}
   }
@@ -139,9 +144,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     });
   }
   async function saveInstance(){
-    if(!instanceDraft)return;
+    if(!instanceDraft||savingInstance)return;
+    setSavingInstance(true);
     setAgentMessageTarget(instanceDraft.kind||selectedAgent);
-    setAgentMessage("Saving runtime profile…");
+    showAgentMessage("Saving runtime profile…");
     try{
       const instance={...instanceDraft};delete instance.environmentKeys;
       const request=()=>api("/api/agent-runtimes",{method:"POST",body:{action:"upsert",instance}});
@@ -149,21 +155,22 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       const active=activeInstanceId===instance.id;
       const result=active?await switchRuntime({runtime:instance.kind||selectedAgent,instanceId:instance.id,resetThread:true},request):await request();
       if(!active&&result.selectedInstanceId===instance.id)await switchRuntime({runtime:result.selectedRuntime||instance.kind,instanceId:instance.id,resetThread:true},async()=>result,{gate:false});
-      setAgentInfo(result);setInstanceDraft(null);setAgentMessage("Runtime profile saved.");
-    }catch(error){setAgentMessage(error.message)}
+      setAgentInfo(result);setInstanceDraft(null);showAgentMessage("Runtime profile saved.");
+    }catch(error){showAgentMessage(error.message,true)}
+    finally{setSavingInstance(false)}
   }
   async function removeInstance(instance){
     if(!instance||instance.id===`${instance.kind}-default`)return;
     setAgentMessageTarget(instance.kind||selectedAgent);
-    setAgentMessage("Removing runtime profile…");
+    showAgentMessage("Removing runtime profile…");
     try{
       const request=()=>api("/api/agent-runtimes?id="+encodeURIComponent(instance.id),{method:"DELETE"});
       // Removing the active profile moves its harness back to the default profile: the same single reconnect as a switch.
       const active=activeInstanceId===instance.id;
       const result=active?await switchRuntime({runtime:instance.kind||selectedAgent,instanceId:`${instance.kind||selectedAgent}-default`,resetThread:true},request):await request();
       if(!active&&result.resetTo)await switchRuntime({runtime:result.selectedRuntime||result.kind||settings.agentRuntime,instanceId:result.selectedInstanceId||result.resetTo,resetThread:true},async()=>result,{gate:false});
-      setAgentInfo(result);setInstanceDraft(null);setAgentMessage("Runtime profile removed.");
-    }catch(error){setAgentMessage(error.message)}
+      setAgentInfo(result);setInstanceDraft(null);showAgentMessage("Runtime profile removed.");
+    }catch(error){showAgentMessage(error.message,true)}
   }
   async function installAgentRuntime(kind){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind);if(!definition?.installable)return;
@@ -173,31 +180,31 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       :"Install or update "+label+" in the selected environment?\n\nTrebell will run: "+(definition.installCommand||"npm install -g "+packageName);
     if(!confirm(confirmation))return;
     setAgentMessageTarget(kind);
-    setInstallingAgent(kind);setAgentMessage("Installing "+label+"…");
+    setInstallingAgent(kind);showAgentMessage("Installing "+label+"…");
     try{
       const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"install",runtime:kind,environmentId:settings.activeEnvironmentId||null}});
       // Reinstalling the active harness reloads it once the install finishes; the transport stays usable during the install itself.
       if(kind===selectedAgent)await switchRuntime({runtime:result.selectedRuntime||kind,instanceId:result.selectedInstanceId||null,resetThread:true},async()=>result,{gate:false});
       setAgentInfo(result);
       const status=result.installed?.status;
-      setAgentMessage(status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.");
-    }catch(error){setAgentMessage(error.message)}finally{setInstallingAgent(null)}
+      showAgentMessage(status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.");
+    }catch(error){showAgentMessage(error.message,true)}finally{setInstallingAgent(null)}
   }
   async function authenticateAgentRuntime(kind,instanceId){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind);if(!definition?.canAuthenticate)return;
     setAgentMessageTarget(kind);
-    setAuthenticatingAgent(instanceId||kind);setAgentMessage("Opening "+(definition.name||kind)+" sign in…");
+    setAuthenticatingAgent(instanceId||kind);showAgentMessage("Opening "+(definition.name||kind)+" sign in…");
     try{
       const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action:"login",runtime:kind,instanceId:instanceId||null,environmentId:runtimeEnvironmentId||null,cwd:projectPath||null}});
       if(result?.authenticated){
-        setAgentMessage((definition.name||kind)+" sign in verified.");
+        showAgentMessage((definition.name||kind)+" sign in verified.");
         if(result.agentSnapshot)setAgentInfo(result.agentSnapshot);
         else await loadAgentRuntimes();
       }else{
-        setAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
+        showAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
         if(result?.session)onOpenRuntimeAuthTerminal?.(result.session);
       }
-    }catch(error){setAgentMessage(error.message)}
+    }catch(error){showAgentMessage(error.message,true)}
     finally{setAuthenticatingAgent(null)}
   }
   async function save(patch){
@@ -227,7 +234,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     onSettings(next);
     if("modelProvider" in patch){
       setApiKey("");
-      setProviderMessage("");
+      showProviderMessage("");
       try{
         if(providerResult){
           setProviderInfo(providerResult);
@@ -336,7 +343,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   }
   async function addCustomModel(){
     const id=modelDraft.id.trim();if(!id)return;
-    if(selectedAgent==="opencode"&&!id.includes("/")){setAgentMessage("OpenCode custom models must use provider/model format.");return}
+    if(selectedAgent==="opencode"&&!id.includes("/")){showAgentMessage("OpenCode custom models must use provider/model format.",true);return}
     const provider=selectedManagedInference?selected:null;
     const entry={
       id,name:modelDraft.name.trim()||id,runtime:selectedAgent,provider,
@@ -346,34 +353,34 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       cacheReadPrice:modelDraft.cacheReadPrice===""?null:Number(modelDraft.cacheReadPrice),
       cacheWritePrice:modelDraft.cacheWritePrice===""?null:Number(modelDraft.cacheWritePrice),
     };
-    for(const key of ["inputPrice","outputPrice","cacheReadPrice","cacheWritePrice"])if(entry[key]!=null&&!Number.isFinite(entry[key])){setAgentMessage("Custom model prices must be valid numbers.");return}
+    for(const key of ["inputPrice","outputPrice","cacheReadPrice","cacheWritePrice"])if(entry[key]!=null&&(!Number.isFinite(entry[key])||entry[key]<0)){showAgentMessage("Custom model prices must be numbers of 0 or more.",true);return}
     const current=Array.isArray(settings.customModels)?settings.customModels:[];
     const next=[...current.filter(item=>!(item.id===id&&item.runtime===selectedAgent&&(!selectedManagedInference||item.provider===selected))),entry];
-    await save({customModels:next});setModelDraft({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});setCustomModelEditorOpen(false);setAgentMessage("Custom model saved.");
+    await save({customModels:next});setModelDraft({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});setCustomModelEditorOpen(false);showAgentMessage("Custom model saved.");
   }
   async function removeCustomModel(item){
     const current=Array.isArray(settings.customModels)?settings.customModels:[];
     await save({customModels:current.filter(candidate=>!(candidate.id===item.id&&candidate.runtime===item.runtime&&candidate.provider===item.provider))});
   }
   async function saveProviderKey(){
-    setProviderMessage("Saving…");
+    showProviderMessage("Saving…");
     try{
       const result=await api("/api/providers",{method:"POST",body:{provider:selected,apiKey}});
       setApiKey("");
       setProviderInfo(result);
-      setProviderMessage(result.ready?"API key saved. Harness ready.":"API key saved.");
+      showProviderMessage(result.ready?"API key saved. Harness ready.":"API key saved.");
       await onProviderUpdated?.({provider:result.selected||selected,agentRuntime:result.agentRuntime||selectedAgent,catalog:result,refreshBootstrap:false});
-    }catch(error){setProviderMessage(error.message)}
+    }catch(error){showProviderMessage(error.message,true)}
   }
   async function clearProviderKey(){
-    setProviderMessage("Removing…");
+    showProviderMessage("Removing…");
     try{
       const result=await api("/api/providers",{method:"POST",body:{provider:selected,apiKey:""}});
       setApiKey("");
       setProviderInfo(result);
-      setProviderMessage("API key removed.");
+      showProviderMessage("API key removed.");
       await onProviderUpdated?.({provider:result.selected||selected,agentRuntime:result.agentRuntime||selectedAgent,catalog:result,refreshBootstrap:false});
-    }catch(error){setProviderMessage(error.message)}
+    }catch(error){showProviderMessage(error.message,true)}
   }
   async function refresh({
     reportErrors=false,
@@ -397,7 +404,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       const key=checks[index]?.[0];
       if(key==="update"){
         if(result.status==="fulfilled")setUpdate(result.value);
-        else if(!update)setUpdate({error:result.reason?.message||String(result.reason)});
+        else if(!update)setUpdate({error:result.reason?.message||String(result.reason),...(result.reason?.data?.current?{current:result.reason.data.current}:{})});
       }else if(key==="diagnostics"){
         if(result.status==="fulfilled")setDiagnostics(result.value);
         else if(!diagnostics)setDiagnostics({error:result.reason?.message||String(result.reason)});
@@ -527,6 +534,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const providerStatusText=providerSwitching?"switching provider…":selectedStatus?.hasKey?(modelError?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required";
   const selectedAgentStatus=runtimeStatusForKind(agentInfo,selectedAgent,{preferSelected:true});
   const selectedAgentDefinition=(agentInfo?.definitions||[]).find(item=>item.id===selectedAgent)||null;
+  const agentMessageHarness=agentMessageTarget&&agentMessageTarget!==selectedAgent?((agentInfo?.definitions||[]).find(item=>item.id===agentMessageTarget)?.name||agentMessageTarget):"";
+  const agentMessageText=agentMessageHarness&&!agentMessage.includes(agentMessageHarness)?agentMessageHarness+": "+agentMessage:agentMessage;
   const selectedAgentCapabilities=Object.keys(runtimeCapabilities||{}).length?runtimeCapabilities:(selectedAgentDefinition?.capabilities||(agentInfo?.selectedRuntime===selectedAgent?agentInfo?.capabilities:null)||{});
   const desktopTools=desktopBridgeToolAvailability(window.trebellDesktop);
   const selectedInstances=(agentInfo?.instances||[]).filter(item=>item.kind===selectedAgent);
@@ -620,7 +629,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id)}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
         })}</div>
         {selectedAgentDefinition?.multipleInstances!==false&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
-          <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={selectedAgentDefinition?.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>
+          <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>
           {selectedInstances.map(instance=>{
             const status=agentInfo?.statuses?.find(item=>item.id===instance.id);const active=activeInstanceId===instance.id;
             return <div className="runtime-profile-row" key={instance.id}>
@@ -640,9 +649,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           {instanceDraft.kind==="opencode"&&<label>Existing OpenCode server URL<input value={instanceDraft.serverUrl||""} onChange={e=>setInstanceDraft({...instanceDraft,serverUrl:e.target.value})} placeholder="Optional, e.g. http://127.0.0.1:4096"/></label>}
           <label>Approved inherited environment variables<textarea value={(instanceDraft.approvedEnvironmentKeys||[]).join("\n")} onChange={e=>setInstanceDraft({...instanceDraft,approvedEnvironmentKeys:e.target.value.split(/\r?\n|,/).map(value=>value.trim()).filter(Boolean)})} placeholder={"One variable name per line\nExample: HTTPS_PROXY"}/></label>
           <p>Trebell passes only a safe OS baseline, this runtime's own credential variables, and the names listed here. Values are read from the parent process at launch time and are not stored in the profile.</p>
-          <div className="provider-key-actions"><button className="setting-action" onClick={saveInstance}>Save profile</button><button onClick={()=>setInstanceDraft(null)}>Cancel</button></div>
+          <div className="provider-key-actions"><button className="setting-action" onClick={saveInstance} disabled={savingInstance} aria-busy={savingInstance?"true":undefined}>{savingInstance&&<RefreshCw size={12} className="spin" aria-hidden="true"/>}Save profile</button><button onClick={()=>setInstanceDraft(null)}>Cancel</button></div>
         </div>}
-        <p className={!agentInfoError&&(agentInfo===null||selectedAgentStatus?.available)?"provider-note":"provider-status-error"}><strong>{selectedAgentStatus?.name||selectedAgent}</strong> · {agentInfo===null?"checking…":selectedAgentStatus?.authenticated==null&&selectedAgentStatus?.message?selectedAgentStatus.message:selectedAgentStatus?.available?"ready":selectedAgentStatus?.message||agentInfo?.error||"setup required"}{agentInfoError&&<span data-testid="agent-runtime-refresh-error" role="alert"> · Could not refresh harness status ({agentInfoError}); showing the last known list</span>}{agentMessage&&(!agentMessageTarget||agentMessageTarget===selectedAgent)?" · "+agentMessage:""} <button onClick={()=>loadAgentRuntimes()} disabled={!!authenticatingAgent}><RefreshCw size={11}/> Refresh</button></p>
+        <p className={!agentInfoError&&(agentInfo===null||selectedAgentStatus?.available)?"provider-note":"provider-status-error"}><strong>{selectedAgentStatus?.name||selectedAgent}</strong> · {agentInfo===null?"checking…":selectedAgentStatus?.authenticated==null&&selectedAgentStatus?.message?selectedAgentStatus.message:selectedAgentStatus?.available?"ready":selectedAgentStatus?.message||agentInfo?.error||"setup required"}{agentInfoError&&<span data-testid="agent-runtime-refresh-error" role="alert"> · Could not refresh harness status ({agentInfoError}); showing the last known list</span>}{agentMessage&&<span className={"agent-runtime-message"+(agentMessageError?" error":"")} data-testid="agent-runtime-message" role={agentMessageError?"alert":undefined}>{" · "+agentMessageText}</span>} <button onClick={()=>loadAgentRuntimes()} disabled={!!authenticatingAgent}><RefreshCw size={11}/> Refresh</button></p>
       </div>}
       {settingsSection==="agents"&&selectedManagedInference&&<div className="settings-card provider-settings-card" {...targetProps("agents-provider")} data-testid="provider-settings-card" aria-busy={providerSwitching?"true":"false"}>
         <h3>Model provider</h3>
@@ -653,14 +662,14 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           </select>
         </label>
         <label>API key
-          <input data-testid="provider-api-key" type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={selectedStatus?.hasKey?"Saved key ••••••••":"Paste API key"}/>
+          <input data-testid="provider-api-key" type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&apiKey.trim()){e.preventDefault();saveProviderKey()}}} placeholder={selectedStatus?.hasKey?"Saved key ••••••••":"Paste API key"}/>
         </label>
         <div className="provider-key-actions">
           <button data-testid="save-provider-key" className="setting-action" onClick={saveProviderKey} disabled={!apiKey.trim()}>Save API key</button>
           {selectedStatus?.hasKey&&<button onClick={clearProviderKey}>Remove key</button>}
         </div>
         <p className="provider-note">{PROVIDER_NOTES[selected]||"Models are loaded from the selected provider when its API supports discovery."}</p>
-        <p data-testid="provider-status" className={modelError?"provider-status-error":""}><strong>{MODEL_PROVIDER_LABELS[selected]||selectedStatus?.name||selected}</strong> · {providerStatusText}{providerMessage?" · "+providerMessage:""}{modelError&&modelError!==providerStatusText?" · "+modelError:""}</p>
+        <p data-testid="provider-status" className={modelError||providerMessageError?"provider-status-error":""}><strong>{MODEL_PROVIDER_LABELS[selected]||selectedStatus?.name||selected}</strong> · {providerStatusText}{providerMessage?" · "+providerMessage:""}{modelError&&modelError!==providerStatusText?" · "+modelError:""}</p>
       </div>}
       {settingsSection==="agents"&&["codex","claude","opencode","cursor","grok","antigravity"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-models")}>
         <h3>Custom models</h3>
@@ -694,7 +703,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         {!scopedMcpServers.length&&!mcpDraft&&<p className="provider-note">No Trebell-managed MCP servers are configured for this runtime and environment.</p>}
         {mcpMessage&&<p className={/failed|error/i.test(mcpMessage)?"provider-status-error":"provider-note"}>{mcpMessage}</p>}
       </div>}
-      {settingsSection==="agents"&&<div className="settings-card" {...targetProps("agents-runtime")}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available?"ready":"not ready"}</strong>{selectedManagedInference&&<><br/>{selectedAgent==="codex"&&<>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/></>}Inference: <strong>{modelProviderLabel(runtime?.provider||selected)}</strong></>}</p><button onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>}
+      {settingsSection==="agents"&&<div className="settings-card" {...targetProps("agents-runtime")}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available?"ready":"not ready"}</strong>{selectedManagedInference&&<><br/>{selectedAgent==="codex"&&<>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/></>}Inference: <strong>{modelProviderLabel(runtime?.provider||selected)}</strong></>}</p><button onClick={()=>refresh({reportErrors:true,includeUpdate:false})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>}
       {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-followups")}><h3>Follow-up behavior</h3>{selectedAgentCapabilities.steering?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">{selectedAgent==="native"?"Steer current turn at the next safe boundary":"Steer current turn immediately"}</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. This runtime does not expose in-flight steering.</p>}</div>}
       {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-context-management")}>
         <h3>Context management</h3>

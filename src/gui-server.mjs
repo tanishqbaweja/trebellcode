@@ -150,6 +150,15 @@ async function readJsonBody(req,maxBytes=2*1024*1024){
   try{return JSON.parse(body)}catch{throw new Error("invalid_json")}
 }
 
+// An uploaded file's stored name: characters outside [a-zA-Z0-9._-] become "_", and a name longer than 80 characters keeps
+// its start and its extension.
+export function safeAttachmentName(name,fallback="attachment.bin"){
+  const safe=String(name||fallback).replace(/[^a-zA-Z0-9._-]/g,"_");
+  if(safe.length<=80)return safe;
+  const dot=safe.lastIndexOf(".");
+  const extension=dot>0&&safe.length-dot<=12?safe.slice(dot):"";
+  return safe.slice(0,80-extension.length)+extension;
+}
 export function requestAbortController(req,res){
   const controller=new AbortController();
   const abort=()=>{
@@ -231,6 +240,11 @@ async function stopChildProcess(child){
   try{child.stderr?.destroy();}catch{}
 }
 
+// "OpenAI API" -> "OpenAI API key", "Anthropic" -> "Anthropic API key".
+export function apiKeyLabel(providerName){
+  const name=String(providerName||"Provider").trim();
+  return /\bAPI$/i.test(name)?name+" key":name+" API key";
+}
 export function codexAppServerEnvironment({env=process.env,runtimeInstance=null,runtimeHome=null,platform=process.platform}={}){
   return {
     ...buildRuntimeEnvironment("codex",{
@@ -343,18 +357,26 @@ function fakeDefaultModel(provider=DEFAULT_MODEL_PROVIDER){
   return fakeModels(provider).includes(MOCK_DEFAULT_MODEL)?MOCK_DEFAULT_MODEL:null;
 }
 
+// A byte count for the Runtime tab, e.g. "28.0 GB" or "2.26 TB".
+export function formatByteSize(bytes){
+  const value=Number(bytes);
+  if(!Number.isFinite(value)||value<0)return "\u2014";
+  const units=["B","KB","MB","GB","TB","PB"];let size=value,unit=0;
+  while(size>=1024&&unit<units.length-1){size/=1024;unit++}
+  return (unit===0?String(Math.round(size)):size>=100?size.toFixed(0):size>=10?size.toFixed(1):size.toFixed(2))+" "+units[unit];
+}
 function statsSnapshot(){
   const load=cpus().length ? Math.min(100,Math.round((requireLoad()/cpus().length)*100)) : 0;
   const usedMem=Math.max(0,totalmem()-freemem());
-  let disk="â€”";
+  let disk="\u2014";
   try{
     const fs=statfsSync(tmpdir());
     const used=(fs.blocks-fs.bfree)*fs.bsize;
-    disk=`${Math.round(used/1024/1024)} MB`;
+    disk=formatByteSize(used);
   }catch{}
   return {
     cpu:`${load}%`,
-    memory:`${Math.round(usedMem/1024/1024)} MB`,
+    memory:formatByteSize(usedMem),
     disk,
     network:"Local",
   };
@@ -1852,7 +1874,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
                 validatedCatalog=await providers.models(provider);
               }catch(error){
                 providers.setKey(provider,previousKey);
-                throw new Error(`${providers.get(provider).name} API key validation failed: ${error instanceof Error?error.message:String(error)}`);
+                throw new Error(`${apiKeyLabel(providers.get(provider).name)} validation failed: ${error instanceof Error?error.message:String(error)}`);
               }
             }
           }
@@ -2857,7 +2879,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const body=await readJsonBody(req,70*1024*1024);
         const dir=join(trebellHome(env),"attachments");
         await mkdir(dir,{recursive:true});
-        const safe=String(body.name||"pasted-context.txt").replace(/[^a-zA-Z0-9._-]/g,"_").slice(-80);
+        const safe=safeAttachmentName(body.name,"pasted-context.txt");
         const path=join(dir,`${Date.now()}-${randomUUID().slice(0,8)}-${safe}`);
         await writeFile(path,String(body.text||""),"utf8");
         return json(res,200,{path,name:basename(path),size:Buffer.byteLength(String(body.text||""),"utf8"),mime:"text/plain"});
@@ -2872,7 +2894,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(data.length>maxBytes) return json(res,413,{error:`${mime.startsWith("image/")?"Image":"Attachment"} is larger than ${Math.round(maxBytes/1024/1024)} MB`});
         const dir=join(trebellHome(env),"attachments");
         await mkdir(dir,{recursive:true});
-        const safe=String(body.name||"attachment.bin").replace(/[^a-zA-Z0-9._-]/g,"_").slice(-80);
+        const safe=safeAttachmentName(body.name,"attachment.bin");
         const path=join(dir,`${Date.now()}-${randomUUID().slice(0,8)}-${safe}`);
         await writeFile(path,data);
         return json(res,200,{path,name:basename(path),size:data.length,mime});

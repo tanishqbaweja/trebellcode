@@ -1,4 +1,4 @@
-export const DEFAULT_LAYOUT={sidebarWidth:258,rightPanelWidth:460,terminalHeight:330};
+export const DEFAULT_LAYOUT={sidebarWidth:264,rightPanelWidth:440,terminalHeight:330};
 export const LAYOUT_LIMITS={
   sidebarWidth:[210,420],
   rightPanelWidth:[340,820],

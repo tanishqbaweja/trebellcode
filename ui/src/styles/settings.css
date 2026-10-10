@@ -336,3 +336,5 @@
 }
 
 :root:root .settings-page.redesigned-settings [hidden]{display:none!important}
+/* Harness result line: a failed install, update, sign in or switch reads as an error inside the muted footer. */
+:root:root .settings-page.redesigned-settings .agent-runtime-settings .agent-runtime-message.error{color:var(--err)!important;font-weight:550}

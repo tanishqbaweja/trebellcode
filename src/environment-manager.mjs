@@ -156,6 +156,13 @@ function normalizedPort(value){
   const n=Number(value||22);
   return Number.isInteger(n)&&n>0&&n<=65535?n:22;
 }
+// A saved SSH profile's port: blank means 22; anything else must be a whole number from 1 to 65535.
+export function validatedSshPort(value){
+  if(value==null||String(value).trim()==="")return 22;
+  const n=Number(value);
+  if(!Number.isInteger(n)||n<1||n>65535)throw new Error("SSH port must be a whole number from 1 to 65535");
+  return n;
+}
 
 function validateProfile(input={}){
   const type=["local","wsl","ssh"].includes(input.type)?input.type:"local";
@@ -175,7 +182,7 @@ function validateProfile(input={}){
   if(type==="ssh"){
     next.host=String(input.host||"").trim().slice(0,255);
     next.user=String(input.user||"").trim().slice(0,120);
-    next.port=normalizedPort(input.port);
+    next.port=validatedSshPort(input.port);
     next.identityFile=String(input.identityFile||"").trim();
     if(!next.host) throw new Error("SSH host is required");
   }
