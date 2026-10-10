@@ -950,8 +950,10 @@ export default function App(){
   useEffect(()=>{
     const node=conversationScrollRef.current;if(!node||typeof ResizeObserver==="undefined")return;
     const content=node.firstElementChild;if(!content)return;
+    // A view that follows the end stays on the newest message when the messages grow and when the view itself is resized, as
+    // when the terminal opens beneath it (T3 keeps the end on layout changes too). A view scrolled up stays where it is.
     const observer=new ResizeObserver(()=>{if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight)});
-    observer.observe(content);return()=>observer.disconnect();
+    observer.observe(content);observer.observe(node);return()=>observer.disconnect();
   },[section,activeThread?.id]);
   useEffect(()=>{
     if(!threadFind.open)return;
