@@ -354,9 +354,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     if(selected)patch.appearance="dark";
     setThemeMessage("");if(!await saveSetting(patch))return;
     if(themeDraft?.id===theme.id)setThemeDraft(null);
-    // The delete is immediate and the app's undo toast offers it back, as for archived threads: Undo restores the theme in its place, selected again if it was.
+    // The delete is immediate and the app's undo toast offers it back, as for archived threads: Undo restores the theme in its place, selected again if it was
+    // and nothing else was chosen since (the theme is still the "dark" the delete fell back to).
     // It saves through save(), so a failed restore shows in the Settings alert, or in the app's error toast once Settings is closed.
-    const restore=()=>{const latest=(Array.isArray(settingsRef.current.customThemes)?settingsRef.current.customThemes:[]).filter(item=>item.id!==theme.id);latest.splice(index<0?latest.length:index,0,theme);return save({customThemes:latest,...(selected?{appearance:theme.id}:{})})};
+    const restore=()=>{const latest=(Array.isArray(settingsRef.current.customThemes)?settingsRef.current.customThemes:[]).filter(item=>item.id!==theme.id);latest.splice(index<0?latest.length:index,0,theme);return save({customThemes:latest,...(selected&&settingsRef.current.appearance==="dark"?{appearance:theme.id}:{})})};
     if(onOfferUndo)onOfferUndo(`Theme “${theme.name}” deleted`,restore);else setThemeMessage("Theme removed.");
   }
   async function importThemeFile(event){
