@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { AgentRuntimeManager, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCapabilities, runtimeCompatibility, runtimeExecutableCandidates } from "../src/agent-runtime-manager.mjs";
+import { AgentRuntimeManager, commandOnPath, openCodeCommandHolder, openCodeInstallOwner, openCodeStatusMessage, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCapabilities, runtimeCompatibility, runtimeExecutableCandidates } from "../src/agent-runtime-manager.mjs";
 import { runtimeCapabilityKinds, sharedRuntimeCapabilities } from "../src/runtime-capabilities.mjs";
 import { AcpAgentSession } from "../src/acp-agent-session.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
@@ -28,8 +29,9 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     const selected=await manager.setActive({runtime:"cursor",instanceId:fake.id});
     assert.equal(selected.runtime,"cursor");
     assert.equal(state.settings().agentRuntimeInstanceId,fake.id);
+    // A "Cursor" that cannot answer over ACP reports why, instead of a stand-in model.
     const models=await manager.models(fake);
-    assert.deepEqual(models.models,["cursor-default"]);
+    assert.deepEqual(models.models,[]);assert.match(models.error,/Cursor could not list its models/);
     assert.equal(manager.capabilities("codex").nativeSandbox,true);
     assert.equal(manager.capabilities("native").dynamicTools,true);
     assert.equal(manager.capabilities("native").dynamicToolExpansion,true);
@@ -49,7 +51,9 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(manager.capabilities("claude").runtimeProfileSwitching,true);
     assert.equal(manager.capabilities("cursor").fork,"runtime");
     assert.equal(manager.capabilities("cursor").mcpInjection,true);
-    assert.equal(manager.capabilities("cursor").clientFilesystem,true);
+    assert.equal(manager.capabilities("cursor").clientFilesystem,false,"Cursor runs its own file tools (T3 offers ACP agents no client files)");
+    assert.equal(manager.capabilities("antigravity").clientFilesystem,true);
+    assert.equal(manager.capabilities("grok").clientTerminal,false);
     assert.equal(manager.capabilities("cursor").nativeSandbox,false);
   }finally{
     await rm(home,{recursive:true,force:true});
@@ -86,7 +90,9 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   const acp=runtimeCapabilities("grok");
   assert.equal(acp.queue,true,"Trebell supplies the queue for external runtimes");
   assert.equal(acp.fork,"runtime","ACP forking must stay conditional on what the connected runtime advertises");
-  assert.equal(acp.rewind,false);
+  assert.equal(acp.rewind,true,"a Grok revert starts a fresh session, as T3's ACP rollbackThread does");
+  assert.equal(runtimeCapabilities("antigravity").rewind,true);
+  assert.equal(runtimeCapabilities("cursor").rewind,false,"Cursor offers no rollback (T3 canRollbackThread false)");
   assert.equal(acp.delegation,true,"manual Trebell delegation stays available even when the runtime cannot invoke dynamic tools itself");
   assert.equal(acp.videoAttachments,true);
   assert.equal(runtimeCapabilities("antigravity").videoAttachments,false,"Antigravity attachment limits belong in the capability contract, not UI runtime-name checks");
@@ -100,7 +106,7 @@ test("runtime launch flags preserve Trebell permission-mode boundaries",()=>{
   assert.deepEqual(manager.acpArgs(cursor,"auto"),["--auto-review","acp"]);
   assert.deepEqual(manager.acpArgs(cursor,"full"),["--force","acp"]);
   assert.deepEqual(manager.acpArgs(grok,"supervised"),["--permission-mode","default","agent","stdio"]);
-  assert.deepEqual(manager.acpArgs(grok,"edits"),["--permission-mode","acceptEdits","agent","stdio"]);
+  assert.deepEqual(manager.acpArgs(grok,"edits"),["--permission-mode","default","agent","stdio"],"grok agent has no accept-edits mode (it treats acceptEdits as asking); Trebell answers its edit requests itself");
   assert.deepEqual(manager.acpArgs(grok,"auto"),["--permission-mode","auto","agent","stdio"]);
   assert.deepEqual(manager.acpArgs(grok,"full"),["agent","--always-approve","stdio"]);
 });
@@ -129,10 +135,15 @@ if(args[0]==="--version")process.stdout.write("2026.09.26-dd393fe\n");
 else if(args[0]==="about")process.stdout.write(args.join(" ")==="about --format json"?JSON.stringify({cliVersion:"2026.09.26-dd393fe",userEmail:"dev@example.test"})+"\n":"User Email          dev@example.test\n");
 else if(args.at(-1)==="acp"){
   const send=message=>process.stdout.write(JSON.stringify(message)+"\n");
+  let picker=false;
   readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{
     let m;try{m=JSON.parse(line)}catch{return}
-    if(m.method==="initialize")send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"cursor-launcher-fixture"},agentCapabilities:{sessionCapabilities:{close:{}}}}});
-    else if(m.method==="session/new")send({jsonrpc:"2.0",id:m.id,result:{sessionId:"cursor-launcher-session",models:{currentModelId:"auto",availableModels:[{modelId:"auto",name:"Auto"}]}}});
+    if(m.method==="initialize"){picker=m.params?.clientCapabilities?._meta?.parameterizedModelPicker===true;send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"cursor-launcher-fixture"},agentCapabilities:{sessionCapabilities:{close:{}}}}})}
+    // Cursor 2026.09 lists base model ids with per-model options only to a client with the parameterized model picker.
+    else if(m.method==="cursor/list_available_models")send(picker
+      ?{jsonrpc:"2.0",id:m.id,result:{models:[{value:"default",name:"Auto",configOptions:[]},{value:"gpt-5.6-sol",name:"GPT-5.6 Sol",configOptions:[{id:"reasoning",name:"Reasoning",category:"thought_level",type:"select",currentValue:"medium",options:[{value:"none",name:"None"},{value:"low",name:"Low"},{value:"medium",name:"Medium"},{value:"high",name:"High"},{value:"xhigh",name:"Extra High"}]}]}]}}
+      :{jsonrpc:"2.0",id:m.id,error:{code:-32601,message:"Method not found"}});
+    else if(m.method==="session/new")send({jsonrpc:"2.0",id:m.id,result:{sessionId:"cursor-launcher-session",models:{currentModelId:"default",availableModels:[{modelId:"default",name:"Auto"}]},configOptions:[{id:"model",name:"Model",category:"model",type:"select",currentValue:"default",options:[{value:"default",name:"Auto"}]}]}});
     else if(m.id!=null)send({jsonrpc:"2.0",id:m.id,result:{}});
   });
 }else{process.stderr.write("unexpected arguments: "+args.join(" ")+"\n");process.exitCode=2}
@@ -155,10 +166,15 @@ test("the official Cursor .cmd launcher wins over PATH and serves version, about
     const status=await manager.probe(instance);
     assert.equal(status.installed,true);assert.equal(status.available,true);assert.equal(status.binary,launcher);
     assert.equal(status.version,"2026.09.26-dd393fe");assert.equal(status.authenticated,true);assert.equal(status.account?.email,"dev@example.test");
+    // The model list is Cursor's own (T3's ACP-era discovery), with names and per-model effort; Auto is the default.
+    const listed=await manager.models(instance);
+    assert.deepEqual(listed.models,["default","gpt-5.6-sol"]);assert.equal(listed.preferred,"default");assert.equal(listed.source,"live");
+    assert.equal(listed.metadata[1].name,"GPT-5.6 Sol");assert.deepEqual(listed.metadata[1].reasoningEfforts,["low","medium","high","xhigh"]);assert.equal(listed.metadata[1].defaultReasoningEffort,"medium");
     const session=new AcpAgentSession({runtime:"cursor",command:manager.executable(instance),args:manager.acpArgs(instance,"supervised"),cwd:root,env:manager.childEnv(instance)});
     try{
       const started=await session.start();
       assert.equal(started.session.sessionId,"cursor-launcher-session");assert.equal(started.initialize.agentInfo.name,"cursor-launcher-fixture");
+      assert.equal(session.model,"default","a thread with no model runs on Cursor's Auto, set explicitly because Cursor saves its model globally");
     }finally{await session.close()}
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
 });
@@ -242,6 +258,38 @@ test("Claude runtime profiles validate and persist auto-compact thresholds",asyn
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("Claude models and plan usage come from Claude Code's own capability probe",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-claude-models-"));
+  try{
+    const env={...process.env,TREBELL_HOME:home};
+    const state=new TrebellStateStore(env);
+    const loads=[];let failure=null;
+    const probe={
+      models:[
+        {value:"default",displayName:"Default (recommended)",description:"Opus 5.5",supportedEffortLevels:["low","medium","high","xhigh","max"],supportsFastMode:true},
+        {value:"haiku",displayName:"Haiku",supportedEffortLevels:["low","high","ultra"]},
+      ],
+      commands:[{name:"review",description:"Review"}],agents:[{name:"Plan"}],usage:{rate_limits_available:true,rate_limits:{five_hour:{utilization:12,resets_at:"2026-10-09T22:59:59Z"}}},checkedAt:"2026-10-09T20:00:00.000Z",
+    };
+    const claudeCapabilitiesCache={load:async(input,options)=>{loads.push({input,options});if(failure)throw failure;return probe}};
+    const manager=new AgentRuntimeManager({state,env,claudeCapabilitiesCache});
+    manager.probe=async()=>({available:true,installed:true,authenticated:true});
+    const models=await manager.models("claude");
+    assert.deepEqual(models.models,["default","haiku"]);
+    assert.equal(models.preferred,"default","Claude Code's own default model is preselected");
+    assert.equal(models.source,"live");
+    assert.deepEqual(models.inventory,{commands:[{name:"review",description:"Review"}],agents:[{name:"Plan"}]},"the probe's commands and agents fill a new chat's menus");
+    assert.deepEqual(models.metadata[0],{id:"default",name:"Default (recommended)",provider:"claude",agent:"Claude Code",description:"Opus 5.5",supportedReasoningEfforts:["low","medium","high","xhigh","max"],supportsFastMode:true,supportedServiceTiers:["fast"]});
+    assert.deepEqual(models.metadata[1].supportedReasoningEfforts,["low","high"]);
+    assert.equal(loads[0].input.cwd,null);assert.equal(loads[0].input.spawnProcess,null);assert.equal(loads[0].input.scope,"");assert.equal(loads[0].input.includeUsage,true);
+    const usage=await manager.usageLimits("claude");
+    assert.deepEqual(usage.windows.map(window=>[window.id,window.label,window.usedPercent]),[["five_hour","Session",12]]);
+    failure=new Error("Claude Code did not report its capabilities in time.");
+    assert.deepEqual(await manager.models("claude"),{models:[],metadata:[],source:"unavailable",error:"Claude Code could not list its models: Claude Code did not report its capabilities in time."});
+    assert.deepEqual((await manager.usageLimits("claude")).unavailable,{reason:"probeFailed",message:"Claude Code could not read usage limits."});
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("runtime profile compatibility follows continuation identity instead of display names",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-compat-"));
   try{
@@ -287,11 +335,15 @@ test("runtime installer uses only official allowlisted packages in the selected 
     const installed=await manager.install("claude");
     assert.equal(installed.packageName,"@anthropic-ai/claude-code");
     assert.equal(installed.status.installed,true);assert.equal(installed.status.authenticated,false);
+    assert.equal(installed.status.message,"Claude Code is not authenticated. Run `claude auth login` and try again.");
     assert.equal(calls.some(call=>call.command==="npm"&&call.args.join(" ")==="install -g @anthropic-ai/claude-code"),true);
     await assert.rejects(()=>manager.install("cursor"),/not installable/i);
     const snapshot=await manager.snapshot();
     assert.equal(snapshot.definitions.find(item=>item.id==="claude").installable,true);
-    assert.equal(snapshot.definitions.find(item=>item.id==="opencode").packageName,"@opencode/cli");
+    // OpenCode 1.x is the opencode-ai package; @opencode/cli is OpenCode 2.x, which Trebell Code does not run.
+    assert.equal(snapshot.definitions.find(item=>item.id==="opencode").packageName,"opencode-ai");
+    assert.match(snapshot.definitions.find(item=>item.id==="opencode").installCommand,/^npm install -g opencode-ai .*opencode upgrade/);
+    assert.equal(snapshot.definitions.find(item=>item.id==="claude").installCommand,"npm install -g @anthropic-ai/claude-code");
     assert.equal(snapshot.definitions.find(item=>item.id==="cursor").installable,false);
   }finally{await rm(home,{recursive:true,force:true})}
 });
@@ -299,34 +351,206 @@ test("runtime installer uses only official allowlisted packages in the selected 
 test("OpenCode compatibility blocks known-broken managed updates and pins verified versions",async()=>{
   assert.equal(runtimeCompatibility("opencode","opencode 1.14.18").status,"broken");
   assert.equal(runtimeCompatibility("opencode","v1.14.19").status,"supported");
+  assert.equal(runtimeCompatibility("opencode","1.18.32").status,"supported");
   assert.equal(runtimeCompatibility("opencode","dev-build").status,"unknown");
+  // OpenCode 2.x prints "opencode v2.0.18" and serves another API (T3 Code's versionProbe tells the two apart the same way).
+  const v2=runtimeCompatibility("opencode","opencode v2.0.18");
+  assert.equal(v2.status,"unsupported");assert.match(v2.message,/^OpenCode 2\.x is not supported yet: .*opencode-ai/);
   const home=await mkdtemp(join(tmpdir(),"trebell-opencode-compat-"));const env={...process.env,TREBELL_HOME:home};
   try{
-    const state=new TrebellStateStore(env);const calls=[];let candidate="1.14.18";
+    const state=new TrebellStateStore(env);const calls=[];let candidate="1.14.18",installedVersion="1.14.10",installTakes=true;
     const environments={
       get:id=>id==="ssh-fixture"?{id,name:"Fixture SSH",type:"ssh",cwd:"/srv/app"}:null,
       executeArgv:async(id,{command,args})=>{
         calls.push({id,command,args:[...args]});
         if(command==="npm"&&args[0]==="--version")return {exitCode:0,stdout:"11.0.0\n",stderr:""};
         if(command==="npm"&&args[0]==="view")return {exitCode:0,stdout:JSON.stringify(candidate)+"\n",stderr:""};
-        if(command==="npm"&&args[0]==="install")return {exitCode:0,stdout:"installed\n",stderr:""};
-        if(command==="opencode"&&args[0]==="--version")return {exitCode:0,stdout:"opencode "+candidate+"\n",stderr:""};
-        if(command==="opencode"&&args[0]==="models")return {exitCode:0,stdout:"fixture/model\n",stderr:""};
+        if(command==="npm"&&args[0]==="install"){if(installTakes)installedVersion=args.at(-1).split("@").at(-1);return {exitCode:0,stdout:"installed\n",stderr:""}}
+        if(command==="opencode"&&args[0]==="--version")return {exitCode:0,stdout:"opencode "+installedVersion+"\n",stderr:""};
+        if(command==="opencode"&&args[0]==="auth")return {exitCode:0,stdout:"— 1 credentials\n",stderr:""};
         return {exitCode:1,stdout:"",stderr:"unexpected command"};
       },
     };
     state.updateSettings({activeEnvironmentId:"ssh-fixture"});
     const manager=new AgentRuntimeManager({state,env,environments});
+    const installs=()=>calls.filter(call=>call.command==="npm"&&call.args[0]==="install").map(call=>call.args.join(" "));
     await assert.rejects(()=>manager.install("opencode"),/known to be incompatible/i);
-    assert.equal(calls.some(call=>call.command==="npm"&&call.args[0]==="install"),false);
+    assert.deepEqual(installs(),[]);
     candidate="1.14.19";
     const installed=await manager.install("opencode");
-    assert.equal(installed.targetVersion,"1.14.19");
+    assert.equal(installed.targetVersion,"1.14.19");assert.equal(installed.packageName,"opencode-ai");assert.equal(installed.method,"npm");
     assert.equal(installed.compatibility.status,"supported");
-    assert.equal(calls.some(call=>call.command==="npm"&&call.args.join(" ")==="install -g @opencode\/cli@1.14.19"),true);
-    const status=await manager.probe("opencode");
-    assert.equal(status.compatibility.status,"supported");
+    // OpenCode 1.x's own package, with its install script allowed (npm 12 skips it otherwise, T3 Code); never 2.x's @opencode/cli.
+    assert.deepEqual(installs(),["install -g --allow-scripts=opencode-ai opencode-ai@1.14.19"]);
+    assert.equal(installed.status.version,"opencode 1.14.19");assert.equal(installed.status.compatibility.status,"supported");
+    // Already the newest release: nothing is installed again.
+    assert.match((await manager.install("opencode")).output,/already the newest/i);assert.equal(installs().length,1);
+    // An install that leaves the OpenCode this profile runs on its old version is reported, not shown as ready.
+    candidate="1.14.20";installTakes=false;
+    await assert.rejects(()=>manager.install("opencode"),/OpenCode 1\.14\.20 was installed, but the OpenCode this profile runs .* still reports 1\.14\.19/);
+    // OpenCode 2.x is neither updated nor joined by a 1.x install: 2.x converts OpenCode's shared database.
+    installedVersion="v2.0.24";const before=calls.length;
+    await assert.rejects(()=>manager.install("opencode"),/OpenCode 2\.x converts OpenCode's shared database in place/);
+    assert.deepEqual(calls.slice(before).map(call=>call.command+" "+call.args.join(" ")),["opencode --version"]);
+    // A remote 2.x is reported as unsupported (Trebell has not been verified with it); its ACP status check still runs.
+    const remote2x=await manager.probe("opencode");
+    assert.equal(remote2x.compatibility.status,"unsupported");assert.equal(remote2x.authenticated,true);
   }finally{await rm(home,{recursive:true,force:true})}
+});
+
+// The Windows command shim npm writes for a package's bin.
+const npmShim=target=>["@ECHO off","GOTO start",":find_dp0","SET dp0=%~dp0","EXIT /b",":start","SETLOCAL","CALL :find_dp0",`"%dp0%\\${target}"   %*`,""].join("\r\n");
+
+test("Trebell updates an OpenCode only the way it was installed, judged from where its binary really is",()=>{
+  const exists=paths=>path=>paths.includes(path);
+  assert.deepEqual(openCodeInstallOwner("/home/dev/.opencode/bin/opencode",{platform:"linux"}),{method:"native"});
+  assert.deepEqual(openCodeInstallOwner("C:\\Users\\dev\\.opencode\\bin\\opencode.exe",{platform:"win32"}),{method:"native"});
+  assert.deepEqual(openCodeInstallOwner("/usr/local/lib/node_modules/opencode-ai/bin/opencode",{platform:"linux"}),{method:"npm",prefix:"/usr/local"});
+  const roaming="C:\\Users\\dev\\AppData\\Roaming\\npm";
+  assert.deepEqual(openCodeInstallOwner(roaming+"\\node_modules\\opencode-ai\\bin\\opencode.exe",{platform:"win32",exists:exists([roaming+"\\opencode.cmd"])}),{method:"npm",prefix:roaming});
+  // Without npm's shim beside node_modules the folder is not a global prefix (a project's node_modules, for one).
+  assert.equal(openCodeInstallOwner("C:\\work\\app\\node_modules\\opencode-ai\\bin\\opencode.exe",{platform:"win32",exists:exists([])}),null);
+  assert.equal(openCodeInstallOwner("/work/app/node_modules/.pnpm/node_modules/opencode-ai/bin/opencode",{platform:"linux"}),null);
+  assert.equal(openCodeInstallOwner("/usr/local/lib/node_modules/tool/node_modules/opencode-ai/bin/opencode",{platform:"linux"}),null);
+  // OpenCode 2.x's package, Homebrew and other installs are not Trebell's to update.
+  assert.equal(openCodeInstallOwner(roaming+"\\node_modules\\@opencode\\cli\\bin\\opencode.exe",{platform:"win32",exists:exists([roaming+"\\opencode.cmd"])}),null);
+  assert.equal(openCodeInstallOwner("/opt/homebrew/Cellar/opencode/1.18.32/bin/opencode",{platform:"darwin"}),null);
+  // npm does not replace a command another package installed, so an npm update needs the prefix's opencode command to be opencode-ai's.
+  const missing=()=>{throw Object.assign(new Error("missing"),{code:"ENOENT"})};
+  assert.equal(openCodeCommandHolder(roaming,{platform:"win32",read:()=>npmShim("node_modules\\@opencode\\cli\\bin\\opencode.exe")}),"@opencode/cli");
+  assert.equal(openCodeCommandHolder(roaming,{platform:"win32",read:()=>npmShim("node_modules\\opencode-ai\\bin\\opencode.exe")}),null);
+  assert.equal(openCodeCommandHolder(roaming,{platform:"win32",read:missing}),null,"npm creates a command that is not there yet");
+  assert.equal(openCodeCommandHolder("/usr/local",{platform:"linux",readLink:()=>"../lib/node_modules/@opencode/cli/bin/opencode"}),"@opencode/cli");
+  assert.equal(openCodeCommandHolder("/usr/local",{platform:"linux",readLink:()=>"../lib/node_modules/opencode-ai/bin/opencode"}),null);
+  assert.equal(openCodeCommandHolder("/usr/local",{platform:"linux",readLink:missing}),null);
+  assert.equal(openCodeCommandHolder("/usr/local",{platform:"linux",readLink:()=>{throw Object.assign(new Error("not a link"),{code:"EINVAL"})}}),"/usr/local/bin/opencode");
+  // A bare command is found as cross-spawn finds it: on PATH, with PATHEXT on Windows.
+  const bin="C:\\tools\\bin";
+  assert.equal(commandOnPath("opencode",{platform:"win32",env:{PATH:"C:\\empty;"+bin,PATHEXT:".EXE;.CMD"},exists:exists([bin+"\\opencode.CMD"])}),bin+"\\opencode.CMD");
+  assert.equal(commandOnPath("opencode",{platform:"linux",env:{PATH:"/usr/bin:/home/dev/.opencode/bin"},exists:exists(["/home/dev/.opencode/bin/opencode"])}),"/home/dev/.opencode/bin/opencode");
+  assert.equal(commandOnPath("/opt/opencode",{platform:"linux",env:{},exists:exists([])}),null);
+  assert.equal(commandOnPath("C:\\oc\\opencode.exe",{platform:"win32",env:{},exists:exists(["C:\\oc\\opencode.exe"])}),"C:\\oc\\opencode.exe");
+  // T3 Code's status wording, from the providers OpenCode's server reports connected.
+  assert.equal(openCodeStatusMessage(4),"4 upstream providers connected through OpenCode.");
+  assert.equal(openCodeStatusMessage(1,{external:true}),"1 upstream provider connected through the configured OpenCode server.");
+  assert.equal(openCodeStatusMessage(0),"OpenCode is available, but it did not report any connected upstream providers.");
+});
+
+// A stand-in OpenCode CLI (`--version`, `upgrade`, `serve`) and npm, run through Windows command launchers. They keep their state in
+// one JSON file: the installed version, the provider list the server reports, and every call.
+const FAKE_OPENCODE_CLI=String.raw`
+import { readFileSync, writeFileSync } from "node:fs";
+import http from "node:http";
+const file=process.env.FAKE_OPENCODE_STATE,state=JSON.parse(readFileSync(file,"utf8")),save=()=>writeFileSync(file,JSON.stringify(state));
+const args=process.argv.slice(2);state.calls.push(["opencode",...args]);save();
+if(args[0]==="--version"){process.stdout.write(state.version+"\n");process.exit(0)}
+if(args[0]==="upgrade"){state.version=args[1];save();process.stdout.write("upgraded\n");process.exit(0)}
+if(args[0]!=="serve")process.exit(1);
+if(state.serveFails){process.stderr.write("config is broken\n");process.exit(2)}
+const port=Number((args.find(arg=>arg.startsWith("--port="))||"").slice(7)),json=(res,value)=>{res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify(value))};
+http.createServer((req,res)=>{
+  const path=new URL(req.url,"http://127.0.0.1").pathname;
+  if(path==="/provider")return json(res,state.providers);
+  if(path==="/config"||path==="/skill")return json(res,path==="/config"?{}:[]);
+  if(path==="/command")return json(res,[{name:"init"}]);
+  if(path==="/agent")return json(res,[{name:"build",mode:"primary"},{name:"general",mode:"subagent"}]);
+  if(path==="/instance/dispose")return json(res,true);
+  res.writeHead(404);res.end();
+}).listen(port,"127.0.0.1",()=>process.stdout.write("opencode server listening on http://127.0.0.1:"+port+"\n"));
+`;
+const FAKE_NPM=String.raw`
+import { readFileSync, writeFileSync } from "node:fs";
+const file=process.env.FAKE_OPENCODE_STATE,state=JSON.parse(readFileSync(file,"utf8")),args=process.argv.slice(2);
+state.calls.push(["npm",...args]);
+if(args[0]==="--version")process.stdout.write("11.0.0\n");
+else if(args[0]==="view")process.stdout.write(JSON.stringify(state.latest)+"\n");
+else if(args[0]==="install")state.version=args.at(-1).split("@").at(-1);
+writeFileSync(file,JSON.stringify(state));
+`;
+const FIXTURE_PROVIDERS={connected:["opencode","openai"],default:{opencode:"muse"},all:[{id:"opencode",name:"OpenCode Zen",models:{muse:{id:"muse",name:"Muse"}}},{id:"openai",name:"OpenAI",models:{gpt:{id:"gpt",name:"GPT"}}}]};
+async function openCodeCliFixture(root,{version="1.18.30",latest="1.18.35"}={}){
+  const scripts=join(root,"scripts");await mkdir(scripts,{recursive:true});
+  await writeFile(join(scripts,"opencode.mjs"),FAKE_OPENCODE_CLI,"utf8");await writeFile(join(scripts,"npm.mjs"),FAKE_NPM,"utf8");
+  const statePath=join(root,"state.json"),write=value=>writeFile(statePath,JSON.stringify(value),"utf8");
+  await write({version,latest,providers:FIXTURE_PROVIDERS,calls:[]});
+  const launcher=async(path,script)=>{await mkdir(join(path,".."),{recursive:true});await writeFile(path,["@echo off",`"${process.execPath}" "${join(scripts,script)}" %*`,""].join("\r\n"),"utf8")};
+  const bin=join(root,"bin");await launcher(join(bin,"npm.cmd"),"npm.mjs");
+  const env={...process.env};for(const key of Object.keys(env))if(key.toUpperCase()==="PATH")delete env[key];
+  env.PATH=bin+";"+(process.env.PATH||"");env.TREBELL_HOME=join(root,"home");env.FAKE_OPENCODE_STATE=statePath;env.XDG_STATE_HOME=join(root,"xdg-state");
+  return {env,launcher,read:async()=>JSON.parse(await readFile(statePath,"utf8")),update:async patch=>write({...JSON.parse(await readFile(statePath,"utf8")),...patch})};
+}
+const WINDOWS_ONLY={skip:process.platform!=="win32"&&"runs Windows command launchers"};
+
+test("a local OpenCode's status counts the providers its own server connects, once per binary and version",WINDOWS_ONLY,async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-opencode-status-"));
+  try{
+    const fixture=await openCodeCliFixture(root),binary=join(root,"oc","opencode.cmd");await fixture.launcher(binary,"opencode.mjs");
+    const manager=new AgentRuntimeManager({state:new TrebellStateStore(fixture.env),env:fixture.env,platform:"win32"});
+    manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:binary,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});
+    const serves=async()=>(await fixture.read()).calls.filter(call=>call[1]==="serve").length;
+    const status=await manager.probe("opencode");
+    assert.deepEqual({available:status.available,authenticated:status.authenticated,account:status.account,message:status.message},{available:true,authenticated:true,account:{connectedProviders:2},message:"2 upstream providers connected through OpenCode."});
+    // Thread starts check the status again; they reuse that read, and a model list right after it does too.
+    await manager.probe("opencode");
+    const listed=await manager.models("opencode");
+    assert.equal(await serves(),1);
+    assert.deepEqual(listed.models,["opencode/muse","openai/gpt"]);assert.deepEqual(listed.metadata.map(item=>item.name),["Muse","GPT"]);
+    assert.deepEqual({commands:listed.inventory.commands.map(item=>item.name),agents:listed.inventory.agents.map(item=>item.name)},{commands:["init"],agents:["build"]});
+    assert.equal((await fixture.read()).calls.some(call=>call[1]==="auth"),false,"the provider count comes from OpenCode's server, not its credential list");
+    // OpenCode 2.x runs nothing beyond its version check.
+    await fixture.update({version:"opencode v2.0.24",calls:[]});
+    const v2=await manager.probe("opencode");
+    assert.equal(v2.available,false);assert.equal(v2.compatibility.status,"unsupported");assert.match(v2.message,/^OpenCode 2\.x is not supported yet/);
+    assert.deepEqual((await fixture.read()).calls,[["opencode","--version"]]);
+    // A server that cannot start makes OpenCode unavailable, with its reason.
+    await fixture.update({version:"1.18.31",serveFails:true});
+    const broken=await manager.probe("opencode");
+    assert.equal(broken.available,false);assert.match(broken.message,/^OpenCode could not list its providers: OpenCode server exited with code 2\. config is broken/);
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
+});
+
+test("updating npm's global opencode-ai installs into the prefix that holds the binary Trebell runs",WINDOWS_ONLY,async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-opencode-npm-"));
+  try{
+    const fixture=await openCodeCliFixture(root),prefix=join(root,"npm"),binary=join(prefix,"node_modules","opencode-ai","bin","opencode.cmd");
+    await fixture.launcher(binary,"opencode.mjs");await writeFile(join(prefix,"opencode.cmd"),npmShim("node_modules\\opencode-ai\\bin\\opencode.exe"),"utf8");
+    const manager=new AgentRuntimeManager({state:new TrebellStateStore(fixture.env),env:fixture.env,platform:"win32"});
+    manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:binary,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});
+    const plan=await manager.openCodeInstallPlan();
+    assert.deepEqual({method:plan.method,installedVersion:plan.installedVersion,targetVersion:plan.targetVersion,command:plan.command,args:plan.args},{method:"npm",installedVersion:"1.18.30",targetVersion:"1.18.35",command:"npm",args:["install","-g","--prefix",realpathSync(prefix),"--allow-scripts=opencode-ai","opencode-ai@1.18.35"]});
+    const installed=await manager.install("opencode");
+    assert.equal(installed.status.version,"1.18.35");assert.equal(installed.status.message,"2 upstream providers connected through OpenCode.");
+    // An OpenCode Trebell cannot tell who installed is left alone.
+    const custom=join(root,"custom","opencode.cmd");await fixture.launcher(custom,"opencode.mjs");
+    manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:custom,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});
+    await fixture.update({calls:[]});
+    await assert.rejects(()=>manager.install("opencode"),/could not tell how .*custom.*opencode\.cmd was installed/);
+    assert.deepEqual((await fixture.read()).calls,[["opencode","--version"]]);
+    // Once OpenCode 2.x (@opencode/cli) holds the prefix's opencode command, npm would refuse to replace it: Trebell runs no npm.
+    manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:binary,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});
+    await writeFile(join(prefix,"opencode.cmd"),npmShim("node_modules\\@opencode\\cli\\bin\\opencode.exe"),"utf8");await fixture.update({version:"1.18.30",calls:[]});
+    await assert.rejects(()=>manager.install("opencode"),/^Error: npm cannot update opencode-ai in .*npm: the opencode command there runs @opencode\/cli, and npm does not replace another package's command\. Trebell Code changes neither install\./);
+    assert.deepEqual((await fixture.read()).calls,[["opencode","--version"]]);
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
+});
+
+test("an OpenCode from its own installer updates with opencode upgrade to the newest 1.x release",WINDOWS_ONLY,async()=>{
+  // OpenCode's installer puts its binary in ~/.opencode/bin on macOS and Linux; the launcher stands in for that binary.
+  const root=await mkdtemp(join(tmpdir(),"trebell-opencode-native-"));
+  try{
+    const fixture=await openCodeCliFixture(root),binary=join(root,"home-dir",".opencode","bin","opencode");
+    await fixture.launcher(binary+".cmd","opencode.mjs");await writeFile(binary,"","utf8");
+    const fetched=[];
+    const fetchImpl=async url=>{fetched.push(String(url));return new Response(JSON.stringify({name:"opencode-ai",version:"1.18.40"}),{status:200,headers:{"content-type":"application/json"}})};
+    const manager=new AgentRuntimeManager({state:new TrebellStateStore(fixture.env),env:fixture.env,platform:"linux",fetchImpl});
+    manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:binary,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});
+    const installed=await manager.install("opencode");
+    assert.equal(installed.method,"native");assert.equal(installed.targetVersion,"1.18.40");assert.equal(installed.status.version,"1.18.40");
+    assert.deepEqual(fetched,["https://registry.npmjs.org/opencode-ai/latest"]);
+    const calls=(await fixture.read()).calls;
+    assert.deepEqual(calls.find(call=>call[1]==="upgrade"),["opencode","upgrade","1.18.40"]);
+    assert.equal(calls.some(call=>call[0]==="npm"),false,"OpenCode's own installer needs no npm");
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
 
 test("remote runtime usage reads the remote login but returns only normalized limits",async()=>{
@@ -404,7 +628,8 @@ test("remote runtime probes use provider-native auth status without treating unk
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
-test("ACP agent session serves bounded filesystem and terminal capabilities end to end", async () => {
+// Antigravity is the one harness offered the client's files (T3 AntigravityAcpSupport); no harness is offered its terminal.
+test("ACP agent session serves Antigravity bounded client files end to end and refuses the terminal it does not offer", async () => {
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-session-"));
   const fixture=join(root,"fake-acp.mjs");
   const input=join(root,"input.txt");
@@ -427,10 +652,8 @@ async function handle(m){
   if(m.method==="session/prompt"){
     const read=await request("fs/read_text_file",{sessionId,path:${JSON.stringify(input)}});
     await request("fs/write_text_file",{sessionId,path:${JSON.stringify(output)},content:"READ:"+read.content});
-    const created=await request("terminal/create",{sessionId,command:process.execPath,args:["-e","process.stdout.write('TERM_OK')"],cwd:${JSON.stringify(root)},env:[]});
-    await request("terminal/wait_for_exit",{sessionId,terminalId:created.terminalId});
-    const terminal=await request("terminal/output",{sessionId,terminalId:created.terminalId});
-    send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"tool_call",toolCallId:"tool-1",title:"Fixture command",kind:"execute",status:"completed",rawOutput:terminal.output}}});
+    let terminal="TERM_RAN";try{await request("terminal/create",{sessionId,command:process.execPath,args:["-e","process.stdout.write('TERM_OK')"],cwd:${JSON.stringify(root)},env:[]})}catch(error){terminal="TERM_REFUSED:"+error.message}
+    send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"tool_call",toolCallId:"tool-1",title:"Fixture command",kind:"execute",status:"completed",rawOutput:terminal}}});
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"usage_update",used:12,size:128}}});
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:"FAKE_OK"}}}});
     return send({jsonrpc:"2.0",id:m.id,result:{stopReason:"end_turn"}});
@@ -440,7 +663,7 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
 `,"utf8");
   const terminals=new TerminalManager({persist:false});
   const updates=[];
-  const session=new AcpAgentSession({runtime:"fixture",command:process.execPath,args:[fixture],cwd:root,terminals,permissionMode:"full",onUpdate:update=>updates.push(update),mcpServers:[{name:"Fixture tools",command:"/opt/fixture-mcp",args:["--stdio"],env:[{name:"TOKEN",value:"secret"}]}]});
+  const session=new AcpAgentSession({runtime:"antigravity",command:process.execPath,args:[fixture],cwd:root,terminals,permissionMode:"full",onUpdate:update=>updates.push(update),mcpServers:[{name:"Fixture tools",command:"/opt/fixture-mcp",args:["--stdio"],env:[{name:"TOKEN",value:"secret"}]}]});
   try{
     const started=await session.start({model:"fake-model"});
     assert.equal(started.session.sessionId,"fixture-session");
@@ -449,7 +672,8 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     assert.equal(result.stopReason,"end_turn");
     assert.equal(await readFile(output,"utf8"),"READ:INPUT_OK");
     assert.ok(updates.some(item=>item.update?.sessionUpdate==="agent_message_chunk"&&item.update.content?.text==="FAKE_OK"));
-    assert.ok(updates.some(item=>item.update?.sessionUpdate==="tool_call"&&String(item.update.rawOutput||"").includes("TERM_OK")));
+    assert.ok(updates.some(item=>item.update?.sessionUpdate==="tool_call"&&String(item.update.rawOutput||"").startsWith("TERM_REFUSED:")),"terminal/create is refused");
+    assert.deepEqual(terminals.list(),[],"no terminal was started for the harness");
     assert.ok(updates.some(item=>item.update?.sessionUpdate==="usage_update"&&item.update.used===12));
     await assert.rejects(()=>session.client.request("fs/read_text_file",{sessionId:"fixture-session",path:join(root,"..","escape.txt")},1000));
   }finally{

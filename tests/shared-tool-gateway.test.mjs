@@ -183,3 +183,27 @@ test("interactive browser actions are treated as external side effects",()=>{
   const click=authorizePlatformToolCall({namespace:"trebell_browser",name:"click",arguments:{ref:"button-1"}},{permissionProfile:"auto",desktopAvailable:true,runtime:"native"});assert.equal(click.decision,POLICY_CONFIRM);assert.equal(click.action.externalSideEffect,true);
   const type=authorizePlatformToolCall({namespace:"trebell_browser",name:"type",arguments:{ref:"input-1",text:"hello"}},{permissionProfile:"read-only",desktopAvailable:true,runtime:"native"});assert.equal(type.decision,POLICY_REJECT);assert.equal(type.action.externalSideEffect,true);
 });
+
+test("a call that fails validation is answered with its error before anyone is asked to approve it, and never runs",async()=>{
+  // The live tour: Trebell Native asked the person to approve a trebell_repo/invoke call whose arguments were invalid, and only then failed.
+  const confirms=[],executions=[],events=[];
+  const gateway=createSharedToolGateway({
+    validate:call=>{if(call.arguments?.ref==="bad")throw new Error("ref must name an element from the latest snapshot")},
+    confirm:async payload=>{confirms.push(payload.call.arguments);return "approved"},
+    execute:async call=>{executions.push(call.arguments);return "typed"},
+    onEvent:event=>events.push(event),
+  });
+  const invalid=await gateway.invoke({namespace:"trebell_browser",name:"type",arguments:{ref:"bad",text:"x"}},{permissionProfile:"supervised",desktopAvailable:true});
+  assert.equal(invalid.success,false);assert.equal(invalid.error,"ref must name an element from the latest snapshot");assert.equal(invalid.uncertain,false);
+  assert.deepEqual(confirms,[]);assert.deepEqual(executions,[]);
+  assert.deepEqual(events.map(event=>event.name),["shared_tool.policy","shared_tool.completed"]);
+  assert.equal(events[1].status,"failed");assert.equal(events[1].data.validation,true);
+  const valid=await gateway.invoke({namespace:"trebell_browser",name:"type",arguments:{ref:"e1",text:"x"}},{permissionProfile:"supervised",desktopAvailable:true});
+  assert.equal(valid.success,true);assert.equal(valid.result,"typed");
+  assert.deepEqual(confirms,[{ref:"e1",text:"x"}]);assert.deepEqual(executions,[{ref:"e1",text:"x"}]);
+  // A rejected call is still rejected by policy first, without validation.
+  let validated=0;
+  const strict=createSharedToolGateway({validate:()=>{validated++},execute:async()=>"never"});
+  const rejected=await strict.invoke({namespace:"trebell_computer",name:"click",arguments:{x:1,y:2}},{permissionProfile:"supervised",desktopAvailable:true});
+  assert.equal(rejected.decision,POLICY_REJECT);assert.equal(validated,0);
+});

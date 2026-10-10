@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { extname } from "node:path";
+import { basename, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { AcpAgentSession } from "./acp-agent-session.mjs";
-import { OpenCodeAgentSession } from "./opencode-agent-session.mjs";
+import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
+import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
+import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
 import { createNativeBuiltins } from "./native-builtins.mjs";
@@ -37,6 +39,7 @@ import { providerFeatureEnabled } from "./provider-capabilities.mjs";
 import { normalizeProviderId } from "./provider-manager.mjs";
 import { isRetiredModelProvider, isRetiredProviderModel, migrateLegacyNativeThread } from "./legacy-provider-migration.mjs";
 import { NativeToolOutputStore } from "./native-tool-output-store.mjs";
+import { threadTitleFromText } from "./agent-thread-store.mjs";
 import { trebellHome } from "./paths.mjs";
 import { dirname, join } from "node:path";
 
@@ -44,6 +47,8 @@ const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
 const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_process","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
 const RETIRED_NATIVE_TOOL_NAMESPACES=new Set(["trebell_device"]);
+// ACP harnesses run a process per thread; reopening one of their threads does not start it (see thread/resume).
+const LAZY_SESSION_RUNTIMES=new Set(["cursor","grok","antigravity"]);
 function expandableNativeToolNamespaces(values=[]){
   const requested=[...new Set((Array.isArray(values)?values:[]).map(value=>String(value||"").trim()).filter(Boolean))];
   const active=requested.filter(name=>!RETIRED_NATIVE_TOOL_NAMESPACES.has(name));
@@ -53,6 +58,22 @@ function expandableNativeToolNamespaces(values=[]){
 function agentProviderIdentity(thread){return thread?.runtime==="native"?(thread?.providerMeta?.modelProvider||null):(thread?.providerMeta?.runtimeInstanceId||thread?.runtimeInstanceId||null)}
 
 function textOfInput(input=[]){return input.filter(item=>item?.type==="text").map(item=>item.text||"").join("\n")}
+// A new thread is listed by its first message until it is renamed, as T3 Code seeds a thread's title (deriveThreadTitleSeed: the
+// message's text, else its first image) and as Codex lists its own threads.
+export function agentThreadTitleSeed(input=[],text=textOfInput(Array.isArray(input)?input:[])){
+  const message=threadTitleFromText(text);if(message)return message;
+  const image=(Array.isArray(input)?input:[]).find(item=>item?.type==="localImage"||item?.type==="image");
+  const name=String((image?.path?basename(String(image.path)):image?.name)||"").trim().replace(/\s+/g," ");
+  return name?threadTitleFromText("Image: "+name):null;
+}
+// Text a harness writes after a tool call starts a new paragraph, as T3 Code starts a new assistant message there; without the
+// break a turn's text ran together (the live tour's Cursor reply "…report the output.```" met the command output's code fence).
+export function agentTextAfterToolCall(session,text){
+  if(!text||!session)return text;
+  const before=String(session.__assistant||""),resumes=Boolean(session.__assistantBreak)&&Boolean(before.trim())&&!/\n\s*$/.test(before)&&!/^\s*\n/.test(text);
+  session.__assistantBreak=false;
+  return resumes?"\n\n"+text:text;
+}
 export function agentPermissionModeFromStart(params={}){
   if(params.permissionProfile)return normalizePermissionMode(params.permissionProfile);
   const sandboxType=String(params.sandboxPolicy?.type||params.sandbox||"").toLowerCase();
@@ -75,6 +96,48 @@ export function agentPermissionProfilePatch(params={}){
     ||Object.prototype.hasOwnProperty.call(params,"sandbox")
     ||Object.prototype.hasOwnProperty.call(params,"sandboxPolicy");
   return hasPolicy?{permissionProfile:agentPermissionModeFromStart(params)}:{};
+}
+// The approval card's text: the harness's own prompt for the request (Claude's, as T3 Code's ClaudeAdapter), else its tool title.
+export function agentApprovalReason(params={}){
+  return String(params?.prompt||"").trim()||String(params?.toolCall?.title||"").trim()||"Agent requests permission";
+}
+function stableJson(value){
+  if(Array.isArray(value))return "["+value.map(stableJson).join(",")+"]";
+  if(value&&typeof value==="object")return "{"+Object.keys(value).filter(key=>value[key]!==undefined).sort().map(key=>JSON.stringify(key)+":"+stableJson(value[key])).join(",")+"}";
+  return JSON.stringify(value??null);
+}
+function nativeToolArguments(call={},authorization={}){
+  const source=authorization?.arguments&&typeof authorization.arguments==="object"?authorization.arguments:call?.arguments;
+  if(source&&typeof source==="object"&&!Array.isArray(source))return source;
+  if(typeof source==="string"){try{const parsed=JSON.parse(source);if(parsed&&typeof parsed==="object"&&!Array.isArray(parsed))return parsed}catch{}}
+  return {};
+}
+const NATIVE_GRANT_BOUNDS=new Set(["timeout_ms","max_output_bytes"]);
+// "Allow session" approves a Trebell Native action and the same action again for the rest of its session, as Codex's
+// approved_for_session remembers the exact command: the tool and its arguments, without the output and time bounds.
+export function nativeApprovalGrantKey(call={},authorization={}){
+  const args=Object.fromEntries(Object.entries(nativeToolArguments(call,authorization)).filter(([key])=>!NATIVE_GRANT_BOUNDS.has(key)));
+  return `${call?.namespace||""}/${call?.name||""} ${stableJson(args)}`;
+}
+// The approval card names what a Trebell Native tool would do (its command or path, else its input), then why the profile asks.
+export function nativeApprovalReason(call={},authorization={}){
+  const args=nativeToolArguments(call,authorization),tool=`${call?.namespace||"trebell"}/${call?.name||"tool"}`;
+  const quote=part=>/[\s"]/.test(part)||!part?JSON.stringify(part):part;
+  const command=typeof args.command==="string"&&args.command.trim()?[args.command.trim(),...(Array.isArray(args.args)?args.args.map(String):[])].map(quote).join(" "):null;
+  const path=["path","file_path","filePath"].map(key=>args[key]).find(value=>typeof value==="string"&&value.trim());
+  let target=command||(path?path.trim():null);
+  if(!target){let serialized="";try{serialized=JSON.stringify(args)??""}catch{}if(serialized&&serialized!=="{}")target=serialized}
+  const what=target?`${tool}: ${target.length>400?target.slice(0,397)+"...":target}`:tool,why=String(authorization?.reason||"").trim();
+  return why?`${what} (${why})`:what;
+}
+// A turn the person sends continues a thread only on the harness that owns it. A client that still shows another harness's thread
+// after a switch sends this harness's model with it, which the owning harness cannot run and must not save as the thread's model
+// (T3 Code locks a started thread to its provider, and its server stays authoritative).
+export function agentTurnOwnerError(thread,activeRuntime){
+  const owner=String(thread?.runtime||""),active=String(activeRuntime||"");
+  if(!owner||!active||owner===active)return null;
+  const label=runtimeHarnessLabel(owner);
+  return Object.assign(new Error(`This chat belongs to ${label}, not ${runtimeHarnessLabel(active)}. Open it from the sidebar to continue it in ${label}.`),{code:-32602});
 }
 export function agentPermissionPolicyDecision(thread,request={},settings={}){
   const params=request?.params||{},toolCall=params.toolCall||{},policy=params.policy||toolCall.policy||{};
@@ -157,8 +220,10 @@ function acpToolItem(update){
   const id=String(update.toolCallId||randomUUID());
   const status=update.status==="completed"?"completed":update.status==="failed"?"failed":"inProgress";
   if(update.namespace)return {type:"dynamicToolCall",id,namespace:String(update.namespace),tool:String(update.tool||update.title||update.kind||"tool"),arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations:update.locations||[],rawOutput:update.rawOutput};
-  if(update.kind==="execute")return {type:"commandExecution",id,command:update.title||"Command",cwd:"",processId:null,source:"agent",status,commandActions:[],aggregatedOutput:typeof update.rawOutput==="string"?update.rawOutput:null,exitCode:null,durationMs:null,rawInput:update.rawInput,locations:update.locations||[]};
-  if(update.kind==="edit"||update.kind==="delete"||update.kind==="move")return {type:"fileChange",id,status,changes:(update.locations||[]).map(location=>({path:location.path||location.uri||"",kind:update.kind})),rawInput:update.rawInput,rawOutput:update.rawOutput};
+  // ACP sessions merge each tool update into the tool's last state and normalize its output (acp-tool-state.mjs): aggregatedOutput and
+  // exitCode for commands, changes with paths and text for diffs.
+  if(update.kind==="execute")return {type:"commandExecution",id,command:update.title||"Command",cwd:"",processId:null,source:"agent",status,commandActions:[],aggregatedOutput:typeof update.rawOutput==="string"?update.rawOutput:typeof update.aggregatedOutput==="string"?update.aggregatedOutput:null,exitCode:Number.isInteger(update.exitCode)?update.exitCode:null,durationMs:null,rawInput:update.rawInput,locations:update.locations||[]};
+  if(update.kind==="edit"||update.kind==="delete"||update.kind==="move")return {type:"fileChange",id,status,changes:Array.isArray(update.changes)&&update.changes.length?update.changes:(update.locations||[]).map(location=>({path:location.path||location.uri||"",kind:update.kind})),rawInput:update.rawInput,rawOutput:update.rawOutput};
   return {type:"dynamicToolCall",id,namespace:"agent",tool:update.title||update.kind||"tool",arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations:update.locations||[],rawOutput:update.rawOutput};
 }
 
@@ -524,13 +589,6 @@ export function paginateAgentAttachments(attachments=[],{cursor=null,limit=100}=
   return {data,nextCursor:next<(attachments||[]).length?String(next):null};
 }
 
-function approvalOption(options,decision){
-  const find=kind=>options.find(option=>option.kind===kind)?.optionId;
-  if(decision==="acceptForSession")return find("allow_always")||find("allow_once")||null;
-  if(decision==="accept")return find("allow_once")||find("allow_always")||null;
-  return find("reject_once")||find("reject_always")||null;
-}
-
 export function agentPermissionTraceData({toolCall=null,options=[]}={}){
   const kinds=[...new Set((Array.isArray(options)?options:[]).map(option=>String(option?.kind||"").trim()).filter(Boolean))].slice(0,20);
   return {
@@ -546,6 +604,8 @@ export function restoreClaudeRejectedRewind(threadStore,threadId,error){
   const backup=current.providerMeta?.claudeRewindBackup;
   if(!backup||!Array.isArray(backup.removedTurns))return null;
   const providerMeta={...(current.providerMeta||{})};delete providerMeta.claudeFork;delete providerMeta.claudeRewindBackup;
+  // A rewind made before an earlier fork ran puts that fork back as well.
+  if(backup.claudeFork)providerMeta.claudeFork=backup.claudeFork;
   const retained=(current.turns||[]).slice(0,Math.max(0,Number(backup.retainedCount)||0));
   return threadStore.update(threadId,{
     providerSessionId:backup.sourceSessionId||error?.claudeFork?.sourceSessionId||current.providerSessionId,
@@ -554,12 +614,24 @@ export function restoreClaudeRejectedRewind(threadStore,threadId,error){
   });
 }
 
+// Edit from here keeps the turns before the target. Claude Code resumes at the newest kept turn that reached its transcript
+// (that turn's last assistant message, T3 Code's rollback cursor); with none, the thread starts a fresh Claude Code session
+// (T3 Code's rollback to the thread start).
 export function claudeRewindCheckpoint(thread,beforeTurnId){
   const turns=Array.isArray(thread?.turns)?thread.turns:[],index=turns.findIndex(item=>item.id===beforeTurnId);
   if(index<0)throw new Error("Claude rewind target turn was not found.");
-  const prior=index>0?turns[index-1]:null,target=turns[index]||null,providerMessageId=prior?.providerMessageId||null;
-  if(!providerMessageId)throw new Error("Claude Code cannot rewind before the first persisted user message in this thread.");
-  return {index,providerMessageId,dropsTurn:target?.providerUserMessageId||null};
+  const kept=turns.slice(0,index).findLast(turn=>turn?.providerMessageId)||null;
+  return {index,providerMessageId:kept?.providerMessageId||null};
+}
+
+// Provider metadata after a rewind: the fork the next prompt runs, and a backup of the thread's previous provider state and
+// removed turns that restoreClaudeRejectedRewind puts back if Claude Code rejects that fork. A fresh session needs neither.
+export function claudeRewindProviderMeta(thread,index,rewind,now=Date.now()){
+  const previous=thread?.providerMeta||{},meta={...previous};delete meta.claudeFork;delete meta.claudeRewindBackup;
+  if(!rewind?.lazyFork)return meta;
+  meta.claudeFork=rewind.lazyFork;
+  meta.claudeRewindBackup={sourceSessionId:thread.providerSessionId,...(previous.claudeFork?{claudeFork:previous.claudeFork}:{}),retainedCount:index,removedTurns:(thread.turns||[]).slice(index),createdAt:now};
+  return meta;
 }
 
 function formQuestions(params){
@@ -580,7 +652,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   const liveToolOutput=new Map();
   const pendingDelegations=new Map();
   const promptSettlements=new Set();
+  // Antigravity sessions report the account's model list to the runtime manager when they start and when their model option changes.
+  const sessionModelReports=new WeakMap();
   let closing=false;
+  // A harness's model list that changed after the app read it (Antigravity's first session) reaches every open window, whose
+  // composer then takes it (T3 pushes provider snapshots as they change).
+  const stopModelUpdates=typeof runtimeManager?.onModelsChanged==="function"?runtimeManager.onModelsChanged(change=>{if(!closing)emit("agentRuntime/models/updated",change)}):()=>{};
   const threadMetadata=id=>typeof threadStore.getMetadata==="function"?threadStore.getMetadata(id):threadStore.get(id);
   async function createVerificationCheckpoint(thread,label){
     if(!checkpoints?.create||!thread?.cwd)return null;
@@ -668,6 +745,17 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     return {thread:threadStore.update(thread.id,{model:legacy.thread.model,providerMeta:legacy.thread.providerMeta})||legacy.thread,retiredProvider};
   }
 
+  // Whether a revert starts the thread's harness conversation over (T3's ACP rollbackThread): Grok and Antigravity, and
+  // OpenCode where it runs on its ACP server (a remote environment; the local OpenCode server forks at the turn instead).
+  // Cursor offers no rollback (T3 canRollbackThread false).
+  function acpRestartsOnRevert(thread){
+    if(thread?.runtime==="grok"||thread?.runtime==="antigravity")return true;
+    if(thread?.runtime!=="opencode")return false;
+    const live=sessions.get(thread.id);if(live)return live instanceof AcpAgentSession;
+    const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
+    return Boolean(runtimeManager.remoteIo?.(runtimeManager.runtimeCwd?.(thread.cwd,environmentId)??thread.cwd,environmentId));
+  }
+
   async function ensureSession(thread,context,{permissionMode=null,model=null}={}){
     if(thread?.runtime==="native"){
       const storedNamespaces=Array.isArray(thread.providerMeta?.dynamicToolNamespaces)?thread.providerMeta.dynamicToolNamespaces:[],activeNamespaces=expandableNativeToolNamespaces(storedNamespaces);
@@ -685,6 +773,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         await session.close().catch(()=>{});sessions.delete(thread.id);session=null;
         journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"mcp",name:"native.mcp.reloaded",status:"completed",data:{serverCount:currentServers.length}});
       }
+    }
+    // An ACP harness whose process exited or was stopped starts again and resumes its conversation; one launched with another
+    // permission mode (Cursor's and Grok's are launch arguments) is relaunched the same way, as T3 detaches such sessions.
+    if(session instanceof AcpAgentSession){
+      const accessLevel=normalizePermissionMode(permissionMode||thread.providerMeta?.permissionProfile||"supervised");
+      if(session.dead||(!session.busy&&session.needsRelaunch(accessLevel))){await session.close().catch(()=>{});sessions.delete(thread.id);session=null}
+      else session.setPermissionMode(accessLevel);
     }
     if(session)return session;
     const effectivePermissionMode=normalizePermissionMode(permissionMode||thread.providerMeta?.permissionProfile||"supervised");
@@ -754,6 +849,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"tool",name:"native.repository.discovered",status:"completed",data:{query:requested.slice(0,300),count:exposed.length,tools:exposed.map(item=>item.name)}});
         return {success:true,query:requested,capabilities:exposed,instruction:exposed.length?"Call trebell_repo/invoke with one returned capability name and arguments matching its inputSchema. The provider-visible tool manifest remains stable.":"No matching advanced repository capability was found; use the currently exposed core repository/workspace tools."};
       }:null;
+      const nativeSessionGrants=new Set();
       const executeTool=createNativeToolExecutor({
         contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,mcpBroker,
         discoverRepositoryTools,outputStore,
@@ -780,8 +876,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           return context.serverRequest("item/tool/call",{threadId:thread.id,turnId:activeTurn?.id||null,callId:call.id||randomUUID(),namespace:call.namespace,tool:call.name,arguments:call.arguments});
         },
         confirm:async({call,authorization})=>{
-          const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:authorization.reason||"Trebell Native requests permission",toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}});
-          return result?.decision||"decline";
+          // A session grant lives as long as this Native session: a new thread, or a restarted server, asks again.
+          const grant=nativeApprovalGrantKey(call,authorization);if(nativeSessionGrants.has(grant))return "accept";
+          const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:nativeApprovalReason(call,authorization),toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}});
+          const decision=result?.decision||"decline";
+          if(decision==="acceptForSession"){nativeSessionGrants.add(grant);return "accept"}
+          return decision;
         },
         onEvent:event=>journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"tool",name:event.name,status:event.status,data:event.data||{}}),
       });
@@ -821,17 +921,23 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       claudeMcpServers.trebell_repository=createClaudeRepositoryMcp({contextEngine,root:runtimeCwd,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,version});
     }
     const runtime=instance.kind==="claude"
-      ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,autoCompactWindow:instance.autoCompactWindow||null,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,resumeDropsTurn:thread.providerMeta?.claudeFork?.resumeDropsTurn||null,mcpServers:claudeMcpServers})
+      ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,capabilityScope:environmentId||"",autoCompactWindow:instance.autoCompactWindow||null,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,persistedTurns:((threadStore.get(thread.id)||thread).turns||[]).some(turn=>turn?.providerMessageId||turn?.providerUserMessageId),onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),mcpServers:claudeMcpServers})
       :instance.kind==="opencode"
       ?(remoteIo
         ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers})
         :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp}))
-      :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
+      :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),argsForPermission:mode=>runtimeManager.acpArgs(instance,mode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,runTempRoot:instance.kind==="antigravity"&&!remoteIo?acpRuntimeTempRoot(runtimeManager.childEnv(instance),"antigravity"):null,attachmentsDir:instance.kind==="antigravity"&&!remoteIo?join(trebellHome(runtimeManager.env||process.env),"attachments"):null,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
+    // A Cursor thread runs in the Plan mode it last ran in until a turn names another (also after a restart).
+    if(runtime instanceof AcpAgentSession&&instance.kind==="cursor")runtime.setCollaborationMode((threadMetadata(thread.id)||thread)?.settings?.collaborationMode?.mode||"default");
     let started;
+    // Antigravity's model list is the one its sessions report (T3), also when the thread's model turns out not to be offered.
+    const reportModels=()=>{if(runtime instanceof AcpAgentSession&&instance.kind==="antigravity"&&runtime.sessionSetup)runtimeManager.rememberAcpSessionModels?.(instance,runtime.sessionSetup,{environmentId})};
     try{started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null})}
-    catch(error){await runtime.close().catch(()=>{});throw error}
+    catch(error){reportModels();await runtime.close().catch(()=>{});throw error}
+    reportModels();sessionModelReports.set(runtime,reportModels);
     const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
-    threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:model||started.session.models?.currentModelId||thread.model||null});
+    // A resumed session keeps the thread's id; an ACP session reports the model it actually runs (an alias resolves to the real id).
+    threadStore.update(thread.id,{providerSessionId:started.session.sessionId||thread.providerSessionId||"",providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:(runtime instanceof AcpAgentSession?runtime.model:null)||model||started.session.models?.currentModelId||thread.model||null});
     sessions.set(thread.id,runtime);return runtime;
   }
 
@@ -880,6 +986,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
     }).catch(error=>{
       if(error?.code==="CLAUDE_REWIND_REJECTED"){
+        // The next turn rebuilds the Claude session from the thread's restored provider state.
+        if(sessions.get(thread.id)===session){sessions.delete(thread.id);void session.close?.().catch(()=>{})}
         const restored=restoreClaudeRejectedRewind(threadStore,thread.id,error);
         if(restored){
           emit("error",{threadId:thread.id,turnId:turn.id,message:"Claude could not safely rewind because the provider transcript changed. The original conversation was restored."});
@@ -887,13 +995,36 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           emit("thread/status/changed",{threadId:thread.id,status:restored?.status||{type:"idle"}});
           return;
         }
+        // A fork of another thread that Claude Code cannot continue: this thread goes on in a conversation of its own.
+        const current=threadMetadata(thread.id)?.providerMeta||{};
+        if(current.claudeFork){const next={...current};delete next.claudeFork;threadStore.update(thread.id,{providerMeta:next})}
       }
+      // A Claude Code turn that failed after its prompt reached the transcript keeps its ids, so a later turn can be edited.
+      if(error?.providerMessageId||error?.userMessageId)threadStore.updateTurn(thread.id,turn.id,{...(error.providerMessageId?{providerMessageId:error.providerMessageId}:{}),...(error.userMessageId?{providerUserMessageId:error.userMessageId}:{})});
       persistUsage(null);persistModelTurns(error?.nativeModelTurns);
       const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message:error.message}});emit("error",{threadId:thread.id,turnId:turn.id,message:error.message});emit("turn/completed",{threadId:thread.id,turn:completed});
     }).finally(()=>{clearLiveToolOutput(thread.id);recoveryInFlight.delete(thread.id)});
     promptSettlements.add(settlement);
     void settlement.finally(()=>promptSettlements.delete(settlement)).catch(error=>log(error?.stack||String(error)));
     return settlement;
+  }
+
+  // A Plan-capable harness (Claude Code, Cursor) runs the turn in the composer's collaboration mode, else the one the thread last
+  // ran in; the thread remembers a changed mode, so reopening it shows that mode.
+  function applyCollaborationMode(thread,session,params){
+    const current=threadMetadata(thread.id)||thread,requested=params.collaborationMode?.mode?params.collaborationMode:null;
+    session.setCollaborationMode(requested?.mode||current?.settings?.collaborationMode?.mode||"default");
+    if(requested&&requested.mode!==current?.settings?.collaborationMode?.mode)threadStore.update(thread.id,{settings:{...(current?.settings||{}),collaborationMode:requested}});
+  }
+
+  // A harness answers on its own when background work it started finishes (T3 Code's wake turns: Claude Code's background
+  // tasks, Grok's task prompts): that answer is a turn of its own, with no user message.
+  function startWakeTurn(threadId,promptPromise,context){
+    const thread=threadStore.get(threadId),session=sessions.get(threadId);
+    if(!thread||!session){promptPromise.catch(()=>{});return}
+    const turn=threadStore.addTurn(thread.id,{inputText:"",status:"inProgress"});session.__assistant="";session.__usage=null;
+    emit("turn/started",{threadId:thread.id,turn});emit("thread/status/changed",{threadId:thread.id,status:{type:"active",activeFlags:[]}});
+    settlePrompt({thread,turn,session,promptPromise,model:thread.model||null,context});
   }
 
   async function recoverPending(context){
@@ -922,12 +1053,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const update=params?.update||{};const thread=threadStore.get(threadId);if(!thread)return;const turnId=thread.turns?.at(-1)?.id||null;
     const type=update.sessionUpdate;
     if(type==="agent_message_chunk"){
-      const text=update.content?.type==="text"?update.content.text||"":"";
+      const session=sessions.get(threadId),text=agentTextAfterToolCall(session,update.content?.type==="text"?update.content.text||"":"");
       if(text&&turnId)emit("item/agentMessage/delta",{threadId,turnId,delta:text});
-      const session=sessions.get(threadId);if(session)session.__assistant=(session.__assistant||"")+text;
+      if(session)session.__assistant=(session.__assistant||"")+text;
     }else if(type==="agent_thought_chunk"){
       if(turnId)emit("item/reasoning/activity",{threadId,turnId,active:true});
     }else if(type==="tool_call"){
+      const toolSession=sessions.get(threadId);if(toolSession)toolSession.__assistantBreak=true;
       const key=threadId+":"+String(update.toolCallId||"");
       const lifecycle=agentToolLifecycle(update,liveToolOutput.get(key)||"");const {item}=lifecycle;
       if(turnId)threadStore.addItem(threadId,turnId,item);
@@ -979,7 +1111,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const current=threadMetadata(threadId)?.providerMeta||{};
       threadStore.update(threadId,{providerMeta:{...current,[type]:update}});
       emit("thread/providerMetadata/updated",{threadId,type,update});
+      // A changed model option carries the account's current model list (T3 AntigravityProvider onConfigOptionsUpdated).
+      if(type==="config_option_update"){const live=sessions.get(threadId);if(live)sessionModelReports.get(live)?.()}
     }else if(type==="runtime_error"){
+      // A dead ACP process leaves the thread: the next turn starts the harness again and resumes the conversation (T3 releases
+      // an errored session), and its open approval or question cards are withdrawn.
+      const runtimeSession=sessions.get(threadId);
+      if(runtimeSession instanceof AcpAgentSession&&runtimeSession.dead){sessions.delete(threadId);void runtimeSession.close().catch(()=>{});for(const context of socketContexts)context.cancelThreadRequests?.(threadId)}
       emit("error",{threadId,turnId,message:update.message||"Agent runtime stopped"});
     }
   }
@@ -1069,13 +1207,24 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         }:{}),
       }});
       threadStore.update(seed.id,{runtimeInstanceId:instance.id});
-      const session=await ensureSession(threadStore.get(seed.id),context,{permissionMode,model:params.model||null});
-      const thread=threadStore.update(seed.id,{providerSessionId:session.sessionId,model:params.model||session.sessionSetup?.models?.currentModelId||null});
+      // A thread whose session never started is not kept: the composer keeps the message and shows why, and no empty
+      // "Untitled task" is left in the sidebar (the live tour's Cursor start that failed to set its model left one).
+      let session;
+      try{session=await ensureSession(threadStore.get(seed.id),context,{permissionMode,model:params.model||null})}
+      catch(error){sessions.delete(seed.id);threadStore.delete(seed.id);throw error}
+      // ensureSession recorded the model the session runs: an ACP session resolves an alias, or no choice, to its real model.
+      const thread=threadStore.update(seed.id,{providerSessionId:session.sessionId,model:threadStore.get(seed.id)?.model||params.model||session.sessionSetup?.models?.currentModelId||null});
       emit("thread/started",{thread});return {thread};
     }
     if(method==="thread/resume"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
-      await ensureSession(thread,context,{model:params.model||thread.model});return agentThreadResumePayload(threadStore.get(thread.id),params);
+      // An ACP harness's conversation opens with the thread's next turn, as T3 Code opens a provider session lazily ("a later
+      // user command ... opens a session"): the reopened thread shows its saved transcript at once, where Cursor's start and
+      // session/load kept it blank for half a minute in the live tour, and browsing threads starts no harness process.
+      if(!LAZY_SESSION_RUNTIMES.has(thread.runtime))await ensureSession(thread,context,{model:params.model||thread.model});
+      const resumed=agentThreadResumePayload(threadStore.get(thread.id),params),collaborationMode=thread.runtime==="claude"||thread.runtime==="cursor"?resumed?.thread?.settings?.collaborationMode:null;
+      // The composer shows the collaboration mode the thread last ran in (Claude Code's and Cursor's Plan mode).
+      return collaborationMode?.mode?{...resumed,collaborationMode}:resumed;
     }
     if(method==="thread/items/list"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
@@ -1101,7 +1250,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }
     if(method==="thread/section/move"){return {thread:threadStore.update(params.threadId,{section:params.sectionId?{id:params.sectionId,name:params.sectionId}:null})}}
     if(method==="thread/settings/update"){
-      const current=threadMetadata(params.threadId);const nextSettings={...(current?.settings||{}),...(params.settings||{})};
+      // The composer sends a collaboration mode change as a top-level collaborationMode (the shape Codex takes).
+      const current=threadMetadata(params.threadId);const nextSettings={...(current?.settings||{}),...(params.settings||{}),...(params.collaborationMode?.mode?{collaborationMode:params.collaborationMode}:{})};
       return {thread:threadStore.update(params.threadId,{settings:nextSettings,...(Object.prototype.hasOwnProperty.call(params.settings||{},"agent")?{agent:params.settings.agent||null}:{})})}
     }
     if(method==="thread/tools/ensure"){
@@ -1335,8 +1485,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
       }
       const runtimeSession=sessions.get(source.id)||await ensureSession(source,context,{});
-      let fork;
-      if(runtimeSession instanceof OpenCodeAgentSession)fork=await runtimeSession.fork();
+      let fork,forkSource=source;
+      // OpenCode gives every copied message a new ID: the forked thread's turns point at their copies, so they can still be rewound.
+      if(runtimeSession instanceof OpenCodeAgentSession){const {messageIds,tailId,...forked}=await runtimeSession.fork();fork=forked;forkSource={...source,turns:remapOpenCodeTurns(source.turns,{messageIds,tailId})}}
       else if(runtimeSession instanceof ClaudeAgentSession)fork=await runtimeSession.fork();
       else{
         const init=runtimeSession.initializeResult?.agentCapabilities?.sessionCapabilities||{};if(init.fork==null)throw Object.assign(new Error(`${runtime} does not advertise session forking`),{code:-32601});
@@ -1344,8 +1495,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       }
       const providerSessionId=fork.sessionId||fork.id;
       const providerMeta={...(source.providerMeta||{}),setup:fork};
-      if(runtimeSession instanceof ClaudeAgentSession&&fork.lazyFork)providerMeta.claudeFork=fork.lazyFork;
-      const materialized=materializeAgentFork(threadStore,source,{runtime,providerSessionId,providerMeta,excludeTurns:Boolean(params.excludeTurns)});
+      // A Claude fork carries only its own pending fork: the source's rewind backup belongs to the source thread.
+      if(runtimeSession instanceof ClaudeAgentSession){delete providerMeta.claudeFork;delete providerMeta.claudeRewindBackup;if(fork.lazyFork)providerMeta.claudeFork=fork.lazyFork}
+      const materialized=materializeAgentFork(threadStore,forkSource,{runtime,providerSessionId,providerMeta,excludeTurns:Boolean(params.excludeTurns)});
       emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
     }
     if(method==="turn/start"){
@@ -1360,13 +1512,40 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(runtime==="native"&&typeof session.setReasoningEffort==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setReasoningEffort(Object.prototype.hasOwnProperty.call(params,"reasoningEffort")?params.reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",providerId,nextModel))}
       if(runtime==="native"&&typeof session.setServiceTier==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setServiceTier(Object.prototype.hasOwnProperty.call(params,"serviceTier")?params.serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",providerId,nextModel))}
       if(runtime==="native"&&typeof session.setPermissionMode==="function")session.setPermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
-      if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
+      // Claude Code runs each turn with the thread's permission and collaboration modes and the composer's effort and speed
+      // (T3 Code's per-turn runtime policy); a changed launch policy reopens its query.
+      if(session instanceof ClaudeAgentSession){
+        session.setPermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
+        applyCollaborationMode(thread,session,params);
+        if(Object.prototype.hasOwnProperty.call(params,"reasoningEffort"))session.setReasoningEffort(params.reasoningEffort);
+        if(Object.prototype.hasOwnProperty.call(params,"serviceTier"))session.setServiceTier(params.serviceTier);
+      }
+      // OpenCode runs each turn with the thread's permission mode (its session rules) and the composer's reasoning level (its model's
+      // variant), as T3 Code applies a turn's runtime policy and model options.
+      if(session instanceof OpenCodeAgentSession){
+        await session.setPermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
+        if(Object.prototype.hasOwnProperty.call(params,"reasoningEffort"))session.setReasoningEffort(params.reasoningEffort);
+      }
+      // ACP harnesses apply the composer's effort before the prompt (Grok's set_model _meta, Cursor's thought_level option), and
+      // Cursor its Fast switch from the composer's speed and the model settings picked in the composer (context, thinking). A
+      // model switch the harness refuses fails the turn with its reason and leaves the thread's model unchanged (T3).
+      if(session instanceof AcpAgentSession){
+        if(Object.prototype.hasOwnProperty.call(params,"reasoningEffort"))session.setReasoningEffort(params.reasoningEffort);
+        if(Object.prototype.hasOwnProperty.call(params,"serviceTier"))session.setServiceTier(params.serviceTier);
+        if(Object.prototype.hasOwnProperty.call(params,"modelOptions"))session.setModelOptions(params.modelOptions);
+        // Cursor's Plan mode is the composer's collaboration mode (T3 interactionMode), as Claude Code's is.
+        if(thread.runtime==="cursor")applyCollaborationMode(thread,session,params);
+        if(params.model&&params.model!==thread.model){await session.setModel(params.model);threadStore.update(thread.id,{model:session.model||params.model})}
+      }
+      else if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
       if(runtime==="native"&&typeof session.setContextWindow==="function"){
         let contextWindow=null;
         if(typeof nativeModelContextWindow==="function")try{contextWindow=await nativeModelContextWindow({provider:requestedProvider||thread.providerMeta?.modelProvider||null,model:params.model||thread.model||null,thread:threadStore.get(thread.id)||thread})}catch(error){log("Native model context metadata unavailable: "+(error?.message||String(error)))}
         session.setContextWindow(contextWindow);
       }
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
+      // The stored message is the redacted one: a secret pasted into the first message never reaches the thread list.
+      if(!thread.name&&!thread.preview){const stored=turn?.items?.find(item=>item?.type==="userMessage")?.content?.[0]?.text||"",preview=agentThreadTitleSeed(params.input||[],stored);if(preview)threadStore.update(thread.id,{preview})}
       session.__usage=null;
       emit("turn/started",{threadId:thread.id,turn});
       const prompt=await contextualAgentPrompt(params.input||[],await withDurableContext(thread.id,params.additionalContext||{},textOfInput(params.input||[])),{runtime:thread.runtime});
@@ -1378,9 +1557,25 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null,context});
       return {turn};
     }
-    if(method==="turn/interrupt"){sessions.get(params.threadId)?.cancel();return {ok:true}}
+    if(method==="turn/interrupt"){
+      const target=sessions.get(params.threadId);target?.cancel();
+      // Stop answers a harness's waiting approvals, questions and form requests as cancelled and withdraws their cards, for Claude Code
+      // and OpenCode as for the ACP harnesses (T3 cancels every pending runtime request of an interrupted run).
+      if(target&&!(target instanceof NativeAgentSession))for(const socket of socketContexts)socket.cancelThreadRequests?.(params.threadId);
+      return {ok:true};
+    }
     if(method==="turn/steer"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      if(thread.runtime==="claude"){
+        // Claude Code takes the message into the running turn at once (T3 Code's steerTurn: a "now" priority user message).
+        const activeTurn=[...(thread.turns||[])].reverse().find(turn=>turn?.status==="inProgress");if(!activeTurn)throw new Error("Claude Code has no active turn to steer.");
+        if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error("The active Claude Code turn changed before steering could be applied.");
+        const session=sessions.get(thread.id);if(!(session instanceof ClaudeAgentSession))throw new Error("The active Claude Code session is unavailable for steering.");
+        const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{},{runtime:thread.runtime}));
+        const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env})}]};
+        threadStore.addItem(thread.id,activeTurn.id,item);emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});
+        return {turnId:activeTurn.id,accepted:Boolean(result?.accepted),pending:Number(result?.pending)||0};
+      }
       if(thread.runtime!=="native")throw Object.assign(new Error(`${thread.runtime||runtime} does not expose in-flight steering through ACP`),{code:-32601});
       const activeTurn=[...(thread.turns||[])].reverse().find(turn=>["inProgress","running","starting"].includes(turn?.status));if(!activeTurn)throw new Error("Trebell Native has no active turn to steer.");
       if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error("The active Native turn changed before steering could be applied.");
@@ -1409,6 +1604,27 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         emit("thread/compacted",{threadId:thread.id,compaction:{id:compaction.id,throughTurnId:compaction.throughTurnId,createdAt:compaction.createdAt}});return {ok:true,compaction};
       }
       if(session instanceof OpenCodeAgentSession||session instanceof ClaudeAgentSession){await session.compact();emit("thread/compacted",{threadId:thread.id});return {ok:true}}
+      // Grok compacts with its own /compact command, run as a turn (T3 compactThread); a completed one adds the compaction item.
+      // OpenCode in a remote environment runs on its ACP server, which answers /compact by summarizing the session, as the
+      // local OpenCode server's compaction does (T3's OpenCode compactThread also sends /compact).
+      if(session instanceof AcpAgentSession&&(thread.runtime==="grok"||thread.runtime==="opencode")){
+        const label=session.label||runtimeHarnessLabel(thread.runtime);
+        if(thread.status?.type==="active"||session.busy)throw new Error(`Stop the running ${label} turn before compacting its context.`);
+        const turn=threadStore.addTurn(thread.id,{inputText:"/compact",status:"inProgress"});session.__assistant="";session.__usage=null;
+        emit("turn/started",{threadId:thread.id,turn});
+        const promptPromise=session.prompt([{type:"text",text:"/compact"}],{messageId:randomUUID()}).then(result=>{
+          if(result?.stopReason==="cancelled"||result?.stopReason==="refusal"){
+            emit("error",{threadId:thread.id,turnId:turn.id,message:result.stopReason==="cancelled"?`${label}'s context compaction was stopped before it finished.`:`${label} declined to compact its context.`});
+            return result;
+          }
+          const item={type:"contextCompaction",id:`compaction-${turn.id}`,status:"completed"};
+          threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()});
+          emit("thread/compacted",{threadId:thread.id,turnId:turn.id});
+          return result;
+        });
+        settlePrompt({thread,turn,session,promptPromise,model:thread.model||null,context});
+        return {ok:true,turn};
+      }
       throw Object.assign(new Error(`${runtime} does not expose a generic compaction RPC`),{code:-32601});
     }
     if(method==="thread/revert"){
@@ -1421,16 +1637,29 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         const session=sessions.get(thread.id);if(session)await session.close().catch(()=>{});sessions.delete(thread.id);
         const updated=threadStore.update(thread.id,{turns:retained,status:{type:"idle"},providerMeta:currentMeta});emit("thread/reverted",{threadId:thread.id,thread:updated});return {thread:updated};
       }
+      // ACP defines no conversation truncation, so Grok, Antigravity and a remote OpenCode (its ACP server) revert the way T3's
+      // ACP rollbackThread does: the thread is cut before the turn and its next turn starts a fresh session. Files come back
+      // through the checkpoint restore the app offers before this call.
+      if(acpRestartsOnRevert(thread)){
+        const live=sessions.get(thread.id),label=runtimeHarnessLabel(thread.runtime);
+        if(thread.status?.type==="active"||live?.busy)throw new Error(`Stop the running ${label} turn before reverting this thread.`);
+        const index=(thread.turns||[]).findIndex(item=>item.id===params.beforeTurnId);if(index<0)throw new Error(`${label} revert target turn was not found.`);
+        if(live){sessions.delete(thread.id);await live.close().catch(()=>{})}
+        const updated=threadStore.update(thread.id,{turns:thread.turns.slice(0,index),providerSessionId:"",status:{type:"idle"}});
+        emit("thread/reverted",{threadId:thread.id,thread:updated});return {thread:updated};
+      }
       const session=sessions.get(thread.id)||await ensureSession(thread,context,{});
       if(session instanceof OpenCodeAgentSession){
         const turn=thread.turns?.find(item=>item.id===params.beforeTurnId);const providerMessageId=turn?.providerMessageId||turn?.items?.find(item=>item.providerMessageId)?.providerMessageId;if(!providerMessageId)throw new Error("This OpenCode turn does not have a provider message checkpoint yet");
-        await session.revert(providerMessageId);const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);threadStore.update(thread.id,{turns:index>=0?thread.turns.slice(0,index):thread.turns});emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
+        // The thread continues in OpenCode's copy of the conversation before this turn; files stay as they are (T3 Code's rollbackThread).
+        const rewound=await session.rewind(providerMessageId);const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);
+        threadStore.update(thread.id,{providerSessionId:rewound.sessionId,turns:remapOpenCodeTurns(index>=0?thread.turns.slice(0,index):thread.turns,rewound)});emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }
       if(session instanceof ClaudeAgentSession){
-        const {index,providerMessageId,dropsTurn}=claudeRewindCheckpoint(thread,params.beforeTurnId);
-        const forked=await session.rewindConversation(providerMessageId,{dropsTurn});
-        const currentMeta=threadMetadata(thread.id)?.providerMeta||{};
-        threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index),providerMeta:{...currentMeta,...(forked.lazyFork?{claudeFork:forked.lazyFork}:{}),claudeRewindBackup:{sourceSessionId:thread.providerSessionId,retainedCount:index,removedTurns:thread.turns.slice(index),createdAt:Date.now()}}});
+        const {index,providerMessageId}=claudeRewindCheckpoint(thread,params.beforeTurnId);
+        const forked=await session.rewindConversation(providerMessageId);
+        const providerMeta=claudeRewindProviderMeta({...thread,providerMeta:threadMetadata(thread.id)?.providerMeta||thread.providerMeta},index,forked);
+        threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index),providerMeta});
         emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }
       throw Object.assign(new Error(`${runtime} does not expose conversation rewind`),{code:-32601});
@@ -1438,7 +1667,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="review/start"){
       return request(context,"turn/start",{threadId:params.threadId,input:[{type:"text",text:"Review the current workspace changes. Focus on correctness, regressions, security and missing tests. Return actionable findings."}]});
     }
-    if(method==="collaborationMode/list")return {data:[]};
+    // Claude Code's and Cursor's Plan mode (T3's interaction mode; Cursor runs a Plan turn in its plan mode).
+    if(method==="collaborationMode/list")return {data:runtime==="claude"||runtime==="cursor"?[{mode:"default",name:"Default"},{mode:"plan",name:"Plan"}]:[]};
     throw Object.assign(new Error(`Unsupported external-agent RPC method: ${method}`),{code:-32601});
   }
 
@@ -1448,10 +1678,21 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const pendingServer=new Map();let nextServerId=1;
       const context={
         ws,
-        serverRequest(method,params){
-          const id=`agent-${nextServerId++}`;ws.send(JSON.stringify({id,method,params}));return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{pendingServer.delete(id);reject(new Error(`${method} user response timed out`))},5*60_000);pendingServer.set(id,{resolve,reject,timer})});
+        serverRequest(method,params,owner=params?.threadId){
+          const id=`agent-${nextServerId++}`;ws.send(JSON.stringify({id,method,params}));return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{pendingServer.delete(id);reject(new Error(`${method} user response timed out`))},5*60_000);pendingServer.set(id,{resolve,reject,timer,method,threadId:owner?String(owner):null})});
         },
-        async permission(thread,{params,options}){
+        // Stop, or an ACP process that died, answers the thread's open approvals, questions and form requests as cancelled and takes
+        // them off the screen (T3 settles a session's pending approvals and user input when its turn is interrupted or the process exits).
+        cancelThreadRequests(threadId){
+          const owner=String(threadId||""),cancelled={"item/tool/requestApproval":{decision:"cancel"},"item/tool/requestUserInput":{answers:{}},"mcpServer/elicitation/request":{action:"cancel"}};
+          if(!owner)return;
+          for(const [id,pending] of [...pendingServer]){
+            if(pending.threadId!==owner||!Object.prototype.hasOwnProperty.call(cancelled,pending.method))continue;
+            pendingServer.delete(id);clearTimeout(pending.timer);pending.resolve(cancelled[pending.method]);
+            if(ws.readyState===ws.OPEN)ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:owner}}));
+          }
+        },
+        async permission(thread,{params,options,askUser=false,approvalOptions=null}){
           const current=threadStore.get(thread.id)||thread,turnId=current?.turns?.at(-1)?.id||null,traceData=agentPermissionTraceData({toolCall:params.toolCall,options});
           const traceBase={runtime:current?.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),environmentId:current?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,threadId:thread.id,turnId,category:"policy"};
           journal?.record?.({...traceBase,name:"permission.requested",status:"pending",data:traceData});
@@ -1463,7 +1704,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
             networkHost:policy.action.networkHost||null,provenance:policy.action.provenance,
           };
           journal?.record?.({...traceBase,name:"policy.decision",status:policy.decision.toLowerCase(),data:policyData});
-          if(policy.decision===POLICY_ALLOW){
+          // Grok's Auto mode has already decided what it could itself: what it still asks about goes to the user (T3), never auto-allowed.
+          if(policy.decision===POLICY_ALLOW&&!askUser){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"accept",data:{...traceData,decision:"accept",policyDecision:policy.decision}});
             return "accept";
           }
@@ -1472,7 +1714,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
             return "decline";
           }
           try{
-            const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:params.toolCall?.title||"Agent requests permission",toolCall:params.toolCall,options}),decision=result?.decision||"decline";
+            // An ACP harness's own choices (approvalOptions) are shown as the card's buttons; each answers with its decision.
+            const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:agentApprovalReason(params),toolCall:params.toolCall,options,...(Array.isArray(approvalOptions)&&approvalOptions.length?{approvalOptions}:{})}),decision=result?.decision||"decline";
             journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision,policyDecision:POLICY_CONFIRM}});return decision;
           }catch(error){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"error",data:{...traceData,message:error?.message||String(error)}});throw error;
@@ -1500,7 +1743,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
             mode,
             serverName:thread.runtime==="opencode"?"OpenCode":thread.runtime==="cursor"?"Cursor":thread.runtime==="grok"?"Grok Build":thread.runtime==="antigravity"?"Antigravity":"ACP agent",
             _meta:{...(params?._meta||{}),trebell_source:"acp",trebell_runtime:thread.runtime},
-          });
+          },thread.id);
         },
       };
       socketContexts.add(context);
@@ -1514,7 +1757,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           if(message.method==="initialized")recoverPending(context).catch(error=>log(error?.stack||String(error)));
           return;
         }
-        try{const result=await request(context,message.method,message.params||{});ws.send(JSON.stringify({id:message.id,result}))}
+        try{
+          // Only the person's own turns are checked: Trebell's continuations of a thread (queues, goals, recovery) run on its owner.
+          if(message.method==="turn/start"){const ownerError=agentTurnOwnerError(threadStore.get(message.params?.threadId),runtimeManager.activeRuntime());if(ownerError)throw ownerError}
+          const result=await request(context,message.method,message.params||{});ws.send(JSON.stringify({id:message.id,result}))}
         catch(error){log(error?.stack||String(error));ws.send(JSON.stringify({id:message.id,error:{code:Number(error?.code)||-32000,message:error instanceof Error?error.message:String(error)}}))}
       });
       ws.on("close",()=>{socketContexts.delete(context);for(const pending of pendingServer.values()){clearTimeout(pending.timer);pending.reject(new Error("Agent client disconnected"))}pendingServer.clear()});
@@ -1526,7 +1772,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(promptSettlements.size)await Promise.allSettled([...promptSettlements]);
   }
   return {reset:closeSessions,close:async()=>{
-    closing=true;
+    closing=true;stopModelUpdates();
     server.off("upgrade",upgrade);
     for(const context of socketContexts){try{context.ws.terminate()}catch{}}
     socketContexts.clear();

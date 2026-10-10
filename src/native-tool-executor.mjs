@@ -19,35 +19,40 @@ export function createNativeToolExecutor({
   repository=true,discoverRepositoryTools=null,outputStore=null,mcpBroker=null,executeShared=null,confirm=null,environment=process.env,onEvent=null,policyContext={},projectAvailable=null,
 }={}){
   const repositoryHandlers=repository&&contextEngine&&root?repositoryToolHandlers({contextEngine,root,io,knowledgeService,environmentId}):null;
+  // A repository call's capability and arguments, checked against its input schema, or null for another tool. The gateway runs it before
+  // asking for approval (a call that cannot run is never put to the person) and again to execute.
+  const repositoryCall=call=>{
+    if(call.definition?.source==="repository"){
+      if(!repositoryHandlers)throw new Error("Repository intelligence is unavailable without an active Context Engine workspace.");
+      if(advancedRepositoryToolDefinition(call.name))throw new Error("Advanced Native repository capabilities must be called through trebell_repo/invoke after discovery.");
+      return {definition:call.definition.rawDefinition,args:parseRepositoryToolArguments(call.definition.rawDefinition,repositoryArguments(root,call.arguments||{}))};
+    }
+    if(call.definition?.source==="repository-invoke"){
+      if(!repositoryHandlers)throw new Error("Repository intelligence is unavailable without an active Context Engine workspace.");
+      const requested=String(call.arguments?.name||"").trim(),definition=advancedRepositoryToolDefinition(requested);
+      if(!definition)throw new Error("Unknown or non-advanced repository capability: "+(requested||"missing")+". Valid capabilities: "+ADVANCED_REPOSITORY_TOOL_NAMES.join(", ")+".");
+      const requestedArguments=repositoryArguments(root,call.arguments?.arguments||{});
+      // Return the full input schema with the validation error so a wrong direct invoke self-corrects in one
+      // retry instead of needing a separate discover round trip.
+      try{return {definition,args:parseRepositoryToolArguments(definition,requestedArguments)}}
+      catch(error){throw new Error((error?.message||String(error))+"\nInput schema for "+definition.name+": "+JSON.stringify(repositoryToolInputJsonSchema(definition)),{cause:error})}
+    }
+    return null;
+  };
   const gateway=createSharedToolGateway({
     confirm,environment,onEvent,
+    validate:call=>{repositoryCall(call)},
     resolveDefinition:(namespace,name,call)=>mcpBroker?.invocationDefinition?.(namespace,name,call?.arguments||{})||mcpBroker?.toolDefinition?.(namespace,name)||platformToolDefinition(namespace,name),
     contextForCall:(call,override={})=>{
       const base=baseContext(policyContext,call);
       return {...base,workspace:override.workspace??base.workspace??root??null,projectAvailable:override.projectAvailable??base.projectAvailable??(projectAvailable==null?Boolean(root):Boolean(projectAvailable)),...override};
     },
     execute:async call=>{
-      if(call.definition?.source==="repository"){
-        if(!repositoryHandlers)throw new Error("Repository intelligence is unavailable without an active Context Engine workspace.");
-        if(advancedRepositoryToolDefinition(call.name))throw new Error("Advanced Native repository capabilities must be called through trebell_repo/invoke after discovery.");
-        const args=parseRepositoryToolArguments(call.definition.rawDefinition,repositoryArguments(root,call.arguments||{}));
-        return await invokeRepositoryTool(repositoryHandlers,call.definition.rawDefinition,args);
-      }
+      const repositoryInvocation=repositoryCall(call);
+      if(repositoryInvocation)return await invokeRepositoryTool(repositoryHandlers,repositoryInvocation.definition,repositoryInvocation.args);
       if(call.definition?.source==="repository-discovery"){
         if(typeof discoverRepositoryTools!=="function")throw new Error("Repository tool discovery is unavailable.");
         return await discoverRepositoryTools(call.arguments||{});
-      }
-      if(call.definition?.source==="repository-invoke"){
-        if(!repositoryHandlers)throw new Error("Repository intelligence is unavailable without an active Context Engine workspace.");
-        const requested=String(call.arguments?.name||"").trim(),definition=advancedRepositoryToolDefinition(requested);
-        if(!definition)throw new Error("Unknown or non-advanced repository capability: "+(requested||"missing")+". Valid capabilities: "+ADVANCED_REPOSITORY_TOOL_NAMES.join(", ")+".");
-        const requestedArguments=repositoryArguments(root,call.arguments?.arguments||{});
-        let args;
-        // Return the full input schema with the validation error so a wrong direct invoke self-corrects in one
-        // retry instead of needing a separate discover round trip.
-        try{args=parseRepositoryToolArguments(definition,requestedArguments)}
-        catch(error){throw new Error((error?.message||String(error))+"\nInput schema for "+definition.name+": "+JSON.stringify(repositoryToolInputJsonSchema(definition)),{cause:error})}
-        return await invokeRepositoryTool(repositoryHandlers,definition,args);
       }
       if(call.namespace==="trebell_output"){
         if(!outputStore)throw new Error("Trebell output store is unavailable.");

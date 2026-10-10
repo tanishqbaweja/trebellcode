@@ -749,3 +749,43 @@ test("Trebell Native keeps a retired-provider thread's queued follow-up queued u
     stored=threadStore.get(legacy.id);assert.equal(stored.model,"model-a");assert.equal(stored.turns.length,2);
   }finally{await fixture.close()}
 });
+
+test("Trebell Native runs a Supervised command after Allow session and runs it again in that session without asking",async()=>{
+  // The live tour: "Allow session" answered acceptForSession, which Native read as a refusal ("Tool execution was not approved.").
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-session-grant-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;
+  const nativeProviderTurn=async request=>{
+    calls++;
+    const reply=(text,toolCalls=[])=>({id:"grant-"+calls,provider:request.provider,model:request.model,text,toolCalls,finishReason:toolCalls.length?"tool_calls":"stop",usage:{}});
+    if(request.toolChoice==="none")return reply('{"status":"complete","unresolved":[],"reason":"The command ran."}');
+    const last=request.messages.at(-1);if(last?.role==="tool")return reply("Ran it.");
+    const asked=JSON.stringify(last?.content||""),code=/Run B/.test(asked)?"process.stdout.write('B')":"process.stdout.write('A')";
+    // The same command asks for other output and time bounds the second time: the grant still covers it.
+    return reply("",[{id:"run-"+calls,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:process.execPath,args:["-e",code],cwd:".",timeout_ms:/again/.test(asked)?60000:30000})}]);
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  const approvals=[];ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method==="item/tool/requestApproval")approvals.push(message)});
+  const answer=(message,decision)=>ws.send(JSON.stringify({id:message.id,result:{decision}}));
+  const runTurn=async text=>{const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"supervised",input:[{type:"text",text}]})).turn;return turn};
+  const finished=turn=>rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id,15000);
+  const runItem=index=>threadStore.get(thread.id).turns[index].items.find(item=>item.type==="dynamicToolCall"&&item.tool==="run");
+  let thread=null;
+  try{
+    thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"supervised",dynamicTools:[]})).thread;
+    const first=await runTurn("Run A");
+    const asked=await rpc.waitFor(message=>message.method==="item/tool/requestApproval",15000);
+    assert.match(asked.params.reason,/^trebell_terminal\/run: .+ -e process\.stdout\.write\('A'\) \(Supervised profile requires confirmation\.\)$/,"the card says what it approves");
+    answer(asked,"acceptForSession");await finished(first);
+    assert.equal(runItem(0).success,true,"Allow session runs the command");
+    const second=await runTurn("Run A again");await finished(second);
+    assert.equal(approvals.length,1,"the same command does not ask again in this session");
+    assert.equal(runItem(1).success,true);
+    const third=await runTurn("Run B");
+    const askedAgain=await rpc.waitFor(message=>message.method==="item/tool/requestApproval"&&message.id!==asked.id,15000);
+    assert.match(askedAgain.params.reason,/-e process\.stdout\.write\('B'\)/,"another command asks");
+    answer(askedAgain,"decline");await finished(third);
+    assert.equal(runItem(2).success,false,"a declined command does not run");
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});

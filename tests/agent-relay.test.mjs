@@ -8,8 +8,9 @@ import { WebSocket } from "ws";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "../src/native-request-metrics.mjs";
+import { openCodeMessageId, openCodePermissionRules } from "../src/opencode-agent-session.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { acpPlanEvent,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionProfilePatch,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,claudeRewindCheckpoint,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { acpPlanEvent,agentApprovalReason,agentTextAfterToolCall,agentThreadTitleSeed,agentTurnOwnerError,nativeApprovalGrantKey,nativeApprovalReason,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionProfilePatch,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,claudeRewindCheckpoint,claudeRewindProviderMeta,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
 test("permission trace metadata excludes raw tool arguments",()=>{
   const trace=agentPermissionTraceData({toolCall:{toolCallId:"tool-1",title:"Run deployment",kind:"execute",rawInput:{command:"do-not-persist"}},options:[{kind:"allow_once"},{kind:"allow_once"},{kind:"reject_once"}]});
@@ -28,6 +29,69 @@ test("external thread starts preserve Trebell permission profiles across runtime
   assert.deepEqual(agentPermissionProfilePatch({sandboxPolicy:{type:"readOnly",networkAccess:false},approvalPolicy:"on-request"}),{permissionProfile:"read-only"});
   assert.deepEqual(agentPermissionProfilePatch({sandboxPolicy:{type:"workspaceWrite"},approvalPolicy:"on-request"}),{permissionProfile:"supervised"});
   assert.deepEqual(agentPermissionProfilePatch({}),{},"turns without a policy override must retain the thread's current permission profile");
+});
+
+test("a new thread is listed by its first message, as T3 Code seeds a thread's title",()=>{
+  assert.equal(agentThreadTitleSeed([{type:"text",text:"  Fix the\n\nlogin   bug  "}]),"Fix the login bug");
+  assert.equal(agentThreadTitleSeed([{type:"text",text:"x".repeat(60)}]),"x".repeat(50)+"...");
+  assert.equal(agentThreadTitleSeed([{type:"localImage",path:"C:\\shots\\screen.png"}]),"Image: screen.png");
+  assert.equal(agentThreadTitleSeed([{type:"text",text:"key sk-live"}],"key [REDACTED]"),"key [REDACTED]","the stored, redacted text is what is listed");
+  assert.equal(agentThreadTitleSeed([]),null);
+});
+
+test("a harness's text after a tool call starts a new paragraph, as T3 Code starts a new assistant message",()=>{
+  // The live tour: Cursor's "I'll run that Node one-liner and report the output." ran into the command output's code fence.
+  const session={__assistant:"I'll run that Node one-liner and report the output.",__assistantBreak:true};
+  assert.equal(agentTextAfterToolCall(session,"```\ntrebell-tour\n```"),"\n\n```\ntrebell-tour\n```");
+  assert.equal(session.__assistantBreak,false,"the break is taken once");
+  assert.equal(agentTextAfterToolCall(session," more")," more","later chunks of the same paragraph are unchanged");
+  assert.equal(agentTextAfterToolCall({__assistant:"",__assistantBreak:true},"First words"),"First words","text that opens the turn after a tool call needs no break");
+  assert.equal(agentTextAfterToolCall({__assistant:"Done.\n",__assistantBreak:true},"Next"),"Next","text already on a new line keeps it");
+  assert.equal(agentTextAfterToolCall({__assistant:"Done.",__assistantBreak:true},"\nNext"),"\nNext");
+  assert.equal(agentTextAfterToolCall({__assistant:"Same",__assistantBreak:false}," sentence")," sentence","no tool call, no break");
+  const waiting={__assistant:"Before",__assistantBreak:true};
+  assert.equal(agentTextAfterToolCall(waiting,""),"");assert.equal(waiting.__assistantBreak,true,"an empty chunk leaves the break for the next text");
+  assert.equal(agentTextAfterToolCall(null,"text"),"text");
+});
+
+test("a turn for another harness's thread is refused with the harness that owns it",()=>{
+  const error=agentTurnOwnerError({id:"t",runtime:"opencode"},"cursor");
+  assert.equal(error.message,"This chat belongs to OpenCode, not Cursor. Open it from the sidebar to continue it in OpenCode.");
+  assert.equal(error.code,-32602);
+  assert.equal(agentTurnOwnerError({id:"t",runtime:"grok"},"native").message,"This chat belongs to Grok Build, not Trebell Native. Open it from the sidebar to continue it in Grok Build.");
+  assert.equal(agentTurnOwnerError({id:"t",runtime:"cursor"},"cursor"),null);
+  assert.equal(agentTurnOwnerError(null,"cursor"),null,"an unknown thread is left to turn/start's own error");
+  assert.equal(agentTurnOwnerError({id:"t",runtime:"cursor"},null),null);
+});
+
+test("a Trebell Native approval names the command or path it approves, then why the profile asks",()=>{
+  const reason="Supervised profile requires confirmation.";
+  assert.equal(nativeApprovalReason({namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["-e","console.log('trebell-tour')"],cwd:"."}},{reason}),
+    "trebell_terminal/run: node -e console.log('trebell-tour') (Supervised profile requires confirmation.)");
+  const exe="C:\\Program Files\\nodejs\\node.exe";
+  assert.equal(nativeApprovalReason({namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:exe,args:["-e","1 + 1"]})},{}),
+    `trebell_terminal/run: ${JSON.stringify(exe)} -e "1 + 1"`,"spaced parts are quoted, and string arguments are read");
+  assert.equal(nativeApprovalReason({namespace:"trebell_repo",name:"read_source",arguments:{path:"src/app.js"}},{reason,arguments:{path:"src/app.js",start_line:1}}),
+    "trebell_repo/read_source: src/app.js (Supervised profile requires confirmation.)");
+  assert.equal(nativeApprovalReason({namespace:"trebell_web",name:"fetch",arguments:{url:"https://example.com"}},{}),'trebell_web/fetch: {"url":"https://example.com"}');
+  assert.equal(nativeApprovalReason({namespace:"trebell_git",name:"status",arguments:{}},{reason}),"trebell_git/status (Supervised profile requires confirmation.)");
+});
+
+test("a Trebell Native session grant covers the same action, whatever its output and time bounds",()=>{
+  const run=args=>({namespace:"trebell_terminal",name:"run",arguments:args});
+  const first=nativeApprovalGrantKey(run({command:"node",args:["-e","1"],cwd:".",timeout_ms:120000,max_output_bytes:64000}));
+  assert.equal(nativeApprovalGrantKey(run({max_output_bytes:1000,cwd:".",args:["-e","1"],command:"node"})),first,"key order and bounds do not matter");
+  assert.equal(nativeApprovalGrantKey(run('{"command":"node","args":["-e","1"],"cwd":"."}')),first);
+  assert.notEqual(nativeApprovalGrantKey(run({command:"node",args:["-e","2"],cwd:"."})),first,"another command asks again");
+  assert.notEqual(nativeApprovalGrantKey(run({command:"node",args:["-e","1"],cwd:"src"})),first,"another folder asks again");
+  assert.notEqual(nativeApprovalGrantKey({namespace:"trebell_terminal",name:"start",arguments:{command:"node",args:["-e","1"],cwd:"."}}),first,"another tool asks again");
+});
+
+test("an approval card shows the harness's prompt for the request, else the tool's title",()=>{
+  assert.equal(agentApprovalReason({prompt:"PowerShell: node -v",toolCall:{title:"PowerShell"}}),"PowerShell: node -v");
+  assert.equal(agentApprovalReason({toolCall:{title:"Run npm test"}}),"Run npm test");
+  assert.equal(agentApprovalReason({prompt:"  ",toolCall:{title:"Edit a.js"}}),"Edit a.js");
+  assert.equal(agentApprovalReason({}),"Agent requests permission");
 });
 
 test("external runtime approval requests use the unified policy decision before asking the user",()=>{
@@ -178,18 +242,39 @@ test("rejected Claude rewind restores the original provider session and removed 
     assert.equal(restored.providerMeta.keep,"value");
     assert.equal(Object.prototype.hasOwnProperty.call(restored.providerMeta,"claudeFork"),false);
     assert.equal(Object.prototype.hasOwnProperty.call(restored.providerMeta,"claudeRewindBackup"),false);
+    // A rewind made while an earlier fork had not run yet puts that fork back.
+    const earlierFork={sourceSessionId:"cccccccc-cccc-4ccc-8ccc-cccccccccccc",targetSessionId:source,resumeSessionAt:null};
+    store.update(thread.id,{
+      providerSessionId:target,turns:[original[0]],
+      providerMeta:{keep:"value",claudeFork:{sourceSessionId:earlierFork.sourceSessionId,targetSessionId:target,resumeSessionAt:"assistant-1"},claudeRewindBackup:{sourceSessionId:source,claudeFork:earlierFork,retainedCount:1,removedTurns:original.slice(1),createdAt:Date.now()}},
+    });
+    const again=restoreClaudeRejectedRewind(store,thread.id,{claudeFork:{sourceSessionId:earlierFork.sourceSessionId}});
+    assert.equal(again.providerSessionId,source);
+    assert.deepEqual(again.providerMeta.claudeFork,earlierFork);
+    assert.deepEqual(again.turns.map(turn=>turn.id),["turn-1","turn-2","turn-3"]);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
-test("Claude rewind uses the prior assistant checkpoint and drops the target user prompt",()=>{
+test("Claude edit-from-here resumes at the newest kept turn's cursor, or starts fresh before the first turn",()=>{
   const thread={turns:[
     {id:"turn-1",providerMessageId:"assistant-1",providerUserMessageId:"user-1"},
-    {id:"turn-2",providerMessageId:"assistant-2",providerUserMessageId:"user-2"},
+    {id:"turn-2",status:"failed"},
     {id:"turn-3",providerMessageId:"assistant-3",providerUserMessageId:"user-3"},
   ]};
-  assert.deepEqual(claudeRewindCheckpoint(thread,"turn-3"),{index:2,providerMessageId:"assistant-2",dropsTurn:"user-3"});
-  assert.throws(()=>claudeRewindCheckpoint(thread,"turn-1"),/cannot rewind before the first persisted user message/i);
+  assert.deepEqual(claudeRewindCheckpoint(thread,"turn-3"),{index:2,providerMessageId:"assistant-1"},"a turn that never reached Claude's transcript is skipped");
+  assert.deepEqual(claudeRewindCheckpoint(thread,"turn-1"),{index:0,providerMessageId:null},"editing the first message starts a fresh session");
   assert.throws(()=>claudeRewindCheckpoint(thread,"missing"),/target turn was not found/i);
+});
+
+test("Claude rewind metadata backs up the thread for a rejected fork, and a fresh session needs no backup",()=>{
+  const source="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",target="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const earlierFork={sourceSessionId:"cccccccc-cccc-4ccc-8ccc-cccccccccccc",targetSessionId:source,resumeSessionAt:null};
+  const turns=[{id:"turn-1",providerMessageId:"assistant-1"},{id:"turn-2",providerMessageId:"assistant-2"}];
+  const thread={providerSessionId:source,turns,providerMeta:{keep:"value",claudeFork:earlierFork,claudeRewindBackup:{stale:true}}};
+  const lazyFork={sourceSessionId:earlierFork.sourceSessionId,targetSessionId:target,resumeSessionAt:"assistant-1"};
+  const meta=claudeRewindProviderMeta(thread,1,{sessionId:target,lazyFork},1234);
+  assert.deepEqual(meta,{keep:"value",claudeFork:lazyFork,claudeRewindBackup:{sourceSessionId:source,claudeFork:earlierFork,retainedCount:1,removedTurns:[turns[1]],createdAt:1234}});
+  assert.deepEqual(claudeRewindProviderMeta(thread,0,{sessionId:target,lazyFork:null}),{keep:"value"});
 });
 
 test("agent thread item pagination uses stable bounded cursors in both directions",()=>{
@@ -458,7 +543,8 @@ const sessionId="fixture-session";
 function send(message){process.stdout.write(JSON.stringify(message)+"\n")}
 function handle(m){
   if(!m.method||m.id==null)return;
-  if(m.method==="initialize")return send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"fixture",version:"1"},agentCapabilities:{loadSession:false}}});
+  // Like Grok Build, the fixture resumes a conversation with session/resume (a restart resumes it, never a silent new session).
+  if(m.method==="initialize")return send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"fixture",version:"1"},agentCapabilities:{loadSession:false,sessionCapabilities:{resume:{}}}}});
   if(m.method==="session/new")return send({jsonrpc:"2.0",id:m.id,result:{sessionId,models:{currentModelId:"fixture-model",availableModels:[{modelId:"fixture-model",name:"Fixture"}]}}});
   if(m.method==="session/prompt"){
     appendFileSync(process.argv[2],JSON.stringify(m.params.prompt)+"\n");
@@ -504,6 +590,156 @@ test("the relay sends an ACP harness fenced context followed by the user's uncha
     assert.deepEqual(prompt[1],{type:"text",text:ENVELOPE_REQUEST});
     assert.ok(prompt[2].text.startsWith("<trebell_runtime>\n"),"first-turn runtime instructions stay a separately fenced part");
     assert.equal(threadStore.get(started.thread.id).turns[0].items.find(item=>item.type==="agentMessage")?.text,"TREBELL_TOUR_OK");
+  }finally{
+    try{ws.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+  }
+});
+
+test("an ACP thread records the model its session runs and starts in the composer's Auto-accept edits mode",async()=>{
+  // Like Cursor and Antigravity, this agent reports its models only as a model config option (no models block).
+  const agent=FAKE_ACP_AGENT.replace('result:{sessionId,models:{currentModelId:"fixture-model",availableModels:[{modelId:"fixture-model",name:"Fixture"}]}}','result:{sessionId,configOptions:[{id:"model",name:"Model",category:"model",type:"select",currentValue:"fixture-pro",options:[{value:"fixture-pro",name:"Fixture Pro"}]}]}');
+  assert.notEqual(agent,FAKE_ACP_AGENT);
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-start-model-")),fixture=join(root,"fake-acp.mjs"),recorded=join(root,"prompts.jsonl");
+  await writeFile(fixture,agent,"utf8");
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  const runtimeManager=fakeAcpRuntimeManager(fixture,recorded),launches=[];runtimeManager.acpArgs=(_instance,mode)=>{launches.push(mode);return [fixture,recorded]};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state:memoryThreadState(),version:"test"});
+  const port=await listen(server),ws=await connect("ws://127.0.0.1:"+port+"/api/agent/ws"),rpc=request(ws);
+  try{
+    // The composer sends the harness's alias when no model is picked (and the profile, which a sandbox and approval policy cannot carry).
+    const started=await rpc("thread/start",{cwd:root,model:"grok-build",permissionProfile:"edits",approvalPolicy:"on-request",sandbox:"workspace-write"});
+    assert.equal(started.thread.model,"fixture-pro","the thread shows the model the session runs, not the alias");
+    assert.equal(threadStore.get(started.thread.id).model,"fixture-pro");
+    assert.equal(threadStore.get(started.thread.id).providerMeta.permissionProfile,"edits");
+    assert.deepEqual(launches,["edits"],"the harness launches in the thread's access level");
+    const plain=await rpc("thread/start",{cwd:root,approvalPolicy:"on-request",sandbox:"workspace-write"});
+    assert.equal(plain.thread.model,"fixture-pro","a thread started with no model records the session's");
+    const completed=turnCompleted(ws);
+    await rpc("turn/start",{threadId:started.thread.id,model:"grok-build",permissionProfile:"edits",input:[{type:"text",text:"Reply with exactly OK"}]});
+    assert.equal((await completed).turn.status,"completed");
+    assert.equal(threadStore.get(started.thread.id).model,"fixture-pro","a turn naming the alias keeps the real model");
+  }finally{
+    try{ws.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+  }
+});
+
+test("after a harness switch the relay refuses a turn for the previous harness's thread and keeps its model",async()=>{
+  // The live tour: the UI still showed an OpenCode thread after switching to Cursor, and its next message reached that thread with
+  // Cursor's model, which was then saved as the OpenCode thread's model.
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-owner-")),fixture=join(root,"fake-acp.mjs"),recorded=join(root,"prompts.jsonl");
+  await writeFile(fixture,FAKE_ACP_AGENT,"utf8");
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  const runtimeManager=fakeAcpRuntimeManager(fixture,recorded);let active="grok";runtimeManager.activeRuntime=()=>active;
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state:memoryThreadState(),version:"test"});
+  const port=await listen(server),ws=await connect("ws://127.0.0.1:"+port+"/api/agent/ws"),rpc=request(ws);
+  try{
+    const started=await rpc("thread/start",{cwd:root,approvalPolicy:"on-request",sandbox:"workspace-write"});
+    const threadId=started.thread.id,model=threadStore.get(threadId).model;
+    assert.equal(model,"fixture-model");
+    active="cursor";
+    await assert.rejects(rpc("turn/start",{threadId,model:"composer-2.5",input:[{type:"text",text:"Reply with exactly OK"}]}),/^Error: This chat belongs to Grok Build, not Cursor. Open it from the sidebar to continue it in Grok Build.$/);
+    assert.equal(threadStore.get(threadId).model,model,"the thread keeps its own model");
+    assert.equal(threadStore.get(threadId).turns.length,0,"no turn was started");
+    active="grok";
+    const completed=turnCompleted(ws);
+    await rpc("turn/start",{threadId,input:[{type:"text",text:"Reply with exactly OK"}]});
+    assert.equal((await completed).turn.status,"completed","its own harness continues it");
+  }finally{
+    try{ws.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+  }
+});
+
+test("a new thread whose harness session cannot start leaves no empty thread behind",async()=>{
+  // The live tour: Cursor answered "Internal error" when the new session switched to Auto, and the failed start stayed in the
+  // sidebar as an empty "Untitled task".
+  const agent=FAKE_ACP_AGENT
+    .replace('availableModels:[{modelId:"fixture-model",name:"Fixture"}]','availableModels:[{modelId:"fixture-model",name:"Fixture"},{modelId:"fixture-pro",name:"Fixture Pro"}]')
+    .replace('  if(m.method==="session/prompt"){','  if(m.method==="session/set_model")return send({jsonrpc:"2.0",id:m.id,error:{code:-32603,message:"Internal error"}});\n  if(m.method==="session/prompt"){');
+  assert.equal(agent.split("fixture-pro").length,2);assert.ok(agent.includes("session/set_model"));
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-start-fails-")),fixture=join(root,"fake-acp.mjs"),recorded=join(root,"prompts.jsonl");
+  await writeFile(fixture,agent,"utf8");
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  const runtimeManager=fakeAcpRuntimeManager(fixture,recorded);
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state:memoryThreadState(),version:"test"});
+  const port=await listen(server),ws=await connect("ws://127.0.0.1:"+port+"/api/agent/ws"),rpc=request(ws);
+  try{
+    await assert.rejects(rpc("thread/start",{cwd:root,model:"fixture-pro",approvalPolicy:"on-request",sandbox:"workspace-write"}),/could not switch to model 'fixture-pro': Internal error/);
+    assert.deepEqual(threadStore.list(),[],"the failed start is not kept as a thread");
+    const started=await rpc("thread/start",{cwd:root,approvalPolicy:"on-request",sandbox:"workspace-write"});
+    assert.deepEqual(threadStore.list().map(thread=>thread.id),[started.thread.id],"the next start is the only thread");
+  }finally{
+    try{ws.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+  }
+});
+
+test("the relay starts a new paragraph where a harness goes on with its reply after a tool call",async()=>{
+  const chunk=text=>'send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:'+JSON.stringify(text)+'}}}});';
+  const agent=FAKE_ACP_AGENT.replace(chunk("TREBELL_TOUR_OK"),[
+    chunk("I'll run that Node one-liner and report the output."),
+    'send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"tool_call",toolCallId:"call-1",title:"node -e",kind:"execute",status:"completed"}}});',
+    chunk("```\ntrebell-tour\n```"),
+  ].join("\n    "));
+  assert.notEqual(agent,FAKE_ACP_AGENT);
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-paragraph-")),fixture=join(root,"fake-acp.mjs"),recorded=join(root,"prompts.jsonl");
+  await writeFile(fixture,agent,"utf8");
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager:fakeAcpRuntimeManager(fixture,recorded),threadStore,terminals:{},state:memoryThreadState(),version:"test"});
+  const port=await listen(server),ws=await connect("ws://127.0.0.1:"+port+"/api/agent/ws"),rpc=request(ws);
+  const deltas=[];ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method==="item/agentMessage/delta")deltas.push(message.params.delta)});
+  try{
+    const started=await rpc("thread/start",{cwd:root,approvalPolicy:"on-request",sandbox:"workspace-write"});
+    const completed=turnCompleted(ws);
+    await rpc("turn/start",{threadId:started.thread.id,input:[{type:"text",text:"Run node -e and tell me its output"}]});
+    assert.equal((await completed).turn.status,"completed");
+    const reply="I'll run that Node one-liner and report the output.\n\n```\ntrebell-tour\n```";
+    assert.equal(deltas.join(""),reply,"the streamed reply has the break");
+    const items=threadStore.get(started.thread.id).turns[0].items;
+    assert.equal(items.find(item=>item.type==="agentMessage")?.text,reply,"the saved reply has it");
+    assert.equal(items.length,3,"the message, the tool call and the reply");
+  }finally{
+    try{ws.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+  }
+});
+
+test("a reopened ACP harness thread shows its transcript without starting the harness, and its next turn resumes the conversation",async()=>{
+  // The live tour: reopening a Cursor thread after a restart waited for Cursor to start and load the conversation, a blank
+  // screen for half a minute. T3 Code opens a provider session lazily, with the thread's next turn.
+  const agent=FAKE_ACP_AGENT.replace('  if(!m.method||m.id==null)return;','  if(!m.method||m.id==null)return;\n  appendFileSync(process.argv[2]+".methods",JSON.stringify({method:m.method,sessionId:m.params?.sessionId??null})+"\\n");');
+  assert.notEqual(agent,FAKE_ACP_AGENT);
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-lazy-resume-")),fixture=join(root,"fake-acp.mjs"),recorded=join(root,"prompts.jsonl");
+  await writeFile(fixture,agent,"utf8");
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  // The thread as a restart leaves it: saved with one finished turn, its conversation the harness's fixture-session, no live session.
+  const saved=threadStore.create({runtime:"grok",cwd:root,providerSessionId:"fixture-session",model:"fixture-model",providerMeta:{runtimeInstanceId:FAKE_GROK_INSTANCE.id,permissionProfile:"supervised"}});
+  threadStore.update(saved.id,{runtimeInstanceId:FAKE_GROK_INSTANCE.id});
+  const earlier=threadStore.addTurn(saved.id,{inputText:"Reply with exactly TREBELL_TOUR_OK",items:[{type:"agentMessage",id:"answer-1",text:"TREBELL_TOUR_OK"}]});
+  threadStore.finishTurn(saved.id,earlier.id);
+  const runtimeManager=fakeAcpRuntimeManager(fixture,recorded),launches=[];runtimeManager.acpArgs=(_instance,mode)=>{launches.push(mode);return [fixture,recorded]};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state:memoryThreadState(),version:"test"});
+  const port=await listen(server),ws=await connect("ws://127.0.0.1:"+port+"/api/agent/ws"),rpc=request(ws);
+  const methods=async()=>(await readFile(recorded+".methods","utf8").catch(()=>"")).trim().split("\n").filter(Boolean).map(line=>JSON.parse(line));
+  try{
+    const reopened=await rpc("thread/resume",{threadId:saved.id,cwd:root});
+    assert.deepEqual(reopened.thread.turns.map(turn=>turn.items.map(item=>item.text||item.content?.[0]?.text)),[["Reply with exactly TREBELL_TOUR_OK","TREBELL_TOUR_OK"]],"the saved transcript comes back at once");
+    assert.equal(reopened.thread.model,"fixture-model");
+    assert.deepEqual(launches,[],"reopening the thread starts no harness process");
+    assert.deepEqual(await methods(),[]);
+    const completed=turnCompleted(ws);
+    await rpc("turn/start",{threadId:saved.id,input:[{type:"text",text:"Reply with exactly TREBELL_TOUR_RESUMED"}]});
+    assert.equal((await completed).turn.status,"completed");
+    assert.deepEqual(launches,["supervised"],"the next turn starts the harness, once");
+    const sent=(await methods()).filter(item=>item.method.startsWith("session/"));
+    assert.deepEqual(sent[0],{method:"session/resume",sessionId:"fixture-session"},"the turn first resumes the saved conversation");
+    assert.equal(sent.some(item=>item.method==="session/new"),false,"never a new session");
+    assert.deepEqual(sent.filter(item=>item.method==="session/prompt").map(item=>item.sessionId),["fixture-session"]);
+    const thread=threadStore.get(saved.id);
+    assert.equal(thread.providerSessionId,"fixture-session");
+    assert.equal(thread.turns.length,2);
   }finally{
     try{ws.close()}catch{}
     await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
@@ -588,5 +824,138 @@ test("restart recovery keeps Trebell Native's benchmark-measured working-context
   }finally{
     try{ws.close()}catch{}
     await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+  }
+});
+
+// A stand-in for `opencode serve` (OpenCode 1.x) that keeps each session's permission rules and messages: a prompt stores the user
+// message under the ID Trebell sent and answers OK, and a fork copies the messages before its messageID under new IDs, as OpenCode does.
+// With askPermission, OpenCode asks to run its bash tool and holds the prompt until it is aborted.
+async function fakeOpenCodeServe({askPermission=false}={}){
+  const calls=[],streams=new Set(),sessions=new Map(),held=new Map();let created=0,forks=0,clock=0n;
+  const stamp=(after=0n)=>{const now=BigInt(Date.now())*0x1000n;clock=[now,clock+1n,after+1n].reduce((a,b)=>a>b?a:b);return openCodeMessageId(clock)};
+  const server=createServer(async(req,res)=>{
+    const url=new URL(req.url,"http://127.0.0.1");let text="";for await(const chunk of req)text+=chunk;
+    const body=text?JSON.parse(text):null,key=`${req.method} ${url.pathname}`;
+    const json=(status,value)=>{res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify(value))};
+    calls.push({key,body});
+    if(key==="GET /event"){res.writeHead(200,{"content-type":"text/event-stream","cache-control":"no-cache"});res.write(`data: ${JSON.stringify({type:"server.connected",properties:{}})}\n\n`);streams.add(res);res.on("close",()=>streams.delete(res));return}
+    if(key==="GET /provider")return json(200,{connected:["anthropic"],default:{anthropic:"claude-sonnet-4-5"},all:[{id:"anthropic",name:"Anthropic",models:{sonnet:{id:"claude-sonnet-4-5",name:"Claude Sonnet 4.5",variants:{high:{},max:{}}}}}]});
+    if(key==="GET /config")return json(200,{});
+    if(key==="POST /session"){const id=`ses_${++created}`;sessions.set(id,{permission:body?.permission||[],messages:[]});return json(200,{id,permission:body?.permission||[]})}
+    if(req.method==="POST"&&/^\/permission\/[^/]+\/reply$/.test(url.pathname))return json(200,true);
+    const [,id,rest=""]=/^\/session\/([^/]+)(\/[^/]+)?$/.exec(url.pathname)||[],entry=sessions.get(id);
+    if(entry&&req.method==="GET"&&!rest)return json(200,{id,permission:entry.permission});
+    if(entry&&req.method==="PATCH"&&!rest){entry.permission=[...entry.permission,...(body?.permission||[])];return json(200,{id,permission:entry.permission})}
+    if(entry&&req.method==="GET"&&rest==="/message")return json(200,entry.messages.map(info=>({info,parts:[]})));
+    if(entry&&req.method==="POST"&&rest==="/message"){
+      const reply={id:stamp(BigInt("0x"+body.messageID.slice(4,16))),parentID:body.messageID,role:"assistant",providerID:"anthropic",modelID:"claude-sonnet-4-5",tokens:{input:3,output:1}};
+      if(askPermission){
+        entry.messages.push({id:body.messageID,role:"user"});
+        held.set(id,()=>{entry.messages.push(reply);json(200,{info:{...reply,error:{name:"MessageAbortedError",data:{message:"The operation was aborted."}}},parts:[]})});
+        const asked={type:"permission.asked",properties:{id:"per_fixture",sessionID:id,permission:"bash",patterns:["npm test"],metadata:{command:"npm test"},tool:{messageID:reply.id,callID:"call_fixture"}}};
+        const ask=()=>{if(!streams.size)return void setTimeout(ask,10);for(const stream of streams)stream.write(`data: ${JSON.stringify(asked)}\n\n`)};
+        return ask();
+      }
+      entry.messages.push({id:body.messageID,role:"user"},reply);
+      return json(200,{info:reply,parts:[{id:`prt_${id}_${entry.messages.length}`,type:"text",text:"OK"}]});
+    }
+    if(entry&&req.method==="POST"&&rest==="/fork"){
+      const forkId=`ses_fork${++forks}`,kept=body?.messageID?entry.messages.filter(message=>message.id<body.messageID):entry.messages;
+      sessions.set(forkId,{permission:[],messages:kept.map(message=>({...message,id:stamp()}))});
+      return json(200,{id:forkId});
+    }
+    if(entry&&req.method==="POST"&&rest==="/abort"){const release=held.get(id);held.delete(id);release?.();return json(200,true)}
+    json(404,{name:"NotFoundError",data:{message:`No fixture route for ${key}`}});
+  });
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  return {url:`http://127.0.0.1:${server.address().port}`,calls,sessions,called:key=>calls.filter(call=>call.key===key),close:()=>{for(const res of streams)res.end();server.closeAllConnections?.();return new Promise(resolve=>server.close(resolve))}};
+}
+
+test("the relay runs an OpenCode thread with its mode's rules and the model's variant, and forks and rewinds it onto OpenCode's copies",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-opencode-relay-")),fixture=await fakeOpenCodeServe();
+  const instance={id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,serverUrl:fixture.url};
+  const runtimeManager={
+    instances:()=>[{...instance}],activeInstance:()=>({...instance}),activeRuntime:()=>"opencode",compatibleInstanceIds:()=>[instance.id],
+    probe:async()=>({id:instance.id,name:"OpenCode",available:true,authenticated:true,version:"1.18.32"}),
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),executable:()=>"opencode",
+  };
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env),state=memoryThreadState();
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
+  const port=await listen(server),ws=await connect("ws://127.0.0.1:"+port+"/api/agent/ws"),rpc=request(ws),model="anthropic/claude-sonnet-4-5";
+  const runTurn=async(threadId,text,params)=>{const completed=turnCompleted(ws);await rpc("turn/start",{threadId,model,input:[{type:"text",text}],...params});assert.equal((await completed).turn.status,"completed")};
+  try{
+    const started=await rpc("thread/start",{cwd:root,model,permissionProfile:"edits"}),threadId=started.thread.id;
+    assert.equal(started.thread.providerSessionId,"ses_1");
+    // The new session carries the thread's mode as OpenCode session rules (T3 Code's openCodePermissionRules).
+    assert.deepEqual(fixture.called("POST /session").map(call=>call.body.permission),[openCodePermissionRules("edits")]);
+    // Each turn runs with the thread's current mode, and the composer's reasoning level as the model's OpenCode variant.
+    await runTurn(threadId,"Reply with exactly OK",{permissionProfile:"supervised",reasoningEffort:"high"});
+    await runTurn(threadId,"Reply with exactly OK again",{permissionProfile:"supervised",reasoningEffort:null});
+    const prompts=fixture.called("POST /session/ses_1/message").map(call=>call.body);
+    assert.deepEqual(prompts.map(body=>body.variant??null),["high",null]);
+    const patches=fixture.called("PATCH /session/ses_1");
+    assert.deepEqual(patches.map(call=>call.body.permission),[openCodePermissionRules("supervised")],"a mode change is applied once");
+    assert.ok(fixture.calls.indexOf(patches[0])<fixture.calls.findIndex(call=>call.key==="POST /session/ses_1/message"),"the mode applies before the turn");
+    const [u1,,u2]=fixture.sessions.get("ses_1").messages.map(message=>message.id);
+    // Every turn keeps the ID Trebell gave its user message: the turn's rewind point.
+    assert.deepEqual(prompts.map(body=>body.messageID),[u1,u2]);
+    assert.deepEqual(threadStore.get(threadId).turns.map(turn=>turn.providerMessageId),[u1,u2]);
+
+    // A fork is OpenCode's copy of the conversation, and the forked thread's turns point at the copies of their messages.
+    const forked=threadStore.get((await rpc("thread/fork",{threadId})).thread.id);
+    const copies=fixture.sessions.get("ses_fork1").messages.map(message=>message.id);
+    assert.equal(forked.providerSessionId,"ses_fork1");assert.equal(copies.length,4);
+    assert.deepEqual(forked.turns.map(turn=>turn.providerMessageId),[copies[0],copies[2]]);
+    assert.deepEqual(threadStore.get(threadId).turns.map(turn=>turn.providerMessageId),[u1,u2],"the source thread keeps its own messages");
+
+    // Edit from here: the thread continues in OpenCode's copy of the conversation before that turn, under the thread's mode, and no
+    // file is reverted (OpenCode's session revert would undo the agent's file changes).
+    await rpc("thread/revert",{threadId,beforeTurnId:threadStore.get(threadId).turns[1].id});
+    assert.deepEqual(fixture.called("POST /session/ses_1/fork").map(call=>call.body),[{},{messageID:u2}]);
+    assert.equal(fixture.calls.some(call=>call.key.endsWith("/revert")),false);
+    const kept=fixture.sessions.get("ses_fork2").messages.map(message=>message.id),rewound=threadStore.get(threadId);
+    assert.equal(kept.length,2);assert.equal(rewound.providerSessionId,"ses_fork2");
+    assert.deepEqual(rewound.turns.map(turn=>turn.providerMessageId),[kept[0]]);
+    assert.deepEqual(fixture.called("PATCH /session/ses_fork2").map(call=>call.body.permission),[openCodePermissionRules("supervised")]);
+    await runTurn(threadId,"Try another way",{permissionProfile:"supervised",reasoningEffort:null});
+    assert.equal(fixture.called("POST /session/ses_fork2/message").length,1);assert.equal(fixture.called("POST /session/ses_1/message").length,2);
+  }finally{
+    try{ws.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true});
+  }
+});
+
+test("Stop withdraws an OpenCode thread's waiting approval card and answers OpenCode with a rejection",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-opencode-stop-")),fixture=await fakeOpenCodeServe({askPermission:true});
+  const instance={id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,serverUrl:fixture.url};
+  const runtimeManager={
+    instances:()=>[{...instance}],activeInstance:()=>({...instance}),activeRuntime:()=>"opencode",compatibleInstanceIds:()=>[instance.id],
+    probe:async()=>({id:instance.id,name:"OpenCode",available:true,authenticated:true,version:"1.18.32"}),
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),executable:()=>"opencode",
+  };
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env),state=memoryThreadState();
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
+  const port=await listen(server),ws=await connect("ws://127.0.0.1:"+port+"/api/agent/ws"),rpc=request(ws),model="anthropic/claude-sonnet-4-5";
+  const next=predicate=>new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{ws.off("message",onMessage);reject(new Error("timed out waiting for a relay message"))},15_000);
+    const onMessage=raw=>{const message=JSON.parse(String(raw));if(!predicate(message))return;clearTimeout(timer);ws.off("message",onMessage);resolve(message)};
+    ws.on("message",onMessage);
+  });
+  try{
+    const started=await rpc("thread/start",{cwd:root,model,permissionProfile:"supervised"}),threadId=started.thread.id;
+    const approval=next(message=>message.method==="item/tool/requestApproval");
+    await rpc("turn/start",{threadId,model,input:[{type:"text",text:"run the tests"}],permissionProfile:"supervised"});
+    const asked=await approval;
+    assert.equal(asked.params.threadId,threadId);
+    assert.equal(threadStore.get(threadId).preview,"run the tests","the thread is listed by its first message");
+    const resolved=next(message=>message.method==="serverRequest/resolved"),completed=turnCompleted(ws);
+    await rpc("turn/interrupt",{threadId});
+    // The card is withdrawn without an answer from the app, as T3 cancels every pending request of an interrupted run.
+    assert.deepEqual((await resolved).params,{requestId:asked.id,threadId});
+    assert.equal((await completed).turn.status,"cancelled");
+    assert.deepEqual(fixture.called("POST /permission/per_fixture/reply").map(call=>call.body.reply),["reject"],"OpenCode is not left waiting for an answer");
+  }finally{
+    try{ws.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true});
   }
 });

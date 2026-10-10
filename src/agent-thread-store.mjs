@@ -40,6 +40,12 @@ function persistedItem(item,environment){
   return next;
 }
 
+// A thread's title from its first message: one line of at most 50 characters (T3 Code titles a new thread by its first message).
+export function threadTitleFromText(value){
+  const message=String(value??"").trim().replace(/\s+/g," ");
+  return message?(message.length<=50?message:message.slice(0,50)+"..."):null;
+}
+
 export class AgentThreadStore{
   constructor(env=process.env){
     this.env=env;
@@ -47,6 +53,17 @@ export class AgentThreadStore{
     this.path=this.storage.path;
     this.legacyPath=this.storage.legacyPath;
     this.data={version:2,threads:this.storage.listMetadata()};
+    this.#titleUntitledThreads();
+  }
+  // A thread saved with no title, as every harness thread was before a new thread took its first message as its title, is titled
+  // by its first message now (the sidebar listed them all as "Untitled task"); its place in the list does not change.
+  #titleUntitledThreads(){
+    let first=[];try{first=this.storage.untitledFirstMessages()}catch{return}
+    for(const {id,text} of first){
+      const thread=this.data.threads.find(item=>item.id===id),preview=threadTitleFromText(text);
+      if(!thread||thread.name||thread.preview||!preview)continue;
+      thread.preview=preview;this.storage.putThread(this.#safe(thread));
+    }
   }
   #safe(value){return redactSecretValue(value,{environment:this.env,maxDepth:20,maxArray:10000,maxFields:5000})}
   #persistThread(thread,{replaceTurns=false}={}){this.storage.putThread(this.#safe(thread),{replaceTurns})}

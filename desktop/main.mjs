@@ -9,7 +9,6 @@ import { chromiumCookieDatabase, discoverHeliumProfiles, readHeliumProfileCookie
 import { DEFAULT_SNAPSHOT_CONFIG, normalizeSnapshotConfig } from "./snapshot-config.mjs";
 import { discoverEditors } from "./editor-discovery.mjs";
 import { createUpdaterController } from "./updater-controller.mjs";
-import { bundledCodexPath } from "./bundled-codex.mjs";
 import { decodePowerShellJsonBase64, decodePowerShellStderr } from "./powershell-output.mjs";
 
 const require=createRequire(import.meta.url);
@@ -106,16 +105,10 @@ function installMainZoomControls(win){
   });
 }
 
-function nativeCodexPath(){
-  if(!app.isPackaged) return null;
-  return bundledCodexPath(process.resourcesPath);
-}
-
+// Codex runs from the user's installed CLI (src/paths.mjs codexBin), as in T3 Code, so the packaged app no longer
+// pins TREBELL_CODEX_BIN to the Codex build bundled at packaging time.
 function configureBundledRuntime(){
   if(!app.isPackaged) return;
-  const codex=nativeCodexPath();
-  if(!existsSync(codex)) throw new Error(`Bundled Codex harness is missing: ${codex}`);
-  process.env.TREBELL_CODEX_BIN=codex;
   process.env.TREBELL_ELECTRON_AS_NODE="1";
 }
 

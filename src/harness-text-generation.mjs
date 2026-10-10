@@ -5,6 +5,9 @@ import { query as claudeAgentQuery } from "@anthropic-ai/claude-agent-sdk";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { createOpencodeClient as createOpencodeV2Client } from "@opencode-ai/sdk/v2";
 import { AcpClient } from "./acp-client.mjs";
+import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
+import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "./acp-session-config.mjs";
+import { claudeExplainedApiError, claudeResultFailure, claudeSignedOutMessage } from "./claude-agent-session.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexApprovalResponse, isCodexApprovalRequest } from "./codex-policy-adapter.mjs";
 import { checkedOpenCodeProviders, connectedOpenCodeModels, openCodeModelPreferences, startOpenCodeServer } from "./opencode-agent-session.mjs";
@@ -26,7 +29,7 @@ const EXPECTED_CODES=new Set(["HARNESS_TEXT_TIMEOUT","HARNESS_TEXT_CANCELLED","H
 export function harnessTextTimeout(value){const ms=Number(value);return Number.isFinite(ms)&&ms>0?Math.min(HARNESS_TEXT_TIMEOUT_MS,Math.round(ms)):HARNESS_TEXT_TIMEOUT_MS}
 function modelCandidates(models){return [...new Set((Array.isArray(models)?models:[models]).map(value=>String(value??"").trim()).filter(Boolean))]}
 // Claude accepts its aliases and full Claude ids; anything else (a Native or another harness's model) falls back to its default.
-export function claudeTextModel(models){return modelCandidates(models).find(id=>/^(?:default|best|sonnet|opus|haiku|opusplan)(?:\[1m\])?$/i.test(id)||/claude/i.test(id))||null}
+export function claudeTextModel(models){return modelCandidates(models).find(id=>/^(?:default|best|sonnet|opus|haiku|fable|opusplan)(?:\[1m\])?$/i.test(id)||/claude/i.test(id))||null}
 async function within(promise,timeoutMs=5000){let timer;try{await Promise.race([Promise.resolve(promise).catch(()=>{}),new Promise(resolve=>{timer=setTimeout(resolve,timeoutMs);timer.unref?.()})])}finally{clearTimeout(timer)}}
 // A fresh empty folder for one local request: the prompt is self-contained, so the harness never needs the repository. Registered
 // before anything else, its removal runs last (teardown is newest-first), after the harness process tree has stopped.
@@ -46,7 +49,8 @@ export function declineCodexServerRequest(message){
 }
 export function denyAcpRequest(method,params={}){
   if(method==="session/request_permission"){
-    const options=Array.isArray(params?.options)?params.options:[],reject=options.find(option=>option?.kind==="reject_once")||options.find(option=>option?.kind==="reject_always");
+    // Reject once, never reject-always: Grok saves an always answer for the whole project (a remote Git text runs in the repository).
+    const options=Array.isArray(params?.options)?params.options:[],reject=options.find(option=>option?.kind==="reject_once");
     return reject?{outcome:{outcome:"selected",optionId:reject.optionId}}:{outcome:{outcome:"cancelled"}};
   }
   if(method==="session/elicitation"||method==="elicitation/create")return {action:"cancel"};
@@ -126,21 +130,18 @@ async function codexText(ctx){
   return {text:codexReplyText(state),model:String(started?.model||model||"")||null};
 }
 
-function claudeResultError(result){
-  const errors=Array.isArray(result?.errors)?result.errors.map(String).filter(Boolean).join("\n"):"";
-  return errors||String(result?.result||"").trim()||`Claude Code stopped with ${result?.subtype||"an error"}`;
-}
 // Claude Code: one turn, no built-in or MCP tools, hooks off, every permission denied, no session written to disk.
 async function claudeText(ctx){
   const {runtimeManager,instance,environmentId}=ctx;
   const command=runtimeManager.executable(instance,{environmentId}),spawnProcess=runtimeManager.processSpawner?.(instance,environmentId)||null;
   const cwd=runtimeManager.runtimeCwd?.(ctx.cwd,environmentId)||ctx.cwd,model=claudeTextModel(ctx.models),abortController=new AbortController();
   const abort=()=>abortController.abort();if(ctx.signal.aborted)abort();else ctx.signal.addEventListener("abort",abort,{once:true});
+  const env={...runtimeManager.childEnv(instance),CLAUDE_AGENT_SDK_CLIENT_APP:`trebell-code/${ctx.version}`};
   const runtime=(ctx.deps.claudeQuery||claudeAgentQuery)({prompt:ctx.prompt,options:{
     cwd,...(model?{model}:{}),
     // A Windows .cmd shim cannot be spawned directly; the SDK runs a native binary or a .js entry itself.
     pathToClaudeCodeExecutable:spawnProcess?command:resolveWindowsCommandShim(command,{allowScripts:true}),
-    env:{...runtimeManager.childEnv(instance),CLAUDE_AGENT_SDK_CLIENT_APP:`trebell-code/${ctx.version}`},
+    env,
     tools:[],mcpServers:{},strictMcpConfig:true,settingSources:["user"],settings:{disableAllHooks:true},
     permissionMode:"dontAsk",canUseTool:async(_toolName,_input,options)=>({behavior:"deny",message:"Trebell Git text generation is read-only and tool-less.",toolUseID:options?.toolUseID}),
     maxTurns:1,persistSession:false,includePartialMessages:false,
@@ -148,14 +149,17 @@ async function claudeText(ctx){
     abortController,...(spawnProcess?{spawnClaudeCodeProcess:spawnProcess}:{}),
   }});
   ctx.defer(()=>{abortController.abort();try{runtime?.close?.()}catch{}});
-  let result=null,usedModel=model,streamed="";
+  let result=null,usedModel=model,streamed="",failureHint=null;
   for await(const message of runtime){
     if(message?.type==="system"&&message.subtype==="init"){usedModel=message.model||usedModel;continue}
-    if(message?.type==="assistant"){for(const block of message.message?.content||[])if(block?.type==="text"&&block.text)streamed+=block.text;continue}
+    // An assistant message that carries an error is the API error the result reports, never the reply; a sign-in failure or
+    // an error Claude does not retry (an unknown model) names the failure, as in a Claude thread.
+    if(message?.type==="assistant"){if(message.error){failureHint=message.error==="authentication_failed"?claudeSignedOutMessage(spawnProcess||String(env.CLAUDE_CONFIG_DIR||"")!==String(process.env.CLAUDE_CONFIG_DIR||"")?env.CLAUDE_CONFIG_DIR:""):claudeExplainedApiError(message);continue}for(const block of message.message?.content||[])if(block?.type==="text"&&block.text)streamed+=block.text;continue}
     if(message?.type==="result"){result=message;break}
   }
   if(!result)throw new Error("Claude Code ended without a result");
-  if(result.subtype!=="success"||result.is_error)throw new Error(claudeResultError(result));
+  // The user-facing failure, as a Claude thread turn reports it (CLI diagnostics are never the message).
+  const failure=claudeResultFailure(result,{failureHint});if(failure)throw new Error(failure);
   return {text:String(result.result||streamed||""),model:usedModel||null};
 }
 
@@ -242,18 +246,19 @@ async function openCodeText(ctx){
   return {text,model:chosen||(info.providerID&&info.modelID?`${info.providerID}/${info.modelID}`:null)};
 }
 
-// The read-only mode an ACP harness offers: Cursor's "ask" (Cursor applies its workspace_readonly sandbox only there and auto-approves
-// allowlisted tools in its default agent mode), otherwise ask, read-only or plan.
-export function acpReadOnlyMode(kind,setup){
-  const offered=(setup?.modes?.availableModes||[]).map(item=>String(item?.id||"")).filter(Boolean);
-  const wanted=kind==="cursor"?["ask"]:["ask","read-only","readonly","read_only","plan"];
-  return wanted.map(id=>offered.find(item=>item.toLowerCase()===id)).find(Boolean)||null;
-}
+// The read-only mode an ACP harness offers (acp-session-config.mjs): Cursor's "ask" (Cursor applies its workspace_readonly sandbox
+// only there and auto-approves allowlisted tools in its default agent mode), otherwise ask, read-only or plan, from the agent's modes
+// or its mode config option (OpenCode lists its agents only as a config option).
+export { acpReadOnlyMode };
+// The model ids Trebell used before real model lists mean the harness's current model; Cursor's base ids drop bracketed options.
+const ACP_MODEL_ALIASES=Object.freeze({cursor:"cursor-default",grok:"grok-build",antigravity:"antigravity-default"});
+function acpTextModel(kind,id){const value=String(id||"").trim();if(!value||value===ACP_MODEL_ALIASES[kind])return null;return kind==="cursor"?value.replace(/\[.*$/,"")||null:value}
 // ACP harnesses (Cursor, Grok Build, Antigravity, remote OpenCode): no client filesystem or terminal, every permission request rejected,
 // and a read-only mode set before the prompt. Locally the session works in an empty folder, so the repository's .cursor/cli.json
 // permissions and rules stay out, nothing can be written into the repository and the session is not listed under it; a remote session
 // keeps the repository. Teardown cancels a prompt still running, deletes the session where the harness can (remote OpenCode), closes it
 // and stops the process tree. ACP itself has no delete: Cursor, Grok Build and Antigravity keep the temp-folder session in their own store.
+// Modes and models are read and changed through the agent's config options when it has them (T3 AcpSessionRuntime setMode/setModel).
 async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=false}={}){
   const {runtimeManager,instance,environmentId}=ctx;
   const command=runtimeManager.executable(instance,{environmentId}),spawner=runtimeManager.processSpawner?.(instance,environmentId)||null;
@@ -262,8 +267,10 @@ async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=f
   const processCwd=instance.kind==="antigravity"&&!remote&&command?dirname(command):null;
   // Explicit variables reach a remote process through its spawner and a local one through its environment.
   const spawnProcess=spawner&&environment?options=>spawner({...options,environment}):spawner;
+  const env={...runtimeManager.childEnv(instance),...(!spawner&&environment?environment:{})};
   let sessionId=null,text="",prompting=false,deleteViaAcp=false;
-  const client=new AcpClient({command,args:args||runtimeManager.acpArgs(instance,"read-only",cwd),cwd:processCwd||cwd,env:{...runtimeManager.childEnv(instance),...(!spawner&&environment?environment:{})},spawnProcess,onRequest:(method,params)=>denyAcpRequest(method,params)});
+  // A local Antigravity unpacks its bundle into a Trebell-owned temp folder that is removed once the process has stopped.
+  const client=new AcpClient({command,args:args||runtimeManager.acpArgs(instance,"read-only",cwd),cwd:processCwd||cwd,env,spawnProcess,runTempRoot:instance.kind==="antigravity"&&!spawner?acpRuntimeTempRoot(env,"antigravity"):null,onRequest:(method,params)=>denyAcpRequest(method,params)});
   // Without an ACP delete (OpenCode 1.x) the harness CLI deletes the session once the ACP process has stopped and cannot write it again.
   if(deleteSession)ctx.defer(()=>sessionId&&!deleteViaAcp?runtimeManager.runCli?.(instance,["session","delete",sessionId],{environmentId,timeoutMs:15_000}):null);
   ctx.defer(async()=>{
@@ -277,27 +284,36 @@ async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=f
     if(update.sessionUpdate==="agent_message_chunk"&&update.content?.type==="text")text+=String(update.content.text||"");
   });
   await client.start();ctx.check();
-  const initialized=await client.initialize({version:ctx.version,capabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false},timeoutMs:ctx.remaining()});ctx.check();
+  // Cursor lists its base model ids (the ids in Trebell's model list) only to a client with the parameterized model picker.
+  const capabilities={fs:{readTextFile:false,writeTextFile:false},terminal:false,...(instance.kind==="cursor"?{_meta:{parameterizedModelPicker:true}}:{})};
+  const initialized=await client.initialize({version:ctx.version,capabilities,timeoutMs:ctx.remaining()});ctx.check();
   deleteViaAcp=Boolean(deleteSession&&initialized?.agentCapabilities?.sessionCapabilities?.delete);
-  const setup=await client.createSession({cwd,mcpServers:[]});
+  let setup=await client.createSession({cwd,mcpServers:[]});
   sessionId=String(setup?.sessionId||"")||null;if(!sessionId)throw new Error(`${ctx.name} did not create the Git text session`);ctx.check();
   // A required mode (Cursor's ask, the restricted OpenCode agent) is never skipped: without it the prompt is not sent.
-  const offered=(setup?.modes?.availableModes||[]).map(item=>String(item?.id||""));
-  const target=mode?(offered.includes(mode)?mode:null):acpReadOnlyMode(instance.kind,setup),required=Boolean(mode)||instance.kind==="cursor";
+  const modes=acpConfigSelect(setup,"mode");
+  const target=mode?(modes.choices.some(choice=>choice.value===mode)?mode:null):acpReadOnlyMode(instance.kind,setup),required=Boolean(mode)||instance.kind==="cursor";
   if(required&&!target)throw new Error(`${ctx.name} did not offer ${mode?`its restricted ${mode} agent`:"its read-only ask mode"}, so the Git text prompt was not sent`);
-  if(target&&setup?.modes?.currentModeId!==target){
-    const switched=await client.setMode(sessionId,target).then(()=>true,()=>client.setConfigOption(sessionId,"mode",target).then(()=>true,()=>false));ctx.check();
-    if(!switched&&required)throw new Error(`${ctx.name} could not switch to its read-only ${target} mode, so the Git text prompt was not sent`);
+  if(target&&modes.current!==target){
+    try{setup=await acpApplyValue(client,sessionId,setup,"mode",target)}
+    catch{throw new Error(`${ctx.name} could not switch to its read-only ${target} mode, so the Git text prompt was not sent`)}
+    ctx.check();
   }
-  const available=(setup?.models?.availableModels||[]).map(item=>String(item?.modelId||"")),current=setup?.models?.currentModelId||null;
-  const chosen=ctx.models.find(id=>available.includes(id))||null;
-  if(chosen&&chosen!==current)await client.setModel(sessionId,chosen).catch(()=>{});
+  // The thread's model when the harness offers it. Cursor saves its model globally, so it always gets an explicit one (Auto when
+  // the thread's is not offered), as T3's Cursor Git text does; the others otherwise keep their current model.
+  const models=acpConfigSelect(setup,"model"),offeredModel=id=>Boolean(id)&&models.choices.some(choice=>choice.value===id);
+  const chosen=ctx.models.map(id=>acpTextModel(instance.kind,id)).find(offeredModel)||(instance.kind==="cursor"&&offeredModel("default")?"default":null);
+  if(chosen&&(chosen!==models.current||instance.kind==="cursor")){
+    try{setup=await acpApplyValue(client,sessionId,setup,"model",chosen)}
+    catch(error){throw new Error(`${ctx.name} could not switch to model ${chosen}: ${error?.message||error}`)}
+    ctx.check();
+  }
   prompting=true;
   const result=await client.prompt(sessionId,[{type:"text",text:HARNESS_TEXT_INSTRUCTIONS+"\n\n"+ctx.prompt}]);prompting=false;
   const stopReason=String(result?.stopReason||"end_turn");
   if(stopReason==="refusal")throw new Error(`${ctx.name} declined to write the Git text`);
   if(stopReason==="cancelled")throw new Error(`${ctx.name} cancelled the Git text request`);
-  return {text,model:chosen||current||null};
+  return {text,model:chosen||models.current||null};
 }
 
 export async function generateTextWithHarness({runtimeManager,instance=null,prompt,cwd=process.cwd(),environmentId=undefined,models=[],timeoutMs=HARNESS_TEXT_TIMEOUT_MS,version="0.0.0",codexAppServer=null,signal=null,deps={}}={}){

@@ -29,6 +29,7 @@ import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-c
 import { withNormalizedModelCapabilities } from "./model-capabilities.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
 import { AcpClient } from "./acp-client.mjs";
+import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { configureAntigravityAuth } from "./antigravity-runtime-installer.mjs";
 import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { importClaudeHistory, publicHistoryCandidate, scanLocalAgentHistory } from "./agent-history-import.mjs";
@@ -49,6 +50,8 @@ import { RepositoryKnowledgeService } from "./repository-knowledge-service.mjs";
 import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, parseRepositoryToolArguments, repositoryDynamicToolNamespace, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
 import { EventJournal } from "./event-journal.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
+import { preferredCodexDefaultModel } from "./codex-model-catalog.mjs";
+import { codexGoalRecord, codexGoalSetParams, codexGoalStatus } from "./codex-goal.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
 import { recordCodexRecoveryItemEvidence, staleCodexRecoveryState } from "./codex-recovery-evidence.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
@@ -240,7 +243,7 @@ export function codexAppServerEnvironment({env=process.env,runtimeInstance=null,
   };
 }
 
-async function startAppServer({appPort,env=process.env,mock=false,environments=null,environmentId=null,runtimeInstance=null,runtimeEnvironmentNames=null}){
+async function startAppServer({appPort,env=process.env,mock=false,environments=null,environmentId=null,runtimeInstance=null,runtimeEnvironmentNames=null,command:runtimeCommand=null}){
   if(mock) return { child:null, logs:[], targetUrl:null, readyUrl:null, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default" };
   if(environmentId&&environments){
     const profile=environments.get(environmentId);
@@ -271,7 +274,8 @@ async function startAppServer({appPort,env=process.env,mock=false,environments=n
       }
     }
   }
-  const command=runtimeInstance?.binaryPath?.trim()||codexBin(env);
+  // The same Codex the status probe checked (AgentRuntimeManager.executable): the profile binary, else the user's installed CLI.
+  const command=runtimeCommand||runtimeInstance?.binaryPath?.trim()||codexBin(env);
   const homeLayout=await prepareCodexHome({homePath:runtimeInstance?.homePath?.trim()||null,shadowHomePath:runtimeInstance?.shadowHomePath?.trim()||null,defaultHome:String(env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
   const runtimeHome=homeLayout.effectiveHomePath||null;
   if(runtimeHome)await mkdir(runtimeHome,{recursive:true});
@@ -966,7 +970,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const starting=(async()=>{
       if(current){await stopAppServer(current);codexAppServers.delete(key)}
       const targetPort=preferredPort||await freeTcpPort();
-      const started=await startAppServer({appPort:targetPort,env,mock,environments,environmentId,runtimeInstance:instance,runtimeEnvironmentNames:agentRuntimes.childEnvironmentKeys(instance)});
+      const started=await startAppServer({appPort:targetPort,env,mock,environments,environmentId,runtimeInstance:instance,runtimeEnvironmentNames:agentRuntimes.childEnvironmentKeys(instance),command:agentRuntimes.executable(instance,{environmentId})});
       started.poolKey=key;started.ownerKey=ownerKey;started.runtimeInstanceId=instance.id;started.environmentId=environmentId||null;started.continuationKey=agentRuntimes.continuationKey(instance);
       codexAppServers.set(key,started);
       if(!mock){const ready=await waitForAppServer(started,targetPort,15000).catch(()=>false);if(!ready&&!started.error)started.error=`Codex app-server profile '${instance.displayName||instance.id}' did not become ready`}
@@ -1045,14 +1049,74 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   function durableCodexGoal(threadId){
     const meta=state.threadMeta(threadId),raw=meta?.goal;if(!raw)return null;
     const createdAt=Number(raw.createdAt)||Date.now(),goal=normalizeGoal({threadId,previous:{...raw,createdAt},patch:{},now:Number(raw.updatedAt)||Date.now()});
+    // A goal mirrored from Codex keeps Codex's own status (blocked, usageLimited, budgetLimited) and token accounting.
+    const nativeStatus=raw.native?codexGoalStatus(raw.status):null;if(nativeStatus)goal.status=nativeStatus;
+    const usage=state.threadUsage(threadId,{since:goal.createdAt});
     const baselines=meta?.goalBudgetBaselines||null;
     const toolCallsUsed=baselines?Math.max(0,Number(meta?.codexToolCallCount||0)-Number(baselines.toolCalls||0)):0;
     const childAgentsUsed=baselines?Math.max(0,Number(meta?.codexChildAgentCount||0)-Number(baselines.childAgents||0)):0;
     return enrichGoal(goal,{
-      usage:state.threadUsage(threadId,{since:goal.createdAt}),turns:codexGoalTurns(meta),
+      usage:raw.native?{...(usage||{}),totalTokens:raw.native.tokensUsed}:usage,turns:codexGoalTurns(meta),
       toolCallsUsed,toolCallTelemetryComplete:Boolean(baselines?.toolCallTelemetryComplete),
       childAgentsUsed,childAgentTelemetryComplete:Boolean(baselines?.childAgentTelemetryComplete),
     });
+  }
+  // Codex threads use Codex's own goal (T3 runGoalCommand). Trebell mirrors it into the thread's record, next to its own
+  // guidance and extra budgets, and the renderer gets Codex's goal with those added. Tool-call and child-agent use count
+  // from when Trebell saw the goal start; a goal it did not see start reports incomplete telemetry.
+  function mirrorCodexGoal(threadId,nativeGoal,{patch={},fresh=false}={}){
+    const meta=state.threadMeta(threadId);
+    if(!nativeGoal){if(meta?.goal)state.updateThreadMeta(threadId,{goal:null,goalBudgetBaselines:undefined});return null}
+    const goal=codexGoalRecord(nativeGoal,{threadId,previous:fresh?null:meta?.goal||null,patch});if(!goal)return null;
+    const baselines=(!fresh&&meta?.goalBudgetBaselines)||{toolCalls:Math.max(0,Number(meta?.codexToolCallCount)||0),childAgents:Math.max(0,Number(meta?.codexChildAgentCount)||0),toolCallTelemetryComplete:fresh,childAgentTelemetryComplete:fresh};
+    state.updateThreadMeta(threadId,{goal,goalBudgetBaselines:baselines});
+    return durableCodexGoal(threadId);
+  }
+  const codexGoalRoute=threadId=>({routeMessage:{method:"thread/goal/get",params:{threadId}}});
+  // A Trebell goal Codex never had (a delegated task's goal, or one set before Codex goals were used) stays Trebell's
+  // own until it is next changed; a mirrored goal Codex no longer has was cleared in Codex.
+  function trebellOnlyCodexGoal(threadId){const goal=state.threadMeta(threadId)?.goal;return goal&&!goal.native?goal:null}
+  async function readCodexGoal(threadId,requestUpstream){
+    const nativeGoal=(await requestUpstream("thread/goal/get",{threadId},codexGoalRoute(threadId)))?.goal||null;
+    if(!nativeGoal&&trebellOnlyCodexGoal(threadId))return durableCodexGoal(threadId);
+    return mirrorCodexGoal(threadId,nativeGoal);
+  }
+  async function setCodexGoal(threadId,patch,requestUpstream){
+    const route=codexGoalRoute(threadId),current=(await requestUpstream("thread/goal/get",{threadId},route))?.goal||null;
+    const meta=state.threadMeta(threadId),trebellOnly=current?null:trebellOnlyCodexGoal(threadId);
+    const previous=current?codexGoalRecord(current,{threadId,previous:meta?.goal||null}):trebellOnly;
+    // The whole patch (objective, budgets) is checked before any of it reaches Codex.
+    const next=normalizeGoal({threadId,previous,patch});
+    const {replace,params}=codexGoalSetParams({threadId,patch,current,next});
+    if(replace)await requestUpstream("thread/goal/clear",{threadId},route);
+    // A patch of Trebell's own guidance or budgets alone leaves Codex's goal as it is.
+    const result=Object.keys(params).some(key=>key!=="threadId")?await requestUpstream("thread/goal/set",params,route):{goal:current};
+    const goal=mirrorCodexGoal(threadId,result?.goal||null,{patch,fresh:replace||(!current&&!trebellOnly)});
+    relay.broadcast("thread/goal/updated",{threadId,goal});
+    return goal;
+  }
+  async function clearCodexGoal(threadId,requestUpstream){
+    const result=await requestUpstream("thread/goal/clear",{threadId},codexGoalRoute(threadId));
+    mirrorCodexGoal(threadId,null);relay.broadcast("thread/goal/updated",{threadId,goal:null});
+    return {ok:true,cleared:Boolean(result?.cleared)};
+  }
+  // Codex continues an active goal with turns of its own, which never pass Trebell's budget gate. Once a budget only
+  // Trebell tracks (time, turns, tool calls, cost) runs out, the goal is paused so Codex stops after the turn that ended.
+  // Codex starts its next goal turn as soon as one ends, so a turn it already started is stopped as T3's Stop does
+  // (pause, then interrupt).
+  async function pauseCodexGoalOverBudget(threadId,finishedTurnId,requestUpstream){
+    const goal=durableCodexGoal(threadId);if(goal?.status!=="active"||!state.threadMeta(threadId)?.goal?.native)return;
+    const gate=goalBudgetGate(goal,{includeChildAgents:false});
+    if(gate.allowed||!(gate.timeExhausted||gate.turnExhausted||gate.toolCallExhausted||gate.costExhausted))return;
+    try{
+      const route=codexGoalRoute(threadId),paused=await requestUpstream("thread/goal/set",{threadId,status:"paused"},route);
+      mirrorCodexGoal(threadId,paused?.goal||null);
+      const running=state.threadMeta(threadId)?.restartRecovery;
+      const nextTurnId=running?.runtime==="codex"&&running.status==="active"&&running.turnId&&String(running.turnId)!==String(finishedTurnId||"")?String(running.turnId):null;
+      if(nextTurnId)await requestUpstream("turn/interrupt",{threadId,turnId:nextTurnId},route);
+      const meta=state.threadMeta(threadId);
+      eventJournal.record({runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_paused",status:"blocked",data:{reason:gate.reason,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,costExhausted:gate.costExhausted,interruptedTurnId:nextTurnId}});
+    }catch(error){appServer?.logs?.push({at:Date.now(),stream:"relay",text:safeLogText("Could not pause the Codex goal over budget: "+(error?.message||String(error))+"\n")})}
   }
   function durableCodexContinuity(threadId){
     const meta=state.threadMeta(threadId);
@@ -1438,55 +1502,60 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         reasoningEfforts:Array.isArray(row.supportedReasoningEfforts)?row.supportedReasoningEfforts:undefined,
         defaultReasoningEffort:row.defaultReasoningEffort||null,
       }));
-      return {models,metadata:{provider:"codex",agentRuntime:"codex",source:"codex-model-list",models:metadata}};
+      return {models,defaultModel:preferredCodexDefaultModel(rows),metadata:{provider:"codex",agentRuntime:"codex",source:"codex-model-list",models:metadata}};
     }finally{client.close()}
   }
 
+  // A catalog answers for the runtime and provider selected when it was asked for: a harness switch can land while the list loads,
+  // and the app keeps only a catalog named for the runtime it shows, so the payload must never name the newly selected one.
   async function selectedModels({nativeProviderCatalog=null}={}){
+    const runtime=selectedAgentRuntime,provider=selectedProvider;
     const mergeCustom=catalog=>{
-      if(!["native","codex","claude","opencode"].includes(selectedAgentRuntime))return catalog;
-      const custom=(state.settings().customModels||[]).filter(item=>item&&item.id&&item.runtime===selectedAgentRuntime&&(selectedAgentRuntime!=="native"||item.provider===selectedProvider));
+      if(!["native","codex","claude","opencode","cursor","grok","antigravity"].includes(runtime))return catalog;
+      const custom=(state.settings().customModels||[]).filter(item=>item&&item.id&&item.runtime===runtime&&(runtime!=="native"||item.provider===provider));
       if(!custom.length)return catalog;
       const baseModels=Array.isArray(catalog.models)?catalog.models:[];const models=[...baseModels];for(const item of custom)if(!models.includes(item.id))models.push(item.id);
-      const metadataModels=[...(catalog.metadata?.models||[])];for(const item of custom){const index=metadataModels.findIndex(model=>model.id===item.id);const meta={id:item.id,name:item.name||item.id,provider:selectedAgentRuntime==="native"?selectedProvider:selectedAgentRuntime,agent:selectedAgentRuntime,custom:true,effort:item.effort||null,serviceTier:item.serviceTier||null};if(index>=0)metadataModels[index]={...metadataModels[index],...meta};else metadataModels.push(meta)}
+      const metadataModels=[...(catalog.metadata?.models||[])];for(const item of custom){const index=metadataModels.findIndex(model=>model.id===item.id);const meta={id:item.id,name:item.name||item.id,provider:runtime==="native"?provider:runtime,agent:runtime,custom:true,effort:item.effort||null,serviceTier:item.serviceTier||null};if(index>=0)metadataModels[index]={...metadataModels[index],...meta};else metadataModels.push(meta)}
       return {...catalog,models,metadata:{...(catalog.metadata||{}),models:metadataModels}};
     };
     const finish=catalog=>{
       const merged=mergeCustom(catalog);
       const normalized={...merged,metadata:{...(merged.metadata||{}),models:(merged.metadata?.models||[]).map(withNormalizedModelCapabilities)}};
-      if(selectedAgentRuntime==="native")rememberNativeModelContextWindows(normalized);
-      return normalized;
+      if(runtime==="native")rememberNativeModelContextWindows(normalized);
+      return {...normalized,scope:{agentRuntime:runtime,provider}};
     };
-    if(selectedAgentRuntime==="codex"){
+    if(runtime==="codex"){
       if(mock)return finish({models:["gpt-6-astra","gpt-5.6-sol","gpt-5.6-terra"],metadata:{provider:"codex",agentRuntime:"codex",source:"mock-codex",models:["gpt-6-astra","gpt-5.6-sol","gpt-5.6-terra"].map(id=>({id,name:id,provider:"codex",agent:"Codex"}))}});
       return finish(await codexNativeModelCatalog());
     }
-    if(selectedAgentRuntime!=="native"){
+    if(runtime!=="native"){
       const result=await agentRuntimes.models(agentRuntimes.activeInstance());
-      return finish({models:result.models||[],defaultModel:result.preferred||null,metadata:{provider:selectedAgentRuntime,agentRuntime:selectedAgentRuntime,source:result.source,models:result.metadata||[]},error:result.error||null});
+      return finish({models:result.models||[],defaultModel:result.preferred||null,metadata:{provider:runtime,agentRuntime:runtime,source:result.source,models:result.metadata||[]},error:result.error||null,...(result.inventory?{inventory:result.inventory}:{})});
     }
-    if(mock) return finish({models:fakeModels(selectedProvider),defaultModel:fakeDefaultModel(selectedProvider),metadata:{provider:selectedProvider,models:fakeModels(selectedProvider).map(id=>({id,provider:selectedProvider}))}});
-    const result=nativeProviderCatalog||await providers.models(selectedProvider);
-    return finish({models:result.models||[],defaultModel:result.defaultModel||null,metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null});
+    if(mock) return finish({models:fakeModels(provider),defaultModel:fakeDefaultModel(provider),metadata:{provider:provider,models:fakeModels(provider).map(id=>({id,provider:provider}))}});
+    const result=nativeProviderCatalog||await providers.models(provider);
+    return finish({models:result.models||[],defaultModel:result.defaultModel||null,metadata:{provider:provider,source:result.source,models:result.metadata||[]},error:result.error||null});
   }
   async function selectedModelsPayload(){
-    const catalog=await selectedModels();
+    const catalog=await selectedModels(),runtime=catalog.scope.agentRuntime;
     return {
-      ...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),
-      agentRuntime:selectedAgentRuntime,
-      ready:selectedAgentRuntime==="native"?providerReady():true,
+      ...(runtime==="native"?{provider:catalog.scope.provider}:{}),
+      agentRuntime:runtime,
+      ready:runtime==="native"?providerReady():true,
       models:catalog.models||[],
       defaultModel:catalog.defaultModel||null,
       metadata:catalog.metadata||null,
       error:catalog.error||null,
+      ...(catalog.inventory?{inventory:catalog.inventory}:{}),
     };
   }
   async function runtimeRefreshPayload(req,{agentSnapshot=null}={}){
+    const runtime=selectedAgentRuntime,provider=selectedProvider;
     const [bootstrap,catalog]=await Promise.all([
       bootstrapPayload(req,{agentSnapshot}),
       selectedModelsPayload().catch(error=>({
-        ...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),
-        agentRuntime:selectedAgentRuntime,
+        ...(runtime==="native"?{provider}:{}),
+        agentRuntime:runtime,
         ready:false,
         models:[],
         defaultModel:null,
@@ -1708,7 +1777,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(instance.kind==="antigravity"){
           if(mock)return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:"oauth-personal",methodName:"Log in with Google",methods:[{id:"oauth-personal",name:"Log in with Google"}]},agentSnapshot:await agentRuntimes.snapshot()});
           if(environmentId)throw new Error("Antigravity ACP sign-in is currently supported on the local machine only.");
-          const command=agentRuntimes.executable(instance),client=new AcpClient({command,args:agentRuntimes.acpArgs(instance,"supervised",cwd),cwd:dirname(command),env:agentRuntimes.childEnv(instance)});
+          // Antigravity unpacks its bundle into a Trebell-owned temp folder that is removed once the process stops.
+          const command=agentRuntimes.executable(instance),client=new AcpClient({command,args:agentRuntimes.acpArgs(instance,"supervised",cwd),cwd:dirname(command),env:agentRuntimes.childEnv(instance),runTempRoot:acpRuntimeTempRoot(agentRuntimes.childEnv(instance),"antigravity")});
           let sessionId=null;
           try{
             await client.start();
@@ -1721,6 +1791,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             await client.authenticate(method.id);
             const verified=await client.createSession({cwd,mcpServers:[]});sessionId=verified?.sessionId||null;
             if(!sessionId)throw new Error("Antigravity authentication finished, but a verified ACP session could not be created.");
+            // The signed-in account's models replace the stand-in list (T3 publishes the catalog on sign-in).
+            agentRuntimes.rememberAcpSessionModels?.(instance,verified,{environmentId:null});
             return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:method.id,methodName:method.name||method.id,methods:methods.map(item=>({id:item.id,name:item.name||item.id}))},agentSnapshot:await agentRuntimes.snapshot()});
           }finally{
             if(sessionId)await client.closeSession(sessionId).catch(()=>{});
@@ -2823,10 +2895,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/models"){
+      const runtime=selectedAgentRuntime,provider=selectedProvider;
       try{
         return json(res,200,await selectedModelsPayload());
       }catch(error){
-        return json(res,503,{...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),agentRuntime:selectedAgentRuntime,ready:false,models:[],defaultModel:null,error:error instanceof Error?error.message:String(error)});
+        return json(res,503,{...(runtime==="native"?{provider}:{}),agentRuntime:runtime,ready:false,models:[],defaultModel:null,error:error instanceof Error?error.message:String(error)});
       }
     }
     if(url.pathname==="/api/update/check"){
@@ -2947,24 +3020,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     handleServerRequest:async message=>resolveCodexServerRequest(message),
     handleRequest:async (message,{requestUpstream})=>{
       const params=message.params||{},threadId=params.threadId?String(params.threadId):"";
-      if(message.method==="thread/goal/get")return {handled:true,result:{goal:threadId?durableCodexGoal(threadId):null}};
+      if(message.method==="thread/goal/get")return {handled:true,result:{goal:threadId?await readCodexGoal(threadId,requestUpstream):null}};
       if(message.method==="thread/goal/set"){
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
-        const meta=state.threadMeta(threadId),previous=meta?.goal||null,goal=normalizeGoal({threadId,previous,patch:params});
-        let goalBudgetBaselines=meta?.goalBudgetBaselines||null;
-        if(!goalBudgetBaselines){
-          goalBudgetBaselines={
-            toolCalls:Math.max(0,Number(meta?.codexToolCallCount)||0),childAgents:Math.max(0,Number(meta?.codexChildAgentCount)||0),
-            toolCallTelemetryComplete:!previous,childAgentTelemetryComplete:!previous,
-          };
-        }
-        state.updateThreadMeta(threadId,{goal,goalBudgetBaselines});
-        const enriched=durableCodexGoal(threadId);relay.broadcast("thread/goal/updated",{threadId,goal:enriched});
-        return {handled:true,result:{goal:enriched}};
+        return {handled:true,result:{goal:await setCodexGoal(threadId,params,requestUpstream)}};
       }
       if(message.method==="thread/goal/clear"){
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
-        state.updateThreadMeta(threadId,{goal:null,goalBudgetBaselines:undefined});relay.broadcast("thread/goal/updated",{threadId,goal:null});return {handled:true,result:{ok:true}};
+        return {handled:true,result:await clearCodexGoal(threadId,requestUpstream)};
       }
       if(message.method==="thread/continuity/get")return {handled:true,result:{continuity:threadId?durableCodexContinuity(threadId):null}};
       if(message.method==="thread/continuity/set"){
@@ -2996,6 +3059,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:await codexThreadProfiles(message.params?.threadId)};
       if(message.method==="thread/runtimeInstance/set")return {handled:true,result:await setCodexThreadProfile(message.params?.threadId,message.params?.instanceId)};
       return null;
+    },
+    // Codex's goal notifications reach the renderer with Trebell's guidance and budget figures added; a finished turn
+    // checks the budgets only Trebell tracks.
+    transformServerMessage:(message,{requestUpstream})=>{
+      const params=message.params||{},threadId=params.threadId?String(params.threadId):"";if(!threadId)return message;
+      if(message.method==="thread/goal/updated"&&params.goal)return {...message,params:{...params,goal:mirrorCodexGoal(threadId,params.goal)}};
+      if(message.method==="thread/goal/cleared")mirrorCodexGoal(threadId,null);
+      if(message.method==="turn/completed")void pauseCodexGoalOverBudget(threadId,params.turn?.id||params.turnId||null,requestUpstream);
+      return message;
     },
     enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
       log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:safeLogText(message)}),

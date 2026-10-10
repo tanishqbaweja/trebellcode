@@ -2,9 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import {
+  claudeUsageResponseToLimits,
   cursorUsageResponseToLimits,
   grokUsageResponseToLimits,
   openCodeUsageResponseToLimits,
+  readAgentRuntimeUsage,
+  readClaudeUsageLimits,
   readCursorUsageLimits,
   readGrokUsageLimits,
   readOpenCodeUsageLimits,
@@ -71,4 +74,30 @@ test("OpenCode Go usage distinguishes no entitlement from failed probes and clam
   });
   assert.equal(failed.unavailable.reason,"probeFailed");
   assert.doesNotMatch(JSON.stringify(failed),/go-secret/);
+});
+
+test("Claude usage maps the SDK usage request's session, weekly and model-scoped windows",()=>{
+  const at="2026-10-09T20:00:00.000Z";
+  const result=claudeUsageResponseToLimits({rate_limits_available:true,rate_limits:{
+    five_hour:{utilization:12,resets_at:"2026-10-09T22:59:59Z"},
+    seven_day:{utilization:140,resets_at:null},
+    model_scoped:[{display_name:"Fable",utilization:0,resets_at:"2026-10-15T00:00:00Z"},{display_name:"Skipped",utilization:null,resets_at:null}],
+  }},at);
+  assert.deepEqual(result,{checkedAt:at,windows:[
+    {id:"five_hour",kind:"session",label:"Session",windowDurationMins:300,usedPercent:12,resetsAt:"2026-10-09T22:59:59.000Z"},
+    {id:"seven_day",kind:"weekly",label:"Weekly",windowDurationMins:10080,usedPercent:100},
+    {id:"seven_day_fable",kind:"weekly",label:"Weekly · Fable",windowDurationMins:10080,usedPercent:0,resetsAt:"2026-10-15T00:00:00.000Z"},
+  ]});
+  assert.deepEqual(claudeUsageResponseToLimits({rate_limits_available:false,rate_limits:null},at),{checkedAt:at,windows:[],unavailable:{reason:"unsupported"}});
+});
+
+test("Claude usage reads the capability probe and tells a failed read from an account without limits",async()=>{
+  const usage={rate_limits_available:true,rate_limits:{five_hour:{utilization:30,resets_at:"2026-10-09T22:59:59Z"}}};
+  const read=await readAgentRuntimeUsage("claude",{readCapabilities:async()=>({usage,checkedAt:"2026-10-09T20:00:00.000Z"})});
+  assert.deepEqual(read.windows.map(window=>[window.id,window.usedPercent]),[["five_hour",30]]);
+  assert.equal(read.checkedAt,"2026-10-09T20:00:00.000Z");
+  assert.deepEqual((await readClaudeUsageLimits({readCapabilities:async()=>{throw new Error("spawn failed")}})).unavailable,{reason:"probeFailed",message:"Claude Code could not read usage limits."});
+  assert.deepEqual((await readClaudeUsageLimits({readCapabilities:async()=>({usage:null,usageError:"timed out"})})).unavailable,{reason:"probeFailed",message:"Claude Code could not read usage limits."});
+  assert.deepEqual((await readClaudeUsageLimits({readCapabilities:async()=>({usage:null})})).unavailable,{reason:"unsupported"});
+  assert.deepEqual((await readClaudeUsageLimits()).unavailable,{reason:"unsupported"});
 });
