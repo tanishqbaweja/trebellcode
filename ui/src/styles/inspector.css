@@ -163,6 +163,8 @@
 :root:root .context-panel .workspace-seg>button:hover{background:transparent!important;color:var(--tx0)!important}
 :root:root .context-panel .workspace-seg>button.active{background:var(--bg4)!important;color:var(--tx0)!important;box-shadow:var(--shseg),inset 0 0 0 1px var(--line2)}
 :root:root .context-panel .workspace-refresh{margin-left:auto}
+:root:root .context-panel .workspace-wrap+.workspace-refresh{margin-left:-4px}
+:root:root .context-panel .panel-tabs>.workspace-wrap.active{background:var(--acsoft)!important;color:var(--ac)!important}
 :root:root .context-panel .workspace-files{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}
 :root:root .context-panel .workspace-search{
   box-sizing:border-box;height:34px;margin:10px 12px;display:flex;align-items:center;gap:9px;padding:0 11px;
@@ -307,6 +309,9 @@
   background:var(--bg0)!important;color:var(--tx2)!important;font:400 11.5px/1.7 var(--mono);white-space:pre;tab-size:4;
 }
 :root:root .context-panel .git-diff .diff-line{display:block;min-height:1.7em;padding:0 14px}
+/* Wrapped lines hang under the line's text, after its +, - or space marker. */
+:root:root .context-panel .git-diff.wrap{grid-template-columns:minmax(0,1fr);white-space:pre-wrap;overflow-wrap:anywhere}
+:root:root .context-panel .git-diff.wrap .diff-line{padding-left:calc(14px + 1ch);text-indent:-1ch}
 :root:root .context-panel .git-diff .diff-line.meta{color:var(--tx3)}
 :root:root .context-panel .git-diff .diff-line.file{margin-top:10px;padding-block:3px;border-block:1px solid var(--line);background:var(--bg2);color:var(--tx1);font-weight:600}
 :root:root .context-panel .git-diff .diff-line.file:first-child{margin-top:-8px;border-top:0}
