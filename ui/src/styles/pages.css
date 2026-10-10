@@ -778,3 +778,56 @@
   :root:root .preview-page .browser-inspector{max-height:none;overflow:visible}
   :root:root .preview-page .browser-elements{flex:none;max-height:200px}
 }
+
+/* ============ Polish pass (review findings) ============ */
+/* One page-header layout: title and subtitle on the left, actions on the right centred on the title block; in narrower pages
+   the actions wrap into a toolbar row under the subtitle. */
+:root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar{align-items:center}
+@container pg (max-width:1000px){
+  :root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar>div:first-child{flex-basis:100%}
+}
+
+/* History: one card of divider rows, the owning harness as a chip, and a compact absolute time (full date in the tooltip). */
+:root:root .secondary-page .history-page{gap:0}
+:root:root .secondary-page .history-page>.history-thread-row{grid-template-columns:minmax(0,1fr) auto auto;gap:14px;padding:11px 16px!important;border-width:0 1px 1px!important;border-style:solid!important;border-color:var(--line)!important;border-radius:0!important;background:var(--pg-card,var(--bg1))!important;box-shadow:none!important}
+:root:root .secondary-page .history-page>.history-thread-row:first-of-type{border-top-width:1px!important;border-top-left-radius:var(--r-l)!important;border-top-right-radius:var(--r-l)!important}
+:root:root .secondary-page .history-page>.history-thread-row:last-of-type{border-bottom-left-radius:var(--r-l)!important;border-bottom-right-radius:var(--r-l)!important}
+:root:root .secondary-page .history-page>.history-thread-row:hover{border-color:var(--line)!important;background:var(--bg2)!important}
+:root:root .secondary-page .history-page>.history-thread-row>em.history-runtime-chip{height:20px;display:inline-flex;align-items:center;padding:0 8px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10.5px/1 var(--mono);font-style:normal;white-space:nowrap}
+:root:root .secondary-page .history-page>.history-thread-row time{min-width:9ch;text-align:right}
+:root:root .secondary-page .history-page>.history-load-more,
+:root:root .secondary-page .history-page>.history-load-error{margin-top:12px!important}
+@media (max-width:640px){
+  :root:root .secondary-page .history-page>.history-thread-row{grid-template-columns:minmax(0,1fr) auto}
+  :root:root .secondary-page .history-page>.history-thread-row>em.history-runtime-chip{display:none}
+  :root:root .secondary-page .history-page>.history-thread-row time{grid-column:auto}
+}
+
+/* Project identity: an icon button in the card header next to Remove (its name stays for screen readers and in the tooltip),
+   instead of a lone button in its own divided row. */
+:root:root .projects-page .project-card>.project-identity-toggle{position:absolute;top:17px;right:52px;z-index:1;margin:0;padding:0!important;border:0!important;background:transparent!important}
+:root:root .projects-page .project-card>.project-identity-toggle button{width:32px;height:32px;min-height:32px!important;display:grid;place-items:center;padding:0!important;border:1px solid transparent!important;border-radius:var(--r-s)!important;background:transparent!important;color:var(--tx3)!important}
+:root:root .projects-page .project-card>.project-identity-toggle button:hover,
+:root:root .projects-page .project-card>.project-identity-toggle button[aria-expanded="true"]{background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .projects-page .project-card>.project-identity-toggle button>span{position:absolute;width:1px;height:1px;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+:root:root .projects-page .project-card.active::after{right:92px}
+:root:root .projects-page .project-open{padding-right:94px!important}
+:root:root .projects-page .project-card.active .project-open{padding-right:168px!important}
+
+/* Usage: zero turns cost $0.00; a dash (turns without any cost) is muted instead of a heavy bar. */
+:root:root .usage-page .usage-summary strong.usage-stat-muted{font-weight:400;color:var(--tx3)!important}
+:root:root .usage-page .usage-table-head span{color:var(--tx2)!important}
+/* Narrow Usage page (900px windows): the recent-turns table fits its card, Environment drops out, and Tokens and Cost stay. */
+@container pg (max-width:760px){
+  :root:root .usage-page .usage-table>div{min-width:0;grid-template-columns:minmax(92px,1.1fr) minmax(64px,.8fr) minmax(0,1.4fr) 62px 70px;gap:10px}
+  :root:root .usage-page .usage-table>div>span:nth-child(2){display:none}
+  :root:root .usage-page .usage-table-empty{min-width:0}
+}
+
+/* Environments: a row's actions stay on one line; when the card is too narrow they move under the name as a group. */
+:root:root .environments-page .environment-list>div{flex-wrap:wrap;row-gap:8px}
+:root:root .environments-page .environment-list>div>div:last-child{flex:0 0 auto;flex-wrap:nowrap;margin-left:auto}
+
+/* One light field style across Settings, Projects, Environments, Usage and Tools: white with the firmer line. */
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]),select,textarea){background-color:var(--bg1)!important;border-color:var(--line2)!important}
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]),select,textarea):focus{border-color:var(--ac)!important}

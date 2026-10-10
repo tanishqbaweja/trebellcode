@@ -63,11 +63,12 @@
   color-scheme:light;
   --bg0:#f7f7f8; --bg1:#ffffff; --bg2:#f4f4f7; --bg3:#eaeaf0; --bg4:#dfdfe7;
   --line:#e6e6ec; --line2:#d5d5de;
-  --tx0:#16161b; --tx1:#3f3f49; --tx2:#6c6c78; --tx3:#85858f;
-  --ac:#6b58ea; --ac2:#5743d6; --acsoft:rgba(107,88,234,.10); --acglow:rgba(107,88,234,.22);
-  --ok:#178a55; --okt:rgba(23,138,85,.10); --okb:rgba(23,138,85,.30);
-  --err:#cc4444; --errt:rgba(204,68,68,.10); --errb:rgba(204,68,68,.30);
-  --warn:#9a6b0b; --warnt:rgba(154,107,11,.12); --warnb:rgba(154,107,11,.32);
+  /* Light text, accent and status colors keep 4.5:1 on white and on their own soft tints (small 11-12px text). */
+  --tx0:#16161b; --tx1:#3f3f49; --tx2:#5f5f6b; --tx3:#6e6e7a;
+  --ac:#5f4be0; --ac2:#4f3bc8; --acsoft:rgba(95,75,224,.09); --acglow:rgba(95,75,224,.22);
+  --ok:#117346; --okt:rgba(17,115,70,.09); --okb:rgba(17,115,70,.30);
+  --err:#b83a3a; --errt:rgba(184,58,58,.09); --errb:rgba(184,58,58,.30);
+  --warn:#8a5d06; --warnt:rgba(138,93,6,.11); --warnb:rgba(138,93,6,.32);
   --info:#2f6fd0;
   --dadd:#167a46; --ddel:#c03434;
   --surf:rgba(255,255,255,.95); --surf2:rgba(255,255,255,.7);
@@ -84,6 +85,19 @@
   --shseg:0 1px 4px rgba(25,25,50,.12);
   --shside:-20px 0 60px rgba(25,25,50,.12);
   --chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23595963' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+
+/* Light Midnight and Light Black: the variant still reads in light mode (a cool blue-grey canvas, and a pure white one with
+   firmer lines), instead of all three variants falling back to the same light palette. */
+:root:root[data-mode="light"][data-theme="midnight"]:not([data-custom-theme="true"]){
+  --bg0:#f3f5fa; --bg1:#ffffff; --bg2:#eef1f7; --bg3:#e2e7f1; --bg4:#d5dcea;
+  --line:#e0e5ef; --line2:#cdd5e3; --panel:#ffffff; --bgtop:rgba(243,245,250,.74);
+  --thumb:#cdd4e1; --thumb2:#b6bfd0;
+}
+:root:root[data-mode="light"][data-theme="black"]:not([data-custom-theme="true"]){
+  --bg0:#ffffff; --bg1:#ffffff; --bg2:#f4f4f5; --bg3:#e9e9eb; --bg4:#dcdcdf;
+  --line:#e2e2e5; --line2:#cbcbd0; --panel:#ffffff; --bgtop:rgba(255,255,255,.8);
+  --tx0:#0b0b0e; --tx1:#34343c;
 }
 
 /* Custom / environment themes: derive the tokens from the inline legacy variables set by App.jsx.
@@ -151,9 +165,13 @@ input::placeholder,textarea::placeholder{color:var(--tx3)}
 *::-webkit-scrollbar-thumb:hover{background:var(--thumb2);background-clip:padding-box;border:2px solid transparent}
 *::-webkit-scrollbar-track,*::-webkit-scrollbar-corner{background:transparent}
 :focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 55%,transparent);outline-offset:2px}
+/* On light surfaces a half-transparent ring fades into the page: use the full accent. */
+:root[data-mode="light"]:not([data-custom-theme="true"]) :focus-visible{outline-color:var(--ac)}
 /* Film grain keeps the large dark gradients from banding. Fixed, click-through and above everything. */
 body::after{content:"";position:fixed;inset:0;z-index:999;pointer-events:none;opacity:var(--grain);background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E")}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+/* A mode or theme switch swaps every token in one frame: nothing fades from the old palette (App adds the class for two frames). */
+html.tb-theme-switching *,html.tb-theme-switching *::before,html.tb-theme-switching *::after{transition:none!important}
 
 @keyframes tb-rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
 @keyframes tb-pop{from{opacity:0;transform:scale(.97) translateY(6px)}}

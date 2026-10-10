@@ -1,3 +1,5 @@
+import { epochSeconds } from "./time-format.js";
+
 const RUNTIMES=new Set(["native","codex","claude","opencode","cursor","grok","antigravity"]);
 
 export function missingRuntimeThreadError(error){
@@ -11,7 +13,9 @@ function runtimeFromInstance(value){
   const key=String(value||"").trim().toLowerCase();
   return [...RUNTIMES].find(name=>key===name||key.startsWith(name+"-"))||null;
 }
-function epoch(value){const number=Number(value);return Number.isFinite(number)&&number>0?number:Date.now()/1000}
+// Catalog timestamps are seconds. Trebell's own thread metadata stores Date.now() milliseconds (updateThreadMeta), and a
+// thread without a snapshot timestamp falls back to it: read a value past 1e11 as milliseconds instead of a far-future date.
+function epoch(value){const seconds=epochSeconds(value);return seconds>0?seconds:Date.now()/1000}
 function safeStatus(status){
   const type=typeof status==="string"?status:status?.type;
   if(!type||type==="active")return {type:"idle"};
@@ -102,7 +106,9 @@ export function threadsFromCatalogMeta(threadMeta={}){
 export function decorateCatalogThread(thread,{runtime:runtimeHint=null,provider=null}={}){
   if(!thread?.id)return thread;
   const owner=threadCatalogRuntime(thread,{},runtimeHint);
-  return {...thread,trebellRuntime:owner,trebellProvider:text(provider,200)||thread.trebellProvider||null};
+  // A thread listed with millisecond timestamps sorts and reads like every other thread (seconds).
+  const units={};for(const key of ["updatedAt","createdAt"])if(Number(thread[key])>1e11)units[key]=epochSeconds(thread[key]);
+  return {...thread,...units,trebellRuntime:owner,trebellProvider:text(provider,200)||thread.trebellProvider||null};
 }
 
 export function mergeThreadCatalog(existing=[],incoming=[],{runtime:runtimeHint=null,provider=null,threadMeta={}}={}){

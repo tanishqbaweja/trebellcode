@@ -56,14 +56,15 @@
 /* Every tab keeps the same box whichever one is active (only colour, icon tint and the underline change), so a tab never moves
    under the pointer when another is selected and a double click always lands on the tab that was clicked. The layout steps
    with the panel width instead (the query measures the panel inside its 1px border): icon + label from 660px (all eight
-   tabs fit), labels only from 450px (the 460px default included), equal icon-only tabs below that (the minimum is 340px). The name stays in the tooltip and aria-label. */
+   tabs fit), labels only from 402px (the 440px default included), equal icon-only tabs below that (the minimum is 340px). The name stays in the tooltip and aria-label. */
 :root:root .context-panel .context-panel-tab{padding:0 8px 2px}
 @container inspector (max-width:658px){
-  :root:root .context-panel .context-panel-tab{flex:1 0 auto;padding:0 5px 2px}
+  /* Labels only from 402px up, so the 440px default shows names instead of eight look-alike icons. */
+  :root:root .context-panel .context-panel-tab{flex:1 0 auto;padding:0 4px 2px;font-size:11.5px}
   :root:root .context-panel .context-panel-tab svg{display:none}
-  :root:root .context-panel .context-panel-tab::after{left:5px;right:5px}
+  :root:root .context-panel .context-panel-tab::after{left:4px;right:4px}
 }
-@container inspector (max-width:448px){
+@container inspector (max-width:400px){
   :root:root .context-panel .context-panel-tab{flex:1 1 0;width:auto;min-width:30px;max-width:44px;padding:0 0 2px}
   :root:root .context-panel .context-panel-tab svg{display:block}
   :root:root .context-panel .context-panel-tab span{display:none}
@@ -957,10 +958,12 @@
   :root:root .terminal-drawer .terminal-content>.terminal-error{position:absolute;top:8px;left:10px;right:10px;z-index:3;background:linear-gradient(var(--errt),var(--errt)),var(--panel)!important;box-shadow:var(--shadow)}
 }
 /* Narrow drawers: the title and New keep only their icons so the session tabs keep their room. */
+/* The split buttons go first (Split stays in the command palette), so the Terminal title keeps its label at 1280. */
 @container terminal (max-width:720px){
-  :root:root .terminal-drawer .terminal-drawer-head>span{gap:0;padding-right:6px;font-size:0}
+  :root:root .terminal-drawer .real-terminal>.terminal-tabs>button[title^="Split"]{display:none}
 }
 @container terminal (max-width:540px){
+  :root:root .terminal-drawer .terminal-drawer-head>span{gap:0;padding-right:6px;font-size:0}
   :root:root .terminal-drawer .real-terminal>.terminal-tabs>.terminal-new{width:28px;padding:0;gap:0;font-size:0}
 }
 /* Narrow split panes: Attach keeps its icon (name in the tooltip) and the command line tightens. */
@@ -1030,3 +1033,47 @@
 :root:root .inspector-text-prompt-actions button.primary{border-color:transparent!important;background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow)}
 :root:root .inspector-text-prompt-actions button.primary:hover{filter:brightness(1.1);color:#fff!important}
 :root:root .inspector-text-prompt-actions button:focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 60%,transparent);outline-offset:2px}
+
+/* ---------------------------------------------------------------- Polish pass (review findings) */
+/* Terminal empty state: a compact call to action instead of a dashed box filling the whole drawer. */
+:root:root .terminal-drawer .terminal-empty{flex:0 1 auto;width:100%;max-height:160px;min-height:120px;margin-block:auto}
+
+/* Runtime status dot: the tone follows the transport state the summary names. */
+:root:root .context-panel .runtime-dot.tone-ok{background:var(--ok);box-shadow:0 0 0 3px var(--okt)}
+:root:root .context-panel .runtime-dot.tone-warn{background:var(--warn);box-shadow:0 0 0 3px var(--warnt)}
+:root:root .context-panel .runtime-dot.tone-err{background:var(--err);box-shadow:0 0 0 3px var(--errt)}
+:root:root .context-panel .runtime-dot.tone-off{background:var(--tx3);box-shadow:0 0 0 3px color-mix(in srgb,var(--tx3) 18%,transparent)}
+
+/* Capability matrix: one list, a check or a dash per row; "available" is the norm and stays only for screen readers, and the
+   exceptions carry a sentence-case tag. */
+:root:root .context-panel .runtime-capability-grid{grid-template-columns:minmax(0,1fr);gap:0;border:1px solid var(--line);border-radius:10px;background:var(--bg2);overflow:hidden}
+:root:root .context-panel .runtime-capability-grid>div{position:relative;min-height:34px;justify-content:flex-start;gap:9px;padding:7px 12px!important;border:0!important;border-bottom:1px solid var(--line)!important;border-radius:0;background:transparent!important}
+:root:root .context-panel .runtime-capability-grid>div:last-child{border-bottom:0!important}
+:root:root .context-panel .runtime-capability-grid>div>svg{flex:none;width:14px;height:14px;color:var(--tx3)}
+:root:root .context-panel .runtime-capability-grid>div.available>svg{color:var(--ok)}
+:root:root .context-panel .runtime-capability-grid span{flex:1 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .runtime-capability-grid>div.available:not(.runtime)>strong{position:absolute;width:1px;height:1px;margin:0;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+:root:root .context-panel .runtime-capability-grid>div:is(.unavailable,.runtime)>strong{display:block;padding:2px 8px;border:1px solid var(--line2);background:var(--bg3);color:var(--tx2)!important;font:600 10.5px/1.3 var(--mono);letter-spacing:0;text-transform:none}
+:root:root .context-panel .runtime-capability-grid>div:is(.unavailable,.runtime)>strong::first-letter{text-transform:uppercase}
+/* Trace status pills read in sentence case like every other pill. */
+:root:root .context-panel .runtime-trace-row>summary>span{display:inline-block;letter-spacing:0;text-transform:none}
+:root:root .context-panel .runtime-trace-row>summary>span::first-letter{text-transform:uppercase}
+
+/* Changed-file list: the folder hint shows only when there is room for a few characters of it; otherwise it wraps onto a
+   hidden second line instead of leaving a stray letter. */
+:root:root .context-panel .changed-file-path.split{flex-wrap:wrap;height:18px;line-height:18px;row-gap:0;overflow:hidden}
+:root:root .context-panel .changed-file-path.split>.changed-file-dir{min-width:4.5em;line-height:18px}
+
+/* Files in a narrow inspector (the 520px drawer, a dragged-in docked panel): one column. With no file open the tree takes the
+   whole height; with a file open the tree keeps the top third and the viewer gets the full width below it. */
+@container inspector (max-width:560px){
+  :root:root .context-panel .workspace-body{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+  :root:root .context-panel .workspace-body>.tree-list{border-right:0!important}
+  :root:root .context-panel .workspace-body:not(:has(.file-head,.workspace-file-error))>.file-view{display:none}
+  :root:root .context-panel .workspace-body:has(.file-head,.workspace-file-error){grid-template-rows:minmax(110px,34%) minmax(0,1fr)}
+  :root:root .context-panel .workspace-body:has(.file-head,.workspace-file-error)>.tree-list{border-bottom:1px solid var(--line)!important}
+}
+
+/* Git panel while it loads, and the clean state. */
+:root:root .context-panel .status-list>p:is(.sc-loading,.sc-clean){margin:0;padding:10px 2px;color:var(--tx3)!important;font-size:12px}
+:root:root .context-panel .sc-branch select:disabled{opacity:.7;cursor:progress}

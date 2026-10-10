@@ -62,7 +62,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .sidebar .bulk-bar button{height:26px;border:0;border-radius:7px;background:transparent;color:var(--tx1);font-size:11.5px;padding:0 7px}
 .sidebar .bulk-bar button:hover{background:var(--bg3);color:var(--tx0)}
 
-.sidebar .thread-sections{display:flex;flex-direction:column;gap:6px;padding:0 8px 10px;scrollbar-width:auto;scrollbar-color:auto}
+/* Rows scroll under a short fade at both edges instead of being cut by a hard line; the bottom padding keeps the last row off
+   the destinations divider. */
+.sidebar .thread-sections{display:flex;flex-direction:column;gap:6px;padding:4px 8px 14px;scrollbar-width:auto;scrollbar-color:auto;-webkit-mask-image:linear-gradient(180deg,transparent 0,#000 10px,#000 calc(100% - 12px),transparent);mask-image:linear-gradient(180deg,transparent 0,#000 10px,#000 calc(100% - 12px),transparent)}
 .sidebar .thread-sections section{margin:0}
 .sidebar .thread-sections h4{height:auto;margin:0;padding:8px 8px 6px;display:flex;align-items:center;justify-content:flex-start;gap:6px;font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--tx3)}
 .sidebar .thread-sections h4 span{font-size:10.5px;font-weight:500;letter-spacing:.04em;color:var(--tx3)}
@@ -82,7 +84,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .sidebar .thread-pr-chip.linked{color:var(--ac);border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:var(--acsoft)}
 .sidebar .thread-pr-chip.detected{color:var(--tx2)}
 /* Fade the row text under the hover menu instead of shifting it. */
-.sidebar .thread-row:is(:hover,:focus-within,:has(.thread-menu[open])) .thread-main>div{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 40px),transparent calc(100% - 20px));mask-image:linear-gradient(90deg,#000 calc(100% - 40px),transparent calc(100% - 20px))}
+/* The hover menu covers the right end of the row: the title line keeps its width free (the title ellipsizes and the runtime
+   and PR chips stay whole), and only the meta line fades under it. */
+.sidebar .thread-row:is(:hover,:focus-within,:has(.thread-menu[open])) .thread-main .thread-title-line{padding-right:28px}
+.sidebar .thread-row:is(:hover,:focus-within,:has(.thread-menu[open])) .thread-main>div>span{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 40px),transparent calc(100% - 20px));mask-image:linear-gradient(90deg,#000 calc(100% - 40px),transparent calc(100% - 20px))}
 .sidebar .thread-menu{right:6px;top:50%;margin-top:-13px}
 .sidebar .thread-menu>summary{width:26px;height:26px;border-radius:7px;color:var(--tx2)}
 .sidebar .thread-row:focus-within .thread-menu>summary{display:grid}
@@ -104,7 +109,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* Two columns at the default width; a sidebar too narrow for "Environments" in a half-width cell gets one column, and a
    very wide one gets three. */
 .sidebar .sidebar-nav-secondary{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:1px 2px;padding-top:6px;border-top:1px solid var(--line)}
-.sidebar .sidebar-nav-secondary .sidebar-utility{min-height:30px;padding:6px;gap:6px}
+/* Same left inset and icon gap as the primary destinations, so the icons line up in one column. */
+.sidebar .sidebar-nav-secondary .sidebar-utility{min-height:30px;padding:6px 4px 6px 10px;gap:9px}
 .sidebar .sidebar-nav-secondary .sidebar-utility span{font-size:12.5px}
 .sidebar .sidebar-nav-secondary .sidebar-utility-kbd{display:none}
 .sidebar .sidebar-utility{width:100%;height:auto;min-height:32px;display:flex;align-items:center;justify-content:flex-start;gap:10px;padding:7px 10px;border:0;border-radius:9px;background:transparent;color:var(--tx1);font-size:13px;font-weight:500;text-align:left;transition:background .14s,color .14s}
@@ -116,9 +122,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .sidebar .sidebar-utility.active svg{color:var(--ac)}
 .sidebar .sidebar-utility .sidebar-utility-kbd{margin-left:auto;flex:none}
 /* Browser and Agents open inspector tabs: "open" is an outline with a dot, so it never reads as a second current page. */
-.sidebar .sidebar-utility.panel-open{background:transparent;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ac) 38%,var(--line2));color:var(--tx0)}
+.sidebar .sidebar-utility.panel-open{position:relative;background:transparent;box-shadow:none;color:var(--tx0)}
+.sidebar .sidebar-utility.panel-open svg{color:var(--ac)}
 .sidebar .sidebar-utility.panel-open:hover{background:var(--bg2)}
-.sidebar .sidebar-utility.panel-open::after{content:"";width:6px;height:6px;margin-left:auto;flex:none;border-radius:50%;background:var(--ac);box-shadow:0 0 0 3px var(--acsoft)}
+.sidebar .sidebar-utility.panel-open::after{content:"";width:5px;height:5px;margin-left:auto;flex:none;border-radius:50%;background:var(--ac);box-shadow:none}
 @media (max-height:720px){
   .sidebar .sidebar-utilities{gap:4px;padding:6px 8px}
   .sidebar .sidebar-utility{min-height:30px;padding:6px 9px;gap:8px}
@@ -257,7 +264,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .queued-message button:hover:not(:disabled){background:var(--bg4);color:var(--tx0)}
 
 /* ============ Empty-state hero ============ */
-.conversation-column .welcome{min-height:calc(100vh - 296px);padding:24px 24px 40px}
+.conversation-column .welcome{min-height:calc(100vh - 296px);padding:24px 24px 40px;justify-content:safe center}
 .app-shell.desktop-shell .conversation-column .welcome{min-height:calc(100vh - 328px)}
 .main-frame.terminal-open .conversation-column .welcome{min-height:0;padding:16px 24px 20px}
 .main-frame.terminal-open .conversation-column .welcome-mark{width:44px;height:44px;margin-bottom:14px}
@@ -469,3 +476,123 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .file-mention-menu button:is(:hover,.active),:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap :is(.model-picker-menu>button,.model-runtime-profiles>button).selected{background:var(--acsoft)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .file-mention-menu small{color:var(--tx3)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .slash-menu button.active{background:var(--acsoft)!important;color:var(--tx0)!important}
+
+/* ============ Polish pass (review findings) ============ */
+/* Page topbar: the pages keep the shell's 52px topbar (crumb, inspector, theme and palette), so the sidebar can always be
+   reopened and the chrome does not jump between Home and a page. */
+.main-frame>.page-topbar{position:absolute;top:32px;left:0;right:0;z-index:5;height:var(--top);display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 12px 0 14px;border-bottom:1px solid var(--line);background:var(--bgtop);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+.app-shell.hosted-shell .main-frame>.page-topbar{top:0}
+.main-frame>.page-topbar~.secondary-page{top:calc(32px + var(--top))}
+.app-shell.hosted-shell .main-frame>.page-topbar~.secondary-page{top:var(--top)}
+.page-topbar .workspace-breadcrumb{display:flex;align-items:center;min-width:0;flex:1 1 auto}
+.page-topbar .workspace-header-actions{display:flex;align-items:center;flex:none}
+.page-topbar .workspace-breadcrumb>span.page-crumb{flex:0 1 auto;display:inline-flex;align-items:center;gap:7px;min-width:0;height:30px;padding:0 9px;color:var(--tx2);font-size:12.5px;font-weight:550;white-space:nowrap}
+.page-topbar .page-crumb>svg{flex:none;color:var(--tx2)}
+.page-topbar .page-crumb>svg+strong+svg{color:var(--tx3)}
+.page-topbar .page-crumb strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:600;color:var(--tx0)}
+.page-topbar .page-crumb em{min-width:0;overflow:hidden;text-overflow:ellipsis;font-style:normal;font-weight:550;color:var(--tx1)}
+/* A link (it navigates back to Settings), styled like the crumb buttons. */
+.page-topbar .page-crumb-back{flex:none;display:inline-flex;align-items:center;padding:0 9px 0 6px;text-decoration:none}
+.page-topbar .page-crumb-back svg{color:var(--tx3)}
+.page-topbar .page-crumb-back+span{flex:none;padding:0 3px;color:var(--tx3);font-size:12px}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .main-frame>.page-topbar{background:var(--bgtop)!important;border-color:var(--line)!important}
+
+/* Thread title before a thread exists: plain text, not a button that does nothing. */
+/* (The breadcrumb separator rule targets every direct span: the static title keeps the title button metrics instead.) */
+.workspace-header .workspace-breadcrumb>span.thread-title-button.is-static{flex:0 1 auto;min-width:0;display:inline-flex;align-items:center;padding:0 9px;color:var(--tx1);font-size:12.5px;cursor:default}
+.workspace-header .thread-title-button.is-static:hover{background:transparent;color:var(--tx1)}
+
+/* Topbar with the inspector open in mid-size windows: the project crumb keeps a readable minimum, the thread title shrinks
+   with an ellipsis, and the branch chip goes icon-only before either of them is cut to a letter. */
+.chat-workspace .workspace-header{container:tbheader/inline-size}
+.workspace-header .workspace-breadcrumb{flex:1 1 auto}
+.workspace-header .project-crumb:not(.sidebar-reopen){flex:none}
+.workspace-header .thread-title-button{flex:0 1 auto;min-width:0}
+.workspace-header .thread-title-button strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@container tbheader (max-width:760px){
+  .workspace-header .project-crumb span{max-width:14ch}
+}
+@container tbheader (max-width:440px){
+  .workspace-header .project-crumb span{max-width:9ch}
+}
+@container tbheader (max-width:560px){
+  .workspace-header .header-control.branch-control{width:30px;padding:0;justify-content:center}
+  .workspace-header .header-control.branch-control span{display:none}
+}
+
+/* Composer footer: "Context" with a meter that is always drawn (dashed while the window size is unknown) and the token
+   value beside it; the hints keep their own end of the row with the Enter key as a key cap. */
+.composer-wrap .composer-status{justify-content:space-between}
+.composer-wrap .composer-status .composer-context{display:inline-flex;align-items:center;flex-wrap:wrap;gap:2px 7px}
+.composer-wrap .composer-status .composer-context .context-meter{margin-right:0;top:0}
+.composer-wrap .context-meter.unknown{background:repeating-linear-gradient(90deg,var(--bg4) 0 5px,transparent 5px 8px)}
+.composer-wrap .context-meter.unknown i{display:none}
+.composer-wrap .composer-status .composer-hints{display:inline-flex;align-items:center;flex-wrap:wrap;justify-content:flex-end;gap:2px 7px;margin-left:auto;color:var(--tx3)}
+.composer-wrap .composer-status .composer-hints .tb-kbd{padding:0 5px;font-size:9.5px;line-height:15px;color:var(--tx2)}
+/* Each select fits its current value (Chromium/Electron), so the control row is not padded with empty pill space. */
+@supports (field-sizing:content){
+  .composer-wrap .composer-left>select{field-sizing:content}
+  /* ...never narrower than the compact layout keeps them (the permission pill 100px, the workspace pill 125px). */
+  .composer-wrap .composer-left>select.permission-picker{min-width:100px}
+  .composer-wrap .composer-left>select.workspace-mode{min-width:125px}
+}
+
+/* Hero with the terminal open: the scroller drops its conversation padding and the hero fills the space left above the
+   composer, centred when it fits and aligned to the top when it does not. In short windows the mark, then the subtitle,
+   give way so the title and the starters stay in view instead of the column scrolling them under the topbar. */
+.main-frame.terminal-open .conversation-column .welcome{justify-content:safe center}
+.main-frame.terminal-open .chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){padding-top:12px;padding-bottom:12px}
+.main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - var(--top) - var(--terminal-height,330px) - 152px)}
+.app-shell.desktop-shell .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - 32px - var(--top) - var(--terminal-height,330px) - 152px)}
+@media (max-height:799px){
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>.welcome-mark{display:none}
+}
+@media (max-height:720px){
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{padding-block:4px}
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>p{display:none}
+}
+@media (max-height:640px){
+  .main-frame.terminal-open .chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){padding-top:6px;padding-bottom:6px}
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - var(--top) - var(--terminal-height,330px) - 140px)}
+  .app-shell.desktop-shell .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - 32px - var(--top) - var(--terminal-height,330px) - 140px)}
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>h1{font-size:18px}
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>.suggestions{margin-top:10px}
+}
+
+/* Docked inspector at 901px and up: the main column may shrink, and App clamps --right-panel-width to the window, so the
+   panel never runs past the right edge (960-1140px windows). */
+@media (min-width:901px){
+  .workspace-shell.right-open:not(.right-maximized){grid-template-columns:minmax(0,1fr) var(--right-panel-width,440px)}
+}
+
+/* Inspector overlay drawer at 900px and below: a dimmed scrim behind it that closes it on click. */
+.workspace-shell>.inspector-scrim{display:none}
+@keyframes tb-scrim-in{from{opacity:0}}
+@media (max-width:900px){
+  .workspace-shell>.inspector-scrim{display:block;position:absolute;inset:32px 0 0;z-index:29;background:color-mix(in srgb,var(--ovl) 60%,transparent);animation:tb-scrim-in .16s ease-out;cursor:default}
+  .app-shell.hosted-shell .workspace-shell>.inspector-scrim{inset:0}
+}
+
+/* Secondary destinations as one row of icon buttons in short windows and narrow sidebars: their names stay in aria-label and
+   the tooltip, and the thread list gets the height back. */
+@media (max-height:720px){
+  .sidebar .sidebar-nav-secondary{grid-template-columns:repeat(auto-fit,minmax(30px,1fr));gap:2px;padding-top:4px}
+  .sidebar .sidebar-nav-secondary .sidebar-utility{min-height:30px;padding:0;justify-content:center}
+  .sidebar .sidebar-nav-secondary .sidebar-utility>span{display:none}
+  .sidebar .sidebar-nav-secondary .sidebar-utility.panel-open::after{position:absolute;top:4px;right:calc(50% - 13px);margin:0}
+}
+@container tbsidebar (max-width:236px){
+  .sidebar .sidebar-nav-secondary{grid-template-columns:repeat(auto-fit,minmax(30px,1fr));gap:2px;padding-top:4px}
+  .sidebar .sidebar-nav-secondary .sidebar-utility{min-height:30px;padding:0;justify-content:center}
+  .sidebar .sidebar-nav-secondary .sidebar-utility>span{display:none}
+  .sidebar .sidebar-nav-secondary .sidebar-utility.panel-open::after{position:absolute;top:4px;right:calc(50% - 13px);margin:0}
+}
+
+/* The latest turn reads top-down: the user's message, the activity card, then the reply with its outcome pill. The card stays
+   a sibling of the history in the DOM (live reasoning rows stay out of .conversation-history); only the visual order changes,
+   and only the rows after the last user message move. */
+.chat-workspace .conversation-column:has(> .agent-block){display:flex;flex-direction:column}
+.chat-workspace .conversation-column:has(> .agent-block)>.conversation-history{display:contents}
+.chat-workspace .conversation-column:has(> .agent-block)>.agent-block{order:2}
+.chat-workspace .conversation-column:has(> .agent-block)>.conversation-history>.user-row~:is(.history-assistant,.reasoning-row):not(:has(~ .user-row)){order:3}
+.chat-workspace .conversation-column:has(> .agent-block)>.agent-block~*{order:4}
