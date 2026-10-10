@@ -6,7 +6,8 @@ const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkd
 
 test("large workspace trees and diffs render bounded progressive windows",async({page,request})=>{
   test.setTimeout(35_000);
-  await request.post("/api/settings",{data:{onboardingComplete:true}});
+  // The light-mode check below reads the default theme's colors; settings persist between tests, so set that theme here.
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"Workspace stress"}});
 
