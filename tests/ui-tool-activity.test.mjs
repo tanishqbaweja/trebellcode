@@ -13,6 +13,24 @@ test("Native's own tool calls are named by what they do, as T3 names tool rows",
   assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"write_file",arguments:{path:"test/new.test.js",content:"x"}}),"Wrote test/new.test.js");
 });
 
+test("an edit or write that failed or was declined names what it attempted, not a change that happened",()=>{
+  const write={namespace:"trebell_workspace",tool:"write_file",arguments:{path:"tour-readonly.txt",content:"hello"}};
+  const edit={namespace:"trebell_workspace",tool:"replace_text",arguments:{path:"src/slug.js",old_text:"a",new_text:"b"}};
+  assert.equal(dynamicToolLabel({...write,status:"failed"}),"Write tour-readonly.txt");
+  assert.equal(dynamicToolLabel({...edit,status:"declined"}),"Edit src/slug.js");
+  for(const status of ["completed","inProgress",undefined]){
+    assert.equal(dynamicToolLabel({...write,status}),"Wrote tour-readonly.txt");
+    assert.equal(dynamicToolLabel({...edit,status}),"Edited src/slug.js");
+  }
+  // Reads, searches and commands do not claim an outcome, so a failed one keeps its name.
+  assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"read_source",arguments:{path:"greet.py"},status:"failed"}),"Read greet.py");
+});
+
+test("a listing or search whose arguments name no query, files or folder is T3's \"Searched files\"",()=>{
+  assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"list",arguments:{depth:2}}),"Searched files");
+  assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"search_code",arguments:{regex:false}}),"Searched files");
+});
+
 test("tools whose name says nothing about the action keep their name, and missing arguments never invent one",()=>{
   assert.equal(dynamicToolLabel({namespace:"trebell_process",tool:"start",arguments:{command:"npm",args:["run","dev"]}}),undefined);
   assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"invoke",arguments:{capability:"diagnostics"}}),undefined);
