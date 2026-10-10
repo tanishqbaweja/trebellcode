@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import crossSpawn from "cross-spawn";
 import { randomUUID } from "node:crypto";
 import { buildRuntimeEnvironment, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
@@ -65,7 +66,9 @@ export class NativeBackgroundProcessManager{
     if(profile&&this.environments){
       child=this.environments.spawnArgv(profile.id,{command:executable,args:commandArgs,cwd,stdio:["ignore","pipe","pipe"],environmentNames:safeNames,environment:profile.type==="local"?buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}):null,detached:profile.type==="local"&&this.platform!=="win32"});
     }else{
-      child=spawn(executable,commandArgs,{cwd,env:buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}),windowsHide:true,stdio:["ignore","pipe","pipe"],detached:this.platform!=="win32"});
+      // cross-spawn runs Windows .cmd/.bat launchers (npm, npx, yarn, pnpm) through cmd.exe with escaped arguments, as the
+      // harness launchers do; on other platforms it is child_process.spawn.
+      child=crossSpawn(executable,commandArgs,{cwd,env:buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}),windowsHide:true,stdio:["ignore","pipe","pipe"],detached:this.platform!=="win32"});
     }
     const id=randomUUID(),record={id,threadId:String(threadId),command:executable,args:commandArgs,label:processLabel(executable,commandArgs),cwd:String(cwd||""),environmentId:profile?.id||null,environmentType:profile?.type||"local",remote,child,osPid:child.pid??null,running:true,exitCode:null,signal:null,stdout:"",stderr:"",truncated:false,maxOutputBytes:boundedBytes(maxOutputBytes,this.maxOutputBytes),createdAt:Date.now(),updatedAt:Date.now()};
     this.processes.set(id,record);child.stdout?.on("data",chunk=>this.#append(record,"stdout",chunk));child.stderr?.on("data",chunk=>this.#append(record,"stderr",chunk));

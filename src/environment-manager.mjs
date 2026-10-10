@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import crossSpawn from "cross-spawn";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, readFile, readdir, stat } from "node:fs/promises";
@@ -422,7 +423,8 @@ export class EnvironmentManager {
     const executable=String(command||"").trim();
     if(!executable)throw new Error("command is required");
     const working=String(cwd??profile.cwd??"").trim();
-    if(profile.type==="local")return spawn(executable,args,{cwd:working||undefined,env:environment&&typeof environment==="object"?environment:this.env,windowsHide:true,stdio,detached});
+    // A local argv command goes through cross-spawn, so Windows .cmd/.bat launchers run (through cmd.exe, arguments escaped).
+    if(profile.type==="local")return crossSpawn(executable,args,{cwd:working||undefined,env:environment&&typeof environment==="object"?environment:this.env,windowsHide:true,stdio,detached});
     return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(executable,args),environmentNames,environment||{}),cwd:working||null,stdio,detached});
   }
 
