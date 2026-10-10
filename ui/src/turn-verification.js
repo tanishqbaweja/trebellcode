@@ -13,16 +13,22 @@ export async function requestTurnVerificationPlan({request,threadId,turnId,retri
   return result;
 }
 
+// The row shows the assessment made when the turn ended. Checks the turn already ran count toward it, so a turn that ran them
+// reads as verified or failed rather than as a plan still waiting.
 export function verificationPlanEvent(result,turnId){
   if(!result?.record)return null;
-  const assessment=result.record.assessment||{},summary=assessment.summary||{},required=Math.max(0,Number(summary.required)||0);
+  const assessment=result.record.assessment||{},summary=assessment.summary||{},count=key=>Math.max(0,Number(summary[key])||0),required=count("required");
   const risk=String(result.record.risk||assessment.risk||result.record.plan?.risk||"unknown");
-  const nextId=result.nextAction?.nextStep?.id?String(result.nextAction.nextStep.id):null;
+  const nextId=result.nextAction?.nextStep?.id?String(result.nextAction.nextStep.id):null,next=nextId?" · next "+nextId:"";
+  const checks=n=>`${n} required check${n===1?"":"s"}`,outcome=String(assessment.status||result.record.status||"");
+  const row=outcome==="verified"?{title:`Verified · ${risk} risk · ${required?checks(required)+" passed":"no required checks"}`,status:"done"}
+    :outcome==="failed"?{title:`Verification failed · ${risk} risk · ${count("failed")} of ${checks(required)} failed`,status:"failed"}
+    :outcome==="blocked"?{title:`Verification blocked · ${risk} risk · ${count("blocked")} of ${checks(required)} blocked${next}`,status:"warning"}
+    :{title:`Verification planned · ${risk} risk · ${checks(required)}${count("passed")?` · ${count("passed")} passed`:""}${next}`,status:"incomplete"};
   return {
     id:"verification-plan-"+String(turnId||result.record.turnId||Date.now()),
     kind:"verification",
-    title:`Verification planned · ${risk} risk · ${required} required check${required===1?"":"s"}${nextId?" · next "+nextId:""}`,
-    status:"pending",
-    raw:{recordId:result.record.id||null,risk,required,nextAction:result.nextAction?.action||null,nextStepId:nextId,changedPaths:result.changedPaths||[]},
+    ...row,
+    raw:{recordId:result.record.id||null,risk,required,outcome:outcome||null,nextAction:result.nextAction?.action||null,nextStepId:nextId,changedPaths:result.changedPaths||[]},
   };
 }
