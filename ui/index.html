@@ -6,6 +6,17 @@
     <meta name="theme-color" content="#090b13" />
     <link rel="icon" type="image/svg+xml" href="/trebell-code-icon.svg" />
     <title>Trebell Code</title>
+    <script>
+      /* The appearance this browser last applied (written by the app as trebell-appearance-v1), set before the stylesheets load so
+         a light-mode user does not see a dark first frame before the settings arrive. */
+      (function(){try{var cached=JSON.parse(localStorage.getItem("trebell-appearance-v1")||"null");if(!cached||typeof cached!=="object")return;
+        var root=document.documentElement,requested=cached.mode==="light"||cached.mode==="dark"?cached.mode:"system";
+        var dark=window.matchMedia?window.matchMedia("(prefers-color-scheme: dark)").matches:true;
+        var mode=requested==="system"?(dark===false?"light":"dark"):requested;
+        root.dataset.mode=mode;root.style.colorScheme=mode;
+        if(cached.theme==="dark"||cached.theme==="midnight"||cached.theme==="black")root.dataset.theme=cached.theme;
+      }catch(error){}})();
+    </script>
   </head>
   <body>
     <div id="root"></div>

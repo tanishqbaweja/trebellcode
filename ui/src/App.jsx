@@ -4,8 +4,10 @@ import {
   Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
   ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Mic, Camera, History,
-  PanelRight, PanelBottom, PanelLeftOpen, Command, Target, Play, Search, Sun, Moon
+  PanelRight, PanelBottom, PanelLeftOpen, Command, Target, Play, Search, Sun, Moon,
+  BarChart3, ChevronLeft, ChevronRight, Folder, Minus, ScrollText, Server, Settings as SettingsIcon, Wrench
 } from "lucide-react";
+import { compactDateTime, fullDateTime, isoDateTime } from "./time-format.js";
 import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
@@ -112,7 +114,38 @@ function useLatestCallback(callback){
   return useCallback((...args)=>ref.current?.(...args),[]);
 }
 
+// The appearance this browser last applied. index.html reads the same key before the stylesheets load, so a light-mode user's
+// first frame is light, and the first render starts from it instead of the dark default until /api/state answers.
+const APPEARANCE_CACHE_KEY="trebell-appearance-v1";
+function cachedAppearanceSettings(){
+  try{
+    const cached=JSON.parse(localStorage.getItem(APPEARANCE_CACHE_KEY)||"null");
+    if(!cached||typeof cached!=="object")return {};
+    return {
+      ...(["system","light","dark"].includes(cached.mode)?{appearanceMode:cached.mode}:{}),
+      ...(["dark","midnight","black"].includes(cached.theme)?{appearance:cached.theme}:{}),
+    };
+  }catch{return {}}
+}
+
+// The harness transport state in the words the Runtime panel uses, with the status-dot tone that matches it.
+function transportStatusCopy(status){
+  if(status==="connected")return {label:"Connected",tone:"ok"};
+  if(status==="connecting"||status==="reconnecting")return {label:"Connecting…",tone:"warn"};
+  if(status==="error")return {label:"Connection failed",tone:"err"};
+  return {label:"Not connected",tone:"off"};
+}
+
+// Full-page sections share the workspace topbar: its crumb names the page (Settings adds its open section), and its actions keep
+// the sidebar, inspector, theme and palette reachable on every page.
+const PAGE_CRUMBS=Object.freeze({
+  projects:[Folder,"Projects"],history:[History,"History"],usage:[BarChart3,"Usage"],tools:[Wrench,"Tools"],
+  environments:[Server,"Environments"],settings:[SettingsIcon,"Settings"],licenses:[ScrollText,"Open source licenses"],
+});
+
 const AGENT_RUNTIME_LABELS=Object.freeze({native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"});
+// The short harness names the sidebar chips use.
+const HISTORY_RUNTIME_LABELS=Object.freeze({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"});
 function agentRuntimeName(kind){return AGENT_RUNTIME_LABELS[kind]||String(kind||"")||"the agent harness"}
 // A model catalog belongs to its harness, and to the inference provider only when Trebell manages inference for that harness.
 function modelCatalogScope(runtime,provider){return String(runtime||"")+"\0"+(sharedRuntimeCapabilities(runtime).managedInference?String(provider||""):"")}
@@ -233,6 +266,17 @@ function tokenLabel(tokenUsage,price=null){
   if(total==null)return "Context —";
   if(windowSize&&contextTokens!=null)return "Context "+Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+" input · "+total.toLocaleString()+" total"+suffix;
   return "Tokens "+total.toLocaleString()+suffix;
+}
+// The context value without the "Context" label, for places that already print the label next to a meter or in a stat cell:
+// "—" before the harness reports usage, "50% · 1,444/120,000" with a known window, else the thread's token total. A cost
+// joins when the harness reports one (or a custom model's prices give one).
+function contextValueLabel(tokenUsage,price=null){
+  const label=tokenLabel(tokenUsage,price);
+  const total=tokenUsage?.total?.totalTokens,contextTokens=tokenUsage?.last?.inputTokens,windowSize=Number(tokenUsage?.modelContextWindow);
+  const cost=/ · (\$[\d.]+)$/.exec(label)?.[1]||"";
+  if(total==null)return "—";
+  if(windowSize&&contextTokens!=null)return Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+"/"+windowSize.toLocaleString()+(cost?" · "+cost:"");
+  return total.toLocaleString()+" tokens"+(cost?" · "+cost:"");
 }
 // The share of the model's context window the last request used, or null when the harness has not reported both numbers.
 function contextUsagePercent(tokenUsage){
@@ -666,7 +710,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button data-testid="send" className="send-btn" aria-label={running&&!steerFollowUps?"Queue follow-up":running?"Steer agent":"Send message"} onClick={()=>onSend?.(prompt)} disabled={!providerReady||!transportReady||Boolean(runtimeSwitchLabel)||Boolean(modelBlocker)||submitting||openingThread||!prompt.trim()||promptTooLong} title={runtimeSwitchLabel||(!transportReady?transportMessage:modelBlocker||undefined)}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
-    <div className={"composer-status"+(promptTooLong||transportError||(modelBlocker?!modelsLoading:modelError)?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:runtimeSwitchLabel?<span data-testid="composer-runtime-switch" className="composer-transport">{runtimeSwitchLabel} · your draft stays here until it is ready.</span>:!transportReady?<span data-testid="composer-transport" className="composer-transport">{transportMessage}{transportError?". Your draft is kept.":" · your draft stays here until it connects."}{transportError&&<button className="context-compact-btn" type="button" onClick={onRetryTransport} title={"Reconnect to "+agentRuntimeLabel}>Retry</button>}</span>:modelBlocker?<span data-testid="composer-model-status" className="composer-transport">{modelBlocker}{!modelsLoading&&!setupRequired&&onConfigureProvider&&<button className="context-compact-btn" type="button" onClick={onConfigureProvider} title={configureLabel+" in Settings"}>{configureLabel}</button>}</span>:modelError||<>{contextPercent!=null&&<span className={"context-meter"+(contextPercent>=90?" full":contextPercent>=75?" high":"")} role="meter" aria-label="Context window used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={contextPercent}><i style={{width:contextPercent+"%"}}/></span>}{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups</span></div>
+    <div className={"composer-status"+(promptTooLong||transportError||(modelBlocker?!modelsLoading:modelError)?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:runtimeSwitchLabel?<span data-testid="composer-runtime-switch" className="composer-transport">{runtimeSwitchLabel} · your draft stays here until it is ready.</span>:!transportReady?<span data-testid="composer-transport" className="composer-transport">{transportMessage}{transportError?". Your draft is kept.":" · your draft stays here until it connects."}{transportError&&<button className="context-compact-btn" type="button" onClick={onRetryTransport} title={"Reconnect to "+agentRuntimeLabel}>Retry</button>}</span>:modelBlocker?<span data-testid="composer-model-status" className="composer-transport">{modelBlocker}{!modelsLoading&&!setupRequired&&onConfigureProvider&&<button className="context-compact-btn" type="button" onClick={onConfigureProvider} title={configureLabel+" in Settings"}>{configureLabel}</button>}</span>:modelError||<span className="composer-context" title={tokenLabel(tokenUsage,priceConfig)}>Context{" "}<span className={"context-meter"+(contextPercent==null?" unknown":contextPercent>=90?" full":contextPercent>=75?" high":"")} {...(contextPercent!=null?{role:"meter","aria-label":"Context window used","aria-valuemin":0,"aria-valuemax":100,"aria-valuenow":contextPercent}:{"aria-hidden":"true"})}><i style={{width:(contextPercent||0)+"%"}}/></span>{contextValueLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</span>}</span><span className="composer-hints">{prompt.length>=MAX_COMPOSER_CHARS*0.8&&!promptTooLong&&<span className="composer-draft-count">{prompt.length.toLocaleString()} / {MAX_COMPOSER_CHARS.toLocaleString()} chars · </span>}{canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups<kbd className="tb-kbd" aria-hidden="true">Enter</kbd></span></div>
   </div>;
 });
 
@@ -719,7 +763,7 @@ export default function App(){
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [openingThreadId,setOpeningThreadId]=useState(null); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   const localQueueStartRef=useRef(null);
-  const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null);
+  const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false); const [modelsLoading,setModelsLoading]=useState(false);
   // runtimeSwitch is set from the moment a harness switch starts until the server answers it: nothing new is sent meanwhile, while the current transport stays open for running turns and approvals.
@@ -732,7 +776,7 @@ export default function App(){
   const [codexThreadState,setCodexThreadState]=useState(null); const codexGoalActivationRef=useRef(null);
   const submittingRef=useRef(false);
   const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
-  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:DEFAULT_MODEL_PROVIDER});
+  const [settings,setSettings]=useState(()=>({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:DEFAULT_MODEL_PROVIDER,...cachedAppearanceSettings()}));
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
   const [sidebarOpen,setSidebarOpen]=useState(true);
   const [layoutPrefs,setLayoutPrefs]=useState(()=>{
@@ -798,6 +842,16 @@ export default function App(){
     setSection(target.section||"chat");
   }
   useEffect(()=>{try{localStorage.setItem("trebell-layout-v1",JSON.stringify(layoutPrefs))}catch{}},[layoutPrefs]);
+  const [viewportWidth,setViewportWidth]=useState(()=>typeof window!=="undefined"?window.innerWidth:1600);
+  useEffect(()=>{
+    let frame=0;const resize=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>setViewportWidth(window.innerWidth))};
+    window.addEventListener("resize",resize);return()=>{cancelAnimationFrame(frame);window.removeEventListener("resize",resize)};
+  },[]);
+  // The docked inspector (wider than 900px) never pushes the main column under 400px or past the window edge: it takes the stored
+  // width when the window has room and shrinks toward its 340px minimum when it does not. The stored preference stays for wider
+  // windows. The sidebar column follows the shell's own breakpoints (t3-workspace.css: 224px up to 1120px wide).
+  const sidebarColumnWidth=!sidebarOpen?0:viewportWidth<=900?196:viewportWidth<=1120?224:layoutPrefs.sidebarWidth;
+  const rightPanelWidth=Math.max(LAYOUT_LIMITS.rightPanelWidth[0],Math.min(layoutPrefs.rightPanelWidth,viewportWidth-sidebarColumnWidth-400));
   // The largest size a pane may take in this window; the pointer and keyboard resizers share these limits.
   function layoutMaximum(kind){
     if(kind==="sidebar")return Math.max(210,Math.min(420,window.innerWidth-620));
@@ -809,7 +863,7 @@ export default function App(){
   function resizeLayoutFromKeyboard(kind,event){
     const key={sidebar:"sidebarWidth",right:"rightPanelWidth",terminal:"terminalHeight"}[kind];if(!key)return;
     const grow={sidebar:"ArrowRight",right:"ArrowLeft",terminal:"ArrowUp"}[kind],shrink={sidebar:"ArrowLeft",right:"ArrowRight",terminal:"ArrowDown"}[kind];
-    const step=event.shiftKey?64:16,min=LAYOUT_LIMITS[key][0],max=layoutMaximum(kind),current=layoutPrefs[key];
+    const step=event.shiftKey?64:16,min=LAYOUT_LIMITS[key][0],max=layoutMaximum(kind),current=key==="rightPanelWidth"?rightPanelWidth:layoutPrefs[key];
     const target=event.key===grow?current+step:event.key===shrink?current-step:event.key==="Home"?min:event.key==="End"?max:null;
     if(target==null)return;
     event.preventDefault();
@@ -817,12 +871,12 @@ export default function App(){
   }
   function layoutSeparatorProps(kind){
     const key={sidebar:"sidebarWidth",right:"rightPanelWidth",terminal:"terminalHeight"}[kind];
-    return {tabIndex:0,"aria-valuemin":LAYOUT_LIMITS[key][0],"aria-valuemax":layoutMaximum(kind),"aria-valuenow":layoutPrefs[key],onKeyDown:event=>resizeLayoutFromKeyboard(kind,event)};
+    return {tabIndex:0,"aria-valuemin":LAYOUT_LIMITS[key][0],"aria-valuemax":layoutMaximum(kind),"aria-valuenow":key==="rightPanelWidth"?rightPanelWidth:layoutPrefs[key],onKeyDown:event=>resizeLayoutFromKeyboard(kind,event)};
   }
   function beginLayoutResize(kind,event){
     if(event.button!==0)return;
     event.preventDefault();
-    const startX=event.clientX,startY=event.clientY,start={...layoutPrefs};
+    const startX=event.clientX,startY=event.clientY,start={...layoutPrefs,rightPanelWidth};
     document.documentElement.classList.add("layout-resizing");
     const move=moveEvent=>{
       if(kind==="sidebar"){
@@ -904,10 +958,17 @@ export default function App(){
       const requested=["system","light","dark"].includes(settings.appearanceMode)?settings.appearanceMode:"system";
       const resolved=requested==="system"?(media?.matches===false?"light":"dark"):requested;
       const custom=environmentThemes.find(theme=>theme.publishedId===selectedEnvironmentThemeId)||(settings.customThemes||[]).find(theme=>theme.id===settings.appearance);
-      root.dataset.theme=custom?.id||settings.appearance||"dark";root.dataset.mode=resolved;root.dataset.customTheme=custom?"true":"false";root.dataset.environmentTheme=custom?.published?"true":"false";root.style.colorScheme=resolved;setResolvedMode(resolved);
+      const theme=custom?.id||settings.appearance||"dark";
+      // A mode or theme change swaps every token at once: transitions stay off for that frame, so buttons, chips and fields do
+      // not fade from the old palette (or stall on it while a heavy first render runs).
+      const switching=root.dataset.mode!==resolved||root.dataset.theme!==theme||root.dataset.customTheme!==(custom?"true":"false");
+      if(switching)root.classList.add("tb-theme-switching");
+      root.dataset.theme=theme;root.dataset.mode=resolved;root.dataset.customTheme=custom?"true":"false";root.dataset.environmentTheme=custom?.published?"true":"false";root.style.colorScheme=resolved;setResolvedMode(resolved);
       const variableNames=["--theme-canvas","--theme-foreground","--bg","--panel","--panel2","--line","--muted","--muted2","--purple","--purple2","--green","--theme-error","--theme-warning","--theme-terminal-selection"];
       for(const name of variableNames)root.style.removeProperty(name);
       if(custom){for(const [name,value] of Object.entries(themeCssVariables(custom,resolved)))root.style.setProperty(name,value)}
+      try{localStorage.setItem(APPEARANCE_CACHE_KEY,JSON.stringify({mode:requested,theme:settings.appearance||"dark"}))}catch{}
+      if(switching)requestAnimationFrame(()=>requestAnimationFrame(()=>root.classList.remove("tb-theme-switching")));
     };
     apply();media?.addEventListener?.("change",apply);return()=>media?.removeEventListener?.("change",apply);
   },[settings.appearance,settings.appearanceMode,settings.customThemes,environmentThemes,selectedEnvironmentThemeId]);
@@ -3878,6 +3939,36 @@ export default function App(){
   }
   const openProviderSettings=useCallback(()=>{setSettingsEntry({section:"agents",target:"agents-provider",nonce:Date.now()});setSection("settings")},[]);
   useEffect(()=>{if(section!=="settings")setSettingsEntry(null)},[section]);
+  // At 900px and below the inspector is an overlay drawer over the main column. Opening a full page closes it (the page would
+  // otherwise sit mostly under it); Escape and a click on the dimmed area close it too, and focus moves into the drawer when it
+  // opens and back to the control that opened it when it closes.
+  const narrowDrawer=viewportWidth<=900;
+  const drawerOpenerRef=useRef(null);
+  useEffect(()=>{
+    if(!PAGE_CRUMBS[section]||!rightPanelOpen||!window.matchMedia?.("(max-width:900px)")?.matches)return;
+    setRightPanelOpen(false);setRightPanelMaximized(false);
+  },[section]);
+  useEffect(()=>{
+    if(!narrowDrawer)return;
+    if(rightPanelOpen){
+      const opener=document.activeElement;drawerOpenerRef.current=opener&&!opener.closest?.("[data-testid=right-panel]")?opener:null;
+      const frame=requestAnimationFrame(()=>{const panel=document.querySelector("[data-testid=right-panel]");if(panel&&!panel.contains(document.activeElement))panel.querySelector(".context-panel-tab.active,.context-panel-tab")?.focus({preventScroll:true})});
+      return()=>cancelAnimationFrame(frame);
+    }
+    const opener=drawerOpenerRef.current;drawerOpenerRef.current=null;
+    if(opener?.isConnected&&!document.activeElement?.closest?.("input,textarea,select,[contenteditable=true]"))opener.focus({preventScroll:true});
+  },[rightPanelOpen,narrowDrawer]);
+  useEffect(()=>{
+    if(!narrowDrawer||!rightPanelOpen)return;
+    const keyDown=event=>{
+      if(event.key!=="Escape"||event.defaultPrevented)return;
+      if(document.querySelector("[aria-modal=true],dialog[open],[role=menu],[role=listbox]"))return;
+      const target=event.target;
+      if(target?.closest?.("[data-testid=right-panel]")&&target.closest("input,textarea,select,[contenteditable=true],.terminal-panel"))return;
+      event.preventDefault();setRightPanelOpen(false);setRightPanelMaximized(false);
+    };
+    window.addEventListener("keydown",keyDown);return()=>window.removeEventListener("keydown",keyDown);
+  },[narrowDrawer,rightPanelOpen]);
   async function saveAppSettings(patch){
     if("appearance" in patch&&environmentThemeCatalog?.environmentKey){
       const selections={...(settings.environmentThemeSelections||{})};
@@ -3895,6 +3986,8 @@ export default function App(){
   const shownApprovalThreadId=approvalForeignThreadId(shownApproval,activeThread?.id);
   const shownApprovalOwner=shownApprovalThreadId?threads.find(thread=>String(thread.id)===shownApprovalThreadId)||null:null;
   const shownApprovalThreadLabel=shownApprovalThreadId?(shownApprovalOwner?titleOf(shownApprovalOwner):"another thread"):"";
+  // The crumb names the workspace folder: its accessible name is the folder (project-identity.spec checks it), so the name from
+  // Projects > Project identity stays on the Projects page.
   const projectLabel=projectlessMode?"No project":String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
   const providerLabel=modelProviderLabel(provider);
   const agentRuntimeLabel=AGENT_RUNTIME_LABELS[agentRuntime]||agentRuntime;
@@ -4011,7 +4104,7 @@ export default function App(){
     }
     return <div className="runtime-surface">
       <section className="runtime-summary">
-        <div><span className={"runtime-dot "+(rpcStatus==="connected"?"online":"")}/><div><strong>{running?"Agent working":agentRuntimeLabel+" harness"}</strong><span>{rpcStatus==="connected"?"Connected locally":rpcStatus}</span></div></div>
+        {(()=>{const transport=bootstrap.mock?{label:"Ready · replies use the direct provider route",tone:"ok"}:rpcStatus==="connected"?{label:"Connected locally",tone:"ok"}:transportStatusCopy(rpcStatus);return <div><span className={"runtime-dot tone-"+transport.tone+(transport.tone==="ok"?" online":"")}/><div><strong>{running?"Agent working":agentRuntimeLabel+" harness"}</strong><span>{transport.label}</span></div></div>})()}
         <small>{completedEvents}/{events.length||1} current activity steps complete</small>
       </section>
       <ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/>
@@ -4021,7 +4114,7 @@ export default function App(){
         <div><span>CPU</span><strong>{stats.cpu||"—"}</strong></div>
         <div><span>Memory</span><strong>{stats.memory||"—"}</strong></div>
         <div><span>Disk</span><strong>{stats.disk||"—"}</strong></div>
-        <div><span>Context</span><strong>{tokenLabel(tokenUsage)}</strong></div>
+        <div><span>Context</span>{" "}<strong>{contextValueLabel(tokenUsage)}</strong></div>
       </section>
       <section className="runtime-capabilities" data-testid="runtime-capabilities">
         <div className="runtime-capabilities-head"><strong>Runtime capability matrix</strong><span>Only exposed controls should be usable.</span></div>
@@ -4041,7 +4134,7 @@ export default function App(){
             ["Harness tools",runtimeCapabilities.harnessTools],
             ["Steering",runtimeCapabilities.steering],
             ["Runtime profiles",runtimeCapabilities.runtimeProfileSwitching],
-          ].map(([label,value])=><div key={label} className={value?"available":"unavailable"}><span>{label}</span><strong>{capabilityStatus(value)}</strong></div>)}
+          ].map(([label,value])=><div key={label} className={value==="runtime"?"available runtime":value?"available":"unavailable"}>{value?<Check size={13} aria-hidden="true"/>:<Minus size={13} aria-hidden="true"/>}<span>{label}</span><strong>{capabilityStatus(value)}</strong></div>)}
         </div>
       </section>
       {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/>}
@@ -4065,7 +4158,7 @@ export default function App(){
 
   const layoutStyle={
     "--sidebar-width":layoutPrefs.sidebarWidth+"px",
-    "--right-panel-width":layoutPrefs.rightPanelWidth+"px",
+    "--right-panel-width":rightPanelWidth+"px",
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
@@ -4084,7 +4177,8 @@ export default function App(){
               {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title="Open sidebar · Ctrl+B"><PanelLeftOpen size={14}/></button>}
               <button className={"project-crumb"+(projectlessMode?" projectless":"")} onClick={projectlessMode||!window.trebellDesktop?.pickDirectory?()=>setSection("projects"):()=>runUserAction(pickWorkspace,"Could not open workspace")} title={projectlessMode?"No project · choose a project":window.trebellDesktop?.pickDirectory?(projectPath||"Open folder"):"Projects and workspaces"}>{projectlessMode?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Projects and General chat"><ChevronDown size={12}/></button>
               <span>/</span>
-              <button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} title="Rename thread"><strong>{activeTitle}</strong><ChevronDown size={13}/></button>
+              {/* Renaming needs a thread: before the first message the title is plain text, not a button that does nothing. */}
+              {activeThread?.id?<button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} title="Rename thread"><strong>{activeTitle}</strong><ChevronDown size={13}/></button>:<span className="thread-title-button is-static"><strong>{activeTitle}</strong></span>}
               {activeThread?.id&&linkedPullRequests.map(pr=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")}><GitBranch size={11}/>#{pr.number}</button>)}
             </div>
             <div className="workspace-header-actions">
@@ -4130,20 +4224,33 @@ export default function App(){
           </div>}
         </div>}
 
+        {PAGE_CRUMBS[section]&&(()=>{const [CrumbIcon,crumbLabel]=PAGE_CRUMBS[section];return <header className="workspace-header page-topbar" data-testid="page-topbar">
+          <div className="workspace-breadcrumb">
+            {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title="Open sidebar · Ctrl+B"><PanelLeftOpen size={14}/></button>}
+            {section==="licenses"&&<><a href="#settings" className="project-crumb page-crumb-back" onClick={event=>{event.preventDefault();setSection("settings")}} aria-label="Back to Settings" title="Back to Settings"><ChevronLeft size={14} aria-hidden="true"/><span>Settings</span></a><span>/</span></>}
+            <span className="page-crumb"><CrumbIcon size={14} aria-hidden="true"/><strong>{crumbLabel}</strong>{section==="settings"&&settingsSectionLabel&&<><ChevronRight size={12} aria-hidden="true"/><em>{settingsSectionLabel}</em></>}</span>
+          </div>
+          <div className="workspace-header-actions">
+            <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else{setRightPanelTab(tab=>tab||"files");setRightPanelOpen(true)}}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
+            <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance")} aria-label={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"} title={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
+            <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
+          </div>
+        </header>})()}
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
         {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} settings={settings} runtimeKnown={runtimeKnown} onSettings={setSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={setSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
           {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert">Could not load thread history: {threadHistory.error}</div>}
-          {threadHistory.items.length?threadHistory.items.map(t=><button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button>}</div>}
+          {threadHistory.items.length?threadHistory.items.map(t=>{const owner=threadCatalogRuntime(t,threadMeta[t.id]||{},agentRuntime)||agentRuntime;return <button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><em className="history-runtime-chip" title={"Owned by "+agentRuntimeName(owner)}>{HISTORY_RUNTIME_LABELS[owner]||owner}</em><time dateTime={isoDateTime(t.updatedAt)} title={fullDateTime(t.updatedAt)}>{compactDateTime(t.updatedAt)}</time></button>}):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button>}</div>}
           {(threadHistory.nextCursor||threadCatalogCursor)&&<div className="history-page-control history-load-more"><button type="button" disabled={threadHistory.loading} onClick={()=>loadOlderThreadHistory()}>{threadHistory.loading?"Loading older threads…":"Load older threads"}</button></div>}
         </div></div>}
       </main>
 
       {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" {...layoutSeparatorProps("right")} onPointerDown={event=>beginLayoutResize("right",event)}/>}
+      {rightPanelOpen&&narrowDrawer&&!rightPanelMaximized&&<div className="inspector-scrim" data-testid="inspector-scrim" aria-hidden="true" onClick={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}/>}
       {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","context","source"]:[]} hiddenTabs={runtimeCapabilities.delegation?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact>{rightPanelContent()}</DeferredSurface></RightPanel>}
       {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")+(section!=="chat"?" secondary-surface-error":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     </div>

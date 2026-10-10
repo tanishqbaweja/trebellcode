@@ -38,7 +38,7 @@
 :root:root .settings-page.redesigned-settings .settings-search-box input{flex:1;width:100%;min-width:0;height:auto!important;margin:0;padding:0!important;border:0!important;background:transparent!important;color:var(--tx0)!important;font-family:var(--font)!important;font-size:12.5px!important;line-height:1.4!important;outline:0;box-shadow:none!important}
 :root:root .settings-page.redesigned-settings .settings-search-box input::placeholder{color:var(--tx3)!important;opacity:1}
 
-:root:root .settings-page.redesigned-settings .settings-nav{display:grid;gap:2px;padding:0!important;border:0!important;border-radius:0;background:transparent!important}
+:root:root .settings-page.redesigned-settings .settings-nav{display:grid;grid-auto-flow:row;grid-auto-columns:auto;gap:2px;padding:0!important;overflow:visible;border:0!important;border-radius:0;background:transparent!important}
 :root:root .settings-page.redesigned-settings .settings-nav button{width:100%;min-height:0;display:flex;align-items:flex-start;gap:10px;margin:0;padding:9px 10px;border:0!important;border-radius:10px;background:transparent!important;color:var(--tx1)!important;text-align:left;cursor:pointer;transition:background .14s,box-shadow .14s}
 :root:root .settings-page.redesigned-settings .settings-nav button:hover{background:var(--bg3)!important}
 :root:root .settings-page.redesigned-settings .settings-nav button.active{background:var(--acsoft)!important;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ac) 30%,transparent)}
@@ -338,3 +338,22 @@
 :root:root .settings-page.redesigned-settings [hidden]{display:none!important}
 /* Harness result line: a failed install, update, sign in or switch reads as an error inside the muted footer. */
 :root:root .settings-page.redesigned-settings .agent-runtime-settings .agent-runtime-message.error{color:var(--err)!important;font-weight:550}
+
+/* ============ Polish pass (review findings) ============ */
+/* Harness list while it loads: the known harness names with a "Checking…" tag instead of nameless bars. */
+:root:root .settings-page.redesigned-settings .agent-runtime-skeleton strong{width:auto!important;height:auto!important;background:none!important;color:var(--tx1)!important;animation:none!important}
+:root:root .settings-page.redesigned-settings .agent-runtime-skeleton>button:first-child>svg{opacity:.55}
+:root:root .settings-page.redesigned-settings .agent-runtime-skeleton em.agent-runtime-checking{display:inline-flex!important;color:var(--tx3)!important}
+
+/* A single select setting is a setting row like the toggles: its title on the left, the select (200-240px) on the right, and
+   any description under the title. Multi-field grids keep their stacked label-over-field layout. */
+:root:root .settings-page.redesigned-settings .settings-card>label:not(.toggle-line):not(.check-row):has(>select:only-of-type):not(:has(>input,>textarea)){grid-template-columns:minmax(0,1fr) minmax(200px,240px);align-items:center;column-gap:16px;padding:10px 2px;font-size:12.5px!important;font-weight:550;letter-spacing:0;text-transform:none;color:var(--tx1)!important}
+:root:root .settings-page.redesigned-settings .settings-card>label:not(.toggle-line):not(.check-row):has(>select:only-of-type):not(:has(>input,>textarea))>select{grid-column:2;grid-row:1;width:100%}
+:root:root .settings-page.redesigned-settings .settings-card>label:not(.toggle-line):not(.check-row):has(>select:only-of-type):not(:has(>input,>textarea))>:is(small,span,p){grid-column:1}
+@container tbsettings (max-width:620px){
+  :root:root .settings-page.redesigned-settings .settings-card>label:not(.toggle-line):not(.check-row):has(>select:only-of-type):not(:has(>input,>textarea)){grid-template-columns:minmax(0,1fr)}
+  :root:root .settings-page.redesigned-settings .settings-card>label:not(.toggle-line):not(.check-row):has(>select:only-of-type):not(:has(>input,>textarea))>select{grid-column:1;grid-row:auto}
+}
+
+/* Shortcut conditions end in an ellipsis (the full condition is in the tooltip) instead of being cut mid-token. */
+:root:root .settings-page.redesigned-settings .keybinding-row input{text-overflow:ellipsis}

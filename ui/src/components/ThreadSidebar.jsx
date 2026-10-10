@@ -10,16 +10,10 @@ import { groupSidebarThreads, THREAD_GROUP_NAMES } from "../thread-sidebar-group
 import { threadCatalogRuntime } from "../thread-catalog.js";
 import { shouldVirtualizeSidebarGroup, sidebarChunkIndexForThread, sidebarVirtualChunks } from "../sidebar-virtualization.js";
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
+import { fullDateTime, relativeTime } from "../time-format.js";
+import { shortcutHint as formatShortcutHint } from "../keybindings.js";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
-function relativeTime(epoch){
-  if(!epoch)return "";
-  const d=Math.max(0,Date.now()/1000-epoch);
-  if(d<60)return "now";
-  if(d<3600)return Math.floor(d/60)+"m";
-  if(d<86400)return Math.floor(d/3600)+"h";
-  return Math.floor(d/86400)+"d";
-}
 
 function threadCanFork(thread,runtimeCapabilities={}){
   if(runtimeCapabilities.fork===true)return true;
@@ -65,7 +59,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
       <div>
         <strong className="thread-title-line"><span className="thread-title-text">{titleOf(thread)}</span>{foreignRuntime&&<em className="thread-runtime-chip" title={"Owned by "+rowRuntimeLabel}>{rowRuntimeLabel}</em>}{reviewLabel&&<em className={linked.length?"thread-pr-chip linked":"thread-pr-chip detected"} title={linked.length?"Linked pull request":"Detected from saved branch"}><GitPullRequest size={9}/>{reviewLabel}</em>}</strong>
-        <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model||rowRuntimeLabel)+" · "+relativeTime(thread.updatedAt)}</span>
+        <span title={section==="Snoozed"&&meta?.snoozedUntil?undefined:fullDateTime(thread.updatedAt)||undefined}>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model||rowRuntimeLabel)+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
     <details ref={menuRef} className="thread-menu" onToggle={event=>setMenuOpen(event.currentTarget.open)}>
@@ -127,13 +121,9 @@ const SidebarVirtualChunk=memo(function SidebarVirtualChunk({chunk,rootRef,force
 });
 
 const MAC_PLATFORM=typeof navigator!=="undefined"&&/Mac|iPhone|iPad/i.test(navigator.userAgentData?.platform||navigator.platform||"");
-// A keybinding as the sidebar shows it: "Mod+Shift+P" reads "Ctrl+Shift+P" (or "⌘+Shift+P" on macOS).
-export function shortcutHint(value,mac=MAC_PLATFORM){
-  const parts=String(value||"").split("+").map(part=>part.trim()).filter(Boolean);
-  if(!parts.length)return "";
-  const names={mod:mac?"⌘":"Ctrl",ctrl:"Ctrl",control:"Ctrl",cmd:"⌘",command:"⌘",meta:"⌘",shift:"Shift",alt:mac?"⌥":"Alt",option:"⌥"};
-  return parts.map(part=>names[part.toLowerCase()]||(part.length===1?part.toUpperCase():part)).join("+");
-}
+// A keybinding as the sidebar shows it: "Mod+Shift+P" reads "Ctrl+Shift+P" (or "⌘+Shift+P" on macOS). Settings > Shortcuts uses
+// the same formatter (keybindings.js).
+export const shortcutHint=formatShortcutHint;
 // The same keybinding in aria-keyshortcuts form ("Control+Shift+P").
 function ariaShortcut(value,mac=MAC_PLATFORM){
   const parts=String(value||"").split("+").map(part=>part.trim()).filter(Boolean);
@@ -228,7 +218,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
         <div className="sidebar-nav-primary">
           <UtilityButton Icon={SquarePen} label="New task" shortcut={shortcuts.newChat} active={(section==="chat"||section==="new")&&!activeThreadId} onClick={()=>runAction(onNew)}/>
           <UtilityButton Icon={Folder} label="Projects" shortcut={shortcuts.projects} active={section==="projects"} onClick={()=>setSection("projects")}/>
-          <UtilityButton Icon={Settings} label="Settings" shortcut={shortcuts.settings} active={section==="settings"} onClick={()=>setSection("settings")}/>
+          <UtilityButton Icon={Settings} label="Settings" shortcut={shortcuts.settings} active={section==="settings"||section==="licenses"} onClick={()=>setSection("settings")}/>
         </div>
         <div className="sidebar-nav-secondary">
           <UtilityButton Icon={Globe2} label="Browser" panel shortcut={shortcuts.previewToggle} active={rightPanelOpen&&rightPanelTab==="preview"} onClick={()=>setSection("preview")}/>

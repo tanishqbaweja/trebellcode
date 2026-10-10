@@ -142,6 +142,16 @@ export function shortcutMatches(event,value){
     ||(expected==="slash"&&eventKey==="/");
 }
 
+const MAC_PLATFORM=typeof navigator!=="undefined"&&/Mac|iPhone|iPad/i.test(navigator.userAgentData?.platform||navigator.platform||"");
+// A keybinding as people read it: "Mod+Shift+P" shows "Ctrl+Shift+P" (or "⌘+Shift+P" on macOS). Used by the sidebar hints and
+// the Settings > Shortcuts read state; the stored value keeps "Mod".
+export function shortcutHint(value,mac=MAC_PLATFORM){
+  const parts=String(value||"").split("+").map(part=>part.trim()).filter(Boolean);
+  if(!parts.length)return "";
+  const names={mod:mac?"⌘":"Ctrl",ctrl:"Ctrl",control:"Ctrl",cmd:"⌘",command:"⌘",meta:"⌘",shift:"Shift",alt:mac?"⌥":"Alt",option:"⌥"};
+  return parts.map(part=>names[part.toLowerCase()]||(part.length===1?part.toUpperCase():part)).join("+");
+}
+
 export function resolveKeybinding(event,settings={},context={}){
   const rules=normalizeKeybindingRules(settings);
   for(let index=rules.length-1;index>=0;index--){

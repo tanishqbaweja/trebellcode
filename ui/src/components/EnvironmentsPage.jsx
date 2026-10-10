@@ -72,8 +72,8 @@ export default function EnvironmentsPage(){
       <section className="capability-card">
         <div className="capability-card-head"><span><Laptop2 size={15}/><strong>Configured environments</strong></span><em title={"Local machine and "+data.profiles.length+" saved"}>{data.profiles.length+1}</em></div>
         <div className="environment-list">
-          <div><div><strong>Local machine</strong><span>{localPlatformLabel.toUpperCase()} · {window.trebellDesktop?"Trebell desktop host":"Trebell host"}</span></div><div>{!data.activeEnvironmentId?<em className="ok">active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
-          {data.profiles.map(profile=>{const enabled=profile.enabled!==false;return <div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}{enabled?"":" · switched off"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy||!enabled}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy||!enabled}>Test</button><button onClick={()=>setEnabled(profile.id,!enabled)} disabled={!!busy}>{enabled?"Switch off":"Switch on"}</button><button className="danger" aria-label={"Remove "+profile.name} onClick={()=>remove(profile.id)} disabled={!!busy||data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>})}</div>
+          <div><div><strong>Local machine</strong><span>{localPlatformLabel.toUpperCase()} · {window.trebellDesktop?"Trebell desktop host":"Trebell host"}</span></div><div>{!data.activeEnvironmentId?<em className="ok">Active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
+          {data.profiles.map(profile=>{const enabled=profile.enabled!==false;return <div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}{enabled?"":" · switched off"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">Agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy||!enabled}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy||!enabled}>Test</button><button onClick={()=>setEnabled(profile.id,!enabled)} disabled={!!busy}>{enabled?"Switch off":"Switch on"}</button><button className="danger" aria-label={"Remove "+profile.name} onClick={()=>remove(profile.id)} disabled={!!busy||data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>})}</div>
         {!data.profiles.length&&<p>No saved remote environments. The local {localPlatformLabel} agent is active by default.</p>}
       </section>
       <section className="capability-card environment-create">
@@ -90,9 +90,9 @@ export default function EnvironmentsPage(){
       <section className="capability-card">
         <div className="capability-card-head"><span><Server size={15}/><strong>Host capabilities</strong></span></div>
         <div className="capability-list">
-          <div><div><strong>Local</strong><span>This machine</span></div><em className="ok">ready</em></div>
-          <div><div><strong>WSL</strong><span>{data.capabilities?.wsl?.distros?.join(", ")||data.capabilities?.wsl?.error||"No distributions detected"}</span></div><em className={data.capabilities?.wsl?.available?"ok":""}>{data.capabilities?.wsl?.available?"ready":"unavailable"}</em></div>
-          <div><div><strong>SSH</strong><span>{data.capabilities?.ssh?.version||data.capabilities?.ssh?.error||"OpenSSH client"}</span></div><em className={data.capabilities?.ssh?.available?"ok":""}>{data.capabilities?.ssh?.available?"ready":"unavailable"}</em></div>
+          <div><div><strong>Local</strong><span>This machine</span></div><em className="ok">Ready</em></div>
+          <div><div><strong>WSL</strong><span>{data.capabilities?.wsl?.distros?.join(", ")||data.capabilities?.wsl?.error||"No distributions detected"}</span></div><em className={data.capabilities?.wsl?.available?"ok":""}>{data.capabilities?.wsl?.available?"Ready":"Unavailable"}</em></div>
+          <div><div><strong>SSH</strong><span>{data.capabilities?.ssh?.version||data.capabilities?.ssh?.error||"OpenSSH client"}</span></div><em className={data.capabilities?.ssh?.available?"ok":""}>{data.capabilities?.ssh?.available?"Ready":"Unavailable"}</em></div>
         </div>
       </section>
     </div>

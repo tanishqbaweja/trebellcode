@@ -31,11 +31,14 @@ async function audit(page) {
     // Rendered on screen: a box, not hidden, and not inside content the browser skips (a closed <details>, whose menu
     // buttons still report a box, or a transparent ancestor), which checkVisibility() covers.
     const visible = el => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && Number(s.opacity) > 0.05 && (typeof el.checkVisibility !== "function" || el.checkVisibility({ opacityProperty: true, visibilityProperty: true, checkOpacity: true, checkVisibilityCSS: true })); };
-    const scrollParent = el => { for (let p = el.parentElement; p; p = p.parentElement) { const s = getComputedStyle(p); if (/(auto|scroll|hidden)/.test(s.overflowX + s.overflowY) && (p.scrollHeight > p.clientHeight + 1 || p.scrollWidth > p.clientWidth + 1)) return p; } return null; };
+    const scrollParent = el => { for (let p = el.parentElement; p; p = p.parentElement) { const s = getComputedStyle(p); if (/(auto|scroll|overlay)/.test(s.overflowX + s.overflowY) && (p.scrollHeight > p.clientHeight + 1 || p.scrollWidth > p.clientWidth + 1)) return p; } return null; };
     // A point that a clipping ancestor cuts off (a thread row scrolled past the edge of the sidebar list) is out of view, not covered.
     const clippedAt = (el, x, y) => { for (let p = el.parentElement; p; p = p.parentElement) { const s = getComputedStyle(p); if (!/(auto|scroll|hidden|clip)/.test(s.overflowX + s.overflowY)) continue; const b = p.getBoundingClientRect(); if (x < b.left || x > b.right || y < b.top || y > b.bottom) return true; } return false; };
     // While a modal dialog is open the page behind it is meant to be covered, so only the dialog's own controls are checked.
-    const modal = [...document.querySelectorAll("[aria-modal=true]")].filter(visible).pop() || null;
+    // The narrow inspector drawer works the same way: with its scrim showing, the conversation under it is meant to be covered.
+    const scrim = document.querySelector("[data-testid=inspector-scrim]");
+    const drawer = scrim && visible(scrim) ? document.querySelector("[data-testid=right-panel]") : null;
+    const modal = [...document.querySelectorAll("[aria-modal=true]")].filter(visible).pop() || drawer || null;
     const controls = [...(modal || document).querySelectorAll("button,[role=button],[role=tab],a[href],input:not([type=hidden]),select,textarea")].filter(visible);
     for (const el of controls) {
       // A placeholder hidden from assistive technology and out of the tab order (a loading skeleton row) has no name to give.
@@ -58,6 +61,10 @@ async function capture(page, name, testInfo) {
   // Code-split surfaces show a "Loading …" placeholder until their chunk (and first data) arrives; wait for them so the
   // screenshot and the audit cover the page itself rather than the placeholder.
   await expect(page.locator(".surface-loading")).toHaveCount(0, { timeout: 15_000 });
+  // Data placeholders clear too (skeleton rows, busy lists and selects, "checking…" and "Loading…" copy), so a shot proves the
+  // loaded screen rather than its loading state.
+  await expect(page.locator(".tb-skeleton, [aria-busy=true]").filter({ visible: true })).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByText(/checking…|^\s*Loading\b/i).filter({ visible: true })).toHaveCount(0, { timeout: 15_000 });
   await page.waitForTimeout(250);
   await page.screenshot({ path: outDir + name + ".png" });
   const issues = await audit(page);
@@ -127,6 +134,80 @@ for (const mode of MODES) {
     });
   }
 }
+
+// Mid-size and narrow windows in both modes (a lighter pass): the widths between the narrow overlay and 1280 are where the
+// docked inspector, the topbar and the settings rail have to give up room.
+const MID_VIEWPORTS = [{ name: "900x800", width: 900, height: 800 }, { name: "1024x768", width: 1024, height: 768 }, { name: "1120x800", width: 1120, height: 800 }];
+for (const mode of MODES) {
+  for (const viewport of MID_VIEWPORTS) {
+    test(`tour ${mode} ${viewport.name} mid-size`, async ({ page, request }, testInfo) => {
+      test.setTimeout(150_000);
+      const consoleErrors = [];
+      page.on("console", message => { if (message.type() === "error" && !/Failed to load resource/.test(message.text())) consoleErrors.push(message.text().slice(0, 200)); });
+      page.on("pageerror", error => consoleErrors.push(String(error).slice(0, 200)));
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await prepare(page, request, mode);
+      const tag = `${mode}-${viewport.name}`;
+      const found = [];
+      found.push(...await capture(page, `${tag}-01-home`, testInfo));
+      for (const label of ["Projects", "Settings"]) {
+        await nav(page, label).click();
+        found.push(...await capture(page, `${tag}-1-${label.toLowerCase()}`, testInfo));
+      }
+      // Settings with the sidebar collapsed: the rail stays a vertical list, and the page topbar brings the sidebar back.
+      await page.keyboard.press("Control+B");
+      const reopen = page.getByRole("button", { name: "Open sidebar" });
+      await expect(reopen).toBeVisible();
+      found.push(...await capture(page, `${tag}-2-settings-sidebar-collapsed`, testInfo));
+      await reopen.click();
+      await expect(nav(page, "Settings")).toBeVisible();
+
+      await nav(page, "New task").click();
+      await page.getByTestId("composer").fill("Show me the project layout.");
+      await page.getByTestId("send").click();
+      await expect(page.getByText(/Mock (direct|Trebell Native) reply/).first()).toBeVisible({ timeout: 15_000 });
+      await page.getByTestId("right-panel-toggle").click();
+      const panel = page.getByTestId("right-panel");
+      await expect(panel).toBeVisible();
+      found.push(...await capture(page, `${tag}-3-inspector-files`, testInfo));
+      const box = await panel.boundingBox();
+      expect(box.x + box.width, "inspector stays inside the window").toBeLessThanOrEqual(viewport.width + 1);
+      if (viewport.width <= 900) {
+        // The overlay drawer closes on Escape and on a click on the dimmed conversation, and a page opened from the sidebar
+        // closes it too.
+        await page.keyboard.press("Escape");
+        await expect(panel).toBeHidden();
+        await page.getByTestId("right-panel-toggle").click();
+        await expect(panel).toBeVisible();
+        await page.getByTestId("inspector-scrim").click({ position: { x: 40, y: 200 } });
+        await expect(panel).toBeHidden();
+        await page.getByTestId("right-panel-toggle").click();
+        await expect(panel).toBeVisible();
+        await nav(page, "Projects").click();
+        await expect(panel).toBeHidden();
+      }
+      writeFileSync(outDir + `report-${tag}.json`, JSON.stringify({ report: report.filter(item => item.name.startsWith(tag)), consoleErrors }, null, 1));
+      if (strict) {
+        expect(consoleErrors, "console errors").toEqual([]);
+        expect(found, "layout issues").toEqual([]);
+      }
+    });
+  }
+}
+
+// A light-mode user's first frame after a reload is light: the cached appearance applies before the stylesheets load.
+test("tour light start paints light from the first frame", async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await prepare(page, request, "light");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const first = await page.evaluate(() => document.documentElement.dataset.mode || "");
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: outDir + "light-1280x800-00-startup-300ms.png" });
+  const settled = await page.evaluate(() => ({ mode: document.documentElement.dataset.mode, background: getComputedStyle(document.body).backgroundColor }));
+  expect(first).toBe("light");
+  expect(settled.mode).toBe("light");
+  expect(settled.background).not.toMatch(/^rgb\((\d|[1-4]\d), (\d|[1-4]\d), (\d|[1-4]\d)\)$/);
+});
 
 test("tour narrow width keeps the workspace usable", async ({ page, request }, testInfo) => {
   await page.setViewportSize({ width: 900, height: 900 });
