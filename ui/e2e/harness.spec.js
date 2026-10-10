@@ -69,10 +69,12 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
     header:getComputedStyle(document.querySelector(".workspace-header")).backgroundColor,
     composer:getComputedStyle(document.querySelector(".composer-wrap")).backgroundColor,
   }));
-  expect(initialShell.sidebar).toBe("rgb(17, 18, 20)");
-  expect(initialShell.main).toBe("rgb(11, 12, 14)");
-  expect(initialShell.header).toMatch(/^rgba?\(11, 12, 14/);
-  expect(initialShell.composer).toMatch(/^rgba?\(20, 22, 25/);
+  // The redesign's dark tokens (ui/src/theme.css): sidebar and composer on --bg1, the main frame on --bg0 and the header on
+  // its translucent --bgtop.
+  expect(initialShell.sidebar).toBe("rgb(11, 11, 14)");
+  expect(initialShell.main).toBe("rgb(7, 7, 9)");
+  expect(initialShell.header).toMatch(/^rgba?\(7, 7, 9/);
+  expect(initialShell.composer).toMatch(/^rgba?\(11, 11, 14/);
   await page.keyboard.press("Control+k");
   await expect(page.getByTestId("command-palette")).toBeVisible();
   await expect(page.getByTestId("command-palette")).not.toContainText("Open workspace folder");
@@ -272,9 +274,10 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
     provider:getComputedStyle(document.querySelector(".sidebar-provider")).backgroundColor,
     composer:getComputedStyle(document.querySelector(".composer-wrap")).backgroundColor,
   }));
-  expect(lightShell.sidebar).toBe("rgb(238, 241, 244)");
-  expect(lightShell.main).toBe("rgb(246, 247, 249)");
-  expect(lightShell.header).toMatch(/^rgba?\(246, 247, 249/);
+  // The redesign's light tokens: sidebar and composer on --bg1 (white), the main frame on --bg0, the header on --bgtop.
+  expect(lightShell.sidebar).toBe("rgb(255, 255, 255)");
+  expect(lightShell.main).toBe("rgb(247, 247, 248)");
+  expect(lightShell.header).toMatch(/^rgba?\(247, 247, 248/);
   expect(lightShell.provider).not.toBe("rgb(255, 255, 255)");
   expect(lightShell.composer).toMatch(/^rgba?\(255, 255, 255/);
   await page.getByRole("button",{name:"Settings"}).click();
@@ -294,9 +297,10 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
     main:getComputedStyle(document.querySelector(".main-frame")).backgroundColor,
     composer:getComputedStyle(document.querySelector(".composer-wrap")).backgroundColor,
   }));
-  expect(darkShell.sidebar).toBe("rgb(17, 18, 20)");
-  expect(darkShell.main).toBe("rgb(11, 12, 14)");
-  expect(darkShell.composer).toMatch(/^rgba?\(20, 22, 25/);
+  // The redesign's Midnight tokens: --bg1 for the sidebar and composer, --bg0 for the main frame.
+  expect(darkShell.sidebar).toBe("rgb(10, 12, 21)");
+  expect(darkShell.main).toBe("rgb(6, 7, 13)");
+  expect(darkShell.composer).toMatch(/^rgba?\(10, 12, 21/);
   await page.getByRole("button",{name:"Settings"}).click();
   await page.getByRole("button",{name:/Appearance/}).click();
   await expect(page.getByRole("button",{name:"E2E Published",exact:true})).toBeVisible();

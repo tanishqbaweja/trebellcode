@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
-import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, MessageSquareText, Pencil, Play, Plus, RefreshCw, Settings2, SquareTerminal, Trash2, Workflow, X } from "lucide-react";
+import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, MessageSquareText, Pencil, Play, Plus, RefreshCw, Search, Settings2, SquareTerminal, Trash2, Workflow, X } from "lucide-react";
 import { api } from "../api.js";
 import { baseProjectRecord, enrichProjectRecords, summarizeProjectRefreshErrors } from "../project-enrichment.js";
 import { PROJECT_PAGE_SIZE, projectGroupCounts, projectGroupKey, projectWindow } from "../project-window.js";
@@ -9,7 +9,16 @@ function blankScript(){
   return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
 }
 function blankHook(){return {id:null,name:"",event:"verification.required",command:"",failureMode:"block",timeoutMs:30000,actionsText:""}}
+// Same normalization the server applies (whole days, 1-3650, anything else means "Never"), so the field shows what was saved.
+function cleanupDays(value){const text=String(value??"").trim();if(!text)return null;const days=Math.trunc(Number(text));return Number.isFinite(days)&&days>=1?Math.min(3650,days):null}
 function hookEventLabel(event){return event==="verification.required"?"Required verification":event==="source-control.before"?"Before source control":"After source control"}
+// Cards keep their place while the page is open. The server lists projects by lastOpenedAt, which every settings save
+// bumps, so without this the card being edited jumps to the top mid-edit. New projects (added or cloned) still lead.
+function keepCardOrder(next,previous){
+  if(!previous.length)return next;
+  const rank=new Map(previous.map((project,index)=>[project.id,index]));
+  return [...next.filter(project=>!rank.has(project.id)),...next.filter(project=>rank.has(project.id)).sort((a,b)=>rank.get(a.id)-rank.get(b.id))];
+}
 
 const ICON_COLORS=["#7c5cff","#4f8cff","#2fa57d","#c57b32","#c45a7a","#6d7f93"];
 function autoMonogram(name="Project"){
@@ -51,8 +60,15 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   const refreshPendingRef=useRef(false);
   const refreshPendingErrorsRef=useRef(false);
 
+  // Cleanup-rule edits that are still saving, shown on top of whatever the server last returned.
+  const pendingCleanupRef=useRef(new Map());
+
   function commitProjects(next){
     projectsRef.current=next;setProjects(next);
+  }
+  function withPendingCleanup(list){
+    const pending=pendingCleanupRef.current;if(!pending.size)return list;
+    return list.map(project=>pending.has(project.id)?{...project,worktreeCleanup:pending.get(project.id).value}:project);
   }
   async function performRefresh({reportErrors=false}={}){
     const environmentPromise=api("/api/environments").then(value=>({value,error:null}),error=>({value:null,error}));
@@ -64,8 +80,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     }
     const refreshErrors=[];
     const previousById=new Map(projectsRef.current.map(project=>[project.id,project]));
-    const base=(d.projects||[]).map(project=>baseProjectRecord(project,previousById.get(project.id)||null));
-    commitProjects(base);
+    const base=keepCardOrder(d.projects||[],projectsRef.current).map(project=>baseProjectRecord(project,previousById.get(project.id)||null));
+    commitProjects(withPendingCleanup(base));
     const enrichmentPromise=enrichProjectRecords(base,{
       concurrency:6,
       fetchGit:project=>api("/api/git/info?path="+encodeURIComponent(project.path)),
@@ -79,7 +95,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     const [enriched,environmentResult]=await Promise.all([enrichmentPromise,environmentPromise]);
     if(environmentResult.value)setEnvironmentData(environmentResult.value);
     else if(reportErrors)refreshErrors.push("Environments: "+(environmentResult.error?.message||String(environmentResult.error)));
-    commitProjects(enriched);
+    commitProjects(withPendingCleanup(enriched));
     if(reportErrors){
       const summary=summarizeProjectRefreshErrors(refreshErrors);
       setError(current=>{
@@ -161,15 +177,29 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     finally{setBusy(false)}
   }
   function cleanupValue(project){return project.worktreeCleanup||null}
+  // Each edit starts from the newest cleanup value (including edits still saving) and shows at once, so two quick
+  // clicks on a slow server both stick instead of the second save overwriting the first with stale rules.
+  function latestProject(project){return projectsRef.current.find(item=>item.id===project.id)||project}
+  async function saveCleanup(project,worktreeCleanup){
+    const token={value:worktreeCleanup};pendingCleanupRef.current.set(project.id,token);
+    commitProjects(withPendingCleanup(projectsRef.current));
+    let saved=null;
+    try{saved=await saveProject(project,{worktreeCleanup})}
+    finally{if(pendingCleanupRef.current.get(project.id)===token)pendingCleanupRef.current.delete(project.id)}
+    if(!saved)void refresh();
+    return saved;
+  }
   async function setCleanupMode(project,mode){
-    if(mode==="inherit")return saveProject(project,{worktreeCleanup:null});
-    if(mode==="off")return saveProject(project,{worktreeCleanup:{mode:"off"}});
-    const current=cleanupValue(project)?.mode==="custom"?cleanupValue(project).rules:{};
-    return saveProject(project,{worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:current?.worktreeAfterDays??30,worktreeOnMerge:Boolean(current?.worktreeOnMerge),worktreeOnDelete:Boolean(current?.worktreeOnDelete),worktreeUnchanged:Boolean(current?.worktreeUnchanged)}}});
+    const latest=latestProject(project);
+    if(mode==="inherit")return saveCleanup(latest,null);
+    if(mode==="off")return saveCleanup(latest,{mode:"off"});
+    const current=cleanupValue(latest)?.mode==="custom"?cleanupValue(latest).rules:{};
+    return saveCleanup(latest,{mode:"custom",rules:{worktreeAfterDays:current?.worktreeAfterDays??30,worktreeOnMerge:Boolean(current?.worktreeOnMerge),worktreeOnDelete:Boolean(current?.worktreeOnDelete),worktreeUnchanged:Boolean(current?.worktreeUnchanged)}});
   }
   async function setCleanupRule(project,key,value){
-    const current=cleanupValue(project)?.mode==="custom"?cleanupValue(project).rules:{};
-    return saveProject(project,{worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:current?.worktreeAfterDays??30,worktreeOnMerge:Boolean(current?.worktreeOnMerge),worktreeOnDelete:Boolean(current?.worktreeOnDelete),worktreeUnchanged:Boolean(current?.worktreeUnchanged),[key]:value}}});
+    const latest=latestProject(project);
+    const current=cleanupValue(latest)?.mode==="custom"?cleanupValue(latest).rules:{};
+    return saveCleanup(latest,{mode:"custom",rules:{worktreeAfterDays:current?.worktreeAfterDays??30,worktreeOnMerge:Boolean(current?.worktreeOnMerge),worktreeOnDelete:Boolean(current?.worktreeOnDelete),worktreeUnchanged:Boolean(current?.worktreeUnchanged),[key]:value}});
   }
 
   async function addLocal(){
@@ -337,7 +367,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   },[projectView.visible,groupTotals]);
 
   return <div className="projects-page">
-    <div className="page-actions project-page-actions"><input className="project-search" aria-label="Search projects" value={projectQuery} onChange={event=>setProjectQuery(event.target.value)} placeholder="Search projects"/><span className="project-window-count">{projectView.shown} / {projectView.total}</span>{hasDesktopPicker&&<button onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button aria-label="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
+    <div className="page-actions project-page-actions"><div className="project-search-field"><Search size={14}/><input className="project-search" aria-label="Search projects" value={projectQuery} onChange={event=>setProjectQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"&&projectQuery){event.preventDefault();event.stopPropagation();setProjectQuery("")}}} placeholder="Search projects"/></div><span className="project-window-count">{projectView.shown} / {projectView.total}</span>{hasDesktopPicker&&<button className="project-add-local" onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button className="project-refresh" aria-label="Refresh projects" title="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
     {error&&<p className="provider-status-error" role="alert">{error}</p>}
     <button className="general-chat-card" onClick={startGeneralChat} disabled={busy}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>{busy?"Starting…":"Start chat"}</em></button>
     {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input aria-label="Clone parent directory" value={cloneParent} onChange={e=>setCloneParent(e.target.value)} placeholder="/srv/projects" title="Remote parent directory"/>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy?"Starting…":"Clone"}</button></div>}
@@ -355,7 +385,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
         </div>
         <div className="project-identity-toggle"><button onClick={()=>setIdentityOpen(current=>({...current,[p.id]:!current[p.id]}))}><Settings2 size={12}/> Project identity</button></div>
         {identityOpen[p.id]&&<div className="project-identity-editor"><label>Name<input defaultValue={p.name} onBlur={e=>{const value=e.target.value.trim();if(value&&value!==p.name)saveProject(p,{name:value})}}/></label><div className="project-icon-actions"><button onClick={()=>saveProject(p,{icon:null})}>Automatic</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"emoji",value:p.icon?.kind==="emoji"?p.icon.value:"🚀",color:p.icon?.color||autoColor(p.name)}}))}>Emoji</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"monogram",value:p.icon?.kind==="monogram"?p.icon.value:autoMonogram(p.name),color:p.icon?.color||autoColor(p.name)}}))}>Monogram</button><label className="project-image-button"><ImagePlus size={12}/> Image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={e=>importProjectImage(p,e.target.files?.[0])}/></label></div>{iconDraft[p.id]&&<div className="project-icon-draft"><input maxLength={iconDraft[p.id].kind==="monogram"?2:16} value={iconDraft[p.id].value} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],value:e.target.value}}))}/><input type="color" value={iconDraft[p.id].color||autoColor(p.name)} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],color:e.target.value}}))}/><button onClick={async()=>{const saved=await saveProject(p,{icon:iconDraft[p.id]});if(saved)setIconDraft(current=>({...current,[p.id]:null}))}}>Save icon</button></div>}</div>}
-        <div className="project-cleanup"><label>Automatic worktree cleanup<select value={p.worktreeCleanup?.mode||"inherit"} onChange={e=>setCleanupMode(p,e.target.value)}><option value="inherit">Inherit</option><option value="off">Off</option><option value="custom">Custom</option></select></label>{p.worktreeCleanup?.mode==="custom"&&<div className="project-cleanup-rules"><label>After inactive days<input type="number" min="1" max="3650" defaultValue={p.worktreeCleanup.rules?.worktreeAfterDays??""} placeholder="Never" onBlur={e=>setCleanupRule(p,"worktreeAfterDays",e.target.value?Number(e.target.value):null)}/></label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnMerge)} onChange={e=>setCleanupRule(p,"worktreeOnMerge",e.target.checked)}/> After merge</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnDelete)} onChange={e=>setCleanupRule(p,"worktreeOnDelete",e.target.checked)}/> After last thread deletion</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeUnchanged)} onChange={e=>setCleanupRule(p,"worktreeUnchanged",e.target.checked)}/> If unchanged from base</label></div>}</div>
+        <div className="project-cleanup"><label>Automatic worktree cleanup<select value={p.worktreeCleanup?.mode||"inherit"} onChange={e=>setCleanupMode(p,e.target.value)}><option value="inherit">Inherit</option><option value="off">Off</option><option value="custom">Custom</option></select></label>{p.worktreeCleanup?.mode==="custom"&&<div className="project-cleanup-rules"><label>After inactive days<input type="number" min="1" max="3650" defaultValue={p.worktreeCleanup.rules?.worktreeAfterDays??""} placeholder="Never" onBlur={e=>{const days=cleanupDays(e.target.value);e.target.value=days==null?"":String(days);setCleanupRule(p,"worktreeAfterDays",days)}}/></label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnMerge)} onChange={e=>setCleanupRule(p,"worktreeOnMerge",e.target.checked)}/> After merge</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnDelete)} onChange={e=>setCleanupRule(p,"worktreeOnDelete",e.target.checked)}/> After last thread deletion</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeUnchanged)} onChange={e=>setCleanupRule(p,"worktreeUnchanged",e.target.checked)}/> If unchanged from base</label></div>}</div>
 
         <div className="project-actions">
           <div className="project-actions-head"><span><SquareTerminal size={13}/> Project actions</span><div>{importableScripts(p).length>0&&<button onClick={()=>setSuggestionsOpen(current=>({...current,[p.id]:!current[p.id]}))}><Download size={12}/> Import {importableScripts(p).length}</button>}<button onClick={()=>editScript(p)}><Plus size={12}/> Add action</button></div></div>
@@ -385,20 +415,20 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
           <p className="project-hook-note">Hooks are installed explicitly here. Repository <code>t3.json</code> files cannot silently install executable hooks.</p>
           {(p.hooks||[]).length?<div className="project-hook-list">{(p.hooks||[]).map(hook=><div className="project-hook-row" key={hook.id}>
             <span><strong>{hook.name}</strong><small>{hookEventLabel(hook.event)} · {hook.command}</small>{hook.actions?.length>0&&<em>{hook.actions.join(", ")}</em>}</span>
-            <b>{hook.event==="source-control.after"?"warn":hook.failureMode}</b><button title="Edit hook" onClick={()=>editHook(p,hook)}><Pencil size={12}/></button><button className="danger" title="Delete hook" onClick={()=>deleteHook(p,hook.id)}><Trash2 size={12}/></button>
+            <b className={hook.event==="source-control.after"?"warn":hook.failureMode}>{hook.event==="source-control.after"?"warn":hook.failureMode}</b><button title="Edit hook" onClick={()=>editHook(p,hook)}><Pencil size={12}/></button><button className="danger" title="Delete hook" onClick={()=>deleteHook(p,hook.id)}><Trash2 size={12}/></button>
           </div>)}</div>:<p className="project-actions-empty">No automatic lifecycle hooks are installed for this project.</p>}
           {hookEditor?.projectId===p.id&&<div className="project-hook-editor">
             <input value={hookEditor.name} onChange={e=>setHookEditor({...hookEditor,name:e.target.value})} placeholder="Hook name (e.g. Lint gate)"/>
             <select value={hookEditor.event} onChange={e=>setHookEditor({...hookEditor,event:e.target.value,failureMode:e.target.value==="source-control.after"?"warn":hookEditor.failureMode})}><option value="verification.required">Required verification</option><option value="source-control.before">Before source control</option><option value="source-control.after">After source control</option></select>
             <input value={hookEditor.command} onChange={e=>setHookEditor({...hookEditor,command:e.target.value})} placeholder="Command (e.g. npm run lint)"/>
             {hookEditor.event.startsWith("source-control.")&&<input value={hookEditor.actionsText} onChange={e=>setHookEditor({...hookEditor,actionsText:e.target.value})} placeholder="Optional actions: push, git.commit (blank = all)"/>}
-            <div className="project-hook-options"><label>Timeout (seconds)<input type="number" min="1" max="300" value={Math.round(hookEditor.timeoutMs/1000)} onChange={e=>setHookEditor({...hookEditor,timeoutMs:Math.max(1,Number(e.target.value)||30)*1000})}/></label>{hookEditor.event==="source-control.before"&&<label>On failure<select value={hookEditor.failureMode} onChange={e=>setHookEditor({...hookEditor,failureMode:e.target.value})}><option value="block">Block mutation</option><option value="warn">Warn and continue</option></select></label>}</div>
+            <div className="project-hook-options"><label>Timeout (seconds)<input type="number" min="1" max="300" value={hookEditor.timeoutText??Math.round(hookEditor.timeoutMs/1000)} onChange={e=>setHookEditor({...hookEditor,timeoutText:e.target.value,timeoutMs:Math.max(1,Math.min(300,Math.trunc(Number(e.target.value))||30))*1000})} onBlur={()=>setHookEditor(current=>current&&{...current,timeoutText:undefined})}/></label>{hookEditor.event==="source-control.before"&&<label>On failure<select value={hookEditor.failureMode} onChange={e=>setHookEditor({...hookEditor,failureMode:e.target.value})}><option value="block">Block mutation</option><option value="warn">Warn and continue</option></select></label>}</div>
             <div><button className="primary" disabled={!hookEditor.command.trim()} onClick={()=>submitHook(p)}><Check size={12}/> Save hook</button><button onClick={()=>setHookEditor(null)}><X size={12}/> Cancel</button></div>
           </div>}
         </div>
       </div>)}</div>
     </section>)}</div>
-    {!projectView.total&&<div className="project-window-empty">{projectQuery?"No projects match this search.":"No projects yet."}</div>}
+    {!projectView.total&&<div className="project-window-empty"><FolderCode size={22}/><span>{projectQuery?"No projects match this search.":"No projects yet."}</span><small>{projectQuery?"Try a name, path, branch or action.":hasDesktopPicker?"Add a local folder or clone a repository to get started.":(environmentData.profiles||[]).length?"Clone a repository above to get started.":"Projects you open appear here."}</small></div>}
     {projectView.hasMore&&<div className="project-window-footer"><button onClick={()=>setProjectLimit(limit=>limit+PROJECT_PAGE_SIZE)}>Show {Math.min(PROJECT_PAGE_SIZE,projectView.total-projectView.shown)} more</button><span>{projectView.shown} of {projectView.total} projects mounted</span></div>}
   </div>;
 }

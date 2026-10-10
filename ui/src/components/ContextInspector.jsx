@@ -34,7 +34,7 @@ function ContextExplorer({root,environmentId=null}){
   const modeMeta={
     symbols:{label:"Symbols",placeholder:"Search symbols, e.g. ContextEngine",endpoint:"/api/context/symbols",empty:"No indexed symbols matched"},
     files:{label:"Files",placeholder:"Find files, e.g. session",endpoint:"/api/context/files",empty:"No repository files matched"},
-    code:{label:"Code",placeholder:"Search source text or regex",endpoint:"/api/context/search",empty:"No source matches found"},
+    code:{label:"Code",placeholder:"Search source text, e.g. return token",endpoint:"/api/context/search",empty:"No source matches found"},
   }[mode];
   function chooseMode(next){if(next===mode)return;setMode(next);setResults([]);setSearched(false);setSelected(null);setRelations(null);setDiagnostics(null);setFixes(null);setError("")}
   async function search(event){

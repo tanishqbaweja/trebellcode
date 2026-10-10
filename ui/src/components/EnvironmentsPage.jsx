@@ -9,6 +9,10 @@ export default function EnvironmentsPage(){
   const [message,setMessage]=useState("");
   const localPlatform=data.capabilities?.local?.platform||"local";
   const localPlatformLabel={win32:"Windows",linux:"Linux",darwin:"macOS"}[localPlatform]||"Local";
+  // The port is kept as typed so the field can be cleared and retyped; it is sent as a number.
+  // A TCP port is a whole number from 1 to 65535; anything else would be saved and only fail at connect time.
+  const portNumber=String(draft.port).trim()===""?NaN:Number(draft.port);
+  const portInvalid=draft.type==="ssh"&&!(Number.isInteger(portNumber)&&portNumber>=1&&portNumber<=65535);
 
   async function refresh({reportErrors=false}={}){
     try{setData(await api("/api/environments"));if(reportErrors)setMessage("");return true}
@@ -19,7 +23,7 @@ export default function EnvironmentsPage(){
   async function add(){
     setBusy("add");setMessage("");
     try{
-      const body={...draft,name:draft.name||({local:"Local machine",wsl:"WSL",ssh:"SSH"}[draft.type])};
+      const body={...draft,port:Number.isInteger(portNumber)?portNumber:22,name:draft.name||({local:"Local machine",wsl:"WSL",ssh:"SSH"}[draft.type])};
       await api("/api/environments",{method:"POST",body});
       setDraft({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
       await refresh();
@@ -66,7 +70,7 @@ export default function EnvironmentsPage(){
     {message&&<div className="inline-status" role="status" aria-live="polite">{message}</div>}
     <div className="environment-grid">
       <section className="capability-card">
-        <div className="capability-card-head"><span><Laptop2 size={15}/><strong>Configured environments</strong></span><em>{data.profiles.length}</em></div>
+        <div className="capability-card-head"><span><Laptop2 size={15}/><strong>Configured environments</strong></span><em title={"Local machine and "+data.profiles.length+" saved"}>{data.profiles.length+1}</em></div>
         <div className="environment-list">
           <div><div><strong>Local machine</strong><span>{localPlatformLabel.toUpperCase()} · {window.trebellDesktop?"Trebell desktop host":"Trebell host"}</span></div><div>{!data.activeEnvironmentId?<em className="ok">active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
           {data.profiles.map(profile=>{const enabled=profile.enabled!==false;return <div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}{enabled?"":" · switched off"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy||!enabled}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy||!enabled}>Test</button><button onClick={()=>setEnabled(profile.id,!enabled)} disabled={!!busy}>{enabled?"Switch off":"Switch on"}</button><button className="danger" aria-label={"Remove "+profile.name} onClick={()=>remove(profile.id)} disabled={!!busy||data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>})}</div>
@@ -80,8 +84,8 @@ export default function EnvironmentsPage(){
         <label>Published themes directory<input value={draft.themeDirectory} onChange={e=>setDraft(d=>({...d,themeDirectory:e.target.value}))} placeholder={draft.type==="local"?"Default Trebell themes folder":"Default .trebell/themes"}/></label>
         {draft.type==="wsl"&&<label>Distribution<select value={draft.distro} onChange={e=>setDraft(d=>({...d,distro:e.target.value}))}><option value="">Default WSL distro</option>{(data.capabilities?.wsl?.distros||[]).map(x=><option key={x}>{x}</option>)}</select></label>}
         {draft.type!=="local"&&<label>Codex executable<input value={draft.codexPath||"codex"} onChange={e=>setDraft(d=>({...d,codexPath:e.target.value}))} placeholder="/usr/local/bin/codex"/></label>}
-        {draft.type==="ssh"&&<><label>Host<input value={draft.host} onChange={e=>setDraft(d=>({...d,host:e.target.value}))} placeholder="dev.example.com"/></label><div className="environment-two"><label>User<input value={draft.user} onChange={e=>setDraft(d=>({...d,user:e.target.value}))}/></label><label>Port<input type="number" value={draft.port} onChange={e=>setDraft(d=>({...d,port:Number(e.target.value)||22}))}/></label></div><label>Identity file<input value={draft.identityFile} onChange={e=>setDraft(d=>({...d,identityFile:e.target.value}))} placeholder="C:\\Users\\me\\.ssh\\id_ed25519"/></label></>}
-        <button className="primary" onClick={add} disabled={!!busy||(draft.type==="ssh"&&!draft.host.trim())}><Plus size={13}/> Add environment</button>
+        {draft.type==="ssh"&&<><label>Host<input value={draft.host} onChange={e=>setDraft(d=>({...d,host:e.target.value}))} placeholder="dev.example.com"/></label><div className="environment-two"><label>User<input value={draft.user} onChange={e=>setDraft(d=>({...d,user:e.target.value}))}/></label><label>Port<input type="number" min="1" max="65535" aria-invalid={portInvalid?"true":undefined} value={draft.port} onChange={e=>setDraft(d=>({...d,port:e.target.value}))}/></label></div>{portInvalid&&<p className="environment-field-error" role="alert">Port must be a whole number from 1 to 65535.</p>}<label>Identity file<input value={draft.identityFile} onChange={e=>setDraft(d=>({...d,identityFile:e.target.value}))} placeholder={"C:\\Users\\me\\.ssh\\id_ed25519"}/></label></>}
+        <button className="primary" onClick={add} disabled={!!busy||(draft.type==="ssh"&&!draft.host.trim())||portInvalid}><Plus size={13}/> Add environment</button>
       </section>
       <section className="capability-card">
         <div className="capability-card-head"><span><Server size={15}/><strong>Host capabilities</strong></span></div>

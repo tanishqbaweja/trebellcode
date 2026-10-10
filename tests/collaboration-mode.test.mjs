@@ -29,3 +29,15 @@ test("collaboration mode payload uses the selected model and built-in instructio
   });
   assert.equal(collaborationModePayload(modes,"missing","test/coding-fast"),null);
 });
+
+test("the chosen reasoning effort rides in the collaboration mode, since Codex gives the mode precedence over effort",()=>{
+  const modes=normalizeCollaborationModes([
+    {name:"Plan",mode:"plan",model:null,reasoning_effort:"medium"},
+    {name:"Default",mode:"default",model:null,reasoning_effort:null},
+  ]);
+  assert.deepEqual(collaborationModePayload(modes,"default","gpt-6-luna",{effort:"high"}),{
+    mode:"default",settings:{model:"gpt-6-luna",reasoning_effort:"high",developer_instructions:null},
+  });
+  assert.equal(collaborationModePayload(modes,"plan","gpt-6-luna",{effort:"ultra"}).settings.reasoning_effort,"ultra");
+  assert.equal(collaborationModePayload(modes,"plan","gpt-6-luna",{effort:null}).settings.reasoning_effort,"medium","without a pick the mode's own effort applies");
+});

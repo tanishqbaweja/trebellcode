@@ -4,6 +4,17 @@ import { api } from "../api.js";
 
 const INHERIT="__inherit__";
 const PERMISSIONS=[["supervised","Supervised"],["edits","Auto-accept edits"],["auto","Auto"],["full","Full access"],["read-only","Read only"]];
+// Options of the scoped selects. The Inherit option reuses these labels, so it names the inherited value the way the select does ("Inherit · Current checkout", not "Inherit · current").
+const OPTIONS={
+  defaultPermissionMode:PERMISSIONS,
+  defaultWorkspaceMode:[["current","Current checkout"],["worktree","New worktree"]],
+  worktreeSubmodules:[["recursive","Recursive"],["top-level","Top level only"],["none","Skip"]],
+  sourceControlMergeMethod:[["squash","Squash"],["merge","Merge commit"],["rebase","Rebase merge"]],
+  sourceControlTextStyle:[["repository","Repository conventions"],["conventional","Conventional Commits"],["custom","Custom instructions"]],
+  worktreeCleanup:[["off","Off"],["custom","Custom"]],
+};
+function optionLabel(key,id){return OPTIONS[key].find(([value])=>value===id)?.[1]||id}
+function optionList(key){return OPTIONS[key].map(([id,label])=><option key={id} value={id}>{label}</option>)}
 
 export default function ScopedSettingsCard({settings={},models=[],onChanged,scopeEnvironmentId=null,scopeProjectId=null,onScopeChange,onCatalog,showScopeTargets=true}){
   const [environmentData,setEnvironmentData]=useState({profiles:[]});
@@ -14,7 +25,9 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged,scop
   const environmentId=controlledScope?scopeEnvironmentId:internalEnvironmentId;
   const projectId=controlledScope?(scopeProjectId||""):internalProjectId;
   const [scope,setScope]=useState(null);
-  const [message,setMessage]=useState("");
+  // Failures are flagged where they are caught: server errors such as "Unknown project" do not always contain the word "error".
+  const [message,setMessageState]=useState({text:"",error:false});
+  function setMessage(text,error=false){setMessageState({text,error})}
   const [loading,setLoading]=useState(false);
   const writeQueueRef=React.useRef(Promise.resolve());
   const selectionRef=React.useRef({environmentId:"local",projectId:""});
@@ -34,9 +47,9 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged,scop
       const params=new URLSearchParams({environmentId:nextEnvironment==="local"?"":nextEnvironment});
       if(nextProject)params.set("projectId",nextProject);
       setScope(await api("/api/scoped-settings?"+params.toString()));
-    }catch(error){setMessage(error.message)}finally{setLoading(false)}
+    }catch(error){setMessage(error.message,true)}finally{setLoading(false)}
   }
-  useEffect(()=>{load().catch(error=>setMessage(error.message))},[]);
+  useEffect(()=>{load().catch(error=>setMessage(error.message,true))},[]);
   useEffect(()=>{loadScope()},[environmentId,projectId]);
   useEffect(()=>{
     if(!projectId||envProjects.some(project=>project.id===projectId))return;
@@ -70,7 +83,7 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged,scop
       return result;
     });
     writeQueueRef.current=operation;
-    operation.catch(error=>setMessage(error.message)).finally(()=>{if(writeQueueRef.current===operation)setLoading(false)});
+    operation.catch(error=>setMessage(error.message,true)).finally(()=>{if(writeQueueRef.current===operation)setLoading(false)});
     return operation;
   }
   function selectValue(key,fallback=""){return projectScope&&!hasOverride(key)?INHERIT:String(value(key)??fallback)}
@@ -89,7 +102,7 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged,scop
     try{
       const result=await api("/api/worktree/cleanup",{method:"POST",body:{}});
       setMessage(result.removed?"Removed "+result.removed+" safe managed worktree"+(result.removed===1?"":"s")+".":"No managed worktrees were eligible for cleanup.");
-    }catch(error){setMessage("Cleanup failed: "+error.message)}finally{setLoading(false)}
+    }catch(error){setMessage("Cleanup failed: "+error.message,true)}finally{setLoading(false)}
   }
 
   const cleanupMode=projectScope&&!hasOverride("worktreeCleanup")?INHERIT:(value("worktreeCleanup")?.mode||"off");
@@ -103,19 +116,19 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged,scop
       <label>Project<select value={projectId} onChange={event=>changeProject(event.target.value)}><option value="">All projects / environment defaults</option>{envProjects.map(project=><option key={project.id} value={project.id}>{project.name} · {project.path}</option>)}</select></label>
     </div>}
     {scope&&<div className="scoped-settings-grid">
-      <label>Default model<select value={modelValue} onChange={event=>write("defaultModel",event.target.value===INHERIT?INHERIT:(event.target.value||null))}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.defaultModel||"provider default"}</option>}<option value="">Provider default</option>{value("defaultModel")&&!models.includes(value("defaultModel"))&&<option value={value("defaultModel")}>{value("defaultModel")}</option>}{models.map(id=><option key={id} value={id}>{id}</option>)}</select></label>
-      <label>Permissions<select value={selectValue("defaultPermissionMode","supervised")} onChange={event=>write("defaultPermissionMode",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.defaultPermissionMode}</option>}{PERMISSIONS.map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
-      <label>Workspace<select value={selectValue("defaultWorkspaceMode","current")} onChange={event=>write("defaultWorkspaceMode",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.defaultWorkspaceMode}</option>}<option value="current">Current checkout</option><option value="worktree">New worktree</option></select></label>
-      <label>Worktree submodules<select value={selectValue("worktreeSubmodules","recursive")} onChange={event=>write("worktreeSubmodules",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.worktreeSubmodules}</option>}<option value="recursive">Recursive</option><option value="top-level">Top level only</option><option value="none">Skip</option></select></label>
+      <label>Default model<select value={modelValue} onChange={event=>write("defaultModel",event.target.value===INHERIT?INHERIT:(event.target.value||null))}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.defaultModel||"Provider default"}</option>}<option value="">Provider default</option>{value("defaultModel")&&!models.includes(value("defaultModel"))&&<option value={value("defaultModel")}>{value("defaultModel")}</option>}{models.map(id=><option key={id} value={id}>{id}</option>)}</select></label>
+      <label>Permissions<select value={selectValue("defaultPermissionMode","supervised")} onChange={event=>write("defaultPermissionMode",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {optionLabel("defaultPermissionMode",scope.defaults.defaultPermissionMode)}</option>}{optionList("defaultPermissionMode")}</select></label>
+      <label>Workspace<select value={selectValue("defaultWorkspaceMode","current")} onChange={event=>write("defaultWorkspaceMode",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {optionLabel("defaultWorkspaceMode",scope.defaults.defaultWorkspaceMode)}</option>}{optionList("defaultWorkspaceMode")}</select></label>
+      <label>Worktree submodules<select value={selectValue("worktreeSubmodules","recursive")} onChange={event=>write("worktreeSubmodules",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {optionLabel("worktreeSubmodules",scope.defaults.worktreeSubmodules)}</option>}{optionList("worktreeSubmodules")}</select></label>
       <label>Automatic pull<select value={projectScope&&!hasOverride("autoPull")?INHERIT:String(Boolean(value("autoPull")))} onChange={event=>write("autoPull",event.target.value===INHERIT?INHERIT:event.target.value==="true")}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.autoPull?"On":"Off"}</option>}<option value="false">Off</option><option value="true">On</option></select></label>
-      <label>Default PR merge<select value={selectValue("sourceControlMergeMethod","squash")} onChange={event=>write("sourceControlMergeMethod",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.sourceControlMergeMethod}</option>}<option value="squash">Squash</option><option value="merge">Merge commit</option><option value="rebase">Rebase merge</option></select></label>
-      <label>Git text style<select value={selectValue("sourceControlTextStyle","repository")} onChange={event=>write("sourceControlTextStyle",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.sourceControlTextStyle}</option>}<option value="repository">Repository conventions</option><option value="conventional">Conventional Commits</option><option value="custom">Custom instructions</option></select></label>
-      <label>Git text model<select value={sourceTextModelValue} onChange={event=>write("sourceControlTextModel",event.target.value===INHERIT?INHERIT:(event.target.value||null))}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.sourceControlTextModel||"current model"}</option>}<option value="">Current model</option>{value("sourceControlTextModel")&&!models.includes(value("sourceControlTextModel"))&&<option value={value("sourceControlTextModel")}>{value("sourceControlTextModel")}</option>}{models.map(id=><option key={id} value={id}>{id}</option>)}</select></label>
+      <label>Default PR merge<select value={selectValue("sourceControlMergeMethod","squash")} onChange={event=>write("sourceControlMergeMethod",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {optionLabel("sourceControlMergeMethod",scope.defaults.sourceControlMergeMethod)}</option>}{optionList("sourceControlMergeMethod")}</select></label>
+      <label>Git text style<select value={selectValue("sourceControlTextStyle","repository")} onChange={event=>write("sourceControlTextStyle",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {optionLabel("sourceControlTextStyle",scope.defaults.sourceControlTextStyle)}</option>}{optionList("sourceControlTextStyle")}</select></label>
+      <label>Git text model<select value={sourceTextModelValue} onChange={event=>write("sourceControlTextModel",event.target.value===INHERIT?INHERIT:(event.target.value||null))}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.sourceControlTextModel||"Current model"}</option>}<option value="">Current model</option>{value("sourceControlTextModel")&&!models.includes(value("sourceControlTextModel"))&&<option value={value("sourceControlTextModel")}>{value("sourceControlTextModel")}</option>}{models.map(id=><option key={id} value={id}>{id}</option>)}</select></label>
       <label>Follow PR templates<select value={projectScope&&!hasOverride("sourceControlFollowTemplates")?INHERIT:String(Boolean(value("sourceControlFollowTemplates")))} onChange={event=>write("sourceControlFollowTemplates",event.target.value===INHERIT?INHERIT:event.target.value==="true")}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.sourceControlFollowTemplates?"On":"Off"}</option>}<option value="true">On</option><option value="false">Off</option></select></label>
       {value("sourceControlTextStyle")==="custom"&&<label className="scoped-settings-wide">Custom Git instructions<textarea key={(projectId||environmentId)+":"+(hasOverride("sourceControlCustomInstructions")?"override":"default")} defaultValue={value("sourceControlCustomInstructions")||""} placeholder="Keep titles concise. Use short bullet points in descriptions." onBlur={event=>write("sourceControlCustomInstructions",event.target.value)}/>{projectScope&&hasOverride("sourceControlCustomInstructions")&&<button type="button" onClick={()=>write("sourceControlCustomInstructions",INHERIT)}>Use inherited instructions</button>}</label>}
     </div>}
-    {scope&&<div className="project-cleanup scoped-cleanup"><label>Automatic worktree cleanup<select value={cleanupMode} onChange={event=>setCleanupMode(event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.worktreeCleanup?.mode||"off"}</option>}<option value="off">Off</option><option value="custom">Custom</option></select></label>{cleanupMode==="custom"&&<div className="cleanup-rule-grid"><label>After inactive days<input type="number" min="1" max="3650" value={value("worktreeCleanup")?.rules?.worktreeAfterDays??""} placeholder="Never" onChange={event=>setCleanupRule("worktreeAfterDays",event.target.value?Number(event.target.value):null)}/></label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeOnMerge)} onChange={event=>setCleanupRule("worktreeOnMerge",event.target.checked)}/> After merge</label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeOnDelete)} onChange={event=>setCleanupRule("worktreeOnDelete",event.target.checked)}/> After last thread deletion</label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeUnchanged)} onChange={event=>setCleanupRule("worktreeUnchanged",event.target.checked)}/> If unchanged</label></div>}</div>}
+    {scope&&<div className="project-cleanup scoped-cleanup"><label>Automatic worktree cleanup<select value={cleanupMode} onChange={event=>setCleanupMode(event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {optionLabel("worktreeCleanup",scope.defaults.worktreeCleanup?.mode||"off")}</option>}{optionList("worktreeCleanup")}</select></label>{cleanupMode==="custom"&&<div className="cleanup-rule-grid"><label>After inactive days<input type="number" min="1" max="3650" value={value("worktreeCleanup")?.rules?.worktreeAfterDays??""} placeholder="Never" onChange={event=>setCleanupRule("worktreeAfterDays",event.target.value?Number(event.target.value):null)}/></label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeOnMerge)} onChange={event=>setCleanupRule("worktreeOnMerge",event.target.checked)}/> After merge</label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeOnDelete)} onChange={event=>setCleanupRule("worktreeOnDelete",event.target.checked)}/> After last thread deletion</label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeUnchanged)} onChange={event=>setCleanupRule("worktreeUnchanged",event.target.checked)}/> If unchanged</label></div>}</div>}
     <div className="provider-key-actions"><button onClick={()=>loadScope()} disabled={loading}><RefreshCw size={12}/> Refresh</button><button onClick={runCleanup} disabled={loading}>Run safe cleanup now</button></div>
-    {message&&<p className={/failed|error/i.test(message)?"provider-status-error":"provider-note"}>{message}</p>}
+    {message.text&&<p className={message.error?"provider-status-error":"provider-note"}>{message.text}</p>}
   </div>;
 }

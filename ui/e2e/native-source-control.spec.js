@@ -43,7 +43,8 @@ test("Trebell Native can create a Git branch directly and the Git panel reflects
     await page.route(/\/api\/checkpoints\/link$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
     await page.route(/\/api\/context\/packet$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"source-ui-context",skipped:true,budget:{reserveTokens:1024}})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-    await page.route(/\/api\/git\/info(?:\?.*)?$/,async route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(await gitInfo(repo))}));
+    // The Git panel polls on a timer: a poll that lands after the test removed its repository answers 404 instead of failing the test.
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,async route=>{const info=await gitInfo(repo).catch(()=>null);return route.fulfill(info?{status:200,contentType:"application/json",body:JSON.stringify(info)}:{status:404,contentType:"application/json",body:JSON.stringify({error:"The fixture repository was removed."})}).catch(()=>{})});
     await page.route(/\/api\/source-control\/diagnostics(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedProvider:"",detectedProvider:"unknown",capabilities:{}})}));
     await page.route(/\/api\/source-control\/prs(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[],capabilities:{create:true,comment:true,review:true,merge:true,updateBranch:true}})}));
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:500,terminalHeight:330})));

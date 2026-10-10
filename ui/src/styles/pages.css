@@ -1,0 +1,768 @@
+/* Pages area: Projects, History, Usage, Tools, Environments, Licenses, plus the Agents and Browser panels.
+   Built on the tokens in ../theme.css (layered surfaces, soft borders, violet accent, Inter + JetBrains Mono) and
+   loaded after the legacy sheets (styles.css, t3-workspace.css), theme.css and shell.css.
+
+   Cascade notes
+   - Every selector starts with `:root:root` plus a page root class. Legacy light-mode rules are written as
+     `html[data-mode="light"]:not([data-custom-theme="true"]) .x` (0,2,1)+, and the doubled :root (0,2,0) plus the page
+     root (0,1,0) keeps these rules ahead of them for the same target in dark, light and custom themes alike.
+   - `!important` marks properties that a legacy rule also forces with !important (t3-workspace.css font-size/height
+     overrides, light-mode and custom-theme background/border/color rules). Delete those legacy rules and the
+     !important flags here together in the CSS cleanup; the plain declarations then carry the look on their own.
+   - --pg-card / --pg-row are local surface aliases: cards are a faint gradient over the page in dark and white in
+     light; rows sit one step up from the card (white in light, which the visual audit checks for).
+   - Page roots are `pg` inline-size containers, so layouts reflow by the width they actually get (sidebar, right
+     panel and maximized panel widths all differ), not by the viewport width.
+   - The History page markup lives in App.jsx; it is styled here through its existing classes only. */
+
+:root:root{--pg-card:transparent;--pg-row:var(--bg2);--pg-code:var(--bg0)}
+:root:root[data-mode="light"]{--pg-card:var(--bg1);--pg-row:var(--bg1);--pg-code:var(--bg2)}
+
+/* ============ Page frame (only the secondary pages owned by this area; Settings has its own sheet) ============ */
+:root:root .secondary-page:is(:has(> .projects-page),:has(> .history-page),:has(> .usage-page),:has(> .capabilities-page),:has(> .capabilities-empty-state),:has(> .environments-page),:has(> .licenses-page)){padding:44px 56px 72px;background:transparent!important;color:var(--tx0)!important}
+:root:root .secondary-page:is(:has(> .projects-page),:has(> .history-page),:has(> .usage-page),:has(> .capabilities-page),:has(> .environments-page),:has(> .licenses-page))>*{max-width:1080px;margin-left:auto;margin-right:auto}
+@media (max-width:900px){
+  :root:root .secondary-page:is(:has(> .projects-page),:has(> .history-page),:has(> .usage-page),:has(> .capabilities-page),:has(> .capabilities-empty-state),:has(> .environments-page),:has(> .licenses-page)){padding:28px 22px 56px}
+}
+
+/* Page headers: the App.jsx `.page-header` (Projects, History, Licenses) and the in-page `.capabilities-toolbar`
+   (Usage, Tools, Environments) share one title style. */
+:root:root .page-header:has(~ :is(.projects-page,.history-page,.licenses-page)){display:block;margin:0 auto 26px!important}
+:root:root .page-header:has(~ :is(.projects-page,.history-page,.licenses-page)) h1,
+:root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar h2{margin:0!important;font-size:26px!important;font-weight:650!important;letter-spacing:-.035em!important;line-height:1.2!important;color:var(--tx0)!important}
+:root:root .page-header:has(~ :is(.projects-page,.history-page,.licenses-page)) p,
+:root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar p{max-width:720px;margin:7px 0 0!important;font-size:13px!important;line-height:1.6!important;color:var(--tx2)!important}
+:root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar{display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:16px 24px;margin:0 0 26px!important}
+:root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar>div:first-child{flex:1 1 420px;min-width:0}
+
+/* ============ Shared controls ============ */
+/* Secondary button (tb-btn). */
+:root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar>button,
+:root:root .usage-page .usage-toolbar>button,
+:root:root .projects-page :is(.project-page-actions>button,.clone-card>button,.project-window-footer button),
+:root:root .secondary-page .history-page .history-load-more button{height:34px!important;min-height:34px!important;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 13px!important;border:1px solid var(--line2)!important;border-radius:9px!important;background:var(--bg3)!important;color:var(--tx1)!important;font-size:12.5px!important;font-weight:550;line-height:1;white-space:nowrap;cursor:pointer;box-shadow:none!important;transition:background-color .15s,color .15s,border-color .15s,filter .15s}
+:root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar>button:hover:not(:disabled),
+:root:root .usage-page .usage-toolbar>button:hover:not(:disabled),
+:root:root .projects-page :is(.project-page-actions>button,.clone-card>button,.project-window-footer button):hover:not(:disabled),
+:root:root .secondary-page .history-page .history-load-more button:hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+
+/* Small secondary button (tb-btn--sm) for in-card actions. */
+:root:root .projects-page :is(.project-identity-toggle button,.project-icon-actions button,.project-image-button,.project-icon-draft button,.project-actions-head button,.project-config-hint button,.project-import-list button,.project-clone-status button,.project-action-editor button,.project-hook-editor button),
+:root:root :is(.usage-page,.capabilities-page,.environments-page) :is(.capability-actions button,.capability-list button,.capability-inline-actions button,.plugin-search-controls button,.plugin-detail-head button,.plugin-detail-skills button,.app-detail-head button,.app-detail .setting-action,.connector-runtime-summary button,.mcp-resource button,.mcp-tool button,.environment-list button,.reset-credit-row button),
+:root:root .preview-page :is(.preview-discovery-head button,.agent-browser-toolbar button,.browser-device-toolbar button,.annotation-actions button){height:30px!important;min-height:30px!important;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 11px!important;border:1px solid var(--line2)!important;border-radius:var(--r-s)!important;background:var(--bg3)!important;color:var(--tx1)!important;font-size:11.5px!important;font-weight:550;line-height:1;white-space:nowrap;cursor:pointer;box-shadow:none!important;transition:background-color .15s,color .15s,border-color .15s,filter .15s}
+:root:root .projects-page :is(.project-identity-toggle button,.project-icon-actions button,.project-image-button,.project-icon-draft button,.project-actions-head button,.project-config-hint button,.project-import-list button,.project-clone-status button,.project-action-editor button,.project-hook-editor button):hover:not(:disabled),
+:root:root :is(.usage-page,.capabilities-page,.environments-page) :is(.capability-actions button,.capability-list button,.capability-inline-actions button,.plugin-search-controls button,.plugin-detail-head button,.plugin-detail-skills button,.app-detail-head button,.app-detail .setting-action,.connector-runtime-summary button,.mcp-resource button,.mcp-tool button,.environment-list button,.reset-credit-row button):hover:not(:disabled),
+:root:root .preview-page :is(.preview-discovery-head button,.agent-browser-toolbar button,.browser-device-toolbar button,.annotation-actions button):hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+
+/* Primary button (tb-btn--primary). */
+:root:root .projects-page .project-page-actions>button.project-add-local,
+:root:root .projects-page :is(.project-action-editor,.project-hook-editor) button.primary,
+:root:root .environments-page .environment-create .primary,
+:root:root .secondary-page .history-page .history-empty button,
+:root:root .agents-page .delegate-submit,
+:root:root .preview-page .annotation-actions button.primary{border-color:transparent!important;background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow)!important}
+:root:root .projects-page .project-page-actions>button.project-add-local:hover:not(:disabled),
+:root:root .projects-page :is(.project-action-editor,.project-hook-editor) button.primary:hover:not(:disabled),
+:root:root .environments-page .environment-create .primary:hover:not(:disabled),
+:root:root .secondary-page .history-page .history-empty button:hover:not(:disabled),
+:root:root .agents-page .delegate-submit:hover:not(:disabled),
+:root:root .preview-page .annotation-actions button.primary:hover:not(:disabled){filter:brightness(1.1);background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important}
+
+/* Disabled buttons, every page. */
+:root:root :is(.projects-page,.history-page,.usage-page,.capabilities-page,.environments-page,.licenses-page,.agents-page,.preview-page) button:disabled{opacity:.5;cursor:default;box-shadow:none!important;filter:none}
+
+/* Fields (tb-input / tb-select). */
+:root:root .projects-page :is(.clone-card input,.clone-card select,.project-overrides select,.project-identity-editor input:not([type="color"]):not([type="file"]),.project-cleanup select,.project-cleanup input[type="number"],.project-action-editor>input,.project-hook-editor>input,.project-hook-editor>select,.project-hook-options input,.project-hook-options select),
+:root:root .usage-page :is(.usage-toolbar select,.usage-environment-filter>summary),
+:root:root :is(.usage-page,.capabilities-page,.environments-page) :is(.plugin-search-controls input,.plugin-search-controls select,.mcp-tool input,.marketplace-add input,.capability-inline-actions select,.environment-create input,.environment-create select),
+:root:root .agents-page .delegate-form select,
+:root:root .preview-page :is(.browser-device-toolbar select,.browser-device-toolbar input){width:100%;min-width:0;height:34px!important;min-height:0;padding:0 12px!important;border:1px solid var(--line)!important;border-radius:9px!important;background-color:var(--bg2)!important;color:var(--tx0)!important;font-family:var(--font);font-size:12.5px!important;font-weight:400;letter-spacing:normal;text-transform:none;outline:none;box-shadow:none;transition:border-color .15s,box-shadow .15s}
+:root:root .projects-page :is(.clone-card select,.project-overrides select,.project-cleanup select,.project-hook-editor>select,.project-hook-options select),
+:root:root .usage-page :is(.usage-toolbar select,.usage-environment-filter>summary),
+:root:root :is(.usage-page,.capabilities-page,.environments-page) :is(.plugin-search-controls select,.capability-inline-actions select,.environment-create select),
+:root:root .agents-page .delegate-form select,
+:root:root .preview-page .browser-device-toolbar select{appearance:none;-webkit-appearance:none;padding-right:30px!important;background-image:var(--chev)!important;background-repeat:no-repeat!important;background-position:right 10px center!important;background-size:11px!important;color:var(--tx1)!important;cursor:pointer}
+:root:root :is(.projects-page,.agents-page,.capabilities-page,.environments-page,.preview-page) textarea{font-family:var(--font)}
+:root:root :is(.projects-page,.usage-page,.capabilities-page,.environments-page,.licenses-page,.agents-page,.preview-page) :is(input,textarea)::placeholder{color:var(--tx3)}
+:root:root :is(.projects-page,.usage-page,.capabilities-page,.environments-page,.licenses-page,.agents-page,.preview-page) :is(input:not([type="checkbox"],[type="radio"],[type="color"],[type="file"],[type="range"]),select,textarea):not(.preview-bar *,.licenses-search *,.project-search-field *):focus{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)!important;outline:none}
+:root:root :is(.projects-page,.usage-page,.capabilities-page,.environments-page,.agents-page,.preview-page) input:is([type="checkbox"],[type="radio"]){accent-color:var(--ac)}
+
+/* Section label (tb-field label). */
+:root:root .projects-page :is(.project-overrides label,.project-cleanup>label,.project-cleanup-rules>label:first-child,.project-identity-editor>label,.project-hook-options label),
+:root:root .environments-page .environment-create>label,
+:root:root .environments-page .environment-two label,
+:root:root .agents-page .delegate-form label{display:grid;gap:7px!important;min-width:0;font-size:11px!important;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--tx3)!important}
+
+/* Banners: errors stay red, notices neutral. */
+:root:root :is(.projects-page,.usage-page,.capabilities-page,.environments-page,.licenses-page,.agents-page,.preview-page) :is(.provider-status-error,.inline-error,.browser-action-error),
+:root:root .secondary-page .history-page .history-load-error{margin:0!important;padding:10px 14px!important;border:1px solid var(--errb)!important;border-radius:var(--r-m)!important;background:var(--errt)!important;color:var(--err)!important;font-size:12.5px!important;line-height:1.5!important;white-space:pre-wrap;overflow-wrap:anywhere}
+:root:root .environments-page>.inline-status,
+:root:root .usage-page .provider-note{max-width:none;margin:0 0 14px!important;padding:10px 14px!important;border:1px solid var(--line2)!important;border-radius:var(--r-m)!important;background:var(--bg2)!important;color:var(--tx1)!important;font-size:12.5px!important;line-height:1.5!important;white-space:pre-wrap;overflow-wrap:anywhere}
+:root:root .usage-page .provider-note{margin:0!important}
+
+/* ============ Projects ============ */
+:root:root .projects-page{display:grid;gap:14px;container:pg/inline-size}
+:root:root .projects-page .project-page-actions{display:flex;align-items:center;justify-content:flex-start;flex-wrap:wrap;gap:10px;margin:0 0 4px}
+:root:root .projects-page .project-search-field{position:relative;flex:1 1 260px;max-width:380px;min-width:0;display:flex;align-items:center}
+:root:root .projects-page .project-search-field>svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--tx3);pointer-events:none}
+:root:root .projects-page .project-search{width:100%!important;height:36px!important;margin:0!important;padding:0 12px 0 35px!important;border:1px solid var(--line)!important;border-radius:10px!important;background:var(--bg2)!important;color:var(--tx0)!important;font-size:12.5px!important;outline:none;transition:border-color .15s,box-shadow .15s}
+:root:root .projects-page .project-search:focus{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)!important}
+:root:root .projects-page .project-window-count{margin-left:auto;font-family:var(--mono);font-size:11px!important;color:var(--tx3)!important;font-variant-numeric:tabular-nums;white-space:nowrap}
+:root:root .projects-page .project-page-actions>button{height:36px!important;min-height:36px!important;border-radius:10px!important}
+:root:root .projects-page .project-page-actions>button.project-refresh{width:36px;padding:0!important}
+
+/* General chat and clone cards: the newfront project rows (accent tile + text + action). */
+:root:root .projects-page .general-chat-card,
+:root:root .projects-page .clone-card{position:relative;width:100%;min-width:0;padding:16px 18px!important;border:1px solid var(--line)!important;border-radius:var(--r-l)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important;box-shadow:none!important;color:var(--tx1)!important;transition:border-color .18s}
+:root:root .projects-page .general-chat-card{min-height:0;display:grid!important;grid-template-columns:40px minmax(0,1fr) auto!important;gap:14px!important;align-items:center!important;text-align:left!important;cursor:pointer}
+:root:root .projects-page .general-chat-card:hover:not(:disabled),
+:root:root .projects-page .clone-card:hover{border-color:var(--line2)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important}
+:root:root .projects-page .general-chat-card:disabled{opacity:.65;cursor:progress}
+:root:root .projects-page :is(.general-chat-card,.clone-card)>svg{box-sizing:content-box;width:18px;height:18px;padding:10px;border-radius:11px;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);background:var(--acsoft);color:var(--ac)}
+:root:root .projects-page .clone-card>svg{border-color:var(--line);background:var(--bg3);color:var(--tx1)}
+:root:root .projects-page .general-chat-card>span{display:grid;gap:3px;min-width:0}
+:root:root .projects-page .general-chat-card strong,
+:root:root .projects-page .clone-card strong{display:block;font-size:13.5px!important;font-weight:600;letter-spacing:-.01em;color:var(--tx0)!important}
+:root:root .projects-page .general-chat-card small,
+:root:root .projects-page .clone-card>div>span{display:block;margin:3px 0 0!important;font-size:12px!important;line-height:1.5;color:var(--tx2)!important;white-space:normal}
+:root:root .projects-page .general-chat-card em{font-style:normal;padding:8px 14px!important;border:1px solid color-mix(in srgb,var(--ac) 40%,var(--line))!important;border-radius:9px!important;background:transparent!important;color:var(--ac)!important;font-size:12.5px!important;font-weight:550;white-space:nowrap;transition:background-color .15s}
+:root:root .projects-page .general-chat-card:hover:not(:disabled) em{background:var(--acsoft)!important}
+
+:root:root .projects-page .clone-card{display:grid;grid-template-columns:40px minmax(130px,190px) minmax(140px,200px) minmax(0,1fr) auto;gap:12px 14px;align-items:center}
+:root:root .projects-page .clone-card>div:not(.clone-inputs){min-width:0}
+:root:root .projects-page .clone-inputs{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;min-width:0}
+:root:root .projects-page .clone-inputs.remote{grid-template-columns:minmax(0,1.3fr) minmax(120px,.7fr)}
+:root:root .projects-page .clone-card :is(input,select){height:36px!important}
+/* URL and remote path read as code (the shared field rule above sets Inter with a more specific :is() list). */
+:root:root .projects-page .clone-card .clone-inputs input{font-family:var(--mono)!important;font-size:12px!important}
+:root:root .projects-page .clone-card>button{height:36px!important;min-height:36px!important}
+/* Between 880 and 1000px one row leaves the URL field about 195px, too short for a repository URL. Two rows instead:
+   title and environment on top, the URL and destination fields at full width with Clone underneath. */
+@container pg (max-width:1000px){
+  :root:root .projects-page .clone-card{grid-template-columns:40px minmax(0,1fr) minmax(170px,230px) auto}
+  :root:root .projects-page .clone-card>select{grid-column:3/5}
+  :root:root .projects-page .clone-card>.clone-inputs{grid-column:2/4}
+  :root:root .projects-page .clone-card>button{grid-column:4}
+}
+@container pg (max-width:880px){
+  :root:root .projects-page .clone-card{grid-template-columns:40px minmax(0,1fr) auto}
+  :root:root .projects-page .clone-card>div:not(.clone-inputs),
+  :root:root .projects-page .clone-card>select{grid-column:2/-1}
+  :root:root .projects-page .clone-card>.clone-inputs{grid-column:2/3}
+  :root:root .projects-page .clone-card>button{grid-column:3}
+}
+@container pg (max-width:560px){
+  :root:root .projects-page .clone-inputs.remote{grid-template-columns:minmax(0,1fr)}
+  :root:root .projects-page .clone-card>.clone-inputs{grid-column:2/-1}
+  :root:root .projects-page .clone-card>button{grid-column:2/-1;justify-self:start}
+}
+
+/* Groups and project cards. */
+:root:root .projects-page .project-groups{display:grid;gap:22px;margin-top:8px}
+:root:root .projects-page .project-groups:empty{display:none}
+:root:root .projects-page .project-group{display:grid;gap:10px;min-width:0}
+:root:root .projects-page .project-group-head{display:flex;align-items:center;gap:10px;min-width:0;padding:0 2px!important;color:var(--tx2)!important}
+:root:root .projects-page .project-group-head>svg{flex:none;box-sizing:content-box;width:13px;height:13px;padding:6px;border:1px solid var(--line);border-radius:8px;background:var(--bg3);color:var(--tx2)}
+:root:root .projects-page .project-group-head>div{min-width:0}
+:root:root .projects-page .project-group-head strong{display:block;font-family:var(--mono);font-size:12px!important;font-weight:500;color:var(--tx1)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-group-head span{display:block;margin-top:2px;font-size:11.5px!important;color:var(--tx3)!important}
+:root:root .projects-page .project-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,470px),1fr));gap:14px;align-items:start}
+
+:root:root .projects-page .project-card{position:relative;min-width:0;overflow:hidden;border:1px solid var(--line)!important;border-radius:var(--r-l)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important;box-shadow:none!important;color:var(--tx1)!important;transition:border-color .18s,box-shadow .18s;container:pgcard/inline-size}
+:root:root .projects-page .project-card:hover{border-color:var(--line2)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important}
+:root:root .projects-page .project-card.active{border-color:color-mix(in srgb,var(--ac) 45%,var(--line))!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--ac) 9%,transparent)!important}
+:root:root .projects-page .project-card.active::after{content:"Current";position:absolute;top:20px;right:56px;padding:3px 9px;border:1px solid color-mix(in srgb,var(--ac) 35%,transparent);border-radius:99px;background:var(--acsoft);color:var(--ac);font-family:var(--mono);font-size:10.5px;font-weight:600;line-height:1.3;pointer-events:none}
+:root:root .projects-page .project-open{width:100%;min-height:0!important;display:grid!important;grid-template-columns:42px minmax(0,1fr)!important;gap:14px;align-items:center;text-align:left;padding:16px 58px 16px 18px!important;border:0!important;border-radius:0!important;background:transparent!important;color:var(--tx1)!important;cursor:pointer;transition:background-color .15s}
+:root:root .projects-page .project-card.active .project-open{padding-right:132px!important}
+:root:root .projects-page .project-open:hover{background:var(--surf)!important}
+:root:root .projects-page .project-open:focus-visible{outline-offset:-3px;border-radius:var(--r-l) var(--r-l) 0 0!important}
+:root:root .projects-page .project-open>div{min-width:0}
+:root:root .projects-page .project-open>div>strong{display:block;font-size:14px!important;font-weight:600;letter-spacing:-.01em;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-open>div>span{display:block;margin:3px 0 0!important;font-family:var(--mono);font-size:11.5px!important;color:var(--tx2)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-open>div>small{display:block;margin-top:4px;font-size:11.5px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-open .project-icon{width:42px!important;height:42px!important;margin:0!important;display:grid!important;place-items:center;overflow:hidden;border-radius:12px;color:#fff!important;font-family:var(--font)!important;font-size:14px!important;font-weight:650;letter-spacing:.01em;line-height:1;white-space:nowrap;box-shadow:inset 0 1px rgba(255,255,255,.16),0 2px 10px rgba(0,0,0,.22)}
+:root:root .projects-page .project-open .project-icon-emoji{font-size:20px!important}
+:root:root .projects-page .project-open .project-icon-image{background:var(--bg3)}
+:root:root .projects-page .project-open .project-icon-image img{width:100%;height:100%;object-fit:cover}
+:root:root .projects-page .project-remove{position:absolute;top:17px;right:16px;width:32px;height:32px;display:grid;place-items:center;padding:0!important;border:1px solid transparent!important;border-radius:var(--r-s)!important;background:transparent!important;color:var(--tx3)!important;transition:background-color .15s,color .15s,border-color .15s}
+:root:root .projects-page .project-remove:hover:not(:disabled){border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+
+:root:root .projects-page .project-card>:is(.project-clone-status,.project-overrides,.project-identity-toggle,.project-identity-editor,.project-cleanup,.project-actions,.project-hooks){margin:0;padding:14px 18px!important;border:0!important;border-top:1px solid var(--line)!important;background:transparent!important}
+:root:root .projects-page .project-overrides{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+:root:root .projects-page .project-identity-toggle{padding:10px 18px!important}
+:root:root .projects-page .project-identity-toggle button{background:transparent!important;border-color:var(--line)!important;color:var(--tx2)!important}
+:root:root .projects-page .project-identity-toggle button:hover{background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .projects-page .project-identity-editor{display:grid;grid-template-columns:minmax(0,560px);gap:12px}
+:root:root .projects-page .project-icon-actions{display:flex;flex-wrap:wrap;gap:6px}
+:root:root .projects-page .project-image-button{position:relative}
+:root:root .projects-page .project-icon-draft{display:grid;grid-template-columns:minmax(0,1fr) 46px auto;gap:8px;align-items:center}
+:root:root .projects-page .project-icon-draft input:not([type="color"]){height:34px!important}
+:root:root .projects-page .project-icon-draft input[type="color"]{width:46px;height:34px!important;padding:3px!important;border:1px solid var(--line)!important;border-radius:9px!important;background:var(--bg2)!important;cursor:pointer}
+:root:root .projects-page .project-icon-draft button{height:34px!important;min-height:34px!important}
+:root:root .projects-page .project-cleanup{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+/* The label may run into the empty cell beside it rather than wrap to two lines in narrower cards. */
+:root:root .projects-page .project-cleanup>label{white-space:nowrap}
+:root:root .projects-page .project-cleanup-rules{grid-column:1/-1}
+:root:root .projects-page .project-cleanup-rules{display:grid;grid-template-columns:minmax(140px,1.2fr) repeat(3,minmax(0,1fr));gap:12px;align-items:end}
+:root:root .projects-page .project-cleanup-rules>label:not(:first-child){min-height:34px;display:flex;align-items:center;gap:8px;font-size:12px!important;font-weight:500;line-height:1.35;color:var(--tx1)!important;text-transform:none;letter-spacing:0;cursor:pointer}
+@container pgcard (max-width:700px){
+  :root:root .projects-page .project-overrides,
+  :root:root .projects-page .project-cleanup,
+  :root:root .projects-page .project-cleanup-rules{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+/* Project actions and lifecycle hooks. */
+:root:root .projects-page :is(.project-actions,.project-hooks){display:grid;gap:12px}
+:root:root .projects-page .project-actions-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 10px}
+:root:root .projects-page .project-actions-head>span{display:flex;align-items:center;gap:8px;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .projects-page .project-actions-head>span svg{color:var(--ac)}
+:root:root .projects-page .project-actions-head>div{display:flex;flex-wrap:wrap;gap:6px}
+:root:root .projects-page :is(.project-actions-empty,.project-hook-note){margin:0!important;font-size:12px!important;line-height:1.55!important;color:var(--tx3)!important}
+:root:root .projects-page .project-hook-note code{padding:1px 6px;border:1px solid color-mix(in srgb,var(--ac) 25%,transparent);border-radius:5px;background:var(--acsoft);color:var(--ac)!important;font-family:var(--mono)!important;font-size:11px!important}
+:root:root .projects-page :is(.project-action-list,.project-hook-list){display:grid;gap:8px}
+:root:root .projects-page .project-action-row{display:flex;align-items:center;gap:6px;min-width:0}
+:root:root .projects-page .project-action-run{flex:1;min-width:0;height:auto!important;min-height:46px;display:grid!important;grid-template-columns:28px minmax(0,1fr) auto!important;gap:10px;align-items:center;justify-items:stretch;text-align:left!important;padding:8px 12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important;color:var(--tx1)!important;cursor:pointer;transition:border-color .15s}
+:root:root .projects-page .project-action-run:hover:not(:disabled){border-color:color-mix(in srgb,var(--ac) 45%,var(--line))!important}
+:root:root .projects-page .project-action-run>svg{box-sizing:content-box;width:12px;height:12px;padding:7px;border-radius:8px;background:var(--acsoft);color:var(--ac)}
+:root:root .projects-page .project-action-run>span{min-width:0}
+:root:root .projects-page .project-action-run strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-action-run small{display:block;margin-top:2px;font-family:var(--mono)!important;font-size:11px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-action-run em{padding:2.5px 8px;border:1px solid color-mix(in srgb,var(--ac) 35%,transparent)!important;border-radius:99px;background:var(--acsoft)!important;color:var(--ac)!important;font-family:var(--mono);font-size:10px!important;font-style:normal;font-weight:600;text-transform:none}
+:root:root .projects-page :is(.project-action-row>button:not(.project-action-run),.project-hook-row>button){flex:none;width:34px;height:34px!important;min-height:34px;display:grid;place-items:center;padding:0!important;border:1px solid var(--line)!important;border-radius:9px!important;background:var(--pg-row)!important;color:var(--tx2)!important;cursor:pointer;transition:background-color .15s,color .15s,border-color .15s}
+:root:root .projects-page :is(.project-action-row>button:not(.project-action-run),.project-hook-row>button):hover:not(:disabled){border-color:var(--line2)!important;background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .projects-page :is(.project-action-row,.project-hook-row)>button.danger:hover:not(:disabled){border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+:root:root .projects-page .project-hook-row{display:grid;grid-template-columns:minmax(0,1fr) auto 34px 34px;gap:8px;align-items:center;padding:10px 10px 10px 14px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root .projects-page .project-hook-row>span{min-width:0}
+:root:root .projects-page .project-hook-row strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-hook-row small{display:block;margin-top:2px;font-family:var(--mono)!important;font-size:11px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-hook-row em{display:inline-block;margin-top:6px;padding:2px 7px;border:1px solid var(--line2)!important;border-radius:6px;background:var(--bg3);color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-style:normal}
+:root:root .projects-page .project-hook-row>b{padding:3px 9px;border:1px solid color-mix(in srgb,var(--ac) 35%,transparent)!important;border-radius:99px;background:var(--acsoft);color:var(--ac)!important;font-family:var(--mono);font-size:10.5px!important;font-weight:600;text-transform:none}
+:root:root .projects-page .project-hook-row>b.warn{border-color:var(--warnb)!important;background:var(--warnt);color:var(--warn)!important}
+
+:root:root .projects-page :is(.project-action-editor,.project-hook-editor){display:grid;gap:10px;padding:14px!important;border:1px solid var(--line2)!important;border-radius:var(--r-m)!important;background:var(--bg2)!important}
+:root:root .projects-page :is(.project-action-editor,.project-hook-editor) :is(input:not([type="checkbox"]),select){background-color:var(--pg-row)!important}
+:root:root .projects-page .project-action-editor>label{display:flex;align-items:center;gap:8px;font-size:12px!important;line-height:1.4;color:var(--tx1)!important;cursor:pointer}
+:root:root .projects-page .project-action-editor>label:has(input:disabled){color:var(--tx3)!important;cursor:default}
+:root:root .projects-page :is(.project-action-editor,.project-hook-editor)>div:last-child{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px}
+:root:root .projects-page .project-hook-options{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px!important;justify-content:stretch!important}
+:root:root .projects-page .project-config-hint{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:10px 12px;border:1px solid color-mix(in srgb,var(--ac) 28%,var(--line))!important;border-radius:var(--r-m);background:var(--acsoft)!important}
+:root:root .projects-page .project-config-hint strong{font-size:12px!important;font-weight:600;color:var(--ac)!important}
+:root:root .projects-page .project-config-hint span{min-width:0;font-size:12px!important;color:var(--tx2)!important}
+/* A repository can expose dozens of scripts: the list scrolls inside the card and its header (with Import all) stays put. */
+/* max-content rows: inside the 440px scroll box the rows must keep their height and scroll, not be squashed to fit. */
+:root:root .projects-page .project-import-list{display:grid;grid-auto-rows:max-content;align-content:start;gap:8px;max-height:440px;overflow:auto;overscroll-behavior:contain;padding:0 12px 12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--bg2)!important}
+:root:root .projects-page .project-import-head{position:sticky;top:0;z-index:1;display:flex!important;align-items:center;justify-content:space-between!important;padding:12px 2px 6px!important;background:var(--bg2)!important}
+:root:root .projects-page .project-import-head span{font-size:11px!important;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .projects-page .project-import-list>div:not(.project-import-head){min-height:0!important;display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:8px 10px!important;border:1px solid var(--line)!important;border-radius:9px!important;background:var(--pg-row)!important}
+:root:root .projects-page .project-import-list>div>span{min-width:0}
+:root:root .projects-page .project-import-list strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-import-list small{display:block;margin-top:2px;font-family:var(--mono);font-size:11px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-import-list em{font-family:var(--mono);font-size:10.5px!important;font-style:normal;color:var(--tx3)!important}
+
+/* Background clone progress (pbar). */
+:root:root .projects-page .project-clone-status{display:grid;grid-template-columns:minmax(0,1fr) minmax(90px,1fr) auto;gap:12px;align-items:center}
+:root:root .projects-page .project-clone-status>div:first-child{display:grid;gap:3px;min-width:0}
+:root:root .projects-page .project-clone-status strong{font-size:12.5px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .projects-page .project-clone-status span{font-family:var(--mono);font-size:11px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .projects-page .project-clone-status i{display:block;height:4px;border-radius:3px;background:var(--bg4)!important;overflow:hidden}
+:root:root .projects-page .project-clone-status i b{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--ac2),var(--ac))!important;transition:width .5s var(--ease-out)}
+:root:root .projects-page .project-clone-status>div:last-child{grid-column:3;display:flex;justify-content:flex-end;gap:6px}
+/* Failed and cancelled jobs have no progress bar: the message takes its column and wraps so the whole error reads. */
+:root:root .projects-page .project-clone-status:is(.failed,.cancelled)>div:first-child{grid-column:1/3}
+:root:root .projects-page .project-clone-status:is(.failed,.cancelled) span{white-space:normal;overflow-wrap:anywhere;line-height:1.5}
+:root:root .projects-page .project-clone-status.failed{background:var(--errt)!important}
+:root:root .projects-page .project-clone-status.failed strong{color:var(--err)!important}
+/* A clone the user cancelled is not an error: neutral surface, muted title. */
+:root:root .projects-page .project-clone-status.cancelled{background:var(--bg2)!important}
+:root:root .projects-page .project-clone-status.cancelled strong{color:var(--tx1)!important}
+
+:root:root .projects-page .project-window-empty{display:grid;justify-items:center;gap:5px;padding:38px 20px!important;border:1.5px dashed var(--line2)!important;border-radius:var(--r-l)!important;background:transparent!important;text-align:center;font-size:12.5px!important;color:var(--tx3)!important}
+:root:root .projects-page .project-window-empty>svg{margin-bottom:6px;opacity:.5}
+:root:root .projects-page .project-window-empty>span{font-size:13px;font-weight:550;color:var(--tx2)}
+:root:root .projects-page .project-window-empty>small{font-size:12px;line-height:1.5;color:var(--tx3)}
+:root:root .projects-page .project-window-footer{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:12px;padding:4px 0 0!important}
+:root:root .projects-page .project-window-footer span{font-family:var(--mono);font-size:11px!important;color:var(--tx3)!important}
+
+/* ============ History (App.jsx markup) ============ */
+:root:root .secondary-page .history-page{display:grid;gap:10px}
+:root:root .secondary-page .history-page>.history-thread-row{width:100%;min-height:0!important;display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:14px;align-items:center;text-align:left;padding:12px 16px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important;color:var(--tx1)!important;cursor:pointer;transition:border-color .15s,background-color .15s}
+:root:root .secondary-page .history-page>.history-thread-row:hover{border-color:var(--line2)!important;background:var(--bg2)!important}
+:root:root .secondary-page .history-page>.history-thread-row>svg{box-sizing:content-box;width:15px;height:15px;padding:9px;border:1px solid var(--line);border-radius:10px;background:var(--bg3);color:var(--tx2);transition:color .15s}
+:root:root .secondary-page .history-page>.history-thread-row:hover>svg{color:var(--ac)}
+:root:root .secondary-page .history-page>.history-thread-row>div{min-width:0}
+:root:root .secondary-page .history-page>.history-thread-row strong{display:block;font-size:13.5px!important;font-weight:600;letter-spacing:-.01em;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .secondary-page .history-page>.history-thread-row span{display:block;margin-top:3px;font-size:12px!important;color:var(--tx2)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .secondary-page .history-page>.history-thread-row time{font-family:var(--mono);font-size:11px!important;color:var(--tx3)!important;white-space:nowrap;font-variant-numeric:tabular-nums}
+:root:root .secondary-page .history-page .history-empty{min-height:0;display:grid;justify-items:center;align-content:center;gap:8px;padding:44px 20px!important;border:1.5px dashed var(--line2)!important;border-radius:var(--r-l)!important;background:transparent!important;text-align:center;color:var(--tx3)!important}
+:root:root .secondary-page .history-page .history-empty>svg{width:22px;height:22px;margin-bottom:4px;color:var(--tx3);opacity:.6}
+:root:root .secondary-page .history-page .history-empty strong{font-size:14px!important;font-weight:600;color:var(--tx1)!important}
+:root:root .secondary-page .history-page .history-empty span{max-width:440px;font-size:12.5px!important;line-height:1.55;color:var(--tx3)!important}
+:root:root .secondary-page .history-page .history-empty button{height:34px!important;min-height:34px!important;margin-top:8px;padding:0 15px!important;border:1px solid transparent!important;border-radius:9px!important;font-size:12.5px!important;font-weight:550;cursor:pointer}
+:root:root .secondary-page .history-page .history-load-more{display:flex;justify-content:center;margin:6px 0 0!important}
+@media (max-width:640px){
+  :root:root .secondary-page .history-page>.history-thread-row{grid-template-columns:36px minmax(0,1fr)}
+  :root:root .secondary-page .history-page>.history-thread-row time{grid-column:2}
+}
+
+/* ============ Shared card system: Usage, Tools, Environments ============ */
+:root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card{min-width:0;min-height:0!important;padding:16px 18px!important;border:1px solid var(--line)!important;border-radius:var(--r-l)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important;box-shadow:none!important;color:var(--tx1)!important;transition:border-color .18s}
+:root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card:hover{border-color:var(--line2)!important}
+:root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px!important;padding:0!important;border:0!important;color:var(--tx0)!important}
+:root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card-head>span{display:flex;align-items:center;gap:8px;min-width:0}
+:root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card-head>span>svg{flex:none;color:var(--ac)}
+:root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card-head strong{font-size:13.5px!important;font-weight:650;letter-spacing:-.01em;color:var(--tx0)!important}
+:root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card-head em{flex:none;padding:2.5px 9px!important;border:1px solid var(--line2)!important;border-radius:99px!important;background:var(--bg3)!important;color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-style:normal;font-weight:600;white-space:nowrap}
+:root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card p:not([class]){margin:8px 0!important;font-size:12.5px!important;line-height:1.6!important;color:var(--tx2)!important}
+:root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card>p:not([class]):last-child{margin-bottom:0!important}
+
+/* List rows (hrow). */
+:root:root :is(.capabilities-page,.environments-page) .capability-list{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;max-height:320px;overflow:auto}
+:root:root :is(.capabilities-page,.environments-page) .capability-list>div{min-height:46px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root :is(.capabilities-page,.environments-page) .capability-list>div>div:first-child{min-width:0}
+:root:root :is(.capabilities-page,.environments-page) .capability-list strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root :is(.capabilities-page,.environments-page) .capability-list>div>div:first-child>span{display:block;margin-top:2px;font-size:11.5px!important;line-height:1.45!important;color:var(--tx3)!important;overflow-wrap:anywhere}
+:root:root :is(.capabilities-page,.environments-page) .capability-list em{flex:none;padding:3px 9px;border:1px solid var(--line2)!important;border-radius:99px;background:var(--bg3)!important;color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-style:normal;font-weight:600;white-space:nowrap}
+:root:root :is(.capabilities-page,.environments-page) .capability-list em.ok{border-color:var(--okb)!important;background:var(--okt)!important;color:var(--ok)!important}
+/* An MCP server that still needs sign-in reads as a warning, not as healthy. */
+:root:root .capabilities-page .capability-list em.warn{border-color:var(--warnb)!important;background:var(--warnt)!important;color:var(--warn)!important}
+:root:root .capabilities-page .config-warning-list em{border-color:var(--warnb)!important;background:var(--warnt)!important;color:var(--warn)!important}
+
+/* ============ Usage ============ */
+:root:root .usage-page{display:grid;gap:14px;container:pg/inline-size}
+:root:root .usage-page>.capabilities-toolbar{margin-bottom:12px!important}
+:root:root .usage-page .usage-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+:root:root .usage-page .usage-toolbar select{width:auto}
+:root:root .usage-page .usage-environment-filter{position:relative}
+:root:root .usage-page .usage-environment-filter>summary{min-width:156px;max-width:240px;display:flex;align-items:center;list-style:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:none}
+:root:root .usage-page .usage-environment-filter>summary::-webkit-details-marker{display:none}
+:root:root .usage-page .usage-environment-filter[open]>summary{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)!important}
+:root:root .usage-page .usage-environment-filter>div{position:absolute;left:0;right:auto;top:40px;z-index:30;width:260px;max-width:calc(100vw - 48px);display:grid;gap:2px;padding:6px!important;border:1px solid var(--line2)!important;border-radius:12px!important;background:var(--panel)!important;box-shadow:var(--shadow)!important;animation:tb-pop .14s var(--ease-out)}
+:root:root .usage-page .usage-environment-filter>div>button{height:34px;min-height:34px!important;padding:0 10px!important;border:0!important;border-radius:8px!important;background:transparent!important;color:var(--tx1)!important;font-size:12.5px!important;text-align:left;cursor:pointer}
+:root:root .usage-page .usage-environment-filter>div>button:hover{background:var(--bg3)!important}
+:root:root .usage-page .usage-environment-filter>div>button.active{background:var(--acsoft)!important;color:var(--ac)!important;font-weight:550}
+:root:root .usage-page .usage-environment-filter label{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:9px;align-items:center;min-height:34px!important;padding:0 10px;border-radius:8px;color:var(--tx1)!important;font-size:12.5px!important;cursor:pointer}
+:root:root .usage-page .usage-environment-filter label:hover{background:var(--bg3)!important}
+:root:root .usage-page .usage-environment-filter label input{width:14px;height:14px;margin:0}
+:root:root .usage-page .usage-environment-filter label span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:root:root .usage-page .usage-environment-filter label em{color:var(--tx3)!important;font-family:var(--mono);font-size:10.5px!important;font-style:normal;text-transform:uppercase}
+:root:root .usage-page .usage-toolbar>button.usage-clear:hover:not(:disabled){border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+
+/* Summary stat tiles. */
+:root:root .usage-page .usage-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+:root:root .usage-page .usage-summary>div{display:grid;align-content:start;gap:6px;min-width:0;padding:16px 18px!important;border:1px solid var(--line)!important;border-radius:var(--r-l)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important}
+:root:root .usage-page .usage-summary span{font-size:12px!important;font-weight:500;letter-spacing:0!important;text-transform:none!important;color:var(--tx2)!important}
+:root:root .usage-page .usage-summary strong{font-size:26px!important;font-weight:650;letter-spacing:-.03em;line-height:1.15;color:var(--tx0)!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:root:root .usage-page .usage-summary small{font-size:11.5px!important;line-height:1.45;color:var(--tx3)!important}
+:root:root .usage-page .usage-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+
+/* Daily tokens: one series of thin bars anchored at the left baseline, rounded at the data end. */
+:root:root .usage-page .usage-bars{display:grid;gap:7px;max-height:320px;overflow:auto}
+:root:root .usage-page .usage-bars>div{display:grid;grid-template-columns:58px minmax(0,1fr) 58px;gap:10px;align-items:center;min-height:20px}
+:root:root .usage-page .usage-bars span{font-size:11.5px!important;color:var(--tx2)!important;white-space:nowrap;font-variant-numeric:tabular-nums}
+:root:root .usage-page .usage-bars i{display:block;height:10px!important;border-radius:0;background:transparent!important;overflow:visible}
+:root:root .usage-page .usage-bars b{display:block;height:100%;min-width:2px;border-radius:0 4px 4px 0;background:var(--ac)!important}
+:root:root .usage-page .usage-bars strong{font-size:11.5px!important;font-weight:550;color:var(--tx1)!important;text-align:right;font-variant-numeric:tabular-nums}
+:root:root .usage-page .usage-bars p,
+:root:root .usage-page .usage-models p{margin:0!important;font-size:12.5px!important;line-height:1.55!important;color:var(--tx3)!important}
+
+:root:root .usage-page .usage-models{display:grid;gap:8px;max-height:320px;overflow:auto}
+:root:root .usage-page .usage-models>div{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;align-items:center;padding:10px 12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root .usage-page .usage-models span{display:grid;gap:2px;min-width:0}
+:root:root .usage-page .usage-models strong{font-family:var(--mono);font-size:12px!important;font-weight:500;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .usage-page .usage-models small{font-size:11.5px!important;color:var(--tx3)!important}
+:root:root .usage-page .usage-models>b{font-size:12.5px!important;font-weight:600;color:var(--tx1)!important;font-variant-numeric:tabular-nums}
+:root:root .usage-page .usage-models>em{min-width:58px;font-family:var(--mono);font-size:11.5px!important;font-style:normal;color:var(--tx2)!important;text-align:right;font-variant-numeric:tabular-nums}
+
+/* Recent turns table. */
+:root:root .usage-page .usage-table{display:grid;max-height:380px;overflow:auto;border:1px solid var(--line);border-radius:var(--r-m)}
+:root:root .usage-page .usage-table>div{min-width:720px;min-height:38px!important;display:grid;grid-template-columns:150px 130px 110px minmax(160px,1fr) 80px 84px;gap:12px;align-items:center;padding:0 14px;border-top:1px solid var(--line)!important;background:transparent;color:var(--tx1)!important;font-size:12px!important}
+:root:root .usage-page .usage-table>div:not(.usage-table-head):hover{background:var(--surf)}
+:root:root .usage-page .usage-table>div span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .usage-page .usage-table>div:not(.usage-table-head) span:first-child{font-family:var(--mono);font-size:11.5px;color:var(--tx2)}
+:root:root .usage-page .usage-table>div:not(.usage-table-head) span:nth-child(4){font-family:var(--mono);font-size:11.5px}
+:root:root .usage-page .usage-table>div span:nth-child(n+5){text-align:right;font-variant-numeric:tabular-nums}
+:root:root .usage-page .usage-table-head{position:sticky;top:0;z-index:1;min-height:36px!important;border-top:0!important;background:var(--bg2)!important;color:var(--tx2)!important;font-size:11.5px!important;font-weight:600}
+:root:root .usage-page .usage-table-empty{min-width:720px;margin:0;padding:22px 14px;border-top:1px solid var(--line);text-align:center;font-size:12.5px;color:var(--tx3)}
+
+/* Live account limits (Codex and subscription runtimes). */
+:root:root .usage-page .codex-account-usage{display:grid;gap:12px}
+:root:root .usage-page .codex-account-usage>.capability-card-head{margin-bottom:0!important}
+:root:root .usage-page .codex-account-line{margin:0!important;font-family:var(--mono);font-size:11.5px!important;color:var(--tx2)!important}
+:root:root .usage-page .usage-warning{display:flex;align-items:center;gap:8px;padding:10px 12px!important;border:1px solid var(--warnb)!important;border-radius:var(--r-m)!important;background:var(--warnt)!important;color:var(--warn)!important;font-size:12.5px!important}
+:root:root .usage-page .codex-limit-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+:root:root .usage-page .codex-limit-card{display:grid;align-content:start;gap:10px;min-width:0;padding:14px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root .usage-page .codex-limit-card>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:8px}
+:root:root .usage-page .codex-limit-card>div:first-child strong{font-size:13px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .usage-page .codex-limit-card>div:first-child span{color:var(--tx3);font-family:var(--mono);font-size:10.5px}
+:root:root .usage-page .codex-limit-card>div:first-child .limit-reached{padding:2.5px 8px;border:1px solid var(--errb);border-radius:99px;background:var(--errt);color:var(--err)!important;font-size:10.5px!important;font-weight:600}
+:root:root .usage-page .limit-window{display:grid;grid-template-columns:72px minmax(80px,1fr) auto;gap:6px 10px;align-items:center}
+:root:root .usage-page .limit-window span{font-size:12px!important;color:var(--tx2)!important}
+:root:root .usage-page .limit-window i{display:block;height:6px;border-radius:3px;background:var(--bg4)!important;overflow:hidden}
+:root:root .usage-page .limit-window i b{display:block;height:100%;border-radius:3px;background:var(--ac)}
+:root:root .usage-page .limit-window.low i b{background:var(--warn)}
+:root:root .usage-page .limit-window.critical i b{background:var(--err)}
+:root:root .usage-page .limit-window strong{font-size:12px!important;font-weight:600;color:var(--tx1)!important;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+:root:root .usage-page .limit-window small{grid-column:2/-1;font-size:11px!important;color:var(--tx3)!important;text-align:left}
+:root:root .usage-page .limit-meta{display:grid;grid-template-columns:90px minmax(0,1fr) auto;gap:10px;align-items:center}
+:root:root .usage-page .limit-meta span{font-size:12px!important;color:var(--tx2)!important}
+:root:root .usage-page .limit-meta strong{font-size:12.5px!important;font-weight:600;color:var(--tx1)!important;font-variant-numeric:tabular-nums}
+:root:root .usage-page .limit-meta small{font-size:11px!important;color:var(--tx3)!important}
+:root:root .usage-page .reset-credit-row{display:flex;flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:12px 14px!important;border:1px solid color-mix(in srgb,var(--ac) 30%,var(--line))!important;border-radius:var(--r-m)!important;background:var(--acsoft)!important}
+:root:root .usage-page .reset-credit-row>div{display:grid;gap:2px;min-width:0}
+:root:root .usage-page .reset-credit-row strong{font-size:13px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .usage-page .reset-credit-row span{font-size:12px!important;color:var(--tx2)!important}
+:root:root .usage-page .codex-usage-kv{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+:root:root .usage-page .codex-usage-kv>div{display:grid;gap:4px;min-width:0;padding:12px 14px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root .usage-page .codex-usage-kv span{font-size:11.5px!important;letter-spacing:0;text-transform:none!important;color:var(--tx2)!important}
+:root:root .usage-page .codex-usage-kv strong{font-size:16px!important;font-weight:650;color:var(--tx0)!important;font-variant-numeric:tabular-nums}
+:root:root .usage-page .thread-account-usage{display:flex;flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 12px;padding-top:12px!important;border-top:1px solid var(--line)!important}
+:root:root .usage-page .thread-account-usage strong{font-size:12.5px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .usage-page .thread-account-usage span{font-family:var(--mono);font-size:11.5px!important;color:var(--tx2)!important}
+:root:root .usage-page .workspace-messages{display:grid;gap:8px}
+:root:root .usage-page .workspace-messages>strong{font-size:12.5px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .usage-page .workspace-messages>div{padding:10px 12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root .usage-page .workspace-messages>div>span{color:var(--ac)!important;font-family:var(--mono);font-size:10.5px!important;text-transform:uppercase}
+:root:root .usage-page .workspace-messages p{margin:4px 0 0!important;font-size:12.5px!important;line-height:1.55;color:var(--tx1)!important}
+@container pg (max-width:760px){
+  :root:root .usage-page .usage-summary,
+  :root:root .usage-page .codex-usage-kv{grid-template-columns:repeat(2,minmax(0,1fr))}
+  :root:root .usage-page .usage-grid{grid-template-columns:minmax(0,1fr)}
+}
+
+/* ============ Tools (harness capabilities) ============ */
+:root:root .capabilities-page{container:pg/inline-size}
+:root:root .capabilities-page .capability-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
+:root:root .capabilities-page .capability-kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+:root:root .capabilities-page .capability-kv>div{min-width:0;padding:10px 12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root .capabilities-page .capability-kv span{display:block;font-size:11.5px!important;letter-spacing:0;text-transform:none;color:var(--tx2)!important}
+:root:root .capabilities-page .capability-kv strong{display:block;margin-top:3px;font-size:13px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .capabilities-page .capability-actions{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:8px;margin:10px 0!important}
+:root:root .capabilities-page .capability-inline-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px}
+:root:root .capabilities-page .capability-inline-actions select{width:auto;height:30px!important;font-size:11.5px!important}
+:root:root .capabilities-page .capability-badges{display:flex;flex-wrap:wrap;gap:6px}
+:root:root .capabilities-page .capability-badges span{padding:3.5px 10px!important;border:1px solid var(--line2)!important;border-radius:99px!important;background:var(--bg3)!important;color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-weight:600}
+:root:root .capabilities-page .capability-badges span.ok{border-color:var(--okb)!important;background:var(--okt)!important;color:var(--ok)!important}
+:root:root .capabilities-page :is(.skill-list,.feature-list) button{min-width:52px}
+:root:root .capabilities-page :is(.skill-list,.feature-list) button.active{border-color:color-mix(in srgb,var(--ac) 40%,transparent)!important;background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root :is(.capabilities-page,.usage-page) .capability-details{margin-top:10px!important;overflow:hidden;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root :is(.capabilities-page,.usage-page) :is(.capability-details,.mcp-server-details)>summary{display:flex;align-items:center;gap:8px;padding:9px 12px!important;list-style:none;color:var(--tx1)!important;font-size:12px!important;font-weight:550;cursor:pointer;user-select:none}
+:root:root :is(.capabilities-page,.usage-page) :is(.capability-details,.mcp-server-details)>summary::-webkit-details-marker{display:none}
+:root:root :is(.capabilities-page,.usage-page) :is(.capability-details,.mcp-server-details)>summary::before{content:"";flex:none;width:12px;height:12px;background:var(--chev) center/11px no-repeat;transform:rotate(-90deg);transition:transform .15s}
+:root:root :is(.capabilities-page,.usage-page) :is(.capability-details,.mcp-server-details)[open]>summary::before{transform:none}
+:root:root :is(.capabilities-page,.usage-page) .capability-details pre{max-height:260px;overflow:auto;margin:0!important;padding:10px 12px!important;border:0!important;border-top:1px solid var(--line)!important;background:var(--pg-code)!important;color:var(--tx2)!important;font:11px/1.6 var(--mono)!important;white-space:pre-wrap;word-break:break-word}
+:root:root .capabilities-page .capability-details>.capability-list{max-height:280px;padding:8px;border-top:1px solid var(--line)}
+:root:root .capabilities-page .capability-status{margin:10px 0 0!important;font-size:12px!important;line-height:1.5;color:var(--tx1)!important}
+:root:root .capabilities-page .capability-error{margin:8px 0 0!important;font-size:12px!important;line-height:1.5;color:var(--err)!important;overflow-wrap:anywhere}
+:root:root .capabilities-page .capability-card>.provider-status-error{margin-top:10px!important}
+
+:root:root .capabilities-page .mcp-server-row{flex-wrap:wrap}
+/* Once a server's resources and tools are expanded, the list grows instead of nesting a scroll area around the argument inputs. */
+:root:root .capabilities-page .capability-list:has(.mcp-server-details[open]){max-height:none}
+:root:root .capabilities-page .mcp-server-details{width:100%;margin-top:4px;padding-top:4px;border:0!important;border-top:1px solid var(--line)!important;background:transparent!important}
+:root:root .capabilities-page .mcp-server-details>summary{padding:6px 0!important}
+:root:root .capabilities-page .mcp-resource{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 0}
+:root:root .capabilities-page .mcp-resource span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11.5px!important;color:var(--tx2)!important}
+:root:root .capabilities-page .mcp-tool{display:grid;grid-template-columns:minmax(100px,.8fr) minmax(140px,1fr) auto;gap:8px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+:root:root .capabilities-page .mcp-tool>div span{white-space:normal}
+:root:root .capabilities-page :is(.mcp-tool input,.marketplace-add input){height:30px!important;font-family:var(--mono);font-size:11.5px!important}
+:root:root .capabilities-page .marketplace-add{display:flex;gap:8px}
+:root:root .capabilities-page .marketplace-add input{flex:1}
+:root:root .capabilities-page .skill-roots-editor{display:grid;gap:8px;margin-top:12px;padding-top:12px;border:0!important;border-top:1px solid var(--line)!important}
+:root:root .capabilities-page .skill-roots-editor label strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .capabilities-page .skill-roots-editor label span{display:block;margin-top:3px;font-size:11.5px!important;line-height:1.5;color:var(--tx3)!important}
+:root:root .capabilities-page .skill-roots-editor textarea{min-height:74px;resize:vertical;padding:9px 12px!important;border:1px solid var(--line)!important;border-radius:9px!important;background:var(--bg2)!important;color:var(--tx0)!important;font:11.5px/1.55 var(--mono)!important;outline:0}
+:root:root .capabilities-page .skill-roots-editor .capability-actions{margin:0!important}
+:root:root .capabilities-page .plugin-search-controls{display:grid;grid-template-columns:minmax(120px,1fr) 118px auto auto;gap:8px;margin-bottom:10px}
+:root:root .capabilities-page .plugin-search-controls :is(input,select){height:30px!important;font-size:12px!important}
+:root:root .capabilities-page .plugin-search-results{margin-bottom:10px}
+:root:root .capabilities-page :is(.plugin-detail,.app-detail){margin-top:10px;padding:12px 14px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important;color:var(--tx1)!important}
+:root:root .capabilities-page :is(.plugin-detail-head,.app-detail-head){display:flex;align-items:center;justify-content:space-between;gap:10px}
+:root:root .capabilities-page :is(.plugin-detail-head,.app-detail-head) strong{display:block;font-size:13px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .capabilities-page :is(.plugin-detail-head,.app-detail-head) span{display:block;margin-top:2px;font-size:11.5px!important;color:var(--tx3)!important}
+:root:root .capabilities-page :is(.plugin-detail,.app-detail)>p{margin:8px 0!important;font-size:12px!important;line-height:1.55;color:var(--tx2)!important}
+:root:root .capabilities-page .plugin-detail-counts{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+:root:root .capabilities-page .plugin-detail-counts span{padding:3px 9px;border:1px solid var(--line2)!important;border-radius:99px;background:var(--bg3)!important;color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important}
+:root:root .capabilities-page :is(.plugin-detail-skills,.app-tools){display:grid;gap:6px;margin-top:8px}
+:root:root .capabilities-page :is(.plugin-detail-skills,.app-tools)>div{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:8px;border-top:1px solid var(--line)!important}
+:root:root .capabilities-page :is(.plugin-detail-skills,.app-tools)>div>div{min-width:0}
+:root:root .capabilities-page :is(.plugin-detail-skills,.app-tools) strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .capabilities-page :is(.plugin-detail-skills,.app-tools) span{display:block;margin-top:2px;font-size:11.5px!important;color:var(--tx3)!important}
+:root:root .capabilities-page .app-tools em{font-family:var(--mono);font-size:10.5px!important;font-style:normal;color:var(--tx2)!important;text-align:right}
+:root:root .capabilities-page .app-tools em.ok{color:var(--ok)!important}
+:root:root .capabilities-page .app-detail .setting-action{margin-top:8px}
+:root:root .capabilities-page .connector-runtime-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;padding:9px 12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root .capabilities-page .connector-runtime-summary span{font-size:12px!important;color:var(--tx2)!important}
+@container pg (max-width:780px){
+  :root:root .capabilities-page .capability-grid{grid-template-columns:minmax(0,1fr)}
+}
+@container pg (max-width:520px){
+  :root:root .capabilities-page .plugin-search-controls{grid-template-columns:minmax(0,1fr) 110px}
+  :root:root .capabilities-page .mcp-tool{grid-template-columns:minmax(0,1fr) auto}
+  :root:root .capabilities-page .mcp-tool>div{grid-column:1/-1}
+}
+
+/* Tools while the harness is not connected (App.jsx mounts it straight into the page frame). */
+:root:root .secondary-page>.capabilities-empty-state{width:min(560px,100%);height:auto!important;min-height:0;margin:56px auto 0!important;padding:32px 24px!important;display:grid;justify-items:center;align-content:center;gap:8px;text-align:center;border:1.5px dashed var(--line2)!important;border-radius:var(--r-l)!important;background:transparent!important;color:var(--tx3)!important}
+:root:root .secondary-page>.capabilities-empty-state>svg{box-sizing:content-box;width:22px;height:22px;margin-bottom:6px;padding:12px;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);border-radius:14px;background:var(--acsoft);color:var(--ac)}
+:root:root .secondary-page>.capabilities-empty-state strong{margin:0!important;font-size:14px!important;font-weight:600;color:var(--tx1)!important}
+:root:root .secondary-page>.capabilities-empty-state span{margin:0!important;font-size:12.5px!important;line-height:1.55;color:var(--tx3)!important}
+
+/* ============ Environments ============ */
+:root:root .environments-page{container:pg/inline-size}
+:root:root .environments-page .environment-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);grid-template-rows:auto 1fr;gap:14px;align-items:start}
+:root:root .environments-page .environment-grid>.capability-card:first-child{grid-column:1;grid-row:1}
+:root:root .environments-page .environment-grid>.environment-create{grid-column:2;grid-row:1/span 2}
+:root:root .environments-page .environment-grid>.capability-card:last-child{grid-column:1;grid-row:2}
+/* minmax(0,1fr): a long environment name must not widen the list past its card (the actions then slid under the Add environment card). */
+:root:root .environments-page .environment-list{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
+:root:root .environments-page .environment-list>div{min-height:58px!important;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root .environments-page .environment-list>div>div:first-child{flex:1 1 0;min-width:min(140px,40%)}
+:root:root .environments-page .environment-list strong{display:block;font-size:13px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .environments-page .environment-list>div>div:first-child>span{display:block;margin-top:3px;font-family:var(--mono);font-size:11px!important;line-height:1.45!important;color:var(--tx3)!important;overflow-wrap:anywhere}
+:root:root .environments-page .environment-list>div>div:last-child{flex:0 1 auto;min-width:0;display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px}
+:root:root .environments-page .environment-list em{padding:3px 10px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-style:normal;font-weight:600;white-space:nowrap}
+:root:root .environments-page .environment-list em.ok{border-color:var(--okb);background:var(--okt);color:var(--ok)!important}
+:root:root .environments-page .environment-list button.danger{width:30px;padding:0!important;background:transparent!important;border-color:var(--line)!important;color:var(--tx2)!important}
+:root:root .environments-page .environment-list button.danger:hover:not(:disabled){border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+:root:root .environments-page .environment-create{display:grid;gap:12px;align-content:start;min-width:0}
+:root:root .environments-page .environment-create>.capability-card-head{margin-bottom:2px!important}
+:root:root .environments-page .environment-create :is(input,select){height:36px!important}
+:root:root .environments-page .environment-two{display:grid;grid-template-columns:minmax(0,1fr) 110px;gap:10px;min-width:0}
+/* The :focus copy outranks the shared focus ring, so the field stays red while the person is still typing in it. */
+:root:root .environments-page .environment-create input[aria-invalid="true"],:root:root .environments-page .environment-create input[aria-invalid="true"]:focus{border-color:var(--errb)!important;box-shadow:0 0 0 3px var(--errt)!important}
+:root:root .environments-page .environment-field-error{margin:-6px 0 0!important;font-size:11.5px!important;line-height:1.45;color:var(--err)!important}
+:root:root .environments-page .environment-create .primary{height:38px!important;margin-top:4px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 16px!important;border-radius:10px!important;font-size:12.5px!important;font-weight:600;cursor:pointer}
+:root:root .environments-page .capability-card>p:not([class]){font-size:12px!important;color:var(--tx3)!important}
+@container pg (max-width:780px){
+  :root:root .environments-page .environment-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:none}
+  :root:root .environments-page .environment-grid>*{grid-column:auto!important;grid-row:auto!important}
+}
+
+/* ============ Licenses ============ */
+:root:root .licenses-page{display:grid;gap:14px;align-content:start;container:pg/inline-size}
+:root:root .licenses-page .licenses-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px}
+:root:root .licenses-page .licenses-search{flex:1 1 260px;max-width:380px;min-width:0!important;height:36px!important;display:flex;align-items:center;gap:9px;padding:0 12px!important;border:1px solid var(--line)!important;border-radius:10px!important;background:var(--bg2)!important;color:var(--tx3)!important;transition:border-color .15s,box-shadow .15s}
+:root:root .licenses-page .licenses-search:focus-within{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)}
+:root:root .licenses-page .licenses-search>svg{flex:none}
+:root:root .licenses-page .licenses-search input{flex:1;min-width:0;height:100%;padding:0!important;border:0!important;outline:0;background:transparent!important;box-shadow:none!important;color:var(--tx0)!important;font-size:12.5px!important}
+:root:root .licenses-page .licenses-toolbar>span{font-family:var(--mono);font-size:11px!important;color:var(--tx3)!important;white-space:nowrap;font-variant-numeric:tabular-nums}
+:root:root .licenses-page .licenses-layout{display:grid;grid-template-columns:minmax(280px,38%) minmax(0,1fr);gap:14px;height:min(680px,calc(100vh - 250px));min-height:380px}
+:root:root .licenses-page :is(.licenses-list,.license-detail){min-width:0;min-height:0;border:1px solid var(--line)!important;border-radius:var(--r-l)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important;color:var(--tx1)!important}
+:root:root .licenses-page .licenses-list{overflow:auto;padding:6px}
+:root:root .licenses-page .licenses-list>button{width:100%;min-height:52px;display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;text-align:left;padding:8px 10px!important;border:0!important;border-radius:var(--r-s)!important;background:transparent!important;color:var(--tx1)!important;cursor:pointer;transition:background-color .12s}
+:root:root .licenses-page .licenses-list>button+button{margin-top:2px}
+:root:root .licenses-page .licenses-list>button:hover{background:var(--bg2)!important}
+:root:root .licenses-page .licenses-list>button.active{background:var(--acsoft)!important;color:var(--tx0)!important;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ac) 30%,transparent)}
+:root:root .licenses-page .licenses-list>button>svg{box-sizing:content-box;width:13px;height:13px;padding:7px;border-radius:8px;background:var(--bg3);color:var(--tx2)}
+:root:root .licenses-page .licenses-list>button.active>svg{background:color-mix(in srgb,var(--ac) 18%,transparent);color:var(--ac)}
+:root:root .licenses-page .licenses-list>button>span{min-width:0}
+:root:root .licenses-page .licenses-list strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .licenses-page .licenses-list small{display:block;margin-top:2px;font-family:var(--mono);font-size:11px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .licenses-page .licenses-list em{color:var(--tx3)!important;font-size:10.5px!important;font-style:normal;white-space:nowrap}
+:root:root .licenses-page .license-list-empty{display:grid;justify-items:center;gap:6px;padding:40px 16px;text-align:center;color:var(--tx3)}
+:root:root .licenses-page .license-list-empty>svg{margin-bottom:4px;opacity:.55}
+:root:root .licenses-page .license-list-empty strong{white-space:normal;font-size:13px!important}
+:root:root .licenses-page .license-list-empty span{font-size:12px;line-height:1.5;color:var(--tx3)}
+:root:root .licenses-page .license-detail{display:flex;flex-direction:column;overflow:hidden}
+:root:root .licenses-page .license-detail-head{min-height:0!important;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px!important;border-bottom:1px solid var(--line)!important}
+:root:root .licenses-page .license-detail-head>div{min-width:0}
+:root:root .licenses-page .license-detail-head strong{display:block;font-size:15px!important;font-weight:650;letter-spacing:-.01em;color:var(--tx0)!important;overflow-wrap:anywhere}
+:root:root .licenses-page .license-detail-head span{display:block;margin-top:3px;font-family:var(--mono);font-size:11.5px!important;color:var(--tx2)!important}
+:root:root .licenses-page .license-detail-head button{flex:none;width:30px;height:30px;display:grid;place-items:center;padding:0;border:1px solid var(--line)!important;border-radius:var(--r-s)!important;background:transparent!important;color:var(--tx2)!important;cursor:pointer;transition:background-color .15s,color .15s}
+:root:root .licenses-page .license-detail-head button:hover{background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .licenses-page .license-detail>p{margin:12px 18px 0!important;font-family:var(--mono);font-size:11.5px!important;color:var(--ac)!important;word-break:break-all}
+:root:root .licenses-page .license-detail pre{flex:1;min-height:0;overflow:auto;margin:12px 18px 18px!important;padding:14px 16px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-code)!important;color:var(--tx1)!important;font:11.5px/1.65 var(--mono)!important;white-space:pre-wrap;word-break:break-word}
+:root:root .licenses-page .license-empty-state{flex:1;display:grid;place-content:center;justify-items:center;gap:6px;padding:24px;text-align:center}
+:root:root .licenses-page .license-empty-state>svg{box-sizing:content-box;width:20px;height:20px;margin-bottom:6px;padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--bg3);color:var(--tx2)}
+:root:root .licenses-page .license-empty-state strong{font-size:13.5px;font-weight:600;color:var(--tx1)}
+:root:root .licenses-page .license-empty-state span{font-size:12.5px;color:var(--tx3)}
+:root:root .licenses-page .license-detail>.inline-error{margin:0 18px 18px!important}
+@container pg (max-width:720px){
+  :root:root .licenses-page .licenses-layout{grid-template-columns:minmax(0,1fr);height:auto;min-height:0}
+  :root:root .licenses-page .licenses-list{max-height:340px}
+  :root:root .licenses-page .license-detail{min-height:320px;max-height:560px}
+}
+
+/* ============ Agents panel ============ */
+:root:root .agents-page{display:grid;align-content:start;gap:12px;padding:6px 6px 14px;container:pg/inline-size}
+:root:root .agents-page :is(.agent-summary,.delegate-card,.collaboration-card){margin:0!important;border:1px solid var(--line)!important;border-radius:var(--r-l)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important;box-shadow:none!important;color:var(--tx1)!important}
+:root:root .agents-page .agent-summary{display:grid;grid-template-columns:40px minmax(0,1fr) auto;gap:12px;align-items:center;padding:14px 16px!important}
+:root:root .agents-page .agent-summary>svg{box-sizing:content-box;width:18px;height:18px;padding:10px;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);border-radius:11px;background:var(--acsoft);color:var(--ac)}
+:root:root .agents-page .agent-summary>div{min-width:0}
+:root:root .agents-page .agent-summary strong{display:block;font-size:13.5px!important;font-weight:650;letter-spacing:-.01em;color:var(--tx0)!important}
+:root:root .agents-page .agent-summary span{display:block;margin-top:3px;font-size:12px!important;line-height:1.5!important;color:var(--tx2)!important}
+:root:root .agents-page .agent-refresh{width:32px;height:32px;display:grid;place-items:center;padding:0;border:1px solid var(--line2)!important;border-radius:9px!important;background:var(--bg3)!important;color:var(--tx2)!important;cursor:pointer;transition:background-color .15s,color .15s}
+:root:root .agents-page .agent-refresh:hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .agents-page .agent-fleet-stats{display:flex;flex-wrap:wrap;gap:6px}
+:root:root .agents-page .agent-fleet-stats span{display:inline-flex;align-items:center;gap:6px;padding:3.5px 10px!important;border:1px solid var(--line2)!important;border-radius:99px!important;background:var(--bg3)!important;color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-weight:600}
+:root:root .agents-page .agent-fleet-stats span::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--tx3)}
+:root:root .agents-page .agent-fleet-stats span.working{border-color:color-mix(in srgb,var(--ac) 35%,transparent)!important;background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .agents-page .agent-fleet-stats span.working::before{background:var(--ac)}
+:root:root .agents-page .agent-fleet-stats span:nth-child(2)::before{background:var(--ok)}
+:root:root .agents-page .agent-fleet-stats span.error{border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+:root:root .agents-page .agent-fleet-stats span.error::before{background:var(--err)}
+
+:root:root .agents-page :is(.delegate-card,.collaboration-card){padding:14px 16px!important}
+:root:root .agents-page :is(.delegate-head,.collaboration-head){display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+:root:root .agents-page :is(.delegate-head,.collaboration-head)>div{display:flex;align-items:flex-start;gap:10px;min-width:0;color:var(--ac)!important}
+:root:root .agents-page :is(.delegate-head,.collaboration-head)>div>svg{flex:none;margin-top:1px;color:var(--ac)}
+:root:root .agents-page :is(.delegate-head,.collaboration-head) span{min-width:0}
+:root:root .agents-page :is(.delegate-head,.collaboration-head) span strong{display:block;font-size:13px!important;font-weight:650;color:var(--tx0)!important}
+:root:root .agents-page :is(.delegate-head,.collaboration-head) span small{display:block;margin-top:3px!important;font-size:11.5px!important;line-height:1.5!important;color:var(--tx2)!important}
+:root:root .agents-page .delegate-head>button{flex:none;height:30px!important;padding:0 12px!important;border:1px solid color-mix(in srgb,var(--ac) 40%,var(--line))!important;border-radius:var(--r-s)!important;background:transparent!important;color:var(--ac)!important;font-size:11.5px!important;font-weight:550;cursor:pointer;transition:background-color .15s}
+:root:root .agents-page .delegate-head>button:hover:not(:disabled){background:var(--acsoft)!important}
+:root:root .agents-page .collaboration-head>button{flex:none;width:28px;height:28px;display:grid;place-items:center;padding:0;border:0!important;border-radius:var(--r-s)!important;background:transparent!important;color:var(--tx2)!important;cursor:pointer}
+:root:root .agents-page .collaboration-head>button:hover:not(:disabled){background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .agents-page :is(.delegate-card,.collaboration-card)>p{margin:10px 0 0!important;font-size:12px!important;line-height:1.6!important;color:var(--tx3)!important}
+:root:root .agents-page .delegate-form{display:grid;gap:10px!important;margin-top:12px}
+:root:root .agents-page .delegate-form textarea{width:100%;min-height:84px!important;max-height:180px;resize:vertical;padding:10px 12px!important;border:1px solid var(--line)!important;border-radius:10px!important;background:var(--bg2)!important;color:var(--tx0)!important;font-size:12.5px!important;line-height:1.55!important;outline:none}
+:root:root .agents-page .delegate-form>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+:root:root .agents-page .delegate-form select{height:34px!important;padding-left:10px!important}
+:root:root .agents-page .delegate-submit{justify-self:start;height:34px!important;padding:0 15px!important;border-radius:9px!important;font-size:12.5px!important;font-weight:600;cursor:pointer}
+:root:root .agents-page .collaboration-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;margin-top:12px}
+:root:root .agents-page .collaboration-modes button{display:grid;gap:2px;text-align:left;padding:10px 12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important;color:var(--tx1)!important;cursor:pointer;transition:border-color .15s,background-color .15s}
+:root:root .agents-page .collaboration-modes button:hover:not(:disabled){border-color:var(--line2)!important;background:var(--pg-row)!important}
+:root:root .agents-page .collaboration-modes button.active{border-color:color-mix(in srgb,var(--ac) 45%,var(--line))!important;background:var(--acsoft)!important}
+:root:root .agents-page .collaboration-modes strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .agents-page .collaboration-modes span{display:block;margin-top:0;font-family:var(--mono);font-size:10.5px!important;color:var(--tx3)!important}
+
+:root:root .agents-page .agent-group{display:grid;gap:8px}
+:root:root .agents-page .agent-group h4{display:flex;align-items:center;justify-content:space-between;margin:6px 2px 0!important;font-size:11px!important;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .agents-page .agent-group h4 span{font-family:var(--mono)!important;font-size:10.5px!important;letter-spacing:0;color:var(--tx3)!important}
+:root:root .agents-page .agent-list{display:grid;gap:8px;margin:0!important}
+:root:root .agents-page .agent-row{min-height:0!important;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;overflow:hidden;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important;transition:border-color .15s}
+:root:root .agents-page .agent-row:hover{border-color:var(--line2)!important}
+/* The agent thread that is open in the main view. */
+:root:root .agents-page .agent-row.current{border-color:color-mix(in srgb,var(--ac) 45%,var(--line))!important;box-shadow:inset 3px 0 0 var(--ac)}
+:root:root .agents-page .agent-open{min-height:0!important;display:grid!important;grid-template-columns:12px minmax(0,1fr) 16px!important;gap:10px;align-items:center;text-align:left;padding:10px 12px!important;border:0!important;border-radius:0!important;background:transparent!important;color:var(--tx3)!important;cursor:pointer}
+:root:root .agents-page .agent-open>div{min-width:0}
+:root:root .agents-page .agent-open>div>strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .agents-page .agent-open>div>span{display:block;margin-top:2px!important;font-size:11.5px!important;line-height:1.45!important;color:var(--tx2)!important}
+:root:root .agents-page .agent-open>div>small{display:block;margin-top:2px;font-family:var(--mono);font-size:10.5px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .agents-page .agent-open>div>small.agent-last-activity{font-style:italic;color:var(--tx3)!important}
+:root:root .agents-page .agent-live-phase b{font-weight:600;color:var(--tx1)}
+:root:root .agents-page .agent-row:has(.agent-status-dot.working) .agent-live-phase b{color:var(--ac)}
+:root:root .agents-page .agent-row:has(.agent-status-dot.error) .agent-live-phase b{color:var(--err)}
+:root:root .agents-page .agent-status-dot{width:8px;height:8px;margin:0;border-radius:50%;background:var(--tx3)}
+:root:root .agents-page .agent-status-dot.working{background:var(--ac);box-shadow:0 0 0 3px var(--acsoft);animation:tb-pulse 2.6s infinite}
+:root:root .agents-page .agent-status-dot.idle{background:var(--ok);box-shadow:0 0 0 3px var(--okt)}
+:root:root .agents-page .agent-status-dot.error{background:var(--err);box-shadow:0 0 0 3px var(--errt)}
+:root:root .agents-page .agent-actions{display:flex;gap:6px;padding-right:10px}
+:root:root .agents-page .agent-actions button{width:30px;height:30px;min-height:30px!important;display:grid!important;grid-template-columns:1fr!important;place-items:center;padding:0!important;border:1px solid var(--line)!important;border-radius:var(--r-s)!important;background:transparent!important;color:var(--tx2)!important;cursor:pointer}
+:root:root .agents-page .agent-actions button:hover:not(:disabled){background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .agents-page .agent-actions button.danger:hover:not(:disabled){border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+:root:root .agents-page .agent-empty-state{min-height:0!important;display:grid;justify-items:center;align-content:center;gap:6px;padding:28px 18px!important;border:1.5px dashed var(--line2)!important;border-radius:var(--r-l)!important;background:transparent!important;text-align:center;color:var(--tx3)!important}
+:root:root .agents-page .agent-empty-state>svg{width:20px;height:20px;margin-bottom:4px;color:var(--tx3);opacity:.6}
+:root:root .agents-page .agent-empty-state strong{font-size:13px!important;font-weight:600;color:var(--tx1)!important}
+:root:root .agents-page .agent-empty-state span{max-width:320px;font-size:12px!important;line-height:1.55!important;color:var(--tx3)!important}
+@container pg (max-width:380px){
+  :root:root .agents-page .delegate-form>div{grid-template-columns:minmax(0,1fr)}
+}
+
+/* ============ Browser panel (preview) ============ */
+/* The panel page scrolls once its controls, the preview and the inspector no longer fit, instead of squeezing the inspector to nothing. */
+:root:root .preview-page{height:100%;min-height:0;display:flex;flex-direction:column;gap:10px;padding:12px!important;overflow-y:auto;overscroll-behavior:contain;container:pg/inline-size}
+:root:root .preview-page>*{flex:none}
+:root:root .preview-page .preview-bar{min-height:40px!important;display:flex!important;align-items:center;gap:4px;padding:4px 4px 4px 12px!important;border:1px solid var(--line)!important;border-radius:99px!important;background:var(--bg2)!important;color:var(--tx3)!important;transition:border-color .15s,box-shadow .15s}
+:root:root .preview-page .preview-bar:focus-within{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)}
+/* An address that failed the check marks the bar too, so the message under it reads as belonging to it. */
+:root:root .preview-page .preview-bar:has(input[aria-invalid="true"]){border-color:var(--errb)!important;box-shadow:0 0 0 3px var(--errt)}
+:root:root .preview-page .preview-bar>svg{flex:none;margin-right:4px;color:var(--tx3)}
+:root:root .preview-page .preview-bar input{flex:1;min-width:0;height:30px!important;padding:0 4px!important;border:0!important;outline:0;background:transparent!important;box-shadow:none!important;color:var(--tx0)!important;font-family:var(--mono);font-size:11.5px!important}
+:root:root .preview-page .preview-bar button{flex:none;height:30px!important;min-width:30px;margin:0!important;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 9px!important;border:1px solid transparent!important;border-radius:99px!important;background:transparent!important;color:var(--tx2)!important;font-size:11.5px!important;font-weight:550;cursor:pointer;transition:background-color .15s,color .15s}
+:root:root .preview-page .preview-bar button:hover:not(:disabled){background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .preview-page .preview-bar input+button{padding:0 13px!important;border-color:color-mix(in srgb,var(--ac) 40%,var(--line))!important;color:var(--ac)!important}
+:root:root .preview-page .preview-bar input+button:hover:not(:disabled){background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .preview-page .preview-bar button:disabled{opacity:.35}
+
+:root:root .preview-page .preview-discovery{display:grid;gap:10px;padding:12px 14px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important}
+:root:root .preview-page .preview-discovery-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+:root:root .preview-page .preview-discovery-head>span{display:flex;align-items:center;gap:7px;font-size:11px!important;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .preview-page .preview-discovery-head>span svg{color:var(--ac)}
+:root:root .preview-page .preview-discovery-head button{height:28px!important;min-height:28px!important}
+:root:root .preview-page .preview-server-list{display:flex;flex-wrap:wrap;gap:6px}
+:root:root .preview-page .preview-server-list button{height:30px!important;display:inline-flex;align-items:center;gap:7px;padding:0 12px!important;border:1px solid var(--line)!important;border-radius:99px!important;background:var(--bg2)!important;color:var(--tx1)!important;cursor:pointer;transition:border-color .14s,background-color .14s}
+:root:root .preview-page .preview-server-list button:hover{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;background:var(--acsoft)!important}
+:root:root .preview-page .preview-server-list strong{font-family:var(--mono)!important;font-size:11.5px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .preview-page .preview-server-list span{font-family:var(--mono);font-size:10.5px!important;color:var(--tx3)!important}
+:root:root .preview-page .preview-discovery>p{margin:0!important;font-size:12px!important;line-height:1.5!important;color:var(--tx3)!important}
+
+:root:root .preview-page .agent-browser-unavailable{display:grid!important;gap:3px;padding:10px 14px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--bg2)!important;color:var(--tx3)!important}
+:root:root .preview-page .agent-browser-unavailable strong{font-size:12.5px!important;font-weight:600;color:var(--tx1)!important}
+:root:root .preview-page .agent-browser-unavailable span{font-size:11.5px!important;line-height:1.5!important;color:var(--tx3)!important}
+
+:root:root .preview-page .preview-layout{flex:1 1 auto;min-height:280px;display:grid;grid-template-columns:minmax(0,1fr) minmax(200px,34%);gap:10px}
+:root:root .preview-page .preview-layout.hosted{grid-template-columns:minmax(0,1fr)}
+:root:root .preview-page .preview-frame{min-height:0;overflow:auto;border-radius:var(--r-m)}
+:root:root .preview-page .preview-frame iframe{min-height:0;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:#fff}
+:root:root .preview-page .preview-empty-state{height:100%;min-height:220px;display:grid;place-content:center;justify-items:center;gap:6px;padding:24px;text-align:center;border:1.5px dashed var(--line2)!important;border-radius:var(--r-l)!important;background:transparent!important}
+:root:root .preview-page .preview-empty-state>svg{box-sizing:content-box;width:18px;height:18px;margin-bottom:6px;padding:11px;border:1px solid var(--line);border-radius:13px;background:var(--bg3);color:var(--tx2)}
+:root:root .preview-page .preview-empty-state strong{font-size:13.5px!important;font-weight:600;color:var(--tx1)!important}
+:root:root .preview-page .preview-empty-state span{max-width:260px;font-size:12px!important;line-height:1.5!important;color:var(--tx3)!important}
+
+/* Desktop-only Agent Browser controls. */
+:root:root .preview-page .browser-device-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:0;padding:6px 8px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--bg2)!important;color:var(--tx3)!important}
+:root:root .preview-page .browser-device-toolbar :is(select,input){height:28px!important;padding:0 8px!important;border-radius:7px!important;background-color:var(--pg-row)!important;font-size:11.5px!important}
+:root:root .preview-page .browser-device-toolbar select{flex:1 1 140px;width:auto;max-width:230px;padding-right:26px!important;background-position:right 8px center!important}
+:root:root .preview-page .browser-device-toolbar input{width:66px;flex:none;font-family:var(--mono);text-align:center}
+:root:root .preview-page .browser-device-toolbar>span{font-size:11px;color:var(--tx3)}
+:root:root .preview-page .browser-device-toolbar button{height:28px!important;min-height:28px!important;padding:0 9px!important;border-radius:7px!important}
+:root:root .preview-page .browser-device-toolbar .recording{margin-left:auto}
+:root:root .preview-page .browser-device-toolbar .recording.active{border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+:root:root .preview-page .browser-history{overflow:hidden;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important}
+:root:root .preview-page .browser-history>summary{height:34px!important;display:flex;align-items:center;gap:7px;padding:0 12px!important;list-style:none;color:var(--tx1)!important;font-size:12px!important;font-weight:550;cursor:pointer;user-select:none}
+:root:root .preview-page .browser-history>summary::-webkit-details-marker{display:none}
+:root:root .preview-page .browser-history>summary svg{color:var(--ac)}
+:root:root .preview-page .browser-history>div{display:grid;max-height:200px;overflow:auto;border-top:1px solid var(--line)!important}
+:root:root .preview-page .browser-history button{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;text-align:left;padding:8px 12px!important;border:0!important;border-top:1px solid var(--line)!important;background:transparent!important;color:var(--tx1)!important;cursor:pointer}
+:root:root .preview-page .browser-history button:first-child{border-top:0!important}
+:root:root .preview-page .browser-history button:hover{background:var(--bg2)!important}
+:root:root .preview-page .browser-history button>span{min-width:0}
+:root:root .preview-page .browser-history strong{display:block;font-size:12px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .preview-page .browser-history small{display:block;margin-top:2px;font-family:var(--mono);font-size:10.5px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .preview-page .browser-history time{font-family:var(--mono);font-size:10.5px!important;color:var(--tx3)!important;white-space:nowrap}
+:root:root .preview-page .agent-browser-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0!important}
+:root:root .preview-page .agent-browser-toolbar>button:first-child{border-color:color-mix(in srgb,var(--ac) 40%,var(--line))!important;background:transparent!important;color:var(--ac)!important}
+:root:root .preview-page .agent-browser-toolbar>button:first-child:hover:not(:disabled){background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .preview-page .browser-cookie-status{flex:1 1 100%;max-width:100%;font-family:var(--mono);font-size:10.5px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .preview-page .browser-profile-import{display:grid;gap:10px;padding:12px 14px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--bg2)!important}
+:root:root .preview-page .browser-profile-import-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+:root:root .preview-page .browser-profile-import-head strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .preview-page .browser-profile-import-head span{display:block;margin-top:2px;font-size:11.5px!important;color:var(--tx3)!important}
+:root:root .preview-page .browser-profile-import-head button{flex:none;width:28px;height:28px;display:grid;place-items:center;padding:0;border:0!important;border-radius:var(--r-s)!important;background:transparent!important;color:var(--tx2)!important;cursor:pointer}
+:root:root .preview-page .browser-profile-import-head button:hover{background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .preview-page .browser-profile-import section{display:grid;grid-template-columns:minmax(120px,.8fr) repeat(auto-fit,minmax(120px,1fr));gap:6px;align-items:center;padding-top:10px;border-top:1px solid var(--line)!important}
+:root:root .preview-page .browser-profile-import section>div strong{display:block;font-size:12px!important;font-weight:600;color:var(--tx1)!important}
+:root:root .preview-page .browser-profile-import section>div span,
+:root:root .preview-page .browser-profile-import>p{display:block;margin:2px 0 0;font-size:11.5px!important;line-height:1.5;color:var(--tx3)!important}
+:root:root .preview-page .browser-profile-import section>button{height:32px!important;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 10px!important;border:1px solid var(--line)!important;border-radius:var(--r-s)!important;background:var(--pg-row)!important;color:var(--tx1)!important;text-align:left;cursor:pointer}
+:root:root .preview-page .browser-profile-import section>button:hover:not(:disabled){border-color:color-mix(in srgb,var(--ac) 45%,var(--line))!important}
+:root:root .preview-page .browser-profile-import section>button span{font-size:12px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:root:root .preview-page .browser-profile-import section>button small{color:var(--ac)!important;font-size:10.5px!important}
+:root:root .preview-page .browser-inspector{min-height:0!important;display:flex;flex-direction:column;gap:10px;overflow:auto;padding:12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important;color:var(--tx1)!important}
+:root:root .preview-page .browser-inspector h3{margin:0!important;font-size:11px!important;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .preview-page .browser-inspector>p{margin:0;min-width:0}
+:root:root .preview-page .browser-inspector>p strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important}
+:root:root .preview-page .browser-inspector>p span{display:block;margin-top:2px;font-family:var(--mono);font-size:10.5px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .preview-page .browser-elements{flex:1 1 auto;min-height:88px;max-height:none;display:grid;align-content:start;gap:4px;overflow:auto}
+:root:root .preview-page .browser-elements button{min-height:40px!important;display:grid;grid-template-columns:34px minmax(0,1fr);grid-template-rows:auto auto;column-gap:8px;align-items:center;text-align:left;padding:6px 9px!important;border:1px solid var(--line)!important;border-radius:var(--r-s)!important;background:var(--pg-row)!important;color:var(--tx1)!important;cursor:pointer}
+:root:root .preview-page .browser-elements button:hover{border-color:var(--line2)!important}
+:root:root .preview-page .browser-elements button.active{border-color:color-mix(in srgb,var(--ac) 45%,var(--line))!important;background:var(--acsoft)!important}
+:root:root .preview-page .browser-elements code{grid-row:1/3;font-family:var(--mono);font-size:10.5px!important;color:var(--ac)!important}
+:root:root .preview-page .browser-elements span{font-size:12px!important;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .preview-page .browser-elements small{font-family:var(--mono);font-size:10.5px!important;color:var(--tx3)!important}
+:root:root .preview-page .empty-inspector{padding:2px 0!important;font-size:12px!important;line-height:1.55!important;color:var(--tx3)!important}
+:root:root .preview-page .browser-annotation{display:grid;gap:8px;margin:0!important;padding-top:10px!important;border-top:1px solid var(--line)!important}
+:root:root .preview-page .browser-annotation>div:first-child strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--ac)!important}
+:root:root .preview-page .browser-annotation>div:first-child span{display:block;margin-top:2px;font-size:11.5px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .preview-page .browser-annotation textarea{width:100%;min-height:76px;resize:vertical;padding:9px 11px!important;border:1px solid var(--line)!important;border-radius:9px!important;background:var(--bg2)!important;color:var(--tx0)!important;font-size:12px!important;line-height:1.5;outline:0}
+:root:root .preview-page .annotation-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+:root:root .preview-page .annotation-actions button{height:28px!important;min-height:28px!important}
+:root:root .preview-page .annotation-actions span{margin-left:auto;font-size:11px!important;color:var(--ok)!important}
+:root:root .preview-page .preview-note{margin:0;font-size:11.5px;line-height:1.5;color:var(--tx3)}
+@container pg (max-width:600px){
+  /* Stacked: the layout is never shorter than preview + inspector content (the page scrolls instead); the element list scrolls on its own. */
+  :root:root .preview-page .preview-layout:not(.hosted){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(220px,1fr) auto;min-height:auto}
+  :root:root .preview-page .browser-inspector{max-height:none;overflow:visible}
+  :root:root .preview-page .browser-elements{flex:none;max-height:200px}
+}

@@ -120,7 +120,7 @@ function UtilityButton({Icon,label,active,onClick}){
 const ThreadSidebar=memo(function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
   selectedIds,setSelectedIds,onBulkAction,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="codex",threadMeta={},onCollapse,
-  rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={},onOpenProviderSettings
+  rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={},onOpenProviderSettings,runtimeStarting=false
 }){
   const searchRef=useRef(null);
   const sectionsRef=useRef(null);
@@ -141,7 +141,8 @@ const ThreadSidebar=memo(function ThreadSidebar({
   const bulk=selectedIds.size>0;
   const managedInference=Boolean(runtimeCapabilities.managedInference);
   const providerLabel=modelProviderLabel(provider);
-  const runtimeLabel={native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
+  // runtimeStarting: Trebell's first load has not yet said which harness runs, so no harness is named.
+  const runtimeLabel=runtimeStarting?"Starting…":{native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
   const toggle=useCallback(id=>{const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)},[selectedIds,setSelectedIds]);
   const firstGroupName=THREAD_GROUP_NAMES.find(name=>groups[name]?.length)||null;
   const renderRow=useCallback(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>,[threadMeta,activeThreadId,bulk,selectedIds,onOpen,toggle,onThreadAction,onMove,runAction,agentRuntime,runtimeCapabilities]);
@@ -194,7 +195,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
         <UtilityButton Icon={Server} label="Environments" active={section==="environments"} onClick={()=>setSection("environments")}/>
         <UtilityButton Icon={Settings} label="Settings" active={section==="settings"} onClick={()=>setSection("settings")}/>
       </div>
-      <button className="sidebar-provider" onClick={()=>managedInference&&onOpenProviderSettings?onOpenProviderSettings():setSection("settings")} title={"Configure "+runtimeLabel}><span className="provider-dot"/><div><strong>{runtimeLabel}</strong><span>{managedInference?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
+      <button className="sidebar-provider" onClick={()=>managedInference&&onOpenProviderSettings?onOpenProviderSettings():setSection("settings")} title={runtimeStarting?"Trebell is starting its agent harness":"Configure "+runtimeLabel}><span className="provider-dot"/><div><strong>{runtimeLabel}</strong><span>{managedInference?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
     </div>
   </aside>;
 });

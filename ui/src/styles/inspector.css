@@ -1,0 +1,1032 @@
+/* Inspector area: the right workspace panel (Files, Diff, Context, Git, Goal, Runtime and the frames of Browser/Agents),
+   the bottom terminal drawer, the worktree setup card and the compact Open-in picker.
+
+   Cascade: every rule is scoped under a doubled :root plus the surface root (.context-panel, .terminal-drawer,
+   .worktree-setup-card). That outranks the legacy dark rules and the legacy light/custom rules, which only ever force
+   color, background and border-color with !important, so those three properties carry !important here as well.
+   All values are theme tokens, so dark, light, Midnight/Black and custom themes follow without per-mode rules. */
+
+/* ---------------------------------------------------------------- frame */
+:root:root .context-panel.context-panel{
+  container:inspector/inline-size;
+  grid-template-rows:var(--top) minmax(0,1fr);
+  background:var(--bg1)!important;
+  border-left:1px solid var(--line)!important;
+  border-color:var(--line)!important;
+  color:var(--tx1);
+  font-family:var(--font);
+}
+/* Hosted builds have no window bar, so the 32px offset the desktop shell needs left an empty band above the tabs. */
+:root:root .app-shell.hosted-shell .context-panel{margin-top:0;height:100vh}
+/* The desktop window bar (32px, with the window controls) sits over the main column only. The inspector runs to the top of the
+   window and carries that bar on (same surface and bottom rule, and a drag region) instead of leaving an empty 32px band above
+   its tabs, which stay level with the 52px workspace header below the bar. */
+:root:root .app-shell.desktop-shell .context-panel.context-panel{margin-top:0;height:100vh;grid-template-rows:32px var(--top) minmax(0,1fr)}
+:root:root .app-shell.desktop-shell .context-panel.context-panel::before{content:"";border-bottom:1px solid var(--line);background:var(--bg0);-webkit-app-region:drag}
+:root:root .context-panel-body{min-height:0;min-width:0;overflow:auto;background:transparent!important;overscroll-behavior:contain}
+
+/* Tab strip: same height as the 52px workspace header so both bottom borders form one line. */
+:root:root .context-panel .context-panel-tabs{
+  height:var(--top);display:flex;align-items:stretch;gap:0;padding:0 8px 0 4px;
+  background:var(--bg1)!important;border:0!important;border-bottom:1px solid var(--line)!important;
+}
+:root:root .context-panel .context-panel-tab-scroll{display:flex;align-items:flex-end;gap:1px;min-width:0;flex:1;padding:0 2px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;scroll-padding-inline:12px}
+:root:root .context-panel .context-panel-tab{
+  position:relative;flex:none;width:auto;height:40px;display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  padding:0 10px 2px;border:0!important;border-radius:8px 8px 0 0;background:transparent!important;color:var(--tx2)!important;
+  font:550 12px/1 var(--font);white-space:nowrap;cursor:pointer;transition:background .14s,color .14s;
+}
+:root:root .context-panel .context-panel-tab span{display:inline}
+:root:root .context-panel .context-panel-tab svg{flex:none;color:var(--tx3);transition:color .14s}
+:root:root .context-panel .context-panel-tab::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;border-radius:2px 2px 0 0;background:transparent;transition:background .14s}
+:root:root .context-panel .context-panel-tab:hover:not(:disabled){background:var(--bg2)!important;color:var(--tx0)!important}
+:root:root .context-panel .context-panel-tab:hover:not(:disabled) svg{color:var(--tx1)}
+:root:root .context-panel .context-panel-tab.active{background:transparent!important;color:var(--tx0)!important}
+:root:root .context-panel .context-panel-tab.active svg{color:var(--ac)}
+:root:root .context-panel .context-panel-tab.active::after{background:var(--ac)}
+:root:root .context-panel .context-panel-tab:disabled{opacity:.38;cursor:not-allowed}
+:root:root .context-panel .context-panel-tab:focus-visible{outline-offset:-3px}
+:root:root .context-panel .context-panel-actions{position:relative;flex:none;display:flex;align-items:center;gap:2px;margin-left:4px;padding-left:9px}
+:root:root .context-panel .context-panel-actions::before{content:"";position:absolute;left:0;top:17px;bottom:17px;width:1px;background:var(--line)}
+:root:root .context-panel .context-panel-close{
+  width:28px;height:28px;flex:none;display:inline-grid;place-items:center;padding:0;border:0!important;border-radius:var(--r-s);
+  background:transparent!important;color:var(--tx2)!important;cursor:pointer;transition:background .14s,color .14s;
+}
+:root:root .context-panel .context-panel-close:hover{background:var(--bg3)!important;color:var(--tx0)!important}
+/* Every tab keeps the same box whichever one is active (only colour, icon tint and the underline change), so a tab never moves
+   under the pointer when another is selected and a double click always lands on the tab that was clicked. The layout steps
+   with the panel width instead (the query measures the panel inside its 1px border): icon + label from 660px (all eight
+   tabs fit), labels only from 450px (the 460px default included), equal icon-only tabs below that (the minimum is 340px). The name stays in the tooltip and aria-label. */
+:root:root .context-panel .context-panel-tab{padding:0 8px 2px}
+@container inspector (max-width:658px){
+  :root:root .context-panel .context-panel-tab{flex:1 0 auto;padding:0 5px 2px}
+  :root:root .context-panel .context-panel-tab svg{display:none}
+  :root:root .context-panel .context-panel-tab::after{left:5px;right:5px}
+}
+@container inspector (max-width:448px){
+  :root:root .context-panel .context-panel-tab{flex:1 1 0;width:auto;min-width:30px;max-width:44px;padding:0 0 2px}
+  :root:root .context-panel .context-panel-tab svg{display:block}
+  :root:root .context-panel .context-panel-tab span{display:none}
+  :root:root .context-panel .context-panel-tab::after{left:8px;right:8px}
+}
+
+/* Loading fallback, generic empty states and inline errors inside the panel. */
+:root:root .context-panel .surface-loading,:root:root .terminal-drawer .surface-loading{min-height:120px;color:var(--tx3)!important;font-size:12px}
+:root:root .context-panel .empty-state{
+  box-sizing:border-box;height:auto;min-height:220px;margin:16px;padding:32px 22px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  border:1.5px dashed var(--line2)!important;border-radius:var(--r-l);background:transparent!important;color:var(--tx3)!important;text-align:center;font-size:12.5px;line-height:1.55;
+}
+:root:root .context-panel .empty-state>svg{box-sizing:content-box;width:20px;height:20px;margin-bottom:8px;padding:11px;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);border-radius:13px;background:var(--acsoft);color:var(--ac)}
+:root:root .context-panel .empty-state strong{margin:0;font-size:13.5px;font-weight:600;color:var(--tx1)!important}
+:root:root .context-panel .empty-state span{max-width:340px;margin:0;font-size:12px;line-height:1.55;color:var(--tx3)!important;overflow-wrap:anywhere}
+:root:root .context-panel .empty-state button{margin-top:10px}
+:root:root .context-panel .inline-error{border:1px solid var(--errb)!important;border-radius:9px;background:var(--errt)!important;color:var(--err)!important;padding:9px 12px;font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+:root:root .context-panel .source-control-error{box-shadow:var(--sh1)}
+
+/* Shared inspector controls ------------------------------------------------------------------ */
+/* Standard small button (tb-btn--sm). */
+:root:root .context-panel :where(
+  .workspace-window-footer button,.file-head>div>button,.file-empty button,.empty-state button,
+  .sc-toolbar button,.sc-card button,.pr-head button,.pr-actions button,.pr-comment-edit,.branch-pr-badge button,.linked-pr-panel-head button,
+  .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
+  .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
+  .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button
+){
+  height:28px;min-height:28px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 10px;
+  border:1px solid var(--line2)!important;border-radius:var(--r-s);background:var(--bg3)!important;color:var(--tx1)!important;
+  font:550 11.5px/1 var(--font);white-space:nowrap;cursor:pointer;box-shadow:none;transition:background .14s,color .14s,border-color .14s,filter .14s;
+}
+:root:root .context-panel :where(
+  .workspace-window-footer button,.file-head>div>button,.file-empty button,.empty-state button,
+  .sc-toolbar button,.sc-card button,.pr-head button,.pr-actions button,.pr-comment-edit,.branch-pr-badge button,.linked-pr-panel-head button,
+  .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
+  .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
+  .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button
+):hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .context-panel :where(
+  .workspace-window-footer button,.file-head>div>button,.file-empty button,.empty-state button,
+  .sc-toolbar button,.sc-card button,.pr-head button,.pr-actions button,.pr-comment-edit,.branch-pr-badge button,.linked-pr-panel-head button,
+  .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
+  .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
+  .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button
+):disabled{opacity:.5;cursor:default}
+/* Primary actions. */
+:root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button){
+  border-color:transparent!important;background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow);
+}
+:root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button):hover:not(:disabled){filter:brightness(1.1);background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important}
+:root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button):disabled{box-shadow:none}
+/* Destructive actions. */
+:root:root .context-panel :is(.goal-actions .danger,.linked-pr-unlink){border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+:root:root .context-panel :is(.goal-actions .danger,.linked-pr-unlink):hover:not(:disabled){background:color-mix(in srgb,var(--err) 16%,transparent)!important;color:var(--err)!important}
+/* Accent outline actions. */
+:root:root .context-panel :is(.pr-composer-trigger,.context-explorer-search button[type="submit"]){border-color:color-mix(in srgb,var(--ac) 40%,var(--line))!important;background:transparent!important;color:var(--ac)!important}
+:root:root .context-panel :is(.pr-composer-trigger,.context-explorer-search button[type="submit"]):hover:not(:disabled){background:var(--acsoft)!important;color:var(--ac)!important}
+/* Square icon buttons. */
+:root:root .context-panel :is(.workspace-refresh,.sc-branch>button,.pr-head>button[aria-label],.runtime-trace-head button,.agent-background-head button[title]){
+  width:28px;min-width:28px;height:28px;padding:0;display:inline-grid;place-items:center;border:1px solid transparent!important;border-radius:var(--r-s);
+  background:transparent!important;color:var(--tx2)!important;cursor:pointer;transition:background .14s,color .14s;
+}
+:root:root .context-panel :is(.workspace-refresh,.sc-branch>button,.pr-head>button[aria-label],.runtime-trace-head button,.agent-background-head button[title]):hover:not(:disabled){background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .context-panel :is(.workspace-refresh,.sc-branch>button,.pr-head>button[aria-label],.runtime-trace-head button,.agent-background-head button[title]):disabled{opacity:.45;cursor:default}
+/* Text fields (tb-input) and selects (tb-select). */
+:root:root .context-panel :is(.commit-box textarea,.goal-panel textarea,.goal-panel input,.context-explorer-search input,.pr-composer-form textarea){
+  box-sizing:border-box;width:100%;min-width:0;border:1px solid var(--field-line,var(--line))!important;border-radius:9px;background:var(--field-bg,var(--bg2))!important;color:var(--tx0)!important;
+  padding:8px 12px;font:400 12.5px/1.5 var(--font);letter-spacing:0;text-transform:none;outline:none;box-shadow:none;transition:border-color .15s,box-shadow .15s;
+}
+:root:root .context-panel :is(.commit-box textarea,.goal-panel textarea,.goal-panel input,.context-explorer-search input,.pr-composer-form textarea):focus{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)}
+:root:root .context-panel :is(.commit-box textarea,.goal-panel textarea,.goal-panel input,.context-explorer-search input,.pr-composer-form textarea)::placeholder{color:var(--tx3)}
+/* Light fields sit white on the light surfaces (the goal e2e checks the Objective field is rgb(255,255,255)); focus and invalid borders still win. */
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .context-panel{--field-bg:var(--bg1);--field-line:var(--line2)}
+:root:root .context-panel :is(.sc-toolbar select,.source-provider-field select,.runtime-trace-filters select,.pr-stack-actions select,.pr-composer-submit select){
+  box-sizing:border-box;height:30px;min-width:0;padding:0 28px 0 10px;border:1px solid var(--line)!important;border-radius:var(--r-s);
+  background-color:var(--bg2)!important;background-image:var(--chev)!important;background-position:right 9px center!important;background-size:11px!important;background-repeat:no-repeat!important;
+  color:var(--tx0)!important;font:500 12px/1 var(--font);appearance:none;-webkit-appearance:none;outline:none;cursor:pointer;transition:border-color .15s,box-shadow .15s;
+}
+:root:root .context-panel :is(.sc-toolbar select,.source-provider-field select,.runtime-trace-filters select,.pr-stack-actions select,.pr-composer-submit select):hover{border-color:var(--line2)!important}
+:root:root .context-panel :is(.sc-toolbar select,.source-provider-field select,.runtime-trace-filters select,.pr-stack-actions select,.pr-composer-submit select):focus{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)}
+:root:root .context-panel select option{background:var(--bg2);color:var(--tx0)}
+/* Footers that page in more rows. The "show more" button sits on --bg1 (white in light mode). */
+:root:root .context-panel :is(.workspace-window-footer,.source-window-footer){display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;padding:8px 6px 4px}
+:root:root .context-panel .workspace-window-footer button{width:auto;background:var(--bg1)!important}
+:root:root .context-panel .workspace-window-footer button:hover:not(:disabled){background:var(--bg3)!important}
+:root:root .context-panel :is(.workspace-window-footer,.source-window-footer) span{font:500 10.5px/1.3 var(--mono);color:var(--tx3)!important;text-align:right}
+/* Keyboard focus stays visible inside clipped scroll areas. */
+:root:root .context-panel :is(.tree-list button,.changed-file-row>button,.pr-list>button,.context-explorer-results>button,.context-explorer-view>button,.goal-details>summary,.verification-evidence-details>summary,.runtime-trace-row>summary,.context-inspector-payload>summary,.pr-file>summary):focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 55%,transparent);outline-offset:-2px}
+
+/* ------------------------------------------------------------- Files and Diff */
+:root:root .context-panel .workspace-panel{box-sizing:border-box;height:100%;min-height:0;padding:0;display:grid;grid-template-rows:auto minmax(0,1fr);background:transparent!important;border:0!important}
+:root:root .context-panel .workspace-panel>.panel-tabs{display:flex;align-items:center;gap:8px;min-width:0;padding:9px 10px 9px 12px;border:0!important;border-bottom:1px solid var(--line)!important;background:transparent!important}
+:root:root .context-panel .workspace-seg{display:inline-flex;gap:2px;padding:3px;min-width:0;border:1px solid var(--line);border-radius:10px;background:var(--bg3)}
+:root:root .context-panel .workspace-seg>button{height:26px;padding:0 11px;border:0!important;border-radius:7px;background:transparent!important;color:var(--tx2)!important;font:550 11.5px/1 var(--font);white-space:nowrap;cursor:pointer;transition:background .14s,color .14s}
+:root:root .context-panel .workspace-seg>button:hover{background:transparent!important;color:var(--tx0)!important}
+:root:root .context-panel .workspace-seg>button.active{background:var(--bg4)!important;color:var(--tx0)!important;box-shadow:var(--shseg),inset 0 0 0 1px var(--line2)}
+:root:root .context-panel .workspace-refresh{margin-left:auto}
+:root:root .context-panel .workspace-files{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}
+:root:root .context-panel .workspace-search{
+  box-sizing:border-box;height:34px;margin:10px 12px;display:flex;align-items:center;gap:9px;padding:0 11px;
+  border:1px solid var(--line)!important;border-radius:10px;background:var(--bg2)!important;color:var(--tx3)!important;transition:border-color .15s,box-shadow .15s;
+}
+:root:root .context-panel .workspace-search:focus-within{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)}
+:root:root .context-panel .workspace-search svg{flex:none;color:var(--tx3)}
+:root:root .context-panel .workspace-search input{width:100%;min-width:0;height:100%;padding:0;border:0!important;outline:0;background:transparent!important;color:var(--tx0)!important;font:400 12.5px var(--font);box-shadow:none}
+:root:root .context-panel .workspace-search input::placeholder{color:var(--tx3)}
+:root:root .context-panel .workspace-body{display:grid;grid-template-columns:minmax(150px,40%) minmax(0,1fr);gap:0;min-height:0;padding:0;border-top:1px solid var(--line)}
+:root:root .context-panel .tree-list{min-height:0;min-width:0;overflow:auto;padding:6px;border:0!important;border-right:1px solid var(--line)!important;border-radius:0;background:transparent!important}
+:root:root .context-panel .tree-list>p{margin:0;padding:10px 8px;color:var(--tx3);font-size:12px}
+:root:root .context-panel .tree-list button{
+  position:relative;width:100%;min-height:28px;display:grid;grid-template-columns:16px minmax(0,1fr);align-items:center;gap:7px;padding-right:6px;
+  border:0!important;border-radius:7px;background:transparent!important;color:var(--tx1)!important;font:450 12px/1.2 var(--font);text-align:left;cursor:pointer;transition:background .12s,color .12s;
+}
+:root:root .context-panel .tree-list button:hover{background:var(--bg2)!important;color:var(--tx0)!important}
+/* The "Show N more files" footer sits in the narrow tree column: a full-width button with the count under it, not a tree row.
+   No background transition, so a mode switch reads the final color at once (workspace-window.spec checks white in light). */
+:root:root .context-panel .tree-list>.workspace-window-footer{flex-direction:column;align-items:stretch;gap:6px;padding:8px 2px 4px}
+:root:root .context-panel .tree-list>.workspace-window-footer button{
+  display:inline-flex;justify-content:center;width:100%;min-height:28px;height:28px;padding:0 10px;border:1px solid var(--line2)!important;border-radius:var(--r-s);
+  background:var(--bg1)!important;color:var(--tx1)!important;font:550 11.5px/1 var(--font);text-align:center;transition:border-color .12s,color .12s;
+}
+:root:root .context-panel .tree-list>.workspace-window-footer button:hover{border-color:color-mix(in srgb,var(--ac) 40%,var(--line2))!important;color:var(--tx0)!important}
+:root:root .context-panel .tree-list>.workspace-window-footer span{text-align:center}
+:root:root .context-panel .tree-list button.active{background:var(--acsoft)!important;color:var(--tx0)!important}
+:root:root .context-panel .tree-list button>svg{color:var(--tx3)}
+/* Folder rows are labels in an always-expanded listing: clicking one does nothing, so they do not look clickable. */
+:root:root .context-panel .tree-list button.tree-dir{color:var(--tx1)!important;font-weight:550;cursor:default}
+:root:root .context-panel .tree-list button.tree-dir:hover{background:transparent!important;color:var(--tx1)!important}
+:root:root .context-panel .tree-list button.tree-dir>svg,:root:root .context-panel .tree-list button.active>svg{color:var(--ac)}
+:root:root .context-panel .tree-list button span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .tree-list button i{position:absolute;right:3px;top:50%;width:22px;height:22px;display:grid;place-items:center;border-radius:6px;background:var(--bg3);color:var(--tx2);opacity:0;transform:translateY(-50%);transition:opacity .12s,background .12s,color .12s}
+:root:root .context-panel .tree-list button:is(:hover,:focus-visible,.active) i{opacity:1}
+:root:root .context-panel .tree-list button i:hover{background:var(--bg4);color:var(--ac)}
+:root:root .context-panel :is(.workspace-tree-error,.workspace-file-error){margin:6px;padding:8px 10px;border:1px solid var(--errb)!important;border-radius:8px;background:var(--errt)!important;color:var(--err)!important;font-size:11.5px;line-height:1.45;overflow-wrap:anywhere}
+:root:root .context-panel .workspace-file-error{margin:8px 10px 0}
+:root:root .context-panel .file-view{min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-rows:auto minmax(0,1fr);border:0!important;border-radius:0;background:var(--bg0)!important}
+:root:root .context-panel .file-view.has-error{grid-template-rows:auto auto minmax(0,1fr)}
+:root:root .context-panel .file-head{
+  box-sizing:border-box;height:auto;min-height:42px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 8px;padding:6px 8px 6px 12px;
+  border:0!important;border-bottom:1px solid var(--line)!important;background:var(--bg1)!important;
+}
+/* When the name and the actions (Attach, Cancel, Save) do not fit on one line, the actions wrap under the name instead of being cut off. */
+:root:root .context-panel .file-head strong{flex:1 1 auto;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 12px/1.3 var(--mono);color:var(--tx0)!important}
+:root:root .context-panel .file-head>div{flex:none;display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:4px;margin-left:auto;max-width:100%}
+:root:root .context-panel .file-head>div>button{height:26px;min-height:26px;padding:0 9px}
+/* The compact Open-in error hangs under the whole file head (right-aligned, as wide as the file view allows) instead of under
+   the 50px picker, where it ran past the file view's left edge and was cut off. */
+:root:root .context-panel .file-head{position:relative}
+:root:root .context-panel .file-head .open-in-wrap{position:static}
+:root:root .context-panel .file-head .open-in-error{right:8px;top:calc(100% + 4px);max-width:calc(100% - 16px);white-space:normal;overflow-wrap:anywhere}
+:root:root .context-panel .file-empty{grid-row:1/-1;display:grid;place-items:center;align-content:center;gap:8px;padding:24px;color:var(--tx3)!important;font-size:12.5px;text-align:center}
+:root:root .context-panel .file-view.has-error .file-empty{grid-row:auto}
+:root:root .context-panel .file-empty strong{font-size:13px;font-weight:600;color:var(--tx1)}
+:root:root .context-panel .file-empty span{max-width:300px;color:var(--tx3);font-size:12px;line-height:1.5}
+:root:root .context-panel :is(.syntax-view,.file-editor){
+  box-sizing:border-box;width:100%;height:100%;margin:0;padding:12px 14px;overflow:auto;border:0!important;border-radius:0;outline:0;
+  background:var(--bg0)!important;color:var(--tx1)!important;font:400 12px/1.65 var(--mono);tab-size:2;resize:none;
+}
+/* In edit mode the file reads as an input before it has focus too; it used to look exactly like the read-only view. */
+:root:root .context-panel .file-editor{white-space:pre;caret-color:var(--ac);background:var(--bg1)!important;box-shadow:inset 0 0 0 1px var(--line2)}
+:root:root .context-panel .file-editor:focus{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ac) 55%,transparent)}
+/* Prism tokens follow the theme instead of the fixed dark palette. */
+:root:root .context-panel .syntax-view .token:is(.comment,.prolog,.doctype,.cdata){color:var(--tx3);font-style:italic}
+:root:root .context-panel .syntax-view .token:is(.string,.char,.attr-value,.inserted,.regex){color:var(--dadd)}
+:root:root .context-panel .syntax-view .token:is(.keyword,.atrule,.important,.selector,.tag){color:var(--ac)}
+:root:root .context-panel .syntax-view .token:is(.function,.class-name,.builtin){color:var(--info)}
+:root:root .context-panel .syntax-view .token:is(.number,.boolean,.constant,.symbol,.attr-name,.property){color:var(--warn)}
+:root:root .context-panel .syntax-view .token:is(.operator,.punctuation,.entity,.url){color:var(--tx2)}
+:root:root .context-panel .syntax-view .token.deleted{color:var(--ddel)}
+:root:root .context-panel :is(.media-preview,.document-preview,.markdown-preview,.table-preview){height:100%;min-height:0;overflow:auto;background:var(--bg0)!important}
+:root:root .context-panel .media-preview{display:grid;place-items:center;padding:18px}
+:root:root .context-panel .media-preview.image img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;border:1px solid var(--line);background:repeating-conic-gradient(var(--bg2) 0 25%,var(--bg3) 0 50%) 0 0/16px 16px}
+:root:root .context-panel .media-preview video{max-width:100%;max-height:100%;border-radius:8px;background:#000}
+:root:root .context-panel .media-preview.audio{align-content:center;gap:16px;color:var(--ac)}
+:root:root .context-panel .document-preview iframe{display:block;width:100%;height:100%;min-height:420px;border:0;background:#fff}
+:root:root .context-panel .markdown-preview{box-sizing:border-box;padding:18px 20px;color:var(--tx1)!important;font-size:13px;line-height:1.65}
+:root:root .context-panel .markdown-preview :is(h1,h2,h3,h4,h5,h6){margin:16px 0 6px;color:var(--tx0)!important;line-height:1.3;letter-spacing:-.01em}
+:root:root .context-panel .markdown-preview :is(h1,h2,h3,h4,h5,h6):first-child{margin-top:0}
+:root:root .context-panel .markdown-preview h1{font-size:20px;font-weight:650}
+:root:root .context-panel .markdown-preview h2{font-size:16px;font-weight:650;padding-bottom:6px;border-bottom:1px solid var(--line)}
+:root:root .context-panel .markdown-preview h3{font-size:14px;font-weight:600}
+:root:root .context-panel .markdown-preview :is(h4,h5,h6){font-size:13px;font-weight:600}
+:root:root .context-panel .markdown-preview p{margin:4px 0}
+:root:root .context-panel .markdown-preview blockquote{margin:8px 0;padding:6px 12px;border-left:2px solid var(--ac)!important;border-radius:0 8px 8px 0;background:var(--acsoft)!important;color:var(--tx1)!important}
+:root:root .context-panel .markdown-preview pre{margin:0;padding:0 12px;background:var(--bg2)!important;color:var(--tx1)!important;font:400 12px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+:root:root .context-panel .markdown-preview .md-fence{margin:8px 0 0;padding:6px 12px 4px;border:0;border-radius:8px 8px 0 0;background:var(--bg2);color:var(--tx3);font:600 10px/1.2 var(--mono);letter-spacing:.06em;text-transform:uppercase}
+:root:root .context-panel .markdown-preview .md-fence:empty{margin:0 0 8px;padding:0;height:8px;border-radius:0 0 8px 8px}
+:root:root .context-panel .markdown-preview .md-list{display:flex;gap:8px;margin:2px 0;color:var(--tx1)}
+:root:root .context-panel .markdown-preview .md-gap{height:8px}
+:root:root .context-panel .table-preview{box-sizing:border-box;padding:12px}
+:root:root .context-panel .table-preview table{border-collapse:separate;border-spacing:0;min-width:100%;font:400 11.5px/1.4 var(--mono);border:1px solid var(--line);border-radius:9px;overflow:hidden}
+:root:root .context-panel .table-preview :is(th,td){padding:6px 10px;border:0;border-bottom:1px solid var(--line);border-right:1px solid var(--line);text-align:left;white-space:nowrap}
+:root:root .context-panel .table-preview :is(th,td):last-child{border-right:0}
+:root:root .context-panel .table-preview tr:last-child td{border-bottom:0}
+:root:root .context-panel .table-preview th{position:sticky;top:0;background:var(--bg3)!important;color:var(--tx0)!important;font-weight:600}
+:root:root .context-panel .table-preview td{background:var(--bg1);color:var(--tx1)!important}
+:root:root .context-panel .table-preview p{margin:10px 2px 0;color:var(--tx3);font-size:11px}
+
+/* Changes (diff) view */
+:root:root .context-panel .changes-view{display:grid;grid-template-columns:minmax(150px,44%) minmax(0,1fr);gap:0;height:100%;min-height:0}
+:root:root .context-panel .changes-view.has-action-error{grid-template-rows:auto minmax(0,1fr)}
+:root:root .context-panel .workspace-diff-error{grid-column:1/-1;position:sticky;top:0;z-index:4;margin:8px 10px;box-shadow:var(--sh1)}
+:root:root .context-panel .changed-files{min-height:0;min-width:0;overflow:auto;padding:6px;border:0!important;border-right:1px solid var(--line)!important;border-radius:0;background:transparent!important}
+:root:root .context-panel .changed-file-row{display:grid;grid-template-columns:minmax(0,1fr) auto 22px;align-items:center;gap:4px;padding-right:3px;border-radius:7px;background:transparent;transition:background .12s}
+:root:root .context-panel .changed-file-row:hover{background:var(--bg2)}
+:root:root .context-panel .changed-file-row>button:first-child{
+  display:flex;align-items:center;width:100%;height:30px;min-width:0;padding:0 2px 0 8px;border:0!important;background:transparent!important;color:var(--tx1)!important;
+  font:450 11.5px/30px var(--mono);text-align:left;white-space:nowrap;overflow:hidden;cursor:pointer;opacity:1;
+}
+:root:root .context-panel .changed-file-row>button:first-child>span:not(.changed-file-path){flex:none;display:inline-flex;margin-right:7px;color:var(--tx3)}
+:root:root .context-panel .changed-file-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Name first, folder after it in a muted smaller face. Only the folder shrinks (the name keeps its full width, so a sub-pixel
+   share of the shrink cannot put an ellipsis on a name that fits); a name longer than the row is cut with an ellipsis. */
+:root:root .context-panel .changed-file-path.split{display:flex;align-items:baseline;gap:7px}
+:root:root .context-panel .changed-file-path.split>.changed-file-name{order:-1;flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;color:var(--tx0)}
+:root:root .context-panel .changed-file-path.split>.changed-file-dir{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--tx3);font-size:10.5px}
+:root:root .context-panel .changed-file-path.split>.changed-file-sep{display:none}
+:root:root .context-panel .changed-file-row.reviewed .changed-file-path.split>.changed-file-name{color:var(--tx2)}
+:root:root .context-panel .changed-file-row.reviewed>button:first-child{color:var(--tx2)!important}
+:root:root .context-panel .changed-file-row.reviewed>button:first-child>span:not(.changed-file-path){color:var(--ok)}
+:root:root .context-panel .changed-file-row>button:first-child:disabled{opacity:.6;cursor:progress}
+:root:root .context-panel .changed-file-code{min-width:16px;padding:2px 5px;border-radius:5px;background:var(--bg3);color:var(--tx2);font:600 10px/1.2 var(--mono);font-style:normal;text-align:center}
+:root:root .context-panel .changed-file-code[data-kind="modified"]{background:var(--warnt);color:var(--warn)}
+:root:root .context-panel .changed-file-code[data-kind="added"]{background:var(--okt);color:var(--ok)}
+:root:root .context-panel .changed-file-code[data-kind="deleted"],:root:root .context-panel .changed-file-code[data-kind="conflict"]{background:var(--errt);color:var(--err)}
+:root:root .context-panel .changed-file-code[data-kind="renamed"]{background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info)}
+:root:root .context-panel .changed-file-row .review-comment{
+  width:22px;height:22px;display:grid;place-items:center;padding:0;border:1px solid transparent!important;border-radius:6px;background:transparent!important;
+  color:var(--tx3)!important;font:500 15px/1 var(--font);cursor:pointer;transition:background .12s,color .12s,border-color .12s;
+}
+:root:root .context-panel .changed-file-row:hover .review-comment{border-color:var(--line2)!important;color:var(--tx1)!important}
+:root:root .context-panel .changed-file-row .review-comment:hover:not(:disabled){background:var(--acsoft)!important;border-color:color-mix(in srgb,var(--ac) 40%,transparent)!important;color:var(--ac)!important}
+:root:root .context-panel .changed-file-row .review-comment:disabled{opacity:.5;cursor:progress}
+:root:root .context-panel .workspace-diff-preview{min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr) auto;gap:0;background:var(--bg0)}
+:root:root .context-panel .workspace-diff-preview>.workspace-window-footer{padding:8px 12px;border-top:1px solid var(--line);background:var(--bg1)}
+/* One grid column as wide as the longest line, so hunk/add/delete backgrounds span the whole scroll width. */
+:root:root .context-panel .git-diff{
+  display:grid;grid-template-columns:minmax(max-content,1fr);align-content:start;margin:0;padding:8px 0 12px;overflow:auto;border:0!important;border-radius:0;
+  background:var(--bg0)!important;color:var(--tx2)!important;font:400 11.5px/1.7 var(--mono);white-space:pre;tab-size:4;
+}
+:root:root .context-panel .git-diff .diff-line{display:block;min-height:1.7em;padding:0 14px}
+:root:root .context-panel .git-diff .diff-line.meta{color:var(--tx3)}
+:root:root .context-panel .git-diff .diff-line.file{margin-top:10px;padding-block:3px;border-block:1px solid var(--line);background:var(--bg2);color:var(--tx1);font-weight:600}
+:root:root .context-panel .git-diff .diff-line.file:first-child{margin-top:-8px;border-top:0}
+:root:root .context-panel .git-diff .diff-line.hunk{margin:4px 0 2px;background:var(--acsoft);color:var(--ac)}
+:root:root .context-panel .git-diff .diff-line.add{background:color-mix(in srgb,var(--ok) 8%,transparent);color:var(--dadd)}
+:root:root .context-panel .git-diff .diff-line.del{background:color-mix(in srgb,var(--err) 8%,transparent);color:var(--ddel)}
+:root:root .context-panel .git-diff .diff-line.ctx{color:var(--tx2)}
+:root:root .context-panel .changes-empty{
+  box-sizing:border-box;min-height:220px;margin:16px;padding:32px 22px;display:grid;place-items:center;align-content:center;gap:6px;text-align:center;
+  border:1.5px dashed var(--line2)!important;border-radius:var(--r-l);background:transparent!important;color:var(--tx3)!important;
+}
+:root:root .context-panel .changes-empty svg{box-sizing:content-box;width:20px;height:20px;margin-bottom:8px;padding:11px;border:1px solid color-mix(in srgb,var(--ok) 28%,transparent);border-radius:13px;background:var(--okt);color:var(--ok)!important}
+:root:root .context-panel .changes-empty strong{font-size:13.5px;font-weight:600;color:var(--tx1)!important}
+:root:root .context-panel .changes-empty span{max-width:320px;font-size:12px;line-height:1.55;color:var(--tx3)!important;overflow-wrap:anywhere}
+:root:root .context-panel .changes-empty.error svg{border-color:var(--errb);background:var(--errt);color:var(--err)!important}
+:root:root .context-panel .changes-empty.error strong{color:var(--err)!important}
+
+/* --------------------------------------------------------------------- Context */
+:root:root .context-panel .context-inspector{box-sizing:border-box;padding:14px;display:grid;gap:12px;align-content:start;min-width:0}
+:root:root .context-panel .context-inspector.empty{height:auto;min-height:100%}
+:root:root .context-panel :is(.context-inspector-hero,.context-inspector-list,.context-inspector-payload,.context-explorer){
+  min-width:0;border:1px solid var(--line)!important;border-radius:var(--r-l);background:linear-gradient(180deg,var(--surf),var(--surf2))!important;box-shadow:none;
+}
+:root:root .context-panel .context-inspector-hero{padding:16px 16px 14px;display:grid;gap:7px}
+:root:root .context-panel .context-inspector-kicker{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+:root:root .context-panel :is(.context-inspector-hero>span,.context-inspector-kicker span){font:600 10.5px/1.2 var(--font);letter-spacing:.08em;text-transform:uppercase;color:var(--ac)!important}
+:root:root .context-panel .context-inspector-kicker em{min-width:0;padding:3px 9px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10.5px/1.2 var(--mono);font-style:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .context-inspector-hero>strong{font-size:15px;font-weight:650;letter-spacing:-.01em;line-height:1.35;color:var(--tx0)!important}
+:root:root .context-panel .context-inspector.empty .context-inspector-hero>strong{font-size:14px;font-weight:600}
+:root:root .context-panel .context-inspector-hero>p{margin:0;font-size:12px;line-height:1.55;color:var(--tx2)!important;overflow-wrap:anywhere}
+:root:root .context-panel .context-inspector-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:6px}
+:root:root .context-panel .context-inspector-stats>div{min-width:0;padding:8px 10px;border:1px solid var(--line)!important;border-radius:9px;background:var(--bg2)!important}
+:root:root .context-panel .context-inspector-stats span{display:block;font:600 10px/1.2 var(--font);letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .context-panel .context-inspector-stats strong{display:block;margin-top:4px;font:600 13px/1.2 var(--mono);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .context-inspector-warning{display:grid;gap:3px;padding:10px 12px;border:1px solid var(--errb)!important;border-radius:var(--r-m);background:var(--errt)!important;color:var(--err)!important}
+:root:root .context-panel .context-inspector-pressure{display:grid;gap:3px;padding:10px 12px;border:1px solid var(--warnb)!important;border-radius:var(--r-m);background:var(--warnt)!important;color:var(--warn)!important}
+:root:root .context-panel :is(.context-inspector-warning,.context-inspector-pressure) strong{font-size:12px;font-weight:600}
+:root:root .context-panel :is(.context-inspector-warning,.context-inspector-pressure) span{font-size:11.5px;line-height:1.5;color:var(--tx1);overflow-wrap:anywhere}
+:root:root .context-panel .context-inspector-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)!important}
+:root:root .context-panel .context-inspector-section-head strong{font-size:12.5px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .context-inspector-section-head span{font:500 10.5px/1.2 var(--mono);color:var(--tx3)!important;text-align:right}
+:root:root .context-panel .context-inspector-list{overflow:hidden}
+:root:root .context-panel .context-inspector-item{min-width:0;padding:12px 14px;border-top:1px solid var(--line)!important}
+:root:root .context-panel .context-inspector-section-head+.context-inspector-item{border-top:0!important}
+:root:root .context-panel .context-inspector-path{display:flex;align-items:center;gap:8px;min-width:0}
+:root:root .context-panel .context-inspector-path code{flex:1;min-width:0;font:500 12px/1.35 var(--mono);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .context-rank{flex:none;padding:2px 8px;border:1px solid var(--line2)!important;border-radius:99px;background:var(--bg3)!important;color:var(--tx2)!important;font:600 10px/1.3 var(--mono);letter-spacing:.04em;text-transform:uppercase}
+:root:root .context-panel .context-rank.high{border-color:color-mix(in srgb,var(--ac) 35%,transparent)!important;background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .context-panel .context-rank.low{opacity:.75}
+:root:root .context-panel .context-inspector-item>p{margin:6px 0 0;font-size:11.5px;line-height:1.5;color:var(--tx2)!important;overflow-wrap:anywhere}
+:root:root .context-panel .context-symbols{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+:root:root .context-panel .context-symbols span{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:3px 8px;border:1px solid var(--line)!important;border-radius:6px;background:var(--bg2)!important;color:var(--tx1)!important;font:500 10.5px/1.3 var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:root:root .context-panel .context-symbols small{color:var(--tx3);font-size:10px}
+:root:root .context-panel .context-token-cost{display:block;margin-top:8px;font:500 10.5px/1.2 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .context-inspector-payload{overflow:hidden}
+:root:root .context-panel .context-inspector-payload>summary{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;list-style:none;cursor:pointer;color:var(--tx1)!important;font-size:12.5px;font-weight:600;user-select:none}
+:root:root .context-panel .context-inspector-payload>summary::-webkit-details-marker{display:none}
+:root:root .context-panel .context-inspector-payload>summary::after{content:"";flex:none;width:12px;height:12px;background:var(--chev) center/12px no-repeat;transition:transform .15s}
+:root:root .context-panel .context-inspector-payload[open]>summary{border-bottom:1px solid var(--line)!important}
+:root:root .context-panel .context-inspector-payload[open]>summary::after{transform:rotate(180deg)}
+:root:root .context-panel .context-inspector-payload pre{max-height:360px;margin:0;padding:12px 14px;overflow:auto;background:var(--bg0)!important;color:var(--tx1)!important;font:400 11px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;border:0!important}
+:root:root .context-panel .context-provenance-block+.context-provenance-block{border-top:1px solid var(--line)!important}
+:root:root .context-panel .context-provenance-block>div{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 14px;background:var(--bg2)!important}
+:root:root .context-panel .context-provenance-block>div strong{font-size:12px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .context-provenance-block>div span{font:500 10.5px/1.2 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .context-provenance-block.application>div span{color:var(--ac)!important}
+:root:root .context-panel .context-provenance-block.untrusted>div span{color:var(--warn)!important}
+:root:root .context-panel .context-provenance-block.legacy>div span{color:var(--err)!important}
+:root:root .context-panel .context-inspector-note{margin:0 2px 4px;font-size:11.5px;line-height:1.55;color:var(--tx3)!important}
+/* Repository explorer */
+:root:root .context-panel .context-explorer{overflow:hidden}
+:root:root .context-panel .context-explorer-modes{display:inline-flex;gap:2px;margin:12px 14px 0;padding:3px;border:1px solid var(--line)!important;border-radius:10px;background:var(--bg3)!important}
+:root:root .context-panel .context-explorer-modes button{height:26px;padding:0 12px;border:0!important;border-radius:7px;background:transparent!important;color:var(--tx2)!important;font:550 11.5px/1 var(--font);cursor:pointer;transition:background .14s,color .14s}
+:root:root .context-panel .context-explorer-modes button:hover{background:transparent!important;color:var(--tx0)!important}
+:root:root .context-panel .context-explorer-modes button.active{background:var(--bg4)!important;color:var(--tx0)!important;box-shadow:var(--shseg),inset 0 0 0 1px var(--line2)}
+:root:root .context-panel .context-explorer-search{display:flex;gap:6px;padding:10px 14px 12px}
+:root:root .context-panel .context-explorer-search input{height:32px;padding:0 11px}
+:root:root .context-panel .context-explorer-search button{height:32px;flex:none}
+:root:root .context-panel .context-explorer-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 14px;border-top:1px solid var(--line)!important;border-bottom:1px solid var(--line)!important;background:var(--surf2)!important}
+:root:root .context-panel .context-explorer-actions button{height:26px;padding:0 11px;border:1px solid var(--line)!important;border-radius:99px;background:var(--bg2)!important;color:var(--tx1)!important;font:550 11.5px/1 var(--font);cursor:pointer;transition:background .14s,color .14s,border-color .14s}
+:root:root .context-panel .context-explorer-actions button:hover:not(:disabled){border-color:var(--line2)!important;color:var(--tx0)!important}
+:root:root .context-panel .context-explorer-actions button.active{border-color:color-mix(in srgb,var(--ac) 40%,transparent)!important;background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .context-panel .context-explorer-actions button:disabled{opacity:.5;cursor:default}
+:root:root .context-panel .context-explorer-actions span{margin-left:auto;font:600 10px/1.2 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .context-panel :is(.context-explorer-error,.context-explorer-empty){margin:0;padding:10px 14px;font-size:12px;line-height:1.5;color:var(--tx3)!important;overflow-wrap:anywhere}
+:root:root .context-panel .context-explorer-error{color:var(--err)!important}
+:root:root .context-panel .context-explorer-results{display:grid;max-height:240px;overflow:auto}
+:root:root .context-panel :is(.context-explorer-results,.context-explorer-view)>button{
+  display:flex;align-items:center;gap:10px;width:100%;min-width:0;padding:8px 14px;border:0!important;border-top:1px solid var(--line)!important;border-radius:0;
+  background:transparent!important;color:var(--tx1)!important;text-align:left;cursor:pointer;transition:background .12s;
+}
+:root:root .context-panel .context-explorer-results>button:first-child{border-top:0!important}
+:root:root .context-panel :is(.context-explorer-results,.context-explorer-view)>button:hover:not(:disabled){background:var(--bg2)!important}
+:root:root .context-panel .context-explorer-results>button.active{background:var(--acsoft)!important}
+:root:root .context-panel :is(.context-explorer-results,.context-explorer-view)>button span{display:grid;gap:2px;flex:1;min-width:0}
+:root:root .context-panel .context-explorer-results strong,:root:root .context-panel .context-explorer-view>button b{font:500 12px/1.35 var(--mono);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .context-explorer-results small,:root:root .context-panel .context-explorer-view>button small{font:400 10.5px/1.35 var(--mono);color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel :is(.context-explorer-results,.context-explorer-view)>button em{flex:none;font:600 10.5px/1.2 var(--mono);font-style:normal;color:var(--ac)!important}
+:root:root .context-panel .context-explorer-view{max-height:280px;overflow:auto;border-bottom:1px solid var(--line)!important;background:transparent!important}
+:root:root .context-panel .context-explorer-view>div{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 14px;border-bottom:1px solid var(--line)!important;background:var(--surf2)}
+:root:root .context-panel .context-explorer-view>div strong{font-size:12px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .context-explorer-view>div span{font:500 10.5px/1.2 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .context-explorer-view>div+button{border-top:0!important}
+:root:root .context-panel .context-explorer-view article{display:grid;gap:3px;padding:8px 14px;border-bottom:1px solid var(--line)!important}
+:root:root .context-panel .context-explorer-view article:last-child{border-bottom:0!important}
+:root:root .context-panel .context-explorer-view article code{font:500 12px/1.4 var(--mono);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .context-explorer-view article span{font-size:11.5px;line-height:1.45;color:var(--tx2)!important;overflow-wrap:anywhere}
+:root:root .context-panel .context-verification-view article small{font:500 10.5px/1.3 var(--mono);color:var(--ac)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .context-verification-reasons{margin:0;padding:9px 14px;border-bottom:1px solid var(--line)!important;font-size:11.5px;line-height:1.5;color:var(--tx2)!important}
+:root:root .context-panel .context-explorer-relations{display:grid;gap:10px;min-width:0;padding:12px 14px 14px;border-top:1px solid var(--line)!important}
+:root:root .context-panel .context-explorer-relations>div{display:grid;gap:3px;min-width:0}
+:root:root .context-panel .context-explorer-relations>div strong{font:600 12px/1.35 var(--mono);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .context-explorer-relations>div span{font-size:11.5px;color:var(--tx3)!important}
+:root:root .context-panel .context-explorer-relations p{margin:0;display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+:root:root .context-panel .context-explorer-relations p>b{width:100%;font:600 10px/1.3 var(--font);letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .context-panel .context-explorer-relations p:not(.context-explorer-relation-actions)>button{
+  max-width:100%;height:24px;padding:0 9px;border:1px solid var(--line)!important;border-radius:99px;background:var(--bg2)!important;color:var(--tx1)!important;
+  font:500 10.5px/22px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;transition:border-color .14s,color .14s;
+}
+:root:root .context-panel .context-explorer-relations p:not(.context-explorer-relation-actions)>button:hover:not(:disabled){border-color:var(--line2)!important;color:var(--tx0)!important}
+:root:root .context-panel .context-explorer-relation-actions{gap:8px!important}
+:root:root .context-panel .context-explorer-relation-actions span{font:500 10.5px/1.2 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .context-explorer-relations .context-explorer-empty{padding:0}
+/* Empty states inside the bordered Diagnostics and Fixes cards keep the card padding (the rule above is for the bare relations text). */
+:root:root .context-panel .context-explorer-relations :is(.context-diagnostics,.context-fixes)>.context-explorer-empty{padding:10px 12px}
+:root:root .context-panel :is(.context-diagnostics,.context-fixes){overflow:hidden;border:1px solid var(--line)!important;border-radius:var(--r-m);background:var(--bg1)!important}
+:root:root .context-panel :is(.context-diagnostics,.context-fixes)>div{display:flex!important;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line)!important;background:var(--surf2)}
+:root:root .context-panel :is(.context-diagnostics,.context-fixes)>div strong{font:600 12px/1.3 var(--font)!important;color:var(--tx0)!important}
+:root:root .context-panel :is(.context-diagnostics,.context-fixes)>div span{font:500 10.5px/1.2 var(--mono)!important;color:var(--tx3)!important}
+:root:root .context-panel .context-diagnostics article{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--line)!important}
+:root:root .context-panel .context-fixes article{display:grid;gap:3px;padding:8px 12px;border-bottom:1px solid var(--line)!important}
+:root:root .context-panel :is(.context-diagnostics,.context-fixes) article:last-child{border-bottom:0!important}
+:root:root .context-panel .context-diagnostics article>span{display:grid;gap:2px;flex:1;min-width:0}
+:root:root .context-panel .context-diagnostics article b{font:600 11px/1.3 var(--mono);color:var(--err)!important}
+:root:root .context-panel .context-diagnostics article small{font-size:11.5px;line-height:1.45;color:var(--tx1)!important;white-space:normal;overflow-wrap:anywhere}
+:root:root .context-panel .context-diagnostics article button{flex:none;height:24px;min-height:24px;padding:0 9px}
+:root:root .context-panel .context-fixes article b{font-size:12px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .context-fixes article span{font:500 10.5px/1.3 var(--mono);color:var(--tx3)!important}
+
+/* ----------------------------------------------------------------- Source control */
+:root:root .context-panel .source-control{box-sizing:border-box;display:grid;gap:12px;align-content:start;min-width:0;padding:12px;border:0!important;background:transparent!important;container-type:inline-size}
+:root:root .context-panel .sc-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:8px;border:1px solid var(--line)!important;border-radius:var(--r-m);background:var(--bg2)!important}
+:root:root .context-panel .sc-toolbar>div{display:flex;align-items:center;gap:4px;min-width:0}
+:root:root .context-panel .sc-toolbar>.sc-branch{flex:1 1 150px;gap:6px;padding-left:4px}
+:root:root .context-panel .sc-branch>svg{flex:none;color:var(--ac)}
+:root:root .context-panel .sc-toolbar select{flex:1;min-width:0;max-width:280px;font:500 12px/1 var(--mono);background-color:var(--bg1)!important}
+:root:root .context-panel .branch-pr-badge{display:grid;grid-template-columns:18px minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:9px 10px 9px 12px;border:1px solid color-mix(in srgb,var(--ac) 32%,var(--line))!important;border-radius:var(--r-m);background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .context-panel .branch-pr-badge span{min-width:0}
+:root:root .context-panel .branch-pr-badge :is(strong,small){display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .branch-pr-badge strong{font-size:12px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .branch-pr-badge small{margin-top:2px;font-size:11.5px;color:var(--tx2)!important}
+:root:root .context-panel .branch-pr-badge em{font:600 10.5px/1 var(--mono);font-style:normal;color:var(--ok)!important}
+:root:root .context-panel .sc-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0}
+:root:root .context-panel :is(.sc-card,.pr-card){
+  box-sizing:border-box;min-width:0;padding:14px;border:1px solid var(--line)!important;border-radius:var(--r-l)!important;
+  background:linear-gradient(180deg,var(--surf),var(--surf2))!important;box-shadow:none!important;color:var(--tx1);
+}
+:root:root .context-panel :is(.sc-card,.pr-card) h3{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:13px;font-weight:600;letter-spacing:-.005em;color:var(--tx0)!important}
+:root:root .context-panel :is(.sc-card,.pr-card) h3>span{padding:2px 8px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10.5px/1.3 var(--mono)}
+:root:root .context-panel :is(.sc-card,.pr-card) h4{margin:16px 0 8px;font:600 10.5px/1.2 var(--font);letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .context-panel .sc-card>p{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;margin:0 0 8px;font-size:12px;line-height:1.5;color:var(--tx2)!important;overflow:visible;overflow-wrap:anywhere}
+:root:root .context-panel .sc-card>p code{min-width:0;padding:1px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg2);color:var(--tx1)!important;font:500 11.5px/1.5 var(--mono);overflow-wrap:anywhere;word-break:break-all}
+:root:root .context-panel .status-list{max-height:220px;overflow:auto;border:1px solid var(--line)!important;border-radius:var(--r-m);background:var(--bg1)!important}
+:root:root .context-panel .status-list>div{height:32px;display:grid;grid-template-columns:30px minmax(0,1fr);align-items:center;gap:8px;padding:0 12px;border-top:1px solid var(--line);font:450 11.5px/1 var(--mono);color:var(--tx1)!important}
+:root:root .context-panel .status-list>div:first-child{border-top:0}
+:root:root .context-panel .status-list>div span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .status-list code{justify-self:start;min-width:14px;padding:2px 5px;border-radius:5px;background:var(--warnt);color:var(--warn)!important;font:600 10px/1.2 var(--mono);text-align:center;white-space:pre}
+:root:root .context-panel .status-list code[data-state="added"]{background:var(--okt);color:var(--ok)!important}
+:root:root .context-panel .status-list code:is([data-state="deleted"],[data-state="conflict"]){background:var(--errt);color:var(--err)!important}
+:root:root .context-panel .status-list code[data-state="renamed"]{background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info)!important}
+:root:root .context-panel .status-list>p{margin:0;padding:11px 12px;font-size:12px;color:var(--tx3)!important}
+:root:root .context-panel .commit-box{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:12px}
+:root:root .context-panel .commit-box textarea{grid-column:1/-1;min-height:64px;max-height:220px;resize:vertical}
+:root:root .context-panel .commit-box>button:not(.primary){justify-self:start;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .commit-box>button:not(.primary) svg{color:var(--ac)}
+:root:root .context-panel .commit-box .primary{padding:0 14px}
+:root:root .context-panel .source-provider-field{display:grid;gap:7px;margin:14px 0 8px}
+:root:root .context-panel .source-provider-field span{font:600 10.5px/1.2 var(--font)!important;letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .context-panel .source-provider-field select{width:100%;height:32px}
+:root:root .context-panel .sc-card>p:has(+h4){margin-bottom:0}
+:root:root .context-panel .worktree-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;min-height:36px;border-top:1px solid var(--line)!important;font-size:12px}
+:root:root .context-panel .worktree-row>span{font:600 11.5px/1.2 var(--mono);color:var(--ac)!important}
+:root:root .context-panel .worktree-row code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:400 11px/1.2 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .worktree-row>button{height:26px;min-height:26px}
+:root:root .context-panel .sc-card>h4+.worktree-row{border-top:0!important}
+:root:root .context-panel .sc-card>button{margin-top:10px}
+/* Linked pull requests */
+:root:root .context-panel .linked-pr-panel{display:grid;gap:10px}
+:root:root .context-panel .linked-pr-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+:root:root .context-panel .linked-pr-panel-head h3{margin:0}
+:root:root .context-panel .linked-pr-panel>p{margin:0;font-size:12px;color:var(--tx3)!important}
+:root:root .context-panel .linked-pr-group{overflow:hidden;border:1px solid var(--line)!important;border-radius:var(--r-m);background:var(--bg1)!important}
+:root:root .context-panel .linked-pr-group-title{min-height:32px;display:flex;align-items:center;gap:7px;padding:0 12px;border-bottom:1px solid var(--line)!important;color:var(--ac)!important}
+:root:root .context-panel .linked-pr-group-title strong{font-size:12px;font-weight:600}
+:root:root .context-panel .linked-pr-group-title span{margin-left:auto;font:500 10.5px/1 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .linked-pr-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:4px 8px 4px 4px;border-top:1px solid var(--line)!important}
+:root:root .context-panel .linked-pr-row:first-child{border-top:0!important}
+:root:root .context-panel .linked-pr-open{min-height:40px!important;display:grid!important;grid-template-columns:22px minmax(0,1fr)!important;align-items:center!important;gap:6px;padding:0 8px!important;border:0!important;border-radius:8px;background:transparent!important;color:var(--ac)!important;text-align:left!important;cursor:pointer}
+:root:root .context-panel .linked-pr-open:hover{background:var(--bg2)!important}
+:root:root .context-panel .linked-pr-open span{min-width:0}
+:root:root .context-panel .linked-pr-open :is(strong,small){display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .linked-pr-open strong{font-size:12px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .linked-pr-open small{margin-top:2px;font:400 10.5px/1.2 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .linked-pr-unlink{height:26px!important;min-height:26px;font-size:11.5px!important}
+/* Pull requests */
+:root:root .context-panel .pr-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+:root:root .context-panel .pr-head h3{margin:0 auto 0 0}
+:root:root .context-panel .pr-head>button:not([aria-label]) svg{color:var(--ac)}
+:root:root .context-panel .pr-layout{display:grid;grid-template-columns:minmax(180px,36%) minmax(0,1fr);gap:10px;min-height:280px;min-width:0}
+:root:root .context-panel .pr-list{min-width:0;overflow:auto;border:1px solid var(--line)!important;border-radius:var(--r-m);background:var(--bg1)!important}
+:root:root .context-panel .pr-list>button{
+  position:relative;box-sizing:border-box;width:100%;min-height:54px;display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:9px;padding:8px 10px 8px 12px;
+  border:0!important;border-bottom:1px solid var(--line)!important;border-radius:0;background:transparent!important;color:var(--tx2)!important;text-align:left;cursor:pointer;transition:background .12s;
+}
+:root:root .context-panel .pr-list>button:hover{background:var(--bg2)!important}
+:root:root .context-panel .pr-list>button.active{background:var(--acsoft)!important}
+:root:root .context-panel .pr-list>button.active::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:0 2px 2px 0;background:var(--ac)}
+:root:root .context-panel .pr-list>button>svg{color:var(--ac)}
+:root:root .context-panel .pr-list>button>div{min-width:0}
+:root:root .context-panel .pr-list strong{display:block;font-size:12px;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .pr-list span{display:block;margin-top:3px;font:400 10.5px/1.3 var(--mono);color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .pr-list em{padding:2px 7px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10px/1.3 var(--mono);font-style:normal;letter-spacing:.04em;text-transform:uppercase}
+:root:root .context-panel .pr-list em[data-state="open"]{border-color:var(--okb);background:var(--okt);color:var(--ok)!important}
+:root:root .context-panel .pr-list em[data-state="merged"]{border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:var(--acsoft);color:var(--ac)!important}
+:root:root .context-panel .pr-list em[data-state="closed"]{border-color:var(--errb);background:var(--errt);color:var(--err)!important}
+:root:root .context-panel .pr-list>.source-window-footer{padding:8px 10px}
+:root:root .context-panel .pr-detail{box-sizing:border-box;min-width:0;padding:14px;overflow:auto;border:1px solid var(--line)!important;border-radius:var(--r-m);background:var(--bg1)!important}
+:root:root .context-panel .pr-detail>p{margin:0 0 10px;font-size:12.5px;line-height:1.6;color:var(--tx1)!important;overflow-wrap:anywhere}
+:root:root .context-panel .pr-detail>h3{margin:0 0 8px;font-size:14px;line-height:1.35;overflow-wrap:anywhere}
+:root:root .context-panel .pr-detail>pre{max-height:200px;margin:0;padding:10px 12px;overflow:auto;border:1px solid var(--line)!important;border-radius:9px;background:var(--bg0)!important;color:var(--tx2)!important;font:400 11px/1.55 var(--mono)}
+:root:root .context-panel .pr-detail>h4:first-of-type{margin-top:14px}
+:root:root .context-panel .pr-linked-threads{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 10px}
+:root:root .context-panel .pr-linked-threads>span{font:600 10.5px/1.2 var(--font);letter-spacing:.06em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .context-panel .pr-linked-threads button{height:24px;padding:0 10px;border:1px solid color-mix(in srgb,var(--ac) 35%,transparent)!important;border-radius:99px;background:var(--acsoft)!important;color:var(--ac)!important;font:550 11px/1 var(--font);cursor:pointer}
+:root:root .context-panel .pr-actions{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}
+:root:root .context-panel .pr-actions button.linked{border-color:color-mix(in srgb,var(--ac) 40%,transparent)!important;background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .context-panel .pr-files-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:14px}
+:root:root .context-panel .pr-files-head h4{margin:0}
+:root:root .context-panel .pr-files-head span{font:500 10.5px/1.2 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .pr-files{display:grid;gap:6px;margin:8px 0 12px}
+:root:root .context-panel .pr-file{overflow:hidden;border:1px solid var(--line)!important;border-radius:9px;background:var(--bg2)!important}
+:root:root .context-panel .pr-file.viewed{opacity:.7}
+:root:root .context-panel .pr-file.dismissed{border-color:var(--warnb)!important}
+:root:root .context-panel .pr-file>summary{min-height:36px;display:grid;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:8px;padding:0 10px 0 6px;list-style:none;cursor:pointer}
+:root:root .context-panel .pr-file>summary::-webkit-details-marker{display:none}
+:root:root .context-panel .pr-file>summary strong{font:500 11.5px/1.3 var(--mono);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .pr-file>summary>span{font:500 10.5px/1.2 var(--mono);color:var(--tx3)!important;white-space:nowrap}
+:root:root .context-panel .pr-file.dismissed>summary>span{color:var(--warn)!important}
+:root:root .context-panel .pr-file-viewed{width:24px;height:24px;display:grid;place-items:center;padding:0;border:0!important;border-radius:6px;background:transparent!important;color:var(--tx3)!important;cursor:pointer}
+:root:root .context-panel .pr-file-viewed:hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .context-panel .pr-file.viewed .pr-file-viewed{color:var(--ok)!important}
+:root:root .context-panel .pr-file>p{margin:0;padding:0 12px 8px;color:var(--warn)!important;font-size:11.5px!important}
+:root:root .context-panel .pr-file>pre{max-height:300px!important;margin:0;padding:10px 12px;overflow:auto;border:0!important;border-top:1px solid var(--line)!important;background:var(--bg0)!important;color:var(--tx1)!important;font:400 11px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word}
+:root:root .context-panel .review-list{display:grid;gap:6px}
+:root:root .context-panel .review-list>div{padding:10px 12px;border:1px solid var(--line)!important;border-radius:9px;background:var(--bg2)!important}
+:root:root .context-panel .review-list strong{font-size:12px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .review-list span{margin-left:8px;padding:1px 7px;border:1px solid var(--line2);border-radius:99px;color:var(--tx2)!important;font:600 10px/1.3 var(--mono);letter-spacing:.04em;text-transform:uppercase}
+:root:root .context-panel .review-list p{margin:6px 0 0;font-size:12px;line-height:1.55;color:var(--tx1)!important;overflow-wrap:anywhere}
+:root:root .context-panel .review-list>p{margin:0;font-size:12px;color:var(--tx3)!important}
+:root:root .context-panel .pr-comment-edit{margin-top:8px;height:24px!important;min-height:24px!important}
+:root:root .context-panel .pr-empty-state{
+  box-sizing:border-box;min-height:180px;padding:28px 20px;display:grid;place-items:center;align-content:center;gap:6px;text-align:center;
+  border:1.5px dashed var(--line2)!important;border-radius:var(--r-l);background:transparent!important;
+}
+:root:root .context-panel .pr-empty-state svg{box-sizing:content-box;width:20px;height:20px;margin-bottom:8px;padding:11px;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);border-radius:13px;background:var(--acsoft);color:var(--ac)!important}
+:root:root .context-panel .pr-empty-state strong{font-size:13.5px;font-weight:600;color:var(--tx1)!important}
+:root:root .context-panel .pr-empty-state span{max-width:300px;font-size:12px;line-height:1.55;color:var(--tx3)!important}
+:root:root .context-panel .pr-stack{display:grid;gap:8px;margin:10px 0;padding:10px;border:1px solid color-mix(in srgb,var(--ac) 30%,var(--line))!important;border-radius:var(--r-m);background:var(--acsoft)!important}
+:root:root .context-panel .pr-stack-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 10px}
+:root:root .context-panel .pr-stack-head strong{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--ac)!important}
+:root:root .context-panel .pr-stack-head span{font:500 10.5px/1.3 var(--mono);color:var(--tx2)!important}
+:root:root .context-panel .pr-stack-layers{display:grid;gap:4px}
+:root:root .context-panel .pr-stack-layers button{min-height:32px;display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:8px;padding:0 10px;border:1px solid var(--line)!important;border-radius:8px;background:var(--bg1)!important;color:var(--tx1)!important;text-align:left;cursor:pointer}
+:root:root .context-panel .pr-stack-layers button.active{border-color:color-mix(in srgb,var(--ac) 45%,transparent)!important}
+:root:root .context-panel .pr-stack-layers button>span{width:18px;height:18px;display:grid;place-items:center;border-radius:50%;background:var(--acsoft);color:var(--ac)!important;font:600 10px/1 var(--mono)}
+:root:root .context-panel .pr-stack-layers button strong{font-size:12px;font-weight:550;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .pr-stack-layers button em{font:500 10.5px/1 var(--mono);font-style:normal;color:var(--tx3)!important}
+:root:root .context-panel .pr-stack-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px}
+:root:root .context-panel .pr-stack-actions select{height:28px}
+/* PR comment / review composer */
+:root:root .context-panel .pr-composer-wrap{position:relative;margin:12px 0}
+:root:root .context-panel .pr-composer{margin-top:8px;padding:10px;border:1px solid var(--line2)!important;border-radius:var(--r-m);background:var(--bg2)!important;box-shadow:var(--sh1)}
+:root:root .context-panel .pr-composer-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+:root:root .context-panel .pr-composer-head>strong{font-size:12.5px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .pr-composer-modes{display:inline-flex;gap:2px;padding:3px;border:1px solid var(--line)!important;border-radius:10px;background:var(--bg3)!important}
+:root:root .context-panel .pr-composer-modes button{height:26px;padding:0 11px;border:0!important;border-radius:7px;background:transparent!important;color:var(--tx2)!important;font:550 11.5px/1 var(--font);cursor:pointer}
+:root:root .context-panel .pr-composer-modes button:hover{color:var(--tx0)!important}
+:root:root .context-panel .pr-composer-modes button.active{background:var(--bg4)!important;color:var(--tx0)!important;box-shadow:var(--shseg),inset 0 0 0 1px var(--line2)}
+:root:root .context-panel .pr-composer-close{width:26px;height:26px;padding:0!important;display:grid!important;place-items:center;border:0!important;border-radius:7px;background:transparent!important;color:var(--tx2)!important;cursor:pointer}
+:root:root .context-panel .pr-composer-close:hover{background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .context-panel .pr-composer-form{display:grid;gap:8px}
+:root:root .context-panel .pr-composer-form textarea{min-height:88px;max-height:240px;resize:vertical;background:var(--bg1)!important}
+:root:root .context-panel .pr-composer-submit{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+:root:root .context-panel .pr-composer-submit>span{font:500 10.5px/1.2 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .pr-composer-submit select{flex:1;max-width:220px;height:28px;background-color:var(--bg1)!important}
+:root:root .context-panel .pr-composer-submit button{margin-left:auto}
+:root:root .context-panel .pr-composer-submit button:disabled{opacity:.5;cursor:not-allowed}
+@container (max-width:620px){
+  :root:root .context-panel .pr-layout{grid-template-columns:minmax(0,1fr);min-height:0}
+  :root:root .context-panel .pr-list{max-height:210px}
+  :root:root .context-panel .pr-detail{min-height:300px}
+}
+@container (min-width:900px){
+  :root:root .context-panel .sc-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start}
+}
+
+/* ------------------------------------------------------------------------ Goal */
+:root:root .context-panel .goal-panel{box-sizing:border-box;height:100%;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px;background:transparent!important;color:var(--tx1)}
+:root:root .context-panel .goal-panel-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:12px;padding:0 0 14px;border-bottom:1px solid var(--line)!important;color:var(--tx2)!important}
+:root:root .context-panel .goal-panel-head>svg{box-sizing:content-box;width:18px;height:18px;margin:0;padding:8px;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);border-radius:11px;background:var(--acsoft);color:var(--ac)!important}
+:root:root .context-panel .goal-panel-head :is(strong,span){display:block}
+:root:root .context-panel .goal-panel-head strong{font-size:14.5px;font-weight:650;letter-spacing:-.01em;color:var(--tx0)!important}
+:root:root .context-panel .goal-panel-head span{margin-top:4px;font-size:12px;line-height:1.5;color:var(--tx2)!important}
+:root:root .context-panel .goal-status{align-self:center;padding:3.5px 10px;border:1px solid var(--line2)!important;border-radius:99px;background:var(--bg3)!important;color:var(--tx2)!important;font:600 10.5px/1.2 var(--mono);font-style:normal;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+:root:root .context-panel .goal-status.status-active{border-color:var(--okb)!important;background:var(--okt)!important;color:var(--ok)!important}
+:root:root .context-panel .goal-status.status-paused{border-color:var(--warnb)!important;background:var(--warnt)!important;color:var(--warn)!important}
+:root:root .context-panel .goal-status.status-complete{border-color:color-mix(in srgb,var(--ac) 35%,transparent)!important;background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .context-panel .goal-status:is(.status-budgetlimited,.status-blocked,.status-failed){border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+/* Field labels: uppercase caption with its hint on one line, the control on the next. */
+:root:root .context-panel .goal-panel label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:baseline;gap:7px 6px;margin:0;font:600 10.5px/1.3 var(--font);letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .context-panel .goal-panel label>span{font:400 11px/1.3 var(--font);letter-spacing:0;text-transform:none;color:var(--tx3)!important;opacity:.85}
+:root:root .context-panel .goal-panel label>:is(textarea,input){grid-column:1/-1}
+:root:root .context-panel .goal-panel textarea{min-height:112px;max-height:340px;resize:vertical;line-height:1.55}
+:root:root .context-panel .goal-panel input{height:34px;padding:0 12px}
+/* Only the whole-number fields: the cost field (min 0.0001, step 0.01) reports a step mismatch for valid amounts such as 12.5. */
+:root:root .context-panel .goal-panel input[step="1"]:invalid{border-color:var(--errb)!important}
+:root:root .context-panel .goal-panel input[step="1"]:invalid:focus{box-shadow:0 0 0 3px var(--errt)}
+:root:root .context-panel .goal-budget-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+:root:root .context-panel .goal-budget-alert{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:start;gap:10px;padding:12px 14px;border:1px solid var(--errb)!important;border-radius:var(--r-m);background:var(--errt)!important;color:var(--err)!important}
+:root:root .context-panel .goal-budget-alert :is(strong,span){display:block}
+:root:root .context-panel .goal-budget-alert strong{font-size:12.5px;font-weight:600;color:var(--err)!important}
+:root:root .context-panel .goal-budget-alert span{margin-top:3px;font-size:12px;line-height:1.5;color:var(--tx1)!important}
+:root:root .context-panel .goal-budget-note{margin:0;font-size:11.5px;line-height:1.55;color:var(--tx3)!important}
+:root:root .context-panel .goal-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+:root:root .context-panel .goal-metrics>div{min-width:0;padding:10px 12px;border:1px solid var(--line)!important;border-radius:10px;background:var(--bg2)!important}
+:root:root .context-panel .goal-metrics :is(span,strong,small){display:block}
+:root:root .context-panel .goal-metrics span{font:600 10px/1.2 var(--font);letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .context-panel .goal-metrics strong{margin-top:5px;font:600 13.5px/1.25 var(--font);font-variant-numeric:tabular-nums;color:var(--tx0)!important;overflow-wrap:anywhere}
+:root:root .context-panel .goal-metrics small{margin-top:3px;font-size:11px;line-height:1.35;color:var(--tx3)!important}
+:root:root .context-panel .goal-metrics>div.exhausted{border-color:var(--errb)!important;background:var(--errt)!important}
+:root:root .context-panel .goal-metrics>div.exhausted :is(strong,small){color:var(--err)!important}
+:root:root .context-panel :is(.goal-details,.verification-evidence-details){flex:0 0 auto;overflow:hidden;border:1px solid var(--line)!important;border-radius:var(--r-m);background:linear-gradient(180deg,var(--surf),var(--surf2))!important}
+:root:root .context-panel .verification-evidence-details{background:var(--bg1)!important}
+:root:root .context-panel :is(.goal-details,.verification-evidence-details)>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;list-style:none;cursor:pointer;color:var(--tx3)!important;user-select:none;transition:background .14s}
+:root:root .context-panel :is(.goal-details,.verification-evidence-details)>summary:hover{background:var(--surf)}
+:root:root .context-panel :is(.goal-details,.verification-evidence-details)>summary::-webkit-details-marker{display:none}
+:root:root .context-panel :is(.goal-details,.verification-evidence-details)>summary span{min-width:0}
+:root:root .context-panel :is(.goal-details,.verification-evidence-details)>summary :is(strong,small){display:block}
+:root:root .context-panel :is(.goal-details,.verification-evidence-details)>summary strong{font-size:12.5px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel :is(.goal-details,.verification-evidence-details)>summary small{margin-top:2px;font-size:11.5px;line-height:1.45;color:var(--tx3)!important}
+:root:root .context-panel :is(.goal-details,.verification-evidence-details)>summary svg{flex:none;color:var(--tx3);transition:transform .15s}
+:root:root .context-panel :is(.goal-details,.verification-evidence-details)[open]>summary svg{transform:rotate(180deg)}
+:root:root .context-panel :is(.goal-details-body,.verification-evidence-body){display:grid;gap:12px;padding:14px;border-top:1px solid var(--line)!important}
+:root:root .context-panel .goal-details-body textarea{min-height:76px;max-height:200px}
+:root:root .context-panel .continuity-derived{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+:root:root .context-panel .continuity-derived>div{display:flex;flex-direction:column;justify-content:space-between;gap:4px;min-width:0;padding:9px 11px;border:1px solid var(--line)!important;border-radius:9px;background:var(--bg2)!important}
+:root:root .context-panel .continuity-derived :is(span,strong){display:block}
+:root:root .context-panel .continuity-derived span{font:600 10px/1.2 var(--font);letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)!important}
+/* Values wrap: a long cwd or "No verification recorded" must stay readable instead of ending in an ellipsis. */
+:root:root .context-panel .continuity-derived strong{font:500 12px/1.35 var(--mono);color:var(--tx0)!important;overflow-wrap:anywhere}
+:root:root .context-panel .verification-evidence-overview{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+:root:root .context-panel .verification-evidence-overview>span{padding:3px 9px;border:1px solid var(--line2)!important;border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10.5px/1.2 var(--mono)}
+:root:root .context-panel .verification-evidence-overview>.status:is(.passed,.verified){border-color:var(--okb)!important;background:var(--okt);color:var(--ok)!important}
+:root:root .context-panel .verification-evidence-overview>.status.failed{border-color:var(--errb)!important;background:var(--errt);color:var(--err)!important}
+:root:root .context-panel .verification-evidence-overview>.status.blocked{border-color:var(--warnb)!important;background:var(--warnt);color:var(--warn)!important}
+:root:root .context-panel .verification-evidence-rows{display:grid;gap:8px}
+:root:root .context-panel .verification-evidence-row{display:grid;grid-template-columns:20px minmax(0,1fr);gap:10px;padding:10px 12px;border:1px solid var(--line)!important;border-radius:9px;background:var(--bg2)!important}
+:root:root .context-panel .verification-evidence-icon{display:flex;justify-content:center;padding-top:1px;color:var(--tx3)!important}
+:root:root .context-panel .verification-evidence-row.status-passed .verification-evidence-icon{color:var(--ok)!important}
+:root:root .context-panel .verification-evidence-row:is(.status-failed) .verification-evidence-icon{color:var(--err)!important}
+:root:root .context-panel .verification-evidence-row.status-blocked .verification-evidence-icon{color:var(--warn)!important}
+:root:root .context-panel .verification-evidence-main{min-width:0}
+:root:root .context-panel .verification-evidence-main>div{display:flex;align-items:center;gap:6px;min-width:0}
+:root:root .context-panel .verification-evidence-main strong{min-width:0;font:600 12px/1.3 var(--mono);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .verification-evidence-main :is(em,b){flex:none;padding:2px 7px;border-radius:99px;background:var(--bg3)!important;color:var(--tx2)!important;font:600 10px/1.2 var(--mono);font-style:normal;text-transform:lowercase}
+:root:root .context-panel .verification-evidence-row.status-passed .verification-evidence-main b{background:var(--okt)!important;color:var(--ok)!important}
+:root:root .context-panel .verification-evidence-row.status-failed .verification-evidence-main b{background:var(--errt)!important;color:var(--err)!important}
+:root:root .context-panel .verification-evidence-row.status-blocked .verification-evidence-main b{background:var(--warnt)!important;color:var(--warn)!important}
+:root:root .context-panel .verification-evidence-main p{margin:6px 0 0;font-size:12px;line-height:1.5;color:var(--tx1)!important}
+:root:root .context-panel .verification-evidence-main small{display:block;margin-top:5px;font:400 10.5px/1.45 var(--mono);color:var(--tx3)!important;overflow-wrap:anywhere}
+:root:root .context-panel :is(.verification-evidence-empty,.verification-evidence-error){padding:12px 14px;border:1.5px dashed var(--line2)!important;border-radius:9px;font-size:12px;line-height:1.5;color:var(--tx3)!important}
+:root:root .context-panel .verification-evidence-error{border-color:var(--errb)!important;color:var(--err)!important}
+:root:root .context-panel .verification-repair-card{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px 12px;padding:12px 14px;border:1px solid var(--warnb)!important;border-radius:var(--r-m);background:var(--warnt)!important}
+/* Light keeps the legacy opaque warm tint; verification-repair.spec checks rgb(255,248,240). */
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .context-panel .verification-repair-card{background:#fff8f0!important}
+:root:root .context-panel .verification-repair-card>div{flex:1 1 220px;min-width:0}
+:root:root .context-panel .verification-repair-card :is(strong,span){display:block}
+:root:root .context-panel .verification-repair-card strong{font-size:12.5px;font-weight:600;color:var(--warn)!important}
+:root:root .context-panel .verification-repair-card span{margin-top:3px;font-size:12px;line-height:1.5;color:var(--tx1)!important}
+:root:root .context-panel .verification-repair-card button{border-color:var(--warnb)!important;background:transparent!important;color:var(--warn)!important}
+:root:root .context-panel .verification-repair-card button:hover:not(:disabled){background:var(--warnt)!important;color:var(--warn)!important}
+:root:root .context-panel .verification-repair-status{padding:9px 12px;border:1px solid var(--okb)!important;border-radius:9px;background:var(--okt)!important;color:var(--ok)!important;font-size:12px}
+:root:root .context-panel .goal-actions{display:flex;flex-wrap:wrap;gap:8px}
+:root:root .context-panel .goal-actions button{height:30px;min-height:30px;padding:0 12px}
+:root:root .context-panel .goal-actions button svg{flex:none}
+/* The goal's own actions stay in reach at the bottom of the scrolling panel. */
+:root:root .context-panel .goal-panel>.goal-actions{position:sticky;bottom:-16px;z-index:2;margin:auto -16px -16px;padding:12px 16px 14px;border-top:1px solid var(--line);background:var(--bg1)}
+@container inspector (max-width:470px){
+  :root:root .context-panel .goal-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@container inspector (max-width:380px){
+  :root:root .context-panel :is(.goal-budget-grid,.continuity-derived){grid-template-columns:minmax(0,1fr)}
+}
+
+/* --------------------------------------------------------------------- Runtime */
+:root:root .context-panel .runtime-surface{box-sizing:border-box;padding:14px;display:grid;gap:12px;align-content:start;min-width:0}
+:root:root .context-panel :is(.runtime-summary,.runtime-grid,.runtime-activity,.runtime-capabilities,.agent-background-terminals,.runtime-trace){
+  box-sizing:border-box;min-width:0;border:1px solid var(--line)!important;border-radius:var(--r-l);background:linear-gradient(180deg,var(--surf),var(--surf2))!important;box-shadow:none;color:var(--tx1);
+}
+:root:root .context-panel .runtime-summary{padding:14px 16px}
+:root:root .context-panel .runtime-summary>div{display:flex;align-items:center;gap:11px;min-width:0}
+:root:root .context-panel .runtime-summary>div>div{min-width:0}
+:root:root .context-panel .runtime-summary>div>div :is(strong,span){display:block}
+:root:root .context-panel .runtime-summary strong{font-size:13.5px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .runtime-summary span{margin-top:2px;font-size:12px;color:var(--tx2)!important}
+:root:root .context-panel .runtime-summary small{display:block;margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font:500 10.5px/1.3 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .runtime-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--tx3);box-shadow:0 0 0 3px color-mix(in srgb,var(--tx3) 18%,transparent)}
+:root:root .context-panel .runtime-dot.online{background:var(--ok);box-shadow:0 0 0 3px var(--okt);animation:tb-pulse 2.6s infinite}
+:root:root .context-panel .runtime-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;padding:0;overflow:hidden}
+:root:root .context-panel .runtime-grid>div{min-width:0;padding:11px 14px;border:0!important;border-bottom:1px solid var(--line)!important;background:transparent!important}
+:root:root .context-panel .runtime-grid>div:nth-child(odd){border-right:1px solid var(--line)!important}
+:root:root .context-panel .runtime-grid>div:nth-last-child(-n+2){border-bottom:0!important}
+:root:root .context-panel .runtime-grid :is(span,strong){display:block}
+:root:root .context-panel .runtime-grid span{font:600 10px/1.2 var(--font);letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)!important}
+:root:root .context-panel .runtime-grid strong{margin-top:5px;font:600 13px/1.3 var(--font);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .runtime-capabilities{display:grid;gap:10px;padding:14px}
+:root:root .context-panel .runtime-capabilities-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:4px 10px}
+:root:root .context-panel .runtime-capabilities-head strong{font-size:12.5px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .runtime-capabilities-head span{font-size:11.5px;color:var(--tx3)!important;text-align:left}
+:root:root .context-panel .runtime-capability-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px}
+:root:root .context-panel .runtime-capability-grid>div{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px 7px 11px;border:1px solid var(--line)!important;border-radius:8px;background:var(--bg2)!important;opacity:1}
+:root:root .context-panel .runtime-capability-grid span{min-width:0;font-size:12px;line-height:1.3;color:var(--tx1)!important;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+:root:root .context-panel .runtime-capability-grid strong{flex:none;padding:2px 7px;border-radius:99px;font:600 10px/1.3 var(--mono);letter-spacing:.04em;text-transform:uppercase;white-space:nowrap;background:var(--bg3);color:var(--tx3)!important}
+:root:root .context-panel .runtime-capability-grid .available strong{background:var(--okt);color:var(--ok)!important}
+:root:root .context-panel .runtime-capability-grid .unavailable span{color:var(--tx3)!important}
+:root:root .context-panel .runtime-activity{padding:14px 16px}
+:root:root .context-panel .runtime-activity strong{font-size:12.5px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .runtime-activity p{margin:5px 0 0;font-size:12px;line-height:1.5;color:var(--tx2)!important}
+/* Agent background processes */
+:root:root .context-panel .agent-background-terminals{display:grid;gap:10px;padding:12px 14px}
+:root:root .context-panel .agent-background-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+:root:root .context-panel .agent-background-head>div{display:flex;align-items:center;gap:7px;min-width:0}
+:root:root .context-panel .agent-background-head>div:first-child>svg{color:var(--ac)}
+:root:root .context-panel .agent-background-head strong{font-size:12.5px;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .agent-background-head>div>span{padding:1px 7px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10.5px/1.3 var(--mono)}
+:root:root .context-panel .agent-background-list{display:grid;gap:6px}
+:root:root .context-panel .agent-background-list>div{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 8px 8px 12px;border:1px solid var(--line)!important;border-radius:9px;background:var(--bg2)!important}
+:root:root .context-panel .agent-background-list>div>span{min-width:0}
+:root:root .context-panel .agent-background-list :is(strong,small,em){display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Long commands get two lines (the full text is in the title) instead of one truncated line. */
+:root:root .context-panel .agent-background-list strong{font:500 12px/1.4 var(--mono);color:var(--tx0)!important;white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2}
+:root:root .context-panel .agent-background-list small{margin-top:2px;font:400 10.5px/1.3 var(--mono);color:var(--tx3)!important}
+:root:root .context-panel .agent-background-list em{margin-top:3px;font:500 10.5px/1.3 var(--mono);font-style:normal;color:var(--tx2)!important}
+:root:root .context-panel .agent-background-list button{flex:none;border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+:root:root .context-panel :is(.agent-background-list button,.agent-background-head button:not([title])):hover:not(:disabled){background:color-mix(in srgb,var(--err) 16%,transparent)!important;color:var(--err)!important}
+:root:root .context-panel .agent-background-head button:not([title]){border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+:root:root .context-panel :is(.agent-background-empty,.agent-background-error){margin:0;padding:2px 0;font-size:12px;line-height:1.5;color:var(--tx3)!important}
+/* Errors read as the panel's other inline errors (a tinted banner), not as loose red text. */
+:root:root .context-panel .agent-background-error{padding:8px 12px;border:1px solid var(--errb)!important;border-radius:9px;background:var(--errt)!important;color:var(--err)!important;overflow-wrap:anywhere}
+/* Execution trace */
+:root:root .context-panel .runtime-trace{overflow:hidden}
+:root:root .context-panel .runtime-trace-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:12px 10px 12px 14px;border-bottom:1px solid var(--line)!important}
+:root:root .context-panel .runtime-trace-head>div{min-width:0}
+:root:root .context-panel .runtime-trace-head :is(strong,span){display:block}
+:root:root .context-panel .runtime-trace-head strong{font-size:12.5px;font-weight:600;color:var(--tx0)!important}
+:root:root .context-panel .runtime-trace-head span{margin-top:3px;font-size:11.5px;line-height:1.45;color:var(--tx3)!important}
+:root:root .context-panel .runtime-trace-filters{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:10px 14px;border-bottom:1px solid var(--line)!important;background:var(--surf2)}
+:root:root .context-panel .runtime-trace-filters select{width:100%;height:28px;font-size:11.5px;padding-left:9px;padding-right:24px;background-position:right 7px center!important}
+:root:root .context-panel .runtime-trace-error{margin:10px 14px;padding:9px 12px;border:1px solid var(--errb)!important;border-radius:9px;background:var(--errt)!important;color:var(--err)!important}
+:root:root .context-panel .runtime-trace-error :is(strong,span){display:block}
+:root:root .context-panel .runtime-trace-error strong{font-size:12px;font-weight:600}
+:root:root .context-panel .runtime-trace-error span{margin-top:2px;font-size:11.5px;line-height:1.45;color:var(--tx1)!important;overflow-wrap:anywhere}
+:root:root .context-panel .runtime-trace-list{max-height:340px;overflow:auto}
+:root:root .context-panel .runtime-trace-row{border-top:1px solid var(--line)!important}
+:root:root .context-panel .runtime-trace-row:first-child{border-top:0!important}
+:root:root .context-panel .runtime-trace-row>summary{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px 14px;list-style:none;cursor:pointer;transition:background .12s}
+:root:root .context-panel .runtime-trace-row>summary:hover{background:var(--bg2)}
+:root:root .context-panel .runtime-trace-row>summary::-webkit-details-marker{display:none}
+/* 12-hour locales add AM/PM: the time keeps one line and sizes its own column. */
+:root:root .context-panel .runtime-trace-row time{min-width:52px;font:500 10.5px/1.2 var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--tx3)!important}
+:root:root .context-panel .runtime-trace-row>summary strong{font:500 11.5px/1.35 var(--mono);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .runtime-trace-row>summary>span{padding:2px 7px;border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10px/1.3 var(--mono);letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+:root:root .context-panel .runtime-trace-row>summary>span:is([data-status="completed"],[data-status="complete"],[data-status="ok"],[data-status="success"],[data-status="succeeded"],[data-status="passed"],[data-status="done"]){background:var(--okt);color:var(--ok)!important}
+:root:root .context-panel .runtime-trace-row>summary>span:is([data-status="failed"],[data-status="error"],[data-status="errored"],[data-status="denied"],[data-status="cancelled"],[data-status="timeout"]){background:var(--errt);color:var(--err)!important}
+:root:root .context-panel .runtime-trace-row>summary>span:is([data-status="started"],[data-status="running"],[data-status="pending"],[data-status="queued"]){background:var(--acsoft);color:var(--ac)!important}
+:root:root .context-panel .runtime-trace-row[open]>summary{background:var(--surf)}
+:root:root .context-panel .runtime-trace-row>div{padding:0 14px 12px}
+:root:root .context-panel .runtime-trace-row p{margin:0 0 6px;font:400 10.5px/1.45 var(--mono);color:var(--tx3)!important;overflow-wrap:anywhere}
+:root:root .context-panel .runtime-trace-row pre{max-height:200px;margin:0;padding:9px 11px;overflow:auto;border:1px solid var(--line)!important;border-radius:8px;background:var(--bg0)!important;color:var(--tx1)!important;font:400 11px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+:root:root .context-panel .runtime-trace-empty{padding:20px 14px;font-size:12px;color:var(--tx3)!important;text-align:center}
+@container inspector (max-width:520px){
+  :root:root .context-panel .runtime-trace-filters{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@container inspector (min-width:760px){
+  :root:root .context-panel .runtime-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  :root:root .context-panel .runtime-grid>div:nth-child(odd){border-right:0!important}
+  :root:root .context-panel .runtime-grid>div:not(:nth-child(3n)){border-right:1px solid var(--line)!important}
+  :root:root .context-panel .runtime-grid>div:nth-last-child(-n+2){border-bottom:1px solid var(--line)!important}
+  :root:root .context-panel .runtime-grid>div:nth-last-child(-n+3){border-bottom:0!important}
+}
+
+/* ------------------------------------------------------- Agents and Browser frames */
+:root:root .context-panel .panel-page{box-sizing:border-box;min-height:100%;padding:14px;background:transparent!important}
+
+/* ------------------------------------------------------------- Maximized panel */
+/* Reading surfaces keep a comfortable measure when the panel takes the whole window. */
+:root:root .context-panel.maximized :is(.runtime-surface,.context-inspector,.source-control){padding-inline:max(14px,calc((100% - 1040px) / 2))}
+:root:root .context-panel.maximized .goal-panel>*{box-sizing:border-box;width:100%;max-width:1040px;margin-inline:auto}
+:root:root .context-panel.maximized .goal-panel>.goal-actions{width:auto;max-width:none;margin-inline:-16px;padding-inline:max(16px,calc((100% + 32px - 1040px) / 2))}
+@container inspector (min-width:900px){
+  :root:root .context-panel .workspace-body{grid-template-columns:300px minmax(0,1fr)}
+  :root:root .context-panel .changes-view{grid-template-columns:320px minmax(0,1fr)}
+}
+@container inspector (max-width:400px){
+  :root:root .context-panel .workspace-body{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(120px,38%) minmax(0,1fr)}
+  :root:root .context-panel .tree-list{border-right:0!important;border-bottom:1px solid var(--line)!important}
+  :root:root .context-panel .changes-view{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(110px,34%) minmax(0,1fr)}
+  :root:root .context-panel .changes-view.has-action-error{grid-template-rows:auto minmax(110px,34%) minmax(0,1fr)}
+  :root:root .context-panel .changed-files{border-right:0!important;border-bottom:1px solid var(--line)!important}
+}
+
+/* ---------------------------------------------------------------- Narrow windows */
+@media (max-width:1120px){
+  /* The legacy rule hides every tab label here; the container query above decides instead. */
+  :root:root .context-panel .context-panel-tab{width:auto}
+}
+@media (max-width:900px){
+  :root:root .context-panel{box-shadow:var(--shside)}
+  :root:root .app-shell.hosted-shell .context-panel{inset:0 0 0 auto;height:100vh;margin-top:0}
+  /* The desktop overlay already starts below the window bar (inset top 32px); the legacy 32px margin pushed it down a second
+     time and past the bottom of the window. */
+  :root:root .app-shell.desktop-shell .context-panel.context-panel{height:auto;grid-template-rows:var(--top) minmax(0,1fr)}
+  :root:root .app-shell.desktop-shell .context-panel.context-panel::before{display:none}
+  /* Maximized in the narrow overlay: the main column collapses to 0, so the panel takes the whole workspace instead of
+     leaving an empty strip beside its 520px overlay. */
+  :root:root .context-panel.maximized{width:100%}
+}
+
+/* ------------------------------------------------------------ Terminal drawer */
+/* The drawer title, the session tabs, New / Split and Close share one 40px header row: the drawer head (App) and the terminal's
+   tab strip are laid out on the drawer's own grid through display:contents. The panes get back the 41px a second row took,
+   which is what kept the command line and its footer visible at the 190px minimum height. */
+:root:root .terminal-drawer.terminal-drawer{
+  container:terminal/size;
+  grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:40px minmax(0,1fr);
+  background:var(--bg1)!important;border-top:1px solid var(--line)!important;border-color:var(--line)!important;
+  box-shadow:0 -14px 40px rgba(0,0,0,.18);color:var(--tx1);font-family:var(--font);
+}
+:root:root .terminal-drawer.terminal-drawer::before{content:"";grid-row:1;grid-column:1/-1;border-bottom:1px solid var(--line);pointer-events:none}
+:root:root .terminal-drawer .terminal-drawer-head{display:contents}
+:root:root .terminal-drawer .terminal-drawer-head>span{grid-row:1;grid-column:1;display:flex;align-items:center;gap:8px;padding:0 10px 0 14px;color:var(--tx0)!important;font:600 12.5px/1 var(--font);white-space:nowrap}
+:root:root .terminal-drawer .terminal-drawer-head>span svg{flex:none;color:var(--ac)}
+:root:root .terminal-drawer .terminal-drawer-head>div{position:relative;grid-row:1;grid-column:3;display:flex;align-items:center;gap:2px;padding:0 8px 0 9px}
+:root:root .terminal-drawer .terminal-drawer-head>div::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:1px;background:var(--line)}
+:root:root .terminal-drawer .terminal-drawer-head button{width:28px;height:28px;display:grid;place-items:center;padding:0;border:0!important;border-radius:var(--r-s);background:transparent!important;color:var(--tx2)!important;cursor:pointer;transition:background .14s,color .14s}
+:root:root .terminal-drawer .terminal-drawer-head button:hover{background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .terminal-drawer .real-terminal{display:contents}
+:root:root .terminal-drawer>.surface-loading{grid-row:2;grid-column:1/-1}
+
+/* Header row: session tabs keep their full names and scroll (wheel, keyboard focus, and the active one is kept in view),
+   while New and the split buttons stay put on the right. */
+:root:root .terminal-drawer .real-terminal>.terminal-tabs{
+  grid-row:1;grid-column:2;min-width:0;height:40px;display:flex;align-items:center;gap:2px;padding:0 4px 0 0;overflow:visible;
+  border:0!important;border-radius:0;background:transparent!important;color:var(--tx2)!important;
+}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list{flex:1;min-width:0;height:100%;display:flex;align-items:center;gap:4px;padding:0 8px 0 0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain}
+:root:root .terminal-drawer .terminal-tab-list::-webkit-scrollbar{display:none}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button{
+  flex:none;max-width:220px;height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 4px 0 9px;
+  border:1px solid transparent!important;border-radius:var(--r-s);background:transparent!important;color:var(--tx2)!important;
+  font:550 12px/1 var(--font);white-space:nowrap;cursor:pointer;transition:background .14s,color .14s,border-color .14s;
+}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>svg{flex:none}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>bdi{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button:hover{background:var(--bg2)!important;color:var(--tx0)!important}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button.active{border-color:var(--line2)!important;background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button.active>svg{color:var(--ac)}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button:focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 55%,transparent);outline-offset:-2px}
+/* Exit status of a stopped session: 0 reads as success, anything else as a failure. */
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>em{flex:none;padding:1px 5px;border-radius:5px;background:var(--errt)!important;color:var(--err)!important;font:600 10px/1.2 var(--mono);font-style:normal}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>em.exit-ok{background:var(--okt)!important;color:var(--ok)!important}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>em:empty{display:none}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>span{flex:none;width:20px;height:20px;display:grid;place-items:center;margin-left:auto;border-radius:5px;color:var(--tx3);cursor:pointer;transition:background .12s,color .12s}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>span:hover{background:var(--bg4);color:var(--tx0)}
+:root:root .terminal-drawer .real-terminal>.terminal-tabs>button{
+  flex:none;height:28px;display:inline-flex;align-items:center;justify-content:center;gap:6px;margin:0;padding:0 10px;
+  border:1px solid transparent!important;border-radius:var(--r-s);background:transparent!important;color:var(--tx2)!important;
+  font:550 12px/1 var(--font);white-space:nowrap;cursor:pointer;transition:background .14s,color .14s,border-color .14s,opacity .14s;
+}
+:root:root .terminal-drawer .real-terminal>.terminal-tabs>button:hover:not(:disabled){background:var(--bg2)!important;color:var(--tx0)!important}
+:root:root .terminal-drawer .real-terminal>.terminal-tabs>.terminal-new{margin:0 4px 0 0;padding:0 10px 0 8px;border-color:color-mix(in srgb,var(--ac) 40%,var(--line))!important;color:var(--ac)!important}
+:root:root .terminal-drawer .real-terminal>.terminal-tabs>.terminal-new:hover:not(:disabled){background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .terminal-drawer .real-terminal>.terminal-tabs>button[title]{width:28px;padding:0}
+:root:root .terminal-drawer .real-terminal>.terminal-tabs>button:disabled{opacity:.4;cursor:default}
+/* A create or split in flight (the buttons ignore further clicks until it settles). */
+:root:root .terminal-drawer :is(.terminal-tabs>button,.terminal-empty button)[data-busy]{opacity:.6;cursor:progress}
+
+/* Content: the error line, then the panes. If the drawer is too short for both, the content scrolls instead of clipping. */
+:root:root .terminal-drawer .real-terminal>.terminal-content{position:relative;grid-row:2;grid-column:1/-1;min-height:0;display:flex;flex-direction:column;gap:6px;padding:8px 10px 10px;overflow-y:auto;overscroll-behavior:contain}
+:root:root .terminal-drawer .terminal-error{flex:none;display:flex;align-items:flex-start;gap:8px;padding:5px 5px 5px 12px;border:1px solid var(--errb)!important;border-radius:9px;background:var(--errt)!important;color:var(--err)!important;font-size:12px;line-height:1.45}
+:root:root .terminal-drawer .terminal-error>span{flex:1;min-width:0;padding-top:2px;overflow-wrap:anywhere}
+:root:root .terminal-drawer .terminal-error>button{flex:none;width:22px;height:22px;display:grid;place-items:center;padding:0;border:0!important;border-radius:6px;background:transparent!important;color:inherit!important;opacity:.75;cursor:pointer}
+:root:root .terminal-drawer .terminal-error>button:hover{opacity:1;background:color-mix(in srgb,var(--err) 14%,transparent)!important}
+:root:root .terminal-drawer .terminal-content>.terminal-panes{flex:1 1 auto;min-height:112px;display:grid;overflow:hidden;border:1px solid var(--line)!important;border-radius:var(--r-m);background:var(--bg0)!important}
+/* Stacked panes keep at least 170px each (set inline) and the stack scrolls when four do not fit. */
+:root:root .terminal-drawer .terminal-content>.terminal-panes.vertical{overflow-y:auto;overscroll-behavior:contain}
+:root:root .terminal-drawer .terminal-pane{container:terminal-pane/inline-size;min-width:0;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto auto;background:var(--bg0)!important;border-left:1px solid var(--line)!important;box-shadow:none}
+:root:root .terminal-drawer .terminal-pane:first-child{border-left:0!important}
+/* A single pane needs no title row: the active tab above already names it. */
+:root:root .terminal-drawer .terminal-panes:not(.split) .terminal-pane{grid-template-rows:minmax(0,1fr) auto auto}
+:root:root .terminal-drawer .terminal-panes:not(.split) .terminal-pane-head{display:none}
+:root:root .terminal-drawer .terminal-panes.vertical .terminal-pane{border-left:0!important;border-top:1px solid var(--line)!important}
+:root:root .terminal-drawer .terminal-panes.vertical .terminal-pane:first-child{border-top:0!important}
+:root:root .terminal-drawer .terminal-panes.split .terminal-pane.active{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ac) 45%,transparent)}
+:root:root .terminal-drawer .terminal-pane-head{min-height:28px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 6px 0 12px;border-bottom:1px solid var(--line)!important;color:var(--tx3)!important;font:500 10.5px/1 var(--mono);cursor:default}
+:root:root .terminal-drawer .terminal-pane-head span{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;overflow:hidden}
+:root:root .terminal-drawer .terminal-pane-head span svg{flex:none}
+:root:root .terminal-drawer .terminal-pane.active .terminal-pane-head span{color:var(--tx1)}
+:root:root .terminal-drawer .terminal-pane.active .terminal-pane-head span svg{color:var(--ac)}
+:root:root .terminal-drawer .terminal-pane-head button{width:22px;height:22px;display:grid;place-items:center;padding:0;border:0!important;border-radius:5px;background:transparent!important;color:var(--tx3)!important;cursor:pointer}
+:root:root .terminal-drawer .terminal-pane-head button:hover{background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .terminal-drawer .terminal-pane>.terminal-screen{min-height:0;margin:0;padding:8px 14px;overflow:auto;border:0!important;border-radius:0;background:var(--bg0)!important;color:var(--tx1)!important;font:400 12px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+:root:root .terminal-drawer .terminal-command-line{
+  display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:6px;margin:0 8px 6px;padding:2px 2px 2px 12px;
+  border:1px solid var(--line)!important;border-radius:9px;background:var(--bg2)!important;color:var(--tx2)!important;transition:border-color .15s,box-shadow .15s;
+}
+:root:root .terminal-drawer .terminal-command-line:focus-within{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)}
+:root:root .terminal-drawer .terminal-command-line>span{color:var(--ac);font:700 12.5px/1 var(--mono)}
+:root:root .terminal-drawer .terminal-command-line input{height:26px;min-width:0;padding:0;border:0!important;outline:0;background:transparent!important;color:var(--tx0)!important;font:400 12px/1 var(--mono);box-shadow:none}
+:root:root .terminal-drawer .terminal-command-line input::placeholder{color:var(--tx3)}
+:root:root .terminal-drawer .terminal-command-line input:disabled{cursor:not-allowed}
+:root:root .terminal-drawer :is(.terminal-command-line,.terminal-foot) button{height:24px;margin:0;display:inline-flex;align-items:center;gap:5px;padding:0 10px;border:1px solid var(--line2)!important;border-radius:7px;background:var(--bg3)!important;color:var(--tx1)!important;font:550 11.5px/1 var(--font);white-space:nowrap;cursor:pointer;transition:background .14s,color .14s}
+:root:root .terminal-drawer :is(.terminal-command-line,.terminal-foot) button:hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .terminal-drawer :is(.terminal-command-line,.terminal-foot) button:disabled{opacity:.45;cursor:default}
+:root:root .terminal-drawer .terminal-command-line button:last-child{border-color:transparent!important;background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important}
+:root:root .terminal-drawer .terminal-command-line button:last-child:hover:not(:disabled){filter:brightness(1.1);color:#fff!important}
+:root:root .terminal-drawer .terminal-command-line button:first-of-type{font-family:var(--mono);font-size:11px}
+:root:root .terminal-drawer .terminal-foot{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 8px 4px 14px;border-top:1px solid var(--line);color:var(--tx3)!important;font:400 10.5px/1.3 var(--mono)}
+:root:root .terminal-drawer .terminal-foot>span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .terminal-drawer .terminal-foot button{flex:none;font-family:var(--font)}
+:root:root .terminal-drawer .terminal-empty{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border:1.5px dashed var(--line2)!important;border-radius:var(--r-l);background:transparent!important;color:var(--tx3)!important;text-align:center}
+:root:root .terminal-drawer .terminal-empty>svg{box-sizing:content-box;width:20px;height:20px;padding:10px;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);border-radius:12px;background:var(--acsoft);color:var(--ac)}
+:root:root .terminal-drawer .terminal-empty strong{font-size:13px;font-weight:600;color:var(--tx1)!important}
+:root:root .terminal-drawer .terminal-empty button{height:30px;margin-top:4px;padding:0 14px;border:0!important;border-radius:var(--r-s);background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;font:550 12px/1 var(--font);box-shadow:0 3px 14px var(--acglow);cursor:pointer}
+:root:root .terminal-drawer .terminal-empty button:hover{filter:brightness(1.1)}
+:root:root .terminal-drawer .terminal-resizer:hover::after,:root:root .layout-resizing .terminal-drawer .terminal-resizer::after{background:var(--ac)}
+/* Short drawers: an error floats over the top of the panes (dismissable) instead of taking the rows the command line needs. */
+@container terminal (max-height:250px){
+  :root:root .terminal-drawer .terminal-content>.terminal-error{position:absolute;top:8px;left:10px;right:10px;z-index:3;background:linear-gradient(var(--errt),var(--errt)),var(--panel)!important;box-shadow:var(--shadow)}
+}
+/* Narrow drawers: the title and New keep only their icons so the session tabs keep their room. */
+@container terminal (max-width:720px){
+  :root:root .terminal-drawer .terminal-drawer-head>span{gap:0;padding-right:6px;font-size:0}
+}
+@container terminal (max-width:540px){
+  :root:root .terminal-drawer .real-terminal>.terminal-tabs>.terminal-new{width:28px;padding:0;gap:0;font-size:0}
+}
+/* Narrow split panes: Attach keeps its icon (name in the tooltip) and the command line tightens. */
+@container terminal-pane (max-width:320px){
+  :root:root .terminal-drawer .terminal-foot{padding-left:10px}
+  :root:root .terminal-drawer .terminal-foot button{width:26px;padding:0;justify-content:center;gap:0;font-size:0}
+  :root:root .terminal-drawer .terminal-command-line{gap:4px;padding-left:9px}
+  :root:root .terminal-drawer .terminal-command-line button{padding:0 7px}
+}
+
+/* --------------------------------------------------------- Worktree setup card */
+:root:root .worktree-setup-card{
+  grid-template-columns:38px minmax(0,1fr) auto;gap:12px;padding:12px 12px 12px 14px;border:1px solid var(--line)!important;border-radius:var(--r-l);
+  background:linear-gradient(180deg,var(--surf),var(--surf2)),var(--bg1)!important;box-shadow:var(--sh1);color:var(--tx1);animation:tb-rise .3s var(--ease-out) both;
+}
+:root:root .worktree-setup-card.done{border-color:var(--okb)!important}
+:root:root .worktree-setup-card.failed{border-color:var(--errb)!important}
+:root:root .worktree-setup-card .worktree-setup-icon{width:38px;height:38px;display:grid;place-items:center;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent)!important;border-radius:11px;background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .worktree-setup-card.done .worktree-setup-icon{border-color:var(--okb)!important;background:var(--okt)!important;color:var(--ok)!important}
+:root:root .worktree-setup-card.failed .worktree-setup-icon{border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+:root:root .worktree-setup-card .worktree-setup-icon .spin{animation:tb-spin 1s linear infinite}
+:root:root .worktree-setup-card .worktree-setup-copy{min-width:0;display:grid;gap:3px}
+:root:root .worktree-setup-card .worktree-setup-copy strong{font-size:13px;font-weight:600;color:var(--tx0)!important}
+:root:root .worktree-setup-card .worktree-setup-copy span{display:flex;align-items:center;gap:6px;min-width:0;font:500 11.5px/1.3 var(--mono);color:var(--tx2)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .worktree-setup-card .worktree-setup-copy span svg{flex:none;color:var(--ac)}
+:root:root .worktree-setup-card .worktree-setup-copy small{font:400 11px/1.4 var(--mono);color:var(--tx3)!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:root:root .worktree-setup-card.failed .worktree-setup-copy small{color:var(--err)!important;white-space:normal;overflow-wrap:anywhere}
+:root:root .worktree-setup-card .worktree-setup-actions{display:flex;align-items:center;gap:6px}
+:root:root .worktree-setup-card .worktree-setup-actions button{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border:1px solid var(--line2)!important;border-radius:var(--r-s);background:var(--bg3)!important;color:var(--tx1)!important;font:550 11.5px/1 var(--font);cursor:pointer;transition:background .14s,color .14s}
+:root:root .worktree-setup-card .worktree-setup-actions button:hover{background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .worktree-setup-card .worktree-setup-actions button.icon{width:28px;padding:0;justify-content:center;border-color:transparent!important;background:transparent!important;color:var(--tx2)!important}
+:root:root .worktree-setup-card .worktree-setup-actions button.icon:hover{background:var(--bg3)!important;color:var(--tx0)!important}
+
+/* ------------------------------------------------- Compact Open-in picker (file head) */
+:root:root .context-panel .open-in-wrap{position:relative;display:inline-flex;min-width:0}
+:root:root .context-panel .open-in-picker.compact{height:26px;display:flex;align-items:stretch;overflow:hidden;border:1px solid var(--line2)!important;border-radius:var(--r-s);background:var(--bg3)!important}
+:root:root .context-panel .open-in-picker.compact>button{width:28px;height:100%;padding:0;display:grid;place-items:center;border:0!important;background:transparent!important;color:var(--tx1)!important;cursor:pointer}
+:root:root .context-panel .open-in-picker.compact>button:hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .context-panel .open-in-picker.compact>select{width:22px;min-width:0;padding:0;border:0!important;border-left:1px solid var(--line2)!important;appearance:none;-webkit-appearance:none;background:var(--chev) center/10px no-repeat!important;color:transparent!important;cursor:pointer;outline:none}
+:root:root .context-panel .open-in-picker.compact>select:hover{background-color:var(--bg4)!important}
+:root:root .context-panel .open-in-picker.compact>select:focus-visible{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--ac) 55%,transparent)}
+:root:root .context-panel .open-in-picker.compact>select option{color:var(--tx0);background:var(--bg2)}
+:root:root .context-panel .open-in-error{position:absolute;right:0;top:calc(100% + 6px);z-index:30;width:max-content;max-width:min(280px,70vw);padding:7px 10px;border:1px solid var(--errb)!important;border-radius:9px;background:var(--panel)!important;color:var(--err)!important;font-size:11.5px;line-height:1.4;box-shadow:var(--shadow)}
+
+/* ------------------------------------------- Text question (askText in RightPanel.jsx) */
+/* Shown where window.prompt is unavailable (the Electron app): one field, Cancel and OK. Enter submits, Escape and Cancel
+   cancel. It lives in <body>, so it is styled from the theme tokens directly. */
+:root:root .inspector-text-prompt{
+  box-sizing:border-box;width:min(440px,calc(100vw - 32px));max-width:none;margin:auto;padding:0;border:1px solid var(--line2)!important;border-radius:var(--r-l);
+  background:var(--panel)!important;color:var(--tx1)!important;box-shadow:var(--shbig);font-family:var(--font);animation:tb-pop .18s var(--ease-out) both;
+}
+:root:root .inspector-text-prompt::backdrop{background:var(--ovl);backdrop-filter:blur(2px)}
+:root:root .inspector-text-prompt>form{display:grid;gap:16px;margin:0;padding:18px 18px 16px}
+:root:root .inspector-text-prompt label{display:grid;gap:9px;margin:0;font:600 13px/1.4 var(--font);color:var(--tx0)!important;overflow-wrap:anywhere}
+:root:root .inspector-text-prompt input{
+  box-sizing:border-box;width:100%;height:36px;min-width:0;padding:0 12px;border:1px solid var(--line2)!important;border-radius:9px;background:var(--bg2)!important;
+  color:var(--tx0)!important;font:400 13px/1 var(--font);outline:none;box-shadow:none;transition:border-color .15s,box-shadow .15s;
+}
+:root:root .inspector-text-prompt input:focus{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)}
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .inspector-text-prompt input{background:var(--bg1)!important}
+:root:root .inspector-text-prompt-actions{display:flex;justify-content:flex-end;gap:8px}
+:root:root .inspector-text-prompt-actions button{
+  height:32px;min-width:76px;display:inline-flex;align-items:center;justify-content:center;padding:0 14px;border:1px solid var(--line2)!important;border-radius:var(--r-s);
+  background:var(--bg3)!important;color:var(--tx1)!important;font:550 12.5px/1 var(--font);cursor:pointer;transition:background .14s,color .14s,filter .14s;
+}
+:root:root .inspector-text-prompt-actions button:hover{background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .inspector-text-prompt-actions button.primary{border-color:transparent!important;background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow)}
+:root:root .inspector-text-prompt-actions button.primary:hover{filter:brightness(1.1);color:#fff!important}
+:root:root .inspector-text-prompt-actions button:focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 60%,transparent);outline-offset:2px}

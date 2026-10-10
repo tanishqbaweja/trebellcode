@@ -1,3 +1,5 @@
+import { splitCodexAttachmentText } from "./codex-turn-options.js";
+
 function inputPath(item){
   if(!item||typeof item!=="object")return null;
   if(["localImage","localAudio","mention","skill"].includes(item.type)&&item.path)return String(item.path);
@@ -24,10 +26,12 @@ export function shouldUseRuntimeNativeQueue({agentRuntime="",nativeQueue=false,p
 export function queuedSubmissionDraft(submission={}){
   const input=Array.isArray(submission.input)?submission.input:[];
   const textParts=input.filter(item=>item?.type==="text"&&typeof item.text==="string").map(item=>item.text).filter(Boolean);
-  const attachments=[...new Set(input.map(inputPath).filter(Boolean))];
+  // A Codex follow-up names its attachments in the text (codexTurnInput); the draft gets them back as attachments.
+  const prompt=splitCodexAttachmentText(textParts.join("\n").trim());
+  const attachments=[...new Set([...input.map(inputPath).filter(Boolean),...prompt.paths])];
   const contextChips=input.map(inputContextChip).filter(Boolean);
   const unsupported=input.some(item=>item&&!(["text","localImage","localAudio","mention","skill"].includes(item.type)));
-  const text=textParts.join("\n").trim();
+  const text=prompt.text.trim();
   const dynamicToolNamespaces=[...new Set((Array.isArray(submission.dynamicToolNamespaces)?submission.dynamicToolNamespaces:[]).map(value=>String(value||"").trim()).filter(Boolean))];
   return {
     id:String(submission.id||""),

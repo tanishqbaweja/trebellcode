@@ -25,7 +25,7 @@ async function freePort(){const server=createServer();await new Promise((resolve
 // its server requests per socket (agent-1, agent-2, …, so a new socket's first approval reuses an id of the old one) and fails the requests
 // of a socket that closes. approvalCommands[runtime] makes each of that runtime's turns wait on an ACP permission request for the command.
 // thread/goal/set fails with GOAL_REJECTED, unless goalSet is a promise: then the goal is saved once it settles.
-async function startAgentRelay(activeRuntime,{approvalCommands={},goalSet="reject"}={}){
+async function startAgentRelay(activeRuntime,{approvalCommands={},goalSet="reject",resumeErrors={}}={}){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Map(),requests=[],threads=[],responses=[],failed=[],savedGoals=[];let connections=0;
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   const broadcast=value=>{for(const {ws} of sockets.values())if(ws.readyState===1)ws.send(JSON.stringify(value))};
@@ -69,6 +69,8 @@ async function startAgentRelay(activeRuntime,{approvalCommands={},goalSet="rejec
         result={thread};
       }
       else if(message.method==="thread/list")result={data:threads,nextCursor:null};
+      // resumeErrors[threadId] fails that thread's resume, as a harness that lost the conversation does.
+      else if(message.method==="thread/resume"&&resumeErrors[params.threadId]){send({id:message.id,error:{code:-32602,message:resumeErrors[params.threadId]}});return}
       else if(message.method==="thread/resume"||message.method==="thread/read")result={thread:threads.find(item=>item.id===params.threadId)||{id:params.threadId,turns:[]},itemsBackwardsCursor:null,turnsBackwardsCursor:null};
       else if(["thread/turns/list","thread/queue/list","thread/attachment/list","thread/timeline/list"].includes(message.method))result={data:[],nextCursor:null};
       else if(["threadSection/list","skills/list","collaborationMode/list"].includes(message.method))result={data:[]};
@@ -96,9 +98,12 @@ async function startAgentRelay(activeRuntime,{approvalCommands={},goalSet="rejec
 // answers with its bootstrap and catalog. With projectPath the app starts in that project, and /api/git/commit-message answers as the
 // active harness writes Git text: OpenCode's account is out of credits, the others write a message. holdGitText[runtime] delays the answer,
 // and holdReviewText[runtime] delays the pull request text of /api/git/review-text; /api/source-control/pr records the created PR.
-async function startHarness(page,{runtime,approvalCommands={},goalSet="reject",projectPath=null,holdGitText={},holdReviewText={}}={}){
-  const server={runtime,counts:{select:0,direct:0},gitText:[],gitTextAnswered:0,reviewText:[],pullRequests:[]};
-  const relay=await startAgentRelay(()=>server.runtime,{approvalCommands,goalSet});
+// catalogs[runtime] is the model catalog /api/models answers with while that runtime is active (read on every request).
+// holdStartupState holds the first /api/bootstrap and /api/state answers (Trebell's first load), which then report the runtime active when
+// they answer. holdSelect holds the answer of a harness selection: the runtime changes at once, and the answer comes once it settles.
+async function startHarness(page,{runtime,approvalCommands={},goalSet="reject",projectPath=null,holdGitText={},holdReviewText={},catalogs=CATALOGS,threadMeta={},resumeErrors={},holdStartupModels=null,holdStartupState=null,holdSelect=null}={}){
+  const server={runtime,counts:{select:0,direct:0,models:0,bootstrap:0,state:0},gitText:[],gitTextAnswered:0,reviewText:[],pullRequests:[]};
+  const relay=await startAgentRelay(()=>server.runtime,{approvalCommands,goalSet,resumeErrors});
   const project=projectPath?{id:"harness-switch-project",name:"Harness switch project",path:projectPath,environmentId:null,effectiveSettings:{}}:null;
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project?.id||null});
   const bootstrap=()=>({mock:false,provider:"openai",providerReady:true,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",agentRuntimeReady:true,appServerReady:true,wsUrl:relay.wsUrl,cwd:process.cwd(),platform:process.platform,version:"harness-switch-context-fixture",activeEnvironmentId:null,activeEnvironment:null});
@@ -106,17 +111,19 @@ async function startHarness(page,{runtime,approvalCommands={},goalSet="reject",p
     const statuses=HARNESSES.map(([kind,name])=>({id:kind+"-default",kind,name,available:true,installed:true,authenticated:true,version:"1.0.0-fixture"}));
     return {selectedRuntime:server.runtime,selectedInstanceId:server.runtime+"-default",definitions:HARNESSES.map(([id,name,protocol])=>({id,name,protocol,multipleInstances:false})),instances:statuses.map(({id,kind,name})=>({id,kind,displayName:name,enabled:true})),statuses};
   };
-  await page.route(/\/api\/bootstrap$/,route=>json(route,bootstrap()));
-  await page.route(/\/api\/state$/,route=>json(route,{settings:settings(),projects:project?[project]:[],threadMeta:{}}));
+  await page.route(/\/api\/bootstrap$/,async route=>{if(++server.counts.bootstrap===1&&holdStartupState)await holdStartupState;return json(route,bootstrap())});
+  await page.route(/\/api\/state$/,async route=>{if(++server.counts.state===1&&holdStartupState)await holdStartupState;return json(route,{settings:settings(),projects:project?[project]:[],threadMeta})});
   await page.route(/\/api\/settings$/,route=>json(route,settings()));
-  await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,CATALOGS[server.runtime]));
-  await page.route(/\/api\/agent-runtimes(?:\?.*)?$/,route=>{
+  // holdStartupModels holds the first /api/models answer (the startup load's), which still answers for the runtime it was asked under.
+  await page.route(/\/api\/models(?:\?.*)?$/,async route=>{const asked=++server.counts.models,runtime=server.runtime;if(holdStartupModels&&asked===1)await holdStartupModels;return json(route,catalogs[runtime])});
+  await page.route(/\/api\/agent-runtimes(?:\?.*)?$/,async route=>{
     if(route.request().method()==="GET")return json(route,snapshot());
     const body=route.request().postDataJSON()||{};
     if(body.action!=="select")return json(route,{error:"Unexpected agent runtime action in the harness switch fixture: "+body.action},400);
     server.counts.select++;server.runtime=body.runtime;
+    if(holdSelect)await holdSelect;
     const current=snapshot();
-    return json(route,{...current,selected:{runtime:server.runtime,instance:current.instances.find(item=>item.kind===server.runtime),status:current.statuses.find(item=>item.kind===server.runtime)},bootstrap:bootstrap(),catalog:CATALOGS[server.runtime]});
+    return json(route,{...current,selected:{runtime:server.runtime,instance:current.instances.find(item=>item.kind===server.runtime),status:current.statuses.find(item=>item.kind===server.runtime)},bootstrap:bootstrap(),catalog:catalogs[server.runtime]});
   });
   await page.route(/\/api\/providers$/,route=>json(route,{selected:"openai",providers:[{id:"openai",name:"OpenAI API",official:true,hasKey:true}],status:{id:"openai",hasKey:true},ready:true}));
   await page.route(/\/api\/projects$/,route=>route.request().method()==="GET"?json(route,{projects:project?[project]:[]}):json(route,{project}));
@@ -409,4 +416,234 @@ test("a goal saved in one thread never shows in the thread opened while it was s
     await expect(objective).toHaveValue("");
     await expect(goalPanel.getByRole("button",{name:"Set goal",exact:true})).toBeVisible();
   }finally{releaseGoal();await close()}
+});
+
+const GROK_TWO_MODELS={...CATALOGS,grok:{agentRuntime:"grok",ready:true,models:["grok-fixture","grok-fixture-heavy"],defaultModel:"grok-fixture",metadata:{models:[{id:"grok-fixture",name:"Grok Build Fixture",agent:"grok"},{id:"grok-fixture-heavy",name:"Grok Heavy Fixture",agent:"grok"}]},error:null}};
+const chosenModel=page=>page.getByTestId("model-picker").locator(".model-picker-current strong");
+async function pickModel(page,name){
+  const picker=page.getByTestId("model-picker");await expect(picker).toBeEnabled({timeout:15_000});await picker.click();
+  const menu=page.locator(".model-picker-menu");await expect(menu).toBeVisible();
+  await menu.locator("> button").filter({hasText:name}).click();
+  await expect(menu).toBeHidden();await expect(chosenModel(page)).toHaveText(name);
+}
+async function expectPickerModels(page,labels,{screenshot=null}={}){
+  const picker=page.getByTestId("model-picker");await expect(picker).toBeEnabled({timeout:15_000});await picker.click();
+  const menu=page.locator(".model-picker-menu");await expect(menu).toBeVisible();
+  await expect(menu.locator("> button strong")).toHaveText(labels);
+  if(screenshot)await page.screenshot({path:auditDir+screenshot,fullPage:true});
+  await picker.click();await expect(menu).toBeHidden();
+}
+
+test("an opened harness thread shows the model it runs on and resumes on it, not on the composer's model",async({page})=>{
+  test.setTimeout(60_000);
+  const {relay,close}=await startHarness(page,{runtime:"grok",catalogs:GROK_TWO_MODELS});
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send"),reply=page.getByText("Fixture reply from grok: done",{exact:true});
+    await expect(chosenModel(page)).toHaveText("Grok Build Fixture");
+    await pickModel(page,"Grok Heavy Fixture");
+    await composer.fill("First task.");await expect(send).toBeEnabled();await send.click();
+    await expect(reply).toBeVisible({timeout:15_000});
+    await page.getByRole("button",{name:"New thread",exact:true}).click();
+    await pickModel(page,"Grok Build Fixture");
+    await composer.fill("Second task.");await expect(send).toBeEnabled();await send.click();
+    await expect.poll(()=>relay.threads.length,{timeout:15_000}).toBe(2);
+    await expect(reply).toBeVisible({timeout:15_000});
+    const [heavy,standard]=relay.threads;
+    expect([heavy.model,standard.model]).toEqual(["grok-fixture-heavy","grok-fixture"]);
+
+    // The composer is on the second thread's model; opening the first thread moves it to the model that thread runs on.
+    const resumedBefore=relay.calls("thread/resume").length;
+    await page.locator(`.thread-row[data-thread-id="${heavy.id}"] .thread-main`).click();
+    await expect(chosenModel(page)).toHaveText("Grok Heavy Fixture",{timeout:15_000});
+    const resumed=relay.calls("thread/resume").slice(resumedBefore);
+    expect(resumed.map(call=>call.params.threadId)).toContain(heavy.id);
+    // The thread resumes on its own model: the composer's model is not sent along to replace it.
+    expect(resumed.filter(call=>Object.prototype.hasOwnProperty.call(call.params,"model"))).toEqual([]);
+    await page.screenshot({path:auditDir+"harness-thread-model-on-open-1600x980.png",fullPage:true});
+    await page.locator(`.thread-row[data-thread-id="${standard.id}"] .thread-main`).click();
+    await expect(chosenModel(page)).toHaveText("Grok Build Fixture",{timeout:15_000});
+
+    // A follow-up in the reopened first thread runs on that thread's model.
+    await page.locator(`.thread-row[data-thread-id="${heavy.id}"] .thread-main`).click();
+    await expect(chosenModel(page)).toHaveText("Grok Heavy Fixture",{timeout:15_000});
+    await composer.fill("Third task.");await expect(send).toBeEnabled();await send.click();
+    await expect.poll(()=>relay.calls("turn/start").length,{timeout:15_000}).toBe(3);
+    expect(relay.calls("turn/start").at(-1).params).toMatchObject({threadId:heavy.id,model:"grok-fixture-heavy"});
+  }finally{await close()}
+});
+
+test("a harness model list that arrives later (Antigravity's first session) reaches the open composer, which keeps its model",async({page})=>{
+  test.setTimeout(60_000);
+  const catalogs={...CATALOGS};
+  const {server,relay,close}=await startHarness(page,{runtime:"antigravity",catalogs});
+  try{
+    await openGeneralChat(page,relay);
+    await expect(chosenModel(page)).toHaveText("Antigravity Fixture");
+    await expectPickerModels(page,["Antigravity Fixture"]);
+    // Another harness's list changing leaves this composer alone.
+    const asked=server.counts.models;
+    relay.broadcast({method:"agentRuntime/models/updated",params:{runtime:"cursor",instanceId:"cursor-default",environmentId:null}});
+    await page.waitForTimeout(400);
+    expect(server.counts.models).toBe(asked);
+
+    // The account's list, read by Antigravity's first session, replaces the stand-in list.
+    catalogs.antigravity={agentRuntime:"antigravity",ready:true,models:["antigravity-fixture","antigravity-pro-fixture"],defaultModel:"antigravity-pro-fixture",metadata:{models:[{id:"antigravity-fixture",name:"Antigravity Fixture",agent:"antigravity"},{id:"antigravity-pro-fixture",name:"Antigravity Pro Fixture",agent:"antigravity"}]},error:null};
+    relay.broadcast({method:"agentRuntime/models/updated",params:{runtime:"antigravity",instanceId:"antigravity-default",environmentId:null}});
+    await expect.poll(()=>server.counts.models,{timeout:10_000}).toBe(asked+1);
+    await expectPickerModels(page,["Antigravity Fixture","Antigravity Pro Fixture"],{screenshot:"harness-late-model-list-1600x980.png"});
+    // The chosen model is still offered, so it stays chosen; the list's own default does not replace it.
+    await expect(chosenModel(page)).toHaveText("Antigravity Fixture");
+    await pickModel(page,"Antigravity Pro Fixture");
+  }finally{await close()}
+});
+
+test("a thread of another harness that cannot open leaves no thread of the previous harness open, says why, and the next message starts a thread there",async({page})=>{
+  // The live tour: an OpenCode thread stayed open after a Cursor thread failed to resume, and the next message went to the OpenCode
+  // thread with Cursor's model, while the failure itself was never shown.
+  test.setTimeout(60_000);
+  const now=Date.now()/1000,lost='Cursor could not resume this conversation: Session "fixture-session" not found';
+  const saved={id:"cursor-saved-thread",name:"Saved Cursor task",preview:"Saved Cursor task",cwd:process.cwd(),model:"cursor-fixture",runtime:"cursor",status:{type:"idle"},createdAt:now-100,updatedAt:now-50,turns:[]};
+  const threadMeta={[saved.id]:{projectless:true,environmentId:null,runtime:"cursor",runtimeInstanceId:"cursor-default",threadSnapshot:{...saved,provider:"cursor"}}};
+  const {server,relay,close}=await startHarness(page,{runtime:"opencode",threadMeta,resumeErrors:{[saved.id]:lost}});
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send");
+    await composer.fill("First task.");await expect(send).toBeEnabled();await send.click();
+    await expect(page.getByText("Fixture reply from opencode: done",{exact:true})).toBeVisible({timeout:15_000});
+    const [opencodeThread]=relay.threads;
+    await expect(page.locator(`.thread-row[data-thread-id="${opencodeThread.id}"]`)).toHaveClass(/active/);
+    await page.locator(`.thread-row[data-thread-id="${saved.id}"] .thread-main`).click();
+    await expect.poll(()=>server.runtime).toBe("cursor");
+    await expect(page.getByTestId("app-action-error")).toContainText("Could not open thread: "+lost,{timeout:15_000});
+    await expect(page.locator(".thread-row.active")).toHaveCount(0);
+    await expect(page.getByText("Fixture reply from opencode: done",{exact:true})).toHaveCount(0);
+    await expect(page.locator(".sidebar-provider strong")).toContainText("Cursor");
+    await page.screenshot({path:auditDir+"harness-foreign-thread-open-failed-1600x980.png",fullPage:true});
+    await composer.fill("Second task.");await expect(send).toBeEnabled();await send.click();
+    await expect(page.getByText("Fixture reply from cursor: done",{exact:true})).toBeVisible({timeout:15_000});
+    expect(relay.calls("thread/start").map(call=>call.runtime)).toEqual(["opencode","cursor"]);
+    expect(relay.calls("turn/start").filter(call=>call.params.threadId===opencodeThread.id)).toHaveLength(1);
+  }finally{await close()}
+});
+
+test("a harness switch begun while Trebell is starting is not undone by the first load, and never shows the replaced harness's models",async({page})=>{
+  // The live tour: switching from Cursor to OpenCode while Cursor still listed its models at startup showed Cursor's models under
+  // "Switching to OpenCode…". Had the switch landed first, the first load's Cursor bootstrap and settings would also have undone it.
+  test.setTimeout(60_000);
+  let release=()=>{};const held=new Promise(resolve=>{release=resolve});
+  const {server,relay,close}=await startHarness(page,{runtime:"cursor",holdStartupModels:held});
+  try{
+    await page.goto("/");
+    await selectHarness(page,"OpenCode");
+    await expect.poll(()=>server.runtime).toBe("opencode");
+    await expect(page.locator(".sidebar-provider strong")).toContainText("OpenCode",{timeout:15_000});
+    // The first load now gets its Cursor catalog, asked for before the switch; it lands at once in this fixture.
+    release();await page.waitForTimeout(1500);
+    await backToThreads(page);
+    await expect(chosenModel(page)).toHaveText("OpenCode Fixture",{timeout:15_000});
+    await expectPickerModels(page,["OpenCode Fixture"],{screenshot:"harness-switch-during-startup-1600x980.png"});
+    await expect(page.locator(".sidebar-provider strong")).toContainText("OpenCode");
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send");
+    await composer.fill("First task.");await expect(send).toBeEnabled();await send.click();
+    await expect(page.getByText("Fixture reply from opencode: done",{exact:true})).toBeVisible({timeout:15_000});
+    expect(relay.calls("thread/start").map(call=>[call.runtime,call.params.model])).toEqual([["opencode","opencode/fixture-fast"]]);
+  }finally{release();await close()}
+});
+
+// A saved harness thread the relay lists and resumes, with one finished turn.
+function savedHarnessThread(runtime,model){
+  const now=Date.now()/1000,name=NAMES[runtime];
+  const turn={id:runtime+"-saved-turn",status:"completed",items:[{id:runtime+"-saved-ask",type:"userMessage",content:[{type:"text",text:`Saved ${name} task.`}]},{id:runtime+"-saved-answer",type:"agentMessage",text:`Saved ${name} reply.`}]};
+  const thread={id:runtime+"-saved-thread",name:`Saved ${name} task`,preview:`Saved ${name} task.`,cwd:process.cwd(),model,runtime,status:{type:"idle"},createdAt:now-100,updatedAt:now-50,turns:[turn]};
+  const threadMeta={[thread.id]:{projectless:true,environmentId:null,runtime,runtimeInstanceId:runtime+"-default",threadSnapshot:{...thread,turns:[],provider:runtime}}};
+  return {thread,threadMeta};
+}
+const CURSOR_TWO_MODELS={...CATALOGS,cursor:{agentRuntime:"cursor",ready:true,models:["cursor-fixture","cursor-fixture-fast"],defaultModel:"cursor-fixture-fast",metadata:{models:[{id:"cursor-fixture",name:"Cursor Fixture",agent:"cursor"},{id:"cursor-fixture-fast",name:"Cursor Fast Fixture",agent:"cursor"}]},error:null}};
+async function openGeneralThreads(page){
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await page.locator(".general-chat-card").click();
+  await expect(page.getByTestId("composer")).toBeVisible();
+}
+
+test("Trebell shows the harness that runs and its threads while that harness still lists its models, and lands on the open thread's model",async({page})=>{
+  // The live tour: Trebell applied nothing until Cursor listed its models (8 s), so it described Codex, its default, meanwhile.
+  test.setTimeout(60_000);
+  let release=()=>{};const held=new Promise(resolve=>{release=resolve});
+  const {thread:saved,threadMeta}=savedHarnessThread("cursor","cursor-fixture");
+  const {server,relay,close}=await startHarness(page,{runtime:"cursor",catalogs:CURSOR_TWO_MODELS,threadMeta,holdStartupModels:held});
+  relay.threads.push(saved);
+  try{
+    await page.goto("/");
+    await expect(page.locator(".sidebar-provider strong")).toContainText("Cursor",{timeout:15_000});
+    await expect(page.getByTestId("composer-model-status")).toHaveText("Loading models…",{timeout:15_000});
+    await openGeneralThreads(page);
+    await page.locator(`.thread-row[data-thread-id="${saved.id}"] .thread-main`).click();
+    await expect(page.getByText("Saved Cursor reply.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(page.getByTestId("composer-model-status")).toHaveText("Loading models…");
+    await page.screenshot({path:auditDir+"harness-startup-models-loading-1600x980.png",fullPage:true});
+    // The list lands on the model the open thread runs on, not the list's own default; Trebell asked for it once.
+    release();
+    await expect(chosenModel(page)).toHaveText("Cursor Fixture",{timeout:15_000});
+    await expectPickerModels(page,["Cursor Fixture","Cursor Fast Fixture"],{screenshot:"harness-startup-models-landed-1600x980.png"});
+    expect(server.counts.models).toBe(1);
+    expect(server.counts.select).toBe(0);
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send");
+    await composer.fill("Follow-up.");await expect(send).toBeEnabled();await send.click();
+    await expect(page.getByText("Fixture reply from cursor: done",{exact:true})).toBeVisible({timeout:15_000});
+    expect(relay.calls("turn/start").at(-1).params).toMatchObject({threadId:saved.id,model:"cursor-fixture"});
+    expect(relay.calls("thread/start")).toHaveLength(0);
+  }finally{release();await close()}
+});
+
+test("Settings names the harness that runs while Trebell is still starting, and a thread of the harness a switch lands on, opened while it ran, stays open",async({page})=>{
+  // The live tour: while Trebell still showed its default harness, Settings offered to switch to Cursor, which already ran. The Cursor
+  // thread opened while that switch ran was closed when it landed.
+  test.setTimeout(60_000);
+  let releaseStartup=()=>{},releaseSelect=()=>{};
+  const startupHeld=new Promise(resolve=>{releaseStartup=resolve}),selectHeld=new Promise(resolve=>{releaseSelect=resolve});
+  const {thread:saved,threadMeta}=savedHarnessThread("grok","grok-fixture-heavy");
+  const {server,relay,close}=await startHarness(page,{runtime:"cursor",catalogs:GROK_TWO_MODELS,threadMeta,holdStartupState:startupHeld,holdSelect:selectHeld});
+  relay.threads.push(saved);
+  try{
+    await page.goto("/");
+    // Trebell has not read its state yet: it names no harness, and Settings marks the one the server runs as Active, not Trebell's default.
+    await expect(page.getByTestId("composer")).toHaveAttribute("placeholder","Starting Trebell Code…",{timeout:15_000});
+    await expect(page.locator(".sidebar-provider strong")).toHaveText("Starting…");
+    await expect(page.getByText(/is the active coding-agent harness/)).toHaveCount(0);
+    await expect(page.getByRole("button",{name:/^Configure /})).toHaveCount(0);
+    await expect(page.getByTestId("model-picker")).toBeDisabled();
+    await page.screenshot({path:auditDir+"harness-first-load-pending-1600x980.png",fullPage:true});
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    const option=name=>page.locator(".agent-runtime-option").filter({hasText:name});
+    await expect(option("Cursor").getByText("Active",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(option("Grok Build").getByText("Switch",{exact:true})).toBeVisible();
+    expect(server.counts.state).toBe(1);
+    await page.screenshot({path:auditDir+"harness-settings-before-first-load-1600x980.png",fullPage:true});
+    // The person switches to Grok before the first load returns; the server moves at once and answers once Grok runs.
+    await option("Grok Build").locator("button").first().click();
+    await expect.poll(()=>server.runtime).toBe("grok");
+    releaseStartup();
+    await expect(page.locator(".sidebar-provider strong")).toContainText("Grok",{timeout:15_000});
+    await openGeneralThreads(page);
+    await expect(page.getByTestId("composer-runtime-switch")).toBeVisible();
+    await page.locator(`.thread-row[data-thread-id="${saved.id}"] .thread-main`).click();
+    await expect(page.getByText("Saved Grok Build reply.",{exact:true})).toBeVisible({timeout:15_000});
+    const connections=relay.connections();
+    releaseSelect();
+    await expect(page.getByTestId("composer-runtime-switch")).toHaveCount(0,{timeout:15_000});
+    await expect.poll(()=>relay.connections(),{timeout:15_000}).toBeGreaterThan(connections);
+    await page.waitForTimeout(500);
+    // The switch landed on Grok, and the Grok thread opened meanwhile is still open, on its own model.
+    await expect(page.locator(".thread-row.active")).toHaveAttribute("data-thread-id",saved.id);
+    await expect(page.getByText("Saved Grok Build reply.",{exact:true})).toBeVisible();
+    await expect(chosenModel(page)).toHaveText("Grok Heavy Fixture",{timeout:15_000});
+    await page.screenshot({path:auditDir+"harness-thread-kept-across-switch-1600x980.png",fullPage:true});
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send");
+    await composer.fill("Follow-up.");await expect(send).toBeEnabled();await send.click();
+    await expect(page.getByText("Fixture reply from grok: done",{exact:true})).toBeVisible({timeout:15_000});
+    expect(relay.calls("turn/start").at(-1).params).toMatchObject({threadId:saved.id,model:"grok-fixture-heavy"});
+    expect(relay.calls("thread/start")).toHaveLength(0);
+  }finally{releaseStartup();releaseSelect();await close()}
 });

@@ -1358,7 +1358,9 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(verification).toContainText("Frontend behavior needs screenshot/visual verification");
     await page.screenshot({path:auditDir+"context-inspector-verification-1280x800.png",fullPage:true});
     const statTops=await inspector.locator(".context-inspector-stats>div").evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
-    expect(new Set(statTops).size).toBe(1);
+    // The redesign's larger stat tiles sit in two full rows of three, never a ragged row with a lone tile.
+    const statRows=[...statTops.reduce((rows,top)=>rows.set(top,(rows.get(top)||0)+1),new Map()).values()];
+    expect(statRows).toEqual([3,3]);
     await page.setViewportSize({width:1280,height:800});
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
@@ -2515,10 +2517,11 @@ test("slash menu only advertises commands that can run in the current context",a
   await composer.fill("/");
   const menu=page.locator(".slash-menu");
   await expect(menu).toBeVisible();
-  for(const command of ["/compact","/ps","/stop","/feedback","/goal","/review"]){
+  for(const command of ["/compact","/ps","/stop","/feedback","/review"]){
     await expect(menu.getByText(command,{exact:true})).toHaveCount(0);
   }
-  for(const command of ["/terminal","/diff","/git","/preview","/model","/plan"]){
+  // Codex lists /goal among its own commands (T3 CodexProvider slashCommands), so a new Codex task can start with a goal.
+  for(const command of ["/terminal","/diff","/git","/preview","/model","/plan","/goal"]){
     await expect(menu.getByText(command,{exact:true})).toBeVisible();
   }
   await page.setViewportSize({width:1280,height:800});
@@ -2532,11 +2535,12 @@ test("slash menu only advertises commands that can run in the current context",a
   await generalComposer.fill("/");
   const generalMenu=page.locator(".slash-menu");
   await expect(generalMenu).toBeVisible();
-  for(const command of ["/compact","/ps","/stop","/feedback","/goal","/review","/diff","/git"]){
+  for(const command of ["/compact","/ps","/stop","/feedback","/review","/diff","/git"]){
     await expect(generalMenu.getByText(command,{exact:true})).toHaveCount(0);
   }
   await expect(generalMenu.getByText("/terminal",{exact:true})).toBeVisible();
   await expect(generalMenu.getByText("/preview",{exact:true})).toBeVisible();
+  await expect(generalMenu.getByText("/goal",{exact:true})).toBeVisible();
   await page.screenshot({path:auditDir+"slash-menu-general-chat-1280x800.png",fullPage:true});
 });
 
@@ -4782,9 +4786,10 @@ test("light mode stays visually coherent across workspace and panels",async({pag
     cleanup:getComputedStyle(document.querySelector(".scoped-cleanup")).backgroundColor,
     action:getComputedStyle(document.querySelector(".scoped-settings-card > .provider-key-actions button")).backgroundColor,
   }));
-  expect(workspaceLight.heading).toBe("rgb(36, 42, 52)");
-  expect(workspaceLight.cleanup).toBe("rgb(248, 249, 251)");
-  expect(workspaceLight.action).toBe("rgb(255, 255, 255)");
+  // The redesign's light tokens: text on --tx0, the cleanup block on --bg2, its standard buttons on --bg3.
+  expect(workspaceLight.heading).toBe("rgb(22, 22, 27)");
+  expect(workspaceLight.cleanup).toBe("rgb(244, 244, 247)");
+  expect(workspaceLight.action).toBe("rgb(234, 234, 240)");
   await page.screenshot({path:auditDir+"light-settings-workspace-scope-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Threads"}).click();
   const shell=await page.evaluate(()=>({
@@ -5945,7 +5950,7 @@ test("populated source control and pull request detail stay usable",async({page,
   await page.screenshot({path:auditDir+"source-control-pr-detail-1280x800.png",fullPage:true});
   await page.setViewportSize({width:1600,height:980});
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
-  const lightSurfaces=await panel.evaluate(node=>({
+  const lightSurfaces=()=>panel.evaluate(node=>({
     panel:getComputedStyle(node).backgroundColor,
     source:getComputedStyle(node.querySelector(".source-control")).backgroundColor,
     detail:getComputedStyle(node.querySelector(".pr-detail")).backgroundColor,
@@ -5953,7 +5958,8 @@ test("populated source control and pull request detail stay usable",async({page,
     conversation:getComputedStyle(node.querySelector(".review-list > div")).backgroundColor,
     action:getComputedStyle(node.querySelector(".pr-actions button")).backgroundColor,
   }));
-  for(const value of Object.values(lightSurfaces))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+  // The redesign's buttons fade their background (transition), so the surfaces are read once the switch has settled.
+  await expect.poll(async()=>Object.entries(await lightSurfaces()).filter(([,value])=>/rgb\((?:1[0-9]|2[0-5]),/.test(value)).map(([name])=>name)).toEqual([]);
   await page.screenshot({path:auditDir+"source-control-pr-detail-light-1600x980.png",fullPage:true});
 });
 

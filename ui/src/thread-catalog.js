@@ -22,6 +22,37 @@ export function threadCatalogRuntime(thread,meta={},fallback=null){
   return runtime(meta?.runtime||thread?.trebellRuntime||thread?.runtime||meta?.trebellContext?.runtime,runtimeFromInstance(meta?.runtimeInstanceId)||fallback);
 }
 
+// The harness that owns a thread when it is not the given one, else null. A started thread stays with the harness that created it, as
+// T3 Code locks a started thread to its provider ("a started thread must not silently fall back to a different driver"): after a harness
+// switch it is neither shown under the new harness nor continued with the new harness's model.
+export function threadOwnerElsewhere(thread,meta={},activeRuntime=null){
+  const active=runtime(activeRuntime);
+  if(!thread?.id||!active)return null;
+  const owner=threadCatalogRuntime(thread,meta||{},active);
+  return owner&&owner!==active?owner:null;
+}
+
+// Whether the open thread stays open when a harness switch lands. The switch closes the thread it replaces, the one open when it began
+// (switchThreadId); a thread the person opened while it ran stays when it belongs to the harness the switch lands on. openedUnder is the
+// harness the app ran when the thread was opened, for a thread that does not name its own.
+export function threadKeptBySwitch(thread,meta={},{switchThreadId=null,landingRuntime=null,openedUnder=null}={}){
+  const landing=runtime(landingRuntime);
+  if(!thread?.id||thread.id===switchThreadId||!landing)return false;
+  return threadCatalogRuntime(thread,meta||{},runtime(openedUnder))===landing;
+}
+
+// The name and preview the open thread's title comes from: the thread list's entry is the fresher one (a new thread is opened
+// before its first message gives it a preview, and the server can name it later), so the header says what the sidebar says.
+export function openThreadTitleSource(activeThread,threads=[]){
+  if(!activeThread)return null;
+  const listed=(Array.isArray(threads)?threads:[]).find(item=>item?.id===activeThread.id)||null;
+  return {...activeThread,name:text(listed?.name)||activeThread.name||null,preview:text(listed?.preview)||activeThread.preview||null};
+}
+
+// A thread's title: its name, else its first message; a saved thread with neither is "Untitled task", as its sidebar row
+// says, and only a chat not yet started is "New Trebell task".
+export function threadTitle(thread){return thread?.name||thread?.preview||(thread?.id?"Untitled task":"New Trebell task")}
+
 export function threadCatalogSnapshot(thread,{runtime:runtimeHint=null,provider=null}={}){
   if(!thread?.id)return null;
   const owner=threadCatalogRuntime(thread,{},runtimeHint);
