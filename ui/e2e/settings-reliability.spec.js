@@ -203,6 +203,26 @@ test("deleting a custom theme offers the app's undo toast and Undo puts it back"
   await page.screenshot({path:auditDir+"settings-theme-delete-undone.png"});
 });
 
+test("Undo of a theme delete keeps a theme chosen after the delete",async({page,request})=>{
+  const warm={id:"custom-reliability-warm",name:"Warm paper",appearance:"light",canvas:"#f4efe6",accent:"#b0582f",colors:{}};
+  await openSettings(page,request,"Theme Undo Choice Workspace",{customThemes:[warm],appearance:warm.id,environmentThemeSelections:{}});
+  await page.getByRole("button",{name:/Appearance/}).click();
+  const themes=page.getByRole("group",{name:"Theme"});
+  await page.getByRole("button",{name:"Delete selected",exact:true}).click();
+  const toast=page.getByTestId("thread-undo-toast");
+  await expect(toast).toContainText("Theme “Warm paper” deleted");
+  await themes.getByRole("button",{name:"Midnight",exact:true}).click();
+  await expect(themes.getByRole("button",{name:"Midnight",exact:true})).toHaveClass(/active/);
+  await expect.poll(async()=>(await savedSettings(request)).appearance).toBe("midnight");
+  await toast.getByRole("button",{name:"Undo",exact:true}).click();
+  await expect(toast).toHaveCount(0);
+  await expect(themes.getByRole("button")).toHaveText(["Trebell","Midnight","Black","Warm paper"]);
+  await expect(themes.getByRole("button",{name:"Midnight",exact:true})).toHaveClass(/active/);
+  await expect(themes.getByRole("button",{name:"Warm paper",exact:true})).not.toHaveClass(/active/);
+  await expect.poll(async()=>{const saved=await savedSettings(request);return {ids:saved.customThemes.map(item=>item.id),appearance:saved.appearance}}).toEqual({ids:[warm.id],appearance:"midnight"});
+  await page.screenshot({path:auditDir+"settings-theme-undo-keeps-later-choice.png"});
+});
+
 test("a failed theme Undo is reported by the app's error toast once Settings is closed, and by the Settings alert while open",async({page,request})=>{
   const pageErrors=[];
   page.on("pageerror",error=>pageErrors.push(String(error?.message||error)));
