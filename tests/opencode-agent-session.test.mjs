@@ -758,3 +758,21 @@ test("a steered message OpenCode refuses leaves the OpenCode turn's answer and t
     await assert.rejects(()=>session.steer([{type:"text",text:"after stop"}]),/no running turn/);
   }finally{await session.close();await fixture.close()}
 });
+
+test("OpenCode gets images, PDFs and other files as file parts, and audio and video by their saved path (T3 Code's toOpenCodeFileParts)",async()=>{
+  const fixture=await fakeOpenCode();
+  const {session}=await startedSession(fixture);
+  try{
+    const link=(uri,name)=>({type:"resource_link",uri,name});
+    await session.prompt([{type:"text",text:"Look"},link("file:///repo/shot.png","shot.png"),link("file:///repo/spec.pdf","spec.pdf"),link("file:///repo/src/app.mjs","app.mjs"),link("file:///repo/memo.mp3","memo.mp3"),link("file:///repo/demo%20clip.mp4","demo clip.mp4")]);
+    assert.deepEqual(fixture.called("POST /session/ses_fixture/message")[0].body.parts,[
+      {type:"text",text:"Look"},
+      {type:"file",mime:"image/png",filename:"shot.png",url:"file:///repo/shot.png"},
+      {type:"file",mime:"application/pdf",filename:"spec.pdf",url:"file:///repo/spec.pdf"},
+      {type:"file",mime:"text/plain",filename:"app.mjs",url:"file:///repo/src/app.mjs"},
+      // OpenCode would read these as text and fail ("Cannot read binary file"); the agent gets where they are instead.
+      {type:"text",text:'[Attached audio "memo.mp3" is saved at: /repo/memo.mp3]'},
+      {type:"text",text:'[Attached video "demo clip.mp4" is saved at: /repo/demo clip.mp4]'},
+    ]);
+  }finally{await session.close();await fixture.close()}
+});

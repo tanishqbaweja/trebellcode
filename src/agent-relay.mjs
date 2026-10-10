@@ -168,6 +168,11 @@ async function acpPrompt(input=[]){
       out.push({type:"image",mimeType:mime,data:data.toString("base64")});
     }else if(item?.type==="mention"){
       out.push({type:"resource_link",uri:fileUri(item.path),name:String(item.name||item.path||"file")});
+    }else if(item?.type==="localAudio"){
+      // Audio is named by its saved path, as T3 Code names every attachment it does not send as content, and the harness opens it
+      // with its own tools.
+      const path=String(item.path||"");
+      out.push({type:"text",text:`[Attached audio "${basename(path)}" is saved at: ${path}]`});
     }
   }
   return out;

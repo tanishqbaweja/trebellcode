@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { Readable } from "node:stream";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { createOpencodeClient as createOpencodeV2Client } from "@opencode-ai/sdk/v2";
@@ -15,13 +15,18 @@ import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 
-const MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".pdf":"application/pdf",".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"audio/mp4",".md":"text/markdown",".json":"application/json",".txt":"text/plain"};
+// OpenCode reads a file part itself: it sends an image or a PDF to the model and reads any other file as text. Audio and video are
+// named by their saved path instead, as T3 Code names every attachment it does not send as an image, text or PDF.
+const MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".pdf":"application/pdf",".md":"text/markdown",".json":"application/json",".txt":"text/plain"};
+const MEDIA=new Map([...[".mp3",".wav",".m4a",".ogg",".oga",".flac",".aac",".opus",".aiff"].map(extension=>[extension,"audio"]),...[".mp4",".mov",".mkv",".webm",".avi",".m4v",".mpeg",".mpg"].map(extension=>[extension,"video"])]);
 function openCodeBodyParts(parts){
   return parts.map(part=>{
     if(part.type==="text")return {type:"text",text:String(part.text||"")};
     if(part.type==="image")return {type:"file",mime:part.mimeType||"image/png",url:`data:${part.mimeType||"image/png"};base64,${part.data}`};
     if(part.type==="resource_link"){
-      const path=fileUriPath(part.uri)||"";return {type:"file",mime:MIME[extname(path).toLowerCase()]||"text/plain",filename:part.name||undefined,url:part.uri};
+      const path=fileUriPath(part.uri)||"",extension=extname(path).toLowerCase(),media=MEDIA.get(extension);
+      if(media)return {type:"text",text:`[Attached ${media} "${part.name||basename(path)}" is saved at: ${path}]`};
+      return {type:"file",mime:MIME[extension]||"text/plain",filename:part.name||undefined,url:part.uri};
     }
     return {type:"text",text:JSON.stringify(part)};
   });
