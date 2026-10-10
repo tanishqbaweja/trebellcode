@@ -13,6 +13,7 @@ import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
+import ChatMarkdown from "./components/ChatMarkdown.jsx";
 import RightPanel, { askText } from "./components/RightPanel.jsx";
 import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
@@ -334,7 +335,7 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initial
       if(progress)rowEvent={...rowEvent,title:progress.title||rowEvent.title,raw:{...(rowEvent.raw||{}),progress:progress.raw||progress}};
       return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={openWorkspace}/>;
     })}
-  </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
+  </div>{assistantText&&<div className="assistant-answer chat-markdown"><ChatMarkdown text={assistantText}/></div>}</div>;
 }));
 
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
@@ -360,7 +361,7 @@ const ConversationMessageRow=memo(function ConversationMessageRow({message,activ
   const parsed=useMemo(()=>message.role==="user"?null:parseVisualizationMessage(message.text),[message.role,message.text]);
   if(message.role==="reasoning")return <ReasoningRow id={message.id} messageId={message.id} text={message.text}/>;
   if(message.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="user-bubble"><p>{message.text}</p>{allowRevert&&message.turnId&&<button className="message-action" onClick={()=>onEditFromHere(message)}>Edit from here</button>}</div></div>;
-  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text" data-assistant-citation-source={message.id}>{parsed.text}</div>}{(parsed?.visualizations||[]).map((visualization,index)=>{
+  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text chat-markdown" data-assistant-citation-source={message.id}><ChatMarkdown text={parsed.text}/></div>}{(parsed?.visualizations||[]).map((visualization,index)=>{
     const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
     return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
   })}{outcomeLabel&&<span className={"turn-outcome tone-"+(outcomeTone||"ok")} data-testid="turn-outcome">{outcomeTone==="err"?<X size={11} aria-hidden="true"/>:outcomeTone==="warn"?<CircleStop size={11} aria-hidden="true"/>:<Check size={11} aria-hidden="true"/>}{outcomeLabel}</span>}</div></div>;
