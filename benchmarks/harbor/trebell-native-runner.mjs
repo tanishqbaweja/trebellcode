@@ -20,6 +20,7 @@ import {
 import { repositoryContextEntries } from "../../ui/src/context-provenance.js";
 import { createNativeStrategyMetrics, observeNativeStrategyEvent } from "./native-strategy-metrics.mjs";
 import { createGateSnapshotter, parseGateSnapshotArtifacts } from "./native-gate-snapshots.mjs";
+import { captureFinalDiff, createToolCallLogger } from "./native-audit-artifacts.mjs";
 
 const VERSION="trebell-native-harbor/1";
 
@@ -46,6 +47,8 @@ const compactionThreshold=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBO
 if(compactionThreshold>=contextWindow)throw new Error("TREBELL_HARBOR_COMPACT_THRESHOLD must be below TREBELL_HARBOR_CONTEXT_WINDOW.");
 const metricsPath=String(process.env.TREBELL_METRICS_PATH||"/logs/agent/trebell-native-metrics.json");
 const eventsPath=String(process.env.TREBELL_EVENTS_PATH||"/logs/agent/trebell-native-events.jsonl");
+const toolCallsPath=String(process.env.TREBELL_TOOL_CALLS_PATH||"/logs/agent/trebell-native-tool-calls.jsonl");
+const finalDiffPath=String(process.env.TREBELL_FINAL_DIFF_PATH||"/logs/agent/trebell-native-final.diff");
 const probeOnly=String(process.env.TREBELL_HARBOR_PROBE||"").trim()==="1";
 const liveProbe=String(process.env.TREBELL_HARBOR_LIVE_PROBE||"").trim()==="1";
 // The semantic completion gate is opt-in for Harbor runs. On fresh SWE-bench Verified pairs it never
@@ -77,6 +80,7 @@ const tools=platformDynamicToolNamespaces({
   delegation:false,
 });
 const outputStore=new NativeToolOutputStore({directory:"/tmp/trebell-output",environment:process.env});
+const toolCallLog=createToolCallLogger({path:toolCallsPath,environment:process.env});
 const contextEngine=new ContextEngine();
 const requests=[],assistantChunks=[],eventStarted=performance.now(),strategyMetrics=createNativeStrategyMetrics();let eventWrites=Promise.resolve();
 const gateSnapshots=createGateSnapshotter({artifacts:parseGateSnapshotArtifacts(process.env.TREBELL_HARBOR_GATE_SNAPSHOT_PATHS),directory:String(process.env.TREBELL_HARBOR_GATE_SNAPSHOT_DIR||"/logs/agent/gate-snapshots")});
@@ -138,7 +142,7 @@ const session=new NativeAgentSession({
   toolOutputStore:outputStore,
   onEvent,
   onUpdate:update=>{if(update?.update?.sessionUpdate==="agent_message_chunk"&&typeof update.update.content?.text==="string")assistantChunks.push(update.update.content.text)},
-  executeTool:executor,
+  executeTool:toolCallLog.wrap(executor),
   initialMessages:[{role:"system",content:nativeSystemPrompt({tools,permissionMode:"full",projectless:false})}],
   providerTurn:async request=>{
     if(probeOnly){
@@ -198,6 +202,8 @@ try{
   error=failure;
 }
 const elapsedMs=Math.round(performance.now()-started);
+const finalDiff=probeOnly||liveProbe?null:await captureFinalDiff({root,path:finalDiffPath,environment:process.env});
+await toolCallLog.flush();
 const raw=result?.raw||{};
 const failureUsage=error?.nativeUsage&&typeof error.nativeUsage==="object"?error.nativeUsage:null;
 const metrics={
@@ -222,6 +228,7 @@ const metrics={
   cacheCarryover:nativeCacheCarryover(requests.map(item=>item?.usage||{})),
   strategy:strategyMetrics,
   gateSnapshots:gateSnapshots.count,
+  auditArtifacts:{toolCalls:toolCallsPath,finalDiff:finalDiff?{path:finalDiffPath,...finalDiff}:null},
   finalReply:assistantChunks.join("").trim().slice(-4000),
   error:error?String(error?.stack||error?.message||error).slice(-8000):null,
 };
