@@ -4,7 +4,6 @@ import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpAgentSession, acpPermissionChoice } from "../src/acp-agent-session.mjs";
-import { TerminalManager } from "../src/terminal-manager.mjs";
 
 const options=[
   {kind:"allow_always",optionId:"always",name:"Always allow"},
@@ -69,12 +68,12 @@ import readline from "node:readline";
 function send(value){process.stdout.write(JSON.stringify(value)+"\n")}
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{const message=JSON.parse(line);if(message.method==="initialize")return send({jsonrpc:"2.0",id:message.id,result:{protocolVersion:1,agentInfo:{name:"fixture",version:process.cwd()},agentCapabilities:{sessionCapabilities:{close:{}}}}});if(message.method==="session/new")return send({jsonrpc:"2.0",id:message.id,result:{sessionId:"cwd-fixture",meta:{requestedCwd:message.params.cwd},models:{currentModelId:"fixture",availableModels:[]},configOptions:[],modes:{currentModeId:"build",availableModes:[]}}});if(message.method==="session/close")return send({jsonrpc:"2.0",id:message.id,result:{}})});
 `,"utf8");
-  const session=new AcpAgentSession({runtime:"fixture",command:process.execPath,args:[fixture],cwd:workspace,processCwd:runtimeDir,terminals:new TerminalManager({persist:false})});
+  const session=new AcpAgentSession({runtime:"fixture",command:process.execPath,args:[fixture],cwd:workspace,processCwd:runtimeDir});
   try{
     const started=await session.start();
     assert.equal(started.initialize.agentInfo.version,runtimeDir);
     assert.equal(started.session.meta.requestedCwd,workspace);
-  }finally{const terminals=session.terminals;await session.close().catch(()=>{});await terminals.shutdown().catch(()=>{});await rm(root,{recursive:true,force:true})}
+  }finally{await session.close().catch(()=>{});await rm(root,{recursive:true,force:true})}
 });
 
 // No harness is offered the client's terminal (T3: ACP agents run their own shell behind their own permission requests),
@@ -100,8 +99,8 @@ async function handle(message){
 }
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{try{handle(JSON.parse(line)).catch(error=>send({jsonrpc:"2.0",id:null,error:{code:-32603,message:error.message}}))}catch{}});
 `,"utf8");
-  const terminals=new TerminalManager({persist:false}),approvals=[],updates=[];
-  const session=new AcpAgentSession({runtime:"fixture",command:process.execPath,args:[fixture],cwd:root,terminals,permissionMode:"edits",onPermission:async request=>{approvals.push(request);return "decline"},onUpdate:update=>updates.push(update)});
+  const approvals=[],updates=[];
+  const session=new AcpAgentSession({runtime:"fixture",command:process.execPath,args:[fixture],cwd:root,permissionMode:"edits",onPermission:async request=>{approvals.push(request);return "decline"},onUpdate:update=>updates.push(update)});
   try{
     const started=await session.start();
     assert.equal(started.initialize.protocolVersion,1);
@@ -109,5 +108,5 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     assert.equal(approvals.length,0,"a request for a service the harness was not offered never reaches the user");
     assert.ok(updates.some(item=>item.update?.content?.text==="DENIED"));
     await assert.rejects(()=>access(marker));
-  }finally{await session.close().catch(()=>{});await terminals.shutdown().catch(()=>{});await rm(root,{recursive:true,force:true})}
+  }finally{await session.close().catch(()=>{});await rm(root,{recursive:true,force:true})}
 });

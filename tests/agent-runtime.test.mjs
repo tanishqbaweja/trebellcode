@@ -9,7 +9,6 @@ import { AgentRuntimeManager, commandOnPath, openCodeCommandHolder, openCodeInst
 import { runtimeCapabilityKinds, sharedRuntimeCapabilities } from "../src/runtime-capabilities.mjs";
 import { AcpAgentSession } from "../src/acp-agent-session.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { TerminalManager } from "../src/terminal-manager.mjs";
 
 test("agent runtime registry exposes real harnesses and capability-gates configured instances", async () => {
   const home=await mkdtemp(join(tmpdir(),"trebell-agent-runtime-"));
@@ -661,9 +660,8 @@ async function handle(m){
 }
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{try{handle(JSON.parse(line)).catch(e=>send({jsonrpc:"2.0",id:null,error:{code:-32603,message:e.message}}))}catch{}});
 `,"utf8");
-  const terminals=new TerminalManager({persist:false});
   const updates=[];
-  const session=new AcpAgentSession({runtime:"antigravity",command:process.execPath,args:[fixture],cwd:root,terminals,permissionMode:"full",onUpdate:update=>updates.push(update),mcpServers:[{name:"Fixture tools",command:"/opt/fixture-mcp",args:["--stdio"],env:[{name:"TOKEN",value:"secret"}]}]});
+  const session=new AcpAgentSession({runtime:"antigravity",command:process.execPath,args:[fixture],cwd:root,permissionMode:"full",onUpdate:update=>updates.push(update),mcpServers:[{name:"Fixture tools",command:"/opt/fixture-mcp",args:["--stdio"],env:[{name:"TOKEN",value:"secret"}]}]});
   try{
     const started=await session.start({model:"fake-model"});
     assert.equal(started.session.sessionId,"fixture-session");
@@ -673,12 +671,10 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     assert.equal(await readFile(output,"utf8"),"READ:INPUT_OK");
     assert.ok(updates.some(item=>item.update?.sessionUpdate==="agent_message_chunk"&&item.update.content?.text==="FAKE_OK"));
     assert.ok(updates.some(item=>item.update?.sessionUpdate==="tool_call"&&String(item.update.rawOutput||"").startsWith("TERM_REFUSED:")),"terminal/create is refused");
-    assert.deepEqual(terminals.list(),[],"no terminal was started for the harness");
     assert.ok(updates.some(item=>item.update?.sessionUpdate==="usage_update"&&item.update.used===12));
     await assert.rejects(()=>session.client.request("fs/read_text_file",{sessionId:"fixture-session",path:join(root,"..","escape.txt")},1000));
   }finally{
     await session.close().catch(()=>{});
-    await terminals.shutdown().catch(()=>{});
     await rm(root,{recursive:true,force:true});
   }
 });
