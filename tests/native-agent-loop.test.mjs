@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, readOnlyInspectionRun, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
@@ -4356,6 +4356,183 @@ test("native convergence guard still allows one bounded batched verification swe
   assert.equal(events.some(event=>event.name==="native.progress.convergence_call_blocked"),false);
 });
 
+test("native convergence does not count passing read-only inspection runs as post-edit checks",async()=>{
+  let turns=0;const events=[],executed=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:6,maxToolCalls:12,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[
+        {id:"status",namespace:"trebell_terminal",name:"run",arguments:'{"command":"git","args":["status","--short"]}'},
+        {id:"diff",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"bash",args:["-lc","git diff -- src/a.mjs | head -50"]})},
+        {id:"view",namespace:"trebell_terminal",name:"run",arguments:'{"command":"cat","args":["src/a.mjs"]}'},
+      ],usage:{}};
+      if(turns===3){
+        assert.equal(request.messages.some(message=>message.role==="developer"&&/convergence checkpoint/i.test(String(message.content||""))),false);
+        return {text:"",toolCalls:[{id:"behavior-check",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-a.mjs"]}'}],usage:{}};
+      }
+      assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="behavior-check"&&!/convergence guard/i.test(String(message.content||""))));
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0}},
+  });
+  assert.equal(result.text,"done");assert.equal(turns,4);
+  assert.deepEqual(executed,["edit","status","diff","view","behavior-check"]);
+  assert.equal(events.some(event=>event.name==="native.progress.convergence_checkpoint"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.convergence_call_blocked"),false);
+});
+
+test("native convergence counts behavioral passes but not a passing git diff",async()=>{
+  let turns=0;const requests=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:6,maxToolCalls:12,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[
+        {id:"check-a",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-a.mjs"]}'},
+        {id:"check-b",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-b.mjs"]}'},
+        {id:"diff",namespace:"trebell_terminal",name:"run",arguments:'{"command":"git","args":["diff"]}'},
+      ],usage:{}};
+      if(turns===3){
+        assert.equal(request.messages.some(message=>message.role==="developer"&&/convergence checkpoint/i.test(String(message.content||""))),false);
+        return {text:"",toolCalls:[{id:"check-c",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-c.mjs"]}'}],usage:{}};
+      }
+      assert.match(String(request.messages.at(-1)?.content||""),/convergence checkpoint: since the latest successful workspace edit, 3 terminal checks have passed/i);
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0},
+  });
+  assert.equal(result.text,"done");assert.equal(turns,4);
+  const checkpoints=events.filter(event=>event.name==="native.progress.convergence_checkpoint");
+  assert.equal(checkpoints.length,1);assert.equal(checkpoints[0].data.passedRuns,3);assert.equal(checkpoints[0].data.distinctPassedRuns,3);
+});
+
+test("native semantic completion gate does not force finalization after only read-only inspection runs",async()=>{
+  let turns=0;const events=[],executed=[],gateRequests=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation and verify the result."}],maxModelTurns:10,maxToolCalls:16,semanticCompletionGate:true,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      if(request.metadata?.completionGate===true){
+        gateRequests.push(request);
+        return {text:'{"status":"complete","progress":"uncertain","edit_support":"unsupported","mutation_safety":"allowed","unresolved":[],"reason":"The requested implementation change is present and the focused behavioral check passed."}',toolCalls:[],usage:{}};
+      }
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[
+        {id:"status",namespace:"trebell_terminal",name:"run",arguments:'{"command":"git","args":["status","--short"]}'},
+        {id:"diff",namespace:"trebell_terminal",name:"run",arguments:'{"command":"git","args":["diff","--stat"]}'},
+        {id:"view",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"bash",args:["-lc","nl -ba src/a.mjs | sed -n '1,40p'"]})},
+      ],usage:{}};
+      if(turns===3){
+        assert.notEqual(request.toolChoice,"none");
+        assert.equal(request.messages.some(message=>message.role==="developer"&&/convergence finalization/i.test(String(message.content||""))),false);
+        return {text:"",toolCalls:[{id:"behavior-check",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-a.mjs"]}'}],usage:{}};
+      }
+      return {text:"Implemented the fix and the focused check passes.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0}},
+  });
+  assert.match(result.text,/focused check passes/i);assert.equal(turns,4);assert.equal(gateRequests.length,1);
+  assert.deepEqual(executed,["edit","status","diff","view","behavior-check"]);
+  assert.equal(events.some(event=>event.name==="native.progress.convergence_finalization"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.convergence_checkpoint"),false);
+});
+
+test("native read-only inspection classifier separates workspace inspection from behavioral runs",()=>{
+  const shell=script=>({command:"bash",args:["-lc",script]});
+  const inspection=[
+    {command:"git",args:["log","--oneline","-5"]},
+    {command:"git",args:["status","--short"]},
+    {command:"git diff -- src/a.py"},
+    {command:"git",args:["--no-pager","show","HEAD:src/a.py"]},
+    {command:"sed",args:["-n","1,40p","src/a.py"]},
+    {command:"cat",args:["src/a.py"]},
+    shell("cd /repo && git status --short && git diff -- src/a.py | head -50 && nl -ba src/a.py | sed -n '1,40p'"),
+    shell("grep -rn needle --include=*.py . 2>/dev/null | head -20; ls -la src || true"),
+    shell("PAGER=cat git log -3 --stat 2>&1 | tail -20"),
+    {command:"sh",args:["-c","find . -name '*.py' -newer setup.py | sort"]},
+    {command:"git",args:["branch","-vv"]},
+    {command:"git",args:["branch","-a","--contains","HEAD"]},
+    {command:"git",args:["branch","--show-current"]},
+    shell("git status --short >/dev/null 2>&1 && echo clean >&2"),
+  ];
+  const behavioral=[
+    {command:"sed",args:["-i","s/a/b/","src/a.py"]},
+    shell("sed -n 1p src/a.py && sed -i.bak s/a/b/ src/a.py"),
+    {command:"git",args:["stash"]},
+    {command:"git",args:["checkout","--","src/a.py"]},
+    {command:"git",args:["apply","fix.patch"]},
+    {command:"git",args:["branch","-D","topic"]},
+    {command:"git",args:["branch","-dr","origin/topic"]},
+    {command:"git",args:["branch","-Mf","old","new"]},
+    {command:"git",args:["diff","--output=fix.patch"]},
+    shell("git diff &> fix.patch"),
+    shell("git log -1 >> notes.txt"),
+    {command:"find",args:[".","-name","*.pyc","-exec","rm","{}",";"]},
+    shell("find . -name '*.tmp' -delete"),
+    shell("echo value > src/out.txt"),
+    shell("git diff 2> errors.txt"),
+    shell("cat $(python -c 'print(1)')"),
+    shell("cat `python gen.py`"),
+    shell("awk 'BEGIN{system(\"pytest\")}'"),
+    shell("cat src/a.py & python -m pytest"),
+    {command:"pytest",args:["-q","tests/test_a.py"]},
+    {command:"python",args:["-m","pytest","tests/test_a.py"]},
+    shell("for name in a b; do cat $name; done"),
+    {command:"node",args:["check-a.mjs"]},
+    {command:"cmd",args:["/c","type","src\\a.py"]},
+    {command:"powershell",args:["-Command","Get-Content src/a.py"]},
+    {command:"bash",args:["build.sh"]},
+    {},
+  ];
+  for(const args of inspection)assert.equal(readOnlyInspectionRun(args),true,JSON.stringify(args));
+  for(const args of behavioral)assert.equal(readOnlyInspectionRun(args),false,JSON.stringify(args));
+});
+
+test("native read-only inspection classifier stays linear on long commands",()=>{
+  // Every terminal run is classified synchronously, so a long literal must not stall the event loop.
+  const digits="7".repeat(200_000),started=Date.now();
+  assert.equal(readOnlyInspectionRun({command:"bash",args:["-lc","echo "+digits]}),true);
+  assert.equal(readOnlyInspectionRun({command:"echo",args:[digits]}),true);
+  assert.equal(readOnlyInspectionRun({command:"bash",args:["-lc","echo "+digits+">out.txt"]}),false);
+  assert.equal(readOnlyInspectionRun({command:"bash",args:["-lc","A=1 ".repeat(50_000)+"git status"]}),true);
+  assert.ok(Date.now()-started<2000,`classification took ${Date.now()-started} ms`);
+});
+
+test("native convergence still treats a failing read-only inspection run as a terminal failure",async()=>{
+  let turns=0;const events=[],executed=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:6,maxToolCalls:12,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[
+        {id:"check-a",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-a.mjs"]}'},
+        {id:"check-b",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-b.mjs"]}'},
+        {id:"check-c",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-c.mjs"]}'},
+        {id:"grep-miss",namespace:"trebell_terminal",name:"run",arguments:'{"command":"grep","args":["-n","expected","src/a.mjs"]}'},
+      ],usage:{}};
+      if(turns===3){
+        assert.equal(request.messages.some(message=>message.role==="developer"&&/convergence checkpoint/i.test(String(message.content||""))),false);
+        return {text:"",toolCalls:[{id:"check-d",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-d.mjs"]}'}],usage:{}};
+      }
+      assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="check-d"&&!/convergence guard/i.test(String(message.content||""))));
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:call.id==="grep-miss"?1:0}},
+  });
+  assert.equal(result.text,"done");assert.equal(turns,4);
+  assert.deepEqual(executed,["edit","check-a","check-b","check-c","grep-miss","check-d"]);
+  assert.equal(events.some(event=>event.name==="native.progress.convergence_checkpoint"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.convergence_call_blocked"),false);
+});
+
 test("native post-edit singleton probing switches to batch-only evidence after three reasoning round trips",async()=>{
   let turns=0;const executed=[],events=[],requests=[];
   const result=await runNativeAgentTurn({
@@ -4536,6 +4713,31 @@ test("native assumption escalation stays advisory for a generic solver task",asy
   assert.equal(escalations.length,1);
   assert.equal(escalations[0].data?.verificationLock,false);
   assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_applied").length,0);
+});
+
+test("native assumption audit still fires on a passing revision without asserting an unresolved defect",async()=>{
+  let turns=0;const events=[];
+  const evidence=label=>[
+    {id:label+"-suite",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"npm",args:["test"]})},
+    {id:label+"-probe",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+".mjs"]})},
+  ];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation and verify it."}],maxModelTurns:9,maxToolCalls:20,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns>=2&&turns<=5)return {text:"",toolCalls:evidence("probe-"+turns),usage:{}};
+      const audit=request.messages.find(message=>message.role==="developer"&&/assumption-audit checkpoint/i.test(String(message.content||"")));
+      assert.ok(audit);
+      assert.match(String(audit.content),/4 evidence-only reasoning rounds have executed since the latest workspace edit\. Before spending/i);
+      assert.doesNotMatch(String(audit.content),/without resolving the remaining defect/i);
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0},
+  });
+  assert.equal(result.text,"done");assert.equal(turns,6);
+  assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
 });
 
 test("native localizes residual structure after an abstraction repair before reopening global assumptions",async()=>{

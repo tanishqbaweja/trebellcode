@@ -111,6 +111,15 @@ test("Responses can select which prior reasoning turns are rendered into the nex
   assert.equal(Object.prototype.hasOwnProperty.call(invalid,"reasoning"),false);
 });
 
+test("Responses forwards a requested text verbosity alongside any structured format",()=>{
+  const plain=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],textVerbosity:"low"});
+  assert.deepEqual(plain.text,{verbosity:"low"});
+  const schema={type:"object",additionalProperties:false,properties:{ok:{type:"boolean"}},required:["ok"]};
+  const structured=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"judge"}],responseJsonSchema:{name:"gate",strict:true,schema},textVerbosity:"HIGH"});
+  assert.deepEqual(structured.text,{format:{type:"json_schema",name:"gate",strict:true,schema},verbosity:"high"});
+  for(const value of [null,"","default","verbose"])assert.equal(Object.prototype.hasOwnProperty.call(providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],textVerbosity:value}),"text"),false,String(value));
+});
+
 test("Chat conversion can reuse canonical message conversions without changing the request body",()=>{
   const messages=[{role:"system",content:"stable"},{role:"user",content:[{type:"text",text:"hello"}]},{role:"assistant",content:"",toolCalls:[{id:"c1",namespace:"trebell_repo",name:"search_code",arguments:{query:"Session"}}]},{role:"tool",toolCallId:"c1",content:"result"}],request={model:"chat-model",messages,tools:[]},cache=new WeakMap(),baseline=providerTurnToChat(request),candidate=providerTurnToChat(request,{messageCache:cache});
   assert.deepEqual(candidate,baseline);assert.equal(JSON.stringify(candidate),JSON.stringify(baseline));

@@ -116,7 +116,9 @@ async function nearestExistingLocalParent(candidate){
 
 async function localSafePath(root,requested,{mustExist=false}={}){
   const base=resolve(String(root||process.cwd()));let raw=String(requested||".");
-  raw=rootRelativeFallback(raw)??raw;
+  // Like the remote branch, keep an absolute path that already names the workspace root or a path inside it;
+  // stripping its leading separator would resolve it a second time under the root (<root>/<root>/...).
+  if(!(isAbsolute(raw)&&inside(base,resolve(base,raw))))raw=rootRelativeFallback(raw)??raw;
   const candidate=resolve(base,raw);
   if(!inside(base,candidate))throw new Error("Path is outside the active workspace");
   const realBase=await realpath(base);

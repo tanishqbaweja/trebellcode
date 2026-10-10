@@ -190,7 +190,7 @@ function responseToolOutput(content,{cacheBreakpoint=false}={}){
   return output;
 }
 
-export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,reasoningContext=null,serviceTier=null,parallelToolCalls=true,responseJsonSchema=null}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
+export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,reasoningContext=null,serviceTier=null,parallelToolCalls=true,responseJsonSchema=null,textVerbosity=null}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
   const instructions=[],input=[];let instructionPrefixOpen=true;
   const sourceMessages=Array.isArray(messages)?messages:[],inputStart=Math.max(0,Math.trunc(Number(inputStartMessageIndex)||0));
   for(let messageIndex=0;messageIndex<sourceMessages.length;messageIndex++){
@@ -239,6 +239,8 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
   if(Object.keys(reasoning).length)result.reasoning=reasoning;
   const structured=normalizedResponseJsonSchema(responseJsonSchema);
   if(structured)result.text={format:{type:"json_schema",name:structured.name,strict:structured.strict,schema:structured.schema}};
+  const verbosity=String(textVerbosity||"").trim().toLowerCase();
+  if(["low","medium","high"].includes(verbosity))result.text={...(result.text||{}),verbosity};
   const normalizedTier=normalizedServiceTier(serviceTier);if(normalizedTier)result.service_tier=normalizedTier;
   return result;
 }

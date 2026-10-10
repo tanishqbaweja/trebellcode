@@ -1009,6 +1009,44 @@ function terminalRunKey(args={}){
   return command?JSON.stringify([command,argv,cwd]):null;
 }
 
+// A terminal run that only inspects the workspace (git queries, file viewers, sed/find/awk without writes or
+// spawned commands) can pass without exercising any behavior, so convergence does not count such a pass as a
+// check. Anything unrecognised, including cmd and PowerShell commands, stays behavioral. This is a
+// convergence-counting heuristic, not a safety predicate: rare forms such as sort -o, sed's w/e commands or
+// rg --pre can still write or spawn, so never use it to allow or skip a command.
+const READ_ONLY_GIT_SUBCOMMANDS=new Set(["status","diff","show","log","blame","grep","ls-files","rev-parse","describe","branch","shortlog","whatchanged"]);
+const READ_ONLY_VIEWER_COMMANDS=new Set(["cat","head","tail","nl","wc","grep","egrep","fgrep","rg","ls","pwd","true","cd","echo","printf","stat","file","tree","sort","uniq","cut","less","more","diff","cmp","realpath","dirname","basename","which"]);
+
+function readOnlyInspectionStatement(statement){
+  const words=String(statement||"").trim().split(/\s+/).filter(Boolean),start=words.findIndex(word=>!/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+  if(start<0)return true;
+  const executable=words[start].replace(/^.*\//,""),options=words.slice(start+1);
+  if(executable==="git"){
+    const subcommand=options.find(word=>!word.startsWith("-"));
+    if(!READ_ONLY_GIT_SUBCOMMANDS.has(subcommand))return false;
+    // Delete/move/copy flags may be clustered with others (-dr, -Df), as sed's -i may be.
+    if(subcommand==="branch"&&options.some(word=>/^-[A-Za-z]*[dDmMcC]|^--(?:delete|move|copy)\b/.test(word)))return false;
+    return !options.some(word=>/^--output(?:=|$)/.test(word));
+  }
+  if(executable==="sed")return !options.some(word=>/^-[A-Za-z]*i|^--in-place\b/.test(word));
+  if(executable==="find")return !options.some(word=>/^-(?:delete|exec|ok|fprint|fls)/.test(word));
+  if(executable==="awk")return !/\bsystem\s*\(|\bprint\s*>/.test(statement);
+  return READ_ONLY_VIEWER_COMMANDS.has(executable);
+}
+
+export function readOnlyInspectionRun(args={}){
+  const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];
+  if(!command)return false;
+  const shellScript=["bash","sh","zsh"].includes(command.replace(/^.*\//,""))&&/^-[a-z]*c[a-z]*$/.test(argv[0]||"");
+  const script=shellScript?String(argv[1]||""):[command,...argv].join(" ");
+  if(/\$\(|`|<\(/.test(script))return false;
+  // The lookbehinds start a file-descriptor number only at the beginning of a digit run, so long digit runs stay linear.
+  const unredirected=script.replace(/(?:(?<![0-9])[0-9]+|&)?>>?\s*\/dev\/null\b|(?<![0-9])[0-9]*>&[0-9]+/g," ");
+  if(unredirected.includes(">"))return false;
+  const statements=unredirected.split(/[;&|\r\n]+/).map(value=>value.trim()).filter(Boolean);
+  return statements.length>0&&statements.every(readOnlyInspectionStatement);
+}
+
 function terminalReplayArguments(args={}){
   const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim();if(!command)return null;
   const replay={command,args:Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[]};
@@ -1579,7 +1617,7 @@ export async function runNativeAgentTurn({
       const key=terminalRunKey(args),exitCode=Number.isFinite(Number(output?.exitCode))?Number(output.exitCode):null;
       if(key&&exitCode!==null){
         const priorFailure=terminalRuns.findLast(item=>item.key===key&&item.exitCode!==0&&item.editRevision<editRevision);
-        terminalRuns.push({key,exitCode,editRevision,arguments:terminalReplayArguments(args),currentTurn:true,reportEvidence:terminalReportEvidence(output)});
+        terminalRuns.push({key,exitCode,editRevision,arguments:terminalReplayArguments(args),currentTurn:true,reportEvidence:terminalReportEvidence(output),inspection:readOnlyInspectionRun(args)});
         const completionTargetMatches=!verificationFinalizationRequest||verificationCompletionMatchesRun(verificationFinalizationRequest,args,terminalRuns,editRevision);
         if(verifiedFinalizationAllowed&&exitCode===0&&priorFailure&&completionTargetMatches){
           verifiedFinalizationReady=true;
@@ -1836,7 +1874,7 @@ export async function runNativeAgentTurn({
     }
     const verifiedResidualLocalizationActive=workspaceMutationRequested&&editRevision>0&&abstractionRepairRevision>0&&!pendingAbstractionRepair&&!abstractionRepairVerificationPending&&postEditResidualStructureRevision>=abstractionRepairRevision;
     if(workspaceMutationRequested&&editRevision>0&&!verifiedResidualLocalizationActive&&postEditAssumptionAuditRevision!==editRevision&&postEditEvidenceRounds>=4){
-      conversation.push({role:"developer",content:"Trebell assumption-audit checkpoint: "+postEditEvidenceRounds+" evidence-only reasoning rounds have executed since the latest workspace edit without resolving the remaining defect. Before spending more inference on variations of the same approach, identify the earliest shared assumption that the recent probes depend on and try to falsify it with evidence that does not itself assume the same thing. The relevant assumption may concern the algorithm or problem family, an input interpretation, an API or file contract, environment behavior, units, state, ordering, or another task-specific premise. Prefer one bounded discriminating check that can explain several observations at once. If the assumption survives an independent check, keep the strongest remaining hypothesis and continue; do not invent an upstream or representation bug merely because this checkpoint fired."});
+      conversation.push({role:"developer",content:"Trebell assumption-audit checkpoint: "+postEditEvidenceRounds+" evidence-only reasoning rounds have executed since the latest workspace edit. Before spending more inference on variations of the same approach, identify the earliest shared assumption that the recent probes depend on and try to falsify it with evidence that does not itself assume the same thing. The relevant assumption may concern the algorithm or problem family, an input interpretation, an API or file contract, environment behavior, units, state, ordering, or another task-specific premise. Prefer one bounded discriminating check that can explain several observations at once. If the assumption survives an independent check, keep the strongest remaining hypothesis and continue; do not invent an upstream or representation bug merely because this checkpoint fired."});
       postEditAssumptionAuditRevision=editRevision;
       emit(onEvent,{name:"native.progress.assumption_audit_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,evidenceRounds:postEditEvidenceRounds}});
     }
@@ -1867,7 +1905,7 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.progress.post_edit_evidence_escalation",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,evidenceRounds:postEditEvidenceRounds}});
     }
     if(workspaceMutationRequested&&editRevision>0&&convergenceCheckpointRevision!==editRevision){
-      const revisionRuns=terminalRuns.filter(item=>item?.currentTurn&&item?.editRevision===editRevision),failedRuns=revisionRuns.filter(item=>item?.exitCode!==0),passedRuns=revisionRuns.filter(item=>item?.exitCode===0),distinctPassed=new Set(passedRuns.map(item=>item?.key).filter(Boolean));
+      const revisionRuns=terminalRuns.filter(item=>item?.currentTurn&&item?.editRevision===editRevision),failedRuns=revisionRuns.filter(item=>item?.exitCode!==0),passedRuns=revisionRuns.filter(item=>item?.exitCode===0&&item?.inspection!==true),distinctPassed=new Set(passedRuns.map(item=>item?.key).filter(Boolean));
       if(failedRuns.length===0&&passedRuns.length>=3&&distinctPassed.size>=2){
         conversation.push({role:"developer",content:`Trebell convergence checkpoint: since the latest successful workspace edit, ${passedRuns.length} terminal checks have passed with no terminal failure (${distinctPassed.size} distinct commands). Command count is not semantic coverage: before stopping, compare those checks against the user's stated acceptance signals and any behavior-driving structured inputs or configured constraints already identified. Explicit quantitative targets still need representative evidence, and a one-shot benchmark/deploy/cutover/release signal should not be triggered before its acceptance-critical preconditions are evidenced. For hidden/randomized/workload-variable performance gates, a narrow proxy that only barely clears the threshold is not strong convergence evidence: use broader varied cases and meaningful headroom when feasible, and make sure invariant preprocessing is not still sitting inside the repeated hot path. If that coverage is complete, stop speculative polishing and answer now. Continue only if you can name a concrete unmet requirement or a focused verification gap; do not invent extra hardening work.`});
         convergenceCheckpointRevision=editRevision;
