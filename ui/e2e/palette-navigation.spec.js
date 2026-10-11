@@ -1,6 +1,8 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
+import { WebSocketServer } from "ws";
 
 // The command palette from the keyboard (keys typed straight after Ctrl+K, where focus goes after a command) and moving between pages
 // with the browser's Back and Forward beside the app's own Navigate back/forward shortcuts.
@@ -400,4 +402,87 @@ test.describe("Back and forward",()=>{
     await expect(usageHeading(page)).toBeVisible();
     expect(await page.evaluate(()=>history.length)).toBe(length);
   });
+});
+
+// ============ Back and Forward to threads, behind a fake Codex app-server ============
+// The app-server answers what the app asks at start; delays holds a thread's resume (by id, in ms) or the thread list (list).
+async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+function fixtureThreads(names){const now=Date.now()/1000;return names.map((name,i)=>({id:"navigation-thread-"+i,name,preview:"Preview of "+name,cwd:process.cwd(),createdAt:now-1000-i*60,updatedAt:now-i*60,turns:[]}))}
+const EMPTY_LISTS=["threadSection/list","thread/loaded/list","thread/attachment/list","thread/queue/list","app/list","permissionProfile/list","hooks/list","experimentalFeature/list","plugin/share/list","collaborationMode/list","skills/list"];
+async function startCodex(threads,delays={}){
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
+  http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",async data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      const m=message.method;let result={};
+      if(m==="thread/list"){if(delays.list)await new Promise(resolve=>setTimeout(resolve,delays.list));result={data:threads,nextCursor:null}}
+      else if(m==="thread/resume"||m==="thread/read"){const id=message.params?.threadId;if(delays[id])await new Promise(resolve=>setTimeout(resolve,delays[id]));result={thread:threads.find(t=>t.id===id)||threads[0],itemsBackwardsCursor:null,turnsBackwardsCursor:null}}
+      else if(m==="initialize")result={userAgent:"navigation-fixture"};
+      else if(EMPTY_LISTS.includes(m))result={data:[],nextCursor:null};
+      else if(m==="thread/goal/get")result={goal:null};
+      else if(m==="thread/timeline/list")result={data:[],nextCursor:null,activeRealtimeSessionAtPageStart:null};
+      else if(m==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
+      else if(m==="mcpServerStatus/list")result={data:[]};
+      else if(m==="plugin/list")result={marketplaces:[]};
+      else if(m==="app/installed")result={apps:[]};
+      else if(m==="account/read")result={account:{type:"chatgpt",email:"fixture@example.com",planType:"plus"},requiresOpenaiAuth:false};
+      else if(m==="account/rateLimits/read")result={rateLimits:{}};
+      else if(m==="config/read")result={config:{},layers:[]};
+      else if(m==="thread/unsubscribe")result={status:"unsubscribed"};
+      try{ws.send(JSON.stringify({id:message.id,result}))}catch{}
+    });
+  });
+  const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
+  return {port,async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
+}
+async function openCodex(page,fixture,threads,{mode="dark",width=1280,height=800}={}){
+  await page.setViewportSize({width,height});
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${fixture.port}`,cwd:process.cwd(),platform:process.platform,version:"navigation-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:Object.fromEntries(threads.map(t=>[t.id,{projectless:true,environmentId:null}]))}));
+  await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  await page.route(/\/api\/agent-runtimes$/,route=>json(route,{selectedRuntime:"codex",selectedInstanceId:"codex-default",definitions:[{id:"codex",name:"Codex",protocol:"codex",multipleInstances:true}],instances:[{id:"codex-default",kind:"codex",displayName:"Codex",enabled:true}],statuses:[{id:"codex-default",kind:"codex",name:"Codex",available:true,installed:true,authenticated:true,version:"fixture"}]}));
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect(page.locator(".thread-row")).toHaveCount(threads.length);
+}
+const headerTitle=page=>page.locator(".workspace-header .thread-title-button strong");
+const threadRow=(page,thread)=>page.locator(`.thread-row[data-thread-id="${thread.id}"]`);
+const shownEntry=page=>page.evaluate(()=>{const entry=history.state?.trebellNav;return entry?entry.section+":"+(entry.threadId||""):null});
+
+test.describe("Back and forward to a thread",()=>{
+  // A page the person picks while the thread a Back or Forward went to is still opening is theirs: it stays, and it is the entry after
+  // that thread's, as when the thread had opened at once.
+  for(const [way,mode] of [["the browser's Back","dark"],["Ctrl+[","light"]]){
+    test(`${way} to a thread that is slow to open, then Projects: Projects stays and is the next entry (${mode})`,async({page})=>{
+      const threads=fixtureThreads(["Alpha thread","Beta thread"]),delays={},fixture=await startCodex(threads,delays);
+      try{
+        await openCodex(page,fixture,threads,{mode});
+        await threadRow(page,threads[0]).click();await expect(headerTitle(page)).toHaveText("Alpha thread");
+        await expect.poll(()=>shownEntry(page)).toBe("chat:"+threads[0].id);
+        await threadRow(page,threads[1]).click();await expect(headerTitle(page)).toHaveText("Beta thread");
+        await expect.poll(()=>shownEntry(page)).toBe("chat:"+threads[1].id);
+        // Alpha's resume (asked twice by this fixture) now takes 2 s each time.
+        delays[threads[0].id]=2000;
+        if(way==="Ctrl+[")await pressShortcut(page,"Control+BracketLeft");else await page.goBack();
+        await page.waitForTimeout(150);
+        await nav(page,"Projects").click();
+        await expect(projectsHeading(page)).toBeVisible();
+        await expect.poll(()=>shownEntry(page),{message:"the Projects visit is not an entry once Alpha has opened",timeout:12000}).toBe("projects:"+threads[0].id);
+        await page.waitForTimeout(400);
+        await expect(projectsHeading(page),"Alpha opening took the person off the Projects page they picked after it").toBeVisible();
+        await page.screenshot({animations:"disabled",path:shots+`history-slow-thread-projects-${mode}-1280.png`});
+        await page.goBack();
+        await expect(page.getByTestId("composer")).toBeVisible();
+        await expect(headerTitle(page)).toHaveText("Alpha thread");
+        await expect(projectsHeading(page)).toHaveCount(0);
+        await page.screenshot({animations:"disabled",path:shots+`history-slow-thread-back-${mode}-1280.png`});
+      }finally{await fixture.close()}
+    });
+  }
 });

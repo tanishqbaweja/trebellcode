@@ -20,7 +20,7 @@ import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx"
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
 import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, shadowedKeybindings, shortcutHint } from "./keybindings.js";
-import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, navigationKey, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
+import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, movedDuringStep, navigationKey, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
@@ -1005,8 +1005,9 @@ export default function App(){
     if(!initialLoaded)return;
     const nav=navigationHistoryRef.current;
     const location={section,threadId:activeThread?.id||null,rightPanelOpen:Boolean(rightPanelOpen),rightPanelTab:rightPanelTab||"files"};
-    // A Back or Forward still opening its thread: the views passed on the way are not entries.
-    if(nav.applying)return;
+    // A Back or Forward still opening its thread: the views passed on the way are not entries. A page, panel or thread the person
+    // picks meanwhile is theirs, and the step leaves it as it is (see showNavigationEntry).
+    if(nav.applying){const step=nav.applying;if(!step.moved&&movedDuringStep(step,location))step.moved=true;return}
     if(nav.index<0){
       let stored=null;
       if(BROWSER_NAVIGATION)try{stored=JSON.parse(sessionStorage.getItem(NAVIGATION_STORE_KEY)||"null")}catch{}
@@ -1021,26 +1022,34 @@ export default function App(){
     const recorded=recordLocation(nav,location);
     if(recorded.action==="push")writeNavigationEntry("push",recorded.entry);
   },[initialLoaded,section,activeThread?.id,rightPanelOpen,rightPanelTab,navigationRevision]);
-  // Shows an entry of the history: the last one asked for wins over one still opening its thread.
+  // Shows an entry of the history: the last one asked for wins over one still opening its thread. A page, panel, thread or new task
+  // the person picks while that thread opens (moved) wins over the step: it leaves the view as the person left it (the thread may
+  // still land behind a page, as any open does), and once the step ends that view is recorded as the entry after this one.
   async function showNavigationEntry(index){
     const nav=navigationHistoryRef.current,target=nav.entries[index];
     if(!target)return;
-    const token={};nav.index=index;nav.applying=token;
+    const token={from:{section:sectionRef.current,threadId:activeThreadRef.current?.id||null,rightPanelOpen:Boolean(rightPanelOpen),rightPanelTab:rightPanelTab||"files"},threadId:target.threadId,moved:false};
+    nav.index=index;nav.applying=token;
     if(BROWSER_NAVIGATION)try{sessionStorage.setItem(NAVIGATION_STORE_KEY,JSON.stringify(storedNavigation(nav)))}catch{}
     try{
       if(target.threadId&&activeThreadRef.current?.id!==target.threadId){
         const thread=threads.find(item=>item.id===target.threadId);
-        if(thread)await openThread(thread);
+        if(thread){
+          const opening=openThread(thread),openNumber=openSeqRef.current;
+          await opening;
+          // Another thread or a new task asked for while this one opened has replaced it.
+          if(openSeqRef.current!==openNumber)token.moved=true;
+        }
       }else if(!target.threadId&&activeThreadRef.current?.id&&target.section==="chat"){
         await newChat();
       }
-      if(nav.applying!==token)return;
+      if(nav.applying!==token||token.moved)return;
       setRightPanelTab(target.rightPanelTab||"files");
       setRightPanelOpen(Boolean(target.rightPanelOpen));
       if(!target.rightPanelOpen)setRightPanelMaximized(false);
       setSection(target.section||"chat");
     }finally{
-      if(nav.applying===token){nav.applying=null;nav.landed=true;setNavigationRevision(value=>value+1)}
+      if(nav.applying===token){nav.applying=null;nav.landed=!token.moved;setNavigationRevision(value=>value+1)}
     }
   }
   async function navigateHistory(delta){

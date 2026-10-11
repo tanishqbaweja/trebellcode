@@ -5,6 +5,7 @@ import {
   browserEntryIndex,
   browserState,
   createNavigationHistory,
+  movedDuringStep,
   navigationKey,
   recordLocation,
   settleLocation,
@@ -120,6 +121,23 @@ test("a Back that could not show its thread names what it showed instead",()=>{
   assert.equal(settled.entry.id,"doc-1");
   assert.equal(nav.entries[0].threadId,null);
   assert.equal(settleLocation(nav,page("chat")).action,"none");
+});
+
+test("while a step opens its thread, only the person's own page, panel or thread change counts as a move",()=>{
+  const step={from:page("chat",{threadId:"beta"}),threadId:"alpha"};
+  assert.equal(movedDuringStep(step,page("chat",{threadId:"beta"})),false,"the view it left");
+  assert.equal(movedDuringStep(step,page("chat",{threadId:"alpha"})),false,"the thread it opens, landed");
+  assert.equal(movedDuringStep(step,page("chat",{threadId:"beta",rightPanelTab:"diff"})),false,"a closed panel's tab is not shown");
+  assert.equal(movedDuringStep(step,page("projects",{threadId:"beta"})),true,"another page");
+  assert.equal(movedDuringStep(step,page("chat",{threadId:"beta",rightPanelOpen:true})),true,"the panel opened");
+  assert.equal(movedDuringStep(step,page("chat",{threadId:"gamma"})),true,"another thread");
+  assert.equal(movedDuringStep(step,page("chat")),true,"a new task");
+  // From a page, the thread lands in the chat; the page itself is still on the way.
+  const fromPage={from:page("history",{threadId:"beta",rightPanelOpen:true,rightPanelTab:"diff"}),threadId:"alpha"};
+  assert.equal(movedDuringStep(fromPage,page("history",{threadId:"beta",rightPanelOpen:true,rightPanelTab:"diff"})),false);
+  assert.equal(movedDuringStep(fromPage,page("chat",{threadId:"alpha",rightPanelOpen:true,rightPanelTab:"diff"})),false);
+  assert.equal(movedDuringStep(fromPage,page("chat",{threadId:"alpha",rightPanelOpen:true,rightPanelTab:"files"})),true,"another panel tab");
+  assert.equal(movedDuringStep(fromPage,page("usage",{threadId:"alpha",rightPanelOpen:true,rightPanelTab:"diff"})),true);
 });
 
 test("the browser state keeps what else it holds",()=>{

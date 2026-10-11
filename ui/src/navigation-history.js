@@ -60,6 +60,17 @@ export function settleLocation(nav,location){
   return {action:"replace",entry:nav.entries[nav.index]};
 }
 
+// While a Back or Forward opens the thread of the entry it goes to ({from: the location it left, threadId: that thread}), the view
+// passes from the thread it left to that one, in the chat or on the page it was on. Anything else shown meanwhile (another page, the
+// right panel opened, closed or on another tab, another thread, a new task) is a move of the person's own, which wins over the step.
+export function movedDuringStep(step,location){
+  const panel=value=>value?.rightPanelOpen?String(value.rightPanelTab||"files"):"";
+  const id=value=>value?String(value):null;
+  const section=String(location?.section||"chat"),threadId=id(location?.threadId);
+  const onTheWay=(section===String(step?.from?.section||"chat")||section==="chat")&&(threadId===id(step?.from?.threadId)||threadId===id(step?.threadId))&&panel(location)===panel(step?.from);
+  return !onTheWay;
+}
+
 // Where the app's own Back (-1) or Forward (+1) goes: an index in this history, or -1 at its ends, so the shortcut never leaves the
 // app the way the browser's Back does from the first page. A step on its way (the browser has not shown it yet) counts.
 export function stepTarget(nav,delta){
