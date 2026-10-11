@@ -332,6 +332,9 @@
 
 /* List rows (hrow). */
 :root:root :is(.capabilities-page,.environments-page) .capability-list{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;max-height:320px;overflow:auto}
+/* Lists stacked in one card (config layers, then warnings, then runtime notices) keep the row gap between them, so their
+   rows read as one evenly spaced list instead of the last row of one touching the first row of the next. */
+:root:root :is(.capabilities-page,.environments-page) .capability-list:not(:empty)+.capability-list:not(:empty){margin-top:6px}
 :root:root :is(.capabilities-page,.environments-page) .capability-list>div{min-height:46px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
 :root:root :is(.capabilities-page,.environments-page) .capability-list>div>div:first-child{min-width:0}
 :root:root :is(.capabilities-page,.environments-page) .capability-list strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -488,8 +491,9 @@
 :root:root .capabilities-page .capability-card>:is(.provider-status-error,.capability-status):not(:last-child){margin-bottom:10px!important}
 
 :root:root .capabilities-page .mcp-server-row{flex-wrap:wrap}
-/* Once a server's resources and tools are expanded, the list grows instead of nesting a scroll area around the argument inputs. */
-:root:root .capabilities-page .capability-list:has(.mcp-server-details[open]){max-height:none}
+/* Once a server's resources and tools are expanded, or an import history row is opened to list its failures, the list grows
+   instead of nesting a scroll area around them. */
+:root:root .capabilities-page .capability-list:has(.mcp-server-details[open],>details[open]){max-height:none}
 :root:root .capabilities-page .mcp-server-details{width:100%;margin-top:4px;padding-top:4px;border:0!important;border-top:1px solid var(--line)!important;background:transparent!important}
 :root:root .capabilities-page .mcp-server-details>summary{padding:6px 0!important}
 :root:root .capabilities-page .mcp-resource{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 0}

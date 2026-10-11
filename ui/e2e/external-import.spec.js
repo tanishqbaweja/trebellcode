@@ -98,3 +98,67 @@ test("external agent imports use native progress and completion notifications",a
     await permissionProfiles.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"tools-empty-runtime-lists-1280x800.png",fullPage:false});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });
+
+// A Codex app-server behind the real relay that answers the Tools page's reads with empty lists and the given import history.
+async function startHistoryFixture(history){
+  const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
+  const empty=["thread/list","threadSection/list","permissionProfile/list","mcpServerStatus/list","hooks/list","experimentalFeature/list","plugin/share/list","app/list","thread/loaded/list"];
+  const answers={"initialize":{userAgent:"import-history-fixture"},"skills/list":{data:[]},"externalAgentConfig/detect":{items:[],connectors:[]},"externalAgentConfig/import/readHistories":{data:history,connectors:[]},"plugin/list":{marketplaces:[],marketplaceLoadErrors:[],featuredPluginIds:[]},"app/installed":{apps:[]},"modelProvider/capabilities/read":{namespaceTools:true,webSearch:true,imageGeneration:false},"account/read":{account:null,requiresOpenaiAuth:false},"account/rateLimits/read":{rateLimits:{}},"account/usage/read":{},"config/read":{config:{},layers:[]},"configRequirements/read":{requirements:{}},"memory/status":{v2ConsolidatedThreads:0,v2Ready:false},"server/diagnostics":{process:{id:4242,residentMemoryBytes:67108864,physicalFootprintBytes:null},gauges:[]}};
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{const message=JSON.parse(String(data));if(message.id==null||!message.method)return;ws.send(JSON.stringify({id:message.id,result:empty.includes(message.method)?{data:[],nextCursor:null}:answers[message.method]||{}}))});
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  return {wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",async close(){relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}};
+}
+
+test("an opened import history row grows the history list instead of hiding its failures in a nested scroll area",async({page})=>{
+  test.setTimeout(40_000);
+  const longPath="C:/Users/someone/AppData/Roaming/Claude/very/deep/nested/configuration/directory/mcp-servers-config-backup-2026-10-11.json";
+  const failures=[
+    {itemType:"MCP_SERVER_CONFIG",errorType:"invalid_config",failureStage:"write",message:"One connector could not be imported because its command points at "+longPath+", which does not exist on this machine.",cwd:null,source:"claude"},
+    {itemType:"HOOKS",errorType:"permission_denied",failureStage:"read",message:"",cwd:null,source:"claude"},
+    {itemType:"AGENTS_MD",errorType:"conflict",failureStage:"merge",message:"AGENTS.md already has a section with the same heading.",cwd:"C:/repo",source:"claude"},
+    {itemType:"SKILLS",errorType:"invalid_skill",failureStage:"validate",message:"Skill 'deploy' is missing a description.",cwd:null,source:"claude"},
+  ];
+  const history=[{importId:"import-many-failures",providerId:"claude",completedAtMs:Date.now(),successes:[{itemType:"SKILLS",cwd:null,source:"claude",target:"skills",title:null}],failures}];
+  for(let index=0;index<7;index++)history.push({importId:"older-"+index,providerId:index%2?"claude":"cursor",completedAtMs:Date.now()-(index+1)*3_600_000,successes:[{itemType:"CONFIG",cwd:null,source:"claude",target:"config.toml",title:null}],failures:[]});
+  const fixture=await startHistoryFixture(history);
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:fixture.wsUrl,cwd:process.cwd(),platform:"linux",version:"import-history-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{}}));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await page.getByRole("button",{name:"Tools",exact:true}).click();
+    const card=page.locator(".capability-card").filter({has:page.getByText("Import agent configuration",{exact:true})}).first();
+    await card.getByText("Previous native imports · 8",{exact:true}).click();
+    const list=card.locator(".migration-history-list"),failed=list.locator(":scope>details").first();
+    await expect(failed.locator("summary")).toContainText("4 failed");
+    // A keyboard user opens the row: focus its summary and press Enter.
+    await failed.locator("summary").focus();await page.keyboard.press("Enter");
+    await expect(failed).toHaveJSProperty("open",true);
+    await expect(failed.getByRole("listitem")).toHaveCount(4);
+    const metrics=()=>list.evaluate(node=>{const box=node.getBoundingClientRect(),open=node.querySelector(":scope>details[open]");return {client:node.clientHeight,scroll:node.scrollHeight,openBottom:open?open.getBoundingClientRect().bottom:null,listBottom:box.bottom,lastBottom:node.lastElementChild.getBoundingClientRect().bottom}});
+    const opened=await metrics();
+    // The opened row and every row after it show in full: the list grows with the row rather than scrolling inside the card.
+    expect(opened.scroll,JSON.stringify(opened)).toBeLessThanOrEqual(opened.client+1);
+    expect(opened.openBottom,JSON.stringify(opened)).toBeLessThanOrEqual(opened.listBottom+1);
+    expect(opened.lastBottom,JSON.stringify(opened)).toBeLessThanOrEqual(opened.listBottom+1);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      await failed.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:auditDir+`tools-import-history-open-${mode}-1280x800.png`,fullPage:false});
+    }
+    // Closed again, the list keeps its usual height cap.
+    await page.keyboard.press("Enter");
+    await expect(failed).toHaveJSProperty("open",false);
+    expect(await list.evaluate(node=>getComputedStyle(node).maxHeight)).not.toBe("none");
+  }finally{await fixture.close()}
+});
