@@ -243,3 +243,57 @@ test.describe("A project list that failed or is still loading",()=>{
     await expect(loading).toHaveCount(0);
   });
 });
+
+test.describe("Clone",()=>{
+  test("Clone with no parent directory says one is needed, marks the field and sends nothing",async({page,request})=>{
+    await page.route(/\/api\/environments$/,async route=>{
+      if(route.request().method()!=="GET")return route.fallback();
+      const body=await (await route.fetch()).json();
+      return json(route,{...body,profiles:[SSH_PROFILE]});
+    });
+    let posts=0;await page.route(/\/api\/clone-jobs$/,route=>{if(route.request().method()==="POST")posts++;return json(route,{error:"Deliberate clone refusal"},400)});
+    await open(page,request);
+    await nav(page,"Projects").click();
+    const clone=page.locator(".clone-card");
+    await clone.getByRole("textbox",{name:"Clone URL"}).fill("https://github.com/owner/repo.git");
+    const parent=clone.getByRole("textbox",{name:"Clone parent directory"});
+    await expect(parent).toHaveValue("");
+    await clone.getByRole("button",{name:"Clone",exact:true}).click();
+    const message=clone.getByText("Enter a parent directory on Build box.");
+    await expect(message).toBeVisible();
+    await expect(parent).toHaveAttribute("aria-invalid","true");
+    await expect(parent).toBeFocused();
+    expect(posts).toBe(0);
+    // The empty field reads as empty: its placeholder names the field instead of looking like a path.
+    await expect(parent).toHaveAttribute("placeholder","Parent directory");
+    for(const [mode,width] of [["dark",1280],["light",1280],["dark",900],["light",900]]){
+      await page.setViewportSize({width,height:800});await flipMode(page,mode);
+      await clone.scrollIntoViewIfNeeded();
+      expect(await sideways(page)).toBeLessThanOrEqual(1);
+      const box=await clone.boundingBox(),text=await message.boundingBox();
+      expect(text.x+text.width,`message inside the card at ${width}`).toBeLessThanOrEqual(box.x+box.width+1);
+      const room=await parent.evaluate(el=>{
+        const style=getComputedStyle(el),pen=document.createElement("canvas").getContext("2d");
+        pen.font=`${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        return el.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)-pen.measureText(el.placeholder).width;
+      });
+      expect(room,`the placeholder is not cut at ${width}`).toBeGreaterThanOrEqual(0);
+      // The field keeps the red line while it has focus, in either mode.
+      await expect(parent).toBeFocused();
+      const red=await parent.evaluate(el=>{
+        const probe=document.createElement("i");probe.style.cssText="position:absolute;border:1px solid var(--errb)";el.parentElement.appendChild(probe);
+        const colour=getComputedStyle(probe).borderTopColor;probe.remove();return colour;
+      });
+      // The field eases between colours, so its line is read until it settles.
+      await expect.poll(()=>parent.evaluate(el=>getComputedStyle(el).borderTopColor),{message:`the parent field is outlined in red (${mode})`}).toBe(red);
+      await page.screenshot({animations:"disabled",path:shots+`clone-no-parent-${mode}-${width}.png`});
+    }
+    // Typing a parent clears the message, and Clone then asks the server.
+    await parent.fill("/srv/projects");
+    await expect(message).toHaveCount(0);
+    await expect(parent).not.toHaveAttribute("aria-invalid","true");
+    await clone.getByRole("button",{name:"Clone",exact:true}).click();
+    await expect(page.getByRole("alert").filter({hasText:"Deliberate clone refusal"})).toBeVisible();
+    expect(posts).toBe(1);
+  });
+});

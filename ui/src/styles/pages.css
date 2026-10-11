@@ -149,7 +149,8 @@
 :root:root .projects-page .clone-card>.clone-inputs{grid-column:2/4}
 :root:root .projects-page .clone-card>button{grid-column:4}
 :root:root .projects-page .clone-inputs{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;min-width:0}
-:root:root .projects-page .clone-inputs.remote{grid-template-columns:minmax(0,1.6fr) minmax(120px,.6fr)}
+/* The parent directory field keeps room for its whole placeholder. */
+:root:root .projects-page .clone-inputs.remote{grid-template-columns:minmax(0,1.6fr) minmax(160px,.6fr)}
 :root:root .projects-page .clone-card :is(input,select){height:36px!important}
 /* URL and remote path read as code (the shared field rule above sets Inter with a more specific :is() list). */
 :root:root .projects-page .clone-card .clone-inputs input{font-family:var(--mono)!important;font-size:12px!important}
@@ -172,6 +173,15 @@
   :root:root .projects-page .clone-card>.clone-inputs{grid-column:2/-1}
   :root:root .projects-page .clone-card>button{grid-column:2/-1;justify-self:start}
 }
+/* A remote clone with no parent directory says so under its fields. The field stays red while it has focus, until it is
+   typed in, and Clone stays level with the fields rather than centring on the taller block. */
+:root:root .projects-page .clone-card input[aria-invalid="true"],:root:root .projects-page .clone-card input[aria-invalid="true"]:focus{border-color:var(--errb)!important;box-shadow:0 0 0 3px var(--errt)!important}
+/* Light mode's shared field line and focus colour (near the end of this file) outweigh that, so the red line is repeated at
+   their weight. */
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page .projects-page .clone-card input[aria-invalid="true"]:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]),
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page .projects-page .clone-card input[aria-invalid="true"]:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):focus{border-color:var(--errb)!important}
+:root:root .projects-page .clone-inputs>.clone-field-error{grid-column:1/-1;margin:-2px 0 0!important;font-size:11.5px!important;line-height:1.45;color:var(--err)!important;white-space:normal}
+:root:root .projects-page .clone-card>button{align-self:start}
 
 /* Groups and project cards. */
 :root:root .projects-page .project-groups{display:grid;gap:22px;margin-top:8px}

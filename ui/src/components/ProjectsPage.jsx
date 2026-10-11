@@ -51,6 +51,10 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   const hasDesktopPicker=Boolean(window.trebellDesktop?.pickDirectory);
   const [cloneEnvironmentId,setCloneEnvironmentId]=useState(()=>hasDesktopPicker?"local":"");
   const [cloneParent,setCloneParent]=useState("");
+  // A remote clone needs a parent directory: the field or the environment's working directory. Without one, Clone says so on
+  // the field instead of doing nothing.
+  const [cloneParentError,setCloneParentError]=useState("");
+  const cloneParentRef=useRef(null);
   const [environmentData,setEnvironmentData]=useState({profiles:[]});
   const [busy,setBusy]=useState(false);
   const [editor,setEditor]=useState(null);
@@ -238,6 +242,12 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     if(!cloneUrl.trim())return;
     const environmentId=cloneEnvironmentId==="local"?null:(cloneEnvironmentId||null);
     if(!hasDesktopPicker&&!environmentId)return;
+    const remoteProfile=environmentId?environmentData.profiles?.find(item=>item.id===environmentId)||null:null;
+    if(environmentId&&!(cloneParent.trim()||remoteProfile?.cwd)){
+      setCloneParentError("Enter a parent directory on "+(remoteProfile?.name||"this environment")+".");
+      cloneParentRef.current?.focus();
+      return;
+    }
     setBusy(true);setError("");
     try{
       let result=null,destination="";
@@ -423,7 +433,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     {loadError&&<div className="provider-status-error project-load-error" role="alert"><span>{loadError}</span><button type="button" className="tb-btn tb-btn--sm" onClick={retryLoad} disabled={retrying}>{retrying?"Retrying…":"Retry"}</button></div>}
     {error&&<p className="provider-status-error" role="alert">{error}</p>}
     <button className="general-chat-card" onClick={startGeneralChat} disabled={busy}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>{busy?"Starting…":"Start chat"}</em></button>
-    {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input aria-label="Clone parent directory" value={cloneParent} onChange={e=>setCloneParent(e.target.value)} placeholder="/srv/projects" title="Remote parent directory"/>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy?"Starting…":"Clone"}</button></div>}
+    {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"");setCloneParentError("")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input ref={cloneParentRef} aria-label="Clone parent directory" aria-invalid={cloneParentError?"true":undefined} aria-describedby={cloneParentError?"clone-parent-error":undefined} value={cloneParent} onChange={e=>{setCloneParent(e.target.value);setCloneParentError("")}} placeholder="Parent directory" title="Remote parent directory"/>}{cloneParentError&&<p id="clone-parent-error" className="clone-field-error" role="alert">{cloneParentError}</p>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy?"Starting…":"Clone"}</button></div>}
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.totalCount} checkout{group.totalCount===1?"":"s"}</span></div></div>
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id}>
