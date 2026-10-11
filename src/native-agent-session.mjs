@@ -110,19 +110,19 @@ const COMPACTION_PROMPT=[
 
 function promptMessage(prompt=[]){
   const content=[];
-  let contextText="",contextEntries=[],userParts=[];
+  let contextText="",contextEntries=[],userParts=[],fence=null;
   for(const item of Array.isArray(prompt)?prompt:[]){
     if(item?.type==="text"&&item.text){
       content.push({type:"text",text:String(item.text)});
       const meta=item[NATIVE_PROMPT_PROVENANCE];
-      if(meta?.kind==="working_context"){contextText=String(meta.contextText||item.text||"");contextEntries=Array.isArray(meta.contextEntries)?meta.contextEntries:contextEntries}
+      if(meta?.kind==="working_context"){contextText=String(meta.contextText||item.text||"");contextEntries=Array.isArray(meta.contextEntries)?meta.contextEntries:contextEntries;fence=meta.fence||null}
       else userParts.push(String(item.text));
       if(Array.isArray(meta?.userParts)&&!userParts.length)userParts=meta.userParts.map(value=>String(value||""));
     }
     else if(item?.type==="image"&&item.data&&item.mimeType)content.push({type:"image_url",image_url:{url:`data:${item.mimeType};base64,${item.data}`}});
     else if(item?.type==="resource_link"&&item.uri)content.push({type:"text",text:`Attached resource: ${item.name||item.uri} (${fileUriPath(item.uri)??item.uri})`});
   }
-  return attachNativePromptProvenance({role:"user",content:content.length===1&&content[0].type==="text"?content[0].text:content},{userParts,contextText,contextEntries});
+  return attachNativePromptProvenance({role:"user",content:content.length===1&&content[0].type==="text"?content[0].text:content},{userParts,contextText,contextEntries,...(fence?{fence}:{})});
 }
 
 const SUPERSEDED_WORKING_CONTEXT="Trebell prior generated working context omitted because a newer Trebell working-context packet supersedes it.";
@@ -150,7 +150,8 @@ function coolSupersededWorkingContext(messages=[],replacementEntries=[]){
     const meta=message[NATIVE_PROMPT_PROVENANCE],contextText=String(meta?.contextText||""),oldEntries=Array.isArray(meta?.contextEntries)?meta.contextEntries:[];
     if(!oldEntries.length)return message;
     const retained=oldEntries.filter(entry=>!replacementKeys.has(contextEntryKey(entry))),removed=oldEntries.length-retained.length;if(!removed)return message;
-    const replacement=retainedWorkingContext(retained);
+    // A fenced packet (contextualAgentPrompt) stays fenced, so the user's request still follows the closed block and its label.
+    const replacement=meta.fence?String(meta.fence.before||"")+retainedWorkingContext(retained)+String(meta.fence.after||""):retainedWorkingContext(retained);
     if(replacement.length>=contextText.length)return message;
     let replaced=false,content=message.content;
     if(typeof content==="string"){

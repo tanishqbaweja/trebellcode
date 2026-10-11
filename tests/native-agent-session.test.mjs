@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread, openAiServerCompactionArmTokens } from "../src/native-agent-session.mjs";
 import { NativeToolOutputStore } from "../src/native-tool-output-store.mjs";
-import { agentToolLifecycle } from "../src/agent-relay.mjs";
+import { agentToolLifecycle, contextualAgentPrompt } from "../src/agent-relay.mjs";
 import { attachNativePromptProvenance } from "../src/native-request-metrics.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
@@ -487,6 +487,34 @@ test("Native session chains OpenAI cache diagnostics only within the same provid
   session.setProvider("anthropic");
   await session.prompt([{type:"text",text:"after provider switch"}]);
   assert.equal(Object.prototype.hasOwnProperty.call(requests[5],"promptCacheComparisonResponseId"),false);
+});
+
+test("Native session keeps a cooled working context fenced when the provider gets the fenced envelope",async()=>{
+  // Providers off the OpenAI Responses API get Trebell's fenced envelope; a superseded packet in an earlier user message is
+  // replaced by a shorter one, which stays inside the fence and before the "User request:" label.
+  const requests=[];let calls=0;
+  const session=new NativeAgentSession({
+    provider:"justworker",model:"claude-opus-4-8",
+    providerTurn:async request=>{requests.push(structuredClone(request));calls++;return {id:"fenced-"+calls,text:"done",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({providerSessionId:"native-fenced-context-cooling",model:"claude-opus-4-8"});
+  const fenced=(text,context)=>contextualAgentPrompt([{type:"text",text}],context,{runtime:"native",provider:"justworker"});
+  await session.prompt(await fenced("first task",{"trebell.repo_evidence":{kind:"untrusted",value:"OLD_REPO "+"x".repeat(3000)},"user.selection":{kind:"application",value:"one-off selection"}}));
+  await session.prompt(await fenced("second task",{"trebell.repo_evidence":{kind:"untrusted",value:"NEW_REPO "+"y".repeat(3000)}}));
+  await session.prompt(await fenced("third task",{"trebell.repo_evidence":{kind:"untrusted",value:"NEWEST_REPO "+"z".repeat(3000)}}));
+  const users=requests[2].messages.filter(message=>message.role==="user");
+  assert.equal(users.length,3);
+  const [retained,omitted,current]=users;
+  for(const message of [retained,omitted,current]){
+    assert.equal(message.content.length,2);
+    assert.ok(message.content[0].text.startsWith("<trebell_context>\nTrebell attached this bounded working context for the user's request"));
+    assert.ok(message.content[0].text.endsWith("\n</trebell_context>\n\nUser request:\n"));
+  }
+  assert.match(retained.content[0].text,/Trebell retained prior working-context sources/);assert.match(retained.content[0].text,/\[application context · user\.selection\]\none-off selection/);
+  assert.doesNotMatch(retained.content[0].text,/OLD_REPO x{100}/);assert.equal(retained.content[1].text,"first task");
+  assert.match(omitted.content[0].text,/prior generated working context omitted/);assert.doesNotMatch(omitted.content[0].text,/NEW_REPO y{100}/);assert.equal(omitted.content[1].text,"second task");
+  assert.match(current.content[0].text,/NEWEST_REPO z{100}/);assert.equal(current.content[1].text,"third task");
 });
 
 test("Native session cools only replaced sources and preserves one-off prior context",async()=>{
