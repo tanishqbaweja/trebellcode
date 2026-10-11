@@ -459,31 +459,35 @@ test("Back leaves a general chat opened while the Diff tab was shown, which keep
   }finally{await harness.close()}
 });
 
-// The text a reader sees in each changed file's name, left to right: the characters drawn inside every clipping box, "…" where an
-// ellipsis stands (after the last character kept, or before the first in a right-to-left box), "▒" for a character drawn only in
-// part, and a space wherever a visible gap parts two drawn pieces.
-function drawnChangedNames(right){
-  return right.locator(".changed-file-row .changed-file-name").evaluateAll(names=>names.map(element=>{
+// The text a reader sees in each changed-file row's name (or, with `part` "path", its name and folder), left to right: the characters
+// drawn inside every clipping box around them (a folder wrapped onto the row's hidden second line is not drawn), "…" for each run the
+// list leaves out and for the browser's own ellipsis at the end of a clipped box, "▒" for a character drawn only in part, and a space
+// wherever a visible gap parts two drawn pieces. Characters are measured one by one (one grapheme at a time), so a wide glyph counts
+// as drawn only when all of it is.
+function drawnChangedNames(right,part="name"){
+  return right.locator(".changed-file-row .changed-file-"+part).evaluateAll(parts=>parts.map(element=>{
     const canvas=document.createElement("canvas").getContext("2d"),row=element.closest(".changed-file-row"),pieces=[];
-    const walker=document.createTreeWalker(element,NodeFilter.SHOW_TEXT);
+    const inside=(rect,clip)=>rect.left>=clip.left-0.5&&rect.right<=clip.right+0.5&&rect.top>=clip.top-0.5&&rect.bottom<=clip.bottom+0.5;
+    const overlaps=(rect,clip)=>rect.right>clip.left+0.5&&rect.left<clip.right-0.5&&rect.bottom>clip.top+0.5&&rect.top<clip.bottom-0.5;
+    const clipOf=start=>{let clip={left:-Infinity,right:Infinity,top:-Infinity,bottom:Infinity};for(let box=start;box&&box!==row;box=box.parentElement){const style=getComputedStyle(box);if(style.overflowX!=="visible"||style.overflowY!=="visible"){const rect=box.getBoundingClientRect();clip={left:Math.max(clip.left,rect.left),right:Math.min(clip.right,rect.right),top:Math.max(clip.top,rect.top),bottom:Math.min(clip.bottom,rect.bottom)}}}return clip};
+    const segmenter=new Intl.Segmenter(undefined,{granularity:"grapheme"}),walker=document.createTreeWalker(element,NodeFilter.SHOW_TEXT);
     for(let node=walker.nextNode();node;node=walker.nextNode()){
       let box=node.parentElement;while(box!==element&&getComputedStyle(box).overflowX==="visible")box=box.parentElement;
-      const style=getComputedStyle(box),own=box.getBoundingClientRect();let clip={left:own.left,right:own.right};
-      for(let outer=box.parentElement;outer&&outer!==row;outer=outer.parentElement)if(getComputedStyle(outer).overflowX!=="visible"){const rect=outer.getBoundingClientRect();clip={left:Math.max(clip.left,rect.left),right:Math.min(clip.right,rect.right)}}
-      const ellipsis=box.scrollWidth>box.clientWidth&&style.textOverflow==="ellipsis",rtl=style.direction==="rtl";
-      canvas.font=style.font;const mark=ellipsis?canvas.measureText("…").width:0;
-      const from=ellipsis&&rtl?own.left+mark:clip.left,to=ellipsis&&!rtl?Math.min(clip.right,own.right-mark):clip.right,shown=[];
-      for(let index=0;index<node.length;index++){
-        const range=document.createRange();range.setStart(node,index);range.setEnd(node,index+1);const rect=range.getBoundingClientRect();
-        if(rect.left>=from-0.5&&rect.right<=to+0.5)shown.push({text:node.data[index],left:rect.left,right:rect.right});
-        else if(!ellipsis&&rect.right>clip.left+0.5&&rect.left<clip.right-0.5)shown.push({text:"▒",left:rect.left,right:rect.right});
+      const style=getComputedStyle(box),own=box.getBoundingClientRect(),clip=clipOf(node.parentElement);
+      const ellipsis=box.scrollWidth>box.clientWidth&&style.textOverflow==="ellipsis";
+      canvas.font=style.font;const mark=ellipsis?canvas.measureText("…").width:0,limit={...clip,right:ellipsis?Math.min(clip.right,own.right-mark):clip.right},shown=[];
+      for(const {segment,index} of segmenter.segment(node.data)){
+        const range=document.createRange();range.setStart(node,index);range.setEnd(node,index+segment.length);const rect=range.getBoundingClientRect();
+        if(!rect.width)continue;
+        if(inside(rect,limit))shown.push({text:segment,left:rect.left,right:rect.right});
+        else if(!ellipsis&&overlaps(rect,clip))shown.push({text:"▒",left:rect.left,right:rect.right});
       }
-      // An ellipsis never replaces the first character of its line: a box too narrow for both shows that character clipped.
-      if(ellipsis&&!shown.length)shown.push({text:"▒",left:own.left,right:own.left});
-      if(ellipsis&&rtl){const first=Math.min(...shown.map(piece=>piece.left));pieces.push({text:"…",left:first-mark,right:first})}
-      if(ellipsis&&!rtl){const last=Math.max(...shown.map(piece=>piece.right));pieces.push({text:"…",left:last,right:last+mark})}
+      // A browser ellipsis never replaces the first character of its line: a box too narrow for both shows that character clipped.
+      if(ellipsis&&!shown.length&&overlaps(own,clip))shown.push({text:"▒",left:own.left,right:own.left});
+      if(ellipsis&&shown.length){const last=Math.max(...shown.map(piece=>piece.right));pieces.push({text:"…",left:last,right:last+mark})}
       pieces.push(...shown);
     }
+    for(const cut of element.querySelectorAll(".changed-file-cut")){const rect=cut.getBoundingClientRect();if(rect.width&&inside(rect,clipOf(cut)))pieces.push({text:"…",left:rect.left,right:rect.right})}
     let text="",edge=null;
     for(const piece of pieces.sort((a,b)=>a.left-b.left)){if(edge!==null&&piece.left-edge>2)text+=" ";text+=piece.text;edge=piece.right}
     return text;
@@ -491,12 +495,14 @@ function drawnChangedNames(right){
 }
 
 test("changed files too long for the Diff list keep the end that tells them apart in view",async({page,request})=>{
-  test.setTimeout(45_000);
+  test.setTimeout(60_000);
   // This checkout's untracked files as they stood when the list cut them all to "artifact_179…", beside long names that share their
-  // start or their end.
+  // start or their end, names that part far from a long shared end, and names shared in full by files in other folders.
   const status=[["??","artifact_1791317470236_d6b22939.png"],["??","artifact_1791317477991_ae1a8b66.png"],["??","artifact_1791317484338_7c659e6b.png"],["??","artifact_1791317494127_7b87f9be.png"],
     ["??","capcut-network-capture/"],["??","goal.md"],["??","google_startups_window.png"],[" M","ui/src/tool-activity.js"],["??","ui/src/tool-activity-summary.js"],[" M","tests/ui-tool-activity.test.mjs"],
-    [" M","src/native-agent-session-recovery.mjs"],["??","src/native-agent-session-recorder.mjs"],[" M","package.json"],[" M","package-lock.json"]];
+    [" M","src/native-agent-session-recovery.mjs"],["??","src/native-agent-session-recorder.mjs"],[" M","package.json"],[" M","package-lock.json"],
+    ["??","visual-audit/workspace-diff-long-names-dark-1280x800.png"],["??","visual-audit/workspace-diff-long-names-light-1280x800.png"],["??","visual-audit/workspace-diff-long-names-dark-1600x980.png"],["??","visual-audit/workspace-diff-long-names-light-1600x980.png"],
+    [" M","packages/alpha/docker-compose.yml"],[" M","packages/beta/docker-compose.yml"],[" M","apps/web/playwright.config.mjs"],[" M","apps/desktop/playwright.config.mjs"],[" M","index.js"],[" M","lib/index.js"]];
   await page.route("**/api/workspace/diff?**",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,status:status.map(([code,path])=>code+" "+path).join("\n"),diff:"diff --git a/goal.md b/goal.md\n--- a/goal.md\n+++ b/goal.md\n@@ -1 +1 @@\n-old\n+new\n",stderr:""})}));
   const {right,top}=await openProjectInspector(page,request,"Workspace long names");
   await top.getByRole("button",{name:"Diff",exact:true}).click();
@@ -509,20 +515,51 @@ test("changed files too long for the Diff list keep the end that tells them apar
     await page.setViewportSize(viewport);await page.evaluate(mode=>{document.documentElement.dataset.mode=mode},mode);
     const tag=mode+"-"+viewport.width+"x"+viewport.height;
     await expect.poll(async()=>(await drawnChangedNames(right)).some(name=>name.includes("…")),tag+": the list is narrow enough to cut names").toBe(true);
-    const drawn=await drawnChangedNames(right),shown=tag+": "+JSON.stringify(drawn);
-    // No row shows half a character, every row reads as its own name and no two read alike.
-    expect(drawn.filter(name=>name.includes("▒")),shown).toEqual([]);
-    expect(new Set(drawn).size,shown).toBe(drawn.length);
+    const drawn=await drawnChangedNames(right),rowsDrawn=await drawnChangedNames(right,"path"),shown=tag+": "+JSON.stringify(rowsDrawn);
+    // No row shows half a character, every name reads as its own, and no two rows read alike, folders included.
+    expect(rowsDrawn.filter(name=>name.includes("▒")),shown).toEqual([]);
+    expect(new Set(rowsDrawn).size,shown).toBe(rowsDrawn.length);
     for(const [index,name] of names.entries())expect(name,tag).toMatch(readAs(drawn[index]));
-    // A cut name keeps its extension, and the end after its ellipsis tells it apart from every other cut name: the four artifacts end in
-    // their own hashes, and the tool-activity files in their own words.
+    // A cut name keeps its extension: the four artifacts end in their own hashes, the tool-activity files in their own words, and the
+    // four screenshots keep where they part ("dark" or "light") as well as their size.
     for(const [index,name] of names.entries())if(/\.\w+$/.test(name))expect(drawn[index],tag+": "+name).toMatch(/\.\w+$/);
-    const ends=drawn.filter(name=>name.includes("…")).map(name=>name.slice(name.lastIndexOf("…")+1));
-    expect(new Set(ends).size,tag+": "+JSON.stringify(ends)).toBe(ends.length);
     for(const index of [0,1,2,3])expect(drawn[index],shown).toMatch(/…\w{6,}\.png$/);
     for(const [index,end] of [[7,/activity\.js$/],[8,/summary\.js$/],[9,/test\.mjs$/]])expect(drawn[index],shown).toMatch(end);
+    for(const [index,mode] of [[14,"dark"],[15,"light"],[16,"dark"],[17,"light"]])expect(drawn[index],shown).toMatch(new RegExp("…"+mode+"….*\\.png$"));
+    // A name another file shares in full shows the folder that tells the two apart beside it, and so does the one at the top's twin.
+    for(const [index,folder] of [[18,/alpha$/],[19,/beta$/],[20,/web$/],[21,/desktop$/],[23,/lib$/]])expect(rowsDrawn[index],shown).toMatch(folder);
+    expect(rowsDrawn[22],shown).toBe("index.js");
     // The row still names the whole path, for the tooltip and for screen readers.
     for(const [index,[,path]] of status.entries())await expect(rows.nth(index).locator("button").first()).toHaveAttribute("aria-label",path);
+    // The row's text is still the path: what the list leaves out is hidden, not removed.
+    for(const [index,[,path]] of status.entries())await expect(rows.nth(index).locator(".changed-file-path")).toHaveText(path);
     await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-long-names-"+tag+".png",fullPage:true});
+    await right.locator(".changed-files").screenshot({animations:"disabled",path:auditDir+"workspace-diff-long-names-list-"+tag+".png"});
   }
+});
+
+test.describe("at three times the pixel density",()=>{
+  test.use({deviceScaleFactor:3});
+  test("wide glyphs in a cut name are drawn whole, with the ellipsis where characters are left out",async({page,request})=>{
+    test.setTimeout(45_000);
+    const status=[["??","设计稿-最终版-第二次修改.png"],["??","设计稿-最终版-第三次修改.png"],["??","résumé-final-version-2026.pdf"],["??","résumé-final-version-2025.pdf"]];
+    await page.route("**/api/workspace/diff?**",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,status:status.map(([code,path])=>code+" "+path).join("\n"),diff:"diff --git a/x b/x\n",stderr:""})}));
+    await page.setViewportSize({width:1280,height:800});
+    const {right,top}=await openProjectInspector(page,request,"Workspace wide glyphs");
+    await top.getByRole("button",{name:"Diff",exact:true}).click();
+    await expect(right.locator(".changed-file-row")).toHaveCount(status.length);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(mode=>{document.documentElement.dataset.mode=mode},mode);
+      await expect.poll(async()=>(await drawnChangedNames(right)).every(name=>name.includes("…")),mode+": the names are cut").toBe(true);
+      const drawn=await drawnChangedNames(right),shown=mode+": "+JSON.stringify(drawn);
+      expect(drawn.filter(name=>name.includes("▒")),shown).toEqual([]);
+      expect(new Set(drawn).size,shown).toBe(drawn.length);
+      expect(drawn[0],shown).toMatch(/…第二次修改\.png$/);expect(drawn[1],shown).toMatch(/…第三次修改\.png$/);
+      expect(drawn[2],shown).toMatch(/^résu.*…2026\.pdf$/u);expect(drawn[3],shown).toMatch(/^résu.*…2025\.pdf$/u);
+      // Nothing is drawn past the row's own box.
+      const overflow=await right.locator(".changed-file-row .changed-file-name").evaluateAll(names=>names.map(name=>name.scrollWidth-name.clientWidth));
+      expect(overflow,shown).toEqual(overflow.map(()=>0));
+      await right.locator(".changed-files").screenshot({animations:"disabled",path:auditDir+"workspace-diff-wide-glyphs-list-"+mode+"-1280x800-x3.png"});
+    }
+  });
 });

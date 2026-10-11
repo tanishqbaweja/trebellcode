@@ -1115,20 +1115,17 @@
 :root:root .context-panel .runtime-trace-row>summary>span{display:inline-block;letter-spacing:0;text-transform:none}
 :root:root .context-panel .runtime-trace-row>summary>span::first-letter{text-transform:uppercase}
 
-/* Changed-file list: the folder hint shows only when there is room for a few characters of it; otherwise it wraps onto a
-   hidden second line instead of leaving a stray letter. */
+/* Changed-file list: the folder hint shows when there is room after the name for a few characters of it (4.5em, or all of a shorter
+   folder such as "lib"); otherwise it wraps onto a hidden second line instead of leaving a stray letter. A folder that tells two
+   same-named files apart (.kept) was cut to fit beside its name (changed-name-fit.js), so it always stays on the first line. */
 :root:root .context-panel .changed-file-path.split{flex-wrap:wrap;height:18px;line-height:18px;row-gap:0;overflow:hidden}
-:root:root .context-panel .changed-file-path.split>.changed-file-dir{min-width:4.5em;line-height:18px}
-/* A name too long for its row is cut in the middle (fileNameParts): its start gives way to an ellipsis first, so its end (the extension,
-   and the part where it differs from the other changed names) stays in view, "artif…d6b22939.png" rather than "artifact_179…".
-   The start keeps two characters, since an ellipsis never replaces the first one. When the row cannot hold that end as well, the end
-   loses characters from its own start, behind the same ellipsis ("a…6b22939.png"), so the extension stays. Both boxes are whole
-   characters wide, so the ellipsis meets the end with no gap and no half glyph shows; the half pixel keeps float error from costing
-   the start its ellipsis. */
-:root:root .context-panel .changed-file-path.split>.changed-file-name.parted{display:flex;min-width:0;max-width:calc(round(down,100%,1ch) + .5px)}
-:root:root .context-panel .changed-file-name.parted>span{overflow:hidden;white-space:nowrap}
-:root:root .context-panel .changed-file-name.parted>.changed-file-lead{flex:0 1 auto;min-width:calc(2ch + .5px);text-overflow:ellipsis}
-:root:root .context-panel .changed-file-name.parted>.changed-file-tail{flex:none;max-width:calc(100% - 2ch - .5px);max-width:round(down,100% - 2ch,1ch);direction:rtl;text-overflow:clip}
+:root:root .context-panel .changed-file-path.split>.changed-file-dir{flex:1 1 4.5em;min-width:0;max-width:max-content;line-height:18px}
+:root:root .context-panel .changed-file-path.split>.changed-file-dir.kept{flex:0 1 auto;text-overflow:clip}
+/* A fitted name is measured to fit its row, so nothing is clipped: each run of characters it leaves out is drawn as one "…" and its
+   text is kept in the row, hidden, so the row's text is still the path. */
+:root:root .context-panel .changed-file-path.split>.changed-file-name.fitted{text-overflow:clip}
+:root:root .context-panel .changed-file-cut::before{content:"…"}
+:root:root .context-panel .changed-file-cut>span{display:none}
 
 /* Files in a narrow inspector (the 520px drawer, a dragged-in docked panel): one column. With no file open the tree takes the
    whole height; with a file open the tree keeps the top third and the viewer gets the full width below it. */
