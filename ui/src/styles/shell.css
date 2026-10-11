@@ -8,6 +8,9 @@
 html[data-theme] body{background:var(--bg0)}
 html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-shell,.main-frame{background:var(--bg0)}
+/* Clipped, never scrolled: a hidden overflow is still a scroll container, and the 720px glow below is wider than a narrow main
+   column, so scrolling a control into view (focus, a test's click) could slide the whole column sideways. */
+.main-frame{overflow:clip}
 .main-frame::before{content:"";position:absolute;top:-150px;left:50%;width:720px;height:340px;transform:translateX(-50%);background:radial-gradient(closest-side,var(--acglow),transparent 70%);opacity:var(--glow-opacity);filter:blur(30px);pointer-events:none;z-index:0}
 .main-frame>.window-bar{position:relative;z-index:1;background:var(--bg0);border-bottom-color:var(--line)}
 .window-bar .window-controls button{color:var(--tx2)}
@@ -189,8 +192,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header .header-control.branch-control span{max-width:140px}
 .workspace-header .header-control.stop-control{color:var(--err)}
 .workspace-header .header-control.stop-control:hover{background:var(--errt);color:var(--err)}
-.workspace-header .workspace-header-actions>:is(.header-control:not(.icon-only),.open-in-wrap)+.header-control.icon-only{position:relative;margin-left:9px}
-.workspace-header .workspace-header-actions>:is(.header-control:not(.icon-only),.open-in-wrap)+.header-control.icon-only::before{content:"";position:absolute;left:-7px;top:6px;bottom:6px;width:1px;background:var(--line)}
+/* A line parts the labelled actions from the icon toggles: it goes before the first toggle the row shows, when a labelled action
+   shows before it. Folded actions (data-folded, see the narrow-header rules below) count as neither. */
+.workspace-header .workspace-header-actions>:is(.header-control:not(.icon-only),.open-in-wrap):not([data-folded])~.header-control.icon-only:not([data-folded]):not(.header-control.icon-only:not([data-folded])~*){position:relative;margin-left:9px}
+.workspace-header .workspace-header-actions>:is(.header-control:not(.icon-only),.open-in-wrap):not([data-folded])~.header-control.icon-only:not([data-folded]):not(.header-control.icon-only:not([data-folded])~*)::before{content:"";position:absolute;left:-7px;top:6px;bottom:6px;width:1px;background:var(--line)}
 .workspace-header .open-in-picker{height:28px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--bg2)}
 .workspace-header .open-in-picker>button{gap:6px;padding:0 9px;color:var(--tx1);font-size:11.5px}
 .workspace-header .open-in-picker>button:hover{background:var(--bg3);color:var(--tx0)}
@@ -622,18 +627,20 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    then header-fit.js measures the title and, while it shows less than a readable width, sets data-fit: 1 drops the labels of the
    labelled actions, 2 also the project name and folds several linked pull requests into the first one's chip ("#482 +1", as the
    sidebar row reads), 3 also hides the theme and palette buttons (the palette, Settings and the sidebar's search reach both), 4
-   leaves the pull request chip its icon and how many are linked, and 5 folds every action but Stop and the inspector toggle
-   into the More actions menu. Each control keeps its tooltip and accessible name. */
+   leaves the pull request chip its icon and how many are linked, and 5 shows the More actions menu while actions fold into it
+   one at a time from the end of the row (each one header-fit.js marks data-folded; Stop and the inspector toggle never fold).
+   Each control keeps its tooltip and accessible name. */
 .workspace-header .workspace-breadcrumb{flex:1 1 auto}
 .workspace-header .project-crumb:not(.sidebar-reopen){flex:0 1000 auto;min-width:calc(39px + 4ch)}
 .workspace-header .thread-title-button{flex:0 1 auto;min-width:0}
 .workspace-header .thread-title-button strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control){width:30px;padding:0;justify-content:center}
 .workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control)>span{display:none}
-/* The row's own picker; the copy in the More actions menu keeps its label. */
+/* The row's own picker; the copy in the More actions menu keeps its label. The icon-only select hides its editor's name over
+   the light theme's !important select color, which would otherwise show the name's first letters beside the chevron. */
 .workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>.open-in-wrap .open-in-picker>button{width:28px;padding:0;justify-content:center}
 .workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>.open-in-wrap .open-in-picker>button>span{display:none}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>.open-in-wrap .open-in-picker>select{width:24px;min-width:0;padding:0;color:transparent}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>.open-in-wrap .open-in-picker>select{width:24px;min-width:0;padding:0;color:transparent!important}
 .workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .project-crumb:not(.sidebar-reopen){width:30px;min-width:30px;padding:0;justify-content:center}
 .workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .project-crumb:not(.sidebar-reopen)>span{display:none}
 .workspace-header:is([data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>:is(.theme-toggle,.palette-control){display:none}
@@ -645,10 +652,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header:is([data-fit="4"],[data-fit="5"]) .header-pr>.header-pr-count{display:inline}
 .workspace-header .header-overflow{position:relative;display:none;flex:none}
 .workspace-header[data-fit="5"] .header-overflow{display:flex}
-.workspace-header[data-fit="5"] .workspace-header-actions>:is(.branch-control,.open-in-wrap,.script-control,.review-control,.terminal-control,.goal-control){display:none}
-/* Stop keeps the separator the icon toggles had beside it. */
-.workspace-header[data-fit="5"] .workspace-header-actions>.stop-control~.panel-control{position:relative;margin-left:9px}
-.workspace-header[data-fit="5"] .workspace-header-actions>.stop-control~.panel-control::before{content:"";position:absolute;left:-7px;top:6px;bottom:6px;width:1px;background:var(--line)}
+/* A folded action leaves the row for the menu; the menu lists only the folded ones (and the theme and palette buttons). */
+.workspace-header .workspace-header-actions>[data-folded]{display:none}
+.workspace-header .header-overflow-menu>[data-fold]:not([data-folded]){display:none}
 /* The menu opens under its button, toward the conversation, so it stays inside the main column. While it is open the header
    rises above the composer, the terminal drawer and the find bar it would otherwise open under. */
 .chat-workspace .workspace-header:has(.header-overflow-menu){z-index:80}

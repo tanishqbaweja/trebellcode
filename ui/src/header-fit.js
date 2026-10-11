@@ -3,13 +3,18 @@
 // action and the Open-in picker) go icon-only, then the project crumb keeps only its icon while several linked pull requests
 // fold into the first one's chip, then the theme and command palette buttons step aside (the palette, Settings and the sidebar's
 // "Search or jump to" reach both), then the pull request chip keeps only its icon and count (its tooltip names them all), and
-// last every action but Stop and the inspector toggle folds into the More actions menu: beside the desktop window's minimum
-// width and a wide inspector, a row of icons alone leaves the title no room. The header is measured, so any branch name, project
-// action, number of linked pull requests or window width is covered, not only the widths a breakpoint was tuned for. Levels:
-// 0 everything labelled, 1 labelled actions icon-only, 2 the project crumb icon-only and one pull request chip, 3 also without
-// the theme and palette buttons, 4 the pull request chip without numbers, 5 the actions in the More actions menu.
-export const HEADER_FIT_LEVELS=6;
+// last the actions fold into the More actions menu one at a time, from the end of the row, until the title has room: beside the
+// desktop window's minimum width and a wide inspector, a row of icons alone leaves the title no room, and folding no more than
+// the title needs keeps the rest where they were (a turn's Stop button moves an action or two, not the whole row). Stop and
+// the inspector toggle never fold. The header is measured, so any branch name, project action, number of linked pull requests
+// or window width is covered, not only the widths a breakpoint was tuned for. Levels: 0 everything labelled, 1 labelled actions
+// icon-only, 2 the project crumb icon-only and one pull request chip, 3 also without the theme and palette buttons, 4 the pull
+// request chip without numbers, then data-fit 5 with one more action folded at each level.
+export const HEADER_FIT_LEVELS=5;
 export const TITLE_READABLE_WIDTH=80;
+// The foldable actions by their data-fold, the first to fold first. Each one's row control and its More actions menu item
+// carry the same data-fold; a folded one is marked data-folded, which hides it from the row and shows it in the menu.
+export const HEADER_FOLD_ORDER=["goal","terminal","review","script","open-in","source"];
 
 // Whether the title shows enough of itself: all of it, or at least the readable width.
 export function titleHasRoom({clientWidth=0,scrollWidth=0}={},readable=TITLE_READABLE_WIDTH){
@@ -23,16 +28,37 @@ export function fitLevel(apply,titleRoom,levels=HEADER_FIT_LEVELS){
   apply(levels-1);return levels-1;
 }
 
+// The actions the header holds that can fold (data-fold values, each counted once), in the order they fold.
+export function foldableActions(ids,foldOrder=HEADER_FOLD_ORDER){
+  const present=new Set(ids);
+  return foldOrder.filter(id=>present.has(id));
+}
+
+// What a level shows: its data-fit and the actions folded at it. Past the last non-folding level each level folds one more.
+export function fitState(level,foldable=[]){
+  const folded=Math.max(0,Math.min(foldable.length,level-HEADER_FIT_LEVELS+1));
+  return {fit:Math.min(level,HEADER_FIT_LEVELS),folded:foldable.slice(0,folded)};
+}
+
 // Keeps a header element fitted as it resizes (window, sidebar or inspector) and as its contents change (a thread opens, a turn
-// starts and Stop appears, the branch changes, the Open-in picker finds its editors), and once web fonts finish loading. The
-// level is written to data-fit; the returned function stops watching.
-export function observeHeaderFit(header,{titleSelector=".thread-title-button strong"}={}){
+// starts and Stop appears, the branch changes, the Open-in picker finds its editors, the More actions menu opens), and once web
+// fonts finish loading. The level is written to data-fit and the folded actions are marked data-folded; the returned function
+// stops watching.
+export function observeHeaderFit(header,{titleSelector=".thread-title-button strong",foldOrder=HEADER_FOLD_ORDER}={}){
   if(!header)return ()=>{};
-  const apply=level=>{const value=String(level);if(header.dataset.fit!==value)header.dataset.fit=value};
-  const fit=()=>{const title=header.querySelector(titleSelector);fitLevel(apply,()=>!title||titleHasRoom(title))};
+  const fit=()=>{
+    const title=header.querySelector(titleSelector),marked=[...(header.querySelectorAll?.("[data-fold]")||[])];
+    const foldable=foldableActions(marked.map(node=>node.dataset.fold),foldOrder);
+    const apply=level=>{
+      const state=fitState(level,foldable),value=String(state.fit);
+      if(header.dataset.fit!==value)header.dataset.fit=value;
+      for(const node of marked){const folded=state.folded.includes(node.dataset.fold);if(node.hasAttribute("data-folded")!==folded)node.toggleAttribute("data-folded",folded)}
+    };
+    fitLevel(apply,()=>!title||titleHasRoom(title),HEADER_FIT_LEVELS+foldable.length);
+  };
   fit();
   const resize=typeof ResizeObserver==="function"?new ResizeObserver(fit):null;resize?.observe(header);
-  // Only text and elements count: the level itself is an attribute, so writing it never re-runs the fit.
+  // Only text and elements count: the level and the folds are attributes, so writing them never re-runs the fit.
   const contents=typeof MutationObserver==="function"?new MutationObserver(fit):null;contents?.observe(header,{childList:true,subtree:true,characterData:true});
   const fonts=typeof document!=="undefined"?document.fonts:null;fonts?.addEventListener?.("loadingdone",fit);
   return ()=>{resize?.disconnect();contents?.disconnect();fonts?.removeEventListener?.("loadingdone",fit)};

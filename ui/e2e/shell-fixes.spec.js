@@ -465,67 +465,230 @@ for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(
   }finally{await harness.close()}
 });
 
-// The desktop window at its minimum size (1180x800, about 400px of main column beside the 520px inspector) and at 1280x800,
-// with every header action there is: the branch, the Open-in picker, a project action, Review, Stop for a running turn, three
-// linked pull requests and long names. Icon-only actions alone leave the title no room, so at the tightest fit they fold into a
-// More actions menu (Stop and the inspector toggle stay), and the title keeps a readable width.
-for(const [width,height] of [[1180,800],[1280,800]])for(const mode of ["dark","light"])test(`the header names the open thread beside every action at ${width}x${height} with the 520px inspector in ${mode} mode`,async({page})=>{
-  test.setTimeout(45_000);
-  // The desktop app's Open-in picker, with one editor to open the project in.
-  await page.addInitScript(()=>{Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors:[{id:"vscode",label:"Visual Studio Code"}]}),open:async()=>{}}}})});
+// The header fixture for the narrow-window tests below: every header action there is (the branch, the desktop app's Open-in
+// picker, a project action, Review, the terminal and goal toggles), long names, prCount linked pull requests, and Stop while a
+// turn runs. The desktop bridge records each Open in window.__opens and fails one while window.__openFails is set.
+async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,running=true,editors=[{id:"vscode",label:"Visual Studio Code"}]}){
+  await page.addInitScript(editors=>{window.__opens=[];window.__openFails=false;Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors}),open:async(path,id)=>{window.__opens.push(id);if(window.__openFails)throw new Error("Deliberate open failure: the editor could not be started")}}}})},editors);
   const project={id:"header-project",name:"Billing reconciliation service with a very long project name",path:process.cwd(),environmentId:null,branch:"feature/reconcile-refunds-in-the-ledger-export",scripts:[{id:"dev-server",name:"Start the billing dev server",command:"npm run dev -- --port 4173"}],preferredScriptId:"dev-server"};
   const thread={id:"header-thread",name:"Investigate why the nightly billing reconciliation job double counts refunds in the ledger export",preview:"Refunds",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Why are refunds counted twice?"}]},{type:"agentMessage",id:"assistant-1",text:"Looking."}]}]};
-  const prs=Array.from({length:3},(_,index)=>({url:"https://github.com/acme/billing/pull/"+(12345+index),number:12345+index,title:"Refund fix "+index,state:"open"}));
+  const prs=Array.from({length:prCount},(_,index)=>({url:"https://github.com/acme/billing/pull/"+(12345+index),number:12345+index,title:"Refund fix "+index,state:"open"}));
   const harness=await startHarness([thread]);
   try{
     await page.setViewportSize({width,height});
     await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:false,environmentId:null,linkedPullRequests:prs}},project,settings:{appearanceMode:mode},layout:{sidebarWidth:258,rightPanelWidth:520,terminalHeight:330}});
     await openThread(page,thread.name);
-    const header=page.locator(".chat-workspace .workspace-header"),title=header.locator(".thread-title-button strong");
+    const header=page.locator(".chat-workspace .workspace-header");
     await expect(header.locator(".open-in-wrap")).toBeVisible();
     await expect(header.getByRole("button",{name:project.scripts[0].name,exact:true})).toBeVisible();
-    await page.getByTestId("composer").fill("Keep going.");await page.getByTestId("send").click();
-    const stop=header.getByRole("button",{name:"Stop",exact:true});
-    await expect(stop).toBeVisible();
+    if(running)await startTurn(page,header);
     await page.getByTestId("right-panel-toggle").click();
     await expect(page.getByTestId("right-panel")).toBeVisible();await settle(page);
+    return {harness,project,thread,header,title:header.locator(".thread-title-button strong"),more:header.getByRole("button",{name:"More actions",exact:true}),menu:page.getByTestId("header-overflow-menu")};
+  }catch(error){await harness.close();throw error}
+}
+async function startTurn(page,header){
+  await page.getByTestId("composer").fill("Keep going.");await page.getByTestId("send").click();
+  await expect(header.getByRole("button",{name:"Stop",exact:true})).toBeVisible();await settle(page);
+}
+// The order the header's actions fold in (their data-fold), from the end of the row; Stop and the inspector toggle never fold.
+const HEADER_FOLD_ORDER=["goal","terminal","review","script","open-in","source"];
+// The header's foldable actions and the folded ones, in the order they fold, and the title's width (shown and whole) now and
+// with the last folded action given back to the row. The fit folds no more than the title needs, so that width is short of
+// the readable 80px.
+const headerFold=header=>header.evaluate((node,order)=>{
+  const row=node.querySelector(".workspace-header-actions"),title=node.querySelector(".thread-title-button strong");
+  const present=order.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`)),folded=present.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`).hasAttribute("data-folded"));
+  let titleWithOneLess=null;
+  if(folded.length){
+    const last=[...node.querySelectorAll(`[data-fold="${folded.at(-1)}"]`)],fit=node.dataset.fit;
+    for(const control of last)control.removeAttribute("data-folded");
+    if(folded.length===1)node.dataset.fit="4";
+    titleWithOneLess=title.clientWidth;
+    for(const control of last)control.setAttribute("data-folded","");
+    node.dataset.fit=fit;
+  }
+  return {fit:node.dataset.fit,present,folded,title:title.clientWidth,whole:title.scrollWidth,titleWithOneLess};
+},HEADER_FOLD_ORDER);
+// Which of the row's controls draws the line that parts the labelled actions from the icon toggles.
+const headerSeparators=header=>header.locator(".workspace-header-actions>*").evaluateAll(nodes=>nodes.filter(node=>node.offsetParent&&getComputedStyle(node,"::before").content!=="none").map(node=>node.getAttribute("aria-label")||node.className));
+const firstShownToggle=header=>header.locator(".workspace-header-actions>.header-control.icon-only").evaluateAll(nodes=>nodes.find(node=>node.offsetParent)?.getAttribute("aria-label")||null);
+async function expectFoldedOnlyAsNeeded(header,state){
+  expect(state.folded,"folded actions").toEqual(state.present.slice(0,state.folded.length));
+  expect(state.title+1,"title width").toBeGreaterThanOrEqual(Math.min(state.whole,80));
+  if(state.folded.length)expect(state.titleWithOneLess+1,"title width with one action fewer folded").toBeLessThan(Math.min(state.whole,80));
+  for(const id of state.present)await expect(header.locator(`.workspace-header-actions>[data-fold="${id}"]`),id).toBeVisible({visible:!state.folded.includes(id)});
+  await expect(header.getByRole("button",{name:"More actions",exact:true})).toBeVisible({visible:state.folded.length>0});
+}
+
+// The desktop window at its minimum size (1180x800, about 400px of main column beside the 520px inspector) and at 1280x800,
+// with every header action, a running turn, three linked pull requests and long names. Icon-only actions alone leave the title
+// no room, so actions fold into a More actions menu one at a time from the end of the row, only as many as the title needs
+// (Stop and the inspector toggle stay), and the title keeps a readable width. The menu lists the folded ones.
+for(const [width,height] of [[1180,800],[1280,800]])for(const mode of ["dark","light"])test(`the header names the open thread beside every action at ${width}x${height} with the 520px inspector in ${mode} mode`,async({page})=>{
+  test.setTimeout(45_000);
+  const {harness,project,header,title,more,menu}=await openHeaderFixture(page,{width,height,mode});
+  try{
     // The inspector keeps the person's 520px; the main column is what is left of the window.
     expect(Math.round((await page.getByTestId("right-panel").boundingBox()).width)).toBe(520);
     expect(Math.round((await header.boundingBox()).width)).toBe(width-258-520);
     await expect(title).toBeVisible();
-    expect((await title.boundingBox()).width).toBeGreaterThanOrEqual(80);
     const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-    // Stop and the inspector toggle stay in the header, beside the menu that holds the rest.
-    await expect(stop).toBeVisible();await expect(page.getByTestId("right-panel-toggle")).toBeVisible();
-    const more=header.getByRole("button",{name:"More actions",exact:true});
-    await expect(more).toBeVisible();await expect(more).toHaveAttribute("aria-expanded","false");
-    for(const name of ["Review","Toggle terminal","Thread goal","Command palette",project.scripts[0].name])await expect(header.getByRole("button",{name,exact:true}),name).toBeHidden();
-    await expect(header.locator(".branch-control")).toBeHidden();await expect(header.locator(".workspace-header-actions>.open-in-wrap")).toBeHidden();
+    const state=await headerFold(header);
+    expect(state.fit).toBe("5");expect(state.present).toEqual(HEADER_FOLD_ORDER);
+    await expectFoldedOnlyAsNeeded(header,state);
+    // Stop and the inspector toggle stay in the header, beside the menu that holds what folded; the first toggle still shown
+    // keeps the line that parts it from the labelled actions.
+    await expect(header.getByRole("button",{name:"Stop",exact:true})).toBeVisible();await expect(page.getByTestId("right-panel-toggle")).toBeVisible();
+    await expect(more).toHaveAttribute("aria-expanded","false");
+    expect(await headerSeparators(header)).toEqual([await firstShownToggle(header)]);
+    for(const name of ["Command palette",mode==="dark"?"Switch to light mode":"Switch to dark mode"])await expect(header.getByRole("button",{name,exact:true}),name).toBeHidden();
     await page.screenshot({path:join(shotsDir,`header-overflow-${mode}-${width}x${height}.png`),animations:"disabled"});
-    // The menu lists every folded action in the header's order, inside the main column.
+    // The menu lists the folded actions in the header's order, then the theme and palette buttons, inside the main column.
     await more.click();await expect(more).toHaveAttribute("aria-expanded","true");
-    const menu=page.getByTestId("header-overflow-menu");
     await expect(menu).toBeVisible();
-    await expect(menu.locator(":scope>button")).toHaveText(["Source control"+project.branch,project.scripts[0].name,"Review","Terminal","Thread goal",mode==="dark"?"Switch to light mode":"Switch to dark mode","Command paletteCtrl+K"]);
-    await expect(menu.locator(".open-in-wrap")).toBeVisible();await expect(menu.getByLabel("Choose external editor")).toHaveValue("vscode");
+    const labels={source:"Source control"+project.branch,script:project.scripts[0].name,review:"Review",terminal:"Terminal",goal:"Thread goal"};
+    const rowOrder=["source","open-in","script","review","terminal","goal"];
+    await expect(menu.locator(":scope>button:visible")).toHaveText([...rowOrder.filter(id=>state.folded.includes(id)&&labels[id]).map(id=>labels[id]),mode==="dark"?"Switch to light mode":"Switch to dark mode","Command paletteCtrl+K"]);
+    await expect(menu.locator(".open-in-wrap")).toBeVisible({visible:state.folded.includes("open-in")});
     const box=await menu.boundingBox(),column=await header.boundingBox();
     expect(box.x).toBeGreaterThanOrEqual(column.x);expect(box.x+box.width).toBeLessThanOrEqual(column.x+column.width+1);
     await page.screenshot({path:join(shotsDir,`header-overflow-menu-${mode}-${width}x${height}.png`),animations:"disabled"});
     // Escape closes it and puts focus back on its button; a chosen action runs and closes it.
     await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await expect(more).toBeFocused();
-    await more.click();await menu.getByRole("button",{name:"Terminal"}).click();
-    await expect(page.getByTestId("drawer")).toBeVisible();await expect(menu).toHaveCount(0);
-    await more.click();await expect(menu.getByRole("button",{name:"Terminal"})).toHaveAttribute("aria-pressed","true");
-    await menu.getByRole("button",{name:"Command palette"}).click();
+    if(state.folded.includes("terminal")){
+      await more.click();await menu.getByRole("button",{name:"Terminal"}).click();
+      await expect(page.getByTestId("drawer")).toBeVisible();await expect(menu).toHaveCount(0);
+      await more.click();await expect(menu.getByRole("button",{name:"Terminal"})).toHaveAttribute("aria-pressed","true");
+    }else await more.click();
+    await menu.getByRole("button",{name:"Command palette"}).click();await expect(menu).toHaveCount(0);
     await expect(page.getByPlaceholder(/Search commands/i)).toBeVisible();await page.keyboard.press("Escape");
     // A click outside closes it too.
     await more.click();await expect(menu).toBeVisible();await page.mouse.click(column.x+column.width/2,400);await expect(menu).toHaveCount(0);
     // Closing the inspector gives the actions back to the row, and the menu goes.
     await page.getByTestId("right-panel-toggle").click();await settle(page);
     expect(Number(await header.getAttribute("data-fit"))).toBeLessThan(5);
-    await expect(more).toBeHidden();
+    await expect(more).toBeHidden();await expect(header.locator("[data-folded]")).toHaveCount(0);
     for(const name of ["Review","Stop","Toggle terminal","Thread goal",project.scripts[0].name])await expect(header.getByRole("button",{name,exact:true}),name).toBeVisible();
     await expect(header.locator(".branch-control")).toBeVisible();await expect(header.locator(".workspace-header-actions>.open-in-wrap")).toBeVisible();
+  }finally{await harness.close()}
+});
+
+// A turn's Stop button is one more control in the row. At 1280x800 with the 520px inspector the idle header has room for every
+// action, so when a turn starts the row folds only what Stop displaces (an action or two, the actions still in the row stay put),
+// and the turn ending gives them back. Before, the last fit level folded every action at once, so each turn moved six actions
+// into the menu and back.
+for(const mode of ["dark","light"])test(`a turn's Stop button folds only the header actions it displaces at 1280x800 with the 520px inspector in ${mode} mode`,async({page})=>{
+  test.setTimeout(40_000);
+  const {harness,thread,header,more}=await openHeaderFixture(page,{width:1280,mode,prCount:0,running:false});
+  const clip=async()=>{const box=await header.boundingBox();return {x:box.x,y:0,width:box.width,height:box.y+box.height}};
+  const shownActions=()=>header.locator(".workspace-header-actions>*").evaluateAll(nodes=>nodes.filter(node=>node.offsetParent).map(node=>node.getAttribute("aria-label")||node.getAttribute("title")||node.className));
+  try{
+    await page.mouse.move(500,420);
+    const idle=await headerFold(header),idleShown=await shownActions();
+    await expectFoldedOnlyAsNeeded(header,idle);
+    await page.screenshot({path:join(shotsDir,`header-turn-idle-${mode}-1280x800.png`),animations:"disabled",clip:await clip()});
+    await startTurn(page,header);
+    // Stop moves at most two of the row's actions into the menu: the room it takes, and the More actions button's.
+    const runningShown=await shownActions();
+    expect(idleShown.filter(action=>!runningShown.includes(action)).length,`row before: ${idleShown.join(", ")}; while the turn runs: ${runningShown.join(", ")}`).toBeLessThanOrEqual(2);
+    const running=await headerFold(header);
+    await expectFoldedOnlyAsNeeded(header,running);
+    // What was folded stays folded.
+    expect(running.folded.slice(0,idle.folded.length)).toEqual(idle.folded);
+    expect(await headerSeparators(header)).toEqual([await firstShownToggle(header)]);
+    await expect(more).toBeVisible({visible:running.folded.length>0});
+    // The row's icon-only editor select shows its chevron alone, in either theme.
+    expect(Number(running.fit)).toBeGreaterThanOrEqual(1);
+    expect(await header.locator(".workspace-header-actions>.open-in-wrap select").evaluate(node=>getComputedStyle(node).color)).toBe("rgba(0, 0, 0, 0)");
+    await page.screenshot({path:join(shotsDir,`header-turn-running-${mode}-1280x800.png`),animations:"disabled",clip:await clip()});
+    harness.push("turn/completed",{threadId:thread.id,turn:{id:"turn-live",status:"completed",completedAt:now()}});
+    await expect(header.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);await settle(page);
+    expect(await shownActions()).toEqual(idleShown);
+    expect((await headerFold(header)).folded).toEqual(idle.folded);
+  }finally{await harness.close()}
+});
+
+// A turn that ends while the More actions menu is open gives Stop's room back to the row, so the last action folded returns to
+// it and leaves the menu, which stays open with the rest. Keyboard focus on that action's menu item moves to the menu's button
+// instead of falling off the page.
+test("a turn ending while the More actions menu is open gives one action back to the row and keeps focus in the menu at 1180x800",async({page})=>{
+  test.setTimeout(40_000);
+  const {harness,thread,header,more,menu}=await openHeaderFixture(page,{width:1180});
+  try{
+    const running=await headerFold(header);
+    expect(running.folded).toEqual(HEADER_FOLD_ORDER);
+    await more.click();await expect(menu).toBeVisible();
+    const source=menu.getByRole("button",{name:/^Source control/});
+    await source.focus();await expect(source).toBeFocused();
+    harness.push("turn/completed",{threadId:thread.id,turn:{id:"turn-live",status:"completed",completedAt:now()}});
+    await expect(header.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);await settle(page);
+    const ended=await headerFold(header);
+    await expectFoldedOnlyAsNeeded(header,ended);
+    expect(ended.folded).toEqual(HEADER_FOLD_ORDER.slice(0,-1));
+    await expect(menu).toBeVisible();await expect(source).toBeHidden();
+    await expect(more).toBeFocused();
+    await expect(menu.locator(":scope>button:visible").first()).toHaveText("Start the billing dev server");
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await expect(more).toBeFocused();
+  }finally{await harness.close()}
+});
+
+// The More actions menu's Open-in picker is the header's own: an editor chosen in either is the one both open, Open closes the
+// menu like its other actions, and a failed Open is reported once the menu has closed (the app's action error, as the menu's
+// other actions report theirs) instead of over the menu's next items. The row's picker still shows its own failure beside it.
+// A click inside the menu never slides the narrow main column sideways under the frame's glow.
+for(const mode of ["dark","light"])test(`the More actions menu opens the editor the header's picker chose and reports a failed Open at 1180x800 in ${mode} mode`,async({page})=>{
+  test.setTimeout(45_000);
+  const {harness,header,more,menu}=await openHeaderFixture(page,{width:1180,mode,editors:[{id:"vscode",label:"Visual Studio Code"},{id:"cursor",label:"Cursor"}]});
+  const preferred=()=>page.evaluate(()=>localStorage.getItem("trebell.preferredEditor"));
+  const opens=()=>page.evaluate(()=>window.__opens);
+  const frameScroll=()=>page.evaluate(()=>{const frame=document.querySelector(".main-frame");return frame.scrollLeft+frame.scrollTop});
+  const rowPicker=header.locator(".workspace-header-actions>.open-in-wrap"),toast=page.getByTestId("app-action-error");
+  const togglePanel=async()=>{await page.getByTestId("right-panel-toggle").click();await settle(page)};
+  try{
+    await expect(rowPicker).toBeHidden();
+    await more.click();await expect(menu).toBeVisible();
+    const select=menu.getByLabel("Choose external editor");
+    await expect(select).toHaveValue("vscode");
+    // Choosing an editor is a setting, not an action: the menu stays open. The header's own picker has the choice too.
+    await select.selectOption("cursor");
+    await expect(menu).toBeVisible();expect(await preferred()).toBe("cursor");
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    await togglePanel();
+    await expect.soft(rowPicker.getByLabel("Choose external editor"),"the row's picker after the menu chose Cursor").toHaveValue("cursor");
+    await togglePanel();await expect(rowPicker).toBeHidden();
+    // Open runs from the menu and closes it, without sliding the main column.
+    await more.click();await expect(select).toHaveValue("cursor");
+    const before=await header.boundingBox();
+    await menu.getByRole("button",{name:"Open",exact:true}).click();
+    expect.soft(await frameScroll(),"the main column's scroll after a click in the menu").toBe(0);expect.soft((await header.boundingBox()).x).toBe(before.x);
+    await expect(menu).toHaveCount(0);
+    await expect.poll(opens).toEqual(["cursor"]);
+    // A failed Open: the menu has closed, the app names what failed, and nothing is left over the menu's items.
+    await page.evaluate(()=>{window.__openFails=true});
+    await more.click();await menu.getByRole("button",{name:"Open",exact:true}).click();
+    await expect(menu).toHaveCount(0);
+    await expect(toast).toHaveText("Could not open in Cursor: Deliberate open failure: the editor could not be started");
+    await expect(page.locator(".open-in-error")).toHaveCount(0);
+    expect(await frameScroll()).toBe(0);
+    await page.screenshot({path:join(shotsDir,`header-overflow-open-failed-${mode}-1180x800.png`),animations:"disabled"});
+    await more.click();await expect(menu).toBeVisible();
+    const covered=await menu.locator(":scope>button:visible").evaluateAll(items=>items.filter(item=>{const box=item.getBoundingClientRect();return !item.contains(document.elementFromPoint(box.x+box.width/2,box.y+box.height/2))}).map(item=>item.textContent));
+    expect(covered).toEqual([]);
+    await page.screenshot({path:join(shotsDir,`header-overflow-menu-after-failed-open-${mode}-1180x800.png`),animations:"disabled"});
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    // Back in the row, the header's picker has the same editor, and its own failure shows beside it.
+    await togglePanel();
+    // Icon-only while the row is tight, the button is named by its tooltip.
+    const rowOpen=rowPicker.locator(".open-in-picker>button");
+    await expect(rowPicker).toBeVisible();await expect(rowPicker.getByLabel("Choose external editor")).toHaveValue("cursor");
+    await expect(rowOpen).toHaveAttribute("title","Open in Cursor");
+    await rowOpen.click();
+    await expect(rowPicker.getByRole("alert")).toHaveText("Deliberate open failure: the editor could not be started");
+    await page.evaluate(()=>{window.__openFails=false});
+    await rowOpen.click();
+    await expect(rowPicker.getByRole("alert")).toHaveCount(0);
+    await expect.poll(opens).toEqual(["cursor","cursor","cursor","cursor"]);expect(await preferred()).toBe("cursor");
   }finally{await harness.close()}
 });
 

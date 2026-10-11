@@ -283,7 +283,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // card says it is loading, so the head shows no "0" beside that.
   const counted=(list,name,count)=>listCount(list,{loading,error:errors[name],count});
   const layerCount=counted(data.config&&(data.config.layers||[]),"config/read");
-  // The app reads the skills list, not this page. A failure names the load, or the refresh when an earlier list is still shown.
+  // The app reads the skills list, not this page. A failure names the load, or the refresh when an earlier list is still shown
+  // (only this workspace's: the app drops another workspace's list as it reads this one).
   const skillsFailure=skillsLoad?.status==="failed"?failureText(skills.length?"Could not refresh skills":"Could not load skills",skillsLoad.error):"";
 
   async function reloadMcp(){

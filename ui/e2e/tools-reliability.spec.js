@@ -178,10 +178,11 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // A Codex app-server for the Tools page whose MCP server list (the slow read: Codex starts the servers before it answers) can be
 // held, answered with one server or none, or failed. The other lists answer at once, full or empty. With `holdInit` the
 // handshake waits too, so the app stays connecting until `releaseInit()`. The skills list (which the app reads for the composer
-// and the Tools page) answers `control.skills` as it stands when it answers: "empty", "listed" (one skill) or "fail", and waits
-// while `holdSkills` is set, until `releaseSkills()`.
-async function startHeldMcpFixture(){
-  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",holdSkills:false,heldSkills:[],skillReads:0};
+// and the Tools page) answers `control.skills` as it stands when it answers: "empty", "listed" (one skill) or "fail", or what
+// `control.skillsByCwd` names for the workspace read, and waits while `holdSkills` is set, until `releaseSkills()`. It lists
+// `threads` and resumes them.
+async function startHeldMcpFixture({threads=[]}={}){
+  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[]};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
   const skill={name:"release-notes",description:"Draft release notes from merged pull requests",path:"/home/test/.codex/skills/release-notes/SKILL.md",scope:"user",enabled:true,interface:{displayName:"Release notes"}};
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
@@ -197,17 +198,22 @@ async function startHeldMcpFixture(){
         return;
       }
       if(message.method==="skills/list"){
-        control.skillReads++;
-        const answer=()=>control.skills==="fail"?send({error:{code:-32000,message:"Deliberate skills list failure"}}):send({result:{data:[{cwd:process.cwd(),skills:control.skills==="listed"?[skill]:[],errors:[]}]}});
+        const cwd=message.params?.cwds?.[0]||process.cwd();control.skillReads++;control.skillCwds.push(cwd);
+        const answer=()=>{const mode=control.skillsByCwd[cwd]||control.skills;return mode==="fail"?send({error:{code:-32000,message:"Deliberate skills list failure"}}):send({result:{data:[{cwd,skills:mode==="listed"?[skill]:[],errors:[]}]}})};
         if(control.holdSkills)control.heldSkills.push(answer);else answer();
         return;
       }
+      if(message.method==="thread/resume"&&threads.length){send({result:{thread:{...(threads.find(thread=>thread.id===message.params?.threadId)||threads[0]),turns:[]}}});return}
       if(message.method==="initialize"&&control.holdInit){control.heldInit.push(()=>send({result:{userAgent:"tools-held-list-fixture"}}));return}
       const full=control.lists==="full";let result={};
       if(message.method==="initialize")result={userAgent:"tools-held-list-fixture"};
       else if(message.method==="permissionProfile/list")result={data:full?[{id:"workspace-write",description:"Edit files in the workspace",allowed:true}]:[]};
       else if(message.method==="experimentalFeature/list")result={data:full?[{name:"step_model_switching",displayName:"Step model switching",description:"Switch models between steps of a running turn.",enabled:false}]:[]};
-      else if(["thread/list","threadSection/list","collaborationMode/list","app/list","hooks/list","plugin/share/list","thread/loaded/list"].includes(message.method))result={data:[],nextCursor:null};
+      else if(message.method==="thread/list")result={data:threads.map(thread=>({...thread,turns:[]})),nextCursor:null};
+      else if(["threadSection/list","collaborationMode/list","app/list","hooks/list","plugin/share/list","thread/loaded/list"].includes(message.method))result={data:[],nextCursor:null};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/continuity/get")result={continuity:null};
+      else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
       else if(message.method==="plugin/list")result={marketplaces:[]};
       else if(message.method==="app/installed")result={apps:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
@@ -230,12 +236,16 @@ async function startHeldMcpFixture(){
     releaseSkills(){control.holdSkills=false;for(const answer of control.heldSkills.splice(0))answer()},
     async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
-async function openTools(page,wsUrl,{connected=true,cwd=process.cwd()}={}){
+// projects are the saved projects (activeProjectId the open one); opening one answers with it, as the server does.
+async function openTools(page,wsUrl,{connected=true,cwd=process.cwd(),projects=[],activeProjectId=null,threadMeta={}}={}){
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd,platform:process.platform,version:"tools-held-list-fixture",activeEnvironmentId:null,activeEnvironment:null}));
-  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{}}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...(activeProjectId?{activeProjectId}:{})},projects,threadMeta}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
-  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/projects$/,route=>{
+    const opened=route.request().method()==="POST"?projects.find(project=>project.path===route.request().postDataJSON()?.path):null;
+    return json(route,{projects,...(opened?{project:opened}:{})});
+  });
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
   await page.goto("/");
@@ -517,4 +527,52 @@ test("Tools Skills card says no workspace is open, rather than loading or claimi
     await expect(skills.locator(".capability-card-head em")).toHaveCount(0);
     expect(fixture.control.skillReads).toBe(0);
   }finally{await fixture.close()}
+});
+
+// Opening a thread that lives in another workspace makes the app read that workspace's skills. While that read is out, and after
+// it fails, the Skills card shows the new workspace's state alone: the list read for the workspace left behind is not shown (or
+// counted) as this one's, and the failure is the load's, not a refresh's.
+test("Tools Skills card drops the previous workspace's skills while the next workspace's list loads or fails",async({page})=>{
+  test.setTimeout(45_000);
+  const workspaceA=process.cwd(),workspaceB=process.cwd()+(process.platform==="win32"?"\\":"/")+"ui";
+  const thread={id:"workspace-b-thread",name:"Work in workspace B",preview:"B",cwd:workspaceB,model:"test/coding-fast",status:{type:"idle"},createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
+  const projects=[{id:"workspace-a",name:"Workspace A",path:workspaceA,environmentId:null},{id:"workspace-b",name:"Workspace B",path:workspaceB,environmentId:null}];
+  const fixture=await startHeldMcpFixture({threads:[thread]});fixture.release();
+  fixture.control.skillsByCwd={[workspaceA]:"listed",[workspaceB]:"fail"};
+  const shoot=async name=>{
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+  };
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.route(/\/api\/thread-meta(?:\?|$)/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projectless:false,environmentId:null})}));
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:false})}));
+    await openTools(page,fixture.wsUrl,{cwd:workspaceA,projects,activeProjectId:"workspace-a",threadMeta:{[thread.id]:{projectless:false,environmentId:null}}});
+    const skills=page.locator(".capabilities-page .capability-card").filter({has:page.getByText("Skills",{exact:true})}).first();
+    const rows=skills.locator(".skill-list>div"),badge=skills.locator(".capability-card-head em"),failure=skills.locator(".capability-error");
+    const pending=skills.getByText("Loading skills…",{exact:true}),claim=skills.getByText("No skills were discovered for this workspace.",{exact:true});
+    await expect(rows).toHaveText([/Release notes/]);await expect(badge).toHaveText("1");
+    // The thread in workspace B opens; its skills list is held.
+    fixture.control.holdSkills=true;
+    await page.locator(".thread-row .thread-main").filter({hasText:thread.name}).click();
+    await expect.poll(()=>fixture.control.skillCwds.includes(workspaceB)).toBe(true);
+    await page.getByRole("button",{name:"Tools",exact:true}).click();
+    await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible({timeout:10_000});
+    await skills.scrollIntoViewIfNeeded();
+    await expect(pending).toBeVisible();
+    await expect(rows).toHaveCount(0);await expect(badge).toHaveCount(0);await expect(failure).toHaveCount(0);await expect(claim).toHaveCount(0);
+    await shoot("tools-skills-next-workspace-pending");
+    // Workspace B's list fails: the card says its skills could not load, beside no list.
+    fixture.releaseSkills();
+    await expect(failure).toHaveText("Could not load skills: Deliberate skills list failure");
+    await expect(rows).toHaveCount(0);await expect(badge).toHaveCount(0);await expect(pending).toHaveCount(0);await expect(claim).toHaveCount(0);
+    await shoot("tools-skills-next-workspace-failed");
+    // Refresh reads workspace B again; its empty answer is claimed as B's.
+    fixture.control.skillsByCwd[workspaceB]="empty";
+    await page.locator(".capabilities-toolbar button").click();
+    await expect(claim).toBeVisible();await expect(badge).toHaveText("0");await expect(failure).toHaveCount(0);await expect(rows).toHaveCount(0);
+    expect(fixture.control.skillCwds.at(-1)).toBe(workspaceB);
+  }finally{fixture.releaseSkills();await fixture.close()}
 });

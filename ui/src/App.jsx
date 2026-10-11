@@ -17,7 +17,7 @@ import ChatMarkdown from "./components/ChatMarkdown.jsx";
 import RightPanel, { askText } from "./components/RightPanel.jsx";
 import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
-import OpenInPicker from "./components/OpenInPicker.jsx";
+import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx";
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
 import { normalizeKeybindingRules, resolveKeybinding } from "./keybindings.js";
@@ -837,7 +837,8 @@ export default function App(){
   const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
   // Where the skills list stands, so an empty `skills` is claimed as "none discovered" only for an answer that came back empty:
   // "loading" until Codex answers (again while it re-reads), "loaded", "failed" with the error, or "idle" with no workspace to list.
-  const [skillsLoad,setSkillsLoad]=useState({status:"loading",error:null}); const skillsReadRef=useRef(0);
+  // skillsPathRef is the workspace the list in `skills` was read for (undefined for a harness's own inventory).
+  const [skillsLoad,setSkillsLoad]=useState({status:"loading",error:null}); const skillsReadRef=useRef(0); const skillsPathRef=useRef(null);
   const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({threadId:null,supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
   // The model, effort and tier the open Codex thread runs with (thread/resume, thread/settings/updated), and the Codex
   // goal waiting to turn active after its first turn starts.
@@ -1830,6 +1831,9 @@ export default function App(){
     if(agentRuntime!=="codex")return;
     // Only the latest read lands, so an answer for a project left meanwhile (or one a newer read replaced) never overwrites it.
     const read=++skillsReadRef.current,latest=()=>read===skillsReadRef.current;
+    // Another workspace's list is not this one's: it goes (from the Tools page and the composer alike) rather than stand in while
+    // this one loads or after it fails. A re-read of the same workspace keeps its list until the answer replaces it.
+    if(skillsPathRef.current!==(path||null)){skillsPathRef.current=path||null;setSkills([])}
     if(!path){setSkillsLoad({status:"idle",error:null});return}
     setSkillsLoad({status:"loading",error:null});
     const threadId=activeThreadRef.current?.id||null;
@@ -1905,7 +1909,7 @@ export default function App(){
 
   function applyProviderInventory(update={}){
     if(Array.isArray(update.commands))setProviderCommands(update.commands);
-    if(Array.isArray(update.skills)){setSkills(update.skills.filter(skill=>skill?.enabled!==false));setSkillsLoad({status:"loaded",error:null})}
+    if(Array.isArray(update.skills)){skillsPathRef.current=undefined;setSkills(update.skills.filter(skill=>skill?.enabled!==false));setSkillsLoad({status:"loaded",error:null})}
     if(Array.isArray(update.agents)){
       const visible=update.agents.filter(agent=>typeof agent==="string"||agent?.hidden!==true).filter(agent=>typeof agent==="string"?agent:Boolean(agent?.name));
       setProviderAgents(visible);
@@ -4364,6 +4368,11 @@ export default function App(){
   const toggleTerminalPanel=()=>setPanel(panel==="terminal"?null:"terminal");
   const toggleAppearanceMode=()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance");
   const appearanceToggleLabel=resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode";
+  // One Open-in state for the row's picker and the menu's copy, so both open the editor last chosen in either. The menu closes as
+  // Open runs, so a failure there is reported like the menu's other actions, not beside a picker that has gone.
+  const headerOpenIn=useOpenInEditors(section==="chat"||section==="new");
+  const headerOpenInShown=!projectlessMode&&!workspaceRemote&&Boolean(projectPath)&&headerOpenIn.editors.length>0;
+  const openProjectFromMenu=()=>runUserAction(()=>headerOpenIn.open(projectPath),headerOpenIn.active?"Could not open in "+headerOpenIn.active.label:"Could not open externally");
   const sidebarBulkAction=useLatestCallback(bulkAction);
   const sidebarCollapse=useLatestCallback(()=>setSidebarOpen(false));
   // Retry's outcome (the list, or the error again) shows in the sidebar itself.
@@ -4503,24 +4512,26 @@ export default function App(){
               {activeThread?.id&&linkedPullRequests.map((pr,index,all)=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")} aria-label={"Pull request #"+pr.number} title={"Open pull request #"+pr.number+(index===0&&all.length>1?" · also linked: "+all.slice(1).map(other=>"#"+other.number).join(", "):"")}><GitBranch size={11} aria-hidden="true"/><span className="header-pr-number">#{pr.number}</span>{index===0&&all.length>1&&<><span className="header-pr-more" aria-hidden="true">+{all.length-1}</span><span className="header-pr-count" aria-hidden="true">{all.length}</span></>}</button>)}
             </div>
             <div className="workspace-header-actions">
-              {gitInfo?.isGit&&<button className="header-control branch-control" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
-              {!projectlessMode&&!workspaceRemote&&<OpenInPicker path={projectPath}/>}
-              {headerScript&&<button className="header-control script-control" onClick={runHeaderScript} aria-label={headerScript.name} title={headerScript.command}><Play size={13}/><span>{headerScript.name}</span></button>}
-              {activeThread?.id&&gitInfo?.isGit&&<button className="header-control review-control" onClick={reviewFromHeader} aria-label="Review" title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
+              {/* data-fold names the actions header-fit.js folds into the More actions menu when the title needs their room. */}
+              {gitInfo?.isGit&&<button className="header-control branch-control" data-fold="source" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
+              {headerOpenInShown&&<OpenInControl openIn={headerOpenIn} path={projectPath} fold="open-in"/>}
+              {headerScript&&<button className="header-control script-control" data-fold="script" onClick={runHeaderScript} aria-label={headerScript.name} title={headerScript.command}><Play size={13}/><span>{headerScript.name}</span></button>}
+              {activeThread?.id&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} aria-label="Review" title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
               {running&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label="Stop" title="Stop the running turn"><CircleStop size={14}/><span>Stop</span></button>}
-              <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
-              {activeThread?.id&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
+              <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} data-fold="terminal" onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
+              {activeThread?.id&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} data-fold="goal" onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
               <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
               <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={toggleAppearanceMode} aria-label={appearanceToggleLabel} title={appearanceToggleLabel}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
               <button className="header-control icon-only palette-control" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
-              {/* Shown only at the tightest fit, where the row keeps just Stop and the inspector toggle: the rest, in the row's order. */}
+              {/* Shown once actions fold: the folded ones in the row's order, then the theme and palette buttons, which the row has
+                  set aside by then. */}
               <HeaderOverflowMenu items={[
-                gitInfo?.isGit&&{id:"source",Icon:GitBranch,label:"Source control",detail:gitInfo.branch||"detached",onSelect:()=>openRightPanel("source")},
-                !projectlessMode&&!workspaceRemote&&{id:"open-in",node:<OpenInPicker path={projectPath}/>},
-                headerScript&&{id:"script",Icon:Play,label:headerScript.name,title:headerScript.command,onSelect:runHeaderScript},
-                activeThread?.id&&gitInfo?.isGit&&{id:"review",Icon:ShieldCheck,label:"Review",title:"Review uncommitted changes",onSelect:reviewFromHeader},
-                {id:"terminal",Icon:PanelBottom,label:"Terminal",pressed:panel==="terminal",onSelect:toggleTerminalPanel},
-                activeThread?.id&&{id:"goal",Icon:Target,label:"Thread goal",title:goal?.objective||"Set thread goal",pressed:rightPanelOpen&&rightPanelTab==="goal",onSelect:()=>openRightPanel("goal")},
+                gitInfo?.isGit&&{id:"source",fold:"source",Icon:GitBranch,label:"Source control",detail:gitInfo.branch||"detached",onSelect:()=>openRightPanel("source")},
+                headerOpenInShown&&{id:"open-in",fold:"open-in",render:close=><OpenInControl openIn={headerOpenIn} path={projectPath} onOpen={()=>{close();openProjectFromMenu()}}/>},
+                headerScript&&{id:"script",fold:"script",Icon:Play,label:headerScript.name,title:headerScript.command,onSelect:runHeaderScript},
+                activeThread?.id&&gitInfo?.isGit&&{id:"review",fold:"review",Icon:ShieldCheck,label:"Review",title:"Review uncommitted changes",onSelect:reviewFromHeader},
+                {id:"terminal",fold:"terminal",Icon:PanelBottom,label:"Terminal",pressed:panel==="terminal",onSelect:toggleTerminalPanel},
+                activeThread?.id&&{id:"goal",fold:"goal",Icon:Target,label:"Thread goal",title:goal?.objective||"Set thread goal",pressed:rightPanelOpen&&rightPanelTab==="goal",onSelect:()=>openRightPanel("goal")},
                 {id:"appearance",Icon:resolvedMode==="dark"?Sun:Moon,label:appearanceToggleLabel,onSelect:toggleAppearanceMode},
                 {id:"palette",Icon:Command,label:"Command palette",hint:"Ctrl+K",onSelect:()=>setPaletteOpen(true)},
               ]}/>
