@@ -130,8 +130,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   // "unknown", not "nothing found".
   const [browserImportMessage,setBrowserImportMessage]=useState({text:"",error:false,scanFailed:false});
   const [browserImportBusy,setBrowserImportBusy]=useState(false);
+  // The storage card's numbers are the last read that worked. A read that fails says so (storageError), in place of the numbers when
+  // none came yet and under them when a later refresh fails; a cleanup says what it removed, or what failed (storageMessage).
   const [storageInfo,setStorageInfo]=useState(null);
-  const [storageMessage,setStorageMessage]=useState("");
+  const [storageError,setStorageError]=useState("");
+  const [storageMessage,setStorageMessage]=useState({text:"",error:false});
   const [storageBusy,setStorageBusy]=useState(false);
   const [themeDraft,setThemeDraft]=useState(null);
   const [themeMessage,setThemeMessage]=useState("");
@@ -532,12 +535,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   async function loadStorageInfo({strict=false}={}){
     try{
       const info=await api("/api/storage-cleanup");
-      setStorageInfo(info);return info;
+      setStorageInfo(info);setStorageError("");return info;
     }catch(error){
+      setStorageError((storageInfo?"Could not refresh storage use: ":"Could not read storage use: ")+(error?.message||String(error)));
       if(strict)throw error;
-      const fallback=storageInfo||{error:error?.message||String(error)};
-      if(!storageInfo)setStorageInfo(fallback);
-      return fallback;
+      return storageInfo;
     }
   }
   async function saveStorageRetention(key,input){
@@ -553,13 +555,13 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     if(saved)await loadStorageInfo();
   }
   async function runStorageCleanup(){
-    setStorageBusy(true);setStorageMessage("Running safe cleanup…");
+    setStorageBusy(true);setStorageMessage({text:"Running safe cleanup…",error:false});
     try{
       const result=await api("/api/storage-cleanup",{method:"POST",body:{}});
       const worktrees=Number(result.worktrees?.removed)||0,attachments=Number(result.attachments?.removed)||0,terminals=Number(result.terminalHistory?.removed)||0;
-      setStorageMessage(`Removed ${worktrees} managed worktree${worktrees===1?"":"s"}, ${attachments} attachment cache file${attachments===1?"":"s"}, and ${terminals} stopped terminal histor${terminals===1?"y":"ies"}.`);
+      setStorageMessage({text:`Removed ${worktrees} managed worktree${worktrees===1?"":"s"}, ${attachments} attachment cache file${attachments===1?"":"s"}, and ${terminals} stopped terminal histor${terminals===1?"y":"ies"}.`,error:false});
       await loadStorageInfo();
-    }catch(error){setStorageMessage("Cleanup failed: "+error.message)}
+    }catch(error){setStorageMessage({text:"Could not clean up storage: "+(error?.message||String(error)),error:true})}
     finally{setStorageBusy(false)}
   }
   async function loadBrowserImportSources({strict=false}={}){
@@ -872,9 +874,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
             <small>Days · running terminals are never pruned</small>
           </label>
         </div>
-        <p className="provider-note">{storageInfo?.error?storageInfo.error:`${storageInfo?.attachments?.count??0} cached attachment${storageInfo?.attachments?.count===1?"":"s"} · ${formatBytes(storageInfo?.attachments?.bytes||0)} · ${storageInfo?.terminalHistory?.count??0} stopped terminal histor${storageInfo?.terminalHistory?.count===1?"y":"ies"} · ${storageInfo?.worktrees?.managed??0} live managed worktree${storageInfo?.worktrees?.managed===1?"":"s"}`}</p>
-        <div className="provider-key-actions"><button className="setting-action" onClick={runStorageCleanup} disabled={storageBusy}>{storageBusy?"Cleaning…":"Clean up storage now"}</button><button onClick={loadStorageInfo} disabled={storageBusy}><RefreshCw size={12}/> Refresh storage</button></div>
-        {storageMessage&&<p className={/failed|error/i.test(storageMessage)?"provider-status-error":"provider-note"}>{storageMessage}</p>}
+        {storageInfo?<p className="provider-note">{`${storageInfo.attachments?.count??0} cached attachment${storageInfo.attachments?.count===1?"":"s"} · ${formatBytes(storageInfo.attachments?.bytes||0)} · ${storageInfo.terminalHistory?.count??0} stopped terminal histor${storageInfo.terminalHistory?.count===1?"y":"ies"} · ${storageInfo.worktrees?.managed??0} live managed worktree${storageInfo.worktrees?.managed===1?"":"s"}`}</p>:!storageError&&<p className="provider-note">Reading storage use…</p>}
+        {storageError&&<p className="provider-status-error" role="alert">{storageError}</p>}
+        <div className="provider-key-actions"><button className="setting-action" onClick={runStorageCleanup} disabled={storageBusy}>{storageBusy?"Cleaning…":"Clean up storage now"}</button><button onClick={()=>loadStorageInfo()} disabled={storageBusy}><RefreshCw size={12}/> Refresh storage</button></div>
+        {storageMessage.text&&<p className={storageMessage.error?"provider-status-error":"provider-note"} role={storageMessage.error?"alert":"status"}>{storageMessage.text}</p>}
       </div>}
       {settingsSection==="desktop"&&selectedAgentCapabilities.dynamicTools&&desktopTools.computer&&<div className="settings-card"><h3><MonitorCog size={14} aria-hidden="true"/> Computer use</h3><p>The active runtime can use Trebell's Windows desktop tools. Screenshots are read-only; mouse and keyboard control are exposed only when the current thread is in <strong>Full access</strong> mode. This keeps desktop automation explicit instead of silently escalating permissions.</p></div>}
       {settingsSection==="appearance"&&<div className="settings-card theme-settings" {...targetProps("appearance-theme")}><h3><Palette size={14} aria-hidden="true"/> Appearance</h3><p>Appearance controls light/dark behavior. Theme controls the palette independently. Trebell themes and VS Code color-theme JSON can be imported.</p><div className="settings-field" role="group" aria-label="Mode"><span aria-hidden="true">Mode</span><div className="appearance-options">{["system","light","dark"].map(v=><button key={v} {...choiceProps((settings.appearanceMode||"dark")===v,()=>saveSetting({appearanceMode:v}))}>{v}</button>)}</div></div><label>Panel animations <span>{panelAnimationMs} ms</span><input aria-label="Panel animations" type="range" min="0" max="400" step="25" style={{"--fill":panelAnimationMs/4+"%"}} value={panelAnimationMs} onChange={e=>dragPanelAnimation(Number(e.target.value))}/></label><p>Sidebar, right panel and terminal movement uses this duration. Operating-system reduced motion always disables it.</p><div className="settings-field" role="group" aria-label="Theme"><span aria-hidden="true">Theme</span><div className="appearance-options">{[["dark","Trebell"],["midnight","Midnight"],["black","Black"]].map(([value,label])=><button key={value} {...themeChoiceProps(value)}>{label}</button>)}{(settings.customThemes||[]).map(theme=><button key={theme.id} {...themeChoiceProps(theme.id)}>{theme.name}</button>)}</div></div><div className="theme-actions"><button onClick={createTheme}>Create theme</button><button onClick={()=>themeImportRef.current?.click()}>Import JSON</button>{(settings.customThemes||[]).find(theme=>theme.id===settings.appearance)&&<><button onClick={()=>setThemeDraft((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Edit selected</button><button onClick={()=>exportTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Export selected</button><button onClick={()=>removeTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Delete selected</button></>}<input ref={themeImportRef} type="file" accept=".json,application/json" hidden onChange={importThemeFile}/></div>{themeDraft&&<div className="theme-editor"><label>Name<input value={themeDraft.name||""} onChange={e=>setThemeDraft({...themeDraft,name:e.target.value})}/></label><div className="theme-editor-grid"><label>Base appearance<select value={themeDraft.appearance||"dark"} onChange={e=>setThemeDraft({...themeDraft,appearance:e.target.value})}><option value="dark">Dark</option><option value="light">Light</option></select></label><label>Canvas<input type="color" value={themeDraft.canvas||"#0c0f16"} onChange={e=>setThemeDraft({...themeDraft,canvas:e.target.value})}/></label><label>Accent<input type="color" value={themeDraft.accent||"#9c6cff"} onChange={e=>setThemeDraft({...themeDraft,accent:e.target.value})}/></label></div><div className="theme-editor-actions"><button className="setting-action" onClick={saveTheme}>Save & apply</button><button onClick={()=>setThemeDraft(null)}>Close editor</button></div></div>}{themeMessage&&<p className={/failed|error/i.test(themeMessage)?"provider-status-error":"provider-note"}>{themeMessage}</p>}</div>}

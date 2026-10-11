@@ -351,3 +351,56 @@ for(const [mode,width] of [["dark",1280],["light",1280],["dark",900],["light",90
   await page.screenshot({animations:"disabled",path:shots+`theme-long-name-${mode}-${width}.png`});
   await page.locator(".theme-settings").screenshot({animations:"disabled",path:shots+`theme-long-name-card-${mode}-${width}.png`});
 });
+
+for(const mode of MODES)test(`storage requests that fail say what failed and are announced (${mode})`,async({page,request})=>{
+  let readFails=true;
+  await page.route(/\/api\/storage-cleanup$/,route=>route.request().method()==="POST"
+    ?json(route,{error:"Deliberate cleanup failure"},500)
+    :readFails?json(route,{error:"Deliberate storage read failure"},500):route.fallback());
+  await open(page,request,{mode});
+  await nav(page,"Settings").click();
+  await section(page,"Workspace").click();
+  const card=page.locator(".storage-settings");
+  const readError=card.getByRole("alert").filter({hasText:"storage use"});
+  await expect(readError).toHaveText("Could not read storage use: Deliberate storage read failure");
+  await expect(card).not.toContainText("0 cached attachments");
+  const cleanup=card.getByRole("button",{name:"Clean up storage now"});
+  await cleanup.scrollIntoViewIfNeeded();
+  await cleanup.click();
+  const cleanupError=card.getByRole("alert").filter({hasText:"clean up"});
+  await expect(cleanupError).toHaveText("Could not clean up storage: Deliberate cleanup failure");
+  await expect(cleanup).toBeEnabled();
+  await page.screenshot({animations:"disabled",path:shots+`storage-failed-${mode}-1280.png`});
+  await page.setViewportSize({width:900,height:800});
+  await cleanupError.scrollIntoViewIfNeeded();
+  expect(await sideways(page)).toBeLessThanOrEqual(0);
+  await page.screenshot({animations:"disabled",path:shots+`storage-failed-${mode}-900.png`});
+  await page.setViewportSize({width:1280,height:800});
+  // Once a read works, the numbers replace the failure.
+  readFails=false;
+  await card.getByRole("button",{name:"Refresh storage"}).click();
+  await expect(card.locator(".provider-note").filter({hasText:"cached attachment"})).toBeVisible();
+  await expect(readError).toHaveCount(0);
+  // A refresh that fails later keeps the numbers and says the refresh failed.
+  readFails=true;
+  await card.getByRole("button",{name:"Refresh storage"}).click();
+  await expect(card.getByRole("alert").filter({hasText:"refresh"})).toHaveText("Could not refresh storage use: Deliberate storage read failure");
+  await expect(card.locator(".provider-note").filter({hasText:"cached attachment"})).toBeVisible();
+  await page.screenshot({animations:"disabled",path:shots+`storage-refresh-failed-${mode}-1280.png`});
+});
+
+for(const mode of MODES)test(`storage use reads as loading until it comes, not as zeros (${mode})`,async({page,request})=>{
+  let release;const held=new Promise(resolve=>{release=resolve});
+  await page.route(/\/api\/storage-cleanup$/,async route=>{if(route.request().method()==="GET")await held;await route.fallback()});
+  await open(page,request,{mode});
+  await nav(page,"Settings").click();
+  await section(page,"Workspace").click();
+  const card=page.locator(".storage-settings");
+  await expect(card.locator(".provider-note").filter({hasText:"Reading storage use…"})).toBeVisible();
+  await expect(card).not.toContainText("cached attachment");
+  await card.getByRole("button",{name:"Refresh storage"}).scrollIntoViewIfNeeded();
+  await page.screenshot({animations:"disabled",path:shots+`storage-reading-${mode}-1280.png`});
+  release();
+  await expect(card.locator(".provider-note").filter({hasText:"cached attachment"})).toBeVisible();
+  await expect(card).not.toContainText("Reading storage use…");
+});
