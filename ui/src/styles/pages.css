@@ -396,6 +396,8 @@
 :root:root .usage-page .usage-environment-filter>summary{min-width:156px;max-width:240px;display:flex;align-items:center;list-style:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:none}
 :root:root .usage-page .usage-environment-filter>summary::-webkit-details-marker{display:none}
 :root:root .usage-page .usage-environment-filter[open]>summary{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)!important}
+/* Tabbed to, the filter shows the ring the period picker beside it shows (the shared field rule above clears the outline). */
+:root:root .usage-page .usage-environment-filter>summary:focus-visible{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2))!important;box-shadow:0 0 0 3px var(--acsoft)!important;outline:none}
 :root:root .usage-page .usage-environment-filter>div{position:absolute;left:0;right:auto;top:40px;z-index:30;width:260px;max-width:calc(100vw - 48px);display:grid;gap:2px;padding:6px!important;border:1px solid var(--line2)!important;border-radius:12px!important;background:var(--panel)!important;box-shadow:var(--shadow)!important;animation:tb-pop .14s var(--ease-out)}
 :root:root .usage-page .usage-environment-filter>div>button{height:34px;min-height:34px!important;padding:0 10px!important;border:0!important;border-radius:8px!important;background:transparent!important;color:var(--tx1)!important;font-size:12.5px!important;text-align:left;cursor:pointer}
 :root:root .usage-page .usage-environment-filter>div>button:hover{background:var(--bg3)!important}
@@ -913,5 +915,9 @@
    box inside it. */
 :root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):not(.settings-search-box>input):not(.licenses-search>input),select,textarea){background-color:var(--bg1)!important;border-color:var(--line2)!important}
 :root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):not(.settings-search-box>input):not(.licenses-search>input),select,textarea):focus{border-color:var(--ac)!important}
+/* The Usage environment filter is a field too: the same white box as the period picker beside it, and the same accent
+   line when it is focused or open. */
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .usage-page .usage-environment-filter>summary{background-color:var(--bg1)!important;border-color:var(--line2)!important}
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .usage-page :is(.usage-environment-filter>summary:focus-visible,.usage-environment-filter[open]>summary){border-color:var(--ac)!important}
 :root:root[data-mode="light"]:not([data-custom-theme="true"]) .licenses-page .licenses-search{background:var(--bg1)!important;border-color:var(--line2)!important}
 :root:root[data-mode="light"]:not([data-custom-theme="true"]) .licenses-page .licenses-search:focus-within{border-color:var(--ac)!important}

@@ -84,3 +84,35 @@ test("the Usage period picker is named, so a screen reader says what it picks",a
   await expect(page.locator(".usage-grid .capability-card-head em").first()).toHaveText("7d");
 });
 
+for(const mode of MODES){
+  test(`Tab to the Usage environment filter shows a ring all round it, like the period picker beside it (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    await nav(page,"Usage").click();
+    const filter=page.locator(".usage-environment-filter>summary");
+    await expect(filter).toHaveText("All environments");
+    const edges=await focusRingByTab(page,filter,page.getByRole("heading",{name:"Usage",level:2}));
+    await page.screenshot({animations:"disabled",path:shots+`usage-filter-focus-${mode}-1280.png`});
+    console.log("USAGE-FILTER-RING "+mode+" "+JSON.stringify(edges));
+    for(const [edge,share] of Object.entries(edges))expect(share,`the ${edge} edge of the focused filter shows the ring`).toBeGreaterThan(.9);
+    // The period picker's keyboard focus looks the same.
+    const period=page.locator(".usage-toolbar select");
+    await page.keyboard.press("Tab");
+    await expect(period).toBeFocused();
+    const look=element=>{for(const animation of element.getAnimations())animation.finish();const style=getComputedStyle(element);return {shadow:style.boxShadow,border:style.borderTopColor}};
+    const periodLook=await period.evaluate(look);
+    await page.keyboard.press("Shift+Tab");
+    await expect(filter).toBeFocused();
+    await expect.poll(()=>filter.evaluate(look)).toEqual(periodLook);
+    // Enter opens the menu, and Enter again closes it with focus still on the filter.
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".usage-environment-filter")).toHaveAttribute("open","");
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".usage-environment-filter")).not.toHaveAttribute("open","");
+    await expect(filter).toBeFocused();
+    await page.setViewportSize({width:900,height:800});
+    await page.keyboard.press("Tab");await page.keyboard.press("Shift+Tab");
+    await expect(filter).toBeFocused();
+    await page.screenshot({animations:"disabled",path:shots+`usage-filter-focus-${mode}-900.png`});
+  });
+}
+
