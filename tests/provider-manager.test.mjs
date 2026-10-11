@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { DEFAULT_MODEL_PROVIDER, MODEL_PROVIDERS, ProviderManager, normalizeProv
 import { RETIRED_MODEL_PROVIDERS } from "../src/legacy-provider-migration.mjs";
 import { nativeRequestMetrics, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
+import { OpenAiResponsesWebSocket } from "../src/openai-responses-websocket.mjs";
 import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "../src/provider-turn.mjs";
 
 const BUNDLED_CODEX_VERSION=JSON.parse(readFileSync(new URL("../node_modules/@openai/codex/package.json",import.meta.url),"utf8")).version;
@@ -1754,4 +1756,175 @@ test("caller cancellation still wins over the provider request timeout", async (
   assert.equal(seen.length,1);
   assert.notEqual(seen[0].signal,controller.signal);
   assert.equal(seen[0].signal.reason,reason);
+});
+
+// Reply streaming hooks (onStream). The real Responses WebSocket runs over a scripted socket, so the hooked lane code is the shipped one.
+function scriptedResponsesSocket(script){
+  const sockets=[];
+  class Socket extends EventEmitter{
+    static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;
+    constructor(){super();this.readyState=Socket.CONNECTING;this.sent=[];sockets.push(this);queueMicrotask(()=>{this.readyState=Socket.OPEN;this.emit("open")})}
+    send(value){
+      if(this.readyState!==Socket.OPEN)throw new Error("closed");this.sent.push(String(value));
+      const lane=JSON.parse(value).stream_id,events=script.shift()||[];
+      void (async()=>{for(const event of events){await new Promise(resolve=>setImmediate(resolve));if(this.readyState!==Socket.OPEN)return;this.emit("message",JSON.stringify({...event,stream_id:lane}))}})();
+    }
+    terminate(){if(this.readyState===Socket.CLOSED)return;this.readyState=Socket.CLOSED;this.emit("close",1006,"terminated")}
+  }
+  return {Socket,sockets};
+}
+const streamTimingKey=/Ms$|Latency|At$|^created$/;
+function withoutTiming(value){
+  if(Array.isArray(value))return value.map(withoutTiming);if(!value||typeof value!=="object")return value;
+  return Object.fromEntries(Object.entries(value).filter(([key])=>!streamTimingKey.test(key)).map(([key,child])=>[key,withoutTiming(child)]));
+}
+const sseEvent=value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`,chatEvent=value=>`data: ${JSON.stringify(value)}\n\n`;
+function chunkedResponse(blocks,headers={"content-type":"text/event-stream"}){
+  const encoder=new TextEncoder();let index=0;
+  return new Response(new ReadableStream({async pull(controller){await new Promise(resolve=>setImmediate(resolve));if(index<blocks.length)controller.enqueue(encoder.encode(blocks[index++]));else controller.close()}}),{status:200,headers});
+}
+const hookTools=[{type:"namespace",name:"trebell_repo",tools:[{name:"search_files",inputSchema:{type:"object",properties:{query:{type:"string"}}}}]}];
+const outputMessage=(id,phase,text)=>({type:"message",id,role:"assistant",status:"completed",...(phase?{phase}:{}),content:[{type:"output_text",text}]});
+const replyWithCommentary=[
+  {type:"response.output_item.added",output_index:0,item:{type:"reasoning",id:"rs_1",summary:[]}},
+  {type:"response.reasoning_summary_text.delta",output_index:0,delta:"thinking about it"},
+  {type:"response.output_item.done",output_index:0,item:{type:"reasoning",id:"rs_1",summary:[]}},
+  {type:"response.output_item.added",output_index:1,item:{type:"message",id:"msg_c",role:"assistant",status:"in_progress",phase:"commentary",content:[]}},
+  {type:"response.output_text.delta",output_index:1,delta:"Checking. "},
+  {type:"response.output_item.done",output_index:1,item:outputMessage("msg_c","commentary","Checking. ")},
+  {type:"response.output_item.added",output_index:2,item:{type:"message",id:"msg_f",role:"assistant",status:"in_progress",phase:"final_answer",content:[]}},
+  {type:"response.output_text.delta",output_index:2,delta:"Hello "},
+  {type:"response.refusal.delta",output_index:2,delta:"refused words"},
+  {type:"response.output_text.delta",output_index:2,delta:"world"},
+  {type:"response.output_item.done",output_index:2,item:outputMessage("msg_f","final_answer","Hello world")},
+  {type:"response.completed",response:{id:"resp-hook",model:"gpt-6-luna",status:"completed",usage:{input_tokens:12,output_tokens:4,total_tokens:16}}},
+];
+async function websocketTurn(script,{onStream=undefined,tools=[]}={}){
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-stream-hook-")),{Socket,sockets}=scriptedResponsesSocket(script);
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket({...options,WebSocketClass:Socket}),fetchFn:async()=>{throw new Error("unexpected HTTPS request")}});manager.setKey("openai","oa-hook-key");
+    const result=await manager.turn("openai",{model:"gpt-6-luna",messages:[{role:"user",content:"Say hello"}],tools,metadata:{sessionId:"hook-lane"}},{streamResponses:true,...(onStream===undefined?{}:{onStream})});
+    manager.close();return {result,sent:sockets.flatMap(socket=>socket.sent)};
+  }finally{rmSync(root,{recursive:true,force:true})}
+}
+
+test("OpenAI WebSocket reply text reaches onStream in order, commentary is held, and the frame and result match a turn without the hook",async()=>{
+  const streamed=[],hooked=await websocketTurn([[...replyWithCommentary]],{onStream:event=>streamed.push(event)}),plain=await websocketTurn([[...replyWithCommentary]]);
+  assert.deepEqual(streamed,[{type:"text",delta:"Checking. ",hold:true},{type:"text",delta:"Hello "},{type:"text",delta:"world"}]);
+  assert.equal(streamed.map(event=>event.delta).join(""),hooked.result.text,"the joined text equals the turn's text, commentary included");
+  assert.deepEqual(hooked.sent,plain.sent);assert.deepEqual(withoutTiming(hooked.result),withoutTiming(plain.result));
+});
+
+test("each OpenAI function_call event starts a tool once and no text is passed on after it",async()=>{
+  const call={type:"function_call",id:"fc_1",call_id:"call_1",name:"trebell_repo__search_files",arguments:'{"query":"x"}'};
+  const completed={type:"response.completed",response:{id:"resp-tool",model:"gpt-6-luna",status:"completed",usage:{input_tokens:3,output_tokens:2,total_tokens:5}}};
+  const variants={
+    added:[{type:"response.output_item.added",output_index:1,item:{...call,arguments:""}}],
+    arguments:[{type:"response.function_call_arguments.delta",output_index:1,item_id:"fc_1",delta:'{"query":"x"}'}],
+    done:[{type:"response.output_item.done",output_index:1,item:call}],
+    all:[{type:"response.output_item.added",output_index:1,item:{...call,arguments:""}},{type:"response.function_call_arguments.delta",output_index:1,item_id:"fc_1",delta:'{"query":"x"}'},{type:"response.output_item.done",output_index:1,item:call}],
+  };
+  for(const [name,toolEvents] of Object.entries(variants)){
+    const streamed=[],closing=toolEvents.some(event=>event.type==="response.output_item.done")?[]:[{type:"response.output_item.done",output_index:1,item:call}];
+    const script=[[
+      {type:"response.output_text.delta",output_index:0,delta:"Let me search."},...toolEvents,{type:"response.output_text.delta",output_index:2,delta:"after the call"},
+      {type:"response.output_item.done",output_index:0,item:outputMessage("msg_p",null,"Let me search.")},...closing,completed,
+    ]];
+    const {result}=await websocketTurn(script,{onStream:event=>streamed.push(event),tools:hookTools});
+    assert.deepEqual(streamed,[{type:"text",delta:"Let me search."},{type:"tool_call"}],name);assert.equal(result.toolCalls.length,1,name);
+  }
+});
+
+test("OpenAI HTTPS stream text reaches onStream and the request and result match a turn without the hook",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-sse-hook-"));
+  try{
+    const completed={id:"resp-sse-hook",model:"gpt-6-luna",status:"completed",output:[outputMessage("msg_1",null,"hello world")],usage:{input_tokens:8,output_tokens:2,total_tokens:10}};
+    const run=async options=>{
+      const seen=[],manager=new ProviderManager({env:{TREBELL_HOME:root,TREBELL_OPENAI_RESPONSES_WEBSOCKET:"0"},fetchFn:async(url,init={})=>{seen.push({url,headers:init.headers,body:init.body});return chunkedResponse([
+        sseEvent({type:"response.created",response:{id:"resp-sse-hook",status:"in_progress"}}),
+        sseEvent({type:"response.output_text.delta",output_index:0,content_index:0,delta:"hello"}),
+        sseEvent({type:"response.output_text.delta",output_index:0,content_index:0,delta:" world"}),
+        sseEvent({type:"response.completed",response:completed}),
+      ],{"content-type":"text/event-stream","x-request-id":"req-sse-hook"})}});manager.setKey("openai","oa-sse-key");
+      const result=await manager.turn("openai",{model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"sse-hook"}},{streamResponses:true,...options});manager.close();return {result,seen};
+    };
+    const streamed=[],hooked=await run({onStream:event=>streamed.push(event)}),plain=await run({});
+    assert.deepEqual(streamed,[{type:"text",delta:"hello"},{type:"text",delta:" world"}]);
+    assert.deepEqual(hooked.seen,plain.seen);assert.deepEqual(withoutTiming(hooked.result),withoutTiming(plain.result));
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a WebSocket failure the HTTPS fallback replays signals restart before the fallback request is sent",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-stream-restart-")),order=[];
+  try{
+    const {Socket}=scriptedResponsesSocket([[
+      {type:"response.output_text.delta",output_index:0,delta:"partial "},
+      {type:"error",status:400,error:{type:"invalid_request_error",message:"No tool output found for function call call_1."}},
+    ]]);
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket({...options,WebSocketClass:Socket}),fetchFn:async()=>{order.push("https request");return chunkedResponse([
+      sseEvent({type:"response.output_text.delta",output_index:0,delta:"final"}),
+      sseEvent({type:"response.completed",response:{id:"resp-fallback",model:"gpt-6-luna",status:"completed",output:[outputMessage("msg_1",null,"final")],usage:{}}}),
+    ])}});manager.setKey("openai","oa-restart-key");
+    const result=await manager.turn("openai",{model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"restart-lane"}},{streamResponses:true,onStream:event=>order.push(event.type+(event.delta?":"+event.delta:""))});
+    assert.equal(result.text,"final");assert.equal(result.telemetry.webSocketFallback.replaySafe,true);
+    assert.deepEqual(order,["text:partial ","restart","https request","text:final"]);
+    manager.close();
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("HCNSec chat stream text reaches onStream, a listed tool call starts a tool, and tool_calls:[] does not",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-hcnsec-stream-"));
+  try{
+    const bodies=[],chunks=[
+      chatEvent({id:"chat-h",model:"glm-5.3",choices:[{index:0,delta:{role:"assistant",content:"Hel",tool_calls:[]},finish_reason:null}]}),
+      chatEvent({id:"chat-h",model:"glm-5.3",choices:[{index:0,delta:{content:"lo",reasoning_content:"hidden thought",tool_calls:[]},finish_reason:null}]}),
+      chatEvent({id:"chat-h",model:"glm-5.3",choices:[{index:0,delta:{tool_calls:[{index:0,id:"call-h",type:"function",function:{name:"trebell_repo__",arguments:'{"query":'}}]},finish_reason:null}]}),
+      chatEvent({id:"chat-h",model:"glm-5.3",choices:[{index:0,delta:{content:"late",tool_calls:[{index:0,function:{name:"search_files",arguments:'"x"}'}}]},finish_reason:"tool_calls"}]}),
+      chatEvent({id:"chat-h",model:"glm-5.3",choices:[],usage:{prompt_tokens:11,completion_tokens:5,total_tokens:16,prompt_tokens_details:{cached_tokens:3}}}),
+      "data: [DONE]\n\n",
+    ];
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body);bodies.push({body,accept:init.headers.Accept});return body.stream?chunkedResponse(chunks):Response.json({id:"chat-json",model:"glm-5.3",choices:[{finish_reason:"stop",message:{role:"assistant",content:"json"}}],usage:{}})}});manager.setKey("hcnsec","hc-key");
+    const streamed=[],result=await manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"Find x"}],tools:hookTools},{streamChat:true,onStream:event=>streamed.push(event)});
+    assert.deepEqual(streamed,[{type:"text",delta:"Hel"},{type:"text",delta:"lo"},{type:"tool_call"}]);
+    assert.deepEqual(result.toolCalls,[{id:"call-h",namespace:"trebell_repo",name:"search_files",arguments:'{"query":"x"}'}]);assert.equal(result.text,"Hellolate");
+    assert.equal(result.usage.inputTokens,11);assert.equal(result.usage.outputTokens,5);assert.equal(result.usage.cachedInputTokens,3);
+    assert.equal(bodies[0].body.stream,true);assert.deepEqual(bodies[0].body.stream_options,{include_usage:true});assert.equal(Object.keys(bodies[0].body).at(-1),"stream_options");assert.match(bodies[0].accept,/text\/event-stream/);
+    await manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"Find x"}],tools:hookTools},{onStream:event=>streamed.push(event)});
+    assert.equal(bodies[1].body.stream,false);assert.equal("stream_options" in bodies[1].body,false);assert.equal(bodies[1].accept,"application/json");assert.equal(streamed.length,3,"a JSON reply passes nothing on");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("JustWorker Anthropic stream text and tool_use reach onStream and the body streams without stream_options",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-justworker-stream-"));
+  try{
+    const seen=[];
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(url,init={})=>{seen.push({url,body:JSON.parse(init.body),accept:init.headers.Accept});return chunkedResponse([
+      sseEvent({type:"message_start",message:{id:"msg_jw",model:"claude-opus-4-8",usage:{input_tokens:20,cache_read_input_tokens:4}}}),
+      sseEvent({type:"content_block_start",index:0,content_block:{type:"text",text:""}}),
+      sseEvent({type:"content_block_delta",index:0,delta:{type:"text_delta",text:"Looking "}}),
+      sseEvent({type:"content_block_delta",index:0,delta:{type:"text_delta",text:"now."}}),
+      sseEvent({type:"content_block_stop",index:0}),
+      sseEvent({type:"content_block_start",index:1,content_block:{type:"tool_use",id:"toolu_1",name:"trebell_repo__search_files",input:{}}}),
+      sseEvent({type:"content_block_delta",index:1,delta:{type:"input_json_delta",partial_json:'{"query":"x"}'}}),
+      sseEvent({type:"content_block_stop",index:1}),
+      sseEvent({type:"message_delta",delta:{stop_reason:"tool_use"},usage:{output_tokens:9}}),
+      sseEvent({type:"message_stop"}),
+    ])}});manager.setKey("justworker","jw-key");
+    const streamed=[],result=await manager.turn("justworker",{model:"claude-opus-4-8",messages:[{role:"user",content:"Find x"}],tools:hookTools},{streamChat:true,onStream:event=>streamed.push(event)});
+    assert.deepEqual(streamed,[{type:"text",delta:"Looking "},{type:"text",delta:"now."},{type:"tool_call"}]);
+    assert.equal(result.text,"Looking now.");assert.deepEqual(result.toolCalls,[{id:"toolu_1",namespace:"trebell_repo",name:"search_files",arguments:'{"query":"x"}'}]);
+    assert.equal(result.usage.inputTokens,24);assert.equal(result.usage.outputTokens,9);
+    assert.equal(seen[0].url,"https://api.justwoker.icu/v1/messages");assert.equal(seen[0].body.stream,true);assert.equal("stream_options" in seen[0].body,false);assert.match(seen[0].accept,/text\/event-stream/);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("an onStream that throws is turned off and never fails or changes the turn",async()=>{
+  let calls=0;const hooked=await websocketTurn([[...replyWithCommentary]],{onStream:()=>{calls++;throw new Error("hook failure")}}),plain=await websocketTurn([[...replyWithCommentary]]);
+  assert.equal(calls,1);assert.deepEqual(withoutTiming(hooked.result),withoutTiming(plain.result));assert.deepEqual(hooked.sent,plain.sent);
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-throwing-chat-hook-"));
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>chunkedResponse([chatEvent({id:"c",model:"glm-5.3",choices:[{index:0,delta:{content:"a"},finish_reason:null}]}),chatEvent({id:"c",model:"glm-5.3",choices:[{index:0,delta:{content:"b"},finish_reason:"stop"}]}),"data: [DONE]\n\n"])});manager.setKey("hcnsec","hc-key");
+    let chatCalls=0;const result=await manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hi"}],tools:[]},{streamChat:true,onStream:()=>{chatCalls++;throw new Error("hook failure")}});
+    assert.equal(result.text,"ab");assert.equal(chatCalls,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
 });

@@ -329,7 +329,35 @@ function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKey
   return body;
 }
 
-async function readOpenAiResponsesStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS}={}){
+// A turn's reply text as it arrives, for Native drafts. The sink only observes the stream: the turn's request and result are
+// the same with or without it, every call into onStream is caught, and the first throw turns the sink off. Text after the first
+// tool-call event is not passed on (a draft is withdrawn there), and text of an OpenAI commentary item is passed on as held.
+function createStreamSink(onStream){
+  let forwarded=false,toolStarted=false,disabled=false;const commentary=new Set();
+  const send=event=>{if(disabled)return;try{onStream(event)}catch{disabled=true}};
+  const guarded=fn=>value=>{if(disabled)return;try{fn(value)}catch{disabled=true}};
+  const text=(delta,hold=false)=>{if(toolStarted||typeof delta!=="string"||!delta)return;forwarded=true;send(hold?{type:"text",delta,hold:true}:{type:"text",delta})};
+  const toolCall=()=>{if(toolStarted)return;toolStarted=true;send({type:"tool_call"})};
+  return {
+    text:guarded(delta=>text(delta)),
+    toolCall:guarded(toolCall),
+    // The same call is about to be sent again after nothing it returned was used; whatever was passed on belongs to the attempt before.
+    restart:guarded(()=>{if(!forwarded)return;forwarded=false;toolStarted=false;commentary.clear();send({type:"restart"})}),
+    responsesEvent:guarded(event=>{
+      const type=String(event?.type||"");
+      if(((type==="response.output_item.added"||type==="response.output_item.done")&&event.item?.type==="function_call")||type==="response.function_call_arguments.delta")return toolCall();
+      if(type==="response.output_item.added"&&event.item?.type==="message"&&event.item.phase==="commentary")return void commentary.add(event.output_index);
+      if(type==="response.output_text.delta"&&typeof event.delta==="string")text(event.delta,commentary.has(event.output_index));
+    }),
+    // Some proxies send tool_calls:[] on every chunk, so only a listed call starts a tool. Reasoning and refusal text are never passed on.
+    chatDelta:guarded(delta=>{
+      if(typeof delta?.content==="string")text(delta.content);
+      if(Array.isArray(delta?.tool_calls)&&delta.tool_calls.length>0)toolCall();
+    }),
+  };
+}
+
+async function readOpenAiResponsesStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,onEvent=null}={}){
   if(!source||typeof source.getReader!=="function")throw new Error("OpenAI Responses stream body is unavailable.");
   const reader=source.getReader(),decoder=new TextDecoder();let buffer="",response=null,responseBytes=0,timeToFirstTokenMs=null;
   const consume=block=>{
@@ -337,6 +365,7 @@ async function readOpenAiResponsesStream(source,{requestStartedAt=performance.no
     if(!data||data==="[DONE]")return;
     let event;try{event=JSON.parse(data)}catch{throw new Error("OpenAI Responses stream returned an invalid JSON event.")}
     if(event.type==="response.output_text.delta"&&event.delta&&timeToFirstTokenMs==null)timeToFirstTokenMs=Number((performance.now()-requestStartedAt).toFixed(3));
+    if(onEvent)try{onEvent(event)}catch{}
     if((event.type==="response.completed"||event.type==="response.incomplete")&&event.response)response=event.response;
     if(event.type==="response.failed"){
       const error=new Error(event.response?.error?.message||event.error?.message||"OpenAI Responses stream failed.");error.code=event.response?.error?.code||event.error?.code||"openai_stream_failed";throw error;
@@ -358,7 +387,7 @@ async function readOpenAiResponsesStream(source,{requestStartedAt=performance.no
   return {response,responseBytes,timeToFirstTokenMs};
 }
 
-async function readOpenAiChatStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS}={}){
+async function readOpenAiChatStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,onDelta=null}={}){
   if(!source||typeof source.getReader!=="function")throw new Error("OpenAI Chat stream body is unavailable.");
   const reader=source.getReader(),decoder=new TextDecoder();let buffer="",responseBytes=0,timeToFirstTokenMs=null,id="",model="",finishReason=null,usage=null,text="",role="assistant";
   const toolCalls=new Map();
@@ -384,6 +413,7 @@ async function readOpenAiChatStream(source,{requestStartedAt=performance.now(),s
         if(fragment?.function?.arguments)current.function.arguments+=String(fragment.function.arguments);
         toolCalls.set(index,current);
       }
+      if(onDelta)try{onDelta(delta)}catch{}
     }
   };
   try{
@@ -836,8 +866,9 @@ export class ProviderManager {
     }finally{headerGuard?.release()}
   }
 
-  async turn(providerId, request={}, { signal, promptCaching=false, streamResponses=false, streamChat=false } = {}) {
+  async turn(providerId, request={}, { signal, promptCaching=false, streamResponses=false, streamChat=false, onStream=null } = {}) {
     const provider=this.get(providerId),model=String(request.model||"").trim();
+    const sink=typeof onStream==="function"?createStreamSink(onStream):null;
     if(!model)throw new Error("Provider turn requires a model.");
     const requestedServiceTierRaw=String(request.serviceTier||request.service_tier||"").trim().toLowerCase(),requestedServiceTier=requestedServiceTierRaw==="priority"?"fast":requestedServiceTierRaw||null;
     const started=performance.now(),requestDeadlineAt=started+this.requestTimeoutMs;let wire={endpoint:null,wireApi:null,requestBytes:0},wireRequestBytes=0,wireAttempts=0;
@@ -896,7 +927,7 @@ export class ProviderManager {
             const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
             fullResponsesBody=fallbackBody;responsesBody=fallbackBody;continuationFallback=true;continuationFallbackReason="websocket_connection_replaced";
           }
-          const socketStarted=performance.now(),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal,idleTimeoutMs:this.requestTimeoutMs}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
+          const socketStarted=performance.now(),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal,idleTimeoutMs:this.requestTimeoutMs,...(sink?{onEvent:sink.responsesEvent}:{})}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
           this.openAiResponsesWebSocketTransientFailures=0;
           this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
           this.#recordOpenAiWebSocketResponseOrigin(result.id,transport);
@@ -935,12 +966,14 @@ export class ProviderManager {
           }
         }
     }
+    sink?.restart();
     let upstream=provider.wireApi==="responses"
       ?await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)})
       :await this.forwardChat(provider.id,chatBody,{signal,onWire,promptCaching,anthropicBody:directAnthropicBody});
     if(provider.id==="openai"&&openAiContinuation?.used&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
       try{await upstream.body?.cancel?.()}catch{}
       if(!fullResponsesBody){fullResponsesBody=this.#officialOpenAiResponsesBody({...request,model});if(streamResponses===true)fullResponsesBody.stream=true}
+      sink?.restart();
       upstream=await this.forwardResponses(provider.id,fullResponsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;if(!continuationFallbackReason)continuationFallbackReason="previous_response_unavailable";
     }
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
@@ -949,7 +982,7 @@ export class ProviderManager {
     const contentType=String(upstream.headers?.get?.("content-type")||"").toLowerCase();
     if(upstream.ok&&provider.id==="openai"&&streamResponses===true&&upstream.body&&contentType.includes("text/event-stream")){
       try{
-        const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs:this.requestTimeoutMs}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
+        const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs:this.requestTimeoutMs,...(sink?{onEvent:sink.responsesEvent}:{})}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
         this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
         result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,requestedServiceTier,serviceTier:result.serviceTier||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),reasoningContext:normalizedOpenAiReasoningContext(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null};
@@ -961,7 +994,7 @@ export class ProviderManager {
     }
     if(upstream.ok&&streamChat===true&&upstream.body&&contentType.includes("text/event-stream")){
       try{
-        const streamed=await readOpenAiChatStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs:this.requestTimeoutMs}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
+        const streamed=await readOpenAiChatStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs:this.requestTimeoutMs,...(sink?{onDelta:sink.chatDelta}:{})}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeChatTurnResponse(streamed.response,provider.id,model);
         result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-chat-completions",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,requestedServiceTier,serviceTier:result.serviceTier||null};
         return result;

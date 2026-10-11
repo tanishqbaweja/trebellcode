@@ -138,3 +138,22 @@ test("Responses WebSocket fails closed on malformed completed output items",asyn
 test("Responses WebSocket stream IDs are bounded and safe",()=>{
   assert.equal(openAiResponsesWebSocketStreamId("native abc/123"),"native-abc-123");assert.equal(openAiResponsesWebSocketStreamId(""),null);assert.ok(openAiResponsesWebSocketStreamId("x".repeat(400)).length<=256);
 });
+
+test("Responses WebSocket hands a lane's events to its observer in order and an observer cannot change or fail the response",async()=>{
+  reset();const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket}),seen=[];let throwing=0;
+  const body={model:"gpt-5.6",input:[{type:"message",role:"user",content:[{type:"input_text",text:"hi"}]}],stream:true};
+  const left=ws.request(body,{streamId:"left",onEvent:event=>seen.push(event.type+":"+(event.delta||""))}),right=ws.request(body,{streamId:"right",onEvent:()=>{throwing++;throw new Error("observer failure")}});
+  await new Promise(resolve=>setImmediate(resolve));const socket=FakeSocket.instances[0];
+  for(const lane of ["left","right"]){
+    socket.server({type:"response.output_text.delta",stream_id:lane,output_index:0,delta:"Hel"});socket.server({type:"response.output_text.delta",stream_id:lane,output_index:0,delta:"lo"});
+    socket.server({type:"response.output_item.done",stream_id:lane,output_index:0,item:{type:"message",role:"assistant",content:[{type:"output_text",text:"Hello"}]}});
+    socket.server({type:"response.completed",stream_id:lane,response:{id:"resp-"+lane,status:"completed"}});
+  }
+  const [leftResult,rightResult]=await Promise.all([left,right]);
+  assert.deepEqual(seen,["response.output_text.delta:Hel","response.output_text.delta:lo","response.output_item.done:","response.completed:"]);assert.equal(throwing,4);
+  assert.equal(leftResult.response.output[0].content[0].text,"Hello");assert.equal(rightResult.response.output[0].content[0].text,"Hello");
+  const plain=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket}),pending=plain.request(body,{streamId:"left"});await new Promise(resolve=>setImmediate(resolve));
+  FakeSocket.instances.at(-1).server({type:"response.completed",stream_id:"left",response:{id:"resp-plain",status:"completed",output:[]}});await pending;
+  assert.equal(FakeSocket.instances.at(-1).sent[0],socket.sent[0],"an observer leaves the response.create frame as it is");
+  ws.close();plain.close();
+});

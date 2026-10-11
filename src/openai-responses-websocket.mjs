@@ -126,6 +126,8 @@ export class OpenAiResponsesWebSocket{
     pending.armIdle?.();
     pending.responseBytes+=bytes;
     if(event.type==="response.output_text.delta"&&event.delta&&pending.timeToFirstTokenMs==null)pending.timeToFirstTokenMs=Number((performance.now()-pending.started).toFixed(3));
+    // An observer of the lane's events (Native drafts); it cannot change or fail the response.
+    if(pending.onEvent)try{pending.onEvent(event)}catch{}
     if(event.type==="response.output_item.done"){
       if(!Number.isSafeInteger(event.output_index)||event.output_index<0||!validOutputItem(event.item))return this.#socketFailure(generation,protocolError("OpenAI Responses WebSocket returned a malformed output item."),"protocol_failure");
       pending.completedItems.set(event.output_index,structuredClone(event.item));return;
@@ -155,7 +157,7 @@ export class OpenAiResponsesWebSocket{
     if(notify)try{this.onReset?.({reason})}catch{}
   }
 
-  async request(body,{streamId,signal=null,idleTimeoutMs=null}={}){
+  async request(body,{streamId,signal=null,idleTimeoutMs=null,onEvent=null}={}){
     const lane=openAiResponsesWebSocketStreamId(streamId);if(!lane)throw new Error("OpenAI Responses WebSocket requires a stable stream ID.");
     if(this.pending.has(lane))throw new Error("OpenAI Responses WebSocket stream already has an active response.");
     if(signal?.aborted)throw abortBeforeSendError(signal);
@@ -167,7 +169,7 @@ export class OpenAiResponsesWebSocket{
       let pending=null;
       const expire=()=>{const current=this.pending.get(lane);if(!current||current!==pending)return;const error=new DOMException("OpenAI Responses WebSocket idle timeout exceeded.","TimeoutError");error.replaySafe=current.sent!==true;error.retryable=false;error.webSocketFailureKind="timeout";this.#finish(lane,{error});for(const other of [...this.pending.keys()])if(other!==lane)this.#finish(other,{error:transportError("OpenAI Responses WebSocket reset after response timeout.")});this.#resetSocket({notify:true,reason:"timeout_failure"})};
       const armIdle=()=>{if(!pending||idleMs<=0)return;if(pending.idleTimer)clearTimeout(pending.idleTimer);pending.idleTimer=setTimeout(expire,idleMs);pending.idleTimer.unref?.()};
-      pending={resolve:value=>resolve({...value,requestBytes}),reject,started,requestBytes,responseBytes:0,timeToFirstTokenMs:null,completedItems:new Map(),signal,abort,sent:false,idleTimer:null,armIdle};this.pending.set(lane,pending);signal?.addEventListener?.("abort",abort,{once:true});
+      pending={resolve:value=>resolve({...value,requestBytes}),reject,started,requestBytes,responseBytes:0,timeToFirstTokenMs:null,completedItems:new Map(),signal,abort,sent:false,idleTimer:null,armIdle,onEvent:typeof onEvent==="function"?onEvent:null};this.pending.set(lane,pending);signal?.addEventListener?.("abort",abort,{once:true});
       try{socket.send(payload);pending.sent=true;armIdle()}catch(error){this.#finish(lane,{error:transportError("OpenAI Responses WebSocket send failed.",error,{replaySafe:true})});this.#resetSocket({notify:true,reason:"send_failure"})}
     });
   }
