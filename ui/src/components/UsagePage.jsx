@@ -22,7 +22,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   const [days,setDays]=useState(30);const [data,setData]=useState({records:[],total:{},models:{},runtimes:{},daily:{}});const [loading,setLoading]=useState(true);const [error,setError]=useState("");
   const [shownQuery,setShownQuery]=useState(null);const usageRequest=useRef(0);
   const [clearing,setClearing]=useState(false);
-  const [codex,setCodex]=useState(()=>({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:agentRuntime==="codex"&&Boolean(rpc)&&rpcStatus==="connected",notice:"",failure:""}));
+  const [codex,setCodex]=useState(()=>({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:agentRuntime==="codex"&&Boolean(rpc)&&rpcStatus==="connected",notice:"",failure:"",answered:false}));
   const [runtimeUsage,setRuntimeUsage]=useState(()=>({data:null,loading:SUBSCRIPTION_RUNTIMES.includes(agentRuntime),error:""}));
   const [environmentData,setEnvironmentData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null});
   const [environmentError,setEnvironmentError]=useState("");
@@ -39,7 +39,9 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     setSelectedEnvironments(current=>current.includes(id)?current.filter(item=>item!==id):[...current,id]);
   }
   async function refreshCodex(){
-    if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"){setCodex(current=>({...current,account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false}));return}
+    // `answered` is false until a read on the current connection completes: the card mounts as Codex connects, a render before
+    // this read starts, and must not claim the route returned no limits then.
+    if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"){setCodex(current=>({...current,account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false,answered:false}));return}
     setCodex(current=>({...current,loading:true,errors:{},notice:"",failure:""}));
     const requests=[
       ["account",()=>rpc.request("account/read",{refreshToken:false})],
@@ -49,7 +51,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     ];
     const results=await Promise.all(requests.map(async([key,run])=>{try{return [key,await run(),null]}catch(err){return [key,null,err?.message||String(err)]}}));
     setCodex(current=>{
-      const next={...current,errors:{},loading:false,notice:""};
+      const next={...current,errors:{},loading:false,notice:"",answered:true};
       for(const [key,value,failure] of results){
         if(failure)next.errors[key]=failure;
         else next[key]=value;
@@ -183,7 +185,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
         {snapshot.secondary&&<div className={"limit-window"+meterTone(rateLimitRemainingPercent(snapshot.secondary))}><span>Secondary</span><i><b style={{width:`${Math.max(2,rateLimitRemainingPercent(snapshot.secondary)??0)}%`}}/></i><strong>{rateLimitRemainingPercent(snapshot.secondary)}% left</strong><small>{formatRateReset(snapshot.secondary.resetsAt)}</small></div>}
         {snapshot.credits&&<div className="limit-meta"><span>Credits</span><strong>{snapshot.credits.unlimited?"Unlimited":snapshot.credits.balance??(snapshot.credits.hasCredits?"Available":"None")}</strong></div>}
         {snapshot.individualLimit&&<div className="limit-meta"><span>Spend control</span><strong>{snapshot.individualLimit.used} / {snapshot.individualLimit.limit}</strong><small>{snapshot.individualLimit.remainingPercent}% left · {formatRateReset(snapshot.individualLimit.resetsAt)}</small></div>}
-      </div>)}</div>:codex.loading?<p aria-busy="true">Loading live Codex account limits…</p>:!codex.errors.rateLimits&&<p>This inference route did not return Codex account limits.</p>}
+      </div>)}</div>:codex.loading||!codex.answered?<p aria-busy="true">Loading live Codex account limits…</p>:!codex.errors.rateLimits&&<p>This inference route did not return Codex account limits.</p>}
       {resetCredits?.availableCount>0&&<div className="reset-credit-row"><div><strong>{resetCredits.availableCount} reset credit{resetCredits.availableCount===1?"":"s"} available</strong><span>Earned reset credits can restore an eligible Codex rate-limit window.</span></div><button onClick={()=>resetCodexLimit(resetCredits.credits?.find(item=>item.status==="available")?.id||null)} disabled={codex.loading}><RotateCcw size={12}/> Use reset credit</button></div>}
       {codex.failure&&<div className="inline-error" role="alert">{codex.failure}</div>}
       {codexSummary&&<div className="codex-usage-kv">

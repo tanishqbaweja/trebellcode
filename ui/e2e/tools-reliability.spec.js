@@ -176,9 +176,10 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 });
 
 // A Codex app-server for the Tools page whose MCP server list (the slow read: Codex starts the servers before it answers) can be
-// held, answered with one server or none, or failed. The other lists answer at once, full or empty.
+// held, answered with one server or none, or failed. The other lists answer at once, full or empty. With `holdInit` the
+// handshake waits too, so the app stays connecting until `releaseInit()`.
 async function startHeldMcpFixture(){
-  const control={mcp:"servers",lists:"full",hold:true,held:[]};
+  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[]};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
@@ -192,6 +193,7 @@ async function startHeldMcpFixture(){
         if(control.hold)control.held.push(answer);else answer();
         return;
       }
+      if(message.method==="initialize"&&control.holdInit){control.heldInit.push(()=>send({result:{userAgent:"tools-held-list-fixture"}}));return}
       const full=control.lists==="full";let result={};
       if(message.method==="initialize")result={userAgent:"tools-held-list-fixture"};
       else if(message.method==="permissionProfile/list")result={data:full?[{id:"workspace-write",description:"Edit files in the workspace",allowed:true}]:[]};
@@ -215,9 +217,10 @@ async function startHeldMcpFixture(){
   const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {control,wsUrl:`ws://127.0.0.1:${port}`,
     release(){control.hold=false;for(const answer of control.held.splice(0))answer()},
+    releaseInit(){control.holdInit=false;for(const answer of control.heldInit.splice(0))answer()},
     async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
-async function openTools(page,wsUrl){
+async function openTools(page,wsUrl,{connected=true}={}){
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd:process.cwd(),platform:process.platform,version:"tools-held-list-fixture",activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{}}));
@@ -227,8 +230,46 @@ async function openTools(page,wsUrl){
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
   await page.goto("/");
   await page.getByRole("button",{name:"Tools",exact:true}).click();
-  await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible({timeout:10_000});
+  if(connected)await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible({timeout:10_000});
+  else await expect(page.getByText("Codex harness is not connected",{exact:true})).toBeVisible({timeout:10_000});
 }
+// Records every listed claim the page ever puts in its text, from the first script on, so a claim shown for a single frame (and
+// replaced before an assertion could look) is caught as well. A text changed in place leaves its old value in the record.
+async function recordClaims(page,claims){
+  await page.addInitScript(claims=>{
+    const seen=window.__claimsSeen=[];
+    const note=text=>{if(text)for(const claim of claims)if(text.includes(claim)&&!seen.includes(claim))seen.push(claim)};
+    new MutationObserver(records=>{for(const record of records){
+      if(record.type==="characterData"){note(record.oldValue);note(record.target.data)}
+      else for(const node of [...record.addedNodes,...record.removedNodes])note(node.textContent);
+    }}).observe(document,{subtree:true,childList:true,characterData:true,characterDataOldValue:true});
+  },claims);
+  return ()=>page.evaluate(()=>window.__claimsSeen);
+}
+
+test("Tools opened while Codex connects never claims the runtime reported nothing before it answers",async({page})=>{
+  test.setTimeout(45_000);
+  const fixture=await startHeldMcpFixture();fixture.control.holdInit=true;
+  // The runtime answers every one of these cards with data, so none of their empty claims may appear at any point.
+  const claims=["Codex did not return account metadata for this inference route.","Memory readiness is unavailable from this Codex runtime.","Process diagnostics are unavailable from this Codex runtime.","No capability report available.","Windows sandbox readiness is unavailable from this Codex runtime.","This runtime reported no permission profiles.","No MCP servers are configured for this runtime.","This runtime reported no experimental features."];
+  const claimsSeen=await recordClaims(page,claims);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    // The page is opened while the handshake is still pending, so it mounts before Codex connects.
+    await openTools(page,fixture.wsUrl,{connected:false});
+    fixture.releaseInit();
+    const tools=page.locator(".capabilities-page"),refresh=page.locator(".capabilities-toolbar button");
+    await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible({timeout:10_000});
+    // The MCP list is still held: the page says it is loading.
+    await expect(refresh).toHaveText("Refreshing…");
+    await expect(tools.locator(".capability-card").filter({has:page.getByText("MCP servers",{exact:true})})).toContainText("Loading MCP servers…");
+    fixture.release();
+    await expect(refresh).toHaveText("Refresh");
+    await expect(tools.locator(".mcp-server-row")).toContainText("docs-server");
+    await expect(tools).toContainText("fixture@example.com");
+    expect(await claimsSeen()).toEqual([]);
+  }finally{await fixture.close()}
+});
 
 test("Tools cards claim a runtime list is empty only once it has loaded empty",async({page})=>{
   test.setTimeout(45_000);

@@ -113,7 +113,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     catch(error){setErrors(prev=>({...prev,[name]:loadFailure(name,error)}));return null}
   }
   async function refresh(){
-    if(!rpc||rpcStatus!=="connected"){setLoading(false);return}
+    // Not connected, the page shows no cards. It waits as loading, so as Codex connects the cards say what is loading rather than
+    // that the runtime reported nothing, and a refresh begun on a connection that has since closed does not land.
+    if(!rpc||rpcStatus!=="connected"){refreshRun.current++;setLoading(true);return}
     // Only the latest refresh lands: one started for an earlier thread or project neither writes its answers nor ends loading.
     const run=++refreshRun.current,latest=()=>run===refreshRun.current;
     setLoading(true);setErrors({});

@@ -91,7 +91,8 @@ test("Usage page refreshes native Codex account and quota updates live",async({p
 });
 
 // A Codex app-server behind the real relay for the Usage page. `control.rateLimits` answers the limits read with a quota and a
-// reset credit ("quota"), with no limits ("none"), or fails it ("fail"); using the reset credit always fails.
+// reset credit ("quota"), with no limits ("none"), or fails it ("fail"); using the reset credit always fails. With
+// `control.holdInit` the handshake waits in `control.heldInit`, so the app stays connecting until those answers are sent.
 async function startUsageFixture(control){
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
@@ -105,6 +106,7 @@ async function startUsageFixture(control){
         return send({result:control.rateLimits==="none"?{rateLimits:null}:{rateLimits:{limitId:"main",limitName:"Coding quota",primary:{usedPercent:30,resetsAt:Math.floor(Date.now()/1000)+3600}},rateLimitResetCredits:{availableCount:1,credits:[{id:"credit-1",status:"available"}]}}});
       }
       if(message.method==="account/rateLimitResetCredit/consume")return fail("Deliberate reset credit failure");
+      if(message.method==="initialize"&&control.holdInit)return control.heldInit.push(()=>send({result:{userAgent:"usage-fixture"}}));
       let result={};
       if(message.method==="initialize")result={userAgent:"usage-fixture"};
       else if(message.method==="thread/list"||message.method==="threadSection/list"||message.method==="skills/list")result={data:[],nextCursor:null};
@@ -193,6 +195,33 @@ test("Usage says a period or account limit is empty only once that answer has lo
     await expect(page.locator(".usage-page>.inline-error")).toHaveCount(0);
     await page.screenshot({animations:"disabled",path:auditDir+"usage-loaded-empty-1280x800.png",fullPage:false});
   }finally{for(const route of held.splice(0))await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(emptyUsage)}).catch(()=>{});await fixture.close()}
+});
+
+test("Usage opened while Codex connects never claims the route returned no limits before it answers",async({page})=>{
+  test.setTimeout(40_000);
+  const control={rateLimits:"quota",holdInit:true,heldInit:[]};const fixture=await startUsageFixture(control);
+  // Every claim the page ever puts in its text is recorded from the first script on, so one shown for a single frame while
+  // Codex connects is caught too. A text changed in place leaves its old value in the mutation record.
+  const claim="This inference route did not return Codex account limits.";
+  await page.addInitScript(claim=>{
+    const seen=window.__claimsSeen=[];const note=text=>{if(text&&text.includes(claim)&&!seen.length)seen.push(claim)};
+    new MutationObserver(records=>{for(const record of records){
+      if(record.type==="characterData"){note(record.oldValue);note(record.target.data)}
+      else for(const node of [...record.addedNodes,...record.removedNodes])note(node.textContent);
+    }}).observe(document,{subtree:true,childList:true,characterData:true,characterDataOldValue:true});
+  },claim);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openUsage(page,fixture.wsUrl,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(emptyUsage)}));
+    // Not connected yet: the page shows recorded usage only, and no Codex card.
+    const codexCard=page.getByTestId("codex-account-usage");
+    await expect(page.getByText("No turns recorded in this period.",{exact:true})).toBeVisible();
+    await expect.poll(()=>control.heldInit.length).toBe(1);
+    await expect(codexCard).toHaveCount(0);
+    for(const answer of control.heldInit.splice(0))answer();
+    await expect(codexCard).toContainText("1 reset credit available");
+    expect(await page.evaluate(()=>window.__claimsSeen)).toEqual([]);
+  }finally{await fixture.close()}
 });
 
 test("Usage failures name the action before the reason, and only once",async({page})=>{
