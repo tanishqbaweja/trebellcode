@@ -177,10 +177,13 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 
 // A Codex app-server for the Tools page whose MCP server list (the slow read: Codex starts the servers before it answers) can be
 // held, answered with one server or none, or failed. The other lists answer at once, full or empty. With `holdInit` the
-// handshake waits too, so the app stays connecting until `releaseInit()`.
+// handshake waits too, so the app stays connecting until `releaseInit()`. The skills list (which the app reads for the composer
+// and the Tools page) answers `control.skills` as it stands when it answers: "empty", "listed" (one skill) or "fail", and waits
+// while `holdSkills` is set, until `releaseSkills()`.
 async function startHeldMcpFixture(){
-  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[]};
+  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",holdSkills:false,heldSkills:[],skillReads:0};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
+  const skill={name:"release-notes",description:"Draft release notes from merged pull requests",path:"/home/test/.codex/skills/release-notes/SKILL.md",scope:"user",enabled:true,interface:{displayName:"Release notes"}};
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
@@ -193,12 +196,18 @@ async function startHeldMcpFixture(){
         if(control.hold)control.held.push(answer);else answer();
         return;
       }
+      if(message.method==="skills/list"){
+        control.skillReads++;
+        const answer=()=>control.skills==="fail"?send({error:{code:-32000,message:"Deliberate skills list failure"}}):send({result:{data:[{cwd:process.cwd(),skills:control.skills==="listed"?[skill]:[],errors:[]}]}});
+        if(control.holdSkills)control.heldSkills.push(answer);else answer();
+        return;
+      }
       if(message.method==="initialize"&&control.holdInit){control.heldInit.push(()=>send({result:{userAgent:"tools-held-list-fixture"}}));return}
       const full=control.lists==="full";let result={};
       if(message.method==="initialize")result={userAgent:"tools-held-list-fixture"};
       else if(message.method==="permissionProfile/list")result={data:full?[{id:"workspace-write",description:"Edit files in the workspace",allowed:true}]:[]};
       else if(message.method==="experimentalFeature/list")result={data:full?[{name:"step_model_switching",displayName:"Step model switching",description:"Switch models between steps of a running turn.",enabled:false}]:[]};
-      else if(["thread/list","threadSection/list","collaborationMode/list","app/list","hooks/list","plugin/share/list","thread/loaded/list","skills/list"].includes(message.method))result={data:[],nextCursor:null};
+      else if(["thread/list","threadSection/list","collaborationMode/list","app/list","hooks/list","plugin/share/list","thread/loaded/list"].includes(message.method))result={data:[],nextCursor:null};
       else if(message.method==="plugin/list")result={marketplaces:[]};
       else if(message.method==="app/installed")result={apps:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
@@ -218,11 +227,12 @@ async function startHeldMcpFixture(){
   return {control,wsUrl:`ws://127.0.0.1:${port}`,
     release(){control.hold=false;for(const answer of control.held.splice(0))answer()},
     releaseInit(){control.holdInit=false;for(const answer of control.heldInit.splice(0))answer()},
+    releaseSkills(){control.holdSkills=false;for(const answer of control.heldSkills.splice(0))answer()},
     async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
-async function openTools(page,wsUrl,{connected=true}={}){
+async function openTools(page,wsUrl,{connected=true,cwd=process.cwd()}={}){
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
-  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd:process.cwd(),platform:process.platform,version:"tools-held-list-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd,platform:process.platform,version:"tools-held-list-fixture",activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{}}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
   await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
@@ -433,4 +443,78 @@ test("Tools Conversation history claims no history only for the latest scan, and
     await expect(badge).toHaveText("1");
     await shoot("tools-history-import-failed");
   }finally{for(const route of heldScans.splice(0))await answer(route,{sessions:[]}).catch(()=>{});await fixture.close()}
+});
+
+test("Tools Skills card claims no skills only once the skills list has loaded empty, and names a failed list",async({page})=>{
+  test.setTimeout(45_000);
+  const fixture=await startHeldMcpFixture();fixture.release();fixture.control.holdSkills=true;
+  const emptyClaim="No skills were discovered for this workspace.";
+  const claimsSeen=await recordClaims(page,[emptyClaim]);
+  const shoot=async name=>{
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+  };
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    const refresh=page.locator(".capabilities-toolbar button");
+    const skills=page.locator(".capabilities-page .capability-card").filter({has:page.getByText("Skills",{exact:true})}).first();
+    const claim=skills.getByText(emptyClaim,{exact:true}),pending=skills.getByText("Loading skills…",{exact:true});
+    const badge=skills.locator(".capability-card-head em"),failure=skills.locator(".capability-error"),rows=skills.locator(".skill-list");
+    // Codex has not answered the skills list yet, though every other read has: the card says it is loading, with no count,
+    // rather than that the workspace has no skills.
+    await expect.poll(()=>fixture.control.heldSkills.length).toBeGreaterThan(0);
+    await expect(refresh).toHaveText("Refresh");
+    await expect(pending).toBeVisible();await expect(pending).toHaveAttribute("aria-busy","true");
+    await expect(claim).toHaveCount(0);await expect(badge).toHaveCount(0);await expect(failure).toHaveCount(0);
+    await skills.scrollIntoViewIfNeeded();
+    await shoot("tools-skills-pending");
+
+    // The list fails: the card names what failed and why, and still does not claim there are no skills.
+    fixture.control.skills="fail";fixture.releaseSkills();
+    await expect(failure).toHaveText("Could not load skills: Deliberate skills list failure");
+    await expect(pending).toHaveCount(0);await expect(claim).toHaveCount(0);await expect(badge).toHaveCount(0);
+    await shoot("tools-skills-load-failed");
+    expect(await claimsSeen()).toEqual([]);
+
+    // Refresh reads the list again. While that read is held the failure gives way to the loading line; the empty answer is then
+    // claimed, with a count of 0.
+    fixture.control.skills="empty";fixture.control.holdSkills=true;
+    const reads=fixture.control.skillReads;
+    await refresh.click();
+    await expect.poll(()=>fixture.control.skillReads).toBeGreaterThan(reads);
+    await expect(pending).toBeVisible();
+    await expect(failure).toHaveCount(0);await expect(claim).toHaveCount(0);await expect(badge).toHaveCount(0);
+    fixture.releaseSkills();
+    await expect(claim).toBeVisible();await expect(badge).toHaveText("0");await expect(pending).toHaveCount(0);
+    await skills.scrollIntoViewIfNeeded();
+    await shoot("tools-skills-loaded-empty");
+
+    // A list with a skill shows it and its count. A refresh that then fails keeps that list on screen and says the refresh failed.
+    fixture.control.skills="listed";await refresh.click();
+    await expect(rows).toContainText("Release notes");
+    await expect(badge).toHaveText("1");await expect(claim).toHaveCount(0);
+    fixture.control.skills="fail";await refresh.click();
+    await expect(failure).toHaveText("Could not refresh skills: Deliberate skills list failure");
+    await expect(rows).toContainText("Release notes");await expect(badge).toHaveText("1");await expect(claim).toHaveCount(0);
+    await skills.scrollIntoViewIfNeeded();
+    await shoot("tools-skills-refresh-failed");
+  }finally{fixture.releaseSkills();await fixture.close()}
+});
+
+test("Tools Skills card says no workspace is open, rather than loading or claiming none, when there is none to list skills for",async({page})=>{
+  test.setTimeout(30_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl,{cwd:""});
+    const skills=page.locator(".capabilities-page .capability-card").filter({has:page.getByText("Skills",{exact:true})}).first();
+    await expect(skills.getByText("Open a workspace to list its skills.",{exact:true})).toBeVisible();
+    await expect(skills.getByText("Loading skills…",{exact:true})).toHaveCount(0);
+    await expect(skills.getByText("No skills were discovered for this workspace.",{exact:true})).toHaveCount(0);
+    await expect(skills.locator(".capability-card-head em")).toHaveCount(0);
+    expect(fixture.control.skillReads).toBe(0);
+  }finally{await fixture.close()}
 });

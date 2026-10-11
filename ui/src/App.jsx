@@ -835,6 +835,9 @@ export default function App(){
   const [runtimeSwitch,setRuntimeSwitch]=useState(null);
   const [collaborationModes,setCollaborationModes]=useState([]); const [collaborationMode,setCollaborationMode]=useState("default"); const [collaborationModeBusy,setCollaborationModeBusy]=useState(false);
   const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
+  // Where the skills list stands, so an empty `skills` is claimed as "none discovered" only for an answer that came back empty:
+  // "loading" until Codex answers (again while it re-reads), "loaded", "failed" with the error, or "idle" with no workspace to list.
+  const [skillsLoad,setSkillsLoad]=useState({status:"loading",error:null}); const skillsReadRef=useRef(0);
   const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({threadId:null,supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
   // The model, effort and tier the open Codex thread runs with (thread/resume, thread/settings/updated), and the Codex
   // goal waiting to turn active after its first turn starts.
@@ -1825,7 +1828,10 @@ export default function App(){
   }
   async function loadSkills(client,path=projectPath,forceReload=false,{strict=false}={}){
     if(agentRuntime!=="codex")return;
-    if(!path)return;
+    // Only the latest read lands, so an answer for a project left meanwhile (or one a newer read replaced) never overwrites it.
+    const read=++skillsReadRef.current,latest=()=>read===skillsReadRef.current;
+    if(!path){setSkillsLoad({status:"idle",error:null});return}
+    setSkillsLoad({status:"loading",error:null});
     const threadId=activeThreadRef.current?.id||null;
     const params={cwds:[path],forceReload:Boolean(forceReload),...(threadId?{_trebellThreadId:threadId}:{})};
     try{
@@ -1836,8 +1842,10 @@ export default function App(){
         if((skill.enabled!==false)===confirmedEnabled){skillOverridesRef.current.delete(skillPath);return skill}
         return {...skill,enabled:confirmedEnabled};
       });
-      setSkills(next);return next;
+      if(latest()){setSkills(next);setSkillsLoad({status:"loaded",error:null})}
+      return next;
     }catch(error){
+      if(latest())setSkillsLoad({status:"failed",error});
       if(strict)throw error;
       return null;
     }
@@ -1897,7 +1905,7 @@ export default function App(){
 
   function applyProviderInventory(update={}){
     if(Array.isArray(update.commands))setProviderCommands(update.commands);
-    if(Array.isArray(update.skills))setSkills(update.skills.filter(skill=>skill?.enabled!==false));
+    if(Array.isArray(update.skills)){setSkills(update.skills.filter(skill=>skill?.enabled!==false));setSkillsLoad({status:"loaded",error:null})}
     if(Array.isArray(update.agents)){
       const visible=update.agents.filter(agent=>typeof agent==="string"||agent?.hidden!==true).filter(agent=>typeof agent==="string"?agent:Boolean(agent?.name));
       setProviderAgents(visible);
@@ -4561,7 +4569,7 @@ export default function App(){
           </div>
         </header>})()}
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
-        {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} platform={bootstrap.platform}/></DeferredSurface></div>}
+        {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} skillsLoad={skillsLoad} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} onSkillsReload={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}

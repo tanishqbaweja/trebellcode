@@ -56,7 +56,9 @@ function configLayerPresentation(layer,index){
   return {label,detail:String(layer?.disabledReason||detail||"Loaded")};
 }
 
-export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported,onSkillsRefresh,platform=""}){
+// skillsLoad says where the app's skills list stands ({status:"loading"|"loaded"|"failed"|"idle",error}), as `skills` alone cannot
+// tell a list that loaded empty from one still loading or one that failed.
+export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],skillsLoad={status:"loaded",error:null},onHistoryImported,onSkillsRefresh,onSkillsReload,platform=""}){
   // Each runtime list stays null until its first answer, so a card tells a list that loaded empty from one not loaded yet.
   const [data,setData]=useState({permissions:null,mcp:null,marketplaces:null,apps:null,installedApps:null,hooks:null,features:null,sharedPlugins:null,loadedThreads:null,loadedThreadsMore:false,capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,diagnostics:null,windowsSandbox:null});
   const [errors,setErrors]=useState({});
@@ -281,6 +283,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // card says it is loading, so the head shows no "0" beside that.
   const counted=(list,name,count)=>listCount(list,{loading,error:errors[name],count});
   const layerCount=counted(data.config&&(data.config.layers||[]),"config/read");
+  // The app reads the skills list, not this page. A failure names the load, or the refresh when an earlier list is still shown.
+  const skillsFailure=skillsLoad?.status==="failed"?failureText(skills.length?"Could not refresh skills":"Could not load skills",skillsLoad.error):"";
 
   async function reloadMcp(){
     if(!rpc)return;setBusy("mcp");setErrors(prev=>({...prev,"config/mcpServer/reload":null}));
@@ -494,23 +498,24 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   }
   async function toggleSkill(skill){
     if(!rpc||!skill?.path)return;
-    const next=skill.enabled===false;setBusy("skill:"+skill.path);setSkillMessage("");setErrors(prev=>({...prev,"skills/config/write":null,"skills/list":null}));
+    const next=skill.enabled===false;setBusy("skill:"+skill.path);setSkillMessage("");setErrors(prev=>({...prev,"skills/config/write":null}));
     try{
       const result=await request("skills/config/write",{path:skill.path,name:null,enabled:next});
       const effectiveEnabled=result?.effectiveEnabled!==false;
       setSkillMessage(`${skill.name||"Skill"} is now ${effectiveEnabled?"enabled":"disabled"}. This setting is saved in Codex config.`);
-      try{await onSkillsRefresh?.({path:skill.path,enabled:effectiveEnabled})}catch(error){setErrors(prev=>({...prev,"skills/list":failureText("Could not refresh skills",error)}))}
+      // A failed re-read is named by the card from skillsLoad, once, however the read was started.
+      try{await onSkillsRefresh?.({path:skill.path,enabled:effectiveEnabled})}catch{}
     }catch(error){setErrors(prev=>({...prev,"skills/config/write":failureText((next?"Could not turn on ":"Could not turn off ")+(skill.interface?.displayName||skill.name||"the skill"),error)}))}
     finally{setBusy("")}
   }
   async function applySkillRoots(){
     if(!rpc)return;
     const extraRoots=[...new Set(skillRootsText.split(/\r?\n/).map(value=>value.trim()).filter(Boolean))];
-    setBusy("skill-roots");setSkillMessage("");setErrors(prev=>({...prev,"skills/extraRoots/set":null,"skills/list":null}));
+    setBusy("skill-roots");setSkillMessage("");setErrors(prev=>({...prev,"skills/extraRoots/set":null}));
     try{
       await request("skills/extraRoots/set",{extraRoots});
       setSkillMessage(extraRoots.length?`${extraRoots.length} runtime skill root${extraRoots.length===1?"":"s"} applied. They reset when this Codex app-server restarts.`:"Runtime-only extra skill roots cleared.");
-      try{await onSkillsRefresh?.()}catch(error){setErrors(prev=>({...prev,"skills/list":failureText("Could not refresh skills",error)}))}
+      try{await onSkillsRefresh?.()}catch{}
     }catch(error){setErrors(prev=>({...prev,"skills/extraRoots/set":failureText("Could not apply the runtime skill roots",error)}))}
     finally{setBusy("")}
   }
@@ -518,7 +523,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   if(rpcStatus!=="connected")return <div className="empty-state capabilities-empty-state"><Wrench size={24}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>;
 
   return <div className="capabilities-page">
-    <div className="capabilities-toolbar"><div><h2>Harness capabilities</h2><p>Live inventory from the bundled Codex app-server. These are real runtime capabilities, not a hard-coded parity list.</p></div><button onClick={refresh} disabled={loading}><RefreshCw size={13}/>{loading?"Refreshing…":"Refresh"}</button></div>
+    <div className="capabilities-toolbar"><div><h2>Harness capabilities</h2><p>Live inventory from the bundled Codex app-server. These are real runtime capabilities, not a hard-coded parity list.</p></div><button onClick={()=>{refresh();onSkillsReload?.()}} disabled={loading}><RefreshCw size={13}/>{loading?"Refreshing…":"Refresh"}</button></div>
 
     <div className="capability-grid">
       <Section title="Account & usage" icon={Sparkles}>
@@ -615,13 +620,13 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <ErrorLine value={errors["mcpServerStatus/list"]}/><ErrorLine value={errors["config/mcpServer/reload"]}/><ErrorLine value={errors["mcpServer/oauth/login"]}/>
       </Section>
 
-      <Section title="Skills" icon={Wrench} count={skills.length}>
+      <Section title="Skills" icon={Wrench} count={listCount(skills,{loading:skillsLoad?.status!=="loaded"})}>
         <p>Enable or disable discovered skills with Codex's native config API. Disabled skills stay visible so they can be turned back on.</p>
         <div className="capability-list skill-list">{skills.map(s=><div key={s.path||s.name}><div><strong>{s.interface?.displayName||s.name}</strong><span>{s.interface?.shortDescription||s.shortDescription||s.description||s.path}{s.scope?` · ${s.scope}`:""}</span></div><button className={s.enabled!==false?"active":""} onClick={()=>toggleSkill(s)} disabled={!!busy||!s.path}>{busy==="skill:"+s.path?"Saving…":s.enabled===false?"Off":"On"}</button></div>)}</div>
-        {!skills.length&&<p>No skills were discovered for this workspace.</p>}
+        {!skills.length&&(skillsLoad?.status==="idle"?<p>Open a workspace to list its skills.</p>:<EmptyState loaded={skillsLoad?.status==="loaded"} loading={skillsLoad?.status==="loading"} error={skillsFailure} pending="Loading skills…">No skills were discovered for this workspace.</EmptyState>)}
         <div className="skill-roots-editor"><label><strong>Runtime-only extra roots</strong><span>One absolute skill-directory path per line. Applying replaces this Codex process's extra roots; restarting the app-server clears them.</span></label><textarea value={skillRootsText} onChange={e=>setSkillRootsText(e.target.value)} placeholder={platform==="win32"?"C:\\Users\\me\\skills\nD:\\shared-skills":"/home/me/skills\n/opt/shared-skills"}/><div className="capability-actions"><button onClick={applySkillRoots} disabled={!!busy}>{busy==="skill-roots"?"Applying…":"Apply runtime roots"}</button>{skillRootsText&&<button onClick={()=>setSkillRootsText("")} disabled={!!busy}>Clear draft</button>}</div></div>
         {skillMessage&&<p className="capability-status">{skillMessage}</p>}
-        <ErrorLine value={errors["skills/list"]}/><ErrorLine value={errors["skills/config/write"]}/><ErrorLine value={errors["skills/extraRoots/set"]}/>
+        <ErrorLine value={skillsFailure}/><ErrorLine value={errors["skills/config/write"]}/><ErrorLine value={errors["skills/extraRoots/set"]}/>
       </Section>
 
       <Section title="Plugins" icon={Blocks} count={counted(data.marketplaces,"plugin/list",plugins.length)}>
