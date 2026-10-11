@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState} from "react";
+import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { BarChart3, Bot, Copy, CornerDownLeft, FileDiff, Files, FolderCode, FolderGit2, FolderOpen, GitBranch, GitPullRequest, Globe, Layers, MessageSquarePlus, MessageSquareText, Monitor, Moon, Palette, Play, Scale, Search, Server, Settings, ShieldCheck, SquarePen, SquareTerminal, Sun, Target, Wrench } from "lucide-react";
 
 // Presentational icons for the built-in palette actions (keyed by action id). Actions can still pass their own icon.
@@ -44,7 +44,8 @@ export default function CommandPalette(props){
   return <CommandPaletteOpen {...props}/>;
 }
 
-function CommandPaletteOpen({open,onClose,actions=[],projects=[],threads=[],environmentNames={},dataError="",onOpenProject,onOpenThread,onSearchThreadMessages}){
+// seed: App's handoff from the stand-in search box it shows while this code loads ({opener,query}, see CommandPaletteLoading).
+function CommandPaletteOpen({open,onClose,seed,actions=[],projects=[],threads=[],environmentNames={},dataError="",onOpenProject,onOpenThread,onSearchThreadMessages}){
   const [query,setQuery]=useState("");
   const [selected,setSelected]=useState(0);
   const [messageMatches,setMessageMatches]=useState([]);
@@ -58,20 +59,26 @@ function CommandPaletteOpen({open,onClose,actions=[],projects=[],threads=[],envi
   const resultsRef=useRef(null);
   const refocusRef=useRef(false);
   const dialogRef=useRef(null);
+  const openerRef=useRef(null);
   useModalFocus(dialogRef,open,false);
+  // The search box takes focus as the palette appears, before the next key is handled, so keys typed straight after Ctrl+K land in it
+  // rather than in the composer (or nowhere). On a first open, while this code loads, App's stand-in search box takes them: the palette
+  // starts from what was typed there, and from the control the stand-in was opened from.
+  useLayoutEffect(()=>{
+    const handoff=seed?.current;
+    if(handoff){handoff.adopted=true;seed.current=null;if(handoff.query)setQuery(handoff.query)}
+    if(!openerRef.current)openerRef.current=handoff?handoff.opener:document.activeElement;
+    inputRef.current?.focus({preventScroll:true});
+  },[]);
   // Closing gives focus back to what had it when the palette opened (the button or menu it was chosen from, the composer it was called
   // up from), so a keyboard user carries on from there rather than from the page's start. A command that put focus somewhere keeps it.
-  useEffect(()=>{
-    const opener=document.activeElement;
-    return()=>{
-      const focused=document.activeElement;
-      if(focused&&focused!==document.body&&!dialogRef.current?.contains(focused))return;
-      if(opener instanceof HTMLElement&&opener!==document.body&&opener.isConnected&&opener.getClientRects().length)opener.focus({preventScroll:true});
-    };
+  useEffect(()=>()=>{
+    const focused=document.activeElement,opener=openerRef.current;
+    if(focused&&focused!==document.body&&!dialogRef.current?.contains(focused))return;
+    if(opener instanceof HTMLElement&&opener!==document.body&&opener.isConnected&&opener.getClientRects().length)opener.focus({preventScroll:true});
   },[]);
   const messageSearchRef=useRef(onSearchThreadMessages);
   messageSearchRef.current=onSearchThreadMessages;
-  useEffect(()=>{if(!open)return;setQuery("");setSelected(0);setMessageMatches([]);setMessageSearching(false);setRunningId(null);setActionError("");setSearchWarning("");const t=setTimeout(()=>inputRef.current?.focus(),0);return()=>clearTimeout(t)},[open]);
   useEffect(()=>{
     if(!open)return;
     const closeOnEscape=event=>{

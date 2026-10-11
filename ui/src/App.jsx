@@ -105,6 +105,36 @@ const SnoozeDialog=lazy(()=>import("./components/SnoozeDialog.jsx"));
 const CommandPalette=lazy(()=>import("./components/CommandPalette.jsx"));
 const OnboardingModal=lazy(()=>import("./components/OnboardingModal.jsx"));
 
+// The command palette as it first appears while its code loads (on the first open only): its search box takes focus and the keys
+// typed straight after Ctrl+K, which would otherwise go into the composer it was opened from. seed hands the palette what was typed
+// and where focus came from; closed before the palette came, the stand-in gives focus back there itself.
+function CommandPaletteLoading({seed,onClose}){
+  const inputRef=useRef(null);
+  useLayoutEffect(()=>{
+    // A second run in React's development checks finds focus already in this box: the control it came from is the first run's.
+    const active=document.activeElement,opener=active?.closest?.('[data-testid="command-palette"]')?seed.current?.opener||null:active;
+    const handoff={opener,query:"",adopted:false};seed.current=handoff;
+    inputRef.current?.focus({preventScroll:true});
+    return()=>queueMicrotask(()=>{
+      if(handoff.adopted||seed.current!==handoff)return;
+      seed.current=null;const focused=document.activeElement,opener=handoff.opener;
+      if((!focused||focused===document.body)&&opener instanceof HTMLElement&&opener.isConnected&&opener.getClientRects().length)opener.focus({preventScroll:true});
+    });
+  },[seed]);
+  useEffect(()=>{
+    const closeOnEscape=event=>{if(event.key!=="Escape")return;event.preventDefault();event.stopPropagation();onClose?.()};
+    window.addEventListener("keydown",closeOnEscape,true);
+    return()=>window.removeEventListener("keydown",closeOnEscape,true);
+  },[onClose]);
+  return <div className="command-palette-backdrop" data-testid="command-palette" onMouseDown={event=>event.target===event.currentTarget&&onClose?.()}>
+    <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" aria-busy="true">
+      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} defaultValue="" onChange={event=>{if(seed.current)seed.current.query=event.target.value}} onKeyDown={event=>{if(event.key==="Tab")event.preventDefault()}} placeholder="Search commands, threads, and messages…" spellCheck={false} autoComplete="off"/><kbd className="tb-kbd">Esc</kbd></div>
+      <div className="command-palette-results"><div className="command-palette-empty" role="status">Loading commands…</div></div>
+      <div className="command-palette-footer" aria-hidden="true"><span><kbd className="tb-kbd">↑</kbd><kbd className="tb-kbd">↓</kbd> navigate</span><span><kbd className="tb-kbd">↵</kbd> run</span><span><kbd className="tb-kbd">esc</kbd> close</span><span className="command-palette-hint"><kbd className="tb-kbd">&gt;</kbd> commands only</span></div>
+    </div>
+  </div>;
+}
+
 function DeferredSurface({children,label="Loading…",compact=false}){
   return <Suspense fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</Suspense>;
 }
@@ -885,7 +915,7 @@ export default function App(){
   // openRunRef: the last open asked for ({done} settles with it). resumedOnRef: the thread last resumed and the transport it was
   // resumed on. A reconnect waits for the one and does not resume again a thread the other says is resumed on it already.
   // heldNotificationsRef: the notifications of the thread an open has resumed, kept until it shows (see holdThreadNotifications).
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0); const openRunRef=useRef(null); const resumedOnRef=useRef(null); const heldNotificationsRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0); const openRunRef=useRef(null); const resumedOnRef=useRef(null); const heldNotificationsRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const paletteSeedRef=useRef(null); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
@@ -4642,6 +4672,7 @@ export default function App(){
   const sidebarOpenThread=useLatestCallback(openThread);
   const sidebarNewThread=useLatestCallback(newChat);
   const sidebarOpenPalette=useCallback(()=>setPaletteOpen(true),[]);
+  const closePalette=useCallback(()=>setPaletteOpen(false),[]);
   // The sidebar and the command palette show the user's own keybindings (Settings > Shortcuts), not the defaults. A command whose
   // key another command takes over everywhere it runs (Settings > Shortcuts says which) shows no key, since pressing it runs the
   // other command.
@@ -4916,7 +4947,7 @@ export default function App(){
     {!elicitations.length&&question?.request&&<Suspense fallback={null}><QuestionModal request={question.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/></Suspense>}
     {snoozeRequest&&<Suspense fallback={null}><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/></Suspense>}
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><UndoCountdown expiresAt={threadUndo.expiresAt}/></div>}
-    {paletteOpen&&<Suspense fallback={null}><CommandPalette open onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></Suspense>}
+    {paletteOpen&&<Suspense fallback={<CommandPaletteLoading seed={paletteSeedRef} onClose={closePalette}/>}><CommandPalette open seed={paletteSeedRef} onClose={closePalette} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></Suspense>}
     {initialLoaded&&settings.onboardingComplete===false&&<Suspense fallback={null}><OnboardingModal open projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={managedInference?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/></Suspense>}
   </div>;
 }
