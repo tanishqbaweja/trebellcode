@@ -52,6 +52,8 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   // What each read last said for the repository on screen: null until it answers, then {ok:true} or {error}. A part whose read has
   // not answered says it is loading rather than drawing an empty answer ("Changes 0", "Git: not found", "No pull requests found"),
   // and a part that could not be read says so. A later refresh keeps the last answer on screen until its own lands.
+  // {skipped:true} is a part never read because the repository could not be: the banner names that failure, not this part's.
+  // A failure the banner reports keeps the banner's text (`banner`), so the part does not repeat the reason while the banner shows it.
   const [reads,setReads]=useState({info:null,diagnostics:null,prs:null});
   const infoRef=useRef(info);infoRef.current=info;
   const [statusLimit,setStatusLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
@@ -103,8 +105,8 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     catch(error){
       refreshFailureRef.current={stage:"info"};
       if(stillShown(started)&&(reportErrors||!infoRef.current))setError(actionError("Could not refresh repository information",error));
-      // Nothing else is read without the repository, so a part that never answered could not be read either.
-      if(stillShown(started))setReads(current=>({info:{error:reason(error)},diagnostics:current.diagnostics||{error:reason(error)},prs:current.prs||{error:reason(error)}}));
+      // Nothing else is read without the repository, so a part that never answered is not read either.
+      if(stillShown(started))setReads(current=>({info:{error:reason(error)},diagnostics:current.diagnostics||{skipped:true},prs:current.prs||{skipped:true}}));
       return false;
     }
     if(!stillShown(started))return false;
@@ -128,8 +130,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       settle("prs",p.ok===false?{error:reason(p.error)}:{ok:true});
     }catch(error){
       refreshFailureRef.current={stage:"prs",message:error.message||String(error)||"Could not refresh pull requests."};
-      if(stillShown(started)&&(reportErrors||i?.remotes?.length))setError(actionError("Could not refresh pull requests",error));
-      settle("prs",{error:reason(error)});
+      const banner=stillShown(started)&&(reportErrors||i?.remotes?.length)?actionError("Could not refresh pull requests",error):"";
+      if(banner)setError(banner);
+      settle("prs",{error:reason(error),banner});
       return false;
     }
     return true;
@@ -372,7 +375,11 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const textGeneratorLabel=agentRuntime&&agentRuntime!=="native"?(agentRuntimeLabel||agentRuntime):modelProviderLabel(provider);
   // Until a read answers its parts say so; a failed one leaves them unknown (the banner, or the title, names the failure).
   const infoLoading=!info&&!reads.info?.error,infoPending=infoLoading?"checking…":"unknown";
-  const diagnosticsLoading=!diagnostics&&!reads.diagnostics?.error;
+  const diagnosticsLoading=!diagnostics&&!reads.diagnostics;
+  // A detached HEAD has no branch to select, so the branch list leads with it ("detached", as the header chip and the worktree rows
+  // say) rather than showing the first branch as checked out; its title names the commit.
+  const detachedAt=info&&!info.branch?(info.worktrees||[]).find(worktree=>worktree.path===info.root)?.head||"":"";
+  const branchTitle=info?.branch?info.branch+" · switch branch":info?"detached"+(detachedAt?" at "+detachedAt.slice(0,8):"")+" · switch branch":"Switch branch";
   const gitVersion=diagnostics?diagnostics.git?.version||"not found":diagnosticsLoading?"checking…":"unknown";
 
   if(!projectPath)return <div className="empty-state">Open a project to use source control.</div>;
@@ -380,7 +387,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
 
   return <div className="source-control">
     <div className="sc-toolbar">
-      <div className="sc-branch"><GitBranch size={16}/><select aria-label="Current branch" title={info?.branch?info.branch+" · switch branch":"Switch branch"} value={info?.branch||""} disabled={!info} aria-busy={infoLoading||undefined} onChange={e=>action("branch-switch",{name:e.target.value})}>{!info&&<option value="">{infoLoading?"Loading branches…":"Branches unavailable"}</option>}{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button aria-label="Create branch" title="Create branch" onClick={async()=>{const n=await askText("New branch name");if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
+      <div className="sc-branch"><GitBranch size={16}/><select aria-label="Current branch" title={branchTitle} value={info?.branch||""} disabled={!info} aria-busy={infoLoading||undefined} onChange={e=>action("branch-switch",{name:e.target.value})}>{!info&&<option value="">{infoLoading?"Loading branches…":"Branches unavailable"}</option>}{info&&!info.branch&&<option value="" disabled>detached</option>}{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button aria-label="Create branch" title="Create branch" onClick={async()=>{const n=await askText("New branch name");if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
       <div><button onClick={()=>action("fetch")} disabled={!!busy}><RefreshCw size={13}/> Fetch</button><button onClick={()=>action("pull")} disabled={!!busy}><Download size={13}/> Pull</button><button onClick={()=>action("push",{setUpstream:!info?.upstream})} disabled={!!busy}><Upload size={13}/> Push</button></div>
     </div>
     {error&&<div className="inline-error source-control-error" role="alert">{error}</div>}
@@ -411,6 +418,8 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       </>:<p>Select a pull request to inspect it.</p>}</div></div>
         :!reads.prs?<div className="pr-loading" role="status" aria-busy="true"><LoaderCircle size={18} aria-hidden="true"/><strong>Loading pull requests…</strong></div>
         :reads.prs.error&&info&&!info.remotes?.length?<div className="pr-empty-state"><GitPullRequest size={20}/><strong>No remote yet</strong><span>Pull requests are listed once this repository has a remote on a code host.</span></div>
+        :reads.prs.skipped?<div className="pr-empty-state"><GitPullRequest size={20}/><strong>Pull requests unavailable</strong><span>They are listed once the repository can be read.</span></div>
+        :reads.prs.error&&reads.prs.banner&&error===reads.prs.banner?<div className="pr-empty-state"><GitPullRequest size={20}/><strong>Pull requests unavailable</strong><span>The list could not be read; the message above says why.</span></div>
         :reads.prs.error?<div className="pr-empty-state error"><GitPullRequest size={20}/><strong>Could not list pull requests</strong><span>{reads.prs.error}</span></div>
         :<div className="pr-empty-state"><GitPullRequest size={20}/><strong>No pull requests found</strong><span>Create a pull request or refresh after one is opened on the remote.</span></div>}
     </section>

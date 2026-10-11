@@ -472,7 +472,15 @@ test("a Git panel whose first reads fail says so, instead of loading for ever or
   await expect(right.getByRole("combobox",{name:"Current branch"}).locator("option")).toHaveText(["Branches unavailable"]);
   await expect(repository).toContainText("Root: unknown");
   await expect(repository).toContainText("Git: unknown");
-  await expect(pulls.locator(".pr-empty-state.error")).toContainText("Deliberate repository read failure");
+  // The pull requests were never asked for: the card says they wait on the repository and leaves its failure to the banner, and Git
+  // (never checked) names no failure of its own.
+  const unread=pulls.locator(".pr-empty-state");
+  await expect(unread).toContainText("Pull requests unavailable");
+  await expect(unread).toContainText("They are listed once the repository can be read.");
+  await expect(unread).not.toHaveClass(/error/);
+  await expect(right.getByText("Deliberate repository read failure")).toHaveCount(1);
+  await expect(right.getByText("Could not list pull requests")).toHaveCount(0);
+  await expect(repository.locator("p").filter({hasText:"Git:"})).not.toHaveAttribute("title",/.+/);
   await expect(right.locator("[aria-busy=true]")).toHaveCount(0);
   await expect(right.getByText(/checking…|Loading/)).toHaveCount(0);
   await expectNoEmptyClaims(right,EMPTY_CLAIMS.filter(claim=>!claim.test("Detected: unknown")));
@@ -490,6 +498,55 @@ test("a Git panel whose first reads fail says so, instead of loading for ever or
   await expect(git).toHaveText("Git: unknown");
   await expect(git).toHaveAttribute("title","Could not check Git: Deliberate diagnostics failure");
   await expect(pulls.locator(".pr-empty-state")).toContainText("No pull requests found");
+});
+
+test("a pull-request list that fails for a repository with a remote is named once, by the banner",async({page,request})=>{
+  test.setTimeout(35_000);
+  const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  const boot=await (await request.get("/api/bootstrap")).json(),reason="Could not identify this Git host. Choose GitHub, GitLab, Forgejo/Gitea, Bitbucket, or Azure DevOps.";
+  await page.route("**/api/git/info?**",route=>json(route,{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:"origin/main",status:[],worktrees:[{path:boot.cwd,branch:"main"}],remotes:[{name:"origin",url:"https://git.example.invalid/owner/repo.git"}]}));
+  await page.route("**/api/source-control/diagnostics?**",route=>json(route,{selectedProvider:null,detectedProvider:"unknown",git:{version:"git version fixture"},providers:{},capabilities:{}}));
+  await page.route("**/api/source-control/prs?**",route=>json(route,{error:reason},400));
+  const {right,pulls}=await openGitPanel(page,request,"Source control pull requests failed");
+  await expect(right.locator(".source-control-error")).toHaveText("Could not refresh pull requests: "+reason);
+  // The card says the list is unavailable and points at the banner, which stays pinned above it, instead of repeating the reason.
+  const unavailable=pulls.locator(".pr-empty-state");
+  await expect(unavailable).toContainText("Pull requests unavailable");
+  await expect(unavailable).toContainText("the message above says why");
+  await expect(unavailable).not.toHaveClass(/error/);
+  await expect(right.getByText(reason)).toHaveCount(1);
+  await expect(right.getByText("No pull requests found")).toHaveCount(0);
+  await page.setViewportSize({width:1600,height:980});
+  await pulls.scrollIntoViewIfNeeded();
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pull-requests-failed-with-remote-dark-1600x980.png"});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pull-requests-failed-with-remote-light-1600x980.png"});
+});
+
+test("a detached HEAD is the branch list's selection, not the first branch",async({page,request})=>{
+  test.setTimeout(35_000);
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await page.route("**/api/git/info?**",route=>json(route,{isGit:true,root:boot.cwd,branch:null,branches:["backup/pre-benchmark-message-cleanup","main"],upstream:null,status:[],remotes:[],worktrees:[{path:boot.cwd,head:"359de2e5c0ffee0123456789abcdef0123456789"},{path:boot.cwd+"-other",head:"0123456789abcdef0123456789abcdef01234567",branch:"main"}]}));
+  await page.route("**/api/source-control/diagnostics?**",route=>json(route,{selectedProvider:null,detectedProvider:"unknown",git:{version:"git version fixture"},providers:{},capabilities:{}}));
+  await page.route("**/api/source-control/prs?**",route=>json(route,{items:[]}));
+  const {right}=await openGitPanel(page,request,"Source control detached head");
+  const branch=right.getByRole("combobox",{name:"Current branch"});
+  await expect(branch).toBeEnabled();
+  await expect(branch).toHaveValue("");
+  await expect(branch.locator("option:checked")).toHaveText("detached");
+  await expect(branch.locator("option")).toHaveText(["detached","backup/pre-benchmark-message-cleanup","main"]);
+  await expect(branch.locator("option").first()).toBeDisabled();
+  await expect(branch).toHaveAttribute("title","detached at 359de2e5 · switch branch");
+  await expect(page.locator(".branch-control")).toHaveText("detached");
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-detached-head-dark-1280x800.png"});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-detached-head-light-1280x800.png"});
+  // Picking a branch still switches to it.
+  let switched=null;
+  await page.route("**/api/git/action",route=>{switched=route.request().postDataJSON();return json(route,{ok:true})});
+  await branch.selectOption("main");
+  await expect.poll(()=>switched&&switched.action+":"+switched.name).toBe("branch-switch:main");
 });
 
 test("a repository with no remote says it has none instead of failing to list pull requests",async({page,request})=>{
