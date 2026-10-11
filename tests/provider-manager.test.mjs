@@ -351,6 +351,31 @@ test("official OpenAI catalog drops video and search-only models and keeps legac
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("official OpenAI catalog drops models past their shutdown date and the live voice model",async()=>{
+  // Live, 2026-10-11: /v1/models still listed these with a shutdown_date already past, and the Responses API answered each
+  // with 404 "The model `<id>` does not exist or you do not have access to it."; gpt-live-1 answered 500 to every request.
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-shutdown-"));
+  const rows=[
+    {id:"gpt-5-codex",created:1757527818,shutdown_date:"2026-07-23"},
+    {id:"gpt-5.1-codex-max",created:1763671532,shutdown_date:"2026-07-23"},
+    {id:"gpt-5.1-chat-latest",created:1762988221,shutdown_date:"2026-07-23"},
+    {id:"gpt-5.3-chat-latest",created:1770537915,shutdown_date:"2026-08-10"},
+    {id:"gpt-3.5-turbo-1106",created:1698959748,shutdown_date:"2026-09-28"},
+    {id:"gpt-3.5-turbo",created:1677610602,shutdown_date:"2026-10-23"},
+    {id:"o4-mini",created:1744225351,shutdown_date:"2026-10-23"},
+    {id:"gpt-live-1",created:1790000000,shutdown_date:null},
+    {id:"gpt-6.1-sol",created:1790552874,shutdown_date:null},
+    {id:"gpt-6.2-sol",created:1799000000,shutdown_date:"2026-10-11"},
+  ].map(row=>({...row,object:"model",owned_by:"system"}));
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root,OPENAI_API_KEY:"oa-shutdown-fixture"},nowFn:()=>Date.parse("2026-10-11T12:00:00Z"),fetchFn:async()=>Response.json({object:"list",data:rows})});
+    const result=await manager.models("openai");
+    assert.deepEqual(result.models,["gpt-3.5-turbo","gpt-6.1-sol","o4-mini"],"a model shuts down from the start of its shutdown date");
+    assert.deepEqual(result.metadata.map(item=>item.id).sort(),result.models);
+    assert.equal(result.defaultModel,"gpt-6.1-sol","a shut-down model is never the default, however new");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI catalog judges fine-tunes by their base model and filtered words as whole id tokens",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-fine-tunes-"));
   try{

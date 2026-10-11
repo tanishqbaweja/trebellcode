@@ -97,15 +97,18 @@ export function normalizeProviderId(value) {
   return Object.prototype.hasOwnProperty.call(MODEL_PROVIDERS, id) ? id : DEFAULT_MODEL_PROVIDER;
 }
 
-// The official OpenAI /models list also returns embedding, audio, image, video (Sora), moderation, realtime, search-only
-// and legacy completion models; none of them can run a Trebell Native agent turn on the Responses API (it refuses the
-// search models outright). The words match whole id tokens only, and a fine-tune (ft:<base>:<org>:<suffix>:<id>) is judged
-// by its base model, so an organization or suffix such as "speechify" or "image-captions" never hides a chat fine-tune.
-const OPENAI_NON_AGENT_MODEL=/(?:^|[^a-z0-9])(?:embedding|audio|tts|whisper|transcribe|speech|dall-e|image|sora|video|moderation|realtime|search|babbage|davinci|instruct)(?=[^a-z0-9]|$)/;
+// The official OpenAI /models list also returns embedding, audio, image, video (Sora), moderation, realtime, live voice,
+// search-only and legacy completion models; none of them can run a Trebell Native agent turn on the Responses API (it
+// refuses the search models outright and answered gpt-live-1 with HTTP 500 every time). The words match whole id tokens
+// only, and a fine-tune (ft:<base>:<org>:<suffix>:<id>) is judged by its base model, so an organization or suffix such as
+// "speechify" or "image-captions" never hides a chat fine-tune.
+const OPENAI_NON_AGENT_MODEL=/(?:^|[^a-z0-9])(?:embedding|audio|tts|whisper|transcribe|speech|dall-e|image|sora|video|moderation|realtime|live|search|babbage|davinci|instruct)(?=[^a-z0-9]|$)/;
 const OPENAI_DEFAULT_MODEL_EXCLUDED=/mini|nano|search|preview|audio|realtime|codex|oss|chat-latest/;
 // Expensive "-pro" variants (pro as a whole id token, e.g. gpt-6-pro, o3-pro) stay selectable but are never the silent default.
 const OPENAI_PRO_MODEL=/(?:^|[^a-z0-9])pro(?:[^a-z0-9]|$)/;
 function openAiAgentModel(id){const text=String(id||"").trim().toLowerCase(),base=text.startsWith("ft:")?text.split(":")[1]||"":text;return !OPENAI_NON_AGENT_MODEL.test(base)}
+// /models keeps listing a model after its shutdown_date (a UTC day), and from that day the Responses API answers 404 for it.
+function openAiModelShutDown(item,now){const date=Date.parse(String(item?.shutdown_date||""));return Number.isFinite(date)&&date<=now}
 function openAiDefaultModel(rows=[]){
   const ranked=rows.map(item=>({id:String((typeof item==="string"?item:item?.id)||"").trim(),created:Number(typeof item==="string"?NaN:item?.created)})).filter(item=>item.id&&!OPENAI_PRO_MODEL.test(item.id.toLowerCase()))
     .map(item=>({...item,created:Number.isFinite(item.created)?item.created:-Infinity}))
@@ -713,7 +716,8 @@ export class ProviderManager {
       throw new Error(`${provider.name} returned invalid JSON from /models`);
     }
     const listed = Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed?.models) ? parsed.models : [];
-    const rows = provider.id === "openai" ? listed.filter((item) => openAiAgentModel(typeof item === "string" ? item : item?.id)) : listed;
+    const now = Number(this.nowFn());
+    const rows = provider.id === "openai" ? listed.filter((item) => openAiAgentModel(typeof item === "string" ? item : item?.id) && !openAiModelShutDown(item, now)) : listed;
     const models = [...new Set(rows.map((item) => typeof item === "string" ? item : item?.id).filter(Boolean).map(String))].sort();
     return {
       models,
