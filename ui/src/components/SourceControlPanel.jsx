@@ -1,6 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, Eye, EyeOff, Pencil, ShieldCheck, Layers3 } from "lucide-react";
 import { api } from "../api.js";
+import { distinctPathParts } from "../inspector-labels.js";
 import { SOURCE_CONTROL_PAGE_SIZE, sourceControlWindow } from "../source-control-window.js";
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
 import { createGitTextRequests, sourceControlContext, sourceControlContextCurrent, sourceControlErrorAfterContextChange } from "../source-control-context.js";
@@ -312,6 +313,8 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const statusWindow=useMemo(()=>sourceControlWindow(info?.status||[],{limit:statusLimit,keyOf:item=>item?.path}),[info?.status,statusLimit]);
   const prWindow=useMemo(()=>sourceControlWindow(prs,{limit:prLimit,activeKey:selectedPr?.number,keyOf:item=>item?.number}),[prs,prLimit,selectedPr?.number]);
   const fileWindow=useMemo(()=>sourceControlWindow(selectedPr?.files||[],{limit:fileLimit,keyOf:item=>item?.path}),[selectedPr?.files,fileLimit]);
+  // Worktrees often share one long parent folder, so each row leads with the part of its path that tells it apart.
+  const worktreePaths=useMemo(()=>distinctPathParts((info?.worktrees||[]).map(w=>w.path)),[info?.worktrees]);
   // Commit and PR text comes from the active harness; only Trebell Native calls the model provider directly.
   const textGeneratorLabel=agentRuntime&&agentRuntime!=="native"?(agentRuntimeLabel||agentRuntime):modelProviderLabel(provider);
 
@@ -320,7 +323,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
 
   return <div className="source-control">
     <div className="sc-toolbar">
-      <div className="sc-branch"><GitBranch size={16}/><select aria-label="Current branch" title="Switch branch" value={info?.branch||""} disabled={!info} aria-busy={!info||undefined} onChange={e=>action("branch-switch",{name:e.target.value})}>{!info&&<option value="">Loading branches…</option>}{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button aria-label="Create branch" title="Create branch" onClick={async()=>{const n=await askText("New branch name");if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
+      <div className="sc-branch"><GitBranch size={16}/><select aria-label="Current branch" title={info?.branch?info.branch+" · switch branch":"Switch branch"} value={info?.branch||""} disabled={!info} aria-busy={!info||undefined} onChange={e=>action("branch-switch",{name:e.target.value})}>{!info&&<option value="">Loading branches…</option>}{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button aria-label="Create branch" title="Create branch" onClick={async()=>{const n=await askText("New branch name");if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
       <div><button onClick={()=>action("fetch")} disabled={!!busy}><RefreshCw size={13}/> Fetch</button><button onClick={()=>action("pull")} disabled={!!busy}><Download size={13}/> Pull</button><button onClick={()=>action("push",{setUpstream:!info?.upstream})} disabled={!!busy}><Upload size={13}/> Push</button></div>
     </div>
     {error&&<div className="inline-error source-control-error" role="alert">{error}</div>}
@@ -332,7 +335,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       </section>
       <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?info.root||"—":"—"}</code></p><p>Upstream: <code>{info?info.upstream||"none":"—"}</code></p><p>Git: {diagnostics?.git?.version||(diagnosticsLoading?"checking…":"not found")}</p><label className="source-provider-field"><span>Code host</span><select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});refresh(e.target.value,{reportErrors:true})}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?diagnostics?.providers?.[sourceProvider]?.label||sourceProvider:"Detected: "+(diagnostics?.detectedProvider||"unknown")} · {sourceProvider?(diagnostics?.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics?.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):"choose a provider if auto-detection is ambiguous"}</p>
         {!info?.remotes?.some(remote=>remote.name==="origin")&&sourceProvider&&diagnostics?.capabilities?.[sourceProvider]?.publish&&<button onClick={publishRepository} disabled={!!busy||!diagnostics?.providers?.[sourceProvider]?.authenticated}><Upload size={13}/> Publish repository</button>}
-        {info&&<h4>Worktrees</h4>}{(info?.worktrees||[]).map(w=><div className="worktree-row" key={w.path}><span>{w.branch||"detached"}</span><code>{w.path}</code>{w.path!==info?.root&&<button onClick={()=>openProjectPath(w.path)} disabled={busy==="open-project"}>Open</button>}</div>)}
+        {info&&<h4>Worktrees</h4>}{(info?.worktrees||[]).map((w,index)=><div className="worktree-row" key={w.path} title={w.path}><span>{w.branch||"detached"}</span><code><bdi className="worktree-dir">{worktreePaths[index]?.dir}</bdi><span className="worktree-sep">{worktreePaths[index]?.sep}</span><bdi className="worktree-name">{worktreePaths[index]?.name}</bdi></code>{w.path!==info?.root&&<button onClick={()=>openProjectPath(w.path)} disabled={busy==="open-project"}>Open</button>}</div>)}
         {(remote||window.trebellDesktop?.pickDirectory)&&<button onClick={addWorktree} disabled={!!busy}><Plus size={13}/> Add worktree</button>}
       </section>
     </div>

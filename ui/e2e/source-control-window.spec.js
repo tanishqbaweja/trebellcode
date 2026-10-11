@@ -168,3 +168,85 @@ test("linked thread refresh failures retain last-known-good data for the same pu
   await prButton.click();await expect(right.getByText("Stable review thread")).toBeVisible();await expect(right.getByText(/Deliberate reverse-link refresh failure/)).toBeVisible();expect(reverseReads).toBe(2);
   await page.setViewportSize({width:1280,height:800});await right.scrollIntoViewIfNeeded();const metrics=await right.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"source-control-linked-thread-refresh-failure-1280x800.png",fullPage:true});
 });
+
+test("the Git panel lines its loading and clean text up with its rows, ends a long branch in an ellipsis and leads worktrees with their folder",async({page,request})=>{
+  test.setTimeout(35_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Source control layout"}});
+
+  const branch="feature/inspector-review/keep-the-current-branch-readable-when-it-is-long",parent="C:/Users/developer/AppData/Local/Trebell/devspace/worktrees/";
+  const worktrees=[{path:boot.cwd,branch},{path:parent+"Trebell-0c178972",branch:"trebell/thread-0c178972"},{path:parent+"Trebell-0d63a1b4",branch:"trebell/thread-0d63a1b4-review-the-inspector-panels"},{path:parent+"docs",branch:"docs"}];
+  let status=[],releaseInfo;const infoHeld=new Promise(resolve=>{releaseInfo=resolve});
+  const info=()=>({isGit:true,root:boot.cwd,branch,branches:["main",branch],upstream:"origin/"+branch,status,worktrees,remotes:[{name:"origin",url:"https://example.test/repo.git"}]});
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route("**/api/git/info?**",async route=>{await infoHeld;return json(route,info())});
+  await page.route("**/api/source-control/diagnostics?**",route=>json(route,{selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,comment:true,review:true,merge:true}}}));
+  await page.route("**/api/source-control/prs?**",route=>json(route,{provider:"github",capabilities:{create:true,comment:true,review:true,merge:true},items:[]}));
+  await page.route("**/api/git/action",route=>json(route,{ok:true,result:{info:info()}}));
+
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const project=page.locator(".project-card").filter({hasText:"Source control layout"});
+  await expect(project).toBeVisible();await project.locator(".project-open").click();
+  await expect(page.getByRole("heading",{name:"What do you want to build?"})).toBeVisible();
+  await page.getByTestId("right-panel-toggle").click();
+  const right=page.getByTestId("right-panel");await right.getByRole("button",{name:"Git",exact:true}).click();
+
+  // Where a reader sees text start: the drawn text of a line, and the inside of the commit message box under the list.
+  const textLeft=locator=>locator.evaluate(node=>{const range=document.createRange();range.selectNodeContents(node);return range.getBoundingClientRect().left});
+  const messageLeft=await right.locator(".commit-box textarea").evaluate(node=>{const style=getComputedStyle(node);return node.getBoundingClientRect().left+parseFloat(style.borderLeftWidth)+parseFloat(style.paddingLeft)});
+  const loading=right.locator(".status-list > .sc-loading");
+  await expect(loading).toHaveText("Loading changes…");
+  expect(Math.abs(await textLeft(loading)-messageLeft)).toBeLessThanOrEqual(1);
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-loading-dark-1280x800.png",fullPage:true});
+  releaseInfo();
+  const clean=right.locator(".status-list > .sc-clean");
+  await expect(clean).toHaveText("Working tree clean.");
+  const cleanLeft=await textLeft(clean);
+  expect(Math.abs(cleanLeft-messageLeft)).toBeLessThanOrEqual(1);
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-clean-dark-1280x800.png",fullPage:true});
+  // The clean text starts where a changed row's badge does once the tree has a change.
+  status=[{code:" M",path:"src/app.js"}];
+  await right.getByRole("button",{name:"Fetch",exact:true}).click();
+  const badge=right.locator(".status-list > div code");
+  await expect(badge).toHaveText("M");
+  expect(Math.abs(await badge.evaluate(node=>node.getBoundingClientRect().left)-cleanLeft)).toBeLessThanOrEqual(1);
+
+  // The branch is too long for its select: it ends in an ellipsis, and the tooltip names all of it.
+  const select=right.getByRole("combobox",{name:"Current branch"});
+  await expect(select).toHaveValue(branch);
+  expect(await select.getAttribute("title")).toContain(branch);
+  const fit=await select.evaluate(node=>{
+    const style=getComputedStyle(node),probe=document.createElement("span");probe.textContent=node.selectedOptions[0].text;
+    Object.assign(probe.style,{position:"absolute",visibility:"hidden",whiteSpace:"pre",fontFamily:style.fontFamily,fontSize:style.fontSize,fontWeight:style.fontWeight,letterSpacing:style.letterSpacing});
+    document.body.append(probe);const text=probe.getBoundingClientRect().width;probe.remove();
+    return {text,room:node.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight),textOverflow:style.textOverflow};
+  });
+  expect(fit.text).toBeGreaterThan(fit.room);
+  expect(fit.textOverflow).toBe("ellipsis");
+
+  // Worktrees share one long parent folder: each row leads with its own folder, whole, and its tooltip is the full path. The
+  // parent follows on the same line only where it fits or has room for a few characters before its ellipsis.
+  const rows=right.locator(".worktree-row");
+  await expect(rows).toHaveCount(worktrees.length);
+  for(const [index,worktree] of worktrees.entries())await expect(rows.nth(index)).toHaveAttribute("title",worktree.path);
+  await expect(rows.locator(".worktree-name")).toHaveText([/./,"Trebell-0c178972","Trebell-0d63a1b4","docs"]);
+  const placement=()=>rows.locator("code").evaluateAll(nodes=>nodes.map(node=>{
+    const name=node.querySelector(".worktree-name"),dir=node.querySelector(".worktree-dir"),box=node.getBoundingClientRect(),own=name.getBoundingClientRect(),rest=dir.getBoundingClientRect();
+    const shown=rest.width>0&&rest.top<box.bottom-1,room=parseFloat(getComputedStyle(dir).fontSize)*4.5;
+    return {whole:name.scrollWidth<=name.clientWidth&&own.right<=box.right+1,first:own.left<=rest.left,parent:!shown?"hidden":dir.scrollWidth>dir.clientWidth?"cut":"whole",
+      fits:!shown||(rest.right<=box.right+1&&rest.width>=Math.min(room,dir.scrollWidth)-1)};
+  }));
+  const checkPlacement=async()=>{
+    const placed=await placement();
+    expect(placed.map(({whole,first,fits})=>({whole,first,fits}))).toEqual(worktrees.map(()=>({whole:true,first:true,fits:true})));
+    expect(placed[3].parent).toBe("cut");
+  };
+  await checkPlacement();
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-layout-dark-1280x800.png",fullPage:true});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await checkPlacement();
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-layout-light-1280x800.png",fullPage:true});
+});

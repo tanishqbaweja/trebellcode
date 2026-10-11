@@ -474,7 +474,8 @@
 :root:root .context-panel .sc-toolbar>div{display:flex;align-items:center;gap:4px;min-width:0}
 :root:root .context-panel .sc-toolbar>.sc-branch{flex:1 1 150px;gap:6px;padding-left:4px}
 :root:root .context-panel .sc-branch>svg{flex:none;color:var(--ac)}
-:root:root .context-panel .sc-toolbar select{flex:1;min-width:0;max-width:280px;font:500 12px/1 var(--mono);background-color:var(--bg1)!important}
+/* A branch name longer than the select ends in an ellipsis instead of being cut mid-letter; the full name is in its tooltip. */
+:root:root .context-panel .sc-toolbar select{flex:1;min-width:0;max-width:280px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:500 12px/1 var(--mono);background-color:var(--bg1)!important}
 :root:root .context-panel .branch-pr-badge{display:grid;grid-template-columns:18px minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:9px 10px 9px 12px;border:1px solid color-mix(in srgb,var(--ac) 32%,var(--line))!important;border-radius:var(--r-m);background:var(--acsoft)!important;color:var(--ac)!important}
 :root:root .context-panel .branch-pr-badge span{min-width:0}
 :root:root .context-panel .branch-pr-badge :is(strong,small){display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -509,9 +510,19 @@
 :root:root .context-panel .source-provider-field span{font:600 10.5px/1.2 var(--font)!important;letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)!important}
 :root:root .context-panel .source-provider-field select{width:100%;height:32px}
 :root:root .context-panel .sc-card>p:has(+h4){margin-bottom:0}
-:root:root .context-panel .worktree-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;min-height:36px;border-top:1px solid var(--line)!important;font-size:12px}
-:root:root .context-panel .worktree-row>span{font:600 11.5px/1.2 var(--mono);color:var(--ac)!important}
+/* A long branch keeps at most 45% of the row, so the path beside it stays readable. */
+:root:root .context-panel .worktree-row{display:grid;grid-template-columns:fit-content(45%) minmax(0,1fr) auto;align-items:center;gap:10px;min-height:36px;border-top:1px solid var(--line)!important;font-size:12px}
+:root:root .context-panel .worktree-row>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 11.5px/1.2 var(--mono);color:var(--ac)!important}
 :root:root .context-panel .worktree-row code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:400 11px/1.2 var(--mono);color:var(--tx3)!important}
+/* Worktrees often sit side by side under one long parent folder, so a path leads with the part that tells it apart (its folder)
+   and the parent follows, muted, ending in an ellipsis where the row runs out. The text stays "parent/folder" in document order.
+   The parent asks for only 4.5em (or its own width if less) to share the line and then grows up to its full width: line breaking
+   uses that request, so a parent with no room for a few characters wraps onto the hidden second line instead of leaving a stray
+   letter, and a long parent that does get room is cut there instead of wrapping away whole. */
+:root:root .context-panel .worktree-row code{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:7px;height:1.2em}
+:root:root .context-panel .worktree-row .worktree-name{order:-1;flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;color:var(--tx1)}
+:root:root .context-panel .worktree-row .worktree-dir{flex:1 1 4.5em;min-width:0;max-width:max-content;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .worktree-row .worktree-sep{display:none}
 :root:root .context-panel .worktree-row>button{height:26px;min-height:26px}
 :root:root .context-panel .sc-card>h4+.worktree-row{border-top:0!important}
 :root:root .context-panel .sc-card>button{margin-top:10px}
@@ -1096,6 +1107,7 @@
   :root:root .context-panel .workspace-body:has(.file-head,.workspace-file-error)>.tree-list{border-bottom:1px solid var(--line)!important}
 }
 
-/* Git panel while it loads, and the clean state. */
-:root:root .context-panel .status-list>p:is(.sc-loading,.sc-clean){margin:0;padding:10px 2px;color:var(--tx3)!important;font-size:12px}
+/* Git panel while it loads, and the clean state: inside the list's border, so the text starts where the rows' badges and the
+   commit message do (12px in), not against the border. */
+:root:root .context-panel .status-list>p:is(.sc-loading,.sc-clean){margin:0;padding:10px 12px;color:var(--tx3)!important;font-size:12px}
 :root:root .context-panel .sc-branch select:disabled{opacity:.7;cursor:progress}

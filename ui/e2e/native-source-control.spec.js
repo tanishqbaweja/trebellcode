@@ -53,6 +53,9 @@ test("Trebell Native can create a Git branch directly and the Git panel reflects
     await expect(page.locator(".branch-control")).toContainText("trebell/native-ui-proof",{timeout:3000});
     await page.getByTestId("right-panel-toggle").click();const panel=page.getByTestId("right-panel");await panel.getByRole("button",{name:"Git",exact:true}).click();await expect(panel.locator("select").first()).toHaveValue("trebell/native-ui-proof",{timeout:10_000});
     let metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"native-source-control-1600x980.png",fullPage:true});
-    await page.setViewportSize({width:1280,height:800});await expect(panel.locator("select").first()).toHaveValue("trebell/native-ui-proof");metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"native-source-control-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await expect(panel.locator("select").first()).toHaveValue("trebell/native-ui-proof");
+    // A branch name too long for the select ends in an ellipsis, and the tooltip names the whole branch.
+    const branchSelect=panel.getByRole("combobox",{name:"Current branch"});await expect(branchSelect).toHaveAttribute("title",/^trebell\/native-ui-proof\b/);expect(await branchSelect.evaluate(node=>getComputedStyle(node).textOverflow)).toBe("ellipsis");
+    metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"native-source-control-1280x800.png",fullPage:true});
   }finally{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
