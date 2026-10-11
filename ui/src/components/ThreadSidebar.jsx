@@ -16,6 +16,16 @@ import "./ThreadSidebar.css";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
 
+// A row's menu is shown in the top layer, where overlays.css anchors it to its button: nothing around the list can clip or cover it there
+// (the list's edge fade is a mask, which hides whatever is drawn inside the list, a fixed menu too, and the destinations sit under the
+// list). Without anchor positioning it stays in the list.
+const ROW_MENU_TOP_LAYER=typeof CSS!=="undefined"&&typeof HTMLElement!=="undefined"&&"showPopover" in HTMLElement.prototype&&Boolean(CSS.supports?.("anchor-scope:all")&&CSS.supports?.("position-try-fallbacks:flip-block"));
+function showRowMenu(menu,open){
+  const popover=ROW_MENU_TOP_LAYER?menu?.querySelector(":scope>.thread-menu-popover"):null;if(!popover)return;
+  try{if(open!==popover.matches(":popover-open"))open?popover.showPopover():popover.hidePopover()}catch{}
+}
+function closeRowMenu(menu){if(!menu)return;menu.open=false;showRowMenu(menu,false)}
+
 function threadCanFork(thread,runtimeCapabilities={}){
   if(runtimeCapabilities.fork===true)return true;
   if(runtimeCapabilities.fork!=="runtime")return false;
@@ -28,12 +38,12 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
   // One row menu is open at a time, and it closes like other menus: Escape (focus returns to its button) or a click outside it.
   useEffect(()=>{
     const menu=menuRef.current;if(!menuOpen||!menu)return;
-    for(const other of document.querySelectorAll("details.thread-menu[open]"))if(other!==menu)other.open=false;
-    const pointerDown=event=>{if(!menu.contains(event.target))menu.open=false};
+    for(const other of document.querySelectorAll("details.thread-menu[open]"))if(other!==menu)closeRowMenu(other);
+    const pointerDown=event=>{if(!menu.contains(event.target))closeRowMenu(menu)};
     const keyDown=event=>{
       if(event.key!=="Escape"||!menu.open)return;
       event.preventDefault();event.stopPropagation();
-      menu.open=false;menu.querySelector("summary")?.focus();
+      closeRowMenu(menu);menu.querySelector("summary")?.focus();
     };
     document.addEventListener("pointerdown",pointerDown,true);
     document.addEventListener("keydown",keyDown,true);
@@ -53,7 +63,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
     const copied=await writeClipboardText(value);
     if(!copied)throw new Error("Could not copy to clipboard.");
   };
-  const runMenuAction=callback=>{if(menuRef.current)menuRef.current.open=false;return runAction(callback)};
+  const runMenuAction=callback=>{closeRowMenu(menuRef.current);return runAction(callback)};
   // Why a thread cannot be moved: Codex orders the threads outside a section by recent activity only, and a thread of a section whose
   // order could not be read has no place to move from (the reason is named).
   const orderHint=thread.sectionOrderError||(agentRuntime==="codex"&&!thread.section?.id&&!thread.section?.name?"This list is kept in order of recent activity":undefined);
@@ -66,9 +76,9 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
         <span title={section==="Snoozed"&&meta?.snoozedUntil?undefined:fullDateTime(thread.updatedAt)||undefined}>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model||rowRuntimeLabel)+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
-    <details ref={menuRef} className="thread-menu" onToggle={event=>setMenuOpen(event.currentTarget.open)}>
+    <details ref={menuRef} className="thread-menu" onToggle={event=>{const open=event.currentTarget.open;showRowMenu(event.currentTarget,open);setMenuOpen(open)}}>
       <summary title="Thread actions"><MoreHorizontal size={13}/></summary>
-      <div className="thread-menu-popover">
+      <div className="thread-menu-popover" popover={ROW_MENU_TOP_LAYER?"manual":undefined}>
         {foreignRuntime?<button onClick={()=>runMenuAction(()=>onOpen(thread))}>Open in {rowRuntimeLabel}</button>:<>
           <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Pinned"?"active":"pin"))}>{section==="Pinned"?"Unpin":"Pin"}</button>
           <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Snoozed"?"active":"snooze"))}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
@@ -189,6 +199,8 @@ const ThreadSidebar=memo(function ThreadSidebar({
     return()=>window.removeEventListener("trebell:sidebar-search",focus);
   },[]);
   const groups=useMemo(()=>sidebarThreadGroups(threads,threadMeta),[threads,threadMeta]);
+  // A row React moves (the list reordered while its menu was open) leaves the top layer, as any moved popover does: its menu goes back.
+  useLayoutEffect(()=>{for(const menu of sectionsRef.current?.querySelectorAll("details.thread-menu[open]")||[])showRowMenu(menu,true)});
   const bulk=selectedIds.size>0;
   const managedInference=Boolean(runtimeCapabilities.managedInference);
   const providerLabel=modelProviderLabel(provider);

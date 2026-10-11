@@ -1136,6 +1136,40 @@ async function selectInOrder(page,names){
   await expect(page.locator(".bulk-bar span")).toHaveText(names.length+" selected");
 }
 
+// The row menu is drawn over whatever is around the list, so every item can be read and clicked on the last rows too: the list's edge
+// fade and the destinations under it once hid most of it.
+for(const [width,height] of [[1180,800],[1600,980]])test(`a thread's More actions menu lies whole over the sidebar footer on the list's last rows at ${width}x${height}, in dark and light`,async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width,height});
+  const threads=orderThreads(),meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  const harness=await startCodexHarness(threads,orderSections),menu=rowMenu(page),moves=sectionMoves(harness);
+  harness.order.set("0199-research",["research-two","research-one"]);
+  try{
+    await openApp(page,{harness,threads,meta,settings:{orderedThreadSections:["0199-research"]}});
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned gamma","Pinned beta","Pinned alpha"]],["Active",["Codex active one","Codex active two"]],["Research",["Research two","Research one"]]]);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value;document.documentElement.style.colorScheme=value},mode);await settle(page);
+      for(const name of ["Research two","Research one"]){
+        const row=await menu(name);await settle(page);
+        // What a pointer meets at the middle of each item is that item, and the whole menu is inside the window.
+        const probe=await row.locator(".thread-menu-popover").evaluate(pop=>{const box=pop.getBoundingClientRect();return {
+          inside:box.top>=0&&box.left>=0&&box.bottom<=innerHeight&&box.right<=innerWidth,
+          items:[...pop.querySelectorAll("button")].map(button=>{const b=button.getBoundingClientRect(),hit=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return [button.textContent,Boolean(hit)&&(hit===button||button.contains(hit))]}),
+        }});
+        expect(probe.inside).toBe(true);
+        expect(probe.items.map(([label])=>label)).toEqual(expect.arrayContaining(["Pin","Settle","Move up","Move down","Archive","Delete"]));
+        expect(probe.items.filter(([,hit])=>!hit)).toEqual([]);
+        if(name==="Research one")await page.screenshot({path:join(shotsDir,`sidebar-row-menu-last-row-${mode}-${width}x${height}.png`),animations:"disabled",clip:{x:0,y:0,width:Math.min(width,520),height}});
+        await page.keyboard.press("Escape");await expect(row.locator(".thread-menu")).not.toHaveAttribute("open","");
+      }
+    }
+    // A real click on the last row's Move up reaches it.
+    await (await menu("Research one")).getByRole("button",{name:"Move up",exact:true}).click();
+    await expect.poll(moves).toEqual([{threadId:"research-one",sectionId:"0199-research",beforeThreadId:"research-two"}]);
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned gamma","Pinned beta","Pinned alpha"]],["Active",["Codex active one","Codex active two"]],["Research",["Research one","Research two"]]]);
+  }finally{await harness.close()}
+});
+
 test("on a relay harness a bulk Pin un-done puts the threads a person placed back in their places, whatever order they were selected in",async({page})=>{
   test.setTimeout(60_000);
   const home=await mkdtemp(join(tmpdir(),"trebell-relay-bulk-undo-"));const relay=await startRelay(home);

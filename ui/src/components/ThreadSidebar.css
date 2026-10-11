@@ -3,3 +3,6 @@
    app's sheets, so its selectors outrank their "h4 span" rules; the name keeps the header's own type, as the bare text it replaces did. */
 .thread-sections section h4 span.thread-group-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:inherit;font-weight:inherit;letter-spacing:inherit;color:inherit}
 .thread-sections section h4 span.thread-group-count{flex:none}
+/* A row's menu in the top layer (ThreadSidebar.jsx) looks as it did in the list: a popover's own defaults (it scrolls, in the system's
+   text colour) give way to the menu's. */
+.sidebar .thread-menu>.thread-menu-popover[popover]{overflow:visible;color:inherit}
