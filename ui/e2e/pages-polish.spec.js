@@ -493,6 +493,20 @@ for(const mode of MODES){
     await expect(model.locator("em")).toHaveText("$1.08");
     expect(await model.locator("b").evaluate(el=>getComputedStyle(el).fontSize)).toBe("12.5px");
     expect(await model.locator("em").evaluate(el=>getComputedStyle(el).fontSize)).toBe("11.5px");
+    // At 900 wide the model rows keep the name, the count and the cost inside the card, with no sideways scroll.
+    await page.locator(".usage-environment-filter>summary").click();
+    await expect(page.locator(".usage-environment-filter")).not.toHaveAttribute("open","");
+    await page.setViewportSize({width:900,height:800});
+    await model.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+`contrast-usage-records-${mode}-900.png`});
+    const narrow=await page.evaluate(()=>{
+      const out=[];const root=document.documentElement;if(root.scrollWidth>root.clientWidth+1)out.push("page scrolls sideways");
+      for(const node of document.querySelectorAll(".secondary-page,.usage-page"))if(node.scrollWidth>node.clientWidth+1)out.push(node.className+" scrolls sideways");
+      for(const row of document.querySelectorAll(".usage-models>div")){const box=row.getBoundingClientRect();for(const el of row.querySelectorAll("strong,small,b,em")){const r=el.getBoundingClientRect();if(r.right>box.right+1||r.left<box.left-1)out.push(`"${el.textContent}" runs outside its row`)}}
+      return out;
+    });
+    expect(narrow).toEqual([]);
+    expect(await page.evaluate(lowContrastText,".usage-page")).toEqual([]);
   });
 
   test(`History rows read at 4.5:1 (${mode})`,async({page})=>{
