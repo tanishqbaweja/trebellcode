@@ -85,7 +85,46 @@ test("Codex runtime diagnostics show unavailable state instead of assuming readi
   await expect(runtimeCard).toContainText("Agent runtime: not ready");
   await expect(runtimeCard).not.toContainText("Inference:");
   await page.getByRole("button",{name:/Diagnostics/}).click();
-  await expect(page.locator(".diag-badges span").first()).not.toHaveClass(/\bok\b/);
+  // Once the runtime has answered, the unavailable harness reads as a warning (not as still loading, and not as ready).
+  await expect(page.locator(".diag-badges span").first()).toHaveClass(/\bwarn\b/);
+});
+
+test("Diagnostics stays neutral while its first answers load, then shows the real state",async({page,request})=>{
+  test.setTimeout(40_000);
+  let releaseDiagnostics=()=>{},releaseRuntime=()=>{};
+  const diagnosticsAnswered=new Promise(resolve=>{releaseDiagnostics=resolve}),runtimeAnswered=new Promise(resolve=>{releaseRuntime=resolve});
+  const native={id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true};
+  const fulfill=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
+  await page.route(/\/api\/agent-runtimes$/,route=>fulfill(route,{selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[native]}));
+  await page.route(/\/api\/diagnostics(?:\?.*)?$/,async route=>{await diagnosticsAnswered;return fulfill(route,{version:"fixture",runtime:{provider:"openai",providerReady:true},logs:[]})});
+  await page.route(/\/api\/runtime(?:\?.*)?$/,async route=>{await runtimeAnswered;return fulfill(route,{agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeStatus:native,provider:"openai",providerReady:true,appServerReady:true,logs:[]})});
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Diagnostics Pending Workspace",activate:true}});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await page.getByRole("button",{name:/Diagnostics/}).click();
+    const chips=page.locator(".diag-badges span"),log=page.locator(".diagnostics-log");
+    await expect(chips).toHaveCount(2);
+    const palette=await page.evaluate(()=>{const probe=document.createElement("span");document.querySelector(".settings-page").appendChild(probe);probe.style.color="var(--warn)";const warn=getComputedStyle(probe).color;probe.style.color="var(--ok)";const ok=getComputedStyle(probe).color;probe.remove();return {warn,ok}});
+    const chipColors=()=>chips.evaluateAll(nodes=>nodes.map(node=>getComputedStyle(node).color));
+    // Neither answer has arrived: an unknown state is not a warning (amber) and not ready (green), and the log is loading, not empty.
+    await expect(log).toContainText("Loading runtime log");
+    await expect(log).not.toContainText("No runtime activity yet");
+    for(const color of await chipColors()){expect(color).not.toBe(palette.warn);expect(color).not.toBe(palette.ok)}
+    await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-pending-1280x800.png"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    for(const color of await chipColors()){expect(color).not.toBe(palette.warn)}
+    await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-pending-light-1280x800.png"});
+    releaseDiagnostics();releaseRuntime();
+    // The answers arrive: both report ready, and an empty log now says there is no activity.
+    await expect(log).toContainText("No runtime activity yet");
+    await expect(chips.nth(0)).toHaveClass(/\bok\b/);await expect(chips.nth(1)).toHaveClass(/\bok\b/);
+    await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-loaded-light-1280x800.png"});
+  }finally{releaseDiagnostics();releaseRuntime()}
 });
 
 test("storage cleanup retention treats zero, negative and too-large days like the worktree field instead of one day",async({page,request})=>{

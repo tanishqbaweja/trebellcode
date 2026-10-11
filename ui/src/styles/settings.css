@@ -293,7 +293,9 @@
 
 /* ============ Diagnostics ============ */
 :root:root .settings-page.redesigned-settings .diag-badges{display:flex;flex-wrap:wrap;gap:8px}
-:root:root .settings-page.redesigned-settings .diag-badges span{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--warnb);border-radius:99px;background:var(--warnt);color:var(--warn);font-family:var(--mono);font-size:11px;font-weight:600}
+/* A chip is neutral until its answer arrives, then ready (ok) or not ready (warn). */
+:root:root .settings-page.redesigned-settings .diag-badges span{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2);font-family:var(--mono);font-size:11px;font-weight:600}
+:root:root .settings-page.redesigned-settings .diag-badges span.warn{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
 :root:root .settings-page.redesigned-settings .diag-badges span.ok{border-color:var(--okb);background:var(--okt);color:var(--ok)}
 :root:root .settings-page.redesigned-settings .diag-badges span svg{width:12px;height:12px}
 :root:root .settings-page.redesigned-settings .diagnostics-log{min-width:0;margin:0;border:1px solid var(--line)!important;border-radius:var(--r-l)!important;background:linear-gradient(180deg,var(--surf),var(--surf2))!important;overflow:hidden}
