@@ -172,3 +172,128 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     wss.close();await new Promise(resolve=>http.close(resolve));
   }
 });
+
+// A Codex app-server for the Tools page whose MCP server list (the slow read: Codex starts the servers before it answers) can be
+// held, answered with one server or none, or failed. The other lists answer at once, full or empty.
+async function startHeldMcpFixture(){
+  const control={mcp:"servers",lists:"full",hold:true,held:[]};
+  const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
+  const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      const send=payload=>ws.send(JSON.stringify({id:message.id,...payload}));
+      if(message.method==="mcpServerStatus/list"){
+        const answer=()=>control.mcp==="fail"?send({error:{code:-32000,message:"Deliberate MCP server list failure"}}):send({result:{data:control.mcp==="servers"?[server]:[],nextCursor:null}});
+        if(control.hold)control.held.push(answer);else answer();
+        return;
+      }
+      const full=control.lists==="full";let result={};
+      if(message.method==="initialize")result={userAgent:"tools-held-list-fixture"};
+      else if(message.method==="permissionProfile/list")result={data:full?[{id:"workspace-write",description:"Edit files in the workspace",allowed:true}]:[]};
+      else if(message.method==="experimentalFeature/list")result={data:full?[{name:"step_model_switching",displayName:"Step model switching",description:"Switch models between steps of a running turn.",enabled:false}]:[]};
+      else if(["thread/list","threadSection/list","collaborationMode/list","app/list","hooks/list","plugin/share/list","thread/loaded/list","skills/list"].includes(message.method))result={data:[],nextCursor:null};
+      else if(message.method==="plugin/list")result={marketplaces:[]};
+      else if(message.method==="app/installed")result={apps:[]};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      else if(message.method==="account/read")result={account:{type:"chatgpt",email:"fixture@example.com",planType:"plus"},requiresOpenaiAuth:false};
+      else if(message.method==="account/rateLimits/read")result={rateLimits:{}};
+      else if(message.method==="account/usage/read")result={summary:{}};
+      else if(message.method==="config/read")result={config:{},layers:[]};
+      else if(message.method==="configRequirements/read")result={requirements:null};
+      else if(message.method==="memory/status")result={v2ConsolidatedThreads:3,v2Ready:false};
+      else if(message.method==="server/diagnostics")result={process:{id:321,residentMemoryBytes:4096},gauges:[]};
+      else if(message.method==="externalAgentConfig/import/readHistories")result={data:[],connectors:[]};
+      else if(message.method==="windowsSandbox/readiness")result={status:"ready"};
+      send({result});
+    });
+  });
+  const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
+  return {control,wsUrl:`ws://127.0.0.1:${port}`,
+    release(){control.hold=false;for(const answer of control.held.splice(0))answer()},
+    async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
+}
+async function openTools(page,wsUrl){
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd:process.cwd(),platform:process.platform,version:"tools-held-list-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{}}));
+  await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  await page.goto("/");
+  await page.getByRole("button",{name:"Tools",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible({timeout:10_000});
+}
+
+test("Tools cards claim a runtime list is empty only once it has loaded empty",async({page})=>{
+  test.setTimeout(45_000);
+  const fixture=await startHeldMcpFixture();
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    const tools=page.locator(".capabilities-page"),refresh=page.locator(".capabilities-toolbar button");
+    const card=title=>tools.locator(".capability-card").filter({has:page.getByText(title,{exact:true})}).first();
+    const listClaims=["This runtime reported no permission profiles.","No MCP servers are configured for this runtime.","This runtime reported no experimental features."];
+    const otherClaims=["Codex did not return account metadata for this inference route.","Memory readiness is unavailable from this Codex runtime.","Process diagnostics are unavailable from this Codex runtime.","No capability report available.","No plugin catalog is available in this runtime.","No shared plugins were returned for this account.","No app connectors reported by Codex.","No project hooks loaded."];
+    const expectNoClaims=async claims=>{for(const claim of claims)await expect(tools.getByText(claim,{exact:true}),claim).toHaveCount(0)};
+    // The first load waits on every read, and the MCP list is still starting its servers: no card says its list is empty,
+    // although the runtime has a profile, a server and a feature to report. The cards say they are loading instead.
+    await expect(refresh).toHaveText("Refreshing…");
+    await expectNoClaims([...listClaims,...otherClaims]);
+    await expect(card("MCP servers")).toContainText("Loading MCP servers…");
+    await expect(card("Permission profiles")).toContainText("Loading permission profiles…");
+    await expect(card("Experimental features")).toContainText("Loading experimental features…");
+    // A count badge waits for its list too, rather than reading 0.
+    for(const title of ["Permission profiles","MCP servers","Experimental features","Plugins","Hooks"])await expect(card(title).locator(".capability-card-head em"),title).toHaveCount(0);
+    await expect(card("Configuration layers").locator(".capability-card-head em")).toHaveCount(0);
+    await card("MCP servers").scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-first-load-pending-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-first-load-pending-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+
+    fixture.release();
+    await expect(refresh).toHaveText("Refresh");
+    await expect(card("MCP servers").locator(".mcp-server-row")).toContainText("docs-server");
+    await expect(card("Permission profiles")).toContainText("workspace-write");
+    await expect(card("Experimental features")).toContainText("Step model switching");
+    await expectNoClaims(listClaims);
+    await expect(tools.getByText(/^Loading .*…$/)).toHaveCount(0);
+    for(const title of ["Permission profiles","MCP servers","Experimental features"])await expect(card(title).locator(".capability-card-head em"),title).toHaveText("1");
+    // Lists that loaded empty still say so, with a count of 0.
+    await expect(card("Hooks")).toContainText("No project hooks loaded.");
+    await expect(card("Apps / connectors")).toContainText("No app connectors reported by Codex.");
+    await expect(card("Hooks").locator(".capability-card-head em")).toHaveText("0");
+    await expect(card("Configuration layers").locator(".capability-card-head em")).toHaveText("0 layers");
+
+    // A refresh that answers every list empty shows each claim.
+    fixture.control.mcp="empty";fixture.control.lists="empty";
+    await refresh.click();
+    for(const claim of listClaims)await expect(tools.getByText(claim,{exact:true}),claim).toBeVisible();
+
+    // The MCP list then fails: its error replaces the claim.
+    fixture.control.mcp="fail";
+    await refresh.click();
+    const mcpError=card("MCP servers").locator(".capability-error");
+    await expect(mcpError).toContainText("Deliberate MCP server list failure");
+    await expectNoClaims([listClaims[1]]);
+
+    // Refreshing after that failure: while the list is held again, the cleared error is not replaced by a claim that there are
+    // no MCP servers, and the lists that loaded empty before wait for this answer too.
+    fixture.control.mcp="empty";fixture.control.hold=true;
+    await refresh.click();
+    await expect(refresh).toHaveText("Refreshing…");
+    await expect(mcpError).toHaveCount(0);
+    await expectNoClaims(listClaims);
+    await expect(card("MCP servers")).toContainText("Loading MCP servers…");
+    await card("MCP servers").scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-refresh-after-failure-pending-1280x800.png",fullPage:false});
+    fixture.release();
+    await expect(refresh).toHaveText("Refresh");
+    for(const claim of listClaims)await expect(tools.getByText(claim,{exact:true}),claim).toBeVisible();
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-loaded-empty-lists-1280x800.png",fullPage:false});
+  }finally{await fixture.close()}
+});

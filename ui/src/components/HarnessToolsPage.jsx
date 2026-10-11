@@ -10,6 +10,13 @@ function Section({title,icon:Icon,count,badge,children}){
   return <section className="capability-card"><div className="capability-card-head"><span><Icon size={15}/><strong>{title}</strong></span>{badge?<em>{badge}</em>:Number.isFinite(count)&&<em>{count}</em>}</div>{children}</section>;
 }
 function ErrorLine({value}){return value?<p className="capability-error">{value}</p>:null}
+// A card's empty state. It claims the runtime reported nothing only for an answer that has loaded empty; while a read is in flight
+// the card says it is loading, and beside an error line, which says why the answer is missing, it says nothing.
+function EmptyState({loaded,loading,error,pending,children}){
+  if(error)return null;
+  if(loading)return <p aria-busy="true">{pending}</p>;
+  return loaded&&children?<p>{children}</p>:null;
+}
 function ImportFailureList({failures}){
   return <ul className="import-failure-list" aria-label="Import failures">{failures.map((failure,index)=><li key={index}><strong>{failure.type}</strong><span>{failure.message}{failure.stage?" · "+failure.stage+" stage":""}</span></li>)}</ul>;
 }
@@ -37,9 +44,12 @@ function configLayerPresentation(layer,index){
 }
 
 export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported,onSkillsRefresh,platform=""}){
-  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],installedApps:[],hooks:[],features:[],sharedPlugins:[],loadedThreads:[],loadedThreadsMore:false,capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,diagnostics:null,windowsSandbox:null});
+  // Each runtime list stays null until its first answer, so a card tells a list that loaded empty from one not loaded yet.
+  const [data,setData]=useState({permissions:null,mcp:null,marketplaces:null,apps:null,installedApps:null,hooks:null,features:null,sharedPlugins:null,loadedThreads:null,loadedThreadsMore:false,capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,diagnostics:null,windowsSandbox:null});
   const [errors,setErrors]=useState({});
-  const [loading,setLoading]=useState(false);
+  // The page loads as it opens, so it starts out loading: the first paint already waits for the runtime's answers.
+  const [loading,setLoading]=useState(true);
+  const refreshRun=useRef(0);
   const [busy,setBusy]=useState("");
   const [marketplaceSource,setMarketplaceSource]=useState("");
   const [migrations,setMigrations]=useState(null);
@@ -90,30 +100,34 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     catch(error){setErrors(prev=>({...prev,[name]:error.message||String(error)}));return null}
   }
   async function refresh(){
-    if(!rpc||rpcStatus!=="connected")return;
+    if(!rpc||rpcStatus!=="connected"){setLoading(false);return}
+    // Only the latest refresh lands: one started for an earlier thread or project neither writes its answers nor ends loading.
+    const run=++refreshRun.current,latest=()=>run===refreshRun.current;
     setLoading(true);setErrors({});
     const threadId=activeThread?.id||null;
+    const load=(name,params)=>request(name,params).catch(error=>{if(latest())setErrors(prev=>({...prev,[name]:error.message||String(error)}));return null});
     const [permissions,mcp,plugins,apps,installedApps,hooks,features,sharedPlugins,loadedThreads,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,importHistories,windowsSandbox]=await Promise.all([
-      call("permissionProfile/list",{limit:100,cwd:projectPath||null}),
-      call("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
-      call("plugin/list",{cwds:projectPath?[projectPath]:[],forceRefetch:false}),
-      call("app/list",{limit:100,threadId,forceRefetch:false}),
-      call("app/installed",{threadId,forceRefresh:false}),
-      call("hooks/list",{cwds:projectPath?[projectPath]:[]}),
-      call("experimentalFeature/list",{limit:200,threadId}),
-      call("plugin/share/list",{}),
-      call("thread/loaded/list",{limit:100}),
-      call("modelProvider/capabilities/read",{}),
-      call("account/read",{refreshToken:false}),
-      call("account/rateLimits/read",{excludeResetCreditDetails:true}),
-      call("account/usage/read",threadId?{threadId}:{}),
-      call("config/read",{includeLayers:true,cwd:projectPath||null}),
-      call("configRequirements/read",{}),
-      call("memory/status",{minConsolidatedThreads:20}),
-      call("server/diagnostics",{}),
-      call("externalAgentConfig/import/readHistories",{}),
-      platform==="win32"?call("windowsSandbox/readiness",undefined):Promise.resolve(null),
+      load("permissionProfile/list",{limit:100,cwd:projectPath||null}),
+      load("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
+      load("plugin/list",{cwds:projectPath?[projectPath]:[],forceRefetch:false}),
+      load("app/list",{limit:100,threadId,forceRefetch:false}),
+      load("app/installed",{threadId,forceRefresh:false}),
+      load("hooks/list",{cwds:projectPath?[projectPath]:[]}),
+      load("experimentalFeature/list",{limit:200,threadId}),
+      load("plugin/share/list",{}),
+      load("thread/loaded/list",{limit:100}),
+      load("modelProvider/capabilities/read",{}),
+      load("account/read",{refreshToken:false}),
+      load("account/rateLimits/read",{excludeResetCreditDetails:true}),
+      load("account/usage/read",threadId?{threadId}:{}),
+      load("config/read",{includeLayers:true,cwd:projectPath||null}),
+      load("configRequirements/read",{}),
+      load("memory/status",{minConsolidatedThreads:20}),
+      load("server/diagnostics",{}),
+      load("externalAgentConfig/import/readHistories",{}),
+      platform==="win32"?load("windowsSandbox/readiness",undefined):Promise.resolve(null),
     ]);
+    if(!latest())return;
     setData(current=>({
       ...current,
       ...(permissions!==null?{permissions:permissions?.data||[]}:{}),
@@ -241,9 +255,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     return()=>{window.removeEventListener("trebell:windows-sandbox-setup",completed);window.removeEventListener("trebell:windows-sandbox-warning",warning)};
   },[rpc,rpcStatus,projectPath,activeThread?.id,platform]);
 
-  const plugins=useMemo(()=>data.marketplaces.flatMap(m=>(m.plugins||[]).map(p=>({...p,marketplace:m}))),[data.marketplaces]);
+  const plugins=useMemo(()=>(data.marketplaces||[]).flatMap(m=>(m.plugins||[]).map(p=>({...p,marketplace:m}))),[data.marketplaces]);
   const installedAppsById=useMemo(()=>Object.fromEntries((data.installedApps||[]).map(app=>[app.id,app])),[data.installedApps]);
-  const hookCount=data.hooks.reduce((n,x)=>n+(x.hooks?.length||0),0);
+  const hookCount=(data.hooks||[]).reduce((n,x)=>n+(x.hooks?.length||0),0);
 
   async function reloadMcp(){
     if(!rpc)return;setBusy("mcp");setErrors(prev=>({...prev,"config/mcpServer/reload":null}));
@@ -490,7 +504,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
           {data.usage?.summary?.currentStreakDays!=null&&<div><span>Active streak</span><strong>{String(data.usage.summary.currentStreakDays)} days</strong></div>}
           {data.rateLimits?.rateLimits?.primary&&<div><span>Primary usage</span><strong>{Math.round(Number(data.rateLimits.rateLimits.primary.usedPercent)||0)}%</strong></div>}
           {data.rateLimits?.rateLimits?.secondary&&<div><span>Secondary usage</span><strong>{Math.round(Number(data.rateLimits.rateLimits.secondary.usedPercent)||0)}%</strong></div>}
-        </div>:<p>Codex did not return account metadata for this inference route.</p>}
+        </div>:<EmptyState loaded loading={loading} error={errors["account/read"]} pending="Loading account…">Codex did not return account metadata for this inference route.</EmptyState>}
         {authRecovery&&<p className="capability-status">{authRecovery.active?"Recovering":"Recovered"} {authRecovery.provider} authentication{authRecovery.message?": "+authRecovery.message:""}</p>}
         <ErrorLine value={errors["account/read"]}/><ErrorLine value={errors["account/rateLimits/read"]}/><ErrorLine value={errors["account/usage/read"]}/>
       </Section>
@@ -499,7 +513,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         {data.memory?<div className="capability-kv">
           <div><span>Consolidated threads</span><strong>{Number(data.memory.v2ConsolidatedThreads||0).toLocaleString()}</strong></div>
           <div><span>V2 memory readiness</span><strong>{data.memory.v2Ready?"Ready":"Building"}</strong></div>
-        </div>:<p>Memory readiness is unavailable from this Codex runtime.</p>}
+        </div>:<EmptyState loaded loading={loading} error={errors["memory/status"]} pending="Loading memory readiness…">Memory readiness is unavailable from this Codex runtime.</EmptyState>}
         <p>Readiness uses Codex's default threshold of 20 consolidated threads. This status reports readiness only; it does not expose memory contents.</p>
         <div className="capability-actions">
           <button onClick={()=>setThreadMemoryMode("enabled")} disabled={!!busy||!activeThread?.id}>Enable for this thread</button>
@@ -517,18 +531,19 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
           <div><span>Process</span><strong>{data.diagnostics.process?.id?"PID "+data.diagnostics.process.id:"Unavailable"}</strong></div>
           <div><span>Resident memory</span><strong>{formatBytes(data.diagnostics.process?.residentMemoryBytes)}</strong></div>
           {data.diagnostics.process?.physicalFootprintBytes!=null&&<div><span>Physical footprint</span><strong>{formatBytes(data.diagnostics.process.physicalFootprintBytes)}</strong></div>}
-          <div><span>Loaded sessions</span><strong>{data.loadedThreads.length.toLocaleString()}{data.loadedThreadsMore?"+":""}</strong></div>
+          <div><span>Loaded sessions</span><strong>{data.loadedThreads?data.loadedThreads.length.toLocaleString()+(data.loadedThreadsMore?"+":""):"Unavailable"}</strong></div>
           {["core.threads.live","core.turns.active","mcp.connections.live"].map(name=>{const gauge=(data.diagnostics.gauges||[]).find(item=>item.name===name);return gauge?<div key={name}><span>{name==="core.threads.live"?"Live threads":name==="core.turns.active"?"Active turns":"MCP connections"}</span><strong>{Number(gauge.value||0).toLocaleString()}</strong></div>:null})}
-        </div>:<p>Process diagnostics are unavailable from this Codex runtime.</p>}
-        {data.loadedThreads.length>0&&<details className="capability-details"><summary>Loaded session IDs</summary><pre>{data.loadedThreads.join("\n")}{data.loadedThreadsMore?"\n…more loaded sessions not shown":""}</pre></details>}
+        </div>:<EmptyState loaded loading={loading} error={errors["server/diagnostics"]} pending="Loading process diagnostics…">Process diagnostics are unavailable from this Codex runtime.</EmptyState>}
+        {data.loadedThreads?.length>0&&<details className="capability-details"><summary>Loaded session IDs</summary><pre>{data.loadedThreads.join("\n")}{data.loadedThreadsMore?"\n…more loaded sessions not shown":""}</pre></details>}
         {data.diagnostics?.gauges?.length>0&&<details className="capability-details"><summary>All runtime gauges</summary><pre>{data.diagnostics.gauges.map(gauge=>gauge.name+": "+Number(gauge.value||0).toLocaleString()).join("\n")}</pre></details>}
         <ErrorLine value={errors["server/diagnostics"]}/><ErrorLine value={errors["thread/loaded/list"]}/>
       </Section>
 
       {platform==="win32"&&<Section title="Windows sandbox" icon={ShieldCheck}>
-        {data.windowsSandbox?(()=>{const status=windowsSandboxStatus(data.windowsSandbox.status);return <div className="capability-kv"><div><span>Native sandbox</span><strong>{status.label}</strong></div><div><span>Managed setup modes</span><strong>{allowedWindowsSetupModes(data.requirements).length?allowedWindowsSetupModes(data.requirements).map(mode=>mode==="elevated"?"Elevated":"Unelevated").join(" · "):"Policy-managed"}</strong></div></div>})():<p>Windows sandbox readiness is unavailable from this Codex runtime.</p>}
+        {data.windowsSandbox?(()=>{const status=windowsSandboxStatus(data.windowsSandbox.status);return <div className="capability-kv"><div><span>Native sandbox</span><strong>{status.label}</strong></div><div><span>Managed setup modes</span><strong>{allowedWindowsSetupModes(data.requirements).length?allowedWindowsSetupModes(data.requirements).map(mode=>mode==="elevated"?"Elevated":"Unelevated").join(" · "):"Policy-managed"}</strong></div></div>})():<EmptyState loaded loading={loading} error={errors["windowsSandbox/readiness"]} pending="Checking Windows sandbox readiness…">Windows sandbox readiness is unavailable from this Codex runtime.</EmptyState>}
         {data.windowsSandbox&&<p>{windowsSandboxStatus(data.windowsSandbox.status).detail}</p>}
-        {data.windowsSandbox?.status!=="ready"&&<div className="capability-actions">
+        {/* Setup is offered once readiness says it is needed, or when readiness could not be read; not while the first read runs. */}
+        {(data.windowsSandbox?data.windowsSandbox.status!=="ready":!loading)&&<div className="capability-actions">
           <button onClick={()=>setupWindowsSandbox("unelevated")} disabled={!!busy||!!sandboxPending||!allowedWindowsSetupModes(data.requirements).includes("unelevated")}>{sandboxPending==="unelevated"?"Setting up…":"Set up unelevated"}</button>
           <button onClick={()=>setupWindowsSandbox("elevated")} disabled={!!busy||!!sandboxPending||!allowedWindowsSetupModes(data.requirements).includes("elevated")}>{sandboxPending==="elevated"?"Setting up…":"Set up elevated"}</button>
         </div>}
@@ -538,8 +553,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>}
 
       {/* The card lists layers and then the warnings and notices Codex sent, so its badge counts each by name. */}
-      <Section title="Configuration layers" icon={ShieldCheck} badge={[countLabel(data.config?.layers?.length||0,"layer"),configWarnings.length+runtimeNotices.length?countLabel(configWarnings.length+runtimeNotices.length,"notice"):""].filter(Boolean).join(" · ")}>
-        {data.config&&!(data.config.layers||[]).length&&<p>Codex reported no configuration layers.</p>}
+      <Section title="Configuration layers" icon={ShieldCheck} badge={[data.config?countLabel(data.config.layers?.length||0,"layer"):"",configWarnings.length+runtimeNotices.length?countLabel(configWarnings.length+runtimeNotices.length,"notice"):""].filter(Boolean).join(" · ")}>
+        {!(data.config?.layers||[]).length&&<EmptyState loaded={!!data.config} loading={loading} error={errors["config/read"]} pending="Loading configuration layers…">Codex reported no configuration layers.</EmptyState>}
         <div className="capability-list">{(data.config?.layers||[]).map((layer,index)=>{const presentation=configLayerPresentation(layer,index);return <div key={presentation.label+":"+String(layer.version||index)}><div><strong>{presentation.label}</strong><span>{presentation.detail}</span></div><em className={layer.disabledReason?"":"ok"}>{layer.disabledReason?"disabled":"active"}</em></div>})}</div>
         {configWarnings.length>0&&<div className="capability-list config-warning-list">{configWarnings.map((warning,index)=><div key={(warning.path||"global")+":"+(warning.summary||index)}><div><strong>{warning.summary||"Configuration warning"}</strong><span>{warning.details||warning.path||"Codex reported a configuration warning."}</span></div><em className="warn">warning</em></div>)}</div>}
         {runtimeNotices.length>0&&<div className="capability-list runtime-notice-list">{runtimeNotices.map(notice=><div key={notice.id}><div><strong>{notice.summary}</strong><span>{notice.details||"Reported by the Codex runtime."}</span></div><em className={notice.kind==="warning"?"warn":""}>{notice.kind}</em></div>)}</div>}
@@ -552,21 +567,21 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
           <span className={data.capabilities.namespaceTools?"ok":""}>Namespace tools</span>
           <span className={data.capabilities.webSearch?"ok":""}>Web search</span>
           <span className={data.capabilities.imageGeneration?"ok":""}>Image generation</span>
-        </div>:<p>No capability report available.</p>}
+        </div>:<EmptyState loaded loading={loading} error={errors["modelProvider/capabilities/read"]} pending="Loading provider capabilities…">No capability report available.</EmptyState>}
         {modelNotices.length>0&&<><p className="capability-status">{modelNotices[0].title}{modelNotices[0].detail?" · "+modelNotices[0].detail:""}</p><details className="capability-details"><summary>Recent model routing & safety · {modelNotices.length}</summary><div className="capability-list">{modelNotices.map(notice=><div key={notice.id}><div><strong>{notice.title}</strong><span>{notice.detail||notice.kind}</span></div><em>{notice.kind}</em></div>)}</div></details></>}
         <ErrorLine value={errors["modelProvider/capabilities/read"]}/>
       </Section>
 
-      <Section title="Permission profiles" icon={ShieldCheck} count={data.permissions.length}>
-        {!data.permissions.length&&!errors["permissionProfile/list"]&&<p>This runtime reported no permission profiles.</p>}
-        <div className="capability-list">{data.permissions.map(p=><div key={p.id}><div><strong>{p.id}</strong><span>{p.description||"Codex permission profile"}</span></div><em className={p.allowed?"ok":""}>{p.allowed?"allowed":"blocked"}</em></div>)}</div>
+      <Section title="Permission profiles" icon={ShieldCheck} count={data.permissions?.length}>
+        {!data.permissions?.length&&<EmptyState loaded={!!data.permissions} loading={loading} error={errors["permissionProfile/list"]} pending="Loading permission profiles…">This runtime reported no permission profiles.</EmptyState>}
+        <div className="capability-list">{(data.permissions||[]).map(p=><div key={p.id}><div><strong>{p.id}</strong><span>{p.description||"Codex permission profile"}</span></div><em className={p.allowed?"ok":""}>{p.allowed?"allowed":"blocked"}</em></div>)}</div>
         <ErrorLine value={errors["permissionProfile/list"]}/>
       </Section>
 
-      <Section title="MCP servers" icon={PlugZap} count={data.mcp.length}>
+      <Section title="MCP servers" icon={PlugZap} count={data.mcp?.length}>
         <div className="capability-actions"><button onClick={reloadMcp} disabled={!!busy}><RefreshCw size={12}/> Reload MCP</button></div>
-        {!data.mcp.length&&!errors["mcpServerStatus/list"]&&<p>No MCP servers are configured for this runtime.</p>}
-        <div className="capability-list">{data.mcp.map(server=><div className="mcp-server-row" key={server.name}><div><strong>{server.name}</strong><span>{server.runtimeStatus||"unknown"} · {countLabel(Object.keys(server.tools||{}).length,"tool")} · {countLabel((server.resources||[]).length,"resource")}</span></div><div className="capability-inline-actions"><em className={server.authStatus==="notLoggedIn"?"warn":server.runtimeStatus==="connected"?"ok":""}>{mcpAuthLabel(server.authStatus)}</em>{server.authStatus==="notLoggedIn"&&<button onClick={()=>loginMcp(server.name)} disabled={!!busy}>Sign in</button>}</div>{((server.resources||[]).length>0||Object.keys(server.tools||{}).length>0)&&<details className="mcp-server-details"><summary>Resources & tools</summary>
+        {!data.mcp?.length&&<EmptyState loaded={!!data.mcp} loading={loading} error={errors["mcpServerStatus/list"]} pending="Loading MCP servers…">No MCP servers are configured for this runtime.</EmptyState>}
+        <div className="capability-list">{(data.mcp||[]).map(server=><div className="mcp-server-row" key={server.name}><div><strong>{server.name}</strong><span>{server.runtimeStatus||"unknown"} · {countLabel(Object.keys(server.tools||{}).length,"tool")} · {countLabel((server.resources||[]).length,"resource")}</span></div><div className="capability-inline-actions"><em className={server.authStatus==="notLoggedIn"?"warn":server.runtimeStatus==="connected"?"ok":""}>{mcpAuthLabel(server.authStatus)}</em>{server.authStatus==="notLoggedIn"&&<button onClick={()=>loginMcp(server.name)} disabled={!!busy}>Sign in</button>}</div>{((server.resources||[]).length>0||Object.keys(server.tools||{}).length>0)&&<details className="mcp-server-details"><summary>Resources & tools</summary>
           {(server.resources||[]).map(resource=><div className="mcp-resource" key={resource.uri}><span>{resource.name||resource.uri}</span><button onClick={()=>readResource(server,resource)} disabled={!!busy}>Read</button></div>)}
           {Object.entries(server.tools||{}).map(([toolName,tool])=><div className="mcp-tool" key={toolName}><div><strong>{toolName}</strong><span>{tool?.description||"MCP tool"}</span></div><input value={toolArgs[server.name+":"+toolName]||""} onChange={e=>setToolArgs(prev=>({...prev,[server.name+":"+toolName]:e.target.value}))} placeholder='JSON arguments, e.g. {"query":"..."}'/><button onClick={()=>runMcpTool(server,toolName)} disabled={!!busy||!activeThread?.id}>Run</button></div>)}
         </details>}</div>)}</div>
@@ -583,53 +598,53 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <ErrorLine value={errors["skills/list"]}/><ErrorLine value={errors["skills/config/write"]}/><ErrorLine value={errors["skills/extraRoots/set"]}/>
       </Section>
 
-      <Section title="Plugins" icon={Blocks} count={plugins.length}>
+      <Section title="Plugins" icon={Blocks} count={data.marketplaces?plugins.length:undefined}>
         <div className="plugin-search-controls"><input value={pluginSearchTerm} onChange={e=>{setPluginSearchTerm(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}} onKeyDown={e=>{if(e.key==="Enter")searchPlugins()}} placeholder="Search plugins" title="Search the plugin catalog"/><select value={pluginSearchScope} onChange={e=>{setPluginSearchScope(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}}><option value="global">Global</option><option value="workspace">Workspace</option><option value="personal">Personal</option></select><button onClick={()=>searchPlugins()} disabled={!!busy||pluginSearchTerm.trim().length<2}>{busy==="plugin:search"?"Searching…":"Search"}</button><button onClick={reconcilePlugins} disabled={!!busy}>Reconcile</button></div>
         {pluginSearchResults.length>0&&<div className="capability-list plugin-search-results">{pluginSearchResults.map(result=>{const plugin=result.plugin||{};const marketplace={name:result.marketplaceName,path:result.marketplacePath};return <div key={(result.marketplaceName||"")+":"+(plugin.id||plugin.name)}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.interface?.shortDescription||plugin.interface?.longDescription||result.marketplaceName}{plugin.version?" · "+plugin.version:""}</span></div><div className="capability-inline-actions"><button onClick={()=>readPlugin(plugin,marketplace)} disabled={!!busy}>Details</button><button onClick={()=>togglePlugin({...plugin,marketplace})} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>})}</div>}
         {pluginSearchCursor&&<div className="capability-actions"><button onClick={()=>searchPlugins({append:true})} disabled={!!busy}>Load more</button></div>}
         {pluginSearchRan&&!pluginSearchResults.length&&!busy&&!errors["plugin/search"]&&<p>No plugins matched this search.</p>}
         {!pluginSearchRan&&<div className="capability-list">{plugins.map(plugin=><div key={plugin.marketplace.name+":"+plugin.id}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.marketplace.name}{plugin.version?" · "+plugin.version:""}{plugin.shareContext?.shareUrl?" · shared":""}</span></div><div className="capability-inline-actions"><button onClick={()=>readPlugin(plugin,plugin.marketplace)} disabled={!!busy}>Details</button>{plugin.source?.type==="local"&&<button onClick={()=>shareLocalPlugin(plugin)} disabled={!!busy}>{plugin.shareContext?.remotePluginId?"Update share":"Share privately"}</button>}<button onClick={()=>togglePlugin(plugin)} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>)}</div>}
-        {!pluginSearchRan&&!plugins.length&&<p>No plugin catalog is available in this runtime.</p>}
+        {!pluginSearchRan&&!plugins.length&&<EmptyState loaded={!!data.marketplaces} loading={loading} error={errors["plugin/list"]} pending="Loading the plugin catalog…">No plugin catalog is available in this runtime.</EmptyState>}
         {pluginDetail&&<div className="plugin-detail"><div className="plugin-detail-head"><div><strong>{pluginDetail.summary?.interface?.displayName||pluginDetail.summary?.name}</strong><span>{pluginDetail.marketplaceName}{pluginDetail.summary?.version?` · ${pluginDetail.summary.version}`:""}{pluginDetail.summary?.interface?.developerName?` · ${pluginDetail.summary.interface.developerName}`:""}</span></div><button onClick={()=>{setPluginDetail(null);setPluginSkillDetail(null)}}>Close</button></div>{(pluginDetail.description||pluginDetail.summary?.interface?.longDescription)&&<p>{pluginDetail.description||pluginDetail.summary.interface.longDescription}</p>}{pluginDetail.summary?.interface?.capabilities?.length>0&&<div className="capability-badges">{pluginDetail.summary.interface.capabilities.map(capability=><span className="ok" key={capability}>{capability}</span>)}</div>}<div className="plugin-detail-counts"><span>{countLabel(pluginDetail.skills?.length,"skill")}</span><span>{countLabel(pluginDetail.hooks?.length,"hook")}</span><span>{countLabel(pluginDetail.apps?.length,"app")}</span><span>{countLabel(pluginDetail.mcpServers?.length,"MCP server")}</span><span>{countLabel(pluginDetail.scheduledTasks?.length,"scheduled task")}</span></div>{pluginDetail.skills?.length>0&&<div className="plugin-detail-skills">{pluginDetail.skills.map(skill=><div key={skill.name}><div><strong>{skill.interface?.displayName||skill.name}</strong><span>{skill.interface?.shortDescription||skill.shortDescription||skill.description}</span></div>{pluginDetail.summary?.remotePluginId&&pluginDetail.marketplaceName&&<button onClick={()=>readPluginSkill(skill)} disabled={!!busy}>{busy==="plugin:skill:"+skill.name?"Reading…":"Read skill"}</button>}</div>)}</div>}{pluginSkillDetail&&<details className="capability-details" open><summary>{pluginSkillDetail.name} · SKILL.md</summary><pre>{pluginSkillDetail.contents||"No skill contents were returned."}</pre></details>}</div>}
         {pluginMessage&&<p className="capability-status">{pluginMessage}</p>}
         <ErrorLine value={errors["plugin/list"]}/><ErrorLine value={errors["plugin/install"]}/><ErrorLine value={errors["plugin/uninstall"]}/><ErrorLine value={errors["plugin/search"]}/><ErrorLine value={errors["plugin/read"]}/><ErrorLine value={errors["plugin/skill/read"]}/><ErrorLine value={errors["plugin/reconcile"]}/><ErrorLine value={errors["plugin/share/save"]}/>
       </Section>
 
-      <Section title="Shared plugins" icon={Blocks} count={data.sharedPlugins.length}>
+      <Section title="Shared plugins" icon={Blocks} count={data.sharedPlugins?.length}>
         <p>Codex plugin sharing is account-backed. Local plugins are first shared privately; visibility can then be changed without inventing recipients.</p>
-        <div className="capability-list shared-plugin-list">{data.sharedPlugins.map(item=>{const plugin=item.plugin||{};const context=plugin.shareContext||{};const remotePluginId=plugin.remotePluginId||context.remotePluginId;return <div key={remotePluginId||plugin.id}><div><strong>{plugin.name||plugin.id}</strong><span>{plugin.version||plugin.localVersion||"shared plugin"}{context.creatorName?` · ${context.creatorName}`:""}</span></div><div className="capability-inline-actions">{context.shareUrl&&<button onClick={()=>window.open(context.shareUrl,"_blank","noopener,noreferrer")}>Open</button>}{!item.localPluginPath&&remotePluginId&&<button onClick={()=>checkoutSharedPlugin(item)} disabled={!!busy}>Checkout</button>}{context.discoverability&&<select value={context.discoverability} onChange={e=>updateShareDiscoverability(item,e.target.value)} disabled={!!busy}><option value="PRIVATE">Private</option><option value="UNLISTED">Unlisted</option><option value="LISTED">Listed</option></select>}{remotePluginId&&<button onClick={()=>deleteSharedPlugin(item)} disabled={!!busy}>Delete share</button>}</div></div>})}</div>
-        {!data.sharedPlugins.length&&!errors["plugin/share/list"]&&<p>No shared plugins were returned for this account.</p>}
+        <div className="capability-list shared-plugin-list">{(data.sharedPlugins||[]).map(item=>{const plugin=item.plugin||{};const context=plugin.shareContext||{};const remotePluginId=plugin.remotePluginId||context.remotePluginId;return <div key={remotePluginId||plugin.id}><div><strong>{plugin.name||plugin.id}</strong><span>{plugin.version||plugin.localVersion||"shared plugin"}{context.creatorName?` · ${context.creatorName}`:""}</span></div><div className="capability-inline-actions">{context.shareUrl&&<button onClick={()=>window.open(context.shareUrl,"_blank","noopener,noreferrer")}>Open</button>}{!item.localPluginPath&&remotePluginId&&<button onClick={()=>checkoutSharedPlugin(item)} disabled={!!busy}>Checkout</button>}{context.discoverability&&<select value={context.discoverability} onChange={e=>updateShareDiscoverability(item,e.target.value)} disabled={!!busy}><option value="PRIVATE">Private</option><option value="UNLISTED">Unlisted</option><option value="LISTED">Listed</option></select>}{remotePluginId&&<button onClick={()=>deleteSharedPlugin(item)} disabled={!!busy}>Delete share</button>}</div></div>})}</div>
+        {!data.sharedPlugins?.length&&<EmptyState loaded={!!data.sharedPlugins} loading={loading} error={errors["plugin/share/list"]} pending="Loading shared plugins…">No shared plugins were returned for this account.</EmptyState>}
         <ErrorLine value={errors["plugin/share/list"]}/><ErrorLine value={errors["plugin/share/checkout"]}/><ErrorLine value={errors["plugin/share/delete"]}/><ErrorLine value={errors["plugin/share/updateTargets"]}/>
       </Section>
 
-      <Section title="Marketplaces" icon={Blocks} count={data.marketplaces.length}>
-        <div className="capability-actions marketplace-add"><input value={marketplaceSource} onChange={e=>setMarketplaceSource(e.target.value)} placeholder="Git URL or local path" title="Marketplace source: a Git URL or a local path"/><button onClick={addMarketplace} disabled={!!busy||!marketplaceSource.trim()}>Add</button><button onClick={()=>upgradeMarketplace(null)} disabled={!!busy||!data.marketplaces.length}>Upgrade all</button></div>
-        <div className="capability-list">{data.marketplaces.map(marketplace=><div key={marketplace.name}><div><strong>{marketplace.interface?.displayName||marketplace.name}</strong><span>{marketplace.path||countLabel((marketplace.plugins||[]).length,"catalog plugin")}</span></div><div className="capability-inline-actions"><button onClick={()=>upgradeMarketplace(marketplace.name)} disabled={!!busy}>Upgrade</button>{marketplace.path&&<button onClick={()=>removeMarketplace(marketplace.name)} disabled={!!busy}>Remove</button>}</div></div>)}</div>
+      <Section title="Marketplaces" icon={Blocks} count={data.marketplaces?.length}>
+        <div className="capability-actions marketplace-add"><input value={marketplaceSource} onChange={e=>setMarketplaceSource(e.target.value)} placeholder="Git URL or local path" title="Marketplace source: a Git URL or a local path"/><button onClick={addMarketplace} disabled={!!busy||!marketplaceSource.trim()}>Add</button><button onClick={()=>upgradeMarketplace(null)} disabled={!!busy||!data.marketplaces?.length}>Upgrade all</button></div>
+        <div className="capability-list">{(data.marketplaces||[]).map(marketplace=><div key={marketplace.name}><div><strong>{marketplace.interface?.displayName||marketplace.name}</strong><span>{marketplace.path||countLabel((marketplace.plugins||[]).length,"catalog plugin")}</span></div><div className="capability-inline-actions"><button onClick={()=>upgradeMarketplace(marketplace.name)} disabled={!!busy}>Upgrade</button>{marketplace.path&&<button onClick={()=>removeMarketplace(marketplace.name)} disabled={!!busy}>Remove</button>}</div></div>)}</div>
         <ErrorLine value={errors["marketplace/add"]}/><ErrorLine value={errors["marketplace/remove"]}/><ErrorLine value={errors["marketplace/upgrade"]}/>
       </Section>
 
-      <Section title="Apps / connectors" icon={CheckCircle2} count={data.apps.length}>
-        <div className="connector-runtime-summary"><span>{data.installedApps.length} installed · {data.installedApps.filter(app=>app.callable).length} callable now</span><button onClick={refreshInstalledApps} disabled={!!busy}>{busy==="apps:installed"?"Refreshing…":"Refresh runtime"}</button></div>
-        <div className="capability-list">{data.apps.map(app=>{const runtime=installedAppsById[app.id];const status=runtime?(runtime.callable?"callable":runtime.enabled?"installed":"disabled"):(app.isEnabled?"catalog only":"disabled");return <div key={app.id}><div><strong>{app.name}</strong><span>{app.description||app.id}</span></div><div className="capability-inline-actions"><em className={runtime?.callable?"ok":""}>{status}</em><button onClick={()=>readApp(app)} disabled={busy==="app:"+app.id}>Details</button></div></div>})}</div>
-        {!data.apps.length&&<p>No app connectors reported by Codex.</p>}
+      <Section title="Apps / connectors" icon={CheckCircle2} count={data.apps?.length}>
+        <div className="connector-runtime-summary"><span>{data.installedApps?`${data.installedApps.length} installed · ${data.installedApps.filter(app=>app.callable).length} callable now`:""}</span><button onClick={refreshInstalledApps} disabled={!!busy}>{busy==="apps:installed"?"Refreshing…":"Refresh runtime"}</button></div>
+        <div className="capability-list">{(data.apps||[]).map(app=>{const runtime=installedAppsById[app.id];const status=runtime?(runtime.callable?"callable":runtime.enabled?"installed":"disabled"):(app.isEnabled?"catalog only":"disabled");return <div key={app.id}><div><strong>{app.name}</strong><span>{app.description||app.id}</span></div><div className="capability-inline-actions"><em className={runtime?.callable?"ok":""}>{status}</em><button onClick={()=>readApp(app)} disabled={busy==="app:"+app.id}>Details</button></div></div>})}</div>
+        {!data.apps?.length&&<EmptyState loaded={!!data.apps} loading={loading} error={errors["app/list"]} pending="Loading app connectors…">No app connectors reported by Codex.</EmptyState>}
         {appDetail&&<div className="app-detail"><div className="app-detail-head"><div><strong>{appDetail.name}</strong><span>{appDetail.distributionChannel||appDetail.id}</span></div><button onClick={()=>setAppDetail(null)}>Close</button></div>{appDetail.description&&<p>{appDetail.description}</p>}{appDetail.pluginDisplayNames?.length>0&&<p>Provided by: {appDetail.pluginDisplayNames.join(", ")}</p>}{appDetail.installUrl&&<button className="setting-action" onClick={()=>window.open(appDetail.installUrl,"_blank","noopener,noreferrer")}>Open install page</button>}{appDetail.toolSummaries?.length>0&&<div className="app-tools">{appDetail.toolSummaries.map(tool=><div key={tool.name}><div><strong>{tool.title||tool.name}</strong><span>{tool.description||tool.name}</span></div><em className={tool.isEnabled?"ok":""}>{tool.isEnabled?(tool.isReadOnly?"read only":"enabled"):(tool.disabledReason||"disabled")}</em></div>)}</div>}</div>}
         <ErrorLine value={errors["app/list"]}/><ErrorLine value={errors["app/installed"]}/><ErrorLine value={errors["app/read"]}/>
       </Section>
 
-      <Section title="Hooks" icon={Wrench} count={hookCount}>
-        <div className="capability-list">{data.hooks.flatMap(entry=>(entry.hooks||[]).map((hook,index)=><div key={entry.cwd+":"+index}><div><strong>{hook.name||hook.event||"Hook"}</strong><span>{entry.cwd}</span></div><em className="ok">loaded</em></div>))}</div>
-        {!hookCount&&<p>No project hooks loaded.</p>}
+      <Section title="Hooks" icon={Wrench} count={data.hooks?hookCount:undefined}>
+        <div className="capability-list">{(data.hooks||[]).flatMap(entry=>(entry.hooks||[]).map((hook,index)=><div key={entry.cwd+":"+index}><div><strong>{hook.name||hook.event||"Hook"}</strong><span>{entry.cwd}</span></div><em className="ok">loaded</em></div>))}</div>
+        {!hookCount&&<EmptyState loaded={!!data.hooks} loading={loading} error={errors["hooks/list"]} pending="Loading hooks…">No project hooks loaded.</EmptyState>}
         {hookRuns.length>0&&<details className="capability-details" open><summary>Recent hook runs · {hookRuns.length}</summary><div className="capability-list hook-run-list">{hookRuns.map(run=><div key={run.id}><div><strong>{run.eventName||run.id}</strong><span>{run.statusMessage||run.sourcePath||run.handlerType||"Hook execution"}</span></div><em className={run.status==="completed"||run.status==="success"?"ok":""}>{run.durationMs!=null?`${Number(run.durationMs).toLocaleString()} ms`:run.status||"running"}</em></div>)}</div></details>}
         <ErrorLine value={errors["hooks/list"]}/>
       </Section>
 
-      <Section title="Experimental features" icon={FlaskConical} count={data.features.length}>
-        {!data.features.length&&!errors["experimentalFeature/list"]&&<p>This runtime reported no experimental features.</p>}
-        <div className="capability-list feature-list">{data.features.map(feature=><div key={feature.name}><div><strong>{feature.displayName||feature.name}</strong><span>{feature.description||feature.stage}</span></div><button className={feature.enabled?"active":""} onClick={()=>toggleFeature(feature)} disabled={!!busy}>{feature.enabled?"On":"Off"}</button></div>)}</div>
+      <Section title="Experimental features" icon={FlaskConical} count={data.features?.length}>
+        {!data.features?.length&&<EmptyState loaded={!!data.features} loading={loading} error={errors["experimentalFeature/list"]} pending="Loading experimental features…">This runtime reported no experimental features.</EmptyState>}
+        <div className="capability-list feature-list">{(data.features||[]).map(feature=><div key={feature.name}><div><strong>{feature.displayName||feature.name}</strong><span>{feature.description||feature.stage}</span></div><button className={feature.enabled?"active":""} onClick={()=>toggleFeature(feature)} disabled={!!busy}>{feature.enabled?"On":"Off"}</button></div>)}</div>
         <ErrorLine value={errors["experimentalFeature/list"]}/><ErrorLine value={errors["experimentalFeature/enablement/set"]}/>
       </Section>
 
-      <Section title="Conversation history" icon={RefreshCw} count={historyImport?.sessions?.length||0}>
+      <Section title="Conversation history" icon={RefreshCw} count={historyImport?(historyImport.sessions||[]).length:undefined}>
         <p>Copy recent local Codex and Claude conversations into Trebell. Source transcripts stay untouched; imported Codex sessions become independent Trebell forks.</p>
         <div className="capability-actions">
           <button onClick={scanHistory} disabled={!!busy}>{busy==="history:scan"?"Scanning…":"Scan history"}</button>
@@ -640,7 +655,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         {historyImport&&!(historyImport.sessions||[]).length&&<p>No recent local agent history was found.</p>}
       </Section>
 
-      <Section title="Import agent configuration" icon={RefreshCw} count={migrations?.items?.length||0}>
+      <Section title="Import agent configuration" icon={RefreshCw} count={migrations?(migrations.items||[]).length:undefined}>
         <p>Detect reusable configuration from supported external coding agents in your home directory and this workspace.</p>
         <div className="capability-actions"><button onClick={detectExternalConfig} disabled={!!busy||!!migrationImportId}>Scan</button>{migrations?.items?.length>0&&<button onClick={importExternalConfig} disabled={!!busy||!!migrationImportId}>{migrationImportId?"Importing…":"Import "+migrations.items.length+(migrations.items.length===1?" item":" items")}</button>}</div>
         <div className="capability-list">{(migrations?.items||[]).map((item,index)=><div key={index}><div><strong>{item.description||humanizeIdentifier(item.itemType)}</strong><span>{item.cwd||"User scope"}</span></div><em>{humanizeIdentifier(item.itemType)}</em></div>)}</div>
