@@ -161,6 +161,9 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     return refreshed;
   }
   useEffect(()=>{refresh({reportErrors:true})},[]);
+  // An environment Undo can land while this page shows (its toast outlives Environments): the cards stop calling the
+  // environment unavailable, and removing one of its projects offers the Undo again.
+  useEffect(()=>{const changed=()=>{void refresh()};window.addEventListener("trebell:environments-changed",changed);return()=>window.removeEventListener("trebell:environments-changed",changed)},[]);
   async function retryLoad(){setRetrying(true);try{await refresh({reportErrors:true})}finally{setRetrying(false)}}
   useEffect(()=>{
     if(hasDesktopPicker||cloneEnvironmentId||!environmentData.profiles?.length)return;

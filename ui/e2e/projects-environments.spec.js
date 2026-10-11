@@ -262,6 +262,33 @@ test.describe("Removing an environment",()=>{
     await expect(page.getByTestId("app-action-error")).toHaveCount(0);
     await page.screenshot({animations:"disabled",path:shots+"environment-undo-failed-dark-1280.png"});
   });
+
+  // The person removes an environment, looks on Projects at what used it, and puts it back from the toast there.
+  test("an environment Undo shows on the Projects page that is open, and its projects can be removed with an Undo again",async({page,request})=>{
+    await open(page,request);
+    expect((await request.post("/api/environments",{data:{id:"polish-undo-box",type:"ssh",name:"Build box",host:"build.example.com",user:"dev",port:22,cwd:"/srv"}})).ok()).toBe(true);
+    expect((await request.post("/api/projects",{data:{path:"/srv/api",environmentId:"polish-undo-box",name:"Remote API"}})).ok()).toBe(true);
+    await nav(page,"Environments").click();
+    await page.locator(".environment-list>div").filter({hasText:"Build box"}).getByRole("button",{name:"Remove Build box",exact:true}).click();
+    const toast=page.getByTestId("thread-undo-toast");
+    await expect(toast).toContainText("Environment “Build box” removed");
+    await nav(page,"Projects").click();
+    const remote=projectCard(page,"Remote API"),place=remote.locator(".project-open>div>span");
+    await expect(place).toHaveText("Unavailable environment · /srv/api");
+    await toast.getByRole("button",{name:"Undo",exact:true}).click();
+    await expect(place).toHaveText("Build box · /srv/api");
+    await remote.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+"environment-undo-on-projects-dark-1280.png"});
+    await flipMode(page,"light");
+    await page.screenshot({animations:"disabled",path:shots+"environment-undo-on-projects-light-1280.png"});
+    await flipMode(page,"dark");
+    const asked=[];page.on("dialog",dialog=>{asked.push(dialog.message());dialog.dismiss().catch(()=>{})});
+    await remote.getByRole("button",{name:"Remove Remote API",exact:true}).click();
+    await expect(toast).toContainText("Project “Remote API” removed");
+    expect(asked,"removing the project asks as if its environment were gone").toEqual([]);
+    await toast.getByRole("button",{name:"Undo",exact:true}).click();
+    await expect(place).toHaveText("Build box · /srv/api");
+  });
 });
 
 test.describe("A project list that failed or is still loading",()=>{

@@ -54,6 +54,8 @@ export default function EnvironmentsPage({onOfferUndo}={}){
   async function restoreEnvironment(profile){
     try{await api("/api/environments",{method:"POST",body:profile})}
     catch(e){const page=environmentsOnScreen?.current;if(!page)throw e;page.showError("Could not restore environment: "+(e.message||String(e)));return}
+    // Projects may be the page on screen: its cards and the removals they offer read the environment again.
+    window.dispatchEvent(new CustomEvent("trebell:environments-changed"));
     await environmentsOnScreen?.current?.refresh({reportErrors:true});
   }
   const screenRef=useRef(null);
