@@ -622,25 +622,50 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    then header-fit.js measures the title and, while it shows less than a readable width, sets data-fit: 1 drops the labels of the
    labelled actions, 2 also the project name and folds several linked pull requests into the first one's chip ("#482 +1", as the
    sidebar row reads), 3 also hides the theme and palette buttons (the palette, Settings and the sidebar's search reach both), 4
-   leaves the pull request chip its icon and how many are linked. Each control keeps its tooltip and accessible name. */
+   leaves the pull request chip its icon and how many are linked, and 5 folds every action but Stop and the inspector toggle
+   into the More actions menu. Each control keeps its tooltip and accessible name. */
 .workspace-header .workspace-breadcrumb{flex:1 1 auto}
 .workspace-header .project-crumb:not(.sidebar-reopen){flex:0 1000 auto;min-width:calc(39px + 4ch)}
 .workspace-header .thread-title-button{flex:0 1 auto;min-width:0}
 .workspace-header .thread-title-button strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control){width:30px;padding:0;justify-content:center}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control)>span{display:none}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"]) .open-in-picker>button{width:28px;padding:0;justify-content:center}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"]) .open-in-picker>button>span{display:none}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"]) .open-in-picker>select{width:24px;min-width:0;padding:0;color:transparent}
-.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"]) .project-crumb:not(.sidebar-reopen){width:30px;min-width:30px;padding:0;justify-content:center}
-.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"]) .project-crumb:not(.sidebar-reopen)>span{display:none}
-.workspace-header:is([data-fit="3"],[data-fit="4"]) .workspace-header-actions>:is(.theme-toggle,.palette-control){display:none}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control){width:30px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control)>span{display:none}
+/* The row's own picker; the copy in the More actions menu keeps its label. */
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>.open-in-wrap .open-in-picker>button{width:28px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>.open-in-wrap .open-in-picker>button>span{display:none}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>.open-in-wrap .open-in-picker>select{width:24px;min-width:0;padding:0;color:transparent}
+.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .project-crumb:not(.sidebar-reopen){width:30px;min-width:30px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .project-crumb:not(.sidebar-reopen)>span{display:none}
+.workspace-header:is([data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>:is(.theme-toggle,.palette-control){display:none}
 .workspace-header .header-pr>:is(.header-pr-more,.header-pr-count){display:none}
-.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"]) .header-pr+.header-pr{display:none}
+.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .header-pr+.header-pr{display:none}
 .workspace-header:is([data-fit="2"],[data-fit="3"]) .header-pr>.header-pr-more{display:inline}
-.workspace-header[data-fit="4"] .header-pr{padding:0 7px}
-.workspace-header[data-fit="4"] .header-pr>.header-pr-number{display:none}
-.workspace-header[data-fit="4"] .header-pr>.header-pr-count{display:inline}
+.workspace-header:is([data-fit="4"],[data-fit="5"]) .header-pr{padding:0 7px}
+.workspace-header:is([data-fit="4"],[data-fit="5"]) .header-pr>.header-pr-number{display:none}
+.workspace-header:is([data-fit="4"],[data-fit="5"]) .header-pr>.header-pr-count{display:inline}
+.workspace-header .header-overflow{position:relative;display:none;flex:none}
+.workspace-header[data-fit="5"] .header-overflow{display:flex}
+.workspace-header[data-fit="5"] .workspace-header-actions>:is(.branch-control,.open-in-wrap,.script-control,.review-control,.terminal-control,.goal-control){display:none}
+/* Stop keeps the separator the icon toggles had beside it. */
+.workspace-header[data-fit="5"] .workspace-header-actions>.stop-control~.panel-control{position:relative;margin-left:9px}
+.workspace-header[data-fit="5"] .workspace-header-actions>.stop-control~.panel-control::before{content:"";position:absolute;left:-7px;top:6px;bottom:6px;width:1px;background:var(--line)}
+/* The menu opens under its button, toward the conversation, so it stays inside the main column. While it is open the header
+   rises above the composer, the terminal drawer and the find bar it would otherwise open under. */
+.chat-workspace .workspace-header:has(.header-overflow-menu){z-index:80}
+.workspace-header .header-overflow-menu{position:absolute;top:calc(100% + 6px);right:0;z-index:30;display:grid;gap:1px;width:max-content;min-width:204px;max-width:min(300px,calc(100vw - 32px));padding:5px;border:1px solid var(--line2);border-radius:var(--r-m);background:var(--panel);box-shadow:var(--shbig);animation:tb-pop .14s var(--ease-out)}
+.workspace-header .header-overflow-menu>button{height:30px;min-width:0;display:flex;align-items:center;gap:9px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:var(--tx1);font-size:12px;font-weight:500;text-align:left;transition:background .14s,color .14s}
+.workspace-header .header-overflow-menu>button>svg{flex:none;color:var(--tx2)}
+.workspace-header .header-overflow-menu>button>span{min-width:0;flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.workspace-header .header-overflow-menu>button>small{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tx3);font:500 10.5px var(--mono);text-align:right}
+.workspace-header .header-overflow-menu>button>.tb-kbd{margin-left:auto}
+.workspace-header .header-overflow-menu>button:hover{background:var(--bg3);color:var(--tx0)}
+.workspace-header .header-overflow-menu>button:hover>svg{color:var(--tx1)}
+.workspace-header .header-overflow-menu>button[aria-pressed="true"]{color:var(--tx0)}
+.workspace-header .header-overflow-menu>button[aria-pressed="true"]>svg{color:var(--ac)}
+.workspace-header .header-overflow-menu>.header-overflow-node{display:flex;padding:3px 5px}
+.workspace-header .header-overflow-menu>.header-overflow-node:empty{display:none}
+.workspace-header .header-overflow-menu>.header-overflow-node>.open-in-wrap,.workspace-header .header-overflow-menu .open-in-picker{flex:1 1 auto}
+.workspace-header .header-overflow-menu .open-in-picker>select{min-width:0;max-width:none;flex:1 1 auto}
 
 /* Composer footer: "Context" with a meter that is always drawn (dashed while the window size is unknown) and the token
    value beside it; the hints keep their own end of the row with the Enter key as a key cap. */

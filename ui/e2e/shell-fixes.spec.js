@@ -465,6 +465,70 @@ for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(
   }finally{await harness.close()}
 });
 
+// The desktop window at its minimum size (1180x800, about 400px of main column beside the 520px inspector) and at 1280x800,
+// with every header action there is: the branch, the Open-in picker, a project action, Review, Stop for a running turn, three
+// linked pull requests and long names. Icon-only actions alone leave the title no room, so at the tightest fit they fold into a
+// More actions menu (Stop and the inspector toggle stay), and the title keeps a readable width.
+for(const [width,height] of [[1180,800],[1280,800]])for(const mode of ["dark","light"])test(`the header names the open thread beside every action at ${width}x${height} with the 520px inspector in ${mode} mode`,async({page})=>{
+  test.setTimeout(45_000);
+  // The desktop app's Open-in picker, with one editor to open the project in.
+  await page.addInitScript(()=>{Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors:[{id:"vscode",label:"Visual Studio Code"}]}),open:async()=>{}}}})});
+  const project={id:"header-project",name:"Billing reconciliation service with a very long project name",path:process.cwd(),environmentId:null,branch:"feature/reconcile-refunds-in-the-ledger-export",scripts:[{id:"dev-server",name:"Start the billing dev server",command:"npm run dev -- --port 4173"}],preferredScriptId:"dev-server"};
+  const thread={id:"header-thread",name:"Investigate why the nightly billing reconciliation job double counts refunds in the ledger export",preview:"Refunds",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Why are refunds counted twice?"}]},{type:"agentMessage",id:"assistant-1",text:"Looking."}]}]};
+  const prs=Array.from({length:3},(_,index)=>({url:"https://github.com/acme/billing/pull/"+(12345+index),number:12345+index,title:"Refund fix "+index,state:"open"}));
+  const harness=await startHarness([thread]);
+  try{
+    await page.setViewportSize({width,height});
+    await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:false,environmentId:null,linkedPullRequests:prs}},project,settings:{appearanceMode:mode},layout:{sidebarWidth:258,rightPanelWidth:520,terminalHeight:330}});
+    await openThread(page,thread.name);
+    const header=page.locator(".chat-workspace .workspace-header"),title=header.locator(".thread-title-button strong");
+    await expect(header.locator(".open-in-wrap")).toBeVisible();
+    await expect(header.getByRole("button",{name:project.scripts[0].name,exact:true})).toBeVisible();
+    await page.getByTestId("composer").fill("Keep going.");await page.getByTestId("send").click();
+    const stop=header.getByRole("button",{name:"Stop",exact:true});
+    await expect(stop).toBeVisible();
+    await page.getByTestId("right-panel-toggle").click();
+    await expect(page.getByTestId("right-panel")).toBeVisible();await settle(page);
+    // The inspector keeps the person's 520px; the main column is what is left of the window.
+    expect(Math.round((await page.getByTestId("right-panel").boundingBox()).width)).toBe(520);
+    expect(Math.round((await header.boundingBox()).width)).toBe(width-258-520);
+    await expect(title).toBeVisible();
+    expect((await title.boundingBox()).width).toBeGreaterThanOrEqual(80);
+    const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    // Stop and the inspector toggle stay in the header, beside the menu that holds the rest.
+    await expect(stop).toBeVisible();await expect(page.getByTestId("right-panel-toggle")).toBeVisible();
+    const more=header.getByRole("button",{name:"More actions",exact:true});
+    await expect(more).toBeVisible();await expect(more).toHaveAttribute("aria-expanded","false");
+    for(const name of ["Review","Toggle terminal","Thread goal","Command palette",project.scripts[0].name])await expect(header.getByRole("button",{name,exact:true}),name).toBeHidden();
+    await expect(header.locator(".branch-control")).toBeHidden();await expect(header.locator(".workspace-header-actions>.open-in-wrap")).toBeHidden();
+    await page.screenshot({path:join(shotsDir,`header-overflow-${mode}-${width}x${height}.png`),animations:"disabled"});
+    // The menu lists every folded action in the header's order, inside the main column.
+    await more.click();await expect(more).toHaveAttribute("aria-expanded","true");
+    const menu=page.getByTestId("header-overflow-menu");
+    await expect(menu).toBeVisible();
+    await expect(menu.locator(":scope>button")).toHaveText(["Source control"+project.branch,project.scripts[0].name,"Review","Terminal","Thread goal",mode==="dark"?"Switch to light mode":"Switch to dark mode","Command paletteCtrl+K"]);
+    await expect(menu.locator(".open-in-wrap")).toBeVisible();await expect(menu.getByLabel("Choose external editor")).toHaveValue("vscode");
+    const box=await menu.boundingBox(),column=await header.boundingBox();
+    expect(box.x).toBeGreaterThanOrEqual(column.x);expect(box.x+box.width).toBeLessThanOrEqual(column.x+column.width+1);
+    await page.screenshot({path:join(shotsDir,`header-overflow-menu-${mode}-${width}x${height}.png`),animations:"disabled"});
+    // Escape closes it and puts focus back on its button; a chosen action runs and closes it.
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await expect(more).toBeFocused();
+    await more.click();await menu.getByRole("button",{name:"Terminal"}).click();
+    await expect(page.getByTestId("drawer")).toBeVisible();await expect(menu).toHaveCount(0);
+    await more.click();await expect(menu.getByRole("button",{name:"Terminal"})).toHaveAttribute("aria-pressed","true");
+    await menu.getByRole("button",{name:"Command palette"}).click();
+    await expect(page.getByPlaceholder(/Search commands/i)).toBeVisible();await page.keyboard.press("Escape");
+    // A click outside closes it too.
+    await more.click();await expect(menu).toBeVisible();await page.mouse.click(column.x+column.width/2,400);await expect(menu).toHaveCount(0);
+    // Closing the inspector gives the actions back to the row, and the menu goes.
+    await page.getByTestId("right-panel-toggle").click();await settle(page);
+    expect(Number(await header.getAttribute("data-fit"))).toBeLessThan(5);
+    await expect(more).toBeHidden();
+    for(const name of ["Review","Stop","Toggle terminal","Thread goal",project.scripts[0].name])await expect(header.getByRole("button",{name,exact:true}),name).toBeVisible();
+    await expect(header.locator(".branch-control")).toBeVisible();await expect(header.locator(".workspace-header-actions>.open-in-wrap")).toBeVisible();
+  }finally{await harness.close()}
+});
+
 test("while a search filters the sidebar, Move up and Move down follow the threads it shows, in the list's order",async({page})=>{
   test.setTimeout(35_000);
   const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[]};

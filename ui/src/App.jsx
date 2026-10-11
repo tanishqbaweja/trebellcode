@@ -18,6 +18,7 @@ import RightPanel, { askText } from "./components/RightPanel.jsx";
 import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInPicker from "./components/OpenInPicker.jsx";
+import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
 import { normalizeKeybindingRules, resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
@@ -4348,6 +4349,13 @@ export default function App(){
     :["warn",transportConnectedRef.current?"Reconnecting…":"Connecting…"];
   const sidebarConnection=useMemo(()=>({tone:sidebarConnectionTone,label:sidebarConnectionLabel}),[sidebarConnectionTone,sidebarConnectionLabel]);
   const workspaceHeaderRef=useCallback(node=>observeHeaderFit(node),[]);
+  // The header's actions, shared by its buttons and by the More actions menu they fold into at the tightest fit.
+  const headerScript=(currentProject?.scripts||[]).find(item=>item.id===currentProject.preferredScriptId)||currentProject?.scripts?.[0]||null;
+  const runHeaderScript=()=>runUserAction(()=>runProjectAction(headerScript),"Project action failed");
+  const reviewFromHeader=()=>runUserAction(startReview,"Could not start review");
+  const toggleTerminalPanel=()=>setPanel(panel==="terminal"?null:"terminal");
+  const toggleAppearanceMode=()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance");
+  const appearanceToggleLabel=resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode";
   const sidebarBulkAction=useLatestCallback(bulkAction);
   const sidebarCollapse=useLatestCallback(()=>setSidebarOpen(false));
   // Retry's outcome (the list, or the error again) shows in the sidebar itself.
@@ -4489,14 +4497,25 @@ export default function App(){
             <div className="workspace-header-actions">
               {gitInfo?.isGit&&<button className="header-control branch-control" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
               {!projectlessMode&&!workspaceRemote&&<OpenInPicker path={projectPath}/>}
-              {(currentProject?.scripts||[]).length>0&&(()=>{const script=(currentProject.scripts||[]).find(item=>item.id===currentProject.preferredScriptId)||currentProject.scripts[0];return <button className="header-control script-control" onClick={()=>runUserAction(()=>runProjectAction(script),"Project action failed")} aria-label={script.name} title={script.command}><Play size={13}/><span>{script.name}</span></button>})()}
-              {activeThread?.id&&gitInfo?.isGit&&<button className="header-control review-control" onClick={()=>runUserAction(startReview,"Could not start review")} aria-label="Review" title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
+              {headerScript&&<button className="header-control script-control" onClick={runHeaderScript} aria-label={headerScript.name} title={headerScript.command}><Play size={13}/><span>{headerScript.name}</span></button>}
+              {activeThread?.id&&gitInfo?.isGit&&<button className="header-control review-control" onClick={reviewFromHeader} aria-label="Review" title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
               {running&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label="Stop" title="Stop the running turn"><CircleStop size={14}/><span>Stop</span></button>}
-              <button data-testid="terminal-toggle" className={"header-control icon-only "+(panel==="terminal"?"active":"")} onClick={()=>setPanel(panel==="terminal"?null:"terminal")} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
-              {activeThread?.id&&<button className={"header-control icon-only "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
-              <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
-              <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance")} aria-label={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"} title={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
+              <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
+              {activeThread?.id&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
+              <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
+              <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={toggleAppearanceMode} aria-label={appearanceToggleLabel} title={appearanceToggleLabel}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
               <button className="header-control icon-only palette-control" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
+              {/* Shown only at the tightest fit, where the row keeps just Stop and the inspector toggle: the rest, in the row's order. */}
+              <HeaderOverflowMenu items={[
+                gitInfo?.isGit&&{id:"source",Icon:GitBranch,label:"Source control",detail:gitInfo.branch||"detached",onSelect:()=>openRightPanel("source")},
+                !projectlessMode&&!workspaceRemote&&{id:"open-in",node:<OpenInPicker path={projectPath}/>},
+                headerScript&&{id:"script",Icon:Play,label:headerScript.name,title:headerScript.command,onSelect:runHeaderScript},
+                activeThread?.id&&gitInfo?.isGit&&{id:"review",Icon:ShieldCheck,label:"Review",title:"Review uncommitted changes",onSelect:reviewFromHeader},
+                {id:"terminal",Icon:PanelBottom,label:"Terminal",pressed:panel==="terminal",onSelect:toggleTerminalPanel},
+                activeThread?.id&&{id:"goal",Icon:Target,label:"Thread goal",title:goal?.objective||"Set thread goal",pressed:rightPanelOpen&&rightPanelTab==="goal",onSelect:()=>openRightPanel("goal")},
+                {id:"appearance",Icon:resolvedMode==="dark"?Sun:Moon,label:appearanceToggleLabel,onSelect:toggleAppearanceMode},
+                {id:"palette",Icon:Command,label:"Command palette",hint:"Ctrl+K",onSelect:()=>setPaletteOpen(true)},
+              ]}/>
             </div>
           </header>
 
