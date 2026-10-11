@@ -1011,7 +1011,7 @@ export default function App(){
       let stored=null;
       if(BROWSER_NAVIGATION)try{stored=JSON.parse(sessionStorage.getItem(NAVIGATION_STORE_KEY)||"null")}catch{}
       const browserEntryId=BROWSER_NAVIGATION?window.history.state?.trebellNav?.id||null:null,moved=Boolean(browserEntryId)&&browserEntryId!==LOADED_BROWSER_ENTRY_ID;
-      const entry=startNavigationHistory(nav,location,{browserEntryId,stored,moved});
+      const entry=startNavigationHistory(nav,location,{browserEntryId,loadedEntryId:LOADED_BROWSER_ENTRY_ID,stored});
       // Back or Forward pressed while the app was starting: show the page it went to rather than write this one over it.
       if(moved&&entry.id===browserEntryId&&navigationKey(entry)!==navigationKey(location))runUserAction(()=>showNavigationEntry(nav.index),"Could not navigate back");
       else writeNavigationEntry("replace",entry);

@@ -20,14 +20,19 @@ export function createNavigationHistory(documentId=Math.random().toString(36).sl
 }
 function nextId(nav){nav.seq+=1;return nav.documentId+"-"+nav.seq}
 
-// The first location this page load shows. After a reload the tab's history entry is one the stored history knows: that entry now
-// shows this location and the entries around it stay, so Back and Forward still reach the pages before and after it. moved: the
-// browser went Back or Forward to that entry while the app was starting, so it keeps its own location (the app shows it next).
-// Anywhere else (a first open, a history kept nowhere) the history starts here.
-export function startNavigationHistory(nav,location,{browserEntryId=null,stored=null,moved=false}={}){
+// The first location this page load shows. After a reload the tab's history entry is one the stored history knows: the entry the page
+// loaded on (loadedEntryId) now shows this location and the entries around it stay, so Back and Forward still reach the pages before
+// and after it. When the browser went Back or Forward while the app was starting, it is on another entry (browserEntryId), which
+// keeps its own location for the app to show next; the entry the page loaded on shows this location all the same, so Forward to it
+// lands where it would have had Back come later. Anywhere else (a first open, a history kept nowhere) the history starts here.
+export function startNavigationHistory(nav,location,{browserEntryId=null,loadedEntryId=browserEntryId,stored=null}={}){
   const entries=(Array.isArray(stored?.entries)?stored.entries.filter(validEntry).map(entry=>entryOf(entry,entry.id)):[]).slice(-NAVIGATION_HISTORY_LIMIT);
   const at=browserEntryId?entries.findIndex(entry=>entry.id===String(browserEntryId)):-1;
-  if(at>=0){nav.entries=entries;nav.index=at;if(!moved)nav.entries[at]=entryOf(location,browserEntryId)}
+  if(at>=0){
+    nav.entries=entries;nav.index=at;
+    const loaded=loadedEntryId?entries.findIndex(entry=>entry.id===String(loadedEntryId)):-1;
+    if(loaded>=0)nav.entries[loaded]=entryOf(location,nav.entries[loaded].id);
+  }
   else{nav.entries=[entryOf(location,nextId(nav))];nav.index=0}
   nav.pending=null;
   return nav.entries[nav.index];

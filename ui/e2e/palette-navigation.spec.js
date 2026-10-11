@@ -301,6 +301,8 @@ test.describe("Back and forward",()=>{
     await expect(page.getByTestId("composer")).toBeVisible();
     await expect(page.locator(".secondary-page")).toHaveCount(0);
     expect(page.url()).toBe(url);
+    // The reloaded entry names the page the app opened on once its history is set up (a Back that comes sooner is tested below).
+    await expect.poll(()=>page.evaluate(()=>history.state?.trebellNav?.section)).toBe("chat");
     await page.goBack();
     await expect(projectsHeading(page)).toBeVisible();
     await pressShortcut(page,"Control+BracketRight");
@@ -310,6 +312,33 @@ test.describe("Back and forward",()=>{
     await page.goBack();
     await expect(page.getByTestId("composer")).toBeVisible();
     await page.screenshot({animations:"disabled",path:shots+"history-after-reload-back-light-1280.png"});
+  });
+
+  test("Forward after a reload and a quick Back lands on the page the reload opened, however soon Back came",async({page,request})=>{
+    const outcomes={};
+    for(const [timing,mode] of [["after the app started","dark"],["while the app was starting","light"]]){
+      await open(page,request,{mode});
+      await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+      await nav(page,"Usage").click();await expect(usageHeading(page)).toBeVisible();
+      // Holding the themes keeps the app starting, so Back comes before its history is set up.
+      let release=()=>{};
+      const starting=timing==="while the app was starting";
+      if(starting){const held=new Promise(resolve=>{release=resolve});await page.route(/\/api\/environment\/themes$/,async route=>{await held;await route.continue()})}
+      await page.reload();
+      await expect(page.getByTestId("composer")).toBeVisible();
+      if(!starting)await expect.poll(()=>page.evaluate(()=>history.state?.trebellNav?.section)).toBe("chat");
+      await page.goBack();
+      release();
+      await expect(projectsHeading(page)).toBeVisible();
+      await page.waitForTimeout(300);
+      await pressShortcut(page,"Control+BracketRight");
+      await expect(projectsHeading(page)).toHaveCount(0);
+      await page.waitForTimeout(400);
+      outcomes[timing]=(await usageHeading(page).isVisible())?"usage":(await page.getByTestId("composer").isVisible())?"chat":"other";
+      await page.screenshot({animations:"disabled",path:shots+`history-reload-back-forward-${starting?"starting":"started"}-${mode}-1280.png`});
+      await page.unroute(/\/api\/environment\/themes$/);
+    }
+    expect(outcomes).toEqual({"after the app started":"chat","while the app was starting":"chat"});
   });
 
   // The Browser panel's preview is a frame of its own: the pages it moves through are in the tab's history too, but they are not the
