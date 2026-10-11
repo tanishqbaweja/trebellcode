@@ -554,7 +554,7 @@ test.describe("at three times the pixel density",()=>{
       const drawn=await drawnChangedNames(right),shown=mode+": "+JSON.stringify(drawn);
       expect(drawn.filter(name=>name.includes("▒")),shown).toEqual([]);
       expect(new Set(drawn).size,shown).toBe(drawn.length);
-      expect(drawn[0],shown).toMatch(/…第二次修改\.png$/);expect(drawn[1],shown).toMatch(/…第三次修改\.png$/);
+      expect(drawn[0],shown).toMatch(/…[^…]*第二次修改\.png$/);expect(drawn[1],shown).toMatch(/…[^…]*第三次修改\.png$/);
       expect(drawn[2],shown).toMatch(/^résu.*…2026\.pdf$/u);expect(drawn[3],shown).toMatch(/^résu.*…2025\.pdf$/u);
       // Nothing is drawn past the row's own box.
       const overflow=await right.locator(".changed-file-row .changed-file-name").evaluateAll(names=>names.map(name=>name.scrollWidth-name.clientWidth));

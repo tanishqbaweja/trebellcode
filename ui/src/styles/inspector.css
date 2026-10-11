@@ -277,7 +277,8 @@
 :root:root .context-panel .changed-file-row:hover{background:var(--bg2)}
 :root:root .context-panel .changed-file-row>button:first-child{
   display:flex;align-items:center;width:100%;height:30px;min-width:0;padding:0 2px 0 8px;border:0!important;background:transparent!important;color:var(--tx1)!important;
-  font:450 11.5px/30px var(--mono);text-align:left;white-space:nowrap;overflow:hidden;cursor:pointer;opacity:1;
+  /* The reference design's file-list face (10.5px mono): the list gets about 44% of a docked inspector, so every character counts. */
+  font:450 10.5px/30px var(--mono);text-align:left;white-space:nowrap;overflow:hidden;cursor:pointer;opacity:1;
 }
 :root:root .context-panel .changed-file-row>button:first-child>span:not(.changed-file-path){flex:none;display:inline-flex;margin-right:7px;color:var(--tx3)}
 :root:root .context-panel .changed-file-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -285,7 +286,7 @@
    share of the shrink cannot put an ellipsis on a name that fits); a name longer than the row is cut with an ellipsis. */
 :root:root .context-panel .changed-file-path.split{display:flex;align-items:baseline;gap:7px}
 :root:root .context-panel .changed-file-path.split>.changed-file-name{order:-1;flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;color:var(--tx0)}
-:root:root .context-panel .changed-file-path.split>.changed-file-dir{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--tx3);font-size:10.5px}
+:root:root .context-panel .changed-file-path.split>.changed-file-dir{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--tx3);font-size:10px}
 :root:root .context-panel .changed-file-path.split>.changed-file-sep{display:none}
 :root:root .context-panel .changed-file-row.reviewed .changed-file-path.split>.changed-file-name{color:var(--tx2)}
 :root:root .context-panel .changed-file-row.reviewed>button:first-child{color:var(--tx2)!important}
