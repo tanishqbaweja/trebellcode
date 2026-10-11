@@ -125,6 +125,8 @@ test.describe("Removing a project",()=>{
     await expect(card).toHaveCount(0);
     expect(deletes.length).toBe(1);
     await expect(page.getByTestId("thread-undo-toast")).toHaveCount(0);
+    // The page polls the list while a clone runs: a read still in flight when the test ends must not fail the next test.
+    await page.unrouteAll({behavior:"ignoreErrors"});
   });
 
   test("Undo still works once Projects is left, and a failed Undo says so where the person is",async({page,request})=>{
