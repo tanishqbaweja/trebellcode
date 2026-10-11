@@ -254,6 +254,16 @@ function mapStopReason(reason){
   return reason?"stop":null;
 }
 
+// An error event inside a 200 stream retries as the same error does as an HTTP status: overloaded (529) and api (500) errors are
+// transient and a rate limit (429) is back-pressure. Its type becomes the error code; no status is set.
+function anthropicStreamError(providerError={}){
+  const error=new Error(providerError?.message||"Anthropic provider stream error"),type=String(providerError?.type||"").trim();
+  if(type)error.code=type;
+  if(type==="rate_limit_error"){error.retryable=true;error.rateLimited=true}
+  else if(type==="overloaded_error"||type==="api_error")error.retryable=true;
+  return error;
+}
+
 export function anthropicSseToChatStream(source,{model=""}={}){
   const decoder=new TextDecoder();
   const encoder=new TextEncoder();
@@ -285,7 +295,7 @@ export function anthropicSseToChatStream(source,{model=""}={}){
             const raw=dataLines.map(v=>v.slice(5).trimStart()).join("\n");
             if(!raw||raw==="[DONE]")continue;
             let event;try{event=JSON.parse(raw)}catch{continue}
-            if(event.type==="error")throw new Error(event.error?.message||"Anthropic provider stream error");
+            if(event.type==="error")throw anthropicStreamError(event.error);
             if(event.type==="message_start"){
               inputTokens=Number(event.message?.usage?.input_tokens||0)||0;
               cacheReadTokens=Number(event.message?.usage?.cache_read_input_tokens||0)||0;

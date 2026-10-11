@@ -141,3 +141,21 @@ test("Anthropic cached input usage is retained in normalized prompt accounting",
   assert.equal(result.usage.prompt_tokens_details.cached_tokens,7);
   assert.equal(result.usage.prompt_tokens_details.cache_write_tokens,3);
 });
+
+test("an Anthropic stream error retries as its HTTP status would and keeps its type as the code",async()=>{
+  const encoder=new TextEncoder();
+  const failWith=async error=>{
+    const upstream=new Response(new ReadableStream({start(controller){
+      controller.enqueue(encoder.encode(`event: message_start\ndata: ${JSON.stringify({type:"message_start",message:{id:"msg",model:"claude-opus-4-8",usage:{input_tokens:3}}})}\n\n`));
+      controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({type:"error",error})}\n\n`));controller.close();
+    }}),{status:200,headers:{"content-type":"text/event-stream"}});
+    const adapted=await adaptAnthropicResponse(upstream,{stream:true,model:"claude-opus-4-8"});
+    try{await adapted.text();return null}catch(failure){return failure}
+  };
+  const overloaded=await failWith({type:"overloaded_error",message:"Overloaded"});
+  assert.equal(overloaded.message,"Overloaded");assert.equal(overloaded.code,"overloaded_error");assert.equal(overloaded.retryable,true);assert.equal(overloaded.rateLimited,undefined);assert.equal(overloaded.status,undefined);
+  const apiError=await failWith({type:"api_error",message:"Internal server error"});assert.equal(apiError.code,"api_error");assert.equal(apiError.retryable,true);
+  const limited=await failWith({type:"rate_limit_error",message:"Rate limited"});assert.equal(limited.retryable,true);assert.equal(limited.rateLimited,true);assert.equal(limited.status,undefined);
+  const invalid=await failWith({type:"invalid_request_error",message:"Bad request"});assert.equal(invalid.code,"invalid_request_error");assert.equal(invalid.retryable,undefined);
+  const bare=await failWith({});assert.equal(bare.message,"Anthropic provider stream error");assert.equal(bare.code,undefined);
+});

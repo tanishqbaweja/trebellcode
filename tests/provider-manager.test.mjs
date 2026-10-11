@@ -1928,3 +1928,31 @@ test("an onStream that throws is turned off and never fails or changes the turn"
     assert.equal(result.text,"ab");assert.equal(chatCalls,1);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
+
+test("an error inside a streamed chat or Anthropic reply retries as the same error does as an HTTP status, without a status",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-stream-errors-"));
+  try{
+    const chatFailure=async providerError=>{
+      const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>chunkedResponse([chatEvent({id:"c",model:"glm-5.3",choices:[{index:0,delta:{content:"part"},finish_reason:null}]}),chatEvent({error:providerError})])});manager.setKey("hcnsec","hc-key");
+      try{await manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hi"}],tools:[]},{streamChat:true});return null}catch(error){return error}
+    };
+    const limited=await chatFailure({code:"rate_limit_exceeded",message:"Rate limit reached. Please try again in 2.5s."});
+    assert.equal(limited.code,"rate_limit_exceeded");assert.equal(limited.retryable,true);assert.equal(limited.rateLimited,true);assert.equal(limited.retryAfterMs,2500);assert.equal(limited.status,undefined);
+    const numeric=await chatFailure({code:429,message:"Too many requests"});assert.equal(numeric.retryable,true);assert.equal(numeric.rateLimited,true);
+    for(const providerError of [{type:"server_error",message:"boom"},{status:503,message:"unavailable"},{code:"502",message:"bad gateway"},{type:"overloaded",message:"busy"},{code:"upstream_timeout",message:"slow"}]){
+      const error=await chatFailure(providerError);assert.equal(error.retryable,true,JSON.stringify(providerError));assert.equal(error.rateLimited,undefined,JSON.stringify(providerError));assert.equal(error.status,undefined);assert.equal(error.telemetry.streaming,true);
+    }
+    const invalid=await chatFailure({type:"invalid_request_error",message:"bad input"});assert.equal(invalid.code,"invalid_request_error");assert.equal(invalid.retryable,undefined);
+    const anthropicFailure=async type=>{
+      const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>chunkedResponse([
+        sseEvent({type:"message_start",message:{id:"msg",model:"claude-opus-4-8",usage:{input_tokens:3}}}),
+        sseEvent({type:"content_block_start",index:0,content_block:{type:"text",text:""}}),
+        sseEvent({type:"content_block_delta",index:0,delta:{type:"text_delta",text:"part"}}),
+        sseEvent({type:"error",error:{type,message:type+" happened"}}),
+      ])});manager.setKey("justworker","jw-key");
+      try{await manager.turn("justworker",{model:"claude-opus-4-8",messages:[{role:"user",content:"hi"}],tools:[]},{streamChat:true});return null}catch(error){return error}
+    };
+    const overloaded=await anthropicFailure("overloaded_error");assert.equal(overloaded.code,"overloaded_error");assert.equal(overloaded.retryable,true);assert.equal(overloaded.rateLimited,undefined);assert.equal(overloaded.status,undefined);assert.equal(overloaded.telemetry.streaming,true);
+    const rateLimited=await anthropicFailure("rate_limit_error");assert.equal(rateLimited.retryable,true);assert.equal(rateLimited.rateLimited,true);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});

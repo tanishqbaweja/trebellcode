@@ -387,6 +387,16 @@ async function readOpenAiResponsesStream(source,{requestStartedAt=performance.no
   return {response,responseBytes,timeToFirstTokenMs};
 }
 
+// An error that arrives inside a stream comes after a 200, so it names its class instead of carrying a status. It retries as the same
+// error does when it comes back as an HTTP status: a rate limit (429) as back-pressure, a server error, overload or timeout as transient.
+// No status is set, so the error still reads as one from the stream.
+function streamedChatErrorRetry(providerError={}){
+  const labels=[providerError?.code,providerError?.type,providerError?.status].filter(value=>value!=null&&value!=="").map(value=>String(value).trim().toLowerCase());
+  if(labels.some(label=>label==="429"||label.startsWith("rate_limit"))){const retryAfterMs=openAiRetryAfterMs({message:providerError?.message});return {retryable:true,rateLimited:true,...(retryAfterMs!=null?{retryAfterMs}:{})}}
+  if(labels.some(label=>/^5\d\d$/.test(label)||label==="server_error"||label.startsWith("overloaded")||label.includes("timeout")))return {retryable:true};
+  return {};
+}
+
 async function readOpenAiChatStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,onDelta=null}={}){
   if(!source||typeof source.getReader!=="function")throw new Error("OpenAI Chat stream body is unavailable.");
   const reader=source.getReader(),decoder=new TextDecoder();let buffer="",responseBytes=0,timeToFirstTokenMs=null,id="",model="",finishReason=null,usage=null,text="",role="assistant";
@@ -396,7 +406,7 @@ async function readOpenAiChatStream(source,{requestStartedAt=performance.now(),s
     if(!data||data==="[DONE]")return;
     let event;try{event=JSON.parse(data)}catch{throw new Error("OpenAI Chat stream returned an invalid JSON event.")}
     if(event.error){
-      const error=new Error(event.error?.message||"OpenAI Chat stream failed.");error.code=event.error?.code||"openai_chat_stream_error";throw error;
+      const error=new Error(event.error?.message||"OpenAI Chat stream failed.");error.code=event.error?.code||event.error?.type||"openai_chat_stream_error";Object.assign(error,streamedChatErrorRetry(event.error));throw error;
     }
     if(event.id)id=String(event.id);if(event.model)model=String(event.model);if(event.usage)usage=event.usage;
     for(const choice of Array.isArray(event.choices)?event.choices:[]){
