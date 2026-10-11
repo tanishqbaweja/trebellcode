@@ -169,9 +169,23 @@ export function shortcutHint(value,mac=MAC_PLATFORM){
 }
 
 const MODIFIER_NAMES=new Set(["mod","ctrl","control","cmd","command","meta","shift","alt","option"]);
+// The keys the matcher can see beyond a single character and F1-F24: KeyboardEvent.key in lower case, and the words it reads for
+// a space, Escape, comma, period and slash.
+const NAMED_KEYS=new Set([
+  "enter","tab","space","backspace","delete","insert","home","end","pageup","pagedown","arrowup","arrowdown","arrowleft","arrowright",
+  "escape","esc","comma","period","slash","contextmenu","pause","printscreen","scrolllock","capslock","numlock","help","clear",
+  "find","copy","cut","paste","undo","redo","select","execute","cancel","play","props","attn","accept","again","zoomin","zoomout",
+  "eject","power","wakeup","brightnessup","brightnessdown","mediaplaypause","mediaplay","mediapause","mediastop","mediatracknext",
+  "mediatrackprevious","mediafastforward","mediarewind","mediarecord","audiovolumeup","audiovolumedown","audiovolumemute",
+  "browserback","browserforward","browserrefresh","browserhome","browsersearch","browserfavorites","browserstop",
+]);
+// Names people type for a key the browser names otherwise, with the name that works.
+const KEY_NAME_FIXES={up:"ArrowUp",down:"ArrowDown",left:"ArrowLeft",right:"ArrowRight",del:"Delete",return:"Enter",pgup:"PageUp",pgdn:"PageDown",pagedn:"PageDown",ins:"Insert",spacebar:"Space",prtsc:"PrintScreen"};
+const knownKey=name=>[...name].length===1||/^f([1-9]|1\d|2[0-4])$/.test(name)||NAMED_KEYS.has(name);
 // Why a typed shortcut cannot be used, or "" when it can. Blank (unbound) and a key with any modifiers are fine. "Ctrl+" and
 // "Ctrl+Shift" stop on a modifier and never match a key; "Ctlr+B" names a modifier that does not exist, which the matcher drops,
-// so it would answer to a bare B. The message names the modifiers as the field shows them (Mod as Ctrl, or ⌘ on macOS).
+// so it would answer to a bare B; "Ctrl+Up" names a key the browser calls ArrowUp, so it would never fire. The message names
+// the modifiers as the field shows them (Mod as Ctrl, or ⌘ on macOS).
 export function shortcutProblem(value,mac=MAC_PLATFORM){
   const text=String(value??"").trim();
   if(!text)return "";
@@ -180,7 +194,11 @@ export function shortcutProblem(value,mac=MAC_PLATFORM){
   const modifiers=parts.filter(Boolean);
   const unknown=modifiers.find(part=>!MODIFIER_NAMES.has(part.toLowerCase()));
   if(unknown)return `“${unknown}” is not a modifier key. Use Ctrl, Alt, Shift or Mod.`;
-  if(last&&!MODIFIER_NAMES.has(last.toLowerCase()))return "";
+  if(last&&!MODIFIER_NAMES.has(last.toLowerCase())){
+    const name=last.toLowerCase(),fix=KEY_NAME_FIXES[name];
+    if(knownKey(name))return "";
+    return fix?`“${last}” is not a key name. Use ${fix}.`:`“${last}” is not a key name. Use a letter, a digit or a name such as F2, Enter or ArrowUp.`;
+  }
   const held=last?[...modifiers,last]:modifiers;
   return held.length?`Add a key after “${shortcutHint(held.join("+"),mac)}+”.`:"Type a key, such as F2 or Ctrl+Alt+K.";
 }

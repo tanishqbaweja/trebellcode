@@ -140,6 +140,52 @@ test.describe("Typing a shortcut",()=>{
     expect(saves.length).toBe(1);
   });
 
+  // The matcher reads the key as the browser names it (ArrowUp, Delete, Enter), so "Ctrl+Up" would never fire.
+  test("a key name the app never sees is refused with the name that works, and the saved shortcut keeps working",async({page,request})=>{
+    await open(page,request);
+    const saves=keybindingSaves(page);
+    await openShortcuts(page);
+    const sidebarRow=row(page,"Toggle main sidebar"),field=keyField(page,"Toggle main sidebar"),message=sidebarRow.getByRole("alert");
+    await retype(field,"Ctrl+Up");
+    await field.press("Tab");
+    await expect(message).toHaveText("“Up” is not a key name. Use ArrowUp. Until then the shortcut stays Ctrl+B.");
+    await expect(field).toHaveAttribute("aria-invalid","true");
+    await expect(field).toHaveAccessibleDescription(/“Up” is not a key name/);
+    expect(saves,"a shortcut naming a key the app never sees is never saved").toEqual([]);
+    await sidebarRow.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+"shortcut-key-name-dark-1280.png"});
+    await flipMode(page,"light");
+    await page.screenshot({animations:"disabled",path:shots+"shortcut-key-name-light-1280.png"});
+    await page.setViewportSize({width:900,height:800});
+    await sidebarRow.scrollIntoViewIfNeeded();
+    expect(await sideways(page)).toBeLessThanOrEqual(0);
+    await page.screenshot({animations:"disabled",path:shots+"shortcut-key-name-light-900.png"});
+    await flipMode(page,"dark");
+    await page.screenshot({animations:"disabled",path:shots+"shortcut-key-name-dark-900.png"});
+    await page.setViewportSize({width:1280,height:800});
+    // Ctrl+B still toggles the sidebar.
+    await sidebarRow.locator("strong").click();
+    await page.keyboard.press("Control+B");
+    await expect.poll(()=>sidebarCollapsed(page)).toBe(true);
+    await page.keyboard.press("Control+B");
+    await expect.poll(()=>sidebarCollapsed(page)).toBe(false);
+    // A name that is no key at all.
+    await retype(field,"Ctrl+Uo");
+    await field.press("Tab");
+    await expect(message).toHaveText("“Uo” is not a key name. Use a letter, a digit or a name such as F2, Enter or ArrowUp. Until then the shortcut stays Ctrl+B.");
+    expect(saves).toEqual([]);
+    // The name that works is saved and works.
+    await retype(field,"Ctrl+ArrowUp");
+    await expect(message).toHaveCount(0);
+    await field.press("Enter");
+    await expect.poll(async()=>(await savedRule(request,"sidebarToggle"))?.key).toBe("Ctrl+ArrowUp");
+    await sidebarRow.locator("strong").click();
+    await page.keyboard.press("Control+ArrowUp");
+    await expect.poll(()=>sidebarCollapsed(page)).toBe(true);
+    await page.keyboard.press("Control+ArrowUp");
+    await expect.poll(()=>sidebarCollapsed(page)).toBe(false);
+  });
+
   for(const mode of MODES)test(`an unfinished condition is refused and the shortcut keeps working (${mode})`,async({page,request})=>{
     await open(page,request,{mode});
     const saves=keybindingSaves(page);

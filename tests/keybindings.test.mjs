@@ -165,6 +165,26 @@ test("a shortcut that stops on a modifier or names a modifier that does not exis
   assert.equal(shortcutMatches(event("b"),"Ctlr+B"),true);
 });
 
+test("a shortcut naming a key the browser names otherwise, or no key at all, is refused with the name that works",()=>{
+  for(const value of ["Ctrl+ArrowUp","Mod+Shift+Enter","Ctrl+Space","Esc","Ctrl+Delete","Ctrl+PageDown","F12","Shift+F24","Ctrl+`","Mod+=","Alt+é","Ctrl+comma","Ctrl+ContextMenu"])assert.equal(shortcutProblem(value,false),"",value);
+  assert.equal(shortcutProblem("Ctrl+Up",false),"“Up” is not a key name. Use ArrowUp.");
+  assert.equal(shortcutProblem("ctrl+left",false),"“left” is not a key name. Use ArrowLeft.");
+  assert.equal(shortcutProblem("Ctrl+Del",false),"“Del” is not a key name. Use Delete.");
+  assert.equal(shortcutProblem("Ctrl+Return",false),"“Return” is not a key name. Use Enter.");
+  assert.equal(shortcutProblem("Ctrl+PgUp",false),"“PgUp” is not a key name. Use PageUp.");
+  assert.equal(shortcutProblem("Ctrl+Plus",false),"“Plus” is not a key name. Use a letter, a digit or a name such as F2, Enter or ArrowUp.");
+  assert.equal(shortcutProblem("F25",false),"“F25” is not a key name. Use a letter, a digit or a name such as F2, Enter or ArrowUp.");
+  // A refused name is one the matcher never answers to; the name it suggests is one it does.
+  assert.equal(shortcutMatches(event("ArrowUp",{ctrlKey:true}),"Ctrl+Up"),false);
+  assert.equal(shortcutMatches(event("ArrowUp",{ctrlKey:true}),"Ctrl+ArrowUp"),true);
+  assert.equal(shortcutMatches(event("Delete",{ctrlKey:true}),"Ctrl+Del"),false);
+  assert.equal(shortcutMatches(event("Delete",{ctrlKey:true}),"Ctrl+Delete"),true);
+  assert.equal(shortcutMatches(event(" ",{ctrlKey:true}),"Ctrl+Space"),true);
+  assert.equal(shortcutSignature("Ctrl+Up",false),"");
+  // Every shipped shortcut names a key the matcher sees.
+  for(const rule of defaultKeybindingRules())assert.equal(shortcutProblem(rule.key,false),"",rule.command+" "+rule.key);
+});
+
 test("a condition the parser refuses says what to change, and a finished one passes",()=>{
   for(const value of ["","!modalOpen","threadOpen && !modalOpen","(threadOpen || pullRequestOpen) && !terminalFocus && !modalOpen","!(a || b)"])assert.equal(whenProblem(value),"",value);
   assert.equal(whenProblem("!modalOpen &&"),"Add a context after “&&”.");
