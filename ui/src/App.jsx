@@ -411,12 +411,14 @@ function ActivityEventBody({event,onInspectChanges}){
     {!(command||event.output||changes?.length||turnDiff.length)&&<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre>}
   </div>;
 }
-function ThreadFindBar({state,inputRef,barRef,onQuery,onPrevious,onNext,onClose}){
+// covered: another thread's opening state is up. The bar belongs to the thread being left, so it hides without closing (a failed open
+// brings it back with its query) and cannot be used meanwhile.
+function ThreadFindBar({state,covered=false,inputRef,barRef,onQuery,onPrevious,onNext,onClose}){
   if(!state.open)return null;
   const current=state.index>=0?state.results[state.index]:null;
   const range=current?.snippetMatchRange||{};const start=Math.max(0,Number(range.start)||0),end=Math.max(start,Number(range.end)||0);
   const snippet=String(current?.snippet||"");
-  return <div className="thread-find-bar" data-testid="thread-find-bar" ref={barRef}>
+  return <div className={"thread-find-bar"+(covered?" opening-covered":"")} data-testid="thread-find-bar" ref={barRef} inert={covered}>
     <Search size={13}/><input ref={inputRef} data-testid="thread-find-input" value={state.query} onChange={event=>onQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"){event.preventDefault();onClose()}else if(event.key==="Enter"){event.preventDefault();event.shiftKey?onPrevious():onNext()}}} placeholder="Find in this thread"/>
     <span className="thread-find-count">{state.loading?"Searching…":state.error?"Error":state.results.length?`${state.index+1} / ${state.results.length}${state.nextCursor?"+":""}`:state.query.trim().length>=2?"No matches":""}</span>
     <button type="button" onClick={onPrevious} disabled={state.loading||state.index<=0} aria-label="Previous match">↑</button><button type="button" onClick={onNext} disabled={state.loading||(!state.results.length)||(state.index>=state.results.length-1&&!state.nextCursor)} aria-label="Next match">↓</button><button type="button" onClick={onClose} aria-label="Close find">×</button>
@@ -888,8 +890,9 @@ export default function App(){
   const [threadCatalogCursor,setThreadCatalogCursor]=useState(null);
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   // opening: the thread an open is fetching, from the click until the open is done (sends wait meanwhile): {thread, token (the
-  // open's number), reopen (it was the open thread already), toChat (it lands in the chat), landed (its history shows)}. Until it
-  // lands the sidebar and the header name it; openingCover turns on once it has taken longer than OPENING_COVER_DELAY_MS.
+  // open's number), reopen (it was the open thread already), toChat (it lands in the chat), from (the section it was asked for
+  // in), landed (its history shows)}. Until it lands the sidebar and the header name it; openingCover turns on once it has taken
+  // longer than OPENING_COVER_DELAY_MS.
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [opening,setOpening]=useState(null); const [openingCover,setOpeningCover]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   const localQueueStartRef=useRef(null);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
@@ -931,12 +934,14 @@ export default function App(){
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const sectionRef=useRef(section);sectionRef.current=section;
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0);const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
+  // openRunRef: the last open asked for ({done} settles with it). resumedOnRef: the thread last resumed and the transport it was
+  // resumed on. A reconnect waits for the one and does not resume again a thread the other says is resumed on it already.
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0); const openRunRef=useRef(null); const resumedOnRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyHoldRef=useRef(0);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
-  const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
+  const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeRequestRef=useRef(Promise.resolve());const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
   modelsRef.current=models;modelRef.current=model;
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
@@ -1397,8 +1402,9 @@ export default function App(){
   // A harness switch clears the previous runtime's models at once and gates the composer until the server answers. Its transport stays open
   // until then (see the transport effect), so a rejected switch leaves running turns and open approvals of the active harness untouched.
   // threadId: the thread open when the switch began, the one resetThread closes.
+  // A switch that replaces one still on its way keeps that one's catalog to put back, the catalog of the harness that runs.
   function beginRuntimeSwitch({runtime,instanceId=null,resetThread=true}={}){
-    const pending={id:++runtimeSwitchSeqRef.current,from:agentRuntime,to:String(runtime||agentRuntime),instanceId:instanceId||null,resetThread,threadId:activeThreadRef.current?.id||null,previous:{models,modelMeta,model,selectedModels,modelError,scope:modelCatalogScopeRef.current}};
+    const pending={id:++runtimeSwitchSeqRef.current,from:agentRuntime,to:String(runtime||agentRuntime),instanceId:instanceId||null,resetThread,threadId:activeThreadRef.current?.id||null,previous:runtimeSwitchRef.current?.previous||{models,modelMeta,model,selectedModels,modelError,scope:modelCatalogScopeRef.current}};
     runtimeSwitchRef.current=pending;modelRefreshSeqRef.current++;
     setRuntimeSwitch({id:pending.id,from:pending.from,to:pending.to});
     clearModelCatalog();
@@ -1462,10 +1468,13 @@ export default function App(){
     refreshProviderModels({agentRuntime:runtime,provider:nextProvider,bootstrap:boot,refreshBootstrap:false,...(keptThread?.model?{preferredModel:keptThread.model}:{})}).catch(()=>{});
   }
   // perform() runs the server request that switches (or reloads) the active harness. gate:false leaves sends ungated while it runs and only
-  // applies its result (e.g. after an install). Either way the transport reconnects once, in completeRuntimeSwitch.
+  // applies its result (e.g. after an install). Either way the transport reconnects once, in completeRuntimeSwitch. The server takes these
+  // requests one at a time in the order asked: one asked while another is on its way waits for that one's answer, so the harness the
+  // server ends on is the last one asked for, which is the one the app applies.
   async function switchAgentRuntime(target={},perform,{gate=true}={}){
     let pending=gate?beginRuntimeSwitch(target):null,result;
-    try{result=await perform()}
+    const request=runtimeRequestRef.current.then(()=>perform());runtimeRequestRef.current=request.catch(()=>{});
+    try{result=await request}
     catch(error){if(pending)await abortRuntimeSwitch(pending);throw error}
     if(!pending)pending=beginRuntimeSwitch(target);
     await completeRuntimeSwitch(pending,result);
@@ -2037,12 +2046,17 @@ export default function App(){
           const reopen=(listed||[]).find(thread=>thread.id===pending.thread.id)||pending.thread;
           // The person asked for this thread, so a thread that cannot open says why, as a sidebar click on it does; the transport it was
           // asked on stays up instead of reconnecting as if the socket had failed.
-          try{await openThread(reopen,{client:current,preserveSection:pending.preserveSection})}
+          try{await openThread(reopen,{client:current,preserveSection:pending.preserveSection,from:pending.from})}
           catch(error){if(disposed||!current.isConnected())throw error;showActionError(error,"Could not open thread")}
         }else{
+          // A thread the person opens meanwhile resumes on this transport and replaces the open one: rather than reopen the thread it
+          // leaves (whose answer would then undo that open), the transport waits for it, and reopens the thread shown after it unless
+          // an open has resumed that thread here already (one that failed leaves the thread from before, which still needs it).
+          for(let waited=null;openingThreadRef.current&&openingThreadRef.current!==String(activeThreadRef.current?.id||"")&&openRunRef.current!==waited;){waited=openRunRef.current;await waited.done;if(disposed)return}
           const activeId=activeThreadRef.current?.id,cataloged=activeId?threads.find(thread=>thread.id===activeId)||activeThreadRef.current:null;
           const reopen=activeId?((listed||[]).find(thread=>thread.id===activeId)||cataloged):null;
-          if(reopen&&threadCatalogRuntime(reopen,threadMeta[reopen.id]||{},agentRuntime)===agentRuntime)await openThread(reopen,{client:current,preserveSection:true});
+          const resumedHere=resumedOnRef.current?.client===current&&resumedOnRef.current.threadId===activeId;
+          if(reopen&&!resumedHere&&threadCatalogRuntime(reopen,threadMeta[reopen.id]||{},agentRuntime)===agentRuntime)await openThread(reopen,{client:current,preserveSection:true});
         }
         await Promise.all([loadSkills(current,projectPath),loadCollaborationModes(current)]);
         if(disposed)return;ready=established=true;
@@ -2252,8 +2266,8 @@ export default function App(){
       else if(command==="navigationForward")runUserAction(()=>navigateHistory(1),"Could not navigate forward");
       else if(command==="sidebarToggle")setSidebarOpen(value=>!value);
       else if(command==="threadStop")runUserAction(stop,"Could not stop turn");
-      // While another thread opens, the sidebar and header already name it: pin and settle wait for it rather than act on the thread
-      // the view is leaving, and previous/next step from it.
+      // While another thread opens, the sidebar and header already name it: pin, settle, find and the goal wait for it rather than
+      // act on the thread the view is leaving, and previous/next step from it.
       else if(command==="threadSettle"&&activeThread?.id&&!openingPending)runUserAction(()=>reversibleThreadAction(activeThread,activeThread.section?.name==="Settled"?"active":"settle"),"Could not update thread");
       else if(command==="threadPin"&&activeThread?.id&&!openingPending)runUserAction(()=>reversibleThreadAction(activeThread,activeThread.section?.name==="Pinned"?"active":"pin"),"Could not update thread");
       else if(command==="threadPrevious"||command==="threadNext"){
@@ -2261,7 +2275,7 @@ export default function App(){
         const delta=command==="threadPrevious"?-1:1;const next=displayThreads[index>=0?index+delta:-1];
         if(next)runUserAction(()=>openThread(next),"Could not open thread");
       }
-      else if(command==="threadFind")openThreadFind();
+      else if(command==="threadFind"&&!openingPending)openThreadFind();
       else if(command.startsWith("threadJump")){
         const index=Number(command.slice("threadJump".length))-1;const target=displayThreads[index];
         if(target)runUserAction(()=>openThread(target),"Could not open thread");
@@ -2291,7 +2305,7 @@ export default function App(){
       else if(command==="projectSearch"){setSidebarOpen(true);setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:sidebar-search")),0)}
       else if(command==="files")openRightPanel("files");
       else if(command==="source")openRightPanel("source");
-      else if(command==="goal"&&activeThread?.id)openRightPanel("goal");
+      else if(command==="goal"&&activeThread?.id&&!openingPending)openRightPanel("goal");
       else if(command==="projects")setSection("projects");
       else if(command==="settings")setSection("settings");
       else if(command==="environments")setSection("environments");
@@ -2871,8 +2885,9 @@ export default function App(){
     const updated={...thread,section:target||null,sectionEnteredAt:target?Date.now()/1000:null,sectionRank:first?first.sectionRank-1:null,sectionPlaced:Boolean(first)};setThreads(prev=>prev.map(t=>t.id===thread.id?updated:t));if(activeThread?.id===thread.id)setActiveThread(updated);await updateThreadMeta(thread.id,{sectionName:target?.name||"Active"});
     loadThreads(rpc);
   }
+  // wasActive: the thread is the one the sidebar and header name, which is the thread still opening when there is one.
   async function reversibleThreadAction(thread,action,{snoozeUntil=null,offerUndo=true}={}){
-    const snapshot=captureThreadPlacement(thread);const wasActive=activeThread?.id===thread.id;let label="Thread updated";let undo=null;
+    const snapshot=captureThreadPlacement(thread);const wasActive=String(openingThreadRef.current||activeThreadRef.current?.id||"")===String(thread.id);let label="Thread updated";let undo=null;
     if(action==="pin"){
       if(thread.section?.name==="Pinned")return null;
       await moveThread(thread,"pin");label="Thread pinned";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
@@ -2889,7 +2904,9 @@ export default function App(){
       await updateThreadMeta(thread.id,{snoozedUntil:Number(snoozeUntil)});await moveThread(thread,"snooze");label="Thread snoozed";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
     }else if(action==="archive"){
       if(!rpc)return null;
-      await rpc.request("thread/archive",{threadId:thread.id});await updateThreadMeta(thread.id,{archived:true});setThreads(prev=>prev.filter(t=>t.id!==thread.id));if(wasActive)await newChat();label="Thread archived";
+      // A thread still opening ends its open first, so that its answer cannot bring the archived thread back (nor save it un-archived).
+      if(openingThreadRef.current===String(thread.id))await newChat();
+      await rpc.request("thread/archive",{threadId:thread.id});await updateThreadMeta(thread.id,{archived:true});setThreads(prev=>prev.filter(t=>t.id!==thread.id));await leaveRemovedThread(thread.id);label="Thread archived";
       undo=async(restored=null)=>{
         const result=await rpc.request("thread/unarchive",{threadId:thread.id});
         const restoredThread=result?.thread||thread;
@@ -2916,9 +2933,10 @@ export default function App(){
     }
     if(action==="delete"){
       if(!rpc||!confirm("Delete this thread permanently?"))return;
+      if(openingThreadRef.current===String(thread.id))await newChat();
       await rpc.request("thread/delete",{threadId:thread.id});
       setThreads(prev=>prev.filter(t=>t.id!==thread.id));
-      if(activeThread?.id===thread.id)await newChat();
+      await leaveRemovedThread(thread.id);
       return;
     }
   }
@@ -3012,22 +3030,32 @@ export default function App(){
     if(previous&&threadCatalogRuntime(previous,threadMeta[threadId]||{},agentRuntime)!=="codex")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
   }
-  async function switchRuntimeForThread(thread,{preserveSection=false}={}){
+  // A switch still on its way lands on its own harness: a thread of the harness that runs now, opened meanwhile, switches back after
+  // it rather than open on a transport that switch is about to replace. A switch that fails leaves alone the thread a later one is
+  // to reopen.
+  async function switchRuntimeForThread(thread,{preserveSection=false,from=null}={}){
     const meta=threadMeta[thread.id]||{},targetRuntime=threadCatalogRuntime(thread,meta,agentRuntime);
-    if(!targetRuntime||targetRuntime===agentRuntime)return false;
+    if(!targetRuntime||targetRuntime===agentRuntime&&targetRuntime===(runtimeSwitchRef.current?.to||agentRuntime))return false;
     if(running)throw new Error("Stop the running turn before switching agent runtimes.");
     setSelectedThreadIds(new Set());
-    pendingRuntimeThreadRef.current={thread,preserveSection,targetRuntime};
+    const pending={thread,preserveSection,from,targetRuntime};pendingRuntimeThreadRef.current=pending;
     try{
       const instanceId=meta.runtimeInstanceId||null;
       await switchAgentRuntime({runtime:targetRuntime,instanceId,resetThread:false},()=>api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:targetRuntime,instanceId}}));
       return true;
     }catch(error){
-      pendingRuntimeThreadRef.current=null;throw error;
+      if(pendingRuntimeThreadRef.current===pending)pendingRuntimeThreadRef.current=null;throw error;
     }
   }
   // A new task is asked for after any thread still opening, so it replaces that open (and a harness switch's reopen of it).
-  async function newChat(){openSeqRef.current++;openingThreadRef.current=null;pendingRuntimeThreadRef.current=null;setOpening(null);rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
+  async function newChat(){openSeqRef.current++;openingThreadRef.current=null;pendingRuntimeThreadRef.current=null;setOpening(null);showNewTask()}
+  // After the thread shown is archived or deleted: a new task, as newChat; under another thread still opening, only the view under
+  // that open becomes the new task, and the open goes on (one that fails then comes back to the new task, not to a thread gone).
+  async function leaveRemovedThread(threadId){
+    if(String(activeThreadRef.current?.id||"")!==String(threadId))return;
+    if(openingThreadRef.current&&openingThreadRef.current!==String(threadId))showNewTask();else await newChat();
+  }
+  function showNewTask(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -3040,20 +3068,22 @@ export default function App(){
   // replaced stops where it is, so a late answer never brings its thread back (nor a late failure its error). Until the open lands,
   // the sidebar and the header name its thread and, once it takes long, its opening state covers the conversation (see opening); the
   // thread already open changes none of that. A thread the person asks for also replaces one a harness switch was still to reopen
-  // for an earlier open (the transport's own reopens pass their client and keep it).
+  // for an earlier open (the transport's own reopens pass their client and keep it). from is the section it was asked for in: it
+  // lands in the chat from there, but a page the person has gone to since stays, with the thread open behind it.
   async function openThread(thread,options={}){
-    const threadId=String(thread?.id||""),token=++openSeqRef.current,pending=pendingRuntimeThreadRef.current;
+    const threadId=String(thread?.id||""),token=++openSeqRef.current,pending=pendingRuntimeThreadRef.current,from=options.from??sectionRef.current;
     if(!options.client&&pending&&String(pending.thread?.id||"")!==threadId)pendingRuntimeThreadRef.current=null;
-    if(threadId){openingThreadRef.current=threadId;setOpening({thread,token,reopen:String(activeThreadRef.current?.id||"")===threadId,toChat:!options.preserveSection,landed:false})}
-    try{return await openThreadInternal(thread,{...options,token})}
+    if(threadId){openingThreadRef.current=threadId;setOpening({thread,token,reopen:String(activeThreadRef.current?.id||"")===threadId,toChat:!options.preserveSection,from,landed:false})}
+    const run=openThreadInternal(thread,{...options,from,token});openRunRef.current={done:run.then(()=>{},()=>{})};
+    try{return await run}
     catch(error){if(openSeqRef.current!==token)return thread;throw error}
     finally{
       const pendingId=String(pendingRuntimeThreadRef.current?.thread?.id||"");
       if(openSeqRef.current===token&&!(threadId&&pendingId===threadId)){openingThreadRef.current=null;setOpening(null)}
     }
   }
-  async function openThreadInternal(thread,{client=rpc,preserveSection=false,token=openSeqRef.current}={}){
-    if(await switchRuntimeForThread(thread,{preserveSection}))return thread;
+  async function openThreadInternal(thread,{client=rpc,preserveSection=false,from=sectionRef.current,token=openSeqRef.current}={}){
+    if(await switchRuntimeForThread(thread,{preserveSection,from}))return thread;
     const previousThreadId=activeThreadRef.current?.id;
     const reopeningCurrentThread=previousThreadId===thread.id;
     let savedMeta=threadMeta[thread.id]||{},metaReadError=null;
@@ -3113,7 +3143,7 @@ export default function App(){
     rememberConversationPosition();
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
     const resumedRunning=openedThread.status?.type==="active",resumedTurnId=resumedActiveTurnId(resumed);
-    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(projectError)throw projectError;else if(!openedThread.cwd)setProjectPath(projectPath);
@@ -3122,7 +3152,7 @@ export default function App(){
     const map=cp?Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x])):(reopeningCurrentThread?checkpointByTurn:{});
     if(cp)setCheckpointByTurn(map);
     if(resumed?.thread){
-      activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
+      activeThreadRef.current=resumed.thread;resumedOnRef.current={threadId:resumed.thread.id,client};pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
       if(runtimeCapabilities.collaborationModes&&resumed.collaborationMode?.mode&&collaborationModes.some(item=>item.mode===resumed.collaborationMode.mode))setCollaborationMode(resumed.collaborationMode.mode);
       if(agentRuntime==="codex")applyCodexThreadSettings(resumed.thread.id,resumed);
       else if(relayHarness(agentRuntime)&&resumed.thread.model&&modelsRef.current.includes(resumed.thread.model)){setModel(resumed.thread.model);setSelectedModels([resumed.thread.model])}
@@ -4251,6 +4281,8 @@ export default function App(){
   async function shareThread(){const text=messages.filter(m=>m.role!=="reasoning").map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
   async function startReview(){
     if(!rpc||!activeThread?.id)throw new Error("Start or open a thread before reviewing.");
+    // A review is a turn, and no turn starts while a thread opens (sends wait the same way).
+    if(openingThreadRef.current)throw new Error("Wait for the thread to finish opening before reviewing.");
     const result=await rpc.request("review/start",{threadId:activeThread.id,target:{type:"uncommittedChanges"}});
     if(result?.turn?.id){setRunning(true);setActiveTurnId(result.turn.id)}
     setEvents(prev=>[...prev,{id:"review-"+Date.now(),kind:"tool",title:"Reviewing uncommitted changes",status:"running",raw:result||{}}]);
@@ -4438,10 +4470,10 @@ export default function App(){
 
   // While a thread other than the open one opens, the sidebar row and the header name it at once (the composer, which waits, drops the
   // open thread's own controls) and, once it takes long, its opening state covers the conversation. Opened from a page such as History,
-  // it shows in the chat view while that page waits hidden (the conversation it replaces is not mounted). What is underneath stays the
-  // view before the click, so a failed open only ends this.
+  // it shows in the chat view while that page waits hidden (the conversation it replaces is not mounted); a page asked for after the
+  // click shows as usual. What is underneath stays the view before the click, so a failed open only ends this.
   const openingView=openingPending?opening.thread:null,openingShown=Boolean(openingView&&openingCover);
-  const openingOverPage=openingShown&&opening.toChat&&section!=="chat"&&section!=="new",viewSection=openingOverPage?"chat":section;
+  const openingOverPage=openingShown&&opening.toChat&&section!=="chat"&&section!=="new"&&section===opening.from,viewSection=openingOverPage?"chat":section;
   const headerThread=openingView||activeThread;
   const activeTitle=titleOf(openThreadTitleSource(headerThread,threads));
   // The open thread's approval comes first; one from another thread says which task is asking.
@@ -4555,6 +4587,8 @@ export default function App(){
   const sidebarRetryThreads=useLatestCallback(()=>loadThreads(rpcRef.current).then(()=>undefined));
   const runningSidebarIds=useMemo(()=>runningThreadIds(displayThreads,{activeThreadId:activeThread?.id,activeRunning:running,turnStates:threadTurnStates}),[displayThreads,activeThread?.id,running,threadTurnStates]);
   const completedEvents=finishedActivitySteps(events);
+  // The palette's thread actions are for the thread the header names: none while another one opens (its own are not loaded yet).
+  const paletteThread=Boolean(activeThread?.id&&!openingView);
   const paletteActions=paletteOpen?[
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:"Ctrl+N",onRun:newChat},
     {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
@@ -4563,13 +4597,13 @@ export default function App(){
     {id:"files",label:"Files",detail:"Browse and edit the workspace",onRun:()=>openRightPanel("files")},
     ...(!projectlessMode?[{id:"diff",label:"Changes",detail:"Inspect the current Git diff",onRun:()=>openRightPanel("diff")},{id:"git",label:"Source control",detail:gitInfo?.branch||"Git and pull requests",onRun:()=>openRightPanel("source")}]:[]),
     ...(!projectlessMode?[{id:"context",label:"Trebell context",detail:"Inspect repository context supplied to the latest turn",onRun:()=>openRightPanel("context")}]:[]),
-    ...(activeThread?.id?[{id:"link-pr",label:"Link pull request",detail:"Attach a hosted review to this thread",onRun:async()=>{const url=await askText("Pull request URL");if(url)await linkPullRequestUrl(url,"manual")}}]:[]),
+    ...(paletteThread?[{id:"link-pr",label:"Link pull request",detail:"Attach a hosted review to this thread",onRun:async()=>{const url=await askText("Pull request URL");if(url)await linkPullRequestUrl(url,"manual")}}]:[]),
     {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:"Ctrl+Shift+T",onRun:()=>setPanel("terminal")},
     ...((currentProject?.scripts||[]).map(script=>({id:"project-action:"+script.id,label:"Run "+script.name,detail:script.command,onRun:()=>runProjectAction(script)}))),
     {id:"browser",label:"Browser",detail:window.trebellDesktop?.browser?"Open Trebell Agent Browser":"Open hosted preview and local dev-server tools",onRun:()=>openRightPanel("preview")},
     ...(runtimeCapabilities.delegation?[{id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")}]:[]),
-    ...(activeThread?.id?[{id:"goal",label:"Thread goal",detail:goal?.objective||"Set a durable objective",onRun:()=>openRightPanel("goal")}]:[]),
-    ...(activeThread?.id&&gitInfo?.isGit?[{id:"review",label:"Review changes",detail:`Ask ${agentRuntimeLabel} to review uncommitted changes`,onRun:()=>startReview()}]:[]),
+    ...(paletteThread?[{id:"goal",label:"Thread goal",detail:goal?.objective||"Set a durable objective",onRun:()=>openRightPanel("goal")}]:[]),
+    ...(paletteThread&&gitInfo?.isGit?[{id:"review",label:"Review changes",detail:`Ask ${agentRuntimeLabel} to review uncommitted changes`,onRun:()=>startReview()}]:[]),
     ...(runtimeCapabilities.harnessTools?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>setSection("tools")}]:[]),
     {id:"environments",label:"Environments",detail:"Local, WSL and SSH",onRun:()=>setSection("environments")},
     {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>setSection("usage")},
@@ -4582,7 +4616,7 @@ export default function App(){
     {id:"theme-black",label:"Theme: Black",detail:"OLED-friendly black Trebell palette",onRun:()=>saveAppSettings({appearance:"black"})},
     ...(settings.customThemes||[]).map(theme=>({id:"theme-custom:"+theme.id,label:"Theme: "+theme.name,detail:`Custom ${theme.appearance||"dark"} theme`,onRun:()=>saveAppSettings({appearance:theme.id})})),
     {id:"settings",label:"Settings",detail:window.trebellDesktop?"Providers, permissions and desktop behavior":"Providers, permissions and workspace behavior",onRun:()=>setSection("settings")},
-    ...(activeThread?.id&&messages.length?[{id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread}]:[]),
+    ...(paletteThread&&messages.length?[{id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread}]:[]),
   ]:null;
 
   const previewSurface=<PreviewPage
@@ -4600,7 +4634,9 @@ export default function App(){
     if(rightPanelTab==="agents"&&runtimeCapabilities.delegation)return <div className="panel-page"><AgentsPage threads={threads} threadMeta={threadMeta} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onDelegate={delegateTask} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry} canModelDelegate={Boolean(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation)}/></div>;
     // Everything the goal panel holds (drafts, busy state and its last error) belongs to one thread: another thread, or a harness
     // switch, starts it afresh instead of showing the previous thread's error. A save that answers after another thread opened
-    // updates nothing on screen (that thread loads its own goal), like every other goal and continuity update here.
+    // updates nothing on screen (that thread loads its own goal), like every other goal and continuity update here. While another
+    // thread's opening state is up, the panel waits for that thread instead of offering the goal of the one being left.
+    if(rightPanelTab==="goal"&&openingShown)return <div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>;
     if(rightPanelTab==="goal"){
       const goalThreadId=activeThread?.id||null,forGoalThread=apply=>next=>{if(goalThreadId&&activeThreadRef.current?.id===goalThreadId)apply(next)};
       return <GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/>;
@@ -4716,7 +4752,7 @@ export default function App(){
             </div>
           </header>
 
-          <ThreadFindBar state={threadFind} inputRef={threadFindInputRef} barRef={threadFindBarRef} onQuery={query=>setThreadFind(current=>({...current,query,error:""}))} onPrevious={()=>stepThreadFind(-1)} onNext={()=>stepThreadFind(1)} onClose={closeThreadFind}/>
+          <ThreadFindBar state={threadFind} covered={openingShown} inputRef={threadFindInputRef} barRef={threadFindBarRef} onQuery={query=>setThreadFind(current=>({...current,query,error:""}))} onPrevious={()=>stepThreadFind(-1)} onNext={()=>stepThreadFind(1)} onClose={closeThreadFind}/>
 
           {!openingOverPage&&<div className={"conversation-scroll"+(openingShown?" opening-covered":"")} ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">

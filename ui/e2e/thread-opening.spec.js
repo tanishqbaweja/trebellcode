@@ -32,11 +32,12 @@ function savedThread(id,name,{runtime="opencode",turns=1,minutesAgo=10,projectle
 
 // One socket URL for both harnesses, as the agent relay serves them: each request is answered by the harness active when it arrives.
 // hold(threadId) holds that thread's next thread/resume until the function it returns is called; fail[threadId] fails its resume.
-// The GUI server around it is faked with routes: the app starts in PROJECT_NAME (the repository folder), and holdSelect(), when
-// set, holds the answer of a harness switch (the runtime changes at once). server.projectDelay slows the answer of a project
-// opening, and server.git makes the project a Git repository.
+// holdList() holds the next thread/list the same way (a harness starting again lists late), and drop() closes the sockets, as a
+// server restart does. The GUI server around it is faked with routes: the app starts in PROJECT_NAME (the repository folder), and
+// holdSelect(), when set, holds the answer of a harness switch (the runtime changes at once); server.selectFail fails one.
+// server.projectDelay slows the answer of a project opening, and server.git makes the project a Git repository.
 async function startHarness(page,{runtime="opencode",saved=[]}={}){
-  const server={runtime,requests:[],holds:new Map(),fail:{},selects:0,selectHold:null,turns:0,projectDelay:0,git:false};
+  const server={runtime,requests:[],holds:new Map(),fail:{},selects:0,selectHold:null,selectFail:null,listHold:null,turns:0,projectDelay:0,git:false};
   const threads=saved.map(item=>item.thread),threadMeta=Object.fromEntries(saved.map(item=>[item.thread.id,item.meta]));
   const project={id:"opening-project",name:PROJECT_NAME,path:process.cwd(),environmentId:null,effectiveSettings:{}};
   const http=createServer(),wss=new WebSocketServer({noServer:true});
@@ -60,10 +61,11 @@ async function startHarness(page,{runtime="opencode",saved=[]}={}){
       send({method:"turn/completed",params:{threadId,turn:{id:turnId,status:"completed",completedAt:Date.now()/1000}}});
       return;
     }
+    if(message.method==="thread/list"&&server.listHold){const held=server.listHold;server.listHold=null;await held}
     let result={};
     if(message.method==="initialize")result={userAgent:"thread-opening-fixture"};
     else if(message.method==="thread/list")result={data:threads.filter(item=>item.runtime===active).map(item=>({...item,turns:[]})),nextCursor:null};
-    else if(["thread/turns/list","thread/queue/list","thread/attachment/list","thread/timeline/list","thread/items/list"].includes(message.method))result={data:[],nextCursor:null};
+    else if(["thread/turns/list","thread/queue/list","thread/attachment/list","thread/timeline/list","thread/items/list","thread/searchOccurrences"].includes(message.method))result={data:[],nextCursor:null};
     else if(["threadSection/list","skills/list","collaborationMode/list"].includes(message.method))result={data:[]};
     else if(message.method==="thread/goal/get")result={goal:null};
     else if(message.method==="thread/continuity/get")result={continuity:null};
@@ -85,7 +87,9 @@ async function startHarness(page,{runtime="opencode",saved=[]}={}){
   await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,CATALOGS[server.runtime]));
   await page.route(/\/api\/agent-runtimes(?:\?.*)?$/,async route=>{
     if(route.request().method()==="GET")return json(route,snapshot());
-    const body=route.request().postDataJSON()||{};server.selects++;server.runtime=body.runtime;
+    const body=route.request().postDataJSON()||{};server.selects++;
+    if(server.selectFail)return json(route,{error:server.selectFail},500);
+    server.runtime=body.runtime;
     if(server.selectHold)await server.selectHold;
     const current=snapshot();
     return json(route,{...current,selected:{runtime:server.runtime,instance:current.instances.find(item=>item.kind===server.runtime),status:current.statuses.find(item=>item.kind===server.runtime)},bootstrap:bootstrap(),catalog:CATALOGS[server.runtime]});
@@ -108,10 +112,13 @@ async function startHarness(page,{runtime="opencode",saved=[]}={}){
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:264,rightPanelWidth:460,terminalHeight:330})));
   return {
-    server,
+    server,threadMeta,
     hold(threadId){let release=()=>{};server.holds.set(threadId,new Promise(resolve=>{release=resolve}));return release},
     holdSelect(){let release=()=>{};server.selectHold=new Promise(resolve=>{release=resolve});return ()=>{server.selectHold=null;release()}},
+    holdList(){let release=()=>{};server.listHold=new Promise(resolve=>{release=resolve});return release},
+    drop(){for(const client of wss.clients)try{client.terminate()}catch{}},
     resumes:threadId=>server.requests.filter(item=>item.method==="thread/resume"&&item.params.threadId===threadId&&item.params.excludeTurns!==false).length,
+    sent:method=>server.requests.filter(item=>item.method===method).map(item=>item.params.threadId),
     async close(){for(const client of wss.clients)try{client.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))},
   };
 }
@@ -137,6 +144,11 @@ async function openRow(page,saved){
   await row(page,saved).locator(".thread-main").click();
   await expect(answer(page,saved,saved.thread.turns.length)).toBeVisible({timeout:15_000});
   await expect(page.getByTestId("composer")).toBeEnabled();
+}
+// A row's menu action as a person picks it: over the row, its menu, then the action.
+async function rowAction(page,saved,name){
+  const target=row(page,saved);await target.hover();await target.locator(".thread-menu summary").click();
+  await target.getByRole("button",{name,exact:true}).click();
 }
 
 // Samples every frame until stopFrames: the header title, the selected row, and whether the opening state, the new-task hero and
@@ -454,5 +466,169 @@ test("a thread opened from History, the command palette or a search result is na
     await expect(opening(page)).toBeVisible();await expect(answer(page,DELTA)).toBeHidden();
     release();
     await expect(answer(page,ALPHA,24)).toBeVisible();await expect(opening(page)).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+test("a thread clicked while a restarted harness lists its threads again opens, and the thread before it reopens there only if that open fails",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});harness.server.fail[GAMMA.thread.id]=FAILURE;
+  const lists=()=>harness.sent("thread/list").length;
+  // A server restart: the socket drops, the app connects again and lists the threads, which the restarted harness answers late.
+  async function restart(){const listed=lists(),release=harness.holdList();harness.drop();await expect.poll(lists,{timeout:15_000}).toBe(listed+1);return release}
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    // Connected again, the person opens another thread, which takes a while, and the list comes in meanwhile: the thread open before
+    // the restart, which the reconnect resumes, is not reopened over the one asked for.
+    let releaseList=await restart(),releaseOpen=harness.hold(BETA.thread.id);
+    await row(page,BETA).locator(".thread-main").click();await expect.poll(()=>harness.resumes(BETA.thread.id)).toBe(1);
+    releaseList();await page.waitForTimeout(500);
+    expect(harness.resumes(ALPHA.thread.id)).toBe(1);await expect(opening(page)).toBeVisible();await expect(headerTitle(page)).toHaveText("Payment retries");
+    releaseOpen();
+    await expect(answer(page,BETA)).toBeVisible();await expect(page.getByTestId("composer")).toBeEnabled();
+    await expect(row(page,BETA)).toHaveClass(/active/);await expect(headerTitle(page)).toHaveText("Payment retries");await expect(answer(page,ALPHA,24)).toHaveCount(0);
+    // It resumed on the new connection itself, so the reconnect does not resume it again.
+    await page.waitForTimeout(400);expect([harness.resumes(ALPHA.thread.id),harness.resumes(BETA.thread.id)]).toEqual([1,1]);
+    // Again with a thread that cannot open: the view goes back to Payment retries, which then resumes on the new connection, and the
+    // next message goes to it.
+    releaseList=await restart();releaseOpen=harness.hold(GAMMA.thread.id);
+    await row(page,GAMMA).locator(".thread-main").click();await expect.poll(()=>harness.resumes(GAMMA.thread.id)).toBe(1);
+    releaseList();await page.waitForTimeout(500);expect(harness.resumes(BETA.thread.id)).toBe(1);
+    releaseOpen();
+    await expect(page.locator(".sidebar-action-error")).toContainText(FAILURE);
+    await expect.poll(()=>harness.resumes(BETA.thread.id)).toBe(2);
+    await expect(row(page,BETA)).toHaveClass(/active/);await expect(headerTitle(page)).toHaveText("Payment retries");await expect(answer(page,BETA)).toBeVisible();
+    const composer=page.getByTestId("composer");await expect(composer).toBeEnabled();
+    await composer.fill("Follow-up after the restart.");await page.getByTestId("send").click();
+    await expect(page.getByText("Fixture reply in "+BETA.thread.id,{exact:true})).toBeVisible({timeout:15_000});
+    expect(harness.sent("turn/start")).toEqual([BETA.thread.id]);
+  }finally{await harness.close()}
+});
+
+test("a page asked for while a thread opens shows at once, and the thread opens behind it",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
+  const heading=name=>page.getByRole("heading",{name,exact:true}),history=page.getByRole("button",{name:"History",exact:true});
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    const release=harness.hold(BETA.thread.id);
+    await row(page,BETA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
+    // History from the sidebar, then Settings and Projects from their shortcuts: each shows when asked for, as the selected page.
+    await history.click();
+    await expect(heading("Thread history")).toBeVisible();await expect(history).toHaveClass(/active/);await expect(opening(page)).toHaveCount(0);
+    await page.keyboard.press("Control+Comma");await expect(heading("Settings")).toBeVisible();
+    await page.keyboard.press("Control+Shift+P");await expect(heading("Projects")).toBeVisible();
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-opening-page-asked-for-dark-1600x980.png"});
+    await expect(row(page,BETA)).toHaveClass(/active/);
+    // The thread lands behind the page asked for last, which stays, and is the open thread back in the threads.
+    release();await expect.poll(()=>harness.sent("thread/goal/get").filter(id=>id===BETA.thread.id).length).toBe(1);await page.waitForTimeout(500);
+    await expect(heading("Projects")).toBeVisible();await expect(page.locator(".chat-workspace")).toHaveCount(0);
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    await expect(answer(page,BETA)).toBeVisible();await expect(opening(page)).toHaveCount(0);await expect(headerTitle(page)).toHaveText("Payment retries");
+    await expect(page.getByTestId("composer")).toBeEnabled();
+  }finally{await harness.close()}
+});
+
+test("archiving the thread left while another opens keeps that open, and archiving a thread as it opens ends its open for good",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    // The thread just left, no longer the selected row: Payment retries goes on opening, and opens.
+    let release=harness.hold(BETA.thread.id);
+    await row(page,BETA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
+    await rowAction(page,ALPHA,"Archive");
+    await expect.poll(()=>harness.sent("thread/archive")).toEqual([ALPHA.thread.id]);await expect(row(page,ALPHA)).toHaveCount(0);
+    await expect(opening(page)).toBeVisible();await expect(headerTitle(page)).toHaveText("Payment retries");
+    release();
+    await expect(answer(page,BETA)).toBeVisible();await expect(row(page,BETA)).toHaveClass(/active/);await expect(page.getByTestId("composer")).toBeEnabled();
+    // A thread that then fails to open comes back to a new task, not to the archived thread it was opened from.
+    harness.server.fail[GAMMA.thread.id]=FAILURE;release=harness.hold(GAMMA.thread.id);
+    await row(page,GAMMA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
+    await rowAction(page,BETA,"Archive");await expect.poll(()=>harness.sent("thread/archive")).toEqual([ALPHA.thread.id,BETA.thread.id]);
+    await expect(opening(page)).toBeVisible();
+    release();
+    await expect(page.locator(".sidebar-action-error")).toContainText(FAILURE);
+    await expect(hero(page)).toBeVisible();await expect(headerTitle(page)).toHaveText("New Trebell task");
+    await expect(page.locator(".thread-row.active")).toHaveCount(0);await expect(answer(page,BETA)).toHaveCount(0);
+    // The thread opening is the selected row: archiving it ends its open, and its late answer neither shows it nor un-archives it.
+    release=harness.hold(DELTA.thread.id);
+    await row(page,DELTA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
+    await rowAction(page,DELTA,"Archive");await expect.poll(()=>harness.sent("thread/archive")).toEqual([ALPHA.thread.id,BETA.thread.id,DELTA.thread.id]);
+    await expect(row(page,DELTA)).toHaveCount(0);await expect(opening(page)).toHaveCount(0);await expect(hero(page)).toBeVisible();
+    await expect(page.getByTestId("composer")).toBeEnabled();
+    release();await expect.poll(()=>harness.sent("thread/goal/get").filter(id=>id===DELTA.thread.id).length).toBe(1);await page.waitForTimeout(500);
+    await expect(row(page,DELTA)).toHaveCount(0);await expect(answer(page,DELTA)).toHaveCount(0);await expect(hero(page)).toBeVisible();
+    expect(harness.threadMeta[DELTA.thread.id]?.archived).toBe(true);
+  }finally{await harness.close()}
+});
+
+test("while a thread opens, the find bar, goal and review of the thread being left are out of reach, and a failed open brings them back",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});harness.server.git=true;
+  const findBar=page.getByTestId("thread-find-bar"),objective=page.locator('textarea[aria-label="Objective"]'),panel=page.getByTestId("right-panel"),palette=page.getByRole("dialog");
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    // Release checklist's find bar and goal panel are open when another thread is clicked.
+    await page.keyboard.press("Control+f");await page.getByTestId("thread-find-input").fill("answer");await expect(findBar).toContainText("No matches");
+    await page.locator(".workspace-header .goal-control").click();await expect(objective).toBeVisible();
+    harness.server.fail[GAMMA.thread.id]=FAILURE;let release=harness.hold(GAMMA.thread.id);
+    await row(page,GAMMA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
+    // Under the opening state the find bar hides and the goal panel waits for the thread; a failed open brings both back as they were.
+    await expect(findBar).toBeHidden();await expect(objective).toHaveCount(0);await expect(panel).toContainText("Opening thread…");
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-opening-goal-panel-dark-1600x980.png"});
+    release();
+    await expect(page.locator(".sidebar-action-error")).toContainText(FAILURE);
+    await expect(findBar).toBeVisible();await expect(page.getByTestId("thread-find-input")).toHaveValue("answer");await expect(objective).toBeVisible();
+    // With both closed: the goal and find shortcuts and the command palette's thread actions wait for the thread too.
+    await page.getByRole("button",{name:"Close find"}).click();await page.getByTestId("right-panel-toggle").click();await expect(panel).toHaveCount(0);
+    release=harness.hold(BETA.thread.id);
+    await row(page,BETA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
+    await page.keyboard.press("Control+Shift+L");await page.keyboard.press("Control+f");
+    await page.keyboard.press("Control+k");await expect(palette).toBeVisible();
+    await page.keyboard.type("Review changes");await expect(palette.getByText("Review changes",{exact:true})).toHaveCount(0);
+    await page.keyboard.press("Control+a");await page.keyboard.type("Thread goal");await expect(palette.getByText("Thread goal",{exact:true})).toHaveCount(0);
+    await page.keyboard.press("Escape");await expect(palette).toHaveCount(0);
+    await expect(panel).toHaveCount(0);await expect(findBar).toHaveCount(0);
+    expect([...harness.sent("review/start"),...harness.sent("thread/goal/set")]).toEqual([]);
+    release();
+    await expect(answer(page,BETA)).toBeVisible();await expect(page.getByTestId("composer")).toBeEnabled();
+    // Opened, the thread has its own: the palette offers its review and the shortcut opens its goal.
+    await expect(page.locator(".workspace-header .review-control")).toBeVisible();
+    await page.keyboard.press("Control+k");await page.keyboard.type("Review changes");await expect(palette.getByText("Review changes",{exact:true}).first()).toBeVisible();
+    await page.keyboard.press("Escape");await expect(palette).toHaveCount(0);
+    await page.keyboard.press("Control+Shift+L");await expect(objective).toBeVisible();
+  }finally{await harness.close()}
+});
+
+test("a thread of the harness that runs, clicked while another harness's thread switches the harness, opens there once the switch is undone",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA,CURSOR]});
+  const composer=page.getByTestId("composer"),provider=page.locator(".sidebar-provider strong");
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    // A switch that fails puts back the thread, its row and the draft in the composer.
+    await composer.fill("Draft kept across a failed open.");
+    harness.server.selectFail="Cursor could not start: the harness is not signed in.";
+    await row(page,CURSOR).locator(".thread-main").click();await expect.poll(()=>harness.server.selects).toBe(1);
+    await expect(page.getByRole("alert").filter({hasText:"not signed in"}).first()).toBeVisible({timeout:15_000});
+    await expect(opening(page)).toHaveCount(0);await expect(row(page,ALPHA)).toHaveClass(/active/);await expect(row(page,CURSOR)).not.toHaveClass(/active/);
+    await expect(headerTitle(page)).toHaveText("Release checklist");await expect(answer(page,ALPHA,24)).toBeVisible();
+    await expect(composer).toBeEnabled();await expect(composer).toHaveValue("Draft kept across a failed open.");
+    // The person clicks the Cursor thread, then, while Cursor starts, a thread of OpenCode: it waits for the switch the server is in the
+    // middle of, which then goes back to OpenCode, and opens there. The Cursor thread never opens.
+    harness.server.selectFail=null;const releaseSelect=harness.holdSelect();
+    await row(page,CURSOR).locator(".thread-main").click();await expect.poll(()=>harness.server.selects).toBe(2);
+    await row(page,BETA).locator(".thread-main").click();
+    await expect(row(page,BETA)).toHaveClass(/active/);await expect(headerTitle(page)).toHaveText("Payment retries");await expect(opening(page)).toBeVisible();
+    await page.waitForTimeout(300);expect([harness.server.selects,harness.resumes(BETA.thread.id)]).toEqual([2,0]);
+    releaseSelect();
+    await expect.poll(()=>harness.server.selects).toBe(3);
+    await expect(answer(page,BETA)).toBeVisible({timeout:15_000});await expect(opening(page)).toHaveCount(0);await expect(provider).toContainText("OpenCode");
+    await page.waitForTimeout(500);
+    await expect(row(page,BETA)).toHaveClass(/active/);await expect(headerTitle(page)).toHaveText("Payment retries");await expect(answer(page,CURSOR)).toHaveCount(0);
+    expect([harness.server.runtime,harness.resumes(CURSOR.thread.id)]).toEqual(["opencode",0]);
+    await expect(composer).toBeEnabled();await composer.fill("Follow-up on OpenCode.");await page.getByTestId("send").click();
+    await expect(page.getByText("Fixture reply in "+BETA.thread.id,{exact:true})).toBeVisible({timeout:15_000});
+    expect(harness.server.requests.filter(item=>item.method==="turn/start").map(item=>[item.runtime,item.params.threadId])).toEqual([["opencode",BETA.thread.id]]);
   }finally{await harness.close()}
 });
