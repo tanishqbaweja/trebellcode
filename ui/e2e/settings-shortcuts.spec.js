@@ -329,6 +329,53 @@ test.describe("Two commands on one key",()=>{
     await expect(page.locator(".keybindings-settings").getByRole("status")).toHaveCount(3);
   });
 
+  // The palette names the keys Settings has, like the sidebar: a moved key moves there too, and a key another command takes goes.
+  test("the command palette shows each command's key as Settings has it",async({page,request})=>{
+    await open(page,request);
+    await openShortcuts(page);
+    const palette=page.getByTestId("command-palette");
+    const paletteKey=async(label,openWith="Control+K")=>{
+      await row(page,"New thread").locator("strong").click();
+      await page.keyboard.press(openWith);
+      await expect(palette).toBeVisible();
+      await palette.locator("input").fill(label);
+      const item=palette.locator(".command-palette-item").filter({has:page.locator("strong",{hasText:new RegExp("^"+label+"$")})}).first();
+      await expect(item).toBeVisible();
+      const keys=await item.locator("kbd").allInnerTexts();
+      return {item,key:keys.join(" ")};
+    };
+    const close=async()=>{await page.keyboard.press("Escape");await expect(palette).toBeHidden()};
+    expect((await paletteKey("New thread")).key).toBe("Ctrl+N");
+    await close();
+    // Keys of their own.
+    await retype(keyField(page,"New thread"),"Ctrl+Alt+N");
+    await keyField(page,"New thread").press("Enter");
+    await retype(keyField(page,"Toggle terminal"),"Ctrl+Alt+T");
+    await keyField(page,"Toggle terminal").press("Enter");
+    await expect.poll(async()=>(await savedRule(request,"terminal"))?.key).toBe("Ctrl+Alt+T");
+    await expect(page.getByRole("button",{name:"New task",exact:true}).locator("kbd")).toHaveText("Ctrl+Alt+N");
+    const moved=await paletteKey("New thread");
+    expect(moved.key,"New thread's key in the palette").toBe("Ctrl+Alt+N");
+    await page.screenshot({animations:"disabled",path:shots+"palette-new-thread-key-dark-1280.png"});
+    await flipMode(page,"light");
+    await page.screenshot({animations:"disabled",path:shots+"palette-new-thread-key-light-1280.png"});
+    await flipMode(page,"dark");
+    await close();
+    expect((await paletteKey("Terminal")).key,"Terminal's key in the palette").toBe("Ctrl+Alt+T");
+    await close();
+    // Command palette on Mod+N takes Ctrl+N from New thread: the palette, opened with Ctrl+N, offers no key for New thread.
+    await retype(keyField(page,"New thread"),"Ctrl+N");
+    await keyField(page,"New thread").press("Enter");
+    await retype(keyField(page,"Command palette"),"Mod+N");
+    await keyField(page,"Command palette").press("Enter");
+    await expect.poll(async()=>(await savedRule(request,"commandPalette"))?.key).toBe("Mod+N");
+    await expect(row(page,"New thread").getByRole("status")).toHaveText("Command palette and New terminal also use Ctrl+N and run instead.");
+    await expect(page.getByRole("button",{name:"New task",exact:true}).locator("kbd")).toHaveCount(0);
+    const taken=await paletteKey("New thread","Control+N");
+    await expect(taken.item.locator("kbd"),"the palette offers Ctrl+N for New thread while Ctrl+N opens the palette").toHaveCount(0);
+    await close();
+  });
+
   // Shortcuts for project actions are saved for every project, but an action exists only in its own project. Elsewhere its key
   // stays with the command it would take, instead of running nothing.
   test("a key saved for an action this project does not have stays with the command it would take",async({page,request})=>{

@@ -19,7 +19,7 @@ import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx";
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
-import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, shadowedKeybindings } from "./keybindings.js";
+import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, shadowedKeybindings, shortcutHint } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
@@ -4642,13 +4642,14 @@ export default function App(){
   const sidebarOpenThread=useLatestCallback(openThread);
   const sidebarNewThread=useLatestCallback(newChat);
   const sidebarOpenPalette=useCallback(()=>setPaletteOpen(true),[]);
-  // The sidebar shows the user's own keybindings (Settings > Shortcuts), not the defaults. A command whose key another command
-  // takes over everywhere it runs (Settings > Shortcuts says which) shows no key, since pressing it runs the other command.
-  const sidebarShortcuts=useMemo(()=>{
+  // The sidebar and the command palette show the user's own keybindings (Settings > Shortcuts), not the defaults. A command whose
+  // key another command takes over everywhere it runs (Settings > Shortcuts says which) shows no key, since pressing it runs the
+  // other command.
+  const commandKey=useMemo(()=>{
     const rules=projectKeybindingRules(normalizeKeybindingRules(settings),projectlessMode?[]:currentProject?.scripts||[]),shadowed=shadowedKeybindings(rules);
-    const key=command=>shadowed.has(command)?"":rules.find(rule=>rule.command===command)?.key||"";
-    return {newChat:key("newChat"),commandPalette:key("commandPalette"),projects:key("projects"),settings:key("settings"),environments:key("environments"),previewToggle:key("previewToggle")};
+    return command=>shadowed.has(command)?"":rules.find(rule=>rule.command===command)?.key||"";
   },[settings.keybindingRules,settings.keyboardShortcuts,projectlessMode,currentProject?.scripts]);
+  const sidebarShortcuts=useMemo(()=>({newChat:commandKey("newChat"),commandPalette:commandKey("commandPalette"),projects:commandKey("projects"),settings:commandKey("settings"),environments:commandKey("environments"),previewToggle:commandKey("previewToggle")}),[commandKey]);
   const sidebarThreadAction=useLatestCallback(threadAction);
   const sidebarMoveThread=useLatestCallback(moveThreadOrder);
   const threadMoves=useMemo(()=>threadMoveAvailability(displayThreads,threadMeta),[displayThreads,threadMeta]);
@@ -4687,7 +4688,7 @@ export default function App(){
   // The palette's thread actions are for the thread the header names: none while another one opens (its own are not loaded yet).
   const paletteThread=Boolean(activeThread?.id&&!openingView);
   const paletteActions=paletteOpen?[
-    {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:"Ctrl+N",onRun:newChat},
+    {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:shortcutHint(commandKey("newChat")),onRun:newChat},
     {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
     ...(window.trebellDesktop?.pickDirectory?[{id:"folder",label:"Open workspace folder",detail:projectPath||"Choose a local folder",onRun:pickWorkspace}]:[]),
     {id:"projects",label:"Recent projects",detail:"Switch checkouts or clone a repository",onRun:()=>setSection("projects")},
@@ -4695,7 +4696,7 @@ export default function App(){
     ...(!projectlessMode?[{id:"diff",label:"Changes",detail:"Inspect the current Git diff",onRun:()=>openRightPanel("diff")},{id:"git",label:"Source control",detail:gitInfo?.branch||"Git and pull requests",onRun:()=>openRightPanel("source")}]:[]),
     ...(!projectlessMode?[{id:"context",label:"Trebell context",detail:"Inspect repository context supplied to the latest turn",onRun:()=>openRightPanel("context")}]:[]),
     ...(paletteThread?[{id:"link-pr",label:"Link pull request",detail:"Attach a hosted review to this thread",onRun:async()=>{const url=await askText("Pull request URL");if(url)await linkPullRequestUrl(url,"manual")}}]:[]),
-    {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:"Ctrl+Shift+T",onRun:()=>setPanel("terminal")},
+    {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:shortcutHint(commandKey("terminal")),onRun:()=>setPanel("terminal")},
     ...((currentProject?.scripts||[]).map(script=>({id:"project-action:"+script.id,label:"Run "+script.name,detail:script.command,onRun:()=>runProjectAction(script)}))),
     {id:"browser",label:"Browser",detail:window.trebellDesktop?.browser?"Open Trebell Agent Browser":"Open hosted preview and local dev-server tools",onRun:()=>openRightPanel("preview")},
     ...(runtimeCapabilities.delegation?[{id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")}]:[]),
@@ -4705,10 +4706,10 @@ export default function App(){
     {id:"environments",label:"Environments",detail:"Local, WSL and SSH",onRun:()=>setSection("environments")},
     {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>setSection("usage")},
     {id:"licenses",label:"Open source licenses",detail:"Third-party packages and installed license notices",onRun:()=>setSection("licenses")},
-    {id:"appearance-system",label:"Appearance: System",detail:"Follow the operating system light/dark setting",shortcut:"Ctrl+Alt+Shift+A",onRun:()=>saveAppSettings({appearanceMode:"system"})},
+    {id:"appearance-system",label:"Appearance: System",detail:"Follow the operating system light/dark setting",shortcut:shortcutHint(commandKey("cycleAppearance")),onRun:()=>saveAppSettings({appearanceMode:"system"})},
     {id:"appearance-light",label:"Appearance: Light",detail:"Use light appearance",onRun:()=>saveAppSettings({appearanceMode:"light"})},
     {id:"appearance-dark",label:"Appearance: Dark",detail:"Use dark appearance",onRun:()=>saveAppSettings({appearanceMode:"dark"})},
-    {id:"theme-trebell",label:"Theme: Trebell",detail:"Default purple Trebell palette",shortcut:"Ctrl+Alt+A",onRun:()=>saveAppSettings({appearance:"dark"})},
+    {id:"theme-trebell",label:"Theme: Trebell",detail:"Default purple Trebell palette",shortcut:shortcutHint(commandKey("cycleTheme")),onRun:()=>saveAppSettings({appearance:"dark"})},
     {id:"theme-midnight",label:"Theme: Midnight",detail:"Cooler deep-blue Trebell palette",onRun:()=>saveAppSettings({appearance:"midnight"})},
     {id:"theme-black",label:"Theme: Black",detail:"OLED-friendly black Trebell palette",onRun:()=>saveAppSettings({appearance:"black"})},
     ...(settings.customThemes||[]).map(theme=>({id:"theme-custom:"+theme.id,label:"Theme: "+theme.name,detail:`Custom ${theme.appearance||"dark"} theme`,onRun:()=>saveAppSettings({appearance:theme.id})})),
