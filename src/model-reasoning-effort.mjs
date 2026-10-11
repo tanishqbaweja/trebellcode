@@ -38,6 +38,8 @@ export function supportedReasoningEfforts(runtime,provider,model,metadata={}){
     if(provider==="openai"){
       if(/^gpt-6-(?:luna|sol)(?:$|-)/.test(id))return ["none","low","medium","high","xhigh","max"];
       if(/^gpt-6-astra(?:$|-)/.test(id))return ["low","medium","high","xhigh","max"];
+      // Point releases (gpt-6.1-sol, OpenAI's default model): the Responses API accepts Low through Max and rejects None.
+      if(/^gpt-6\.\d+-(?:luna|sol|astra)(?:$|-)/.test(id))return ["low","medium","high","xhigh","max"];
       if(/^(?:gpt-5(?:\.|-|$)|o\d)/.test(id))return ["low","medium","high","xhigh"];
     }
     if(provider==="gemini")return ["low","medium","high"];

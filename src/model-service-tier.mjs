@@ -76,7 +76,8 @@ export function supportedModelServiceTiers(runtime,provider,model,metadata={}){
   for(const value of advertised){const tier=normalizeModelServiceTier(typeof value==="string"?value:(value?.serviceTier??value?.tier??value?.value??value?.id));if(tier&&!normalized.includes(tier))normalized.push(tier)}
   if(normalized.length)return normalized;
   const id=String(model||"").trim().toLowerCase();
-  if(runtime==="native"&&provider==="openai"&&/^gpt-6-(?:luna|sol)(?:$|-)/.test(id))return ["fast"];
+  // Point releases of Luna and Sol (gpt-6.1-sol) take the priority tier as their base models do.
+  if(runtime==="native"&&provider==="openai"&&/^gpt-6(?:\.\d+)?-(?:luna|sol)(?:$|-)/.test(id))return ["fast"];
   return [];
 }
 

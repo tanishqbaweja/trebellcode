@@ -8,6 +8,15 @@ test("OpenAI Native exposes Fast as a processing tier for GPT-6 Luna and Sol",()
   assert.deepEqual(supportedModelServiceTiers("native","gemini","gpt-6-luna"),[]);
 });
 
+test("OpenAI Native offers Fast on GPT-6 point releases of Luna and Sol as on their base models",()=>{
+  assert.deepEqual(supportedModelServiceTiers("native","openai","gpt-6.1-sol"),["fast"]);
+  assert.deepEqual(supportedModelServiceTiers("native","openai","gpt-6.1-luna"),["fast"]);
+  assert.deepEqual(supportedModelServiceTiers("native","openai","gpt-6.1-sol-2026-09-30"),["fast"]);
+  assert.deepEqual(supportedModelServiceTiers("native","openai","gpt-6.1-astra"),supportedModelServiceTiers("native","openai","gpt-6-astra"));
+  assert.deepEqual(supportedModelServiceTiers("native","openai","gpt-60-sol"),[]);
+  assert.deepEqual(supportedModelServiceTiers("native","hcnsec","gpt-6.1-sol"),[]);
+});
+
 test("service tier settings normalize Priority to Fast and stay model scoped",()=>{
   assert.equal(normalizeModelServiceTier("FAST"),"fast");
   assert.equal(normalizeModelServiceTier("priority"),"fast");
