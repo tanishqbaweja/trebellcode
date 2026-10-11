@@ -135,9 +135,10 @@ export class AgentThreadStore{
     };
     this.#cacheMetadata(thread);this.#persistThread(thread,{replaceTurns:true});return clone(thread);
   }
-  update(id,patch={}){
+  // touch:false keeps the thread's last-update time: a place in a section is not activity (Codex does not change it either).
+  update(id,patch={},{touch=true}={}){
     const thread=this.storage.get(id);if(!thread)return null;
-    Object.assign(thread,patch,{updatedAt:Math.floor(Date.now()/1000)});this.#persistThread(thread,{replaceTurns:Object.prototype.hasOwnProperty.call(patch,"turns")});this.#cacheMetadata(thread);return clone(thread);
+    Object.assign(thread,patch,touch?{updatedAt:Math.floor(Date.now()/1000)}:{});this.#persistThread(thread,{replaceTurns:Object.prototype.hasOwnProperty.call(patch,"turns")});this.#cacheMetadata(thread);return clone(thread);
   }
   delete(id){const before=this.data.threads.length;this.data.threads=this.data.threads.filter(thread=>thread.id!==id);if(this.data.threads.length!==before)this.storage.delete(id);return before!==this.data.threads.length}
   addTurn(threadId,{id=randomUUID(),inputText="",items=[],status="inProgress",startedAt=Math.floor(Date.now()/1000)}={}){

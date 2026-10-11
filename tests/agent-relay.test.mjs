@@ -369,6 +369,51 @@ test("agent thread listing paginates stable filtered sidebar views",()=>{
   assert.throws(()=>paginateAgentThreads(threads,{cursor:first.nextCursor,sortKey:"created_at"}),/invalid thread list cursor/i);
 });
 
+test("the agent relay keeps thread/section/move's place for every thread, lists it, and keeps it across a restart",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-section-order-")),env={...process.env,TREBELL_HOME:home};
+  const base=Math.floor(Date.now()/1000)-3600;
+  let threadStore=new AgentThreadStore(env);
+  const ids=["one","two","three","four"].map((name,index)=>threadStore.importHistory({runtime:"native",cwd:home,providerSessionId:"order-"+name,name,createdAt:base-600,updatedAt:base-index*60}).id);
+  const [one,two,three,four]=ids,runtimeManager={instances:()=>[],activeInstance:()=>({id:"native-default",kind:"native"}),activeRuntime:()=>"native",probe:async()=>({available:false})};
+  const state={settings:()=>({activeEnvironmentId:null}),threadMeta:()=>({}),updateThreadMeta:()=>({}),threadUsage:()=>({totalTokens:0})};
+  const start=async()=>{
+    const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
+    const ws=await connect("ws://127.0.0.1:"+await listen(server)+"/api/agent/ws");
+    return {rpc:request(ws),async close(){ws.close();await relay.close();await new Promise(resolve=>server.close(()=>resolve()))}};
+  };
+  // The sidebar's listing (newest first) carries each thread's place in its section; a section's own listing is in that order.
+  const places=async rpc=>Object.fromEntries((await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"})).data.map(thread=>[thread.id,thread.sectionRank]));
+  const section=async(rpc,sectionId)=>(await rpc("thread/list",{limit:100,sectionId,sortKey:"section_position",sortDirection:"asc"})).data.map(thread=>thread.id);
+  let relay=await start();
+  try{
+    assert.deepEqual(await places(relay.rpc),{[one]:0,[two]:1,[three]:2,[four]:3});
+    await relay.rpc("thread/section/move",{threadId:one,sectionId:null,beforeThreadId:three});
+    await relay.rpc("thread/section/move",{threadId:four,sectionId:null,beforeThreadId:three});
+    assert.deepEqual(await section(relay.rpc,null),[two,one,four,three]);
+    assert.deepEqual(await places(relay.rpc),{[one]:1,[two]:0,[three]:3,[four]:2});
+    // A move is not activity: the updated_at listing and every last-update time are as they were.
+    const listed=await relay.rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"});
+    assert.deepEqual(listed.data.map(thread=>[thread.id,thread.updatedAt]),ids.map((id,index)=>[id,base-index*60]));
+    // A section keeps its own order: a thread joins at the end or before a thread there, and leaves it for its place by recency.
+    await relay.rpc("thread/section/move",{threadId:three,sectionId:"Pinned"});
+    const pinned=await relay.rpc("thread/section/move",{threadId:two,sectionId:"Pinned",beforeThreadId:three});
+    assert.deepEqual(pinned.thread.section,{id:"Pinned",name:"Pinned"});assert.ok(pinned.thread.sectionEnteredAt>=base);assert.equal(pinned.thread.updatedAt,base-60);
+    assert.deepEqual(await section(relay.rpc,"Pinned"),[two,three]);assert.deepEqual(await section(relay.rpc,null),[one,four]);
+    await assert.rejects(relay.rpc("thread/section/move",{threadId:one,sectionId:"Pinned",beforeThreadId:four}),/not in section Pinned/);
+    await relay.rpc("thread/section/move",{threadId:two,sectionId:"Pinned",beforeThreadId:null});
+    assert.deepEqual(await section(relay.rpc,"Pinned"),[three,two]);
+  }finally{await relay.close()}
+  // A restarted relay reads the places back from the thread store.
+  threadStore=new AgentThreadStore(env);relay=await start();
+  try{
+    assert.deepEqual(await section(relay.rpc,"Pinned"),[three,two]);assert.deepEqual(await section(relay.rpc,null),[one,four]);
+    assert.deepEqual(await places(relay.rpc),{[one]:0,[two]:1,[three]:0,[four]:1});
+    const unpinned=await relay.rpc("thread/section/move",{threadId:three,sectionId:null});
+    assert.equal(unpinned.thread.section,null);assert.equal(unpinned.thread.sectionEnteredAt,null);
+    assert.deepEqual(await section(relay.rpc,null),[one,four,three]);
+  }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
+});
+
 test("agent global thread search finds persisted visible conversation text beyond titles",()=>{
   const threads=[
     {id:"old",name:"Unrelated title",createdAt:1,updatedAt:10,archived:false,turns:[{id:"o1",items:[{id:"ou",type:"userMessage",text:"Needle in an older request"},{id:"ot",type:"commandExecution",aggregatedOutput:"needle tool secret"},{id:"oa",type:"agentMessage",text:"final response"}]}]},

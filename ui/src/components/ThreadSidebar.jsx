@@ -6,7 +6,7 @@ import {
 import { formatSnoozeUntil } from "../thread-snooze.js";
 import { threadReferenceValues } from "../thread-references.js";
 import { writeClipboardText } from "../clipboard.js";
-import { groupSidebarThreads, THREAD_GROUP_NAMES } from "../thread-sidebar-groups.js";
+import { sidebarThreadGroups } from "../thread-sidebar-groups.js";
 import { threadCatalogRuntime } from "../thread-catalog.js";
 import { shouldVirtualizeSidebarGroup, sidebarChunkIndexForThread, sidebarVirtualChunks } from "../sidebar-virtualization.js";
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
@@ -53,6 +53,9 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
     if(!copied)throw new Error("Could not copy to clipboard.");
   };
   const runMenuAction=callback=>{if(menuRef.current)menuRef.current.open=false;return runAction(callback)};
+  // A thread its runtime keeps no place for (Codex orders the threads outside a section by recent activity) cannot be moved. A section
+  // whose order could not be read has no place either, but the list's error names it instead.
+  const orderHint=Number.isFinite(thread.sectionRank)||thread.section?.id||thread.section?.name?undefined:"This list is kept in order of recent activity";
   return <div className={active?"thread-row active":"thread-row"} data-thread-id={thread.id}>
     {bulk&&<input className="thread-select" type="checkbox" checked={selected} disabled={foreignRuntime} title={foreignRuntime?"Open this thread before applying bulk actions":undefined} onChange={()=>onSelect(thread.id)}/>}
     <button className="thread-main" onClick={()=>runAction(()=>onOpen(thread))} title={titleOf(thread)}>
@@ -70,8 +73,8 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
           <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Snoozed"?"active":"snooze"))}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
           <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Settled"?"active":"settle"))}>{section==="Settled"?"Un-settle":"Settle"}</button>
           {threadCanFork(thread,runtimeCapabilities)&&<button onClick={()=>runMenuAction(()=>onAction(thread,"fork"))}>Fork thread</button>}
-          <button disabled={!canMoveUp} onClick={()=>runMenuAction(()=>onMove(thread,-1))}>Move up</button>
-          <button disabled={!canMoveDown} onClick={()=>runMenuAction(()=>onMove(thread,1))}>Move down</button>
+          <button disabled={!canMoveUp} title={orderHint} onClick={()=>runMenuAction(()=>onMove(thread,-1))}>Move up</button>
+          <button disabled={!canMoveDown} title={orderHint} onClick={()=>runMenuAction(()=>onMove(thread,1))}>Move down</button>
         </>}
         <button onClick={()=>runMenuAction(()=>copy(references.threadId))}>Copy thread ID</button>
         {references.branch&&<button onClick={()=>runMenuAction(()=>copy(references.branch))}>Copy branch</button>}
@@ -184,14 +187,14 @@ const ThreadSidebar=memo(function ThreadSidebar({
     window.addEventListener("trebell:sidebar-search",focus);
     return()=>window.removeEventListener("trebell:sidebar-search",focus);
   },[]);
-  const groups=useMemo(()=>groupSidebarThreads(threads,threadMeta),[threads,threadMeta]);
+  const groups=useMemo(()=>sidebarThreadGroups(threads,threadMeta),[threads,threadMeta]);
   const bulk=selectedIds.size>0;
   const managedInference=Boolean(runtimeCapabilities.managedInference);
   const providerLabel=modelProviderLabel(provider);
   // runtimeStarting: Trebell's first load has not yet said which harness runs, so no harness is named.
   const runtimeLabel=runtimeStarting?"Starting…":{native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
   const toggle=useCallback(id=>{const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)},[selectedIds,setSelectedIds]);
-  const firstGroupName=THREAD_GROUP_NAMES.find(name=>groups[name]?.length)||null;
+  const firstGroupKey=groups.find(group=>group.threads.length)?.key||null;
   const renderRow=useCallback(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} running={Boolean(runningIds?.has(t.id))} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} canMoveUp={Boolean(threadMoves?.get(t.id)?.up)} canMoveDown={Boolean(threadMoves?.get(t.id)?.down)} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>,[threadMeta,activeThreadId,bulk,selectedIds,runningIds,onOpen,toggle,onThreadAction,onMove,threadMoves,runAction,agentRuntime,runtimeCapabilities]);
   // A failed load is not an empty list: with nothing listed the sidebar says it could not load them, and over an older list it says
   // the refresh failed. Either way Retry asks again.
@@ -237,9 +240,9 @@ const ThreadSidebar=memo(function ThreadSidebar({
 
     <div className="thread-sections" ref={sectionsRef}>
       {listFailure}
-      {THREAD_GROUP_NAMES.map(name=>{const items=groups[name],virtualized=shouldVirtualizeSidebarGroup(items),chunks=virtualized?sidebarVirtualChunks(items):[],activeChunk=virtualized?sidebarChunkIndexForThread(chunks,activeThreadId):-1;return items.length>0&&<section key={name}>
+      {groups.map(({key,name,threads:items})=>{const virtualized=shouldVirtualizeSidebarGroup(items),chunks=virtualized?sidebarVirtualChunks(items):[],activeChunk=virtualized?sidebarChunkIndexForThread(chunks,activeThreadId):-1;return items.length>0&&<section key={key}>
         <h4>{name}<span>{items.length}</span></h4>
-        {virtualized?chunks.map((chunk,index)=><SidebarVirtualChunk key={chunk.key} chunk={chunk} rootRef={sectionsRef} forceMount={index===activeChunk} initialMount={name===firstGroupName&&index===0} activeThreadId={activeThreadId} renderRow={renderRow}/>):items.map(renderRow)}
+        {virtualized?chunks.map((chunk,index)=><SidebarVirtualChunk key={chunk.key} chunk={chunk} rootRef={sectionsRef} forceMount={index===activeChunk} initialMount={key===firstGroupKey&&index===0} activeThreadId={activeThreadId} renderRow={renderRow}/>):items.map(renderRow)}
       </section>})}
       {!threads.length&&!listFailure&&<div className="sidebar-empty" role={query||listLoaded?undefined:"status"}>{emptyText}</div>}
     </div>

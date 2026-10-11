@@ -36,7 +36,7 @@ import { THREAD_SCROLL_END_THRESHOLD, captureHistoryPrependAnchor, captureThread
 import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
 import { latestTurnRowsStart } from "./conversation-order.js";
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
-import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query.js";
+import { nativeThreadSearchMatches, rankThreadSections, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary, guardianDeniedEvent } from "./guardian-review.js";
 import { completedItemStatus, toolEventFailed } from "./tool-event-status.js";
@@ -49,7 +49,7 @@ import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
-import { threadMoveAvailability, threadMoveTarget, threadsInListOrder } from "./thread-order.js";
+import { sectionFirstThread, threadMoveAvailability, threadMoveTarget, threadPlacementAnchor, threadsInListOrder } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { userVerificationAvailability } from "./mcp-elicitation.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
@@ -1599,9 +1599,14 @@ export default function App(){
     try{
       if(!client)throw new Error("Agent harness is not connected");
       const listed=await client.request("thread/list",threadListParams(100));
-      const incoming=listed.data||[];rememberThreadCatalog(incoming);
-      setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
-      setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
+      // Each thread's place in its section (thread-list-query.js); a place from an earlier listing is dropped, so only this listing's
+      // places are compared.
+      const {threads:incoming,failures}=await rankThreadSections(client,listed.data||[]);rememberThreadCatalog(incoming);
+      setThreads(previous=>mergeThreadCatalog(previous.map(thread=>thread?.sectionRank==null?thread:{...thread,sectionRank:null}),incoming,{runtime:agentRuntime,provider,threadMeta}));
+      setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
+      // A section whose order could not be read is named, but the threads it listed are still the list (they keep their order).
+      const failure=failures.length?new Error("Could not read the order of "+failures.map(failure=>failure.name+" ("+(failure.error?.message||String(failure.error))+")").join(", ")):null;
+      setThreadListError(failure?.message||"");if(failure&&strict)throw failure;
       return mergeThreadCatalog([],incoming,{runtime:agentRuntime,provider});
     }catch(error){
       setThreadListError(error?.message||String(error)||"Unknown error");
@@ -2705,10 +2710,17 @@ export default function App(){
     catch(error){setEvents(prev=>[...prev,{id:"thread-undo-error-"+Date.now(),kind:"error",title:"Undo failed: "+(error.message||String(error)),status:"done",raw:{}}])}
   }
   useEffect(()=>()=>{if(threadUndoTimerRef.current)clearTimeout(threadUndoTimerRef.current)},[]);
+  // Where an undo puts the thread back: its section, and the thread after it there in the order the sidebar shows (none where the
+  // runtime keeps no place for it, such as a Codex thread outside a section: it returns to its place by recent activity).
   function captureThreadPlacement(thread){
-    const sectionId=thread.section?.id||null;const group=threads.filter(item=>(item.section?.id||null)===sectionId);const index=group.findIndex(item=>item.id===thread.id);
-    return {section:thread.section||null,beforeThreadId:index>=0?group[index+1]?.id||null:null,snoozedUntil:threadMeta[thread.id]?.snoozedUntil??null};
+    return {section:thread.section||null,beforeThreadId:threadPlacementAnchor(threads,thread,threadMeta),snoozedUntil:threadMeta[thread.id]?.snoozedUntil??null};
   }
+  // The anchor only while it is still in that section when the undo runs (Codex refuses a thread to go before that is not in the
+  // destination section); an undo made seconds later reads the list as it is then, not as it was when the thread moved.
+  const placementAnchor=useLatestCallback(snapshot=>{
+    const anchor=snapshot.beforeThreadId?threads.find(item=>item.id===snapshot.beforeThreadId):null;
+    return anchor&&(anchor.section?.id||null)===(snapshot.section?.id||null)?anchor.id:null;
+  });
   function restoreThreadLocally(thread,snapshot){
     const restored={...thread,archived:false,section:snapshot.section||null,sectionEnteredAt:snapshot.section?Date.now()/1000:null};
     setThreads(prev=>{
@@ -2720,14 +2732,22 @@ export default function App(){
   }
   async function restoreThreadPlacement(thread,snapshot){
     if(!rpc||rpcStatus!=="connected")return;
-    await rpc.request("thread/section/move",{threadId:thread.id,sectionId:snapshot.section?.id||null,beforeThreadId:snapshot.beforeThreadId||null});
+    await rpc.request("thread/section/move",{threadId:thread.id,sectionId:snapshot.section?.id||null,beforeThreadId:placementAnchor(snapshot)});
     restoreThreadLocally(thread,snapshot);await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null});
+    loadThreads(rpc);
   }
-  async function moveThread(thread,destination,beforeThreadId=null){
+  // The section's first thread as the list is now: a bulk action, auto-settle and snooze wake-up move threads from a loop whose list
+  // is older, and a thread to go before must still be in the section.
+  const sectionTop=useLatestCallback((sectionId,exceptId)=>sectionFirstThread(threads,sectionId,threadMeta,exceptId));
+  // A thread moved into a section goes first there (before the section's first thread); one moved out of a section goes back to its
+  // place by recent activity. The list is read again for the places the runtime gave.
+  async function moveThread(thread,destination){
     if(!rpc||rpcStatus!=="connected")return;
     const target=destination==="active"?null:sections[destination==="pin"?"Pinned":destination==="snooze"?"Snoozed":destination==="settle"?"Settled":destination];
-    await rpc.request("thread/section/move",{threadId:thread.id,sectionId:target?.id||null,beforeThreadId});
-    const updated={...thread,section:target||null,sectionEnteredAt:target?Date.now()/1000:null};setThreads(prev=>prev.map(t=>t.id===thread.id?updated:t));if(activeThread?.id===thread.id)setActiveThread(updated);await updateThreadMeta(thread.id,{sectionName:target?.name||"Active"});
+    const first=target?sectionTop(target.id,thread.id):null;
+    await rpc.request("thread/section/move",{threadId:thread.id,sectionId:target?.id||null,beforeThreadId:first?.id||null});
+    const updated={...thread,section:target||null,sectionEnteredAt:target?Date.now()/1000:null,sectionRank:first?first.sectionRank-1:null};setThreads(prev=>prev.map(t=>t.id===thread.id?updated:t));if(activeThread?.id===thread.id)setActiveThread(updated);await updateThreadMeta(thread.id,{sectionName:target?.name||"Active"});
+    loadThreads(rpc);
   }
   async function reversibleThreadAction(thread,action,{snoozeUntil=null,offerUndo=true}={}){
     const snapshot=captureThreadPlacement(thread);const wasActive=activeThread?.id===thread.id;let label="Thread updated";let undo=null;
@@ -2751,9 +2771,9 @@ export default function App(){
       undo=async()=>{
         const result=await rpc.request("thread/unarchive",{threadId:thread.id});
         const restoredThread=result?.thread||thread;
-        await rpc.request("thread/section/move",{threadId:thread.id,sectionId:snapshot.section?.id||null,beforeThreadId:snapshot.beforeThreadId||null});
+        await rpc.request("thread/section/move",{threadId:thread.id,sectionId:snapshot.section?.id||null,beforeThreadId:placementAnchor(snapshot)});
         await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null,archived:false,sectionName:snapshot.section?.name||"Active"});const restored=restoreThreadLocally(restoredThread,snapshot);
-        if(wasActive)await openThread(restored);
+        loadThreads(rpc);if(wasActive)await openThread(restored);
       };
     }else return null;
     const result={label,undo};if(offerUndo&&undo)offerThreadUndo(label,undo);return result;

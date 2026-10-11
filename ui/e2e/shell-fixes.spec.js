@@ -1,9 +1,13 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { mkdtemp,rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { attachAgentRelay } from "../../src/agent-relay.mjs";
+import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 
 // The conversation's activity rows, the thread sidebar, the workspace header and the app shell at narrow widths, against a
 // fake harness socket (as in reasoning-text.spec.js).
@@ -11,7 +15,7 @@ const shotsDir=process.env.TREBELL_E2E_SHOTS_DIR||fileURLToPath(new URL("../../v
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
 // The harness end of the agent socket: it lists the threads, starts the turns it is sent, records every request, and pushes
-// what the test sends. respond(message) answers a request itself when it returns a result.
+// what the test sends. respond(message) answers a request itself when it returns a result ({rpcError} answers with that error).
 async function startHarness(threads,{respond=()=>undefined}={}){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set(),requests=[];
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
@@ -27,7 +31,7 @@ async function startHarness(threads,{respond=()=>undefined}={}){
     else if(message.method==="thread/continuity/get")result={continuity:null};
     else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
     else if(/\/list$/.test(message.method))result={data:[],nextCursor:null};
-    ws.send(JSON.stringify({id:message.id,result}));
+    ws.send(JSON.stringify(result?.rpcError?{id:message.id,error:result.rpcError}:{id:message.id,result}));
   })});
   const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {
@@ -55,6 +59,48 @@ async function openApp(page,{harness,threads,meta,project=null,runtime="codex",s
   await page.addInitScript(value=>localStorage.setItem("trebell-layout-v1",JSON.stringify(value)),layout);
   await page.goto("/");
 }
+// The agent relay with its own thread store, as Trebell serves Trebell Native and the relay harnesses (Claude Code, OpenCode, Cursor,
+// Grok, Antigravity): what a move leaves is what the relay keeps. A second start on the same home is a server restart.
+async function startRelay(home,runtime="native"){
+  const env={...process.env,TREBELL_HOME:home},threadStore=new AgentThreadStore(env),meta=new Map();
+  const runtimeManager={instances:()=>[],activeInstance:()=>({id:runtime+"-default",kind:runtime}),activeRuntime:()=>runtime,probe:async()=>({available:false,message:"fixture runtime"})};
+  const state={settings:()=>({activeEnvironmentId:null}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},threadUsage:()=>({totalTokens:0})};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"shell-fixes-relay"});
+  const port=await freePort();await new Promise((resolve,reject)=>server.listen(port,"127.0.0.1",resolve).once("error",reject));
+  return {threadStore,wsUrl:"ws://127.0.0.1:"+port+"/api/agent/ws",async close(){await relay.close();await new Promise(resolve=>server.close(()=>resolve()))}};
+}
+// A Codex app-server's sections as the bundled one (0.155.1) keeps them, checked live in an isolated CODEX_HOME: each section has its
+// own order (thread/section/move puts a thread before a thread in that section or at its end, and thread/list sorts a section by
+// section_position, top first, only with a section filter); a move changes no thread's updatedAt; the threads outside a section have no
+// order (a thread to go before is refused there); and a fresh home already has a Pinned section.
+async function startCodexHarness(threads,sections,{failOrder=[]}={}){
+  const order=new Map(sections.map(section=>[section.id,threads.filter(thread=>thread.section?.id===section.id).map(thread=>thread.id)]));
+  const fail=message=>({rpcError:{code:-32600,message}});
+  return startHarness(threads,{respond:message=>{
+    const params=message.params||{};
+    if(message.method==="threadSection/list")return {data:sections,nextCursor:null};
+    if(message.method==="thread/list"){
+      if(params.sortKey==="section_position"){
+        if(params.sectionId==null)return fail("section-position sorting requires a section filter");
+        if(failOrder.includes(params.sectionId))return fail("section order unavailable");
+        return {data:(order.get(params.sectionId)||[]).map(id=>({...threads.find(thread=>thread.id===id),turns:[]})),nextCursor:null};
+      }
+      return {data:[...threads].sort((a,b)=>b.updatedAt-a.updatedAt).map(thread=>({...thread,turns:[]})),nextCursor:null};
+    }
+    if(message.method==="thread/section/move"){
+      const thread=threads.find(item=>item.id===params.threadId),sectionId=params.sectionId??null,before=params.beforeThreadId??null;
+      if(before&&!sectionId)return fail("beforeThreadId requires a non-null sectionId");
+      const members=sectionId?(order.get(sectionId)||[]).filter(id=>id!==thread.id):[];
+      if(before&&!members.includes(before))return fail(`before thread ${before} is not in section ${sectionId}`);
+      for(const [id,ids] of order)order.set(id,ids.filter(item=>item!==thread.id));
+      if(sectionId){members.splice(before?members.indexOf(before):members.length,0,thread.id);order.set(sectionId,members)}
+      if((thread.section?.id??null)!==sectionId){thread.section=sectionId?sections.find(section=>section.id===sectionId):null;thread.sectionEnteredAt=sectionId?now():null}
+      return {};
+    }
+    return undefined;
+  }});
+}
+const sidebarGroups=page=>page.locator(".thread-sections section").evaluateAll(sections=>sections.map(section=>[section.querySelector("h4").firstChild.textContent,[...section.querySelectorAll(".thread-main")].map(node=>node.title)]));
 const threadRow=(page,name)=>page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
 async function openThread(page,name){const row=threadRow(page,name);await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);return row}
 const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
@@ -250,12 +296,13 @@ test("in a project with Git a capped turn diff offers the whole diff in the Diff
 
 test("Move up and Move down follow the sidebar's groups: General chats and project threads do not step over each other",async({page})=>{
   test.setTimeout(35_000);
+  // A relay harness (Claude Code here) lists each thread with its place among the threads outside a section.
   const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[]};
-  const threads=[{...base,id:"project-a",name:"Project thread A",preview:"A"},{...base,id:"general-chat",name:"General fixture chat",preview:"G"},{...base,id:"project-b",name:"Project thread B",preview:"B"}];
+  const threads=[{...base,id:"project-a",name:"Project thread A",preview:"A",sectionRank:0},{...base,id:"general-chat",name:"General fixture chat",preview:"G",sectionRank:1},{...base,id:"project-b",name:"Project thread B",preview:"B",sectionRank:2}];
   const meta={"general-chat":{projectless:true,environmentId:null},"project-a":{projectless:false,environmentId:null},"project-b":{projectless:false,environmentId:null}};
   const harness=await startHarness(threads);
   try{
-    await openApp(page,{harness,threads,meta});
+    await openApp(page,{harness,threads,meta,runtime:"claude"});
     await expect(threadRow(page,"Project thread B")).toBeVisible();
     const groups=await page.locator(".thread-sections section").evaluateAll(sections=>sections.map(section=>[section.querySelector("h4").firstChild.textContent,[...section.querySelectorAll(".thread-main")].map(node=>node.title)]));
     expect(groups).toEqual([["General",["General fixture chat"]],["Active",["Project thread A","Project thread B"]]]);
@@ -415,12 +462,13 @@ for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(
 test("while a search filters the sidebar, Move up and Move down follow the threads it shows, in the list's order",async({page})=>{
   test.setTimeout(35_000);
   const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[]};
-  const threads=[{...base,id:"gamma-zero",name:"Gamma zero",preview:"G0"},{...base,id:"alpha-one",name:"Alpha one",preview:"A1"},{...base,id:"beta-two",name:"Beta two",preview:"B2"},{...base,id:"alpha-three",name:"Alpha three",preview:"A3"}];
+  // A relay harness (Claude Code here) lists each thread with its place among the threads outside a section.
+  const threads=[{...base,id:"gamma-zero",name:"Gamma zero",preview:"G0"},{...base,id:"alpha-one",name:"Alpha one",preview:"A1"},{...base,id:"beta-two",name:"Beta two",preview:"B2"},{...base,id:"alpha-three",name:"Alpha three",preview:"A3"}].map((thread,index)=>({...thread,sectionRank:index}));
   const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
   // Gamma zero matches "alpha" in a message only, so the search finds it after the title matches.
   const harness=await startHarness(threads,{respond:message=>message.method==="thread/items/list"?{data:message.params?.threadId==="gamma-zero"?[{type:"userMessage",text:"Compare this with the alpha release."}]:[],nextCursor:null}:undefined});
   try{
-    await openApp(page,{harness,threads,meta});
+    await openApp(page,{harness,threads,meta,runtime:"claude"});
     await expect(threadRow(page,"Alpha three")).toBeVisible();
     const search=page.getByRole("textbox",{name:"Search threads"});
     const shown=()=>page.locator(".thread-sections section").evaluateAll(sections=>sections.map(section=>[section.querySelector("h4").firstChild.textContent,[...section.querySelectorAll(".thread-main")].map(node=>node.title)]));
@@ -455,6 +503,131 @@ test("while a search filters the sidebar, Move up and Move down follow the threa
     await (await menu("Gamma zero")).getByRole("button",{name:"Move down",exact:true}).click();
     await expect.poll(()=>moveRequests().at(-1)).toEqual({threadId:"gamma-zero",sectionId:null,beforeThreadId:"beta-two"});
     await page.screenshot({path:join(shotsDir,"sidebar-search-moves-1600x980.png"),animations:"disabled"});
+  }finally{await harness.close()}
+});
+
+test("Move up and Move down reorder a relay harness's threads, and the order survives a reload and a relay restart",async({page})=>{
+  test.setTimeout(60_000);
+  const home=await mkdtemp(join(tmpdir(),"trebell-relay-order-"));let relay=await startRelay(home);
+  // Newest first, a minute apart: the order the sidebar shows before anyone moves a thread.
+  const base=Math.floor(Date.now()/1000),names=["Relay order one","Relay order two","Relay order three","Relay order four"];
+  const ids=names.map((name,index)=>relay.threadStore.importHistory({runtime:"native",cwd:process.cwd(),providerSessionId:"relay-order-"+index,model:"fixture-model",name,preview:name,createdAt:base-600-index*60,updatedAt:base-index*60}).id);
+  const meta=Object.fromEntries(ids.map(id=>[id,{projectless:false,environmentId:null,runtime:"native"}]));
+  const harness={get wsUrl(){return relay.wsUrl}};
+  const menu=async name=>{const row=threadRow(page,name);await row.hover();await row.locator(".thread-menu summary").click();return row};
+  const move=async(name,label)=>(await menu(name)).getByRole("button",{name:label,exact:true}).click();
+  try{
+    await openApp(page,{harness,threads:[],meta,runtime:"native"});
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",names]]);
+    // Down puts the thread after the next one, up before the previous one; the threads nobody moved keep their order.
+    await move("Relay order one","Move down");
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",["Relay order two","Relay order one","Relay order three","Relay order four"]]]);
+    await move("Relay order four","Move up");
+    const moved=[["Active",["Relay order two","Relay order one","Relay order four","Relay order three"]]];
+    await expect.poll(()=>sidebarGroups(page)).toEqual(moved);
+    await page.screenshot({path:join(shotsDir,"sidebar-relay-moves-1600x980.png"),animations:"disabled"});
+    // A move is not activity: the moved threads keep their last-update times.
+    expect(relay.threadStore.list("native").map(thread=>[thread.name,thread.updatedAt])).toEqual(names.map((name,index)=>[name,base-index*60]));
+    await page.reload();
+    await expect.poll(()=>sidebarGroups(page)).toEqual(moved);
+    // Pinned threads keep their own order: a pinned thread goes first, and moves within Pinned stay there.
+    await (await menu("Relay order three")).getByRole("button",{name:"Pin",exact:true}).click();
+    await (await menu("Relay order one")).getByRole("button",{name:"Pin",exact:true}).click();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Relay order one","Relay order three"]],["Active",["Relay order two","Relay order four"]]]);
+    await move("Relay order one","Move down");
+    const pinned=[["Pinned",["Relay order three","Relay order one"]],["Active",["Relay order two","Relay order four"]]];
+    await expect.poll(()=>sidebarGroups(page)).toEqual(pinned);
+    // A restarted relay reads the same order from its thread store.
+    await relay.close();relay=await startRelay(home);
+    await page.reload();
+    await expect.poll(()=>sidebarGroups(page)).toEqual(pinned);
+    await page.screenshot({path:join(shotsDir,"sidebar-relay-moves-after-restart-1600x980.png"),animations:"disabled"});
+  }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
+});
+
+test("on Codex the sidebar shows each section in Codex's own order, moves within it, keeps a thread of any section, and moves nothing Codex cannot order",async({page})=>{
+  test.setTimeout(60_000);
+  const sections=[{id:"0198-pinned",name:"Pinned",appearance:null},{id:"0198-snoozed",name:"Snoozed",appearance:null},{id:"0198-settled",name:"Settled",appearance:null},{id:"0199-research",name:"Research",appearance:null}];
+  const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-900,turns:[]},section=id=>sections.find(item=>item.id===id);
+  // Codex's Pinned order is alpha, beta, gamma: the order they were pinned, not their last updates (gamma is the newest).
+  const threads=[
+    {...base,id:"pinned-alpha",name:"Pinned alpha",updatedAt:now()-300,section:section("0198-pinned")},
+    {...base,id:"pinned-beta",name:"Pinned beta",updatedAt:now()-200,section:section("0198-pinned")},
+    {...base,id:"pinned-gamma",name:"Pinned gamma",updatedAt:now()-100,section:section("0198-pinned")},
+    {...base,id:"active-one",name:"Codex active one",updatedAt:now()-10,section:null},
+    {...base,id:"active-two",name:"Codex active two",updatedAt:now()-20,section:null},
+    {...base,id:"research-notes",name:"Research notes",updatedAt:now()-50,section:section("0199-research")},
+  ];
+  const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  const harness=await startCodexHarness(threads,sections);
+  const menu=async name=>{const row=threadRow(page,name);await row.hover();await row.locator(".thread-menu summary").click();return row};
+  const close=async row=>{await row.locator(".thread-menu summary").click();await expect(row.locator(".thread-menu")).not.toHaveAttribute("open","")};
+  const move=async(name,label)=>(await menu(name)).getByRole("button",{name:label,exact:true}).click();
+  const moves=()=>harness.requests.filter(request=>request.method==="thread/section/move").map(request=>request.params);
+  try{
+    await openApp(page,{harness,threads,meta});
+    // The thread in the Research section (made in another Codex client) has a group of its own instead of vanishing.
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned alpha","Pinned beta","Pinned gamma"]],["Active",["Codex active one","Codex active two"]],["Research",["Research notes"]]]);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value;document.documentElement.style.colorScheme=value},mode);
+      await page.screenshot({path:join(shotsDir,`sidebar-codex-sections-${mode}-1600x980.png`),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark";document.documentElement.style.colorScheme="dark"});
+    // Codex orders the threads outside a section by recent activity only, so they cannot be moved, and the menu says why.
+    const active=await menu("Codex active one");
+    for(const label of ["Move up","Move down"]){const item=active.getByRole("button",{name:label,exact:true});await expect(item).toBeDisabled();await expect(item).toHaveAttribute("title","This list is kept in order of recent activity")}
+    await close(active);
+    const research=await menu("Research notes");
+    await expect(research.getByRole("button",{name:"Move up",exact:true})).toBeDisabled();await expect(research.getByRole("button",{name:"Move down",exact:true})).toBeDisabled();
+    await expect(research.getByRole("button",{name:"Move up",exact:true})).not.toHaveAttribute("title",/./);
+    await close(research);
+    // Within Pinned, a move is Codex's own: before the thread above, or before the thread after the next one.
+    await move("Pinned gamma","Move up");
+    await expect.poll(moves).toEqual([{threadId:"pinned-gamma",sectionId:"0198-pinned",beforeThreadId:"pinned-beta"}]);
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned alpha","Pinned gamma","Pinned beta"]],["Active",["Codex active one","Codex active two"]],["Research",["Research notes"]]]);
+    await move("Pinned alpha","Move down");
+    await expect.poll(()=>moves().at(-1)).toEqual({threadId:"pinned-alpha",sectionId:"0198-pinned",beforeThreadId:"pinned-beta"});
+    const reordered=[["Pinned",["Pinned gamma","Pinned alpha","Pinned beta"]],["Active",["Codex active one","Codex active two"]],["Research",["Research notes"]]];
+    await expect.poll(()=>sidebarGroups(page)).toEqual(reordered);
+    await page.reload();
+    await expect.poll(()=>sidebarGroups(page)).toEqual(reordered);
+    await page.screenshot({path:join(shotsDir,"sidebar-codex-pinned-moves-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+    // A pinned thread goes first in Pinned; its undo sends it back without a thread to go before (Codex refuses one outside a section).
+    await move("Codex active two","Pin");
+    await expect.poll(()=>moves().at(-1)).toEqual({threadId:"active-two",sectionId:"0198-pinned",beforeThreadId:"pinned-gamma"});
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Codex active two","Pinned gamma","Pinned alpha","Pinned beta"]],["Active",["Codex active one"]],["Research",["Research notes"]]]);
+    await page.getByTestId("thread-undo-toast").getByRole("button",{name:"Undo",exact:true}).click();
+    await expect.poll(()=>moves().at(-1)).toEqual({threadId:"active-two",sectionId:null,beforeThreadId:null});
+    await expect.poll(()=>sidebarGroups(page)).toEqual(reordered);
+    await expect(page.getByText(/Undo failed/)).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+test("on Codex a section whose order cannot be read still shows its threads, and the sidebar names it",async({page})=>{
+  test.setTimeout(45_000);
+  const sections=[{id:"0198-pinned",name:"Pinned",appearance:null},{id:"0198-snoozed",name:"Snoozed",appearance:null},{id:"0198-settled",name:"Settled",appearance:null},{id:"0199-research",name:"Research",appearance:null}];
+  const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-900,turns:[]},section=id=>sections.find(item=>item.id===id);
+  // Codex's Pinned order is alpha, then beta (beta is the newer one); Research's order cannot be read.
+  const threads=[
+    {...base,id:"pinned-alpha",name:"Pinned alpha",updatedAt:now()-300,section:section("0198-pinned")},
+    {...base,id:"pinned-beta",name:"Pinned beta",updatedAt:now()-200,section:section("0198-pinned")},
+    {...base,id:"active-one",name:"Codex active one",updatedAt:now()-10,section:null},
+    {...base,id:"research-one",name:"Research one",updatedAt:now()-60,section:section("0199-research")},
+    {...base,id:"research-two",name:"Research two",updatedAt:now()-40,section:section("0199-research")},
+  ];
+  const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  const harness=await startCodexHarness(threads,sections,{failOrder:["0199-research"]});
+  try{
+    await openApp(page,{harness,threads,meta});
+    // Research's threads stay listed (newest first, as listed), Pinned keeps Codex's order, and the error says which order is missing.
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned alpha","Pinned beta"]],["Active",["Codex active one"]],["Research",["Research two","Research one"]]]);
+    const alert=page.locator(".sidebar-list-error");
+    await expect(alert).toContainText("Could not refresh threads");await expect(alert).toContainText(/Could not read the order of Research \(.*section order unavailable.*\)/);
+    await page.screenshot({path:join(shotsDir,"sidebar-codex-section-order-failed-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+    // With no order, Research's threads cannot move, and the menu does not claim the list follows recent activity.
+    const row=threadRow(page,"Research two");await row.hover();await row.locator(".thread-menu summary").click();
+    for(const label of ["Move up","Move down"]){const item=row.getByRole("button",{name:label,exact:true});await expect(item).toBeDisabled();await expect(item).not.toHaveAttribute("title",/./)}
+    await row.locator(".thread-menu summary").click();await expect(row.locator(".thread-menu")).not.toHaveAttribute("open","");
   }finally{await harness.close()}
 });
 

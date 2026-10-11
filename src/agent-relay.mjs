@@ -41,6 +41,7 @@ import { normalizeProviderId } from "./provider-manager.mjs";
 import { isRetiredModelProvider, isRetiredProviderModel, migrateLegacyNativeThread } from "./legacy-provider-migration.mjs";
 import { NativeToolOutputStore } from "./native-tool-output-store.mjs";
 import { threadTitleFromText } from "./agent-thread-store.mjs";
+import { compareSectionOrder, sectionMovePlacement, sectionRanks, threadSectionId } from "./thread-section-order.mjs";
 import { trebellHome } from "./paths.mjs";
 import { dirname, join } from "node:path";
 
@@ -379,21 +380,25 @@ export function paginateAgentThreads(threads=[],params={}){
   const cwdFilters=(Array.isArray(params.cwd)?params.cwd:[params.cwd]).filter(value=>value!=null&&String(value)!=="").map(String);
   if(cwdFilters.length)data=data.filter(thread=>cwdFilters.includes(String(thread?.cwd||"")));
   if(Object.prototype.hasOwnProperty.call(params,"sectionId")){
-    const sectionId=params.sectionId??null;
-    data=data.filter(thread=>sectionId==null?!thread?.section?.id:String(thread?.section?.id||"")===String(sectionId));
+    const sectionId=params.sectionId==null||params.sectionId===""?null:String(params.sectionId);
+    data=data.filter(thread=>threadSectionId(thread)===sectionId);
   }
   const term=String(params.searchTerm||"").trim().toLowerCase();
   if(term)data=data.filter(thread=>String(thread?.name||thread?.preview||"").toLowerCase().includes(term));
   const sortKey=String(params.sortKey||"created_at"),direction=String(params.sortDirection||"desc").toLowerCase()==="asc"?1:-1;
-  const sortValue=thread=>sortKey==="created_at"?Number(thread?.createdAt||0):sortKey==="section_position"?Number(thread?.sectionPosition??thread?.updatedAt??0):Number(thread?.updatedAt||thread?.createdAt||0);
-  data.sort((left,right)=>{const delta=sortValue(left)-sortValue(right);if(delta)return delta*direction;return String(left?.id||"").localeCompare(String(right?.id||""))*direction});
+  const sortValue=thread=>sortKey==="created_at"?Number(thread?.createdAt||0):Number(thread?.updatedAt||thread?.createdAt||0);
+  // section_position ascending is a section's order from the top, as Codex sorts it.
+  if(sortKey==="section_position")data.sort((left,right)=>compareSectionOrder(left,right)*direction);
+  else data.sort((left,right)=>{const delta=sortValue(left)-sortValue(right);if(delta)return delta*direction;return String(left?.id||"").localeCompare(String(right?.id||""))*direction});
   const signature=threadListSignature(params);let start=0;
   if(params.cursor){
     const anchor=parseThreadListCursor(params.cursor);
     if(!anchor||anchor.signature!==signature)throw Object.assign(new Error("Invalid thread list cursor"),{code:-32602});
     start=data.findIndex(thread=>String(thread.id)===String(anchor.id));if(start<0)throw Object.assign(new Error("Thread list cursor no longer exists"),{code:-32602});
   }
-  const pageSize=Math.max(1,Math.min(200,Number(params.limit)||100)),selected=data.slice(start,start+pageSize),next=data[start+pageSize]||null;
+  const pageSize=Math.max(1,Math.min(200,Number(params.limit)||100)),next=data[start+pageSize]||null;let selected=data.slice(start,start+pageSize);
+  // Every listed thread says where it sits in its section (Codex's listing does not; the sidebar asks Codex for each section's order).
+  if(!archived){const ranks=sectionRanks(threads);selected=selected.map(thread=>({...thread,sectionRank:ranks.get(String(thread.id))??null}))}
   return {data:selected,nextCursor:next?threadListCursor(next,signature):null,backwardsCursor:selected.length?threadListCursor(selected[0],signature):null};
 }
 
@@ -1276,7 +1281,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const runtimeSession=sessions.get(params.threadId);if(runtimeSession instanceof ClaudeAgentSession)await runtimeSession.delete().catch(()=>{});else await runtimeSession?.close().catch(()=>{});
       sessions.delete(params.threadId);threadStore.delete(params.threadId);if(state?.removeThreadMeta)state.removeThreadMeta(params.threadId);else state?.updateThreadMeta?.(params.threadId,{deletedAt:Date.now(),archived:true});emit("thread/deleted",{threadId:params.threadId});if(onThreadDeleted)try{await onThreadDeleted(deletedThread)}catch{}return {ok:true}
     }
-    if(method==="thread/section/move"){return {thread:threadStore.update(params.threadId,{section:params.sectionId?{id:params.sectionId,name:params.sectionId}:null})}}
+    if(method==="thread/section/move"){
+      // The thread goes where beforeThreadId says (thread-section-order.mjs), and the place is kept with the thread. Neither a move nor
+      // the tiebreak it gives the threads beside it changes their last-update time, so it moves nothing else in the list.
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
+      const sectionId=params.sectionId==null||params.sectionId===""?null:String(params.sectionId),entering=threadSectionId(thread)!==sectionId;
+      const placement=sectionMovePlacement(threadStore.list(thread.runtime),{threadId:thread.id,sectionId,beforeThreadId:params.beforeThreadId});
+      let moved=null;
+      for(const [id,order] of placement){
+        const patch=id===String(thread.id)?{...order,section:sectionId?{id:sectionId,name:sectionId}:null,...(entering?{sectionEnteredAt:sectionId?Math.floor(Date.now()/1000):null}:{})}:order;
+        const updated=threadStore.update(id,patch,{touch:false});if(id===String(thread.id))moved=updated;
+      }
+      return {thread:moved};
+    }
     if(method==="thread/settings/update"){
       // The composer sends a collaboration mode change as a top-level collaborationMode (the shape Codex takes).
       const current=threadMetadata(params.threadId);const nextSettings={...(current?.settings||{}),...(params.settings||{}),...(params.collaborationMode?.mode?{collaborationMode:params.collaborationMode}:{})};
