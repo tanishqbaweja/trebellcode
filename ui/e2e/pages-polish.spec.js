@@ -116,3 +116,80 @@ for(const mode of MODES){
   });
 }
 
+// ============ History (behind a fake Codex app-server) ============
+const LONG_TITLE="Investigate why the nightly integration pipeline for the payments gateway keeps timing out on the reconciliation step after the database migration";
+const LONG_PREVIEW="C:\\Users\\someone\\source\\repos\\a-very-long-folder-name-for-the-payments-gateway-service\\src\\reconciliation\\nightly-job.ts";
+function historyThreads(count,{long=false}={}){
+  const now=Date.now()/1000;
+  return Array.from({length:count},(_,i)=>({id:"polish-thread-"+i,name:i===0&&long?LONG_TITLE:"Polish thread "+i,preview:i===0&&long?LONG_PREVIEW:"Preview of thread "+i,cwd:process.cwd(),createdAt:now-1000-i*60,updatedAt:now-i*60,turns:[]}));
+}
+async function startCodex(threads){
+  const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      const m=message.method;let result={};
+      if(m==="thread/list")result={data:threads,nextCursor:null};
+      else if(m==="thread/resume"||m==="thread/read")result={thread:threads.find(t=>t.id===message.params?.threadId)||threads[0],itemsBackwardsCursor:null,turnsBackwardsCursor:null};
+      else if(m==="initialize")result={userAgent:"polish-fixture"};
+      else if(["threadSection/list","thread/loaded/list","thread/attachment/list","thread/queue/list","app/list","permissionProfile/list","hooks/list","experimentalFeature/list","plugin/share/list","collaborationMode/list","skills/list"].includes(m))result={data:[],nextCursor:null};
+      else if(m==="thread/goal/get")result={goal:null};
+      else if(m==="thread/timeline/list")result={data:[],nextCursor:null,activeRealtimeSessionAtPageStart:null};
+      else if(m==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
+      else if(m==="mcpServerStatus/list")result={data:[]};
+      else if(m==="plugin/list")result={marketplaces:[]};
+      else if(m==="app/installed")result={apps:[]};
+      else if(m==="account/read")result={account:{type:"chatgpt",email:"fixture@example.com",planType:"plus"},requiresOpenaiAuth:false};
+      else if(m==="account/rateLimits/read")result={rateLimits:{}};
+      else if(m==="config/read")result={config:{},layers:[]};
+      else if(m==="thread/unsubscribe")result={status:"unsubscribed"};
+      try{ws.send(JSON.stringify({id:message.id,result}))}catch{}
+    });
+  });
+  const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
+  return {port,async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
+}
+async function openCodexHistory(page,fixture,threads,{mode="dark",width=1280,height=800}={}){
+  await page.setViewportSize({width,height});
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${fixture.port}`,cwd:process.cwd(),platform:process.platform,version:"polish-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:Object.fromEntries(threads.map(t=>[t.id,{projectless:true,environmentId:null}]))}));
+  await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  await page.route(/\/api\/agent-runtimes$/,route=>json(route,{selectedRuntime:"codex",selectedInstanceId:"codex-default",definitions:[{id:"codex",name:"Codex",protocol:"codex",multipleInstances:true}],instances:[{id:"codex-default",kind:"codex",displayName:"Codex",enabled:true}],statuses:[{id:"codex-default",kind:"codex",name:"Codex",available:true,installed:true,authenticated:true,version:"fixture"}]}));
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  expect(await page.evaluate(()=>document.documentElement.dataset.mode)).toBe(mode);
+  await nav(page,"History").click();
+  await expect(page.getByRole("heading",{name:"Thread history",level:1})).toBeVisible();
+  const rows=page.locator(".history-thread-row");
+  await expect(rows).toHaveCount(threads.length);
+  return rows;
+}
+
+for(const mode of MODES){
+  test(`a History row reached by Tab shows its whole focus ring, the bottom edge included (${mode})`,async({page})=>{
+    const threads=historyThreads(4);
+    const fixture=await startCodex(threads);
+    try{
+      const rows=await openCodexHistory(page,fixture,threads,{mode});
+      const heading=page.getByRole("heading",{name:"Thread history",level:1});
+      const first=await focusRingByTab(page,rows.first(),heading);
+      await page.screenshot({animations:"disabled",path:shots+`history-row-focus-${mode}-1280.png`});
+      const second=await focusRingByTab(page,rows.nth(1),heading);
+      await page.screenshot({animations:"disabled",path:shots+`history-row-focus-second-${mode}-1280.png`});
+      console.log("HISTORY-RING "+mode+" "+JSON.stringify({first,second}));
+      for(const [name,edges] of [["first",first],["second",second]])for(const [edge,share] of Object.entries(edges))expect(share,`the ${edge} edge of the focused ${name} row shows the ring`).toBeGreaterThan(.9);
+      await page.setViewportSize({width:900,height:800});
+      await rows.nth(1).focus();await page.keyboard.press("Shift+Tab");await page.keyboard.press("Tab");
+      await expect(rows.nth(1)).toBeFocused();
+      await page.screenshot({animations:"disabled",path:shots+`history-row-focus-second-${mode}-900.png`});
+      await page.keyboard.press("Enter");
+      await expect(page.locator("main")).toContainText("Polish thread 1",{timeout:5000});
+    }finally{await fixture.close()}
+  });
+}
+

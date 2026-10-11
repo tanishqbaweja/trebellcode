@@ -874,6 +874,9 @@
 :root:root .secondary-page .history-page>.history-thread-row:first-of-type{border-top-width:1px!important;border-top-left-radius:var(--r-l)!important;border-top-right-radius:var(--r-l)!important}
 :root:root .secondary-page .history-page>.history-thread-row:last-of-type{border-bottom-left-radius:var(--r-l)!important;border-bottom-right-radius:var(--r-l)!important}
 :root:root .secondary-page .history-page>.history-thread-row:hover{border-color:var(--line)!important;background:var(--bg2)!important}
+/* A focused row draws its ring just inside its own edges. Drawn outside them, the next row (painted after it, and white in
+   light mode) covered the ring's bottom edge. */
+:root:root .secondary-page .history-page>.history-thread-row:focus-visible{outline-offset:-2px}
 :root:root .secondary-page .history-page>.history-thread-row>em.history-runtime-chip{height:20px;display:inline-flex;align-items:center;padding:0 8px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10.5px/1 var(--mono);font-style:normal;white-space:nowrap}
 :root:root .secondary-page .history-page>.history-thread-row time{min-width:9ch;text-align:right}
 :root:root .secondary-page .history-page>.history-load-more,
