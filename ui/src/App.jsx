@@ -1,14 +1,13 @@
 import React,{forwardRef,lazy,memo,Suspense,useCallback,useEffect,useImperativeHandle,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { flushSync } from "react-dom";
 import {
-  Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
-  GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
-  ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Mic, Camera, History,
+  Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FolderCode,
+  GitBranch, Globe2, HardDrive, Link2, MemoryStick, Network, Paperclip, Plus, Send,
+  ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Mic, Camera, History,
   PanelRight, PanelBottom, PanelLeftOpen, Command, Target, Play, Search, Sun, Moon,
   BarChart3, ChevronLeft, ChevronRight, Folder, Minus, ScrollText, Server, Settings as SettingsIcon, Wrench
 } from "lucide-react";
 import { compactDateTime, fullDateTime, isoDateTime } from "./time-format.js";
-import { dynamicToolLabel } from "./tool-activity.js";
 import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
@@ -25,7 +24,9 @@ import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
 import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId } from "./thread-history.js";
-import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnEndRows, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain } from "./turn-outcome.js";
+import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain, turnTrailers } from "./turn-outcome.js";
+import { activityRow, isCardItem, mergeLiveRow, restoredRow, settledRow } from "./activity-item.js";
+import { cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeIncompleteTurnIds } from "./turn-activity.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
@@ -40,7 +41,7 @@ import { DEFAULT_LAYOUT, LAYOUT_LIMITS, clampLayoutValue, normalizeLayoutPrefere
 import { loadThreadListPages, nativeThreadSearchMatches, rankSearchHits, rankThreadSections, threadListParams, threadSectionOrderParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary, guardianDeniedEvent } from "./guardian-review.js";
-import { completedItemStatus, toolEventFailed } from "./tool-event-status.js";
+import { completedItemStatus } from "./tool-event-status.js";
 import { startupRuntimeOutcome } from "./startup-runtime.js";
 import { collaborationModePayload, normalizeCollaborationModes } from "./collaboration-mode.js";
 import { ensureRuntimeProject, sameWorkspacePath } from "./codex-projects.js";
@@ -63,8 +64,7 @@ import { contextTaskAnchor, contextTaskText } from "./context-task.js";
 import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
 import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openThreadTitleSource, sameCatalogSnapshot, threadCatalogRuntime, threadOwnerElsewhere, threadsFromCatalogMeta, threadTitle, threadKeptBySwitch } from "./thread-catalog.js";
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
-import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "./activity-window.js";
-import { activityItemStatus, commandFacts, commandLine, fileChangeRows, finishedActivitySteps, turnDiffLines } from "./activity-details.js";
+import { finishedActivitySteps } from "./activity-details.js";
 import { observeHeaderFit } from "./header-fit.js";
 import { sidebarAutoCollapses } from "./sidebar-layout.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
@@ -81,7 +81,8 @@ import { goalAdditionalContext } from "../../src/goal-state.mjs";
 import { codexErrorNotice, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal, parseCodexGoalCommand } from "./codex-turn-options.js";
 import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayHarness, serviceTierPickerTitle } from "./harness-turn-options.js";
 import ReasoningRow from "./components/ReasoningRow.jsx";
-import { reasoningHistoryMessage, reasoningItemText } from "./reasoning-text.js";
+import TurnActivityCard from "./components/TurnActivityCard.jsx";
+import { reasoningHistoryMessage } from "./reasoning-text.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -254,31 +255,6 @@ function upsertEvent(events,event){return events.some(item=>item.id===event.id)?
 function historyFromThread(thread,checkpointByTurn={}){
   return historyFromTurns(thread?.turns||[],checkpointByTurn);
 }
-function normalizeItem(item={}){
-  const type=item.type||"tool";
-  let title=item.title||item.name||item.description||"Agent activity";
-  if(type==="plan")title="Plan";
-  if(type==="commandExecution")title=Array.isArray(item.command)?item.command.join(" "):(item.command||"Running command");
-  if(type==="fileChange")title="Editing files";
-  if(type==="mcpToolCall")title=(item.server?item.server+" / ":"")+(item.tool||item.name||"MCP tool");
-  // The relay files every harness (ACP) tool under the placeholder namespace "agent" with the harness's own title, which is
-  // shown as is (as T3 does). Native's and Codex's dynamic tools have no title: they are named by what they do, the T3 way.
-  if(type==="dynamicToolCall")title=item.namespace&&item.namespace!=="agent"?dynamicToolLabel(item)||item.namespace+" / "+(item.tool||"Dynamic tool"):item.tool||"Dynamic tool";
-  if(type==="collabAgentToolCall")title="Collaboration · "+String(item.tool||"agent task").replace(/([a-z])([A-Z])/g,"$1 $2").toLowerCase();
-  if(type==="subAgentActivity")title="Subagent · "+(item.kind||"activity");
-  if(type==="webSearch")title=item.query||"Searching the web";
-  if(type==="reasoning")title="Reasoning";
-  if(type==="imageView")title="Viewing image";
-  if(type==="imageGeneration")title="Generating image";
-  if(type==="contextCompaction")title="Compacting context";
-  if(type==="enteredReviewMode")title="Reviewing changes";
-  if(type==="exitedReviewMode")title="Finished review";
-  const output=type==="commandExecution"?String(item.aggregatedOutput??item.output??""):"";
-  // Codex and the relay mark a running item "inProgress"; the timeline calls it running, as plan steps already do. A command
-  // that exited non-zero reads as failed whichever harness ran it.
-  const status=activityItemStatus(item);
-  return {id:item.id||crypto.randomUUID(),kind:type,title:String(title).split("\n")[0].slice(0,160),status,raw:item,output};
-}
 function presetFor(mode){
   if(mode==="full")return {sandbox:"danger-full-access",approvalPolicy:"never"};
   if(mode==="read-only")return {sandbox:"read-only",approvalPolicy:"on-request"};
@@ -331,20 +307,12 @@ function contextUsagePercent(tokenUsage){
   return Math.max(0,Math.min(100,Math.round(Number(used)/windowSize*100)));
 }
 
-function EventIcon({event}){
-  if(toolEventFailed(event))return <X size={13}/>;
-  if(event.status==="done")return <Check size={13}/>;
-  if(event.kind==="commandExecution")return <SquareTerminal size={13}/>;
-  if(event.kind==="fileChange")return <FileDiff size={13}/>;
-  if(event.kind==="plan")return <ListTodo size={13}/>;
-  if(event.kind==="mcpToolCall")return <Zap size={13}/>;
-  return <Sparkles size={13}/>;
-}
-const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initialAssistantText="",initialCommandOutputs,initialMcpProgress,onOpenPanel,canInspectChanges=true},ref){
+// The live turn's block: its activity card (TurnActivityCard, open until the person closes it) and, below the card, the reply as
+// it streams, which stays in view while the card is closed.
+const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,threadId=null,turnId=null,initialAssistantText="",initialCommandOutputs,initialMcpProgress,onOpenPanel,canInspectChanges=true,onToggleLayout=null},ref){
   const [assistantText,setAssistantText]=useState(initialAssistantText);
   const [commandOutputs,setCommandOutputs]=useState(()=>new Map(initialCommandOutputs||[]));
   const [mcpProgress,setMcpProgress]=useState(()=>new Map(initialMcpProgress||[]));
-  const [windowEnd,setWindowEnd]=useState(null);
   const openPanelRef=useRef(onOpenPanel);openPanelRef.current=onOpenPanel;
   const openWorkspace=useCallback(()=>openPanelRef.current?.("workspace"),[]);
   useImperativeHandle(ref,()=>({
@@ -359,60 +327,11 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initial
     clearMcpProgress:key=>setMcpProgress(previous=>{const id=String(key||"");if(!previous.has(id))return previous;const next=new Map(previous);next.delete(id);return next}),
     resetStreams:()=>{setAssistantText("");setCommandOutputs(new Map());setMcpProgress(new Map())},
   }),[]);
-  useEffect(()=>{
-    if(windowEnd==null)return;
-    if(!events.length){setWindowEnd(null);return}
-    if(windowEnd>events.length)setWindowEnd(events.length);
-  },[events.length,windowEnd]);
   if(!events.length&&!assistantText)return null;
-  const visible=activityWindow(events,{end:windowEnd});
   // A reply that streams without any tool or reasoning step has no activity to list, so it shows only its text.
-  return <div className="agent-block">{events.length>0&&<><div className="agent-heading"><div className="agent-star"><Sparkles size={16}/></div><span>Trebell agent activity</span></div><div className="timeline">
-    {events.length>visible.size&&<div className="timeline-window-controls"><span>{visible.start+1}–{visible.end} of {visible.total}</span><div><button disabled={!visible.hasOlder} onClick={()=>setWindowEnd(previousActivityWindowEnd(visible))}>Earlier</button><button disabled={!visible.hasNewer} onClick={()=>setWindowEnd(nextActivityWindowEnd(visible))}>Newer</button>{!visible.latest&&<button onClick={()=>setWindowEnd(null)}>Latest</button>}</div></div>}
-    {visible.items.map(event=>{
-      const id=String(event.id),streamedOutput=commandOutputs.get(id)||"",progress=mcpProgress.get(id);
-      if(event.kind==="reasoning")return <ReasoningRow key={event.id} id={id} text={streamedOutput||reasoningItemText(event.raw)} active={event.status==="running"}/>;
-      let rowEvent=!event.output&&streamedOutput?{...event,output:streamedOutput}:event;
-      if(progress)rowEvent={...rowEvent,title:progress.title||rowEvent.title,raw:{...(rowEvent.raw||{}),progress:progress.raw||progress}};
-      return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={canInspectChanges?openWorkspace:null}/>;
-    })}
-  </div></>}{assistantText&&<div className="assistant-answer chat-markdown"><ChatMarkdown text={assistantText}/></div>}</div>;
+  return <div className="agent-block">{events.length>0&&<TurnActivityCard live threadId={threadId} turnId={turnId} rows={events} defaultOpen onToggleLayout={onToggleLayout} onInspectChanges={canInspectChanges?openWorkspace:null} commandOutputs={commandOutputs} mcpProgress={mcpProgress}/>}{assistantText&&<div className="assistant-answer chat-markdown"><ChatMarkdown text={assistantText}/></div>}</div>;
 }));
 
-const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
-  const [expanded,setExpanded]=useState(false);
-  return <details className={"tool-event status-"+(toolEventFailed(event)?"error":event.status)+" kind-"+(event.kind||"event")} onToggle={toggle=>setExpanded(toggle.currentTarget.open)}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
-    {expanded&&<ActivityEventBody event={event} onInspectChanges={onInspectChanges}/>}
-  </details>;
-});
-function DiffBlock({lines}){
-  return <pre className="tool-event-diff">{lines.map((line,index)=><span key={index} className={"diff-"+line.tone}>{line.text||" "}</span>)}</pre>;
-}
-// A path cut at its start, so its last folders and file name stay in view (the tooltip has all of it).
-function PathTail({as:Tag="code",path,title=path,className=""}){
-  return <Tag className={"path-tail"+(className?" "+className:"")} title={title}><bdi>{path}</bdi></Tag>;
-}
-// An expanded row shows what the step did, once each: a command's line (the one it ran, when the harness titled it with a
-// description) with its exit code, folder and duration, then its output; a change's files with what happened to each and its
-// diff, which a General chat or a folder without Git has no other place to show. The raw event is shown only for a step that
-// has none of those (an MCP call, for example), not as a third copy of the command under its output.
-function ActivityEventBody({event,onInspectChanges}){
-  const raw=event.raw&&typeof event.raw==="object"?event.raw:null;
-  const command=raw?.command?commandLine(raw):"",facts=command?commandFacts(raw):[];
-  // Worked out once per version of the step: an open row re-renders as the turn goes on (a turn diff on every update).
-  const changes=useMemo(()=>Array.isArray(raw?.changes)?fileChangeRows(raw.changes):null,[raw]);
-  // A turn's diff update carries the diff itself.
-  const turnDiff=useMemo(()=>event.kind==="fileChange"&&typeof event.raw==="string"?turnDiffLines(event.raw):[],[event.kind,event.raw]);
-  return <div className="tool-event-body">
-    {command&&<pre>{command}</pre>}
-    {facts.length>0&&<div className="tool-event-facts" data-testid="tool-event-facts">{facts.map((fact,index)=><React.Fragment key={fact.key}>{index>0&&<i className="fact-sep" aria-hidden="true">·</i>}{fact.key==="cwd"?<PathTail as="span" className="fact-cwd" path={fact.label} title={fact.title}/>:<span className={"fact-"+fact.key+(fact.tone?" tone-"+fact.tone:"")} title={fact.title}>{fact.label}</span>}</React.Fragment>)}</div>}
-    {event.output&&<pre>{event.output}</pre>}
-    {changes?.length>0&&<div className="tool-event-changes" data-testid="tool-event-changes">{changes.map((change,index)=><div className="tool-event-change" key={change.path+":"+index}><div className="tool-event-change-head"><FileDiff size={12} aria-hidden="true"/><PathTail path={change.path||"Unnamed file"}/>{change.kind&&<em className={"change-kind kind-"+change.kind}>{change.kind}</em>}{change.movePath&&<><span className="change-move-to">to</span><PathTail path={change.movePath}/></>}</div>{change.lines.length>0&&<DiffBlock lines={change.lines}/>}</div>)}</div>}
-    {turnDiff.length>0&&<DiffBlock lines={turnDiff}/>}
-    {(changes||turnDiff.length>0)&&onInspectChanges&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}
-    {!(command||event.output||changes?.length||turnDiff.length)&&<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre>}
-  </div>;
-}
 // covered: another thread's opening state is up. The bar belongs to the thread being left, so it hides without closing (a failed open
 // brings it back with its query) and cannot be used meanwhile.
 function ThreadFindBar({state,covered=false,inputRef,barRef,onQuery,onPrevious,onNext,onClose}){
@@ -440,14 +359,12 @@ const ConversationMessageRow=memo(function ConversationMessageRow({message,activ
     return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
   })}{outcomeLabel&&<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/>}</div></div>;
 },sameConversationMessageRowProps);
-// How a turn that failed or was stopped before any reply ended (turn-outcome.js turnEndRows), where its reply would have
-// been: the heading and pill on one line, then the error it ended with, in full. No message id: it is not a message, so
-// find, scroll anchors and citations pass it by.
+// How a turn that failed, was stopped or completed before any reply ended (turn-outcome.js turnTrailers), where its reply would
+// have been: the heading and pill on one line, then the error it ended with in full ("Finished without a reply." for a completed
+// one). No message id: it is not a message, so find, scroll anchors and citations pass it by.
 const TurnOutcomeRow=memo(function TurnOutcomeRow({turnId,heading="",outcomeLabel,outcomeTone,message="",latest=false}){
   return <div className={"history-assistant turn-outcome-row"+(latest?" latest-turn-end":"")} data-testid="turn-outcome-row" data-turn-id={turnId}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body"><div className="turn-outcome-head">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/></div>{message&&<p className={"turn-outcome-message tone-"+outcomeTone}>{message}</p>}</div></div>;
 });
-// The outcome rows that follow one row (or open the thread), in their turns' order.
-function turnOutcomeRows(rows){return (rows||[]).map(row=><TurnOutcomeRow key={"turn-end:"+row.turnId} {...row}/>)}
 
 const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,rootRef,forceMount=false,initialMount=false,renderMessage}){
   const ref=useRef(null),[mounted,setMounted]=useState(Boolean(initialMount||forceMount)),[placeholderHeight,setPlaceholderHeight]=useState(Math.max(1,Number(chunk.estimatedHeight)||1));
@@ -479,24 +396,41 @@ const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,roo
 
 // cardFailedTurns: the turns whose failure the live activity card lists, one id per line (a string, so the memo holds while
 // the card's events change around them). turnOrder: the thread's turn ids, oldest first, where a turn without rows ends.
-const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,activeFindItemId=null,anchorItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null,cardFailedTurns="",turnOrder=null}){
+// turnActivity: the open thread's activity card of every turn (turn-activity.js); liveCardTurnId: the one the live card shows,
+// which has no card here; newestTurnId: the turn whose card is open until the person closes it.
+const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,activeFindItemId=null,anchorItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null,cardFailedTurns="",turnOrder=null,turnActivity=null,liveCardTurnId=null,newestTurnId=null,onToggleLayout=null}){
   const historyRef=useRef(null);
-  // The chunks holding the active find match and an older page's anchor row mount at once, so both can be scrolled to exactly.
-  const virtualized=shouldVirtualizeConversation(messages),chunks=useMemo(()=>virtualized?conversationVirtualChunks(messages):[],[messages,virtualized]),forcedChunk=virtualized?conversationChunkIndexForMessage(chunks,activeFindItemId):-1,anchorChunk=virtualized?conversationChunkIndexForMessage(chunks,anchorItemId):-1;
+  const virtualized=shouldVirtualizeConversation(messages);
   // The rows of the live card's turn read below the card (shell.css orders the rows after this marker). A turn that started
   // without a user message (a goal continuing) leaves the previous turn's reply above the card.
   const latestStart=useMemo(()=>virtualized?-1:latestTurnRowsStart(messages,cardTurnId),[messages,cardTurnId,virtualized]);
   // A turn's first reply names the harness (and the mode this window sent it with); its last reply says how it ended.
   const decorations=useMemo(()=>assistantRowDecorations(messages,{harnessLabel,turnInfo,threadId}),[messages,harnessLabel,turnInfo,threadId]);
-  // A turn that failed or was stopped before any reply ends with a row saying so, unless the live card lists that failure; one
-  // with no rows at all ends after the turn before it, or opens the thread.
+  // Each earlier turn's activity card, and the row that ends a turn which failed, was stopped or completed before any reply,
+  // unless the live card lists that failure (one with no rows at all ends after the turn before it, or opens the thread); a turn
+  // whose steps are not all loaded never reads as finished without a reply. The turn lists are strings, so the placement is
+  // worked out again only when they change, not with every step a card adds.
   const cardFailedTurnSet=useMemo(()=>new Set(String(cardFailedTurns||"").split("\n").filter(Boolean)),[cardFailedTurns]);
-  const gapBeforeId=historyGap?.beforeId??null;
-  const turnEnds=useMemo(()=>turnEndRows(messages,{harnessLabel,turnInfo,threadId,cardFailedTurnIds:cardFailedTurnSet,cardTurnId,reorder:!virtualized,turnOrder,gapBeforeId,startLoaded:!canLoadEarlier}),[messages,harnessLabel,turnInfo,threadId,cardFailedTurnSet,cardTurnId,virtualized,turnOrder,gapBeforeId,canLoadEarlier]);
-  // One fragment per message whatever goes with it, so no row remounts when a gap marker or its turn's outcome row comes or goes.
-  const renderMessage=useCallback(message=>{const id=String(message.id),decoration=decorations.get(id),ends=turnEnds.get(id);return <React.Fragment key={message.id}>
+  const gapBeforeId=historyGap?.beforeId??null,boundaryTurnId=turnActivity?.boundaryTurnId??null;
+  const cardTurns=useMemo(()=>storeCardTurnIds(turnActivity).join("\n"),[turnActivity]),incompleteTurns=useMemo(()=>storeIncompleteTurnIds(turnActivity).join("\n"),[turnActivity]);
+  const trailers=useMemo(()=>turnTrailers(messages,{harnessLabel,turnInfo,threadId,cardFailedTurnIds:cardFailedTurnSet,cardTurnId,reorder:!virtualized,turnOrder,gapBeforeId,startLoaded:!canLoadEarlier,cardTurnIds:cardTurns?cardTurns.split("\n"):[],liveCardTurnId,boundaryTurnId,incompleteTurnIds:new Set(incompleteTurns?incompleteTurns.split("\n"):[])}),[messages,harnessLabel,turnInfo,threadId,cardFailedTurnSet,cardTurnId,virtualized,turnOrder,gapBeforeId,canLoadEarlier,cardTurns,liveCardTurnId,boundaryTurnId,incompleteTurns]);
+  // A virtualized list estimates each chunk with the closed cards its rows carry (36px and the 22px below each); a chunk on
+  // screen measures itself. The chunks holding the active find match and an older page's anchor row mount at once, so both can
+  // be scrolled to exactly.
+  const cardsAt=useMemo(()=>{const counts=new Map();for(const map of [trailers.before,trailers.after])for(const [id,entries] of map){const cards=entries.filter(entry=>entry.kind==="card").length;if(cards)counts.set(id,(counts.get(id)||0)+cards)}return counts},[trailers]);
+  const chunks=useMemo(()=>virtualized?conversationVirtualChunks(messages,{extraHeight:message=>58*(cardsAt.get(String(message.id))||0)}):[],[messages,virtualized,cardsAt]),forcedChunk=virtualized?conversationChunkIndexForMessage(chunks,activeFindItemId):-1,anchorChunk=virtualized?conversationChunkIndexForMessage(chunks,anchorItemId):-1;
+  // A turn's card and end row, in their turns' order. A card has no message id: find, scroll anchors and citations pass it by.
+  const renderTrailers=useCallback(entries=>(entries||[]).map(entry=>{
+    if(entry.kind==="end")return <TurnOutcomeRow key={"turn-end:"+entry.turnId} turnId={entry.turnId} heading={entry.heading} outcomeLabel={entry.outcomeLabel} outcomeTone={entry.outcomeTone} message={entry.message} latest={entry.latest}/>;
+    const turn=turnActivity?.turns?.[entry.turnId];if(!turn?.rows?.length)return null;
+    return <div className="turn-card" key={"turn-card:"+entry.turnId} data-turn-id={entry.turnId}><TurnActivityCard threadId={threadId} turnId={entry.turnId} rows={turn.rows} complete={turn.complete} defaultOpen={entry.turnId===String(newestTurnId??"")} onToggleLayout={onToggleLayout}/></div>;
+  }),[turnActivity,threadId,newestTurnId,onToggleLayout]);
+  // One fragment per message whatever goes with it, so no row remounts when a gap marker, a card or its turn's outcome row comes
+  // or goes.
+  const renderMessage=useCallback(message=>{const id=String(message.id),decoration=decorations.get(id);return <React.Fragment key={message.id}>
     {/* The turns not loaded between a detached find hit and the newest pages are marked where they belong, and load from there. */}
     {historyGap&&id===String(historyGap.beforeId)&&<div className="history-page-control history-gap" data-testid="history-gap"><button type="button" disabled={historyBusy} onClick={onLoadGap}>{loadingGap?"Loading turns…":<>{historyGapLabel(historyGap.missing)}<span className="history-gap-load">· Load</span></>}</button></div>}
+    {renderTrailers(trailers.before.get(id))}
     <ConversationMessageRow
       message={message}
       activeFind={id===String(activeFindItemId||"")}
@@ -509,10 +443,10 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
       outcomeLabel={decoration?.outcomeLabel||""}
       outcomeTone={decoration?.outcomeTone||""}
     />
-    {turnOutcomeRows(ends)}
-  </React.Fragment>},[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations,turnEnds,historyGap,historyBusy,loadingGap,onLoadGap]);
-  // A thread that opens with turns that have no rows (a goal's first turn failing at once) starts with their outcome rows.
-  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={historyBusy} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{turnOutcomeRows(turnEnds.get(""))}{virtualized
+    {renderTrailers(trailers.after.get(id))}
+  </React.Fragment>},[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations,trailers,renderTrailers,historyGap,historyBusy,loadingGap,onLoadGap]);
+  // A thread that opens with turns that have no rows (a goal's first turn failing at once) starts with their cards and outcome rows.
+  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={historyBusy} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{renderTrailers(trailers.after.get(""))}{virtualized
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
@@ -855,6 +789,10 @@ export default function App(){
   // turnOutcomePagesRef: for the open item-paged thread, where its turn outcome pages stopped and the turns they covered.
   // turnOrder: the open thread's turn ids, oldest first, so a turn with no rows of its own still ends in its place.
   const [turnInfo,setTurnInfo]=useState({});const turnClockRef=useRef(new Map());const turnOutcomePagesRef=useRef(null);const [turnOrder,setTurnOrder]=useState({threadId:null,ids:[]});
+  // turnActivity: the open thread's activity card of every turn, by turn (turn-activity.js), read by the notification handlers through
+  // turnActivityRef. liveItemRowsRef: the live card's steps by thread and turn (trackLiveRow), which a turn's card takes once the turn
+  // ends; liveTurnKeyRef: the open thread's running turn, the one stored steps may still join the live card for.
+  const [turnActivity,setTurnActivity]=useState(()=>emptyTurnActivity(null));const turnActivityRef=useRef(turnActivity);turnActivityRef.current=turnActivity;const liveItemRowsRef=useRef(new Map());const liveTurnKeyRef=useRef(null);
   const [resolvedMode,setResolvedMode]=useState(()=>typeof document!=="undefined"&&document.documentElement.dataset.mode==="light"?"light":"dark");
   if(!assistantStreamBufferRef.current)assistantStreamBufferRef.current=createTextFrameBuffer({
     schedule:callback=>requestAnimationFrame(callback),
@@ -953,6 +891,38 @@ export default function App(){
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
+  // The live card's steps for each turn of the open thread, merged as the list merges them (the list cannot be read while a
+  // notification is handled): what a turn's own card takes once the turn ends (sealLiveTurn). Card items only.
+  function trackLiveRow(threadId,turnId,row,{phase,streamed=""}={}){
+    const owner=threadId||activeThreadRef.current?.id,key=turnInfoKey(owner,turnId);if(!key)return;
+    let entry=liveItemRowsRef.current.get(key);if(!entry){entry={threadId:String(owner),turnId:String(turnId),rows:new Map()};liveItemRowsRef.current.set(key,entry)}
+    const id=String(row.id),next=mergeLiveRow(entry.rows.get(id)||null,row,{phase,streamed});
+    if(phase==="started")entry.rows.delete(id);
+    entry.rows.set(id,next);
+  }
+  // Stored steps of the running turn (older than any live one) go in front of its live rows, in the list and in the record above:
+  // the turn running when the thread opened, or one that starts again under its id (the relay's restart recovery).
+  function seedLiveRows(threadId,turnId,rows){
+    const key=turnInfoKey(threadId,turnId);if(!key||!rows?.length||liveTurnKeyRef.current!==key)return;
+    const held=liveItemRowsRef.current.get(key)?.rows||new Map(),merged=new Map();
+    for(const row of rows)if(!held.has(String(row.id)))merged.set(String(row.id),row);
+    for(const [id,row] of held)merged.set(id,row);
+    liveItemRowsRef.current.set(key,{threadId:String(threadId),turnId:String(turnId),rows:merged});
+    setEvents(current=>{const liveIds=new Set(current.map(event=>String(event.id))),added=rows.filter(row=>!liveIds.has(String(row.id)));return added.length?[...added,...current]:current});
+  }
+  // A turn that ended, or that the live card left for another, keeps its steps as its own card: its live rows, settled and bounded,
+  // after any older ones history pages stored meanwhile. A turn whose history is not all loaded (running when the thread opened,
+  // cut by the first page) stays incomplete.
+  function sealLiveTurn(threadId,turnId){
+    const owner=threadId||activeThreadRef.current?.id,key=turnInfoKey(owner,turnId),entry=liveItemRowsRef.current.get(key);if(!entry)return;
+    liveItemRowsRef.current.delete(key);
+    const id=String(turnId),sealed=[...entry.rows.values()].map(row=>restoredRow(settledRow(row))),sealedIds=new Set(sealed.map(row=>String(row.id)));
+    setTurnActivity(prev=>{
+      if(prev.threadId!==entry.threadId)return prev;
+      const known=prev.turns[id],older=(known?.rows||[]).filter(row=>!sealedIds.has(String(row.id)));
+      return mergeTurnActivity(prev,{[id]:[...older,...sealed]},{mode:"replace",complete:!known||known.complete});
+    });
+  }
   useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose();diffEventBufferRef.current?.dispose();for(const waiter of compactionWaitersRef.current.values()){clearTimeout(waiter.timer);waiter.reject?.(new Error("Trebell closed while context compaction was pending"))}compactionWaitersRef.current.clear()},[]);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
   useEffect(()=>{
@@ -1402,7 +1372,7 @@ export default function App(){
     }finally{if(seq===modelRefreshSeqRef.current){modelsLoadingRef.current=false;setModelsLoading(false)}}
   }
   function resetThreadView(runtime,capabilities){
-    activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setEvents([]);setTokenUsage(null);resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime:runtime,nativeQueue:capabilities?.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);
+    activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setEvents([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;setTokenUsage(null);resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime:runtime,nativeQueue:capabilities?.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);
   }
   // The open thread when the person opened it while the switch ran and it belongs to the harness the switch lands on, else null. A
   // switch closes the thread it replaces (the one open when it began), not one the person has since opened under the landing harness.
@@ -2589,6 +2559,15 @@ export default function App(){
       if(isCurrent){
         // The open thread's turns in order, where one without rows ends (a thread this window started begins its order here).
         if(threadId&&id)setTurnOrder(prev=>prev.threadId===threadId?{...prev,ids:appendTurnOrder(prev.ids,[id])}:{threadId,ids:[String(id)]});
+        // The live card moves to this turn: every other turn of this thread on it takes its rows into its own card and they leave the
+        // list (notices stay). A turn that starts again under its id gets back the steps its card holds.
+        const owner=threadId||activeThreadRef.current?.id;
+        if(owner&&id){
+          liveTurnKeyRef.current=turnInfoKey(owner,id);
+          for(const entry of [...liveItemRowsRef.current.values()])if(entry.threadId===String(owner)&&entry.turnId!==String(id))sealLiveTurn(owner,entry.turnId);
+          setEvents(prev=>{const next=prev.filter(event=>!event.turnId||event.turnId===String(id));return next.length===prev.length?prev:next});
+          const stored=turnActivityRef.current;seedLiveRows(owner,id,stored.threadId===owner?stored.turns[String(id)]?.rows:null);
+        }
         setRunning(true);setActiveTurnId(id);
         setMessages(prev=>{const index=[...prev].reverse().findIndex(m=>m.role==="user"&&!m.turnId);if(index<0)return prev;const real=prev.length-1-index;return prev.map((m,i)=>i===real?{...m,turnId:id}:m)});
       }
@@ -2610,33 +2589,36 @@ export default function App(){
       // A failed Codex turn ends with its error (T3 Code); an active Codex goal goes on with a turn Codex starts itself.
       const codexFailure=agentRuntime==="codex"?codexTurnFailure(p.turn):null,codexGoalContinues=agentRuntime==="codex"&&isCurrent&&goal?.status==="active";
       if(isCurrent){
+        sealLiveTurn(threadId,completedTurnId);if(liveTurnKeyRef.current===turnInfoKey(threadId||activeThreadRef.current?.id,completedTurnId))liveTurnKeyRef.current=null;
         setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>e.status==="running"?{...e,status:"done"}:e);return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{}}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
         if(codexFailure)desktopNotify("Trebell Code error",codexFailure.message);else if(!codexGoalContinues)desktopNotify("Trebell Code finished",titleOf(activeThreadRef.current)+" is ready for review.");
       }else if(threadId&&backgroundThreadsRef.current.has(threadId)){
         backgroundThreadsRef.current.delete(threadId);loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Background task completed, but the thread list could not refresh"));const thread=threads.find(item=>item.id===threadId);desktopNotify("Background task finished",(thread?titleOf(thread):"A background Trebell task")+" is ready for review.");
       }
     }
-    else if(message.method==="turn/plan/updated"&&isCurrent){const plan=(p.plan||[]).map((s,i)=>({id:"plan-"+i,kind:"plan",title:s.step||s.description||s.text||"Plan step",status:s.status==="completed"?"done":s.status==="inProgress"?"running":"pending",raw:s}));setEvents(prev=>[...prev.filter(e=>e.kind!=="plan"),...plan])}
+    else if(message.method==="turn/plan/updated"&&isCurrent){const plan=(p.plan||[]).map((s,i)=>({id:"plan-"+i,kind:"plan",title:s.step||s.description||s.text||"Plan step",status:s.status==="completed"?"done":s.status==="inProgress"?"running":"pending",raw:s,turnId:p.turnId==null?null:String(p.turnId)}));setEvents(prev=>[...prev.filter(e=>e.kind!=="plan"),...plan])}
     else if(message.method==="item/started"&&p.item){
-      const item=normalizeItem(p.item);
+      const item=activityRow(p.item,{turnId:p.turnId});
       const isActivityItem=!["userMessage","agentMessage"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,{currentActivity:{id:item.id,kind:item.kind,title:item.title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
       if(isCurrent&&isActivityItem)setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item]);
+      if(isCurrent&&isCardItem(p.item))trackLiveRow(threadId,p.turnId,item,{phase:"started"});
     }
     // A harness tool that is still running can name itself better as it goes (an ACP tool call first reports its bare tool
     // name, then its kind and command); the row follows it in place.
     else if(message.method==="item/tool/progress"&&p.item){
       // Output-only updates stream through outputDelta; only a changed name, kind or status touches the row and the telemetry.
-      const item=normalizeItem(p.item);
+      const item=activityRow(p.item,{turnId:p.turnId});
       const activity=threadTelemetryRef.current[threadId]?.currentActivity;
       if(activity?.id===item.id&&(activity.title!==item.title||activity.kind!==item.kind))updateThreadTelemetry(threadId,{currentActivity:{...activity,kind:item.kind,title:item.title}});
       if(isCurrent)setEvents(prev=>{
         const index=prev.findIndex(e=>e.id===item.id);
         if(index<0)return [...prev,item];
-        const old=prev[index];
-        if(old.title===item.title&&old.kind===item.kind&&old.status===item.status)return prev;
-        const next=prev.slice();next[index]={...old,...item,output:item.output||old.output};return next;
+        const old=prev[index],merged=mergeLiveRow(old,item,{phase:"progress"});
+        if(merged===old)return prev;
+        const next=prev.slice();next[index]=merged;return next;
       });
+      if(isCurrent&&isCardItem(p.item))trackLiveRow(threadId,p.turnId,item,{phase:"progress"});
     }
     else if(message.method==="item/completed"&&p.item){
       let streamedCommandOutput="";
@@ -2651,7 +2633,7 @@ export default function App(){
         const itemId=String(p.item.id||"");
         if(itemId){mcpProgressRef.current.delete(itemId);activityTimelineRef.current?.clearMcpProgress(itemId)}
       }
-      const item=normalizeItem({...p.item,status:completedItemStatus(p.item)});
+      const item=activityRow({...p.item,status:completedItemStatus(p.item)},{turnId:p.turnId});
       const completedAtMs=p.completedAtMs||Date.now();
       const isActivityItem=!["userMessage","agentMessage"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===item.id?null:current.currentActivity,lastActivity:{id:item.id,kind:item.kind,title:item.title,durationMs:p.item?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs}));
@@ -2664,7 +2646,10 @@ export default function App(){
         if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);resetAssistantStream()}
         // A finished thought leaves the live activity for the conversation, where a reopened thread shows it too.
         if(p.item.type==="reasoning"){const thought=reasoningHistoryMessage(p.item,p.turnId,streamedCommandOutput);setEvents(prev=>prev.filter(e=>e.id!==item.id));if(thought)setMessages(prev=>prev.some(m=>m.id===thought.id)?prev:[...prev,thought])}
-        else if(isActivityItem)setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item,output:item.output||streamedCommandOutput||e.output}:e):[...prev,{...item,output:item.output||streamedCommandOutput}]);
+        else if(isActivityItem){
+          setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?mergeLiveRow(e,item,{phase:"completed",streamed:streamedCommandOutput}):e):[...prev,mergeLiveRow(null,item,{phase:"completed",streamed:streamedCommandOutput})]);
+          if(isCardItem(p.item))trackLiveRow(threadId,p.turnId,item,{phase:"completed",streamed:streamedCommandOutput});
+        }
       }
     }
     else if(message.method==="item/autoApprovalReview/started"){
@@ -3080,7 +3065,7 @@ export default function App(){
     if(String(activeThreadRef.current?.id||"")!==String(threadId))return;
     if(openingThreadRef.current&&openingThreadRef.current!==String(threadId))showNewTask();else await newChat();
   }
-  function showNewTask(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
+  function showNewTask(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -3183,7 +3168,7 @@ export default function App(){
     rememberConversationPosition();
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
     const resumedRunning=openedThread.status?.type==="active",resumedTurnId=resumedActiveTurnId(resumed);
-    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(projectError)throw projectError;else if(!openedThread.cwd)setProjectPath(projectPath);
@@ -3191,6 +3176,9 @@ export default function App(){
     if(!connectedClient){setReviewedFiles(savedMeta.reviewedFiles||[]);if(persistentReadErrors.length)showActionError(new Error(persistentReadErrors.join(" · ")),"Opened thread, but some saved state could not be loaded");return}
     const map=cp?Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x])):(reopeningCurrentThread?checkpointByTurn:{});
     if(cp)setCheckpointByTurn(map);
+    // openedCards: the turns' cards the first page (or the whole thread) holds. cutNewestTurnId: the newest turn when it alone filled
+    // the first item page, whose earlier steps are read once more below.
+    let openedCards=null,cutNewestTurnId=null;
     if(resumed?.thread){
       activeThreadRef.current=resumed.thread;resumedOnRef.current={threadId:resumed.thread.id,client};pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
       if(runtimeCapabilities.collaborationModes&&resumed.collaborationMode?.mode&&collaborationModes.some(item=>item.mode===resumed.collaborationMode.mode))setCollaborationMode(resumed.collaborationMode.mode);
@@ -3199,14 +3187,27 @@ export default function App(){
       if(resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
         const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
-        // An item-paged thread takes the failed and stopped turns from its outcome pages: a done pill is left to turn pages, so
-        // it shows none on only some turns, while a failure or stop always says so.
+        // An item-paged thread reads how its turns ended from its outcome pages, done ones too, so every reply has its pill.
         turnOutcomePagesRef.current=page.kind==="items"?{threadId:resumed.thread.id,cursor:page.turnsCursor||null,covered:new Set((page.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean))}:null;
         // The turns in order come from the same pages (item pages skip a turn that has no items), then any this window saw start.
         const orderIds=turnIdsOldestFirst(page.kind==="items"?page.turns||[]:page.data||[]);
         setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder(orderIds,prev.threadId===resumed.thread.id?prev.ids:[])}));
-        setTurnInfo(prev=>page.kind==="items"?mergeTurnOutcomes(prev,resumed.thread.id,page.turns||[],{failuresOnly:true}):mergeTurnOutcomes(prev,resumed.thread.id,page.data||[]));setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",itemHistory:page.kind==="items",loading:false});
-      }else{turnOutcomePagesRef.current=null;setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder((resumed.thread.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean),prev.threadId===resumed.thread.id?prev.ids:[])}));setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
+        // Each turn's card comes from the same page: an item page reads turns newest first and may cut its oldest (the boundary, whose
+        // card heads the newest pages until older ones load); a turn page holds whole turns.
+        if(page.kind==="items"){
+          const boundaryTurnId=itemPageBoundaryTurnId(page.data||[],page.nextCursor||null);
+          openedCards={rows:cardRowsFromItemEntries([...(page.data||[])].reverse(),{activeTurnId:resumedTurnId}),merge:{mode:"older",complete:itemPageCompleteness(page.data||[],page.nextCursor||null)},boundaryTurnId};
+          if(boundaryTurnId&&String(page.data?.[0]?.turnId||"")===boundaryTurnId&&openedCards.rows[boundaryTurnId]?.length)cutNewestTurnId=boundaryTurnId;
+        }else openedCards={rows:cardRowsFromTurns([...(page.data||[])].reverse(),{activeTurnId:resumedTurnId}),merge:{mode:"replace",complete:true},boundaryTurnId:null};
+        setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,page.kind==="items"?page.turns||[]:page.data||[]));setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",itemHistory:page.kind==="items",loading:false});
+      }else{
+        // The whole thread: cards for its newest 200 turns.
+        openedCards={rows:cardRowsFromTurns((resumed.thread.turns||[]).slice(-200),{activeTurnId:resumedTurnId}),merge:{mode:"replace",complete:true},boundaryTurnId:null};
+        turnOutcomePagesRef.current=null;setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder((resumed.thread.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean),prev.threadId===resumed.thread.id?prev.ids:[])}));setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})
+      }
+      // The running turn's stored steps start its live card.
+      const cards=openedCards;setTurnActivity(prev=>prev.threadId===thread.id?{...mergeTurnActivity(prev,cards.rows,cards.merge),boundaryTurnId:cards.boundaryTurnId}:prev);
+      if(resumedTurnId)seedLiveRows(thread.id,resumedTurnId,cards.rows[String(resumedTurnId)]);
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex")applyProviderInventory(harnessInventory(runtimeInventoryRef.current,resumed.thread.providerMeta))
     }
     // The thread shows now (its history lands in this same frame), so its opening state ends; sends still wait for the reads below.
@@ -3231,20 +3232,28 @@ export default function App(){
         }
       }
     }
-    if(agentRuntime==="codex"&&!bootstrap.mock&&resumed?.thread){
+    // The newest turn alone filled the first item page: its earlier steps are read once, so its card holds them all (failing that, it
+    // says some steps are not loaded).
+    if(cutNewestTurnId){
+      const completeThreadId=thread.id,turnId=cutNewestTurnId;
+      client.request("thread/items/list",{threadId:completeThreadId,turnId,sortDirection:"desc",limit:400}).then(result=>{
+        if(activeThreadRef.current?.id!==completeThreadId)return;
+        const entries=(result?.data||[]).filter(entry=>String(entry?.turnId||"")===turnId),rows=cardRowsFromItemEntries([...entries].reverse(),{activeTurnId:resumedTurnId,turnId});
+        setTurnActivity(prev=>prev.threadId===completeThreadId?mergeTurnActivity(prev,rows,{mode:"older",complete:entries.length>0&&!result?.nextCursor}):prev);
+        seedLiveRows(completeThreadId,turnId,rows[turnId]);
+      },()=>{});
+    }
+    // A Codex thread whose pages hold no step (messages only, or a thread from before item paging) takes its latest turn's steps
+    // from the timeline, into that turn's card, and into the live card too while that turn runs.
+    if(agentRuntime==="codex"&&!bootstrap.mock&&resumed?.thread&&!Object.values(openedCards?.rows||{}).some(rows=>rows.length)){
       const timelineThreadId=thread.id;
       import("./thread-timeline.js")
         .then(({loadLatestTurnTimeline})=>loadLatestTurnTimeline(client,timelineThreadId))
         .then(timeline=>{
-          if(activeThreadRef.current?.id!==timelineThreadId||!timeline.items.length)return;
-          const restored=timeline.items.map(item=>{
-            const event=normalizeItem(item);
-            return {...event,status:item.status?event.status:"done",output:item.aggregatedOutput||""};
-          });
-          setEvents(current=>{
-            const liveIds=new Set(current.map(event=>String(event.id)));
-            return [...restored.filter(event=>!liveIds.has(String(event.id))),...current];
-          });
+          if(activeThreadRef.current?.id!==timelineThreadId||!timeline.items.length||!timeline.turnId)return;
+          const turnId=String(timeline.turnId),rows=cardRowsFromItemEntries(timeline.items.map(item=>({turnId,item})),{activeTurnId:resumedTurnId});
+          setTurnActivity(prev=>prev.threadId===timelineThreadId?mergeTurnActivity(prev,rows,timeline.complete?{mode:"replace",complete:true}:{mode:"older"}):prev);
+          seedLiveRows(timelineThreadId,turnId,rows[turnId]);
         })
         .catch(error=>{
           const detail=error?.message||String(error);
@@ -3292,25 +3301,27 @@ export default function App(){
           const anchor=captureHistoryPrependAnchor(node);
           pendingHistoryPrependRef.current={threadId,scrollHeight:node.scrollHeight,scrollTop:node.scrollTop,anchor};setHistoryAnchorItemId(anchor?.messageId??null);
         }
-        // A thread opened on item pages takes only failed and stopped turns, from its outcome pages and from turn pages loaded into
-        // it later (above a find hit, or after one joined the history), so no turn shows a done pill the others cannot.
-        setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,outcomeTurns,{failuresOnly:itemPaging||Boolean(historyPage.itemHistory)}));
+        setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,outcomeTurns));
+        // The page's turns take their steps into their cards: an item page adds older steps and may cut its oldest turn (the boundary
+        // while older pages remain, none once the gap under a find hit joins), a turn page holds whole turns.
+        const cards=itemPaging?cardRowsFromItemEntries(data,{activeTurnId}):cardRowsFromTurns(data,{activeTurnId}),cardMerge=itemPaging?{mode:"older",complete:itemPageCompleteness(page?.data||[],nextCursor)}:{mode:"replace",complete:true};
+        const storeCards=boundaryTurnId=>setTurnActivity(prev=>{if(prev.threadId!==threadId)return prev;const next=mergeTurnActivity(prev,cards,cardMerge);return boundaryTurnId===undefined||next.boundaryTurnId===boundaryTurnId?next:{...next,boundaryTurnId}});
         // Older turns go in front of the turn order (a run that lies apart from it, above a find hit, is told apart by the gap).
         setTurnOrder(prev=>prev.threadId===threadId?{...prev,ids:prependTurnOrder(prev.ids,turnIdsOldestFirst(outcomeTurns))}:prev);
         if(above){
           // Older turns join the detached hit's group; the gap below it is unchanged.
-          if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
+          if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));storeCards(undefined);
           const grown={...detached,ids:[...detached.ids,...earlier.map(message=>String(message.id))],turnIds:[...detached.turnIds,...pageTurnIds],cursor:nextCursor};
           setHistoryPage(current=>current.threadId===threadId?{...current,loading:false,detached:grown}:current);
           return;
         }
         if(detached){
           const step=historyGapPage(detached,{earlier,pageTurnIds,nextCursor,windowTurnIds});
-          setMessages(current=>mergeHistoryGapMessages(current,detached,earlier,step.joined));
+          setMessages(current=>mergeHistoryGapMessages(current,detached,earlier,step.joined));storeCards(itemPaging?(step.joined?null:itemPageBoundaryTurnId(page?.data||[],nextCursor)):undefined);
           setHistoryPage(current=>current.threadId===threadId?{...current,loading:false,nextCursor:step.nextCursor,itemPaging:step.itemPaging??current.itemPaging,detached:step.detached}:current);
           return;
         }
-        if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
+        if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));storeCards(itemPaging?itemPageBoundaryTurnId(page?.data||[],nextCursor):undefined);
         setHistoryPage(current=>({threadId,nextCursor,paginated:true,itemPaging,itemHistory:current.threadId===threadId&&Boolean(current.itemHistory),loading:false,detached:null}));
       }catch(error){
         if(activeThreadRef.current?.id===threadId){setHistoryPage(current=>current.threadId===threadId?{...current,loading:false}:current);setEvents(prev=>[...prev,{id:"history-page-error-"+Date.now(),kind:"error",title:"Could not load earlier messages: "+(error.message||String(error)),status:"done",raw:{}}])}
@@ -3328,8 +3339,8 @@ export default function App(){
     if(!page?.nextCursor||!occurrence.turnCursor||windowTurnIds.includes(turnId)){setMessages(current=>mergeHistoryMessages(found,current));return}
     const [earlierCursor,missing]=await Promise.all([
       // The cursor of the turn before the hit, to load what lies above it (failing that, the hit's own cursor: its repeat is dropped).
-      // The page holds the hit's own turn, which says whether that turn failed or was stopped.
-      rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,sortDirection:"desc",itemsView:"notLoaded"}).then(result=>{setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,result?.data||[],{failuresOnly:true}));return result?.nextCursor||null},()=>occurrence.turnCursor),
+      // The page holds the hit's own turn, which says how that turn ended.
+      rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,sortDirection:"desc",itemsView:"notLoaded"}).then(result=>{setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,result?.data||[]));return result?.nextCursor||null},()=>occurrence.turnCursor),
       countUnloadedTurns((method,params)=>rpc.request(method,params),{threadId,turnCursor:occurrence.turnCursor,turnId,loadedTurnIds:windowTurnIds}).catch(()=>null),
     ]);
     if(stale())return;
@@ -3361,13 +3372,14 @@ export default function App(){
       const holdPaging=historyPage.threadId===threadId&&!historyPage.loading;
       if(holdPaging)setHistoryPage(current=>current.threadId===threadId&&!current.loading?{...current,loading:"find"}:current);
       try{
-        let found=[];
+        // The hit's turn's card: the steps its scan read (all of them when it reached the turn's end), or the whole turn from its page.
+        let found=[],scanned=[],scanEnded=false,foundTurns=null;
         if(historyPage.itemPaging){
           try{
             let cursor=null;
             for(let pageIndex=0;pageIndex<HISTORY_ITEM_SCAN_PAGES;pageIndex++){
               const page=await rpc.request("thread/items/list",{threadId,turnId:occurrence.turnId,cursor,limit:HISTORY_ITEM_PAGE_LIMIT,sortDirection:"asc"});
-              found=mergeHistoryMessages(found,historyFromItemEntries(page?.data||[],checkpointByTurn));
+              found=mergeHistoryMessages(found,historyFromItemEntries(page?.data||[],checkpointByTurn));scanned.push(...(page?.data||[]));scanEnded=!page?.nextCursor;
               if(found.some(message=>String(message.id)===itemId)||!page?.nextCursor)break;
               cursor=page.nextCursor;
             }
@@ -3375,10 +3387,12 @@ export default function App(){
         }
         if(!found.some(message=>String(message.id)===itemId)&&occurrence.turnCursor){
           const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
-          found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn));
-          setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[],{failuresOnly:Boolean(historyPage.itemHistory)}));
+          found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn));foundTurns=page?.data||[];
+          setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
         }
         if(stale())return;
+        if(scanned.length&&occurrence.turnId)setTurnActivity(prev=>prev.threadId===threadId?mergeTurnActivity(prev,cardRowsFromItemEntries(scanned,{activeTurnId,turnId:occurrence.turnId}),{mode:"older",complete:scanEnded}):prev);
+        if(foundTurns?.length)setTurnActivity(prev=>prev.threadId===threadId?mergeTurnActivity(prev,cardRowsFromTurns(foundTurns,{activeTurnId}),{mode:"replace",complete:true}):prev);
         if(found.length)await placeFoundHistory(threadId,occurrence,found,stale);
       }finally{
         if(holdPaging)setHistoryPage(current=>current.loading==="find"?{...current,loading:false}:current);
@@ -4593,6 +4607,20 @@ export default function App(){
     await saveAppSettings({modelOptionValues:modelOptionSettingsWith(settings,agentRuntime,provider,model,id,value)});
   });
   const activityOpenPanel=useLatestCallback(name=>name==="workspace"?openRightPanel("diff"):setPanel(name));
+  // The cards the conversation shows: the open thread's, less the turn the live card shows (it lists that turn's own steps). The
+  // newest turn's card is open until the person closes it, none while a sent message waits for its turn.
+  const shownTurnActivity=turnActivity.threadId&&turnActivity.threadId===activeThread?.id?turnActivity:null;
+  const liveCardTurnId=useMemo(()=>cardTurnId&&events.some(event=>event.fromItem&&event.turnId===String(cardTurnId))?String(cardTurnId):null,[cardTurnId,events]);
+  const shownTurnOrder=turnOrder.threadId===activeThread?.id?turnOrder.ids:null;
+  const newestTurnId=useMemo(()=>newestCardTurnId({messages,turnOrder:shownTurnOrder,turns:shownTurnActivity?.turns}),[messages,shownTurnOrder,shownTurnActivity]);
+  // An activity card's head stays where it was clicked as the card opens or closes: the view stops following the end and an older
+  // page's anchor stops holding it, the toggle runs, and once the card has its new size the view moves by however far the head did.
+  const activityCardToggleLayout=useLatestCallback((head,toggle)=>{
+    const node=conversationScrollRef.current,top=head.getBoundingClientRect().top;
+    followConversationEndRef.current=false;stopHistoryAnchorSettle();toggle();
+    if(!node)return null;
+    return ()=>{const moved=head.isConnected?head.getBoundingClientRect().top-top:0;if(moved)node.scrollTop+=moved;followConversationEndRef.current=captureThreadScrollPosition(node)?.atEnd===true};
+  });
   const sidebarNavigate=useLatestCallback(navigateSection);
   const sidebarOpenThread=useLatestCallback(openThread);
   const sidebarNewThread=useLatestCallback(newChat);
@@ -4803,12 +4831,12 @@ export default function App(){
           {!openingOverPage&&<div className={"conversation-scroll"+(openingShown?" opening-covered":"")} ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={turnOrder.threadId===activeThread?.id?turnOrder.ids:null}/>
-              <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)}/>
+              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={shownTurnOrder} turnActivity={shownTurnActivity} liveCardTurnId={liveCardTurnId} newestTurnId={newestTurnId} onToggleLayout={activityCardToggleLayout}/>
+              <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {shownApproval&&<div className="inline-approval"><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?`Queued in ${agentRuntimeLabel}`:item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button disabled={running&&!runtimeCapabilities.steering} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>runUserAction(()=>editQueued(item),"Could not edit queued follow-up")} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
-              {!messages.length&&!events.length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
+              {!messages.length&&!events.length&&!storeCardTurnIds(shownTurnActivity).length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>
                 <p>{projectlessMode?"This is a General chat with no attached project. Files and terminal commands stay inside a Trebell-managed scratch workspace.":<>{!runtimeKnown?"":managedInference?`${providerLabel} supplies inference to ${agentRuntimeLabel}. `:`${agentRuntimeLabel} is the active coding-agent harness. `}Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</>}</p>

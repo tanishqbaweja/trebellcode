@@ -257,13 +257,15 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .turn-outcome.tone-warn{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
 .conversation-column .turn-outcome.tone-err{border-color:var(--errb);background:var(--errt);color:var(--err)}
 .conversation-column .turn-outcome svg{flex:none}
-/* A turn that failed or was stopped before any reply ends with a row of its own (TurnOutcomeRow): the heading and the pill on
-   one line (two when narrow), then the error it ended with in full, wrapped however long it is, unbroken URLs included. */
+/* A turn that failed, was stopped or completed before any reply ends with a row of its own (TurnOutcomeRow): the heading and the
+   pill on one line (two when narrow), then the error it ended with in full, wrapped however long it is, unbroken URLs included
+   ("Finished without a reply." for a completed one). */
 .conversation-column .turn-outcome-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-height:28px}
 .conversation-column .turn-outcome-head .assistant-heading{padding-top:0}
 .conversation-column .turn-outcome-head .turn-outcome{margin-top:0}
 .conversation-column .turn-outcome-message{margin:3px 0 0;font-size:12.5px;line-height:1.6;color:var(--err);white-space:pre-wrap;overflow-wrap:anywhere}
 .conversation-column .turn-outcome-message.tone-warn{color:var(--warn)}
+.conversation-column .turn-outcome-message.tone-ok{color:var(--tx2)}
 .conversation-column .assistant-message-text::selection{background:color-mix(in srgb,var(--ac) 32%,transparent);color:var(--tx0)}
 /* Markdown in replies (ChatMarkdown): blocks keep the reply's rhythm, code reads as code, and wide tables and code scroll
    inside the reply instead of widening the conversation. */
@@ -306,12 +308,28 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .user-row.find-active .user-bubble,.conversation-column .history-assistant.find-active>div:last-child{outline:1px solid color-mix(in srgb,var(--ac) 70%,transparent);box-shadow:0 0 0 3px var(--acsoft);border-radius:12px}
 .conversation-column .inline-visualization-card{border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2)}
 
-/* Agent activity card (heading + timeline form one card) */
+/* Agent activity cards (TurnActivityCard): the live turn's (.agent-block) and each earlier turn's (.turn-card) read alike, one
+   card whose head names the activity and counts its steps, and opens or closes the steps below it. Closed, a card is its head.
+   An earlier turn's card off screen is not painted, and keeps the height it last had. */
 .conversation-column .agent-block{margin:0 0 22px 39px}
-.conversation-column .agent-block .agent-heading{margin:0;padding:8px 12px;gap:8px;border:1px solid var(--line);border-bottom:0;border-radius:var(--r-m) var(--r-m) 0 0;background:var(--bg2);color:var(--tx2);font-size:11.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
-.conversation-column .agent-block .agent-heading .agent-star{width:auto;height:auto;border:0;border-radius:0;background:none;color:var(--ac);box-shadow:none}
-.conversation-column .agent-block .agent-heading .agent-star svg{width:13px;height:13px}
-.conversation-column .agent-block .timeline{margin:0;padding:6px;gap:1px;border:1px solid var(--line);border-radius:0 0 var(--r-m) var(--r-m);background:var(--bg2)}
+.conversation-column .turn-card{margin:0 0 22px 39px;content-visibility:auto;contain-intrinsic-size:auto 36px}
+.conversation-column .activity-card{border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2);overflow:hidden}
+.conversation-column .activity-card-head{display:flex;align-items:center;gap:8px;width:100%;min-height:34px;margin:0;padding:8px 12px;border:0;border-radius:calc(var(--r-m) - 1px) calc(var(--r-m) - 1px) 0 0;background:none;color:var(--tx2);font:600 11.5px/1.3 var(--font);letter-spacing:.04em;text-transform:uppercase;text-align:left;cursor:pointer}
+.conversation-column .activity-card-head:hover{background:var(--bg3)}
+.conversation-column .activity-card-head:focus-visible{outline:2px solid var(--ac);outline-offset:-2px}
+/* The focus ring follows the card's corners: the top ones while the steps show, all four when the card is its head. */
+.conversation-column .activity-card.closed .activity-card-head{border-radius:calc(var(--r-m) - 1px)}
+.conversation-column .activity-card-head .agent-star{display:grid;place-items:center;flex:none;width:auto;height:auto;border:0;border-radius:0;background:none;color:var(--ac);box-shadow:none}
+.conversation-column .activity-card-head .agent-star svg{width:13px;height:13px}
+.conversation-column .activity-card-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conversation-column .activity-card-meta{display:flex;align-items:center;gap:8px;min-width:0;margin-left:auto}
+.conversation-column .activity-card-summary{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tx3);font:500 11px/1.3 var(--mono);letter-spacing:0;text-transform:none}
+/* The row's err pill with a pixel less above and below, so a closed card that has one stays a 36px line. */
+.conversation-column .activity-card-failed{flex:none;padding:1px 8px;border:1px solid var(--errb);border-radius:99px;background:var(--errt);color:var(--err);font:500 10.5px/1.3 var(--mono);font-style:normal;letter-spacing:0;text-transform:none;white-space:nowrap}
+.conversation-column .activity-card-chevron{flex:none;width:13px;height:13px;color:var(--tx3);transition:transform .2s}
+.conversation-column .activity-card.closed .activity-card-chevron{transform:rotate(-90deg)}
+@media (prefers-reduced-motion:reduce){.conversation-column .activity-card-chevron{transition:none}}
+.conversation-column .activity-card>.timeline{margin:0;padding:6px;gap:1px;border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}
 .conversation-column .timeline .tool-event{margin:0;border:0;border-radius:8px;background:transparent}
 .conversation-column .timeline .tool-event summary{min-height:30px;grid-template-columns:18px minmax(0,1fr) auto;gap:9px;padding:0 7px;border-radius:7px;color:var(--tx1)}
 .conversation-column .timeline .tool-event summary:hover{background:var(--bg3);color:var(--tx0)}
@@ -769,6 +787,6 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .chat-workspace .conversation-column:has(> .agent-block){display:flex;flex-direction:column}
 .chat-workspace .conversation-column:has(> .agent-block)>.conversation-history{display:contents}
 .chat-workspace .conversation-column:has(> .agent-block)>.agent-block{order:2}
-.chat-workspace .conversation-column:has(> .agent-block)>.conversation-history>.latest-turn-start~:is(.history-assistant,.reasoning-row){order:3}
+.chat-workspace .conversation-column:has(> .agent-block)>.conversation-history>.latest-turn-start~:is(.history-assistant,.reasoning-row,.turn-card){order:3}
 .chat-workspace .conversation-column:has(> .agent-block)>.conversation-history>.turn-outcome-row.latest-turn-end{order:3}
 .chat-workspace .conversation-column:has(> .agent-block)>.agent-block~*{order:4}
