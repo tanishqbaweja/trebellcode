@@ -15,13 +15,15 @@ const shotsDir=process.env.TREBELL_E2E_SHOTS_DIR||fileURLToPath(new URL("../../v
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
 // The harness end of the agent socket: it lists the threads, starts the turns it is sent, records every request, and pushes
-// what the test sends. respond(message) answers a request itself when it returns a result ({rpcError} answers with that error).
+// what the test sends. respond(message) answers a request itself when it returns a result ({rpcError} answers with that error), or a
+// promise of one (a slow answer).
 async function startHarness(threads,{respond=()=>undefined}={}){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set(),requests=[];
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
-  wss.on("connection",ws=>{sockets.add(ws);ws.on("close",()=>sockets.delete(ws));ws.on("message",raw=>{
+  wss.on("connection",ws=>{sockets.add(ws);ws.on("close",()=>sockets.delete(ws));ws.on("message",async raw=>{
     const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;requests.push({method:message.method,params:message.params});let result={};
-    const thread=threads.find(item=>item.id===message.params?.threadId)||threads[0],answer=respond(message);
+    const thread=threads.find(item=>item.id===message.params?.threadId)||threads[0];let answer=respond(message);
+    if(typeof answer?.then==="function")answer=await answer;
     if(answer!==undefined)result=answer;
     else if(message.method==="initialize")result={userAgent:"shell-fixes-fixture"};
     else if(message.method==="thread/list")result={data:threads.map(item=>({...item,turns:[]})),nextCursor:null};
@@ -31,7 +33,7 @@ async function startHarness(threads,{respond=()=>undefined}={}){
     else if(message.method==="thread/continuity/get")result={continuity:null};
     else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
     else if(/\/list$/.test(message.method))result={data:[],nextCursor:null};
-    ws.send(JSON.stringify(result?.rpcError?{id:message.id,error:result.rpcError}:{id:message.id,result}));
+    if(ws.readyState===ws.OPEN)ws.send(JSON.stringify(result?.rpcError?{id:message.id,error:result.rpcError}:{id:message.id,result}));
   })});
   const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {
@@ -41,13 +43,17 @@ async function startHarness(threads,{respond=()=>undefined}={}){
   };
 }
 
-async function openApp(page,{harness,threads,meta,project=null,runtime="codex",settings={},layout={sidebarWidth:258,rightPanelWidth:460,terminalHeight:330},cwd=process.cwd()}){
+async function openApp(page,{harness,threads,meta,project=null,runtime="codex",settings={},layout={sidebarWidth:258,rightPanelWidth:460,terminalHeight:330},cwd=process.cwd(),settingsFailure=()=>""}){
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   const appSettings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...(project?{activeProjectId:project.id}:{}),...settings};
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd,platform:process.platform,version:"shell-fixes-fixture",activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/state$/,route=>json(route,{settings:appSettings,projects:project?[project]:[],threadMeta:meta}));
-  // A saved setting is kept, as the server keeps it, so a reload reads it back.
-  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,Object.assign(appSettings,route.request().postDataJSON()||{})):route.fallback());
+  // A saved setting is kept, as the server keeps it, so a reload reads it back; settingsFailure() names an error to fail a save with.
+  await page.route(/\/api\/settings$/,route=>{
+    if(route.request().method()!=="POST")return route.fallback();
+    const failure=settingsFailure();if(failure)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:failure})});
+    return json(route,Object.assign(appSettings,route.request().postDataJSON()||{}));
+  });
   await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,{models:["fixture-model"],metadata:{provider:runtime,models:[{id:"fixture-model",name:"Fixture Model",provider:runtime,agent:"Fixture"}]}}));
   await page.route(/\/api\/thread-meta(?:\?|$)/,route=>{const id=new URL(route.request().url()).searchParams.get("threadId")||route.request().postDataJSON?.()?.threadId;return json(route,meta[id]||{projectless:!project,environmentId:null})});
   await page.route(/\/api\/checkpoints(?:\?|$)/,route=>json(route,route.request().method()==="GET"?{checkpoints:[]}:{supported:false}));
@@ -74,10 +80,11 @@ async function startRelay(home,runtime="native"){
 // own order (thread/section/move puts a thread before a thread in that section or at its end, and thread/list sorts a section by
 // section_position, top first, only with a section filter); a move changes no thread's updatedAt; the threads outside a section have no
 // order (a thread to go before is refused there); and a fresh home already has a Pinned section. thread/list gives one page of the
-// newest threads, and thread/search finds threads by name, newest first, with no place in their section.
-async function startCodexHarness(threads,sections,{failOrder=[]}={}){
+// newest threads, and thread/search finds threads by name, newest first, with no place in their section. listDelay() and moveDelay()
+// slow the plain listing and each move by that many milliseconds (a busy app-server).
+async function startCodexHarness(threads,sections,{failOrder=[],listDelay=()=>0,moveDelay=()=>0}={}){
   const order=new Map(sections.map(section=>[section.id,threads.filter(thread=>thread.section?.id===section.id).map(thread=>thread.id)]));
-  const fail=message=>({rpcError:{code:-32600,message}});
+  const fail=message=>({rpcError:{code:-32600,message}}),later=(ms,answer)=>ms>0?new Promise(resolve=>setTimeout(()=>resolve(answer()),ms)):answer();
   return Object.assign(await startHarness(threads,{respond:message=>{
     const params=message.params||{};
     if(message.method==="threadSection/list")return {data:sections,nextCursor:null};
@@ -87,13 +94,13 @@ async function startCodexHarness(threads,sections,{failOrder=[]}={}){
         if(failOrder.includes(params.sectionId))return fail("section order unavailable");
         return {data:(order.get(params.sectionId)||[]).map(id=>({...threads.find(thread=>thread.id===id),turns:[]})),nextCursor:null};
       }
-      return {data:[...threads].sort((a,b)=>b.updatedAt-a.updatedAt).slice(0,Number(params.limit)||100).map(thread=>({...thread,turns:[]})),nextCursor:null};
+      return later(listDelay(),()=>({data:[...threads].sort((a,b)=>b.updatedAt-a.updatedAt).slice(0,Number(params.limit)||100).map(thread=>({...thread,turns:[]})),nextCursor:null}));
     }
     if(message.method==="thread/search"){
       const term=String(params.searchTerm||"").toLowerCase();
       return {data:threads.filter(thread=>!thread.archived&&String(thread.name||"").toLowerCase().includes(term)).sort((a,b)=>b.updatedAt-a.updatedAt).map(thread=>({thread:{...thread,turns:[]},snippet:thread.name})),nextCursor:null};
     }
-    if(message.method==="thread/section/move"){
+    if(message.method==="thread/section/move")return later(moveDelay(),()=>{
       const thread=threads.find(item=>item.id===params.threadId),sectionId=params.sectionId??null,before=params.beforeThreadId??null;
       if(before&&!sectionId)return fail("beforeThreadId requires a non-null sectionId");
       const members=sectionId?(order.get(sectionId)||[]).filter(id=>id!==thread.id):[];
@@ -102,7 +109,7 @@ async function startCodexHarness(threads,sections,{failOrder=[]}={}){
       if(sectionId){members.splice(before?members.indexOf(before):members.length,0,thread.id);order.set(sectionId,members)}
       if((thread.section?.id??null)!==sectionId){thread.section=sectionId?sections.find(section=>section.id===sectionId):null;thread.sectionEnteredAt=sectionId?now():null}
       return {};
-    }
+    });
     return undefined;
   }}),{order});
 }
@@ -1101,6 +1108,55 @@ for(const [width,height] of [[1180,800],[1280,800],[1600,980]])test(`a group nam
       await page.evaluate(()=>{document.querySelector(".sidebar .thread-sections").scrollTop=0});
     }
   }finally{await harness.close()}
+});
+
+// Codex's built-in sections and one made in another Codex client, with three pinned threads (pinned alpha, beta, gamma: the order Codex
+// keeps), two outside a section and two in Research.
+const orderSections=[{id:"0198-pinned",name:"Pinned",appearance:null},{id:"0198-snoozed",name:"Snoozed",appearance:null},{id:"0198-settled",name:"Settled",appearance:null},{id:"0199-research",name:"Research",appearance:null}];
+function orderThreads(){
+  const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-900,turns:[]},section=id=>orderSections.find(item=>item.id===id);
+  return [
+    {...base,id:"pinned-alpha",name:"Pinned alpha",updatedAt:now()-300,section:section("0198-pinned")},
+    {...base,id:"pinned-beta",name:"Pinned beta",updatedAt:now()-200,section:section("0198-pinned")},
+    {...base,id:"pinned-gamma",name:"Pinned gamma",updatedAt:now()-100,section:section("0198-pinned")},
+    {...base,id:"active-one",name:"Codex active one",updatedAt:now()-10,section:null},
+    {...base,id:"active-two",name:"Codex active two",updatedAt:now()-20,section:null},
+    {...base,id:"research-one",name:"Research one",updatedAt:now()-60,section:section("0199-research")},
+    {...base,id:"research-two",name:"Research two",updatedAt:now()-40,section:section("0199-research")},
+  ];
+}
+const rowMenu=page=>async name=>{const row=threadRow(page,name);await row.hover();await row.locator(".thread-menu summary").click();await expect(row.locator(".thread-menu")).toHaveAttribute("open","");return row};
+const sectionMoves=harness=>()=>harness.requests.filter(request=>request.method==="thread/section/move").map(request=>request.params);
+// Bulk mode starts with the first thread selected; the rest are selected in the order given, and that first one is dropped.
+async function selectInOrder(page,names){
+  await page.locator(".sidebar-bulk-toggle").click();await expect(page.locator(".thread-select").first()).toBeVisible();
+  const initially=await page.locator(".thread-row").evaluateAll(rows=>rows.filter(row=>row.querySelector(".thread-select")?.checked).map(row=>row.querySelector(".thread-main").title));
+  for(const name of names)await threadRow(page,name).locator(".thread-select").check();
+  for(const name of initially)if(!names.includes(name))await threadRow(page,name).locator(".thread-select").uncheck();
+  await expect(page.locator(".bulk-bar span")).toHaveText(names.length+" selected");
+}
+
+test("on a relay harness Archive and then Undo puts a thread nobody moved back in its place, with its age",async({page})=>{
+  test.setTimeout(45_000);
+  const home=await mkdtemp(join(tmpdir(),"trebell-relay-archive-undo-"));const relay=await startRelay(home);
+  const base=Math.floor(Date.now()/1000)-3*3600,names=["Kept one","Kept two","Kept three","Kept four"];
+  const ids=names.map((name,index)=>relay.threadStore.importHistory({runtime:"native",cwd:process.cwd(),providerSessionId:"relay-archive-undo-"+index,model:"fixture-model",name,preview:name,createdAt:base-600,updatedAt:base-index*3600}).id);
+  const meta=Object.fromEntries(ids.map(id=>[id,{projectless:false,environmentId:null,runtime:"native"}])),menu=rowMenu(page);
+  const ages=()=>page.locator(".thread-row").evaluateAll(rows=>rows.map(row=>[row.querySelector(".thread-main").title,row.querySelector(".thread-main > div > span")?.textContent]));
+  try{
+    await openApp(page,{harness:relay,threads:[],meta,runtime:"native"});
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",names]]);
+    const before=await ages();
+    await (await menu("Kept three")).getByRole("button",{name:"Archive",exact:true}).click();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",["Kept one","Kept two","Kept four"]]]);
+    // Archiving is not activity: the thread keeps its last-update time.
+    expect(relay.threadStore.getMetadata(ids[2]).updatedAt).toBe(base-2*3600);
+    await page.getByTestId("thread-undo-toast").getByRole("button",{name:"Undo",exact:true}).click();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",names]]);
+    await expect.poll(ages).toEqual(before);
+    expect(relay.threadStore.getMetadata(ids[2]).updatedAt).toBe(base-2*3600);
+    await page.screenshot({path:join(shotsDir,"sidebar-relay-archive-undo-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+  }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
 });
 
 test("a narrow browser window collapses the sidebar instead of scrolling sideways, and gets it back when it widens",async({page,request})=>{

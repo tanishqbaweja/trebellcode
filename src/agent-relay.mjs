@@ -1520,8 +1520,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(thread.runtime!=="native")throw Object.assign(new Error(`${thread.runtime||runtime} does not expose Trebell-managed background processes`),{code:-32601});
       return await nativeBackgroundProcesses.clean(thread.id);
     }
-    if(method==="thread/archive"){await sessions.get(params.threadId)?.close().catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
-    if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false});if(!thread)throw new Error("Thread not found");emit("thread/unarchived",{threadId:params.threadId});return {thread}}
+    // Archiving is not activity: the thread keeps its last-update time, so one brought back (an undo) takes its old place by recent activity.
+    if(method==="thread/archive"){await sessions.get(params.threadId)?.close().catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
+    if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/unarchived",{threadId:params.threadId});return {thread}}
     if(method==="thread/fork"){
       const source=threadStore.get(params.threadId);if(!source)throw new Error("Thread not found");
       if(source.runtime==="native"){

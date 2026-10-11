@@ -441,10 +441,14 @@ test("on the agent relay a Pin, Snooze or Archive a person undoes gives a thread
     await rpc("thread/section/move",{threadId:three,sectionId:"Snoozed",beforeThreadId:null});await rpc("thread/section/move",{threadId:three,sectionId:null,beforeThreadId:one});
     assert.deepEqual(await active(),[two,four,three,one]);
     assert.deepEqual((await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"})).data.filter(thread=>thread.sectionPlaced).map(thread=>thread.id),[three]);
-    // Archive and unarchive keep the thread's section and place.
-    await rpc("thread/section/move",{threadId:one,sectionId:"Pinned",beforeThreadId:null});await rpc("thread/archive",{threadId:one});await rpc("thread/unarchive",{threadId:one});
+    // Archive and unarchive keep the thread's section and place, and its last-update time: archiving is not activity, so a thread
+    // brought back takes its old place by recent activity.
+    await rpc("thread/section/move",{threadId:one,sectionId:"Pinned",beforeThreadId:null});
+    const lastUpdate=threadStore.getMetadata(one).updatedAt;assert.ok(lastUpdate<Math.floor(Date.now()/1000)-60);
+    assert.equal((await rpc("thread/archive",{threadId:one})).thread.updatedAt,lastUpdate);
+    assert.equal((await rpc("thread/unarchive",{threadId:one})).thread.updatedAt,lastUpdate);
     const back=(await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"})).data.find(thread=>thread.id===one);
-    assert.deepEqual(back.section,{id:"Pinned",name:"Pinned"});assert.equal(back.sectionPlaced,false);
+    assert.deepEqual(back.section,{id:"Pinned",name:"Pinned"});assert.equal(back.sectionPlaced,false);assert.equal(back.updatedAt,lastUpdate);
     // A search finds a thread with the place in its section that thread/list gives it, beyond any page the sidebar listed.
     const found=(await rpc("thread/search",{searchTerm:"Undo",limit:50,sortKey:"recency_at",sortDirection:"desc",archived:false})).data.map(entry=>entry.thread);
     const ranks=Object.fromEntries((await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"})).data.map(thread=>[thread.id,[thread.sectionRank,thread.sectionPlaced]]));
