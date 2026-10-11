@@ -90,3 +90,32 @@ test("a send while the harness transport is down keeps the draft, never falls ba
     expect(directCalls).toBe(0);
   }finally{await harness.close()}
 });
+
+test("before the harness has ever connected the thread list says it is waiting for it, not that there are no threads",async({page})=>{
+  test.setTimeout(45_000);
+  const harness=await startHarness();harness.drop();
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"harness-reconnect-fixture"}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
+    await page.route(/\/api\/settings$/,route=>json(route,settings));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const sidebar=page.locator(".sidebar"),empty=sidebar.locator(".sidebar-empty");
+    await expect(page.getByTestId("composer-transport")).toContainText("Connecting to Codex");
+    await expect(empty).toHaveText("Loading threads…Waiting for Codex to connect.");await expect(empty).toHaveAttribute("role","status");
+    await expect(sidebar).not.toContainText("No threads yet");
+    await page.screenshot({animations:"disabled",path:auditDir+"sidebar-harness-never-connected-1280x800.png"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"sidebar-harness-never-connected-light-1280x800.png"});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // Once it connects and lists nothing, the list is empty indeed.
+    harness.accept();
+    await expect(empty).toHaveText("No threads yet.Start a task to create one.",{timeout:15_000});
+    await expect(empty).not.toHaveAttribute("role","status");
+  }finally{await harness.close()}
+});

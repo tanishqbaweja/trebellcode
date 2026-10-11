@@ -32,7 +32,7 @@ import { isListedThread, prependThread } from "./thread-list-state.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
 import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-message-search.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
-import { captureHistoryPrependAnchor, captureThreadScrollPosition, historyAnchorDisturbed, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
+import { THREAD_SCROLL_END_THRESHOLD, captureHistoryPrependAnchor, captureThreadScrollPosition, historyAnchorDisturbed, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
 import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
 import { latestTurnRowsStart } from "./conversation-order.js";
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
@@ -402,9 +402,10 @@ const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,roo
   return <div ref={ref} className={"conversation-virtual-chunk"+(mounted?" mounted":" placeholder")} data-virtual-chunk={chunk.key} style={mounted?undefined:{height:placeholderHeight}}>{mounted?chunk.messages.map(renderMessage):null}</div>;
 });
 
-const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,activeFindItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null}){
+const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,activeFindItemId=null,anchorItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null}){
   const historyRef=useRef(null);
-  const virtualized=shouldVirtualizeConversation(messages),chunks=useMemo(()=>virtualized?conversationVirtualChunks(messages):[],[messages,virtualized]),forcedChunk=virtualized?conversationChunkIndexForMessage(chunks,activeFindItemId):-1;
+  // The chunks holding the active find match and an older page's anchor row mount at once, so both can be scrolled to exactly.
+  const virtualized=shouldVirtualizeConversation(messages),chunks=useMemo(()=>virtualized?conversationVirtualChunks(messages):[],[messages,virtualized]),forcedChunk=virtualized?conversationChunkIndexForMessage(chunks,activeFindItemId):-1,anchorChunk=virtualized?conversationChunkIndexForMessage(chunks,anchorItemId):-1;
   // The rows of the live card's turn read below the card (shell.css orders the rows after this marker). A turn that started
   // without a user message (a goal continuing) leaves the previous turn's reply above the card.
   const latestStart=useMemo(()=>virtualized?-1:latestTurnRowsStart(messages,cardTurnId),[messages,cardTurnId,virtualized]);
@@ -428,7 +429,7 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
     return <React.Fragment key={message.id}><div className="history-page-control history-gap" data-testid="history-gap"><button type="button" disabled={historyBusy} onClick={onLoadGap}>{loadingGap?"Loading turns…":<>{historyGapLabel(historyGap.missing)}<span className="history-gap-load">· Load</span></>}</button></div>{row}</React.Fragment>;
   },[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations,historyGap,historyBusy,loadingGap,onLoadGap]);
   return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={historyBusy} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{virtualized
-    ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
+    ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
 // threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
@@ -740,9 +741,10 @@ export default function App(){
   const [bootstrap,setBootstrap]=useState({mock:false,wsUrl:null,cwd:"",platform:""});
   const [rpc,setRpc]=useState(null); const [rpcStatus,setRpcStatus]=useState("disconnected"); const transportConnectedRef=useRef(false);
   const [threads,setThreads]=useState([]); const [sections,setSections]=useState({}); const [threadMeta,setThreadMeta]=useState({});
-  // threadListError: the last thread-list load failed, so the sidebar says so instead of "No threads yet". threadTurnStates: the
-  // turn starts and ends this window saw per thread (the sidebar's running dot).
-  const [threadListError,setThreadListError]=useState(""); const [threadTurnStates,setThreadTurnStates]=useState({});
+  // threadListError: the last thread-list load failed, so the sidebar says so instead of "No threads yet". threadListLoaded: the
+  // harness has answered a thread-list load since it connected; until then an empty sidebar is waiting, not empty.
+  // threadTurnStates: the turn starts and ends this window saw per thread (the sidebar's running dot).
+  const [threadListError,setThreadListError]=useState(""); const [threadListLoaded,setThreadListLoaded]=useState(false); const [threadTurnStates,setThreadTurnStates]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   // The turn the live activity card shows: the running turn, and once it ends the last one (the card stays until the next turn).
   // Layout effects, so the rows are ordered for the new turn before it paints.
@@ -750,6 +752,8 @@ export default function App(){
   useLayoutEffect(()=>{setCardTurnId(activeTurnId||null)},[activeThread?.id]);
   useLayoutEffect(()=>{if(activeTurnId)setCardTurnId(activeTurnId)},[activeTurnId]);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]);
+  // The anchor row of an older page landing now: its virtual chunk mounts with the page, so the anchor is placed exactly.
+  const [historyAnchorItemId,setHistoryAnchorItemId]=useState(null);
   const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
   const assistantStreamBufferRef=useRef(null);
   // Per thread and turn: the mode this window sent the turn with, and how and how fast it ended (see turn-outcome.js).
@@ -832,7 +836,7 @@ export default function App(){
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
-  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
+  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyHoldRef=useRef(0);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
   modelsRef.current=models;modelRef.current=model;
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
@@ -941,8 +945,19 @@ export default function App(){
     followConversationEndRef.current=position.atEnd;
     return position;
   }
+  // The column height that holds the rows in view after an older page landed above a short newest page (--history-hold).
+  function setHistoryHold(node,value){
+    const next=Math.max(0,Math.ceil(Number(value)||0));if(!node||next===historyHoldRef.current)return;
+    historyHoldRef.current=next;if(next)node.style.setProperty("--history-hold",next+"px");else node.style.removeProperty("--history-hold");
+  }
   function conversationScrolled(){
     const node=conversationScrollRef.current;if(!node)return;
+    // Scrolling up uncovers less of the held space: only what still reaches the view's bottom edge stays held, and a hold the rows
+    // have outgrown holds nothing any more.
+    if(historyHoldRef.current){
+      setHistoryHold(node,historyHoldAfterScroll(node,historyHoldRef.current));
+      if(historyHoldRef.current&&(node.firstElementChild?.getBoundingClientRect().height||0)>historyHoldRef.current+0.5)setHistoryHold(node,0);
+    }
     const position=captureThreadScrollPosition(node);followConversationEndRef.current=position?.atEnd!==false;
     const threadId=activeThreadRef.current?.id;if(threadId&&position)rememberThreadScrollPosition(threadScrollPositionsRef.current,threadId,position);
   }
@@ -951,23 +966,33 @@ export default function App(){
     if(settle?.frame)cancelAnimationFrame(settle.frame);
   }
   // A send brings the newest message into view: the view follows the end again, and an older page's anchor stops holding it.
-  function followConversationEnd(){stopHistoryAnchorSettle();pendingHistoryPrependRef.current=null;followConversationEndRef.current=true}
+  function followConversationEnd(){stopHistoryAnchorSettle();pendingHistoryPrependRef.current=null;setHistoryAnchorItemId(null);setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true}
+  // Puts the anchor row back on its spot. A newest page that did not fill the view ends inside it, so the view cannot scroll far
+  // enough: the column then keeps the height the spot needs, the empty space that was below those rows.
+  function placeHistoryAnchor(node,anchor){
+    if(!restoreHistoryPrependAnchor(node,anchor))return false;
+    const short=historyAnchorShortfall(node,anchor);
+    if(short>0.5){const column=node.firstElementChild;setHistoryHold(node,(column?.getBoundingClientRect().height||0)+short);restoreHistoryPrependAnchor(node,anchor)}
+    return true;
+  }
   useLayoutEffect(()=>{
     const node=conversationScrollRef.current;const threadId=activeThread?.id;if(!node||!threadId)return;
     if(pendingHistoryPrependRef.current?.threadId===threadId){
-      // The older page is placed once: its first row keeps the spot the anchor row had. Rows above it can still change size for a
-      // few frames (content-visibility estimates, fonts), so each frame puts the anchor back until those settle or something else
-      // moves the view (the person scrolls, a send scrolls to the end). Later message or event changes do not re-pin it.
+      // The older page is placed once: its first row keeps the spot the anchor row had (its virtual chunk mounts with the page). Rows
+      // above it can still change size for a few frames (content-visibility estimates, fonts, chunks mounting), so each frame puts
+      // the anchor back until those settle or something else moves the view (the person scrolls, a send scrolls to the end). Later
+      // message or event changes do not re-pin it.
       const pending=pendingHistoryPrependRef.current;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();
-      if(!restoreHistoryPrependAnchor(node,pending.anchor))node.scrollTop=Math.max(0,pending.scrollTop+(node.scrollHeight-pending.scrollHeight));
+      if(!placeHistoryAnchor(node,pending.anchor))node.scrollTop=Math.max(0,pending.scrollTop+(node.scrollHeight-pending.scrollHeight));
       followConversationEndRef.current=false;
       const settle={threadId,anchor:pending.anchor,top:node.scrollTop,frame:0,attempts:0};historyAnchorSettleRef.current=settle;
+      const finish=()=>{historyAnchorSettleRef.current=null;const id=settle.anchor?.messageId??null;setHistoryAnchorItemId(current=>current===id?null:current)};
       const step=()=>{
         if(historyAnchorSettleRef.current!==settle)return;
         const live=conversationScrollRef.current;
-        if(!live||activeThreadRef.current?.id!==settle.threadId||!pending.anchor||historyAnchorDisturbed(live,settle.anchor,settle.top)){historyAnchorSettleRef.current=null;return}
-        restoreHistoryPrependAnchor(live,settle.anchor);settle.top=live.scrollTop;
-        if(++settle.attempts<12)settle.frame=requestAnimationFrame(step);else historyAnchorSettleRef.current=null;
+        if(!live||activeThreadRef.current?.id!==settle.threadId||!pending.anchor||historyAnchorDisturbed(live,settle.anchor,settle.top)){finish();return}
+        placeHistoryAnchor(live,settle.anchor);settle.top=live.scrollTop;
+        if(++settle.attempts<12)settle.frame=requestAnimationFrame(step);else finish();
       };
       settle.frame=requestAnimationFrame(step);
       return;
@@ -996,12 +1021,20 @@ export default function App(){
   },[threadFind.open]);
   // The find bar floats over the top of the conversation, so while it is open the conversation keeps that strip clear: a jump
   // lands below the bar (scroll-padding) and the first rows and controls start below it (padding). The strip follows the bar's
-  // height, which grows with the match snippet.
+  // height, which grows with the match snippet. Opening, growing or closing it never moves the rows being read: the scroll
+  // position moves with the padding. Only a view at the very top of the thread lets the opening strip push the first rows down.
   useLayoutEffect(()=>{
     const scroller=conversationScrollRef.current,bar=threadFindBarRef.current;
     if(!scroller)return;
-    if(!threadFind.open||!bar){scroller.style.removeProperty("--thread-find-reserve");return}
-    const measure=()=>{const reserve=Math.ceil(bar.getBoundingClientRect().bottom-scroller.getBoundingClientRect().top+12);scroller.style.setProperty("--thread-find-reserve",Math.max(0,reserve)+"px")};
+    const reserve=value=>{
+      const next=value==null?"":Math.max(0,value)+"px";if(scroller.style.getPropertyValue("--thread-find-reserve")===next)return;
+      const top=scroller.scrollTop,before=parseFloat(getComputedStyle(scroller).paddingTop)||0;
+      if(next)scroller.style.setProperty("--thread-find-reserve",next);else scroller.style.removeProperty("--thread-find-reserve");
+      const shift=(parseFloat(getComputedStyle(scroller).paddingTop)||0)-before;
+      if(shift&&(top>0||shift<0))scroller.scrollTop=top+shift;
+    };
+    if(!threadFind.open||!bar){reserve(null);return}
+    const measure=()=>reserve(Math.ceil(bar.getBoundingClientRect().bottom-scroller.getBoundingClientRect().top+12));
     measure();
     if(typeof ResizeObserver==="undefined")return;
     // The scroller's border box: its padding, which the reserve itself sets, must not re-trigger the measure.
@@ -1531,7 +1564,7 @@ export default function App(){
       const listed=await client.request("thread/list",threadListParams(100));
       const incoming=listed.data||[];rememberThreadCatalog(incoming);
       setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
-      setThreadListError("");setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
+      setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
       return mergeThreadCatalog([],incoming,{runtime:agentRuntime,provider});
     }catch(error){
       setThreadListError(error?.message||String(error)||"Unknown error");
@@ -1558,7 +1591,7 @@ export default function App(){
       if(cancelled)return;
       const incoming=result?.data||[];rememberThreadCatalog(incoming);
       setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
-      setThreadListError("");setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
+      setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
       setThreadHistory(current=>{
         const sameSource=current.runtimeSource===sourceKey,alreadyExhausted=sameSource&&current.runtimeExhausted,nextCursor=result?.nextCursor||null;
         return {...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:alreadyExhausted||!nextCursor,items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:alreadyExhausted?null:nextCursor,loading:false,error:""};
@@ -1836,6 +1869,8 @@ export default function App(){
     // A pending harness switch leaves this transport open (running turns and open approvals keep it) and only gates sends. The
     // transport reconnects once, when completeRuntimeSwitch applies the runtime the server confirmed; a failed switch never touches it.
     if(bootstrap.agentRuntime&&bootstrap.agentRuntime!==agentRuntime)return;
+    // A new transport has listed nothing yet: until it does, an empty sidebar waits for it rather than saying there are no threads.
+    setThreadListLoaded(false);
     // established: this transport connected at least once, so later attempts back off from 500ms to 5s.
     let disposed=false,retryTimer=null,client=null,established=false;
     const retry=attempt=>{
@@ -2763,7 +2798,7 @@ export default function App(){
       pendingRuntimeThreadRef.current=null;throw error;
     }
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -2832,7 +2867,7 @@ export default function App(){
     rememberConversationPosition();
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
     const resumedRunning=openedThread.status?.type==="active",resumedTurnId=resumedActiveTurnId(resumed);
-    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
@@ -2848,7 +2883,7 @@ export default function App(){
       if(resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
         const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
-        if(page.kind!=="items")setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,page.data||[]));setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",loading:false});
+        if(page.kind!=="items")setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,page.data||[]));setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",itemHistory:page.kind==="items",loading:false});
       }else{setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex")applyProviderInventory(harnessInventory(runtimeInventoryRef.current,resumed.thread.providerMeta))
     }
@@ -2921,10 +2956,15 @@ export default function App(){
         const earlier=itemPaging?historyFromItemEntries(data,checkpointByTurn):historyFromTurns(data,checkpointByTurn);
         const pageTurnIds=[...new Set(data.map(entry=>itemPaging?entry?.turnId:entry?.id).filter(Boolean).map(String))];
         // The view is measured when the page lands, not when it was asked for (the person may have scrolled or sent meanwhile); a
-        // view that follows the end keeps following it.
+        // view that follows the end keeps following it. A view whose rows all fit has no end to follow: its rows stay put.
         const node=conversationScrollRef.current;
-        if(earlier.length&&node&&!followConversationEndRef.current)pendingHistoryPrependRef.current={threadId,scrollHeight:node.scrollHeight,scrollTop:node.scrollTop,anchor:captureHistoryPrependAnchor(node)};
-        if(!itemPaging)setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
+        if(earlier.length&&node&&(!followConversationEndRef.current||node.scrollHeight-node.clientHeight<=THREAD_SCROLL_END_THRESHOLD)){
+          const anchor=captureHistoryPrependAnchor(node);
+          pendingHistoryPrependRef.current={threadId,scrollHeight:node.scrollHeight,scrollTop:node.scrollTop,anchor};setHistoryAnchorItemId(anchor?.messageId??null);
+        }
+        // A thread opened on item pages has no turn outcomes for the turns shown; turn pages loaded into it later (above a find hit,
+        // or after one joined the history) add none either, so no turn shows a pill the others cannot.
+        if(!itemPaging&&!historyPage.itemHistory)setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
         if(above){
           // Older turns join the detached hit's group; the gap below it is unchanged.
           if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
@@ -2939,7 +2979,7 @@ export default function App(){
           return;
         }
         if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
-        setHistoryPage({threadId,nextCursor,paginated:true,itemPaging,loading:false,detached:null});
+        setHistoryPage(current=>({threadId,nextCursor,paginated:true,itemPaging,itemHistory:current.threadId===threadId&&Boolean(current.itemHistory),loading:false,detached:null}));
       }catch(error){
         if(activeThreadRef.current?.id===threadId){setHistoryPage(current=>current.threadId===threadId?{...current,loading:false}:current);setEvents(prev=>[...prev,{id:"history-page-error-"+Date.now(),kind:"error",title:"Could not load earlier messages: "+(error.message||String(error)),status:"done",raw:{}}])}
       }
@@ -3003,7 +3043,7 @@ export default function App(){
         if(!found.some(message=>String(message.id)===itemId)&&occurrence.turnCursor){
           const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
           found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn));
-          setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
+          if(!historyPage.itemHistory)setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
         }
         if(stale())return;
         if(found.length)await placeFoundHistory(threadId,occurrence,found,stale);
@@ -4333,7 +4373,7 @@ export default function App(){
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
-    <ThreadSidebar runtimeStarting={!runtimeKnown} connection={sidebarConnection} threadMoves={threadMoves} section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab} onOpenPalette={sidebarOpenPalette} shortcuts={sidebarShortcuts} listError={threadListError} onRetryList={sidebarRetryThreads} runningIds={runningSidebarIds}/>
+    <ThreadSidebar runtimeStarting={!runtimeKnown} connection={sidebarConnection} threadMoves={threadMoves} section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab} onOpenPalette={sidebarOpenPalette} shortcuts={sidebarShortcuts} listError={threadListError} onRetryList={sidebarRetryThreads} runningIds={runningSidebarIds} listLoaded={Boolean(bootstrap.mock)||threadListLoaded}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" {...layoutSeparatorProps("sidebar")} onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>
@@ -4368,10 +4408,10 @@ export default function App(){
 
           <ThreadFindBar state={threadFind} inputRef={threadFindInputRef} barRef={threadFindBarRef} onQuery={query=>setThreadFind(current=>({...current,query,error:""}))} onPrevious={()=>stepThreadFind(-1)} onNext={()=>stepThreadFind(1)} onClose={closeThreadFind}/>
 
-          <div className={"conversation-scroll"+(threadFind.open?" find-open":"")} ref={conversationScrollRef} onScroll={conversationScrolled}>
+          <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId}/>
+              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {shownApproval&&<div className="inline-approval"><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}

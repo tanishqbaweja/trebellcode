@@ -26,6 +26,107 @@ function entries(turns){
   return turns.flatMap(value=>value.items.map(item=>({turnId:value.id,item})));
 }
 
+const frames=(page,count)=>page.evaluate(total=>new Promise(resolve=>{let left=total;const tick=()=>--left>0?requestAnimationFrame(tick):resolve();requestAnimationFrame(tick)}),count);
+
+// An OpenCode harness with one thread of turnCount short turns ("User history N", "Assistant history N"), served newest first in
+// item pages of pageSize, opened from the sidebar.
+async function openItemPagedThread(page,{turnCount,pageSize}){
+  const thread={id:"item-paged-history",name:"Item paged history",preview:"paging fixture",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-100,updatedAt:Date.now()/1000,turns:[]};
+  const newestFirst=Array.from({length:turnCount},(_,index)=>{const turnId="turn-"+String(index+1).padStart(3,"0");return [{turnId,item:{id:"user-"+turnId,type:"userMessage",text:"User history "+(index+1)}},{turnId,item:{id:"agent-"+turnId,type:"agentMessage",text:"Assistant history "+(index+1)}}]}).flat().reverse();
+  const requests=[],http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
+  http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",raw=>{
+      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;requests.push(message);let result={};
+      if(message.method==="initialize")result={userAgent:"item-paged-fixture"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread:{...thread,turns:[]},itemsBackwardsCursor:"latest",turnsBackwardsCursor:null};
+      else if(message.method==="thread/items/list"){
+        const cursor=message.params?.cursor,start=cursor==="latest"||!cursor?0:Number(String(cursor).replace("older-",""))||0;
+        result={data:newestFirst.slice(start,start+pageSize),nextCursor:start+pageSize<newestFirst.length?"older-"+(start+pageSize):null,backwardsCursor:"latest"};
+      }
+      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/attachment/list"||message.method==="thread/queue/list")result={data:[],nextCursor:null};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
+  const close=async()=>{for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))};
+  try{
+    const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"};
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${port}`,cwd:process.cwd(),platform:process.platform,version:"item-paged-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}}));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["opencode/test-model"],metadata:{provider:"opencode",models:[{id:"opencode/test-model",name:"Test model",provider:"opencode"}]}}));
+    await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,{projects:[]}));
+    await page.route(/\/api\/git\/info\?/,route=>json(route,{isGit:false,root:process.cwd(),branch:null,status:[],remotes:[],worktrees:[]}));
+    await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?route.request().postDataJSON()?.patch||{}:{}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,{supported:false}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await page.getByRole("button",{name:/Item paged history/}).click();
+    await expect(page.getByText("Assistant history "+turnCount,{exact:true})).toBeVisible({timeout:10_000});
+  }catch(error){await close();throw error}
+  return {requests,close};
+}
+
+// Where each message row in view sits, by id.
+const rowsInView=scroller=>scroller.evaluate(node=>{const root=node.getBoundingClientRect();return Object.fromEntries([...node.querySelectorAll("[data-message-id]")].filter(row=>{const rect=row.getBoundingClientRect();return rect.bottom>root.top&&rect.top<root.bottom}).map(row=>[row.dataset.messageId,Math.round(row.getBoundingClientRect().top-root.top)]))});
+
+test("an older page above a newest page that fits the view keeps the rows in view where they were",async({page})=>{
+  test.setTimeout(35_000);
+  const fixture=await openItemPagedThread(page,{turnCount:20,pageSize:4});
+  try{
+    const scroller=page.locator(".conversation-scroll");await frames(page,4);
+    expect(await scroller.evaluate(node=>node.scrollHeight<=node.clientHeight)).toBe(true);
+    const before=await rowsInView(scroller);expect(Object.keys(before)).toEqual(["user-turn-019","agent-turn-019","user-turn-020","agent-turn-020"]);
+    await page.getByRole("button",{name:"Load earlier messages",exact:true}).click();
+    await expect.poll(()=>fixture.requests.filter(item=>item.method==="thread/items/list").length).toBe(2);
+    await expect(page.locator('[data-message-id="user-turn-017"]')).toBeAttached();await frames(page,16);
+    // The empty space that was below them stays, so they keep their spots; the older page sits above, out of view.
+    const after=await rowsInView(scroller);
+    for(const [id,offset] of Object.entries(before))expect(Math.abs(after[id]-offset),id).toBeLessThanOrEqual(1);
+    await page.screenshot({animations:"disabled",path:auditDir+"item-paged-short-page-loaded-1280x800.png"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"item-paged-short-page-loaded-light-1280x800.png"});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // Scrolling up gives the held space back: at the end again, the newest row ends where a thread's end always does.
+    const held=await scroller.evaluate(node=>node.scrollHeight);
+    await scroller.evaluate(node=>{node.scrollTop=0});await frames(page,4);await expect(page.getByRole("button",{name:"Load earlier messages",exact:true})).toBeInViewport();
+    await scroller.evaluate(node=>{node.scrollTop=node.scrollHeight});await frames(page,4);
+    expect(await scroller.evaluate(node=>node.scrollHeight)).toBeLessThan(held-100);
+    const gapBelow=await scroller.evaluate(node=>node.getBoundingClientRect().bottom-node.querySelector('[data-message-id="agent-turn-020"]').getBoundingClientRect().bottom);
+    expect(gapBelow).toBeLessThan(120);
+  }finally{await fixture.close()}
+});
+
+test("a scroll right after an older page lands is kept, also when that page makes the list virtual",async({page})=>{
+  test.setTimeout(35_000);
+  const fixture=await openItemPagedThread(page,{turnCount:200,pageSize:100});
+  try{
+    const scroller=page.locator(".conversation-scroll");await scroller.evaluate(node=>{node.scrollTop=0});await frames(page,3);
+    const before=await rowsInView(scroller);expect(before["user-turn-151"]).toBeGreaterThan(0);
+    // The moment the page lands (the list turns into virtual chunks), scroll 400px down once, as a wheel notch would.
+    await page.evaluate(()=>{
+      const node=document.querySelector(".conversation-scroll"),history=node.querySelector(".conversation-history");window.__landing=null;
+      const observer=new MutationObserver(()=>{
+        if(!history.querySelector(".conversation-virtual-chunk"))return;observer.disconnect();
+        window.__landing={anchorMounted:Boolean(node.querySelector('[data-message-id="user-turn-151"]'))};node.scrollTop+=400;
+      });
+      observer.observe(history,{childList:true,subtree:true});
+    });
+    await page.getByRole("button",{name:"Load earlier messages",exact:true}).click();
+    await expect.poll(()=>page.evaluate(()=>window.__landing)).toBeTruthy();await frames(page,20);await page.waitForTimeout(300);
+    // The page placed its anchor row exactly (its chunk mounted with it), and the scroll after it was not undone.
+    expect((await page.evaluate(()=>window.__landing)).anchorMounted).toBe(true);
+    const offset=await scroller.evaluate(node=>{const row=node.querySelector('[data-message-id="user-turn-151"]');return row?row.getBoundingClientRect().top-node.getBoundingClientRect().top:null});
+    expect(Math.abs(offset-(before["user-turn-151"]-400))).toBeLessThan(6);
+    await page.screenshot({animations:"disabled",path:auditDir+"item-paged-scroll-after-landing-1280x800.png"});
+  }finally{await fixture.close()}
+});
+
 test("Codex thread history opens from bounded item pages and loads older items on demand",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"history-page-fixture",name:"Paginated history fixture",preview:"Bounded Codex history",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};

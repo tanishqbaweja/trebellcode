@@ -14,6 +14,38 @@ import { TrebellStateStore } from "../../src/trebell-state.mjs";
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 mkdirSync(auditDir,{recursive:true});
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+const frames=(page,count)=>page.evaluate(total=>new Promise(resolve=>{let left=total;const tick=()=>--left>0?requestAnimationFrame(tick):resolve();requestAnimationFrame(tick)}),count);
+
+// The Native relay with one imported thread of turnCount turns (each "Routine Native history message N." unless userText says
+// otherwise, answered "Native historical answer N."), opened from the sidebar.
+async function openNativeHistory(page,{turnCount,userText=index=>`Routine Native history message ${index}.`}){
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-history-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);
+  const turns=Array.from({length:turnCount},(_,index)=>({id:`find-turn-${index}`,startedAt:1_700_000_000+index,completedAt:1_700_000_001+index,durationMs:1000,error:null,status:"completed",items:[{id:`find-user-${index}`,type:"userMessage",clientId:null,content:[{type:"text",text:userText(index)}]},{id:`find-answer-${index}`,type:"agentMessage",text:`Native historical answer ${index}.`}]}));
+  const thread=threadStore.importHistory({runtime:"native",cwd:repo,providerSessionId:"native-history-session",model:"gpt-5.6",name:"Native long history",preview:"Long paginated Native history",turns,providerMeta:{runtimeInstanceId:"native-default",modelProvider:"agentrouter",permissionProfile:"supervised",projectless:false,environmentId:null}});
+  const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn:async request=>({id:"unused-history-provider",provider:request.provider,model:request.model,text:"",toolCalls:[],finishReason:"stop",usage:{}}),version:"visual-fixture"});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  const close=async()=>{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})};
+  try{
+    const project={id:"native-history-project",name:"Native History Project",path:repo,environmentId:null,effectiveSettings:{}};let uiMeta={projectless:false,environmentId:null,cwd:repo,runtime:"native",runtimeInstanceId:"native-default"};
+    const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:{[thread.id]:uiMeta}}));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["gpt-5.6"],metadata:{provider:"agentrouter",models:[{id:"gpt-5.6",name:"GPT-5.6",provider:"agentrouter",agent:"Trebell Native"}]}}));
+    await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{project}:{projects:[project]}));
+    await page.route(/\/api\/worktree\/ensure$/,route=>json(route,{ok:true}));
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:false,cwd:repo,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]}));
+    await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST")uiMeta={...uiMeta,...(route.request().postDataJSON()?.patch||{})};await json(route,uiMeta)});
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,{checkpoints:[]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native long history"]')});await expect(row).toBeVisible({timeout:10_000});await row.locator(".thread-main").click();
+    await expect(page.getByText(`Native historical answer ${turnCount-1}.`,{exact:true})).toBeVisible({timeout:10_000});
+  }catch(error){await close();throw error}
+  return {close};
+}
 
 test("Trebell Native finds an old conversation match that is not initially mounted",async({page})=>{
   test.setTimeout(45_000);
@@ -101,4 +133,57 @@ test("Trebell Native global search finds conversation text outside the loaded si
     await page.setViewportSize({width:1280,height:800});await expect(hiddenRow).toBeVisible();metrics=await page.locator(".app-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"native-global-thread-search-1280x800.png",fullPage:true});
     expect(hidden.id).toBeTruthy();
   }finally{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+test("opening, using and closing thread find never moves the rows being read",async({page})=>{
+  test.setTimeout(45_000);
+  const needle="window-heron-marker-318";
+  const fixture=await openNativeHistory(page,{turnCount:65,userText:index=>index===40?`Turn ${index} talks about ${needle} today.`:`Routine Native history message ${index}.`});
+  try{
+    const scroller=page.locator(".conversation-scroll"),find=page.getByTestId("thread-find-bar"),input=page.getByTestId("thread-find-input");
+    // A row well inside the view, and where it sits.
+    const readRow=()=>scroller.evaluate(node=>{const root=node.getBoundingClientRect();const row=[...node.querySelectorAll("[data-message-id]")].find(item=>{const rect=item.getBoundingClientRect();return rect.top>root.top+150&&rect.bottom<root.bottom});return row?{id:row.dataset.messageId,offset:row.getBoundingClientRect().top-root.top}:null});
+    const offsetOf=id=>scroller.evaluate((node,messageId)=>{const row=node.querySelector(`[data-message-id="${messageId}"]`);return row?row.getBoundingClientRect().top-node.getBoundingClientRect().top:null},id);
+    const clearOfFind=async target=>{const bar=await find.boundingBox(),box=await target.boundingBox();return box.y>=bar.y+bar.height||box.y+box.height<=bar.y||box.x>=bar.x+bar.width||box.x+box.width<=bar.x};
+    await scroller.evaluate(node=>{node.scrollTop=Math.round(node.scrollHeight*0.45)});await frames(page,4);
+    let read=await readRow();expect(read).toBeTruthy();
+    await page.keyboard.press("Control+f");await expect(find).toBeVisible();await frames(page,4);
+    expect(Math.abs(await offsetOf(read.id)-read.offset)).toBeLessThanOrEqual(1);
+    // The match and its snippet show; the jump lands clear of the taller bar.
+    await input.fill(needle);await expect(find.locator(".thread-find-count")).toHaveText("1 / 1",{timeout:10_000});await expect(find.locator(".thread-find-snippet")).toBeVisible();
+    const match=page.locator(".user-row").filter({hasText:needle});await expect(match).toHaveClass(/find-active/);await frames(page,8);
+    expect(await clearOfFind(match.locator(".user-bubble"))).toBe(true);
+    read=await readRow();expect(read).toBeTruthy();
+    await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-mid-thread-1280x800.png"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-mid-thread-light-1280x800.png"});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    await input.press("Escape");await expect(find).toBeHidden();await frames(page,4);
+    expect(Math.abs(await offsetOf(read.id)-read.offset)).toBeLessThanOrEqual(1);
+    await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-closed-mid-thread-1280x800.png"});
+    // At the very top of the thread the opening strip pushes the first rows down instead, so nothing starts under the bar.
+    await scroller.evaluate(node=>{node.scrollTop=0});await frames(page,4);
+    await page.keyboard.press("Control+f");await expect(find).toBeVisible();await frames(page,4);
+    const loadEarlier=page.getByRole("button",{name:"Load earlier messages"});await expect(loadEarlier).toBeVisible();
+    expect(await clearOfFind(loadEarlier)).toBe(true);
+    await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-top-1280x800.png"});
+  }finally{await fixture.close()}
+});
+
+test("turns loaded above a find hit in an item-paged thread carry no outcome pills the rest of it lacks",async({page})=>{
+  test.setTimeout(45_000);
+  const needle="middle-otter-marker-552";
+  const fixture=await openNativeHistory(page,{turnCount:200,userText:index=>index===5?`Turn ${index} mentions ${needle} here.`:`Routine Native history message ${index}.`});
+  try{
+    // Item pages carry no turn outcomes, so the window shows none.
+    const pills=page.locator(".conversation-history [data-testid=turn-outcome]");await expect(pills).toHaveCount(0);
+    await page.keyboard.press("Control+f");const find=page.getByTestId("thread-find-bar");await page.getByTestId("thread-find-input").fill(needle);
+    await expect(find.locator(".thread-find-count")).toHaveText("1 / 1",{timeout:10_000});await expect(page.locator('[data-message-id="find-user-5"]')).toHaveClass(/find-active/);
+    await expect(page.getByTestId("history-gap")).toBeVisible();
+    // The turn pages loaded above the hit add none either: no turn shows a pill the others cannot.
+    await page.locator(".conversation-scroll").evaluate(node=>{node.scrollTop=0});await frames(page,4);
+    await page.getByRole("button",{name:"Load earlier messages"}).click();
+    await expect(page.locator('[data-message-id="find-user-0"]')).toBeAttached({timeout:10_000});await frames(page,8);
+    await expect(page.locator('[data-message-id="find-answer-4"]')).toBeVisible();
+    await expect(pills).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-loaded-above-hit-1280x800.png"});
+  }finally{await fixture.close()}
 });

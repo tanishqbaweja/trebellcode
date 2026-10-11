@@ -62,11 +62,26 @@ export function restoreHistoryPrependAnchor(node,anchor){
 
 // Something other than the anchor moved the view since its last correction: the person scrolled, or a send scrolled to the
 // end. Rows growing above the anchor leave scrollTop alone, and the browser's own scroll anchoring moves scrollTop but keeps
-// the anchor row in place; neither counts. An anchor row not mounted yet (a virtualized chunk still a placeholder) tells
-// nothing either way, so it does not count; restoring it is a no-op until it mounts.
+// the anchor row in place; neither counts. The page mounts its anchor row's chunk as it lands, so a moved view whose anchor
+// row is gone was scrolled away from it (a chunk unmounts only far from the view): that counts, so it is never undone.
 export function historyAnchorDisturbed(node,anchor,expectedTop,tolerance=1){
   if(!node)return true;
   if(Math.abs((Number(node.scrollTop)||0)-(Number(expectedTop)||0))<=tolerance)return false;
   const offset=historyAnchorOffset(node,anchor);
-  return offset!=null&&Math.abs(offset-(Number(anchor?.offset)||0))>tolerance;
+  return offset==null||Math.abs(offset-(Number(anchor?.offset)||0))>tolerance;
+}
+
+// How far the anchor row still sits below its spot after a restore: the view could not scroll far enough because the rows
+// below it end inside the view (a newest page that did not fill it). 0 when it is in place or not mounted.
+export function historyAnchorShortfall(node,anchor){
+  const offset=historyAnchorOffset(node,anchor);
+  return offset==null?0:Math.max(0,offset-(Number(anchor?.offset)||0));
+}
+
+// The column height a hold keeps after the view scrolled. Whatever lies below the view's bottom edge is not needed to keep the
+// view where it is, so the hold gives that much back: scrolling up shrinks it, scrolling back down never grows it.
+export function historyHoldAfterScroll(node,hold){
+  const value=Math.max(0,Number(hold)||0);if(!node||!value)return 0;
+  const below=(Number(node.scrollHeight)||0)-(Number(node.scrollTop)||0)-(Number(node.clientHeight)||0);
+  return below>0.5?Math.max(0,Math.ceil(value-below)):value;
 }

@@ -213,12 +213,13 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .chat-workspace .thread-find-snippet mark{background:color-mix(in srgb,var(--ac) 30%,transparent);color:var(--tx0)}
 
 /* ============ Conversation ============ */
-.chat-workspace .conversation-scroll{top:var(--top);bottom:132px;padding:34px 28px 72px;scrollbar-width:auto;scrollbar-color:auto}
+/* --thread-find-reserve: while find is open the strip under its floating bar stays clear (App measures the bar and sets it, moving
+   the scroll position with it so the rows in view stay put): the first rows start below it and a jump to a match lands below it.
+   --history-hold: when an older page lands above a newest page too short to fill the view, the column keeps the height that holds
+   the rows in view where they were; rows arriving below fill it, and App lowers it as the view scrolls up. */
+.chat-workspace .conversation-scroll{top:var(--top);bottom:132px;padding:max(34px,var(--thread-find-reserve,0px)) 28px 72px;scroll-padding-top:var(--thread-find-reserve,0px);scrollbar-width:auto;scrollbar-color:auto}
 .main-frame.terminal-open .chat-workspace .conversation-scroll{bottom:calc(var(--terminal-height,330px) + 128px)}
-/* While find is open the strip under its floating bar stays clear (App measures the bar into --thread-find-reserve): the first
-   rows start below it and a jump to a match lands below it. */
-.chat-workspace .conversation-scroll.find-open{padding-top:max(34px,var(--thread-find-reserve,34px));scroll-padding-top:var(--thread-find-reserve,0px)}
-.chat-workspace .conversation-column{width:min(100%,764px)}
+.chat-workspace .conversation-column{width:min(100%,764px);min-height:var(--history-hold,0px)}
 .conversation-column .conversation-history{gap:0}
 
 .conversation-column .user-row{margin:0 0 22px}

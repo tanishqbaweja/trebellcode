@@ -144,7 +144,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
   selectedIds,setSelectedIds,onBulkAction,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="codex",threadMeta={},onCollapse,
   rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={},onOpenProviderSettings,runtimeStarting=false,connection={tone:"ok",label:""},threadMoves=null,
-  onOpenPalette,shortcuts={},listError="",onRetryList,runningIds=null
+  onOpenPalette,shortcuts={},listError="",onRetryList,runningIds=null,listLoaded=true
 }){
   const searchRef=useRef(null);
   const sectionsRef=useRef(null);
@@ -196,6 +196,10 @@ const ThreadSidebar=memo(function ThreadSidebar({
   // A failed load is not an empty list: with nothing listed the sidebar says it could not load them, and over an older list it says
   // the refresh failed. Either way Retry asks again.
   const listFailure=listError&&!query?<div className="sidebar-list-error" role="alert"><strong>{threads.length?"Could not refresh threads":"Could not load threads"}</strong><span>{listError}</span>{onRetryList&&<button type="button" className="tb-btn tb-btn--sm" onClick={retryList} disabled={retryingList}>{retryingList?"Retrying…":"Retry"}</button>}</div>:null;
+  // Until the harness has answered a list load, an empty sidebar is waiting for it, not empty: it says what it waits for, as the
+  // harness card below does, or that the harness could not connect.
+  const connectFailed=!runtimeStarting&&connection.tone==="err",waitingFor=runtimeStarting?"":connectFailed?runtimeLabel+" did not connect.":connection.tone==="warn"?"Waiting for "+runtimeLabel+" to connect.":"";
+  const emptyText=query?"No matching threads.":listLoaded?<>No threads yet.<br/>Start a task to create one.</>:<>{connectFailed?"Could not load threads.":"Loading threads…"}{waitingFor&&<><br/>{waitingFor}</>}</>;
 
   return <aside className="sidebar">
     <div className="sidebar-titlebar">
@@ -237,7 +241,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
         <h4>{name}<span>{items.length}</span></h4>
         {virtualized?chunks.map((chunk,index)=><SidebarVirtualChunk key={chunk.key} chunk={chunk} rootRef={sectionsRef} forceMount={index===activeChunk} initialMount={name===firstGroupName&&index===0} activeThreadId={activeThreadId} renderRow={renderRow}/>):items.map(renderRow)}
       </section>})}
-      {!threads.length&&!listFailure&&<div className="sidebar-empty">{query?"No matching threads.":<>No threads yet.<br/>Start a task to create one.</>}</div>}
+      {!threads.length&&!listFailure&&<div className="sidebar-empty" role={query||listLoaded?undefined:"status"}>{emptyText}</div>}
     </div>
 
     <div className="sidebar-footer">
