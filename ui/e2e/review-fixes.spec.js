@@ -114,3 +114,74 @@ test("an opened thought keeps one thought per line without blank lines in lists 
     await page.screenshot({path:join(shotsDir,"review-reasoning-breaks-light-1280x1000.png"),animations:"disabled"});
   }finally{await harness.close()}
 });
+
+test("both Context Inspector notices stay readable while the panel scrolls",async({page})=>{
+  test.setTimeout(45_000);
+  const project={id:"review-context-project",name:"Review Context Project",path:process.cwd(),environmentId:null};
+  const thread={id:"review-context-notices",name:"Context notices fixture",preview:"Context notices",cwd:project.path,model:"fixture-model",status:{type:"idle"},createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
+  const files=["src/auth/session.js","src/auth/token.js","src/auth/cookies.js","src/server.js","tests/auth-refresh.test.js","tests/session.test.js"];
+  const packet={id:"ctx-review",root:project.path,task:"Fix refresh token session bug",generatedAt:Date.now(),tokenEstimate:640,maxTokens:7000,injection:"Repository evidence",untrustedInjection:"Repository evidence",
+    budget:{mode:"focused",maxTokens:2800,maxFiles:12,reason:"short/focused task"},stats:{filesIndexed:138,reparsed:3,reused:135,graphEdges:412},
+    items:files.map((path,index)=>({path,score:90-index*12,reasons:["contains task terms: refresh, token","structurally central in repository graph"],symbols:[{name:"refreshSession"+index,kind:"function",line:8+index}],tokenEstimate:100}))};
+  // The first turn gets a packet, the second skips injection under context pressure, and the third fails to refresh: the
+  // window then keeps the pressure notice and adds the failure notice above it.
+  const responses=[
+    {status:200,body:packet},
+    {status:200,body:{id:"ctx-pressure",root:project.path,generatedAt:Date.now(),tokenEstimate:0,maxTokens:0,items:[],injection:"",skipped:true,budget:{mode:"exhausted",pressure:"exhausted",maxTokens:0,maxFiles:0,skip:true,remainingTokens:7000,reserveTokens:8000,reason:"context window only has the response safety reserve left"},stats:{filesIndexed:0,skippedByPressure:true}}},
+    {status:500,body:{error:"Deliberate context refresh failure"}},
+  ];
+  let contextCalls=0;
+  await page.route(/\/api\/context\/packet$/,route=>{const response=responses[Math.min(contextCalls++,responses.length-1)];return route.fulfill({status:response.status,contentType:"application/json",body:JSON.stringify(response.body)})});
+  const harness=await startHarness(thread);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,thread,project});
+    for(const [index,text] of ["Fix refresh token session bug","Continue without crowding the context window","Continue even if the context refresh fails"].entries()){
+      await page.getByTestId("composer").fill(text);await page.getByTestId("send").click();
+      await expect.poll(()=>harness.started.length).toBe(index+1);
+      harness.push("turn/completed",{turn:{id:"turn-"+(index+1),status:"completed"}});
+      await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
+    }
+    expect(contextCalls).toBe(3);
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel");
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Context",exact:true}).click();
+    const inspector=panel.locator(".context-inspector");
+    const warning=inspector.getByRole("alert").filter({hasText:"Latest context refresh failed."}),pressure=inspector.getByRole("status").filter({hasText:"Latest turn preserved response space."});
+    await expect(warning).toContainText("Deliberate context refresh failure");
+    await expect(pressure).toContainText("7,000 context tokens remained");
+    await expect(inspector).toContainText("6 selected files");
+    // Scrolled down to the selected files, each notice is still on screen and on top at its own centre: neither covers the other,
+    // and no scrolled row shows between them.
+    const body=panel.locator(".context-panel-body");
+    for(const scroll of ["middle","end"]){
+      const scrollTop=await body.evaluate((node,scroll)=>{node.scrollTop=scroll==="end"?node.scrollHeight:Math.round((node.scrollHeight-node.clientHeight)/2);return node.scrollTop},scroll);
+      expect(scrollTop,scroll).toBeGreaterThan(150);await settle(page);
+      const hits=await inspector.evaluate(node=>{
+        const view=node.closest(".context-panel-body").getBoundingClientRect();
+        return [".context-inspector-warning",".context-inspector-pressure"].map(selector=>{
+          const notice=node.querySelector(selector),box=notice.getBoundingClientRect(),hit=document.elementFromPoint(box.left+box.width/2,box.top+box.height/2);
+          return {selector,top:Math.round(box.top-view.top),bottom:Math.round(box.bottom-view.top),onTop:notice.contains(hit)};
+        });
+      });
+      expect.soft(hits.map(hit=>hit.onTop),scroll+" "+JSON.stringify(hits)).toEqual([true,true]);
+      expect.soft(hits[0].top,scroll+" "+JSON.stringify(hits)).toBeGreaterThanOrEqual(0);
+      expect.soft(hits[0].bottom,scroll+" "+JSON.stringify(hits)).toBeLessThanOrEqual(hits[1].top);
+      const gap=await inspector.evaluate(node=>{
+        const first=node.querySelector(".context-inspector-warning").getBoundingClientRect(),second=node.querySelector(".context-inspector-pressure").getBoundingClientRect();
+        const hit=document.elementFromPoint(first.left+first.width/2,(first.bottom+second.top)/2);
+        return {height:second.top-first.bottom,underRow:Boolean(hit?.closest(".context-inspector-hero,.context-explorer,.context-inspector-list,.context-inspector-payload,.context-inspector-note"))};
+      });
+      expect.soft(gap.underRow,scroll+" "+JSON.stringify(gap)).toBe(false);
+    }
+    await expect(warning).toBeInViewport();await expect(pressure).toBeInViewport();
+    await page.screenshot({path:join(shotsDir,"review-context-notices-scrolled-dark-1280x800.png"),animations:"disabled"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await settle(page);
+    await page.screenshot({path:join(shotsDir,"review-context-notices-scrolled-light-1280x800.png"),animations:"disabled"});
+    await body.evaluate(node=>{node.scrollTop=0});await settle(page);
+    await page.screenshot({path:join(shotsDir,"review-context-notices-top-light-1280x800.png"),animations:"disabled"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await settle(page);
+    await page.screenshot({path:join(shotsDir,"review-context-notices-top-dark-1280x800.png"),animations:"disabled"});
+    const bounds=await body.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
+  }finally{await harness.close()}
+});
