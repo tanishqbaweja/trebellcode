@@ -14,7 +14,7 @@ const frames=(page,count)=>page.evaluate(total=>new Promise(resolve=>{let left=t
 // A scroll position once the view stops moving: for a few frames after a scroll, rows coming into view take their real height
 // (content-visibility estimates) and the browser moves the position to keep the rows being read in place.
 const settledScrollTop=scroller=>scroller.evaluate(node=>new Promise(resolve=>{let last="",still=0,left=240;const tick=()=>{const now=node.scrollTop+":"+node.scrollHeight;still=now===last?still+1:0;last=now;if(still>=12||--left<=0)resolve(node.scrollTop);else requestAnimationFrame(tick)};requestAnimationFrame(tick)}));
-const HARNESSES=[["opencode","OpenCode","sdk","opencode/fixture-fast"],["cursor","Cursor","acp","cursor-fixture"]];
+const HARNESSES=[["opencode","OpenCode","sdk","opencode/fixture-fast"],["cursor","Cursor","acp","cursor-fixture"],["grok","Grok Build","acp","grok-fixture"]];
 const CATALOGS=Object.fromEntries(HARNESSES.map(([id,name,,model])=>[id,{agentRuntime:id,ready:true,models:[model],defaultModel:model,metadata:{models:[{id:model,name:name+" Fixture",agent:id}]},error:null}]));
 const FAILURE="OpenCode could not start this session: the harness exited before it answered (code 1).";
 const PROJECT_NAME="Opening fixture";
@@ -33,8 +33,10 @@ function savedThread(id,name,{runtime="opencode",turns=1,minutesAgo=10,projectle
   return {thread,meta};
 }
 
-// One socket URL for both harnesses, as the agent relay serves them: each request is answered by the harness active when it arrives.
-// hold(threadId) holds that thread's next thread/resume until the function it returns is called; fail[threadId] fails its resume.
+// One socket URL for all harnesses, as the agent relay serves them: each request is answered by the harness active when it arrives.
+// hold(threadId) holds that thread's next thread/resume until the function it returns is called; fail[threadId] fails its resume,
+// resumeDelay[threadId] answers it that many milliseconds late, and turnsCursor[threadId] has it page its history: the resume
+// answers with a turns cursor, whose page (the thread's turns) answers once server.onTurnsList, when set, is done.
 // holdList() holds the next thread/list the same way (a harness starting again lists late), and drop() closes the sockets, as a
 // server restart does. The GUI server around it is faked with routes: the app starts in PROJECT_NAME (the repository folder), and
 // holdSelect(), when set, holds the answer of a harness switch (the runtime changes at once); server.selectFail fails one.
@@ -43,7 +45,7 @@ function savedThread(id,name,{runtime="opencode",turns=1,minutesAgo=10,projectle
 // (server.worktreeHeld says when one is held), emit() sends a notification and serverRequest() asks the app something, as the
 // harness does; server.modes are the collaboration modes it lists.
 async function startHarness(page,{runtime="opencode",saved=[],extraProjects=[]}={}){
-  const server={runtime,requests:[],holds:new Map(),fail:{},selects:0,selectHold:null,selectFail:null,listHold:null,turns:0,projectDelay:0,onProjectPost:null,worktreeHold:null,worktreeHeld:false,modes:[],nextRequestId:9000,git:false};
+  const server={runtime,requests:[],holds:new Map(),fail:{},resumeDelay:{},turnsCursor:{},onTurnsList:null,selects:0,selectHold:null,selectFail:null,listHold:null,turns:0,projectDelay:0,onProjectPost:null,worktreeHold:null,worktreeHeld:false,modes:[],nextRequestId:9000,git:false};
   const threads=saved.map(item=>item.thread),threadMeta=Object.fromEntries(saved.map(item=>[item.thread.id,item.meta]));
   const project={id:"opening-project",name:PROJECT_NAME,path:process.cwd(),environmentId:null,effectiveSettings:{}},projects=[project,...extraProjects];
   const http=createServer(),wss=new WebSocketServer({noServer:true});
@@ -55,9 +57,14 @@ async function startHarness(page,{runtime="opencode",saved=[],extraProjects=[]}=
     if(message.method==="thread/resume"){
       const held=params.excludeTurns!==false?server.holds.get(params.threadId):null;
       if(held){server.holds.delete(params.threadId);await held}
+      if(params.excludeTurns!==false&&server.resumeDelay[params.threadId])await new Promise(resolve=>setTimeout(resolve,server.resumeDelay[params.threadId]));
       const thread=threads.find(item=>item.id===params.threadId);
       if(server.fail[params.threadId]||!thread)return send({id:message.id,error:{code:-32000,message:server.fail[params.threadId]||"Unknown fixture thread"}});
-      return send({id:message.id,result:{thread:{...thread,turns:params.excludeTurns===false?thread.turns:[]},itemsBackwardsCursor:null,turnsBackwardsCursor:null}});
+      return send({id:message.id,result:{thread:{...thread,turns:params.excludeTurns===false?thread.turns:[]},itemsBackwardsCursor:null,turnsBackwardsCursor:params.excludeTurns!==false&&server.turnsCursor[params.threadId]?"turns-cursor":null}});
+    }
+    if(message.method==="thread/turns/list"&&params.cursor==="turns-cursor"){
+      if(server.onTurnsList)await server.onTurnsList();
+      return send({id:message.id,result:{data:[...(threads.find(item=>item.id===params.threadId)?.turns||[])].reverse(),nextCursor:null}});
     }
     if(message.method==="turn/start"){
       const threadId=params.threadId,turnId=active+"-live-turn-"+(++server.turns);
@@ -82,7 +89,7 @@ async function startHarness(page,{runtime="opencode",saved=[],extraProjects=[]}=
   }));
   const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
   const wsUrl="ws://127.0.0.1:"+port+"/api/agent/ws";
-  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue",activeProjectId:project.id,keybindingRules:[{command:"threadPin",key:"Ctrl+Alt+P",when:"threadOpen && !modalOpen"},{command:"threadNext",key:"Ctrl+Alt+J",when:"threadOpen && !modalOpen"}]});
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue",activeProjectId:project.id,keybindingRules:[{command:"threadPin",key:"Ctrl+Alt+P",when:"threadOpen && !modalOpen"},{command:"threadNext",key:"Ctrl+Alt+J",when:"threadOpen && !modalOpen"},{command:"threadStop",key:"Ctrl+Alt+S",when:"threadOpen && running && !modalOpen"}]});
   const bootstrap=()=>({mock:false,provider:"openai",providerReady:true,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd:process.cwd(),platform:process.platform,version:"thread-opening-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const snapshot=()=>{
     const statuses=HARNESSES.map(([kind,name])=>({id:kind+"-default",kind,name,available:true,installed:true,authenticated:true,version:"1.0.0-fixture"}));
@@ -167,8 +174,9 @@ async function rowAction(page,saved,name){
   await target.getByRole("button",{name,exact:true}).click();
 }
 
-// Samples every frame until stopFrames: the header title, the selected row, and whether the opening state, the new-task hero and
-// each thread's messages are on screen, with the time since the first click after startFrames.
+// Samples every frame until stopFrames: the header title, the selected row, whether the opening state, the new-task hero and each
+// thread's messages are on screen, and the composer's own controls (composer: the context in use, "unknown" without a value, then
+// Compact and the mode picker when shown, "picker dimmed" when it is disabled), with the time since the first click after startFrames.
 async function startFrames(page){
   await page.evaluate(()=>{
     const shown=node=>Boolean(node&&node.checkVisibility({visibilityProperty:true}));
@@ -176,7 +184,9 @@ async function startFrames(page){
     document.addEventListener("click",()=>{if(window.__clickAt==null)window.__clickAt=performance.now()},{capture:true,once:true});
     const sample=()=>{
       const threads=[...new Set([...document.querySelectorAll(".conversation-column [data-message-id]")].filter(shown).map(node=>String(node.dataset.messageId).split("-")[0]))];
-      window.__frames.push({at:performance.now(),title:document.querySelector(".workspace-header .thread-title-button strong")?.textContent||"",row:document.querySelector(".thread-row.active")?.dataset.threadId||null,opening:shown(document.querySelector("[data-testid=thread-opening]")),hero:shown(document.querySelector(".conversation-column .welcome")),threads});
+      const meter=document.querySelector(".composer-wrap .composer-context .context-meter"),picker=document.querySelector("[data-testid=collaboration-mode-picker]");
+      const composer=[meter?meter.getAttribute("aria-valuenow")||"unknown":"none",[...document.querySelectorAll(".composer-context .context-compact-btn")].some(node=>node.textContent==="Compact")?"Compact":"",picker?(picker.disabled||getComputedStyle(picker).opacity!=="1"?"picker dimmed":"picker"):""].filter(Boolean).join(" ");
+      window.__frames.push({at:performance.now(),title:document.querySelector(".workspace-header .thread-title-button strong")?.textContent||"",row:document.querySelector(".thread-row.active")?.dataset.threadId||null,opening:shown(document.querySelector("[data-testid=thread-opening]")),hero:shown(document.querySelector(".conversation-column .welcome")),threads,composer});
       if(window.__framesRun===run)requestAnimationFrame(sample);
     };
     requestAnimationFrame(sample);
@@ -362,12 +372,16 @@ test("while a thread opens, the thread shortcuts follow the thread the header na
   const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
   try{
     await start(page,harness);await openRow(page,ALPHA);
+    // Release checklist has a turn running, which its Stop shortcut would stop.
+    harness.emit({method:"turn/started",params:{threadId:ALPHA.thread.id,turn:{id:"alpha-live",status:"inProgress",startedAt:Date.now()/1000}}});
+    await expect(page.locator(".workspace-header .stop-control")).toBeVisible();
     const moves=()=>harness.server.requests.filter(item=>item.method==="thread/section/move");
     const releaseBeta=harness.hold(BETA.thread.id),releaseGamma=harness.hold(GAMMA.thread.id);
     await row(page,BETA).locator(".thread-main").click();await expect.poll(()=>harness.resumes(BETA.thread.id)).toBe(1);
     await expect(headerTitle(page)).toHaveText("Payment retries");
-    // Pin waits for the thread being opened instead of pinning the one the view is leaving.
-    await page.keyboard.press("Control+Alt+P");await page.waitForTimeout(300);expect(moves()).toHaveLength(0);
+    // Pin and Stop wait for the thread being opened instead of acting on the one the view is leaving.
+    await page.keyboard.press("Control+Alt+P");await page.keyboard.press("Control+Alt+S");await page.waitForTimeout(300);
+    expect(moves()).toHaveLength(0);expect(harness.sent("turn/interrupt")).toEqual([]);
     // Next steps from the selected thread, not from the one still underneath.
     await page.keyboard.press("Control+Alt+J");await expect.poll(()=>harness.resumes(GAMMA.thread.id)).toBe(1);
     expect(harness.resumes(BETA.thread.id)).toBe(1);
@@ -379,7 +393,7 @@ test("while a thread opens, the thread shortcuts follow the thread the header na
   }finally{await harness.close()}
 });
 
-test("the thread already open shows no opening state, and a quick open never flashes one, the new-task screen or an empty view",async({page})=>{
+test("the thread already open shows no opening state, and a quick open never flashes one, the new-task screen, an empty view or an empty composer",async({page})=>{
   test.setTimeout(60_000);
   const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
   try{
@@ -387,6 +401,11 @@ test("the thread already open shows no opening state, and a quick open never fla
     // Quick opens: from the new-task screen, then from a thread to a project thread and to a General chat thread. The project opens
     // in a few frames, as a real server's does: that used to show the empty new-task screen between two project threads.
     harness.server.projectDelay=40;
+    // Each thread has its own context in use. A quick open shows the context of the view before the click until the thread shows,
+    // and Compact all along from one thread to another, instead of blanking them for a few frames.
+    const usage=input=>({total:{totalTokens:input*2,inputTokens:input,outputTokens:input},last:{totalTokens:input,inputTokens:input,outputTokens:0},modelContextWindow:200000});
+    for(const [saved,input] of [[ALPHA,100000],[BETA,60000],[DELTA,20000]])harness.emit({method:"thread/tokenUsage/updated",params:{threadId:saved.thread.id,tokenUsage:usage(input)}});
+    const context=saved=>saved?{[ALPHA.thread.id]:"50",[BETA.thread.id]:"30",[DELTA.thread.id]:"10"}[saved.thread.id]+" Compact":"unknown";
     const quick=[];
     for(const [from,saved] of [[null,ALPHA],[ALPHA,BETA],[BETA,DELTA],[DELTA,ALPHA]]){
       await startFrames(page);
@@ -400,6 +419,8 @@ test("the thread already open shows no opening state, and a quick open never fla
       const before=from?[from.thread.id.split("-")[0]]:[],after=[saved.thread.id.split("-")[0]];
       const between=seen.filter(frame=>!(from?JSON.stringify(frame.threads)===JSON.stringify(before):frame.hero)&&JSON.stringify(frame.threads)!==JSON.stringify(after));
       expect(between,"frames between the two views: "+JSON.stringify(seen)).toEqual([]);
+      const steps=seen.map(frame=>frame.composer).filter((value,index,all)=>value!==all[index-1]);
+      expect(steps.slice(steps[0]===context(from)?1:0),"the composer's frames: "+JSON.stringify(seen)).toEqual([context(saved)]);
     }
     console.log("quick opens (ms from the click to the thread's first frame):",JSON.stringify(quick));
     // The thread already open, clicked again while its resume takes long: nothing about the view changes.
@@ -649,6 +670,28 @@ test("a thread of the harness that runs, clicked while another harness's thread 
   }finally{await harness.close()}
 });
 
+test("a harness picked in Settings while a thread's own harness switch is on its way ends that thread's open",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,CURSOR]});
+  const composer=page.getByTestId("composer");
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    const releaseSelect=harness.holdSelect();
+    await row(page,CURSOR).locator(".thread-main").click();await expect.poll(()=>harness.server.selects).toBe(1);
+    // While Cursor starts, the person picks Grok Build in Settings instead. Its switch lands last, so the Cursor thread never opens.
+    await page.keyboard.press("Control+Comma");await expect(page.getByRole("heading",{name:"Settings",exact:true})).toBeVisible();
+    await page.getByRole("button",{name:/Agents & models/}).click();await expect(page.getByRole("heading",{name:"Agent harness"})).toBeVisible();
+    const grok=page.locator(".agent-runtime-option").filter({hasText:"Grok Build"}).locator("button").first();await expect(grok).toBeEnabled({timeout:10_000});await grok.click();
+    releaseSelect();
+    await expect.poll(()=>harness.server.selects,{timeout:10_000}).toBe(2);await expect(page.locator(".sidebar-provider strong")).toContainText("Grok",{timeout:15_000});
+    await expect.poll(()=>harness.server.requests.filter(item=>item.runtime==="grok"&&item.method==="thread/list").length,{timeout:15_000}).toBeGreaterThan(0);
+    // Back in the threads nothing is opening any more, and the composer takes a message for Grok.
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    await expect(opening(page)).toHaveCount(0);await expect(composer).toBeEnabled();await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");
+    await expect(headerTitle(page)).toHaveText("New Trebell task");expect(harness.resumes(CURSOR.thread.id)).toBe(0);
+  }finally{await harness.close()}
+});
+
 test("a turn that ends or starts while its thread opens shows as it is once the thread shows, and the next message starts a turn",async({page})=>{
   test.setTimeout(60_000);
   const RUNNING=savedThread("running-thread","Long migration",{minutesAgo:2});RUNNING.thread.status={type:"active",turnId:"running-thread-live"};
@@ -682,6 +725,54 @@ test("a turn that ends or starts while its thread opens shows as it is once the 
     await expect(answer(page,BETA)).toBeVisible({timeout:15_000});await expect(composer).toBeEnabled();
     await expect(stop).toBeVisible();await expect(row(page,BETA).locator(".thread-running-dot")).toBeVisible();
     await expect(page.locator(".tool-event").filter({hasText:"npm test"})).toBeVisible();
+  }finally{await harness.close()}
+});
+
+test("a thread whose open a later one or a new task replaces shows its turn in its row from then, not once its own open ends",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
+  const dot=row(page,BETA).locator(".thread-running-dot");let releaseProject=()=>{};
+  // Payment retries' resume answers, and while its project opens (an answer that comes late) its harness starts a turn in it.
+  const turnWhileProjectOpens=turnId=>{let posted=false;harness.server.onProjectPost=async()=>{harness.server.onProjectPost=null;posted=true;harness.emit({method:"turn/started",params:{threadId:BETA.thread.id,turn:{id:turnId,status:"inProgress",startedAt:Date.now()/1000}}});await new Promise(resolve=>{releaseProject=resolve})};return ()=>posted};
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    let posted=turnWhileProjectOpens("beta-first");
+    await row(page,BETA).locator(".thread-main").click();await expect.poll(posted).toBe(true);
+    // A thread that is slow to open replaces it: Payment retries is a thread in the background now, so its row says its turn runs.
+    const releaseGamma=harness.hold(GAMMA.thread.id);
+    await row(page,GAMMA).locator(".thread-main").click();await expect(headerTitle(page)).toHaveText("Flaky import");
+    await expect(dot).toBeVisible();
+    harness.emit({method:"turn/completed",params:{threadId:BETA.thread.id,turn:{id:"beta-first",status:"completed",completedAt:Date.now()/1000}}});await expect(dot).toHaveCount(0);
+    releaseGamma();releaseProject();
+    await expect(answer(page,GAMMA)).toBeVisible();await expect(page.getByTestId("composer")).toBeEnabled();await expect(answer(page,BETA)).toHaveCount(0);
+    // A new task replaces it the same way.
+    posted=turnWhileProjectOpens("beta-second");
+    await row(page,BETA).locator(".thread-main").click();await expect.poll(posted).toBe(true);
+    await page.getByRole("button",{name:"New thread",exact:true}).click();await expect(hero(page)).toBeVisible();
+    await expect(dot).toBeVisible();
+    releaseProject();await page.waitForTimeout(300);await expect(hero(page)).toBeVisible();await expect(dot).toBeVisible();
+  }finally{releaseProject();await harness.close()}
+});
+
+test("a turn that ends while the first page of an opened thread's history is read shows ended once the thread shows",async({page})=>{
+  test.setTimeout(60_000);
+  const PAGED=savedThread("paged-thread","Long migration",{minutesAgo:2});PAGED.thread.status={type:"active",turnId:"paged-thread-live"};
+  const harness=await startHarness(page,{saved:[ALPHA,PAGED]});harness.server.turnsCursor[PAGED.thread.id]=true;
+  const composer=page.getByTestId("composer"),stop=page.locator(".workspace-header .stop-control");
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    // Its harness pages history: the resume answers with the turn running, and the turn ends while the app reads the first page.
+    harness.server.onTurnsList=async()=>{
+      harness.server.onTurnsList=null;PAGED.thread.status={type:"idle"};
+      harness.emit({method:"turn/completed",params:{threadId:PAGED.thread.id,turn:{id:"paged-thread-live",status:"completed",completedAt:Date.now()/1000}}});
+      await new Promise(resolve=>setTimeout(resolve,150));
+    };
+    await row(page,PAGED).locator(".thread-main").click();
+    await expect(answer(page,PAGED)).toBeVisible({timeout:15_000});await expect(composer).toBeEnabled();
+    await expect(stop).toHaveCount(0);await expect(row(page,PAGED).locator(".thread-running-dot")).toHaveCount(0);
+    await composer.fill("Follow-up once the migration is done.");await page.getByTestId("send").click();
+    await expect(page.getByText("Fixture reply in "+PAGED.thread.id,{exact:true})).toBeVisible({timeout:15_000});
+    expect(harness.sent("turn/start")).toEqual([PAGED.thread.id]);
   }finally{await harness.close()}
 });
 
@@ -787,7 +878,7 @@ test("a thread clicked again while it opens shows when that open answers instead
   }finally{await harness.close()}
 });
 
-test("while a thread opens, the composer's mode picker waits for it instead of changing the thread being left",async({page})=>{
+test("while a thread opens, the composer's mode picker waits for it instead of changing the thread being left, and a quick open leaves it as it is",async({page})=>{
   test.setTimeout(60_000);
   const LEFT=savedThread("left-thread","Cursor refactor",{runtime:"cursor",minutesAgo:4,projectless:true});
   const NEXT=savedThread("next-thread","Cursor tests",{runtime:"cursor",minutesAgo:8,projectless:true});
@@ -797,14 +888,25 @@ test("while a thread opens, the composer's mode picker waits for it instead of c
   try{
     await page.goto("/");await expect(row(page,LEFT)).toBeVisible({timeout:15_000});await expect(page.getByTestId("composer")).toBeEnabled({timeout:15_000});
     await openRow(page,LEFT);await expect(picker).toHaveValue("default");await expect(picker).toBeEnabled();
-    const release=harness.hold(NEXT.thread.id);
-    await row(page,NEXT).locator(".thread-main").click();await expect(headerTitle(page)).toHaveText("Cursor tests");
-    // The header names the thread being opened: the picker, whose mode is the open thread's, waits for it.
-    await expect(picker).toBeDisabled();await expect(opening(page)).toBeVisible();await expect(picker).toBeDisabled();
+    // A quick open, whose resume answers in a few frames: frame by frame the picker stays as it is.
+    harness.server.resumeDelay[NEXT.thread.id]=80;
+    await startFrames(page);await openRow(page,NEXT);await frames(page,4);
+    const quick=await stopFrames(page);
+    expect(quick.filter(frame=>frame.opening),"no opening state in a quick open: "+JSON.stringify(quick)).toEqual([]);
+    expect(quick.filter(frame=>frame.composer.includes("dimmed")),"frames with the picker dimmed: "+JSON.stringify(quick)).toEqual([]);
+    // A slow one, back to Cursor refactor. A pick in the moment after the click, before the opening state shows, changes no thread.
+    const release=harness.hold(LEFT.thread.id);
+    await page.evaluate(async id=>{
+      document.querySelector(`.thread-row[data-thread-id="${id}"] .thread-main`).click();await new Promise(resolve=>setTimeout(resolve,0));
+      const select=document.querySelector("[data-testid=collaboration-mode-picker]");select.value="plan";select.dispatchEvent(new Event("change",{bubbles:true}));
+    },LEFT.thread.id);
+    await expect(headerTitle(page)).toHaveText("Cursor refactor");await expect(picker).toHaveValue("default");
+    // Once the opening state shows, the picker, whose mode is the open thread's, waits for the thread.
+    await expect(opening(page)).toBeVisible();await expect(picker).toBeDisabled();
     release();
-    await expect(answer(page,NEXT)).toBeVisible();await expect(picker).toBeEnabled();
+    await expect(answer(page,LEFT)).toBeVisible();await expect(picker).toBeEnabled();
     // Opened, the thread takes the mode picked for it; the thread left never had its mode changed.
-    await picker.selectOption("plan");await expect.poll(updates).toEqual([NEXT.thread.id]);
+    await picker.selectOption("plan");await expect.poll(updates).toEqual([LEFT.thread.id]);
   }finally{await harness.close()}
 });
 
