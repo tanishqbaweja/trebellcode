@@ -1,6 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionError, actionErrorUnlessNamed, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusEntry, gitStatusPath, splitPath } from "../ui/src/inspector-labels.js";
+import { actionError, actionErrorUnlessNamed, asSentence, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusEntry, gitStatusPath, splitPath } from "../ui/src/inspector-labels.js";
+
+test("a reason followed by another sentence ends as a sentence",()=>{
+  assert.equal(asSentence("Deliberate context refresh failure"),"Deliberate context refresh failure.");
+  for(const done of ["Index failed.","Index failed!","Why did it fail?","Still indexing…","It said \"stop.\"","(see the log.)"])assert.equal(asSentence(done),done);
+  assert.equal(asSentence("  Request timed out (30s)  "),"Request timed out (30s).");
+  assert.equal(asSentence("Context engine unavailable:"),"Context engine unavailable.");
+  assert.equal(asSentence("Retry later; "),"Retry later.");
+  assert.equal(asSentence(""),"");
+  assert.equal(asSentence(null),"");
+});
 
 test("sibling names keep the part where they differ apart from the start they share",()=>{
   // Folders named <repo>-<branch>, and their branches, differ only at the end. A short end is kept whole.

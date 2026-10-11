@@ -1,5 +1,6 @@
 import React,{useEffect,useState} from "react";
 import { api } from "../api.js";
+import { asSentence } from "../inspector-labels.js";
 
 function deliveryLabel(packet){
   if(packet?.delivery==="additionalContext")return "Codex additional context";
@@ -189,7 +190,7 @@ export default function ContextInspector({packet=null,error=null,pressure=null,r
   return <div className="context-inspector">
     {/* A pressure skip followed by a failed refresh shows both notices; they pin as one stack, so neither covers the other. */}
     {(error?.message||pressure?.skipped)&&<div className="context-inspector-notices">
-      {error?.message&&<div className="context-inspector-warning" role="alert"><strong>Latest context refresh failed.</strong><span>{error.message} The last successful packet is shown below.</span></div>}
+      {error?.message&&<div className="context-inspector-warning" role="alert"><strong>Latest context refresh failed.</strong><span>{asSentence(error.message)} The last successful packet is shown below.</span></div>}
       {pressure?.skipped&&<div className="context-inspector-pressure" role="status"><strong>Latest turn preserved response space.</strong><span>Trebell skipped repository injection because only about {Number(pressure.remainingTokens||0).toLocaleString()} context tokens remained. About {Number(pressure.reserveTokens||0).toLocaleString()} were reserved for the response and harness overhead. The last successful packet is shown below.</span></div>}
     </div>}
     <section className="context-inspector-hero">

@@ -1510,7 +1510,8 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     expect(turnContexts[1]).toBeNull();
     await expect(page.locator(".tool-event.kind-error").filter({hasText:"Trebell repository context unavailable"})).toContainText("Deliberate context refresh failure");
     await expect(inspector.getByRole("alert")).toContainText("Latest context refresh failed");
-    await expect(inspector.getByRole("alert")).toContainText("The last successful packet is shown below");
+    // The reason has no closing stop of its own; it still ends as a sentence before the next one.
+    await expect(inspector.getByRole("alert").locator("span")).toHaveText("Deliberate context refresh failure. The last successful packet is shown below.");
     await expect(inspector).toContainText("src/auth/session.js");
     // The panel was left scrolled down at the explorer; the failure notice is still on screen, pinned to the top of the panel.
     await expect(inspector.getByRole("alert")).toBeInViewport();
@@ -1534,6 +1535,67 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     const pressureMetrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(pressureMetrics.scroll).toBeLessThanOrEqual(pressureMetrics.client+1);
     await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-pressure-skip-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("a failed context refresh reads as its own sentence before the note on the last packet",async({page})=>{
+  test.setTimeout(40_000);
+  const project={id:"context-refresh-project",name:"Context Refresh Project",path:process.cwd(),environmentId:null};
+  const thread={id:"context-refresh-thread",name:"Context refresh fixture",preview:"Context refresh failure",cwd:project.path,createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const packet={id:"ctx-refresh-fixture",root:project.path,task:"Fix refresh token session bug",generatedAt:Date.now(),tokenEstimate:120,maxTokens:7000,injection:"Repository evidence",untrustedInjection:"Repository evidence",
+    budget:{mode:"focused",maxTokens:2800,maxFiles:12,reason:"short/focused task"},stats:{filesIndexed:12,reparsed:1,reused:11,graphEdges:20},
+    items:[{path:"src/auth/session.js",score:82,reasons:["defines task-related symbol: RefreshSession"],symbols:[{name:"RefreshSession",kind:"class",line:8}],tokenEstimate:120}]};
+  // The first turn gets a packet; each later one fails to refresh, for the reason given here in turn.
+  const reasons=[null,"Deliberate context refresh failure","Context index is busy.","Context index is still building…"];
+  let sent=0,turns=0,contextCalls=0,meta={projectless:false,environmentId:null};
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method!=="turn/start")return false;
+    turns++;ws.send(JSON.stringify({id:message.id,result:{turn:{id:"context-refresh-turn-"+turns,status:"inProgress"}}}));return true;
+  }});
+  try{
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+    const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"context-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[project],threadMeta:{[thread.id]:meta}}));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[project],project}));
+    await page.route(/\/api\/worktree\/ensure$/,route=>json(route,{ok:true}));
+    // The thread keeps what the app stores on it (its context packet, the last refresh failure), as the server would.
+    await page.route(/\/api\/thread-meta$/,route=>{if(route.request().method()==="POST")meta={...meta,...(route.request().postDataJSON().patch||{})};return json(route,meta)});
+    await page.route(/\/api\/context\/packet$/,route=>{const reason=reasons[Math.min(contextCalls++,reasons.length-1)];return reason?json(route,{error:reason},500):json(route,packet)});
+    await page.route(/\/api\/git\/info\?/,route=>json(route,{isGit:true,root:project.path,branch:"main",branches:["main"],upstream:"origin/main",status:[],remotes:[],worktrees:[{path:project.path,branch:"main"}]}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,route.request().method()==="GET"?{checkpoints:[]}:{supported:false}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Context refresh fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel");
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Context",exact:true}).click();
+    const inspector=panel.locator(".context-inspector"),notice=inspector.getByRole("alert").filter({hasText:"Latest context refresh failed."});
+    const send=async text=>{
+      await page.getByTestId("composer").fill(text);await page.getByTestId("send").click();sent++;
+      await expect.poll(()=>turns).toBe(sent);
+      harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"context-refresh-turn-"+turns,status:"completed"}}});
+      await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
+    };
+    await send("Fix refresh token session bug");
+    await expect(inspector).toContainText("src/auth/session.js");
+    await expect(notice).toHaveCount(0);
+    // A reason with no stop of its own still ends as a sentence before the next one; a reason with its own stop keeps it, alone.
+    await send("Continue even if the context refresh fails");
+    await expect(notice.locator("span")).toHaveText("Deliberate context refresh failure. The last successful packet is shown below.");
+    await expect(inspector).toContainText("src/auth/session.js");
+    await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-refresh-reason-dark-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"context-inspector-refresh-reason-light-1280x800.png",fullPage:true});
+    await send("Continue while the index is busy");
+    await expect(notice.locator("span")).toHaveText("Context index is busy. The last successful packet is shown below.");
+    await send("Continue while the index builds");
+    await expect(notice.locator("span")).toHaveText("Context index is still building… The last successful packet is shown below.");
   }finally{await harness.close()}
 });
 

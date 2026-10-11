@@ -6,6 +6,15 @@ export function actionError(action,error){
   const detail=String(error?.message??error??"").trim();
   return detail?action+": "+detail:action+".";
 }
+// A reason followed by another sentence ends as a sentence, so "… failed" and the next sentence do not run together. A reason that
+// already ends in ".", "!", "?" or "…" (before any closing quote or bracket) is kept as it is; a trailing ",", ";" or ":" gives way
+// to the full stop.
+export function asSentence(text=""){
+  const value=String(text??"").trim();
+  if(!value||/[.!?…]["'”’»)\]]*$/.test(value))return value;
+  const stripped=value.replace(/[\s,;:]+$/,"");
+  return stripped?stripped+".":value;
+}
 // The same, for a reason that may already name what failed: a harness writer's "OpenCode could not write the Git text: …" is shown
 // as it is (`named` matches it), while a bare one such as a Native provider's "fetch failed" gets the action first.
 export function actionErrorUnlessNamed(action,error,named){
