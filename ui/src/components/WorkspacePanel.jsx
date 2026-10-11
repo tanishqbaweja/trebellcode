@@ -105,9 +105,11 @@ function ChangedFilePath({path,parts}){
 
 // The inspector's Files and Diff tabs and this panel's Files | Changes switch are one choice, which the inspector holds (`tab`): the
 // switch hands a choice to onTabChange, and the panel stays mounted across it, so an open file or a search survives the switch.
-// Without a repository to diff (a general chat) only Files is shown, and a Diff choice left over from a project is handed back as Files.
+// Without a repository to diff (a general chat) the switch offers only Files, and a Diff tab carried over from a project says there is
+// nothing to diff, as the Git and Context tabs do there. It is never handed back as Files: that would be a second step in the
+// inspector's navigation history, and going back to the Diff step would hand it back again, so Back could never leave the chat.
 export default function WorkspacePanel({projectPath,environmentId=null,remote=false,tab:requestedTab="files",onTabChange,allowDiff=true,activeThreadId=null,reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
-  const tab=allowDiff&&requestedTab==="diff"?"diff":"files";
+  const tab=requestedTab==="diff"?"diff":"files";
   const [entries,setEntries]=useState([]);
   const [query,setQuery]=useState("");
   const [searchResults,setSearchResults]=useState([]);
@@ -116,10 +118,12 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [draft,setDraft]=useState("");
   const [diff,setDiff]=useState({status:"",diff:""});
   const [diffError,setDiffError]=useState("");
-  // Whether a diff has been read for this project: until then the Diff tab says it is loading, never that the tree is clean. Only
-  // the latest read lands, so an answer about the previous project or an older refresh never replaces a newer one.
+  // Whether a diff has been read for this project: until then the Diff tab says it is loading, never that the tree is clean.
+  // Reads are numbered, and an answer lands unless a later read has already landed: refreshes that start faster than reads answer
+  // (file changes streaming in during a turn) still show each answer as it comes, while an older answer never replaces a newer one.
+  // A project change counts as a landed read, so an answer about the previous project is dropped.
   const [diffLoaded,setDiffLoaded]=useState(false);
-  const diffRequestRef=useRef(0);
+  const diffRequestRef=useRef(0),diffShownRef=useRef(0);
   const [treeLoading,setTreeLoading]=useState(false);
   const [error,setError]=useState("");
   const [treeError,setTreeError]=useState("");
@@ -150,16 +154,16 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   async function refreshDiff(){
     if(!projectPath)return;
     const request=++diffRequestRef.current;setDiffError("");
+    const lands=()=>{if(request<=diffShownRef.current)return false;diffShownRef.current=request;return true};
     try{
       const data=await api("/api/workspace/diff?"+params({path:projectPath}));
-      if(request===diffRequestRef.current){setDiff(data);setDiffError(data.error||"");setDiffLoaded(true)}
-    }catch(error){if(request===diffRequestRef.current)setDiffError(String(error?.message??error??"").trim()||"No reason was given.")}
+      if(lands()){setDiff(data);setDiffError(data.error||"");setDiffLoaded(true)}
+    }catch(error){if(lands())setDiffError(String(error?.message??error??"").trim()||"No reason was given.")}
   }
-  useEffect(()=>{diffRequestRef.current++;setDiff({status:"",diff:""});setDiffError("");setDiffLoaded(false);setTreeLimit(WORKSPACE_TREE_PAGE_SIZE);setChangedLimit(WORKSPACE_CHANGED_PAGE_SIZE);setDiffLimit(WORKSPACE_DIFF_CHUNK_CHARS);refreshTree();refreshDiff();setFile(null);setError("");},[projectPath,environmentId]);
+  useEffect(()=>{diffShownRef.current=diffRequestRef.current;setDiff({status:"",diff:""});setDiffError("");setDiffLoaded(false);setTreeLimit(WORKSPACE_TREE_PAGE_SIZE);setChangedLimit(WORKSPACE_CHANGED_PAGE_SIZE);setDiffLimit(WORKSPACE_DIFF_CHUNK_CHARS);refreshTree();refreshDiff();setFile(null);setError("");},[projectPath,environmentId]);
   // Opening the Changes view, from either switch, reads the working tree again; the last answer stays on screen meanwhile.
   const shownTabRef=useRef(tab);
-  useEffect(()=>{const previous=shownTabRef.current;shownTabRef.current=tab;if(tab==="diff"&&previous!=="diff")refreshDiff()},[tab]);
-  useEffect(()=>{if(requestedTab==="diff"&&!allowDiff)onTabChange?.("files")},[requestedTab,allowDiff]);
+  useEffect(()=>{const previous=shownTabRef.current;shownTabRef.current=tab;if(tab==="diff"&&previous!=="diff"&&allowDiff)refreshDiff()},[tab]);
   useEffect(()=>{setTreeLimit(WORKSPACE_TREE_PAGE_SIZE)},[query]);
   useEffect(()=>{
     let timer=null;
@@ -263,7 +267,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
 
   const editable=Boolean(file&&["text","html","markdown","table"].includes(file.kind));
   return <div className="workspace-panel">
-    <div className="panel-tabs"><div className="workspace-seg"><button className={tab==="files"?"active":""} onClick={()=>onTabChange?.("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>tab==="diff"?refreshDiff():onTabChange?.("diff")}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}</div>{tab==="diff"&&changedPaths.length>0&&<button className={"workspace-refresh workspace-wrap"+(wrapDiff?" active":"")} aria-pressed={wrapDiff} aria-label={wrapDiff?"Disable diff line wrapping":"Enable diff line wrapping"} title={wrapDiff?"Disable line wrapping":"Enable line wrapping"} onClick={toggleDiffWrap}><WrapText size={13}/></button>}<button className="workspace-refresh" aria-label="Refresh workspace files" title="Refresh files and changes" onClick={()=>{refreshTree();if(allowDiff)refreshDiff()}}><RefreshCw size={13}/></button></div>
+    <div className="panel-tabs"><div className="workspace-seg"><button className={tab==="files"?"active":""} onClick={()=>onTabChange?.("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>tab==="diff"?refreshDiff():onTabChange?.("diff")}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}</div>{tab==="diff"&&allowDiff&&changedPaths.length>0&&<button className={"workspace-refresh workspace-wrap"+(wrapDiff?" active":"")} aria-pressed={wrapDiff} aria-label={wrapDiff?"Disable diff line wrapping":"Enable diff line wrapping"} title={wrapDiff?"Disable line wrapping":"Enable line wrapping"} onClick={toggleDiffWrap}><WrapText size={13}/></button>}<button className="workspace-refresh" aria-label="Refresh workspace files" title="Refresh files and changes" onClick={()=>{refreshTree();if(allowDiff)refreshDiff()}}><RefreshCw size={13}/></button></div>
     {tab==="files"&&<div className="workspace-files">
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
@@ -271,7 +275,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
         <div className={"file-view"+(error?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>{setError("");if(edit)setDraft(file.content??"");setEdit(v=>!v)}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{preview()}</div>
       </div>
     </div>}
-    {tab==="diff"&&(changedPaths.length?<div className={"changes-view"+(diffPanelError?" has-action-error":"")}>
+    {tab==="diff"&&!allowDiff&&<div className="changes-empty"><FileDiff size={20}/><strong>No repository changes</strong><span>General chats are not attached to a repository, so there is nothing to diff.</span></div>}
+    {tab==="diff"&&allowDiff&&(changedPaths.length?<div className={"changes-view"+(diffPanelError?" has-action-error":"")}>
       {diffPanelError&&<div className="inline-error workspace-diff-error" role="alert">{diffPanelError}</div>}
       <div className="changed-files">{changedWindow.visible.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>changeReviewed(path,!reviewedFiles.includes(path))} disabled={actionBusy==="reviewed:"+path} aria-label={path} title={path+(reviewedFiles.includes(path)?" · reviewed. Click to mark as not reviewed":" · click to mark as reviewed")}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span><ChangedFilePath path={path} parts={changedNameParts.get(path)}/></button><em className="changed-file-code" data-kind={changedBadges.get(path)?.kind} title={changedBadges.get(path)?.title}>{changedBadges.get(path)?.label}</em><button className="review-comment" title="Add review comment as context" onClick={()=>addReviewComment(path)} disabled={actionBusy==="comment:"+path}>+</button></div>)}{changedWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setChangedLimit(limit=>limit+WORKSPACE_CHANGED_PAGE_SIZE)}>Show {changedWindow.nextCount} more changed files</button><span>{changedWindow.shown} of {changedWindow.total} shown</span></div>}</div>
       <div className="workspace-diff-preview"><pre className={"git-diff"+(wrapDiff?" wrap":"")} data-testid="workspace-diff-preview">{diffLines}</pre>{diffWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setDiffLimit(limit=>limit+WORKSPACE_DIFF_CHUNK_CHARS)}>Show more diff</button><span>{Math.round(diffWindow.shown/1000)}k of {Math.round(diffWindow.total/1000)}k characters shown</span></div>}</div>

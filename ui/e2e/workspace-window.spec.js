@@ -1,6 +1,8 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
+import { WebSocketServer } from "ws";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 
@@ -330,6 +332,131 @@ test("a general chat keeps its Files view, with no Changes switch beside the dis
   await right.locator("[data-workspace-entry]").filter({hasText:"scratch.md"}).click();
   await expect(right.locator(".file-head strong")).toHaveText("scratch.md");
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-general-chat-files-1280x800.png",fullPage:true});
+});
+
+test("a working-tree read that answers after newer reads started still shows, and an older answer never replaces a newer one",async({page,request})=>{
+  test.setTimeout(35_000);
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  // Every diff read waits until the test answers it, as a large repository's reads do while an agent keeps changing files.
+  const held=[];
+  await page.route("**/api/workspace/diff?**",route=>{held.push(route)});
+  const files=count=>({isGit:true,status:Array.from({length:count},(_,index)=>" M src/file-"+index+".js").join("\n"),diff:"diff --git a/src/file-0.js b/src/file-0.js\n",stderr:""});
+  const answer=async(index,value)=>{await expect.poll(()=>held.length).toBeGreaterThan(index);const responded=page.waitForResponse(response=>response.request()===held[index].request());await json(held[index],value);await responded};
+  const fileChanged=()=>page.evaluate(()=>window.dispatchEvent(new CustomEvent("trebell:rpc-notification",{detail:{method:"turn/diff/updated",params:{}}})));
+  await page.setViewportSize({width:1280,height:800});
+  const {right,top,inner}=await openProjectInspector(page,request,"Workspace diff stream");
+  await top.getByRole("button",{name:"Diff",exact:true}).click();
+  const rows=right.locator(".changed-file-row");
+  // The reads the panel starts on opening (one or two, as the panel loads) are out, and two file changes start two more before any
+  // answers.
+  await expect(right.locator(".changes-loading")).toBeVisible();
+  await expect.poll(()=>held.length).toBeGreaterThan(0);
+  await page.waitForTimeout(300);
+  const opening=held.length;
+  await fileChanged();
+  await expect.poll(()=>held.length).toBe(opening+1);
+  await fileChanged();
+  await expect.poll(()=>held.length).toBe(opening+2);
+  // The oldest answer shows although newer reads are out: a stream of changes no longer keeps the tab loading.
+  await answer(0,files(1));
+  await expect(rows).toHaveCount(1);
+  await expect(inner.getByRole("button",{name:/^Changes/})).toHaveText("Changes (1)");
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-stream-first-answer-dark-1280x800.png",fullPage:true});
+  // The newest answer replaces it, and the ones in between, answering last, do not bring an older list back.
+  await answer(opening+1,files(3));
+  await expect(rows).toHaveCount(3);
+  for(let index=1;index<=opening;index++)await answer(index,files(2));
+  await page.waitForTimeout(300);
+  await expect(rows).toHaveCount(3);
+  await expect(inner.getByRole("button",{name:/^Changes/})).toHaveText("Changes (3)");
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-stream-newest-light-1280x800.png",fullPage:true});
+});
+
+// A Codex app server holding the given threads: enough for the sidebar to list them and for the app to open them.
+async function startThreadHarness(threads){
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
+  http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{sockets.add(ws);ws.on("close",()=>sockets.delete(ws));ws.on("message",raw=>{
+    const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
+    const thread=threads.find(item=>item.id===message.params?.threadId)||threads[0];
+    const result=message.method==="initialize"?{userAgent:"workspace-fixture"}:message.method==="thread/list"?{data:threads,nextCursor:null}:message.method==="thread/resume"?{thread}
+      :message.method==="thread/goal/get"?{goal:null}:message.method==="thread/continuity/get"?{continuity:null}:message.method==="thread/runtimeInstances/list"?{supported:false,currentInstanceId:null,items:[]}
+      :message.method==="thread/unsubscribe"?{status:"unsubscribed"}:/\/list$/.test(message.method)?{data:[],nextCursor:null}:{};
+    ws.send(JSON.stringify({id:message.id,result}));
+  })});
+  await new Promise((resolve,reject)=>http.listen(0,"127.0.0.1",resolve).once("error",reject));
+  return {wsUrl:"ws://127.0.0.1:"+http.address().port+"/api/agent/ws",async close(){for(const ws of sockets)ws.terminate();wss.close();await new Promise(resolve=>http.close(resolve))}};
+}
+
+test("Back leaves a general chat opened while the Diff tab was shown, which keeps the Diff tab and says there is nothing to diff",async({page})=>{
+  test.setTimeout(45_000);
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  const cwd=process.cwd(),now=Date.now()/1000;
+  const project={id:"history-project",name:"History Project",path:cwd,environmentId:null};
+  const thread=(id,name,age)=>({id,name,preview:name,cwd,model:"fixture-model",status:{type:"idle"},createdAt:now-age-60,updatedAt:now-age,turns:[]});
+  const a=thread("thread-a","Project thread A",30),b=thread("thread-b","General thread B",10);
+  const meta={[a.id]:{projectless:false,environmentId:null},[b.id]:{projectless:true,environmentId:null}};
+  const harness=await startThreadHarness([a,b]);
+  try{
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd,platform:process.platform,version:"workspace-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[project],threadMeta:meta}));
+    await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,{...settings,...(route.request().postDataJSON()||{})}):route.fallback());
+    await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,{models:["fixture-model"],metadata:{provider:"openai",models:[{id:"fixture-model",name:"Fixture Model",provider:"openai",agent:"Codex"}]}}));
+    await page.route(/\/api\/thread-meta(?:\?|$)/,route=>{const id=new URL(route.request().url()).searchParams.get("threadId")||route.request().postDataJSON?.()?.threadId;return json(route,meta[id]||{projectless:false,environmentId:null})});
+    await page.route(/\/api\/checkpoints(?:\?|$)/,route=>json(route,route.request().method()==="GET"?{checkpoints:[]}:{supported:false}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[project],project}));
+    await page.route(/\/api\/worktree\/ensure$/,route=>json(route,{ok:true}));
+    await page.route(/\/api\/git\/info\?/,route=>json(route,{isGit:true,root:cwd,branch:"main",branches:["main"],upstream:"origin/main",status:[],remotes:[],worktrees:[{path:cwd,branch:"main"}]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.route("**/api/workspace/tree?**",route=>json(route,{entries:[{name:"notes.txt",path:"notes.txt",relativePath:"notes.txt",isFile:true,isDirectory:false,depth:0}],truncated:false}));
+    await page.route("**/api/workspace/diff?**",route=>json(route,{isGit:true,status:" M notes.txt",diff:"diff --git a/notes.txt b/notes.txt\n",stderr:""}));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const row=name=>page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
+    const open=async item=>{await row(item.name).locator(".thread-main").click();await expect(row(item.name)).toHaveClass(/active/)};
+    // The shortcuts act only when no text field has focus, as for a person who clicked away from the composer.
+    const press=async keys=>{await page.evaluate(()=>document.activeElement?.blur?.());await page.keyboard.press(keys)};
+    await open(a);
+    await page.getByTestId("right-panel-toggle").click();
+    const right=page.getByTestId("right-panel"),top=right.locator(".context-panel-tab-scroll"),inner=right.locator(".workspace-panel .panel-tabs");
+    const diffTab=top.getByRole("button",{name:"Diff",exact:true}),filesTab=top.getByRole("button",{name:"Files",exact:true}),filesButton=inner.getByRole("button",{name:"Files",exact:true});
+    const nothingToDiff=right.locator(".changes-empty").filter({hasText:"No repository changes"});
+    await diffTab.click();
+    await expect(right.locator(".changed-file-row")).toHaveCount(1);
+    // The general chat keeps the Diff tab, as it keeps the Git tab, and says why it is empty; nothing claims Files.
+    await open(b);
+    await expect(diffTab).toHaveClass(/active/);await expect(diffTab).toBeDisabled();
+    await expect(nothingToDiff).toContainText("General chats are not attached to a repository");
+    await expect(inner.locator(".workspace-seg button")).toHaveText(["Files"]);
+    await expect(filesButton).not.toHaveClass(/active/);
+    await page.screenshot({animations:"disabled",path:auditDir+"workspace-general-chat-diff-dark-1280x800.png"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"workspace-general-chat-diff-light-1280x800.png"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // Back returns to the project thread and its changes, and Forward to the general chat.
+    await press("Control+BracketLeft");
+    await expect(row(a.name)).toHaveClass(/active/);
+    await expect(diffTab).toHaveClass(/active/);
+    await expect(right.locator(".changed-file-row")).toHaveCount(1);
+    await press("Control+BracketRight");
+    await expect(row(b.name)).toHaveClass(/active/);
+    await expect(nothingToDiff).toBeVisible();
+    // Files there is one more step, and Back walks through the general chat's Diff step and on to the project thread.
+    await filesTab.click();
+    await expect(filesButton).toHaveClass(/active/);
+    await expect(right.locator("[data-workspace-entry]")).toHaveText(["notes.txt"]);
+    await press("Control+BracketLeft");
+    await expect(row(b.name)).toHaveClass(/active/);
+    await expect(nothingToDiff).toBeVisible();
+    await press("Control+BracketLeft");
+    await expect(row(a.name)).toHaveClass(/active/);
+    await expect(diffTab).toHaveClass(/active/);
+    await expect(right.locator(".changed-file-row")).toHaveCount(1);
+    await page.screenshot({animations:"disabled",path:auditDir+"workspace-general-chat-back-to-project-dark-1280x800.png"});
+  }finally{await harness.close()}
 });
 
 // The text a reader sees in each changed file's name, left to right: the characters drawn inside every clipping box, "…" where an
