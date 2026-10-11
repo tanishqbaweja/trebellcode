@@ -4,6 +4,16 @@ import { fileURLToPath } from "node:url";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 
+// Diff lines whose text runs outside their own row, or whose row overlaps the next one: a wrapped line that keeps a one-line row
+// paints its continuation over the lines under it.
+function overprintedDiffLines(diff){
+  return diff.evaluate(node=>[...node.querySelectorAll(".diff-line")].filter((line,index,lines)=>{
+    const range=document.createRange();range.selectNodeContents(line);
+    const text=range.getBoundingClientRect(),box=line.getBoundingClientRect(),next=lines[index+1]?.getBoundingClientRect();
+    return text.height>0&&(text.bottom>box.bottom+1||Boolean(next&&next.top<box.bottom-1));
+  }).length);
+}
+
 test("large workspace trees and diffs render bounded progressive windows",async({page,request})=>{
   test.setTimeout(35_000);
   // The light-mode check below reads the default theme's colors; settings persist between tests, so set that theme here.
@@ -52,17 +62,35 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   expect(firstLength).toBeGreaterThan(100_000);
   expect(firstLength).toBeLessThanOrEqual(120_000);
   await expect(right.getByRole("button",{name:"Show more diff"})).toBeVisible();
+  // Lines wrap by default, and each wrapped line takes the rows its text needs: none paints over the lines under it.
+  await expect(diffPreview).toHaveClass(/\bwrap\b/);
+  expect(await overprintedDiffLines(diffPreview)).toBe(0);
 
   await right.getByRole("button",{name:"Show 80 more changed files"}).click();
   await expect(right.locator(".changed-file-row")).toHaveCount(160);
   await right.getByRole("button",{name:"Show more diff"}).click();
   await expect.poll(()=>diffPreview.evaluate(node=>node.textContent.length)).toBeGreaterThan(120_000);
+  await expect(right.locator(".workspace-diff-preview .workspace-window-footer span")).toHaveText("240k of 491k characters shown");
+  expect(await overprintedDiffLines(diffPreview)).toBe(0);
 
   const metrics=await right.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-windowing-dark-1280x800.png",fullPage:true});
 
+  // Without wrapping each line keeps one row and the diff scrolls sideways instead.
+  await right.getByRole("button",{name:"Disable diff line wrapping"}).click();
+  await expect(diffPreview).not.toHaveClass(/\bwrap\b/);
+  const unwrapped=await diffPreview.evaluate(node=>{const heights=[...node.querySelectorAll(".diff-line.add")].map(line=>line.getBoundingClientRect().height);return {client:node.clientWidth,scroll:node.scrollWidth,tallest:Math.max(...heights),lineHeight:parseFloat(getComputedStyle(node).lineHeight)}});
+  expect(unwrapped.scroll).toBeGreaterThan(unwrapped.client);
+  expect(unwrapped.tallest).toBeLessThanOrEqual(unwrapped.lineHeight+1);
+  expect(await overprintedDiffLines(diffPreview)).toBe(0);
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-windowing-nowrap-dark-1280x800.png",fullPage:true});
+  await right.getByRole("button",{name:"Enable diff line wrapping"}).click();
+  await expect(diffPreview).toHaveClass(/\bwrap\b/);
+
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  expect(await overprintedDiffLines(diffPreview)).toBe(0);
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-windowing-light-1280x800.png",fullPage:true});
   await right.locator(".workspace-panel .panel-tabs").getByRole("button",{name:"Files",exact:true}).click();
   await right.locator(".tree-list").evaluate(node=>{node.scrollTop=node.scrollHeight});
   const lightMore=right.getByRole("button",{name:"Show 120 more files"});

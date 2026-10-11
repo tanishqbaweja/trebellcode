@@ -64,13 +64,25 @@ async function capture(page, name, testInfo) {
   // Data placeholders clear too (skeleton rows, busy lists and selects, "checking…" and "Loading…" copy), so a shot proves the
   // loaded screen rather than its loading state.
   await expect(page.locator(".tb-skeleton, [aria-busy=true]").filter({ visible: true })).toHaveCount(0, { timeout: 15_000 });
-  await expect(page.getByText(/checking…|^\s*Loading\b/i).filter({ visible: true })).toHaveCount(0, { timeout: 15_000 });
+  // Text inside a code or diff view is content, not a placeholder: this checkout's own diff can quote "checking…".
+  const placeholders = page.getByText(/checking…|^\s*Loading\b/i).and(page.locator("xpath=//*[not(ancestor-or-self::pre)]"));
+  await expect(placeholders.filter({ visible: true })).toHaveCount(0, { timeout: 15_000 });
   await page.waitForTimeout(250);
   await page.screenshot({animations:"disabled", path: outDir + name + ".png" });
   const issues = await audit(page);
   report.push({ name, issues });
   if (issues.length) testInfo.annotations.push({ type: "layout", description: `${name}: ${issues.join("; ")}` });
   return issues;
+}
+
+// Diff lines whose text runs outside their own row, or whose row overlaps the next one: a wrapped line that keeps a one-line row
+// paints its continuation over the lines under it.
+function overprintedDiffLines(diff) {
+  return diff.evaluate(node => [...node.querySelectorAll(".diff-line")].filter((line, index, lines) => {
+    const range = document.createRange(); range.selectNodeContents(line);
+    const text = range.getBoundingClientRect(), box = line.getBoundingClientRect(), next = lines[index + 1]?.getBoundingClientRect();
+    return text.height > 0 && (text.bottom > box.bottom + 1 || Boolean(next && next.top < box.bottom - 1));
+  }).length);
 }
 
 // Destinations live in the sidebar's "Destinations" nav landmark; a page-wide name match would also hit thread rows
@@ -112,12 +124,19 @@ for (const mode of MODES) {
       await expect(page.getByText(/Mock (direct|Trebell Native) reply/).first()).toBeVisible({ timeout: 15_000 });
       found.push(...await capture(page, `${tag}-30-conversation`, testInfo));
 
+      // The Diff tab shows this checkout's own changes, when it has any.
+      const boot = await (await request.get("/api/bootstrap")).json();
+      const changes = await (await request.get("/api/workspace/diff?" + new URLSearchParams({ path: boot.cwd, environmentId: "" }))).json();
       await page.getByTestId("right-panel-toggle").click();
       for (const [index, label] of ["Files", "Diff", "Context", "Browser", "Git", "Agents", "Goal", "Runtime"].entries()) {
         const tab = page.getByTestId("right-panel").getByRole("button", { name: label, exact: true });
         if (!(await tab.count()) || await tab.isDisabled()) continue;
         await tab.click();
+        const diff = label === "Diff" && String(changes.diff || "").trim() ? page.getByTestId("workspace-diff-preview") : null;
+        if (diff) await expect(diff).toBeVisible();
         found.push(...await capture(page, `${tag}-4${index}-inspector-${label.toLowerCase()}`, testInfo));
+        // Lines wrap by default, and a wrapped line takes the rows its text needs: none paints over the lines under it.
+        if (diff) expect(await overprintedDiffLines(diff), "overprinted diff lines").toBe(0);
       }
       await page.getByTestId("terminal-toggle").click();
       found.push(...await capture(page, `${tag}-50-terminal`, testInfo));
