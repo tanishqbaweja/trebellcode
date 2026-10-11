@@ -88,6 +88,8 @@ function codexCommand(turn,{emit,threadId},id,command){
 }
 function codexReply(turn,{emit,threadId},text){const answer={id:"agent-"+turn.id,type:"agentMessage",text};turn.items.push(answer);emit({method:"item/completed",params:{threadId,turnId:turn.id,item:answer}})}
 const long=label=>Array.from({length:16},(_,index)=>`${label} note ${index+1}: the change is in place and its check passed.`).join("\n\n");
+// A Native step that runs for ms before it prints "slow-done", with room to spare under its time limit.
+const slowRunCall=(id,ms)=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:process.execPath,args:["-e",`setTimeout(()=>console.log('slow-done'),${ms})`],cwd:".",timeout_ms:30_000})});
 
 test("a relay turn's steps move to a closed card of their own when the next turn starts, toggle in place and return after a reload",async({page})=>{
   test.setTimeout(150_000);
@@ -533,5 +535,94 @@ test("a new task's first turn keeps its own card once the person sends a follow-
     expect(await inDocumentOrder(page,userRow(page,"First request"),past,reply(page,"First turn answer."))).toBe(true);
     await expect(page.locator(".agent-block .tool-event").filter({hasText:"notes.txt"})).toHaveCount(0);
     await auditCards(page,"new-task-card",past);
+  }finally{await harness.close()}
+});
+
+test("a relay turn still running when a reload opens its thread again keeps its steps on the live card, once each, through its end",async({page})=>{
+  test.setTimeout(150_000);
+  const harness=await startRelayHarness({replies:[
+    {toolCalls:[writeFileCall("reload-write-1","notes.txt","first\n")]},
+    {toolCalls:[slowRunCall("reload-slow-1",6000)]},
+    {toolCalls:[runCall("reload-run-1","console.log('after-reload')")]},
+    {text:"First turn answer."},
+    {text:"Second turn answer."},
+  ]});
+  const thread=harness.seedThread("Relay reload running");
+  try{
+    await routeRelayApp(page,harness);
+    await page.goto("/");await openThreadRow(page,"Relay reload running");
+    const composer=page.getByTestId("composer");
+    await composer.fill("First request");await page.getByTestId("send").click();
+    await expect(liveCard(page).locator(".tool-event.status-running").filter({hasText:"slow-done"})).toHaveCount(1,{timeout:20_000});
+    // The slow step still runs: the page reloads and the thread opens again.
+    await page.reload();await openThreadRow(page,"Relay reload running");
+    await expect(page.getByRole("button",{name:"Stop"})).toBeVisible({timeout:10_000});
+    const [first]=harness.turns(thread),live=liveCard(page);
+    // The steps stored so far start the live card, named for the running turn, the slow one still running; no other card has them.
+    await expect(live).toHaveAttribute("data-turn-id",first.id);
+    await expect(live.locator(".tool-event").filter({hasText:"notes.txt"})).toHaveCount(1);
+    await expect(live.locator(".tool-event.status-running").filter({hasText:"slow-done"})).toHaveCount(1);
+    await expect(pastCards(page)).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"dark-1600x980-reopened-running-relay.png"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await frames(page,3);
+    await page.screenshot({animations:"disabled",path:auditDir+"light-1600x980-reopened-running-relay.png"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // When the turn ends, each step shows once, all on the one card of the turn.
+    await expect(reply(page,"First turn answer.")).toBeVisible({timeout:20_000});await frames(page,4);
+    for(const text of ["notes.txt","slow-done","after-reload"])await expect(page.locator("[data-testid=activity-card] .tool-event").filter({hasText:text}),text).toHaveCount(1);
+    await expect(page.locator("[data-testid=activity-card]")).toHaveCount(1);await expect(live.locator(".activity-card-summary")).toHaveText("3 steps");
+    await auditCards(page,"reopened-turn-ended",live);
+    // The next send leaves turn 1 its own card, holding the three steps once each.
+    await composer.fill("Second request");await page.getByTestId("send").click();
+    await expect(reply(page,"Second turn answer.")).toBeVisible({timeout:20_000});
+    await expect(cardOf(page,first.id).locator(".activity-card-summary")).toHaveText("3 steps");
+    await expect(page.locator(`[data-testid=activity-card][data-turn-id="${first.id}"]`)).toHaveCount(1);
+  }finally{await harness.close()}
+});
+
+test("a relay turn still running when its thread is opened again from another keeps its steps on one card",async({page})=>{
+  test.setTimeout(150_000);
+  const harness=await startRelayHarness({replies:[
+    {toolCalls:[writeFileCall("switch-write-1","notes.txt","first\n")]},
+    {toolCalls:[slowRunCall("switch-slow-1",6000)]},
+    {toolCalls:[runCall("switch-run-1","console.log('after-return')")]},
+    {text:"First turn answer."},
+  ]});
+  const thread=harness.seedThread("Relay switch running");
+  harness.seedThread("Relay other thread",[{user:"Lint the project",items:[commandItem("other-lint-1","npm run lint"),replyItem("other-answer-1","Lint is clean.")]}]);
+  try{
+    await routeRelayApp(page,harness);
+    await page.goto("/");await openThreadRow(page,"Relay switch running");
+    await page.getByTestId("composer").fill("First request");await page.getByTestId("send").click();
+    await expect(liveCard(page).locator(".tool-event.status-running").filter({hasText:"slow-done"})).toHaveCount(1,{timeout:20_000});
+    // While the slow step runs, the person reads another thread and comes back.
+    await openThreadRow(page,"Relay other thread");await expect(reply(page,"Lint is clean.")).toBeVisible({timeout:10_000});
+    await openThreadRow(page,"Relay switch running");
+    const [first]=harness.turns(thread),live=liveCard(page);
+    await expect(live).toHaveAttribute("data-turn-id",first.id,{timeout:10_000});
+    await expect(live.locator(".tool-event.status-running").filter({hasText:"slow-done"})).toHaveCount(1);await expect(pastCards(page)).toHaveCount(0);
+    await expect(reply(page,"First turn answer.")).toBeVisible({timeout:20_000});await frames(page,4);
+    for(const text of ["notes.txt","slow-done","after-return"])await expect(page.locator("[data-testid=activity-card] .tool-event").filter({hasText:text}),text).toHaveCount(1);
+    await expect(page.locator("[data-testid=activity-card]")).toHaveCount(1);
+  }finally{await harness.close()}
+});
+
+test("a Codex thread opened while its turn runs shows the running step running on the live card, and nowhere as done",async({page})=>{
+  test.setTimeout(60_000);
+  const thread={...codexThread("codex-open-running","Codex open running"),status:{type:"active",activeFlags:[]}};
+  const running={...codexTurn(2,{user:"Run the long build"}),status:"inProgress",completedAt:null,durationMs:null};
+  running.items.push({id:"cmd-2-1",type:"commandExecution",command:"npm run build",cwd:process.cwd(),status:"inProgress",aggregatedOutput:"",exitCode:null});
+  const harness=await startCodexHarness(thread,[],{seed:[codexTurn(1,{user:"Set the project up",commands:["npm install"],reply:"Set up."}),running]});
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Codex open running");
+    await expect(userRow(page,"Run the long build")).toBeVisible({timeout:10_000});
+    await expect(page.getByRole("button",{name:"Stop"})).toBeVisible();
+    const live=liveCard(page),build=live.locator(".tool-event").filter({hasText:"npm run build"});
+    await expect(live).toHaveAttribute("data-turn-id","codex-turn-2",{timeout:10_000});
+    await expect(build).toHaveCount(1);await expect(build.locator("summary em")).toHaveText("running");
+    await expect(page.locator("[data-testid=activity-card] .tool-event").filter({hasText:"npm run build"})).toHaveCount(1);
+    await expect(cardOf(page,"codex-turn-2")).toHaveCount(0);await expect(cardOf(page,"codex-turn-1")).toHaveAttribute("data-state","closed");
+    await auditCards(page,"reopened-running",live);
   }finally{await harness.close()}
 });

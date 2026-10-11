@@ -60,6 +60,15 @@ test("active resumed threads restore only explicit active turn ids",()=>{
   assert.equal(resumedActiveTurnId({thread:{status:{type:"active"},turns:[]},__trebellHistoryPage:{kind:"items",data:[{turnId:"completed-but-unknown"}]}}),null);
 });
 
+// The relay and Codex resume an item-paged thread with no turns and an active status that names no turn; the page of turn
+// outcomes read beside the item page (newest first) lists the one running.
+test("an item-paged thread resumed while a turn runs names the turn its outcome page lists as running",()=>{
+  const page={kind:"items",data:[{turnId:"t2",item:{id:"c2",type:"commandExecution",status:"inProgress"}},{turnId:"t2",item:{id:"u2",type:"userMessage"}}],nextCursor:null,turns:[{id:"t2",status:"inProgress",items:[]},{id:"t1",status:"completed",items:[]}],turnsCursor:null};
+  assert.equal(resumedActiveTurnId({thread:{id:"th",status:{type:"active",activeFlags:[]},turns:[],historyMode:"paginated"},__trebellHistoryPage:page}),"t2");
+  assert.equal(resumedActiveTurnId({thread:{id:"th",status:{type:"idle"},turns:[]},__trebellHistoryPage:page}),null);
+  assert.equal(resumedActiveTurnId({thread:{id:"th",status:{type:"active",activeFlags:[]},turns:[]},__trebellHistoryPage:{...page,turns:[{id:"t2",status:"completed",items:[]}]}}),null);
+});
+
 const msg=(turn,role)=>({id:`${role}-${turn}`,role,text:`${role} ${turn}`,turnId:`t${turn}`});
 const turnMessages=(...turns)=>turns.flatMap(turn=>[msg(turn,"user"),msg(turn,"assistant")]);
 

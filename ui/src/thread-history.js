@@ -117,9 +117,10 @@ export function resumedActiveTurnId(resumed){
   const explicit=resumed?.activeTurnId||resumed?.thread?.activeTurnId||resumed?.thread?.status?.turnId;
   if(explicit)return String(explicit);
   const threadTurn=[...(resumed?.thread?.turns||[])].reverse().find(activeTurn);if(threadTurn?.id)return String(threadTurn.id);
-  if(resumed?.__trebellHistoryPage?.kind==="turns"){
-    const pageTurn=(resumed.__trebellHistoryPage.data||[]).find(activeTurn);if(pageTurn?.id)return String(pageTurn.id);
-  }
+  // A turn page names how its turns stand, newest first, and so does the page of turn outcomes an item page is read with: the relay
+  // and Codex resume an item-paged thread with no turns and an active status that names none.
+  const page=resumed?.__trebellHistoryPage,pageTurns=page?.kind==="turns"?page.data:page?.kind==="items"?page.turns:null;
+  const pageTurn=(pageTurns||[]).find(activeTurn);if(pageTurn?.id)return String(pageTurn.id);
   return null;
 }
 
