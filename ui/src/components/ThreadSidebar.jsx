@@ -77,7 +77,9 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
       </div>
     </button>
     <details ref={menuRef} className="thread-menu" onToggle={event=>{const open=event.currentTarget.open;showRowMenu(event.currentTarget,open);setMenuOpen(open)}}>
-      <summary title="Thread actions"><MoreHorizontal size={13}/></summary>
+      {/* The button opens the menu itself, so it is in the top layer and Escape closes it as it opens: the toggle event can come after the
+          next key. */}
+      <summary title="Thread actions" onClick={event=>{const menu=menuRef.current;if(!menu)return;event.preventDefault();menu.open=!menu.open;showRowMenu(menu,menu.open);setMenuOpen(menu.open)}}><MoreHorizontal size={13}/></summary>
       <div className="thread-menu-popover" popover={ROW_MENU_TOP_LAYER?"manual":undefined}>
         {foreignRuntime?<button onClick={()=>runMenuAction(()=>onOpen(thread))}>Open in {rowRuntimeLabel}</button>:<>
           <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Pinned"?"active":"pin"))}>{section==="Pinned"?"Unpin":"Pin"}</button>

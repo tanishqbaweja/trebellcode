@@ -1154,12 +1154,14 @@ for(const [width,height] of [[1180,800],[1600,980]])test(`a thread's More action
     for(const mode of ["dark","light"]){
       await page.evaluate(value=>{document.documentElement.dataset.mode=value;document.documentElement.style.colorScheme=value},mode);await settle(page);
       for(const name of ["Research two","Research one"]){
-        const row=await menu(name);await settle(page);
-        // What a pointer meets at the middle of each item is that item, and the whole menu is inside the window.
-        const probe=await row.locator(".thread-menu-popover").evaluate(pop=>{const box=pop.getBoundingClientRect();return {
+        // As the menu opens (read in the same task as the click), what a pointer meets at the middle of each item is that item, and the
+        // whole menu is inside the window.
+        const row=threadRow(page,name);await row.hover();
+        const probe=await row.evaluate(node=>{document.activeElement?.blur?.();node.querySelector(".thread-menu summary").click();const pop=node.querySelector(".thread-menu-popover"),box=pop.getBoundingClientRect();return {
           inside:box.top>=0&&box.left>=0&&box.bottom<=innerHeight&&box.right<=innerWidth,
           items:[...pop.querySelectorAll("button")].map(button=>{const b=button.getBoundingClientRect(),hit=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return [button.textContent,Boolean(hit)&&(hit===button||button.contains(hit))]}),
         }});
+        await expect(row.locator(".thread-menu")).toHaveAttribute("open","");await settle(page);
         expect(probe.inside).toBe(true);
         expect(probe.items.map(([label])=>label)).toEqual(expect.arrayContaining(["Pin","Settle","Move up","Move down","Archive","Delete"]));
         expect(probe.items.filter(([,hit])=>!hit)).toEqual([]);
@@ -1167,6 +1169,13 @@ for(const [width,height] of [[1180,800],[1600,980]])test(`a thread's More action
         await page.keyboard.press("Escape");await expect(row.locator(".thread-menu")).not.toHaveAttribute("open","");
       }
     }
+    // From the keyboard: Enter on the focused button opens the menu whole, Tab goes on to its first item, and Escape closes it and gives
+    // the button its focus back.
+    const last=threadRow(page,"Research one"),button=last.locator(".thread-menu summary");
+    await last.hover();await button.focus();await page.keyboard.press("Enter");await expect(last.locator(".thread-menu")).toHaveAttribute("open","");
+    expect(await last.locator(".thread-menu-popover").evaluate(pop=>[...pop.querySelectorAll("button")].every(item=>{const b=item.getBoundingClientRect(),hit=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return hit===item||item.contains(hit)}))).toBe(true);
+    await page.keyboard.press("Tab");await expect(last.getByRole("button",{name:"Pin",exact:true})).toBeFocused();
+    await page.keyboard.press("Escape");await expect(last.locator(".thread-menu")).not.toHaveAttribute("open","");await expect(button).toBeFocused();
     // A real click on the last row's Move up reaches it.
     await (await menu("Research one")).getByRole("button",{name:"Move up",exact:true}).click();
     await expect.poll(moves).toEqual([{threadId:"research-one",sectionId:"0199-research",beforeThreadId:"research-two"}]);
