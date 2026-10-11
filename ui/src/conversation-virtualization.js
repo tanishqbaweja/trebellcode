@@ -12,7 +12,8 @@ export function estimateConversationMessageHeight(message){
   return Math.max(92,Math.min(560,92+Math.ceil(length/88)*20));
 }
 
-export function conversationVirtualChunks(messages=[],{chunkSize=CONVERSATION_CHUNK_SIZE}={}){
+// extraHeight(message): what goes with a row besides itself (a turn's closed activity card), added to its chunk's estimate.
+export function conversationVirtualChunks(messages=[],{chunkSize=CONVERSATION_CHUNK_SIZE,extraHeight=null}={}){
   const source=Array.isArray(messages)?messages:[],size=Math.max(8,Math.min(100,Math.trunc(Number(chunkSize)||CONVERSATION_CHUNK_SIZE)));
   const chunks=[];let end=source.length;
   while(end>0){
@@ -21,7 +22,7 @@ export function conversationVirtualChunks(messages=[],{chunkSize=CONVERSATION_CH
       key:String(items[0]?.id??start)+"::"+String(items.at(-1)?.id??(end-1)),
       start,end,
       messages:items,
-      estimatedHeight:items.reduce((sum,item)=>sum+estimateConversationMessageHeight(item)+7,0),
+      estimatedHeight:items.reduce((sum,item)=>sum+estimateConversationMessageHeight(item)+7+Math.max(0,Number(extraHeight?.(item))||0),0),
     });
     end=start;
   }

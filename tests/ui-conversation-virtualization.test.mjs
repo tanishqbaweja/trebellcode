@@ -31,3 +31,14 @@ test("height estimates stay positive and bounded for placeholder stability",()=>
   assert.ok(estimateConversationMessageHeight({role:"user",text:"hi"})>=54);
   assert.ok(estimateConversationMessageHeight({role:"assistant",text:"x".repeat(100_000)})<=560);
 });
+
+test("the closed activity cards a row carries add to its chunk's estimate, and the chunk keys stay the same",()=>{
+  const original=messages(100),plain=conversationVirtualChunks(original);
+  const withCards=conversationVirtualChunks(original,{extraHeight:message=>message.id==="m-99"||message.id==="m-98"?58:0});
+  assert.deepEqual(withCards.map(chunk=>chunk.key),plain.map(chunk=>chunk.key));
+  assert.equal(withCards.at(-1).estimatedHeight,plain.at(-1).estimatedHeight+116);
+  assert.equal(withCards[0].estimatedHeight,plain[0].estimatedHeight);
+  // A bad or negative height adds nothing.
+  assert.deepEqual(conversationVirtualChunks(original,{extraHeight:()=>-40}).map(chunk=>chunk.estimatedHeight),plain.map(chunk=>chunk.estimatedHeight));
+  assert.deepEqual(conversationVirtualChunks(original,{extraHeight:()=>"wide"}).map(chunk=>chunk.estimatedHeight),plain.map(chunk=>chunk.estimatedHeight));
+});

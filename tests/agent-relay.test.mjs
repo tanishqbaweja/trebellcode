@@ -350,6 +350,34 @@ test("agent tool lifecycle settles one-shot commands and streams only appended o
   assert.equal(replaced.outputDelta,"","non-prefix replacement must not duplicate prior output in the UI");
 });
 
+test("one turn's items page in order both ways and hold no other turn's, so a past activity card can read its own turn",()=>{
+  const thread={id:"thread-1",turns:[
+    {id:"turn-1",items:[{id:"u1",type:"userMessage",text:"one"},{id:"c1",type:"commandExecution",command:"ls"},{id:"a1",type:"agentMessage",text:"answer one"}]},
+    {id:"turn-2",items:[{id:"u2",type:"userMessage",text:"two"},{id:"c2",type:"commandExecution",command:"npm test"},{id:"f2",type:"fileChange",changes:[]},{id:"a2",type:"agentMessage",text:"answer two"}]},
+    {id:"turn-3",items:[{id:"u3",type:"userMessage",text:"three"}]},
+  ]};
+  const ids=page=>page.data.map(entry=>entry.turnId+"/"+entry.item.id);
+  const desc=paginateAgentThreadItems(thread,{turnId:"turn-2",limit:3,sortDirection:"desc"});
+  assert.deepEqual(ids(desc),["turn-2/a2","turn-2/f2","turn-2/c2"]);assert.ok(desc.nextCursor);
+  const rest=paginateAgentThreadItems(thread,{turnId:"turn-2",cursor:desc.nextCursor,limit:3,sortDirection:"desc"});
+  assert.deepEqual(ids(rest),["turn-2/u2"]);assert.equal(rest.nextCursor,null);
+  const asc=paginateAgentThreadItems(thread,{turnId:"turn-2",limit:500,sortDirection:"asc"});
+  assert.deepEqual(ids(asc),["turn-2/u2","turn-2/c2","turn-2/f2","turn-2/a2"]);assert.equal(asc.nextCursor,null);
+  assert.equal(paginateAgentThreadItems(thread,{turnId:"turn-2",limit:900,sortDirection:"desc"}).data.length,4);
+});
+
+test("relay tool items keep the shapes a past activity card titles: commands, edits, namespaced tools and the agent's own",()=>{
+  const command=agentToolLifecycle({toolCallId:"cmd-1",title:"npm test",kind:"execute",status:"completed",rawOutput:"ok\n",exitCode:0}).item;
+  assert.equal(command.type,"commandExecution");assert.equal(command.id,"cmd-1");assert.equal(command.command,"npm test");assert.equal(command.aggregatedOutput,"ok\n");assert.equal(command.exitCode,0);assert.equal(command.status,"completed");
+  const edit=agentToolLifecycle({toolCallId:"edit-1",title:"Edit a.js",kind:"edit",status:"failed",locations:[{path:"src/a.js"}]}).item;
+  assert.equal(edit.type,"fileChange");assert.equal(edit.status,"failed");assert.deepEqual(edit.changes,[{path:"src/a.js",kind:"edit"}]);
+  const named=agentToolLifecycle({toolCallId:"read-1",namespace:"trebell_workspace",tool:"read_file",rawInput:{path:"README.md"},status:"in_progress"}).item;
+  assert.equal(named.type,"dynamicToolCall");assert.equal(named.namespace,"trebell_workspace");assert.equal(named.tool,"read_file");assert.deepEqual(named.arguments,{path:"README.md"});assert.equal(named.status,"inProgress");
+  const own=agentToolLifecycle({toolCallId:"agent-1",title:"Search the repo",kind:"search",status:"completed"}).item;
+  assert.equal(own.type,"dynamicToolCall");assert.equal(own.namespace,"agent");assert.equal(own.tool,"Search the repo");assert.equal(own.success,true);
+  assert.equal("kind" in own,false,"an agent tool item has no kind, so a row titles it by its tool");
+});
+
 test("agent turn pagination supports summary, full and metadata-only views with stable cursors",()=>{
   const thread={id:"thread-1",turns:[
     {id:"turn-1",status:"completed",items:[{id:"u1",type:"userMessage",text:"one"},{id:"tool1",type:"commandExecution"},{id:"draft1",type:"agentMessage",text:"draft"},{id:"a1",type:"agentMessage",text:"final one"}]},

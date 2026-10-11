@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, formatTurnDuration, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnEndRows, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomePill, turnOutcomeStatus, turnOutcomesFromTurns, turnStartedAgain } from "../ui/src/turn-outcome.js";
+import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, formatTurnDuration, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnEndRows, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomePill, turnOutcomeStatus, turnOutcomesFromTurns, turnStartedAgain, turnTrailers } from "../ui/src/turn-outcome.js";
 
 const user=(id,turnId)=>({id,role:"user",text:"Message "+id,turnId}),reply=(id,turnId)=>({id,role:"assistant",text:"Reply "+id,turnId}),thought=(id,turnId)=>({id,role:"reasoning",text:"Thought "+id,turnId});
 
@@ -28,9 +28,9 @@ test("only finished turns have an outcome, and imported zero durations are not m
   ]),{t1:{status:"completed",durationMs:3000},t2:{status:"completed",durationMs:null},t4:{status:"interrupted",durationMs:null}});
 });
 
-test("the outcome pill says done only with a measured time, and always names a stop or failure",()=>{
+test("the outcome pill says done, with the time when one was measured, and always names a stop or failure",()=>{
   assert.deepEqual(turnOutcomePill({status:"completed",durationMs:2100}),{label:"done · 2.1s",tone:"ok"});
-  assert.equal(turnOutcomePill({status:"completed",durationMs:null}),null);
+  assert.deepEqual(turnOutcomePill({status:"completed",durationMs:null}),{label:"done",tone:"ok"});
   assert.equal(turnOutcomePill({mode:"Supervised"}),null);
   assert.deepEqual(turnOutcomePill({status:"interrupted",durationMs:61_000}),{label:"stopped · 1m 1s",tone:"warn"});
   assert.deepEqual(turnOutcomePill({status:"failed"}),{label:"failed",tone:"err"});
@@ -90,7 +90,7 @@ test("a Codex error with a code and no text reads as the card worded it when the
   assert.deepEqual(turnOutcomesFromTurns([{id:"t1",status:"failed",durationMs:2100,error:{message:"",codexErrorInfo:"unauthorized"}}]).t1.error,"Agent error · Sign in to Codex again from Agents & models, or run codex login.");
 });
 
-test("history pages carry a turn's error, and an item-paged thread takes only the failed and stopped turns from them",()=>{
+test("history pages carry a turn's error, and every page keeps its completed turns too",()=>{
   const turns=[
     {id:"t1",status:"completed",durationMs:3000},
     {id:"t2",status:"failed",durationMs:2100,error:{message:"Usage limit reached."}},
@@ -99,11 +99,10 @@ test("history pages carry a turn's error, and an item-paged thread takes only th
   assert.deepEqual(turnOutcomesFromTurns(turns),{t1:{status:"completed",durationMs:3000},t2:{status:"failed",durationMs:2100,error:"Usage limit reached."},t3:{status:"interrupted",durationMs:null}});
   const keys=value=>Object.keys(value).sort();
   assert.deepEqual(keys(mergeTurnOutcomes({},"th",turns)),[turnInfoKey("th","t1"),turnInfoKey("th","t2"),turnInfoKey("th","t3")].sort());
-  assert.deepEqual(keys(mergeTurnOutcomes({},"th",turns,{failuresOnly:true})),[turnInfoKey("th","t2"),turnInfoKey("th","t3")].sort());
   // The error this window was sent is kept over the page's; a page adds one where none was known.
   const key=turnInfoKey("th","t2");
-  assert.equal(mergeTurnOutcomes({[key]:{mode:"Supervised",status:"failed",durationMs:2140,error:"Sent live."}},"th",turns,{failuresOnly:true})[key].error,"Sent live.");
-  assert.deepEqual(mergeTurnOutcomes({[key]:{mode:"Supervised",status:"failed",durationMs:2140}},"th",turns,{failuresOnly:true})[key],{mode:"Supervised",status:"failed",durationMs:2140,error:"Usage limit reached."});
+  assert.equal(mergeTurnOutcomes({[key]:{mode:"Supervised",status:"failed",durationMs:2140,error:"Sent live."}},"th",turns)[key].error,"Sent live.");
+  assert.deepEqual(mergeTurnOutcomes({[key]:{mode:"Supervised",status:"failed",durationMs:2140}},"th",turns)[key],{mode:"Supervised",status:"failed",durationMs:2140,error:"Usage limit reached."});
   // A page that adds nothing returns the same object, so nothing re-renders.
   const settled=mergeTurnOutcomes({},"th",turns);assert.equal(mergeTurnOutcomes(settled,"th",turns),settled);
 });
@@ -112,14 +111,14 @@ test("a page holding a later completion of a turn replaces what this window reco
   const key=turnInfoKey("th","t1"),note="Trebell restarted while this turn was running. Recovery is queued.",real="Could not continue after restart: provider refused the session.";
   const recorded={[key]:{mode:"Supervised",status:"interrupted",durationMs:800,completedAt:1000,error:note}};
   // The relay ran the turn again after a restart and it failed: the page says so, with a later completion time.
-  const rerun=mergeTurnOutcomes(recorded,"th",[{id:"t1",status:"failed",durationMs:3000,completedAt:1012,error:{message:real}}],{failuresOnly:true});
+  const rerun=mergeTurnOutcomes(recorded,"th",[{id:"t1",status:"failed",durationMs:3000,completedAt:1012,error:{message:real}}]);
   assert.deepEqual(rerun[key],{mode:"Supervised",status:"failed",durationMs:3000,completedAt:1012,error:real});
-  // A later completion with no error drops the old one; an item-paged page still records it, as the window held an outcome.
-  assert.deepEqual(mergeTurnOutcomes(recorded,"th",[{id:"t1",status:"completed",durationMs:3000,completedAt:1012}],{failuresOnly:true})[key],{mode:"Supervised",status:"completed",durationMs:3000,completedAt:1012});
+  // A later completion with no error drops the old one.
+  assert.deepEqual(mergeTurnOutcomes(recorded,"th",[{id:"t1",status:"completed",durationMs:3000,completedAt:1012}])[key],{mode:"Supervised",status:"completed",durationMs:3000,completedAt:1012});
   // The same completion (or an older one, read before the turn ran again) leaves the window's record as it is.
   for(const completedAt of [1000,990])assert.equal(mergeTurnOutcomes(recorded,"th",[{id:"t1",status:"failed",durationMs:3000,completedAt,error:{message:real}}]),recorded);
-  // A completed turn this window holds no outcome for still adds nothing to an item-paged thread.
-  assert.deepEqual(mergeTurnOutcomes({},"th",[{id:"t2",status:"completed",durationMs:3000,completedAt:1012}],{failuresOnly:true}),{});
+  // A completed turn this window holds no outcome for is added, so its reply has its done pill after a reload.
+  assert.deepEqual(mergeTurnOutcomes({},"th",[{id:"t2",status:"completed",durationMs:3000,completedAt:1012}]),{[turnInfoKey("th","t2")]:{status:"completed",durationMs:3000,completedAt:1012}});
 });
 
 test("a completion records its own error, a replay keeps the first, and a turn that starts again is not ended any more",()=>{
@@ -139,7 +138,7 @@ test("a completion records its own error, a replay keeps the first, and a turn t
   const sent={mode:"Supervised"};assert.equal(turnStartedAgain(sent),sent);assert.equal(turnStartedAgain(undefined),undefined);
 });
 
-test("a turn that failed or was stopped before any reply ends with a row of its own after its last row",()=>{
+test("a turn that failed, was stopped or completed before any reply ends with a row of its own after its last row",()=>{
   const turnInfo={
     [turnInfoKey("th","t1")]:{mode:"Supervised",status:"failed",durationMs:2100,error:"Usage limit reached."},
     [turnInfoKey("th","t2")]:{status:"completed",durationMs:900},
@@ -149,11 +148,12 @@ test("a turn that failed or was stopped before any reply ends with a row of its 
   };
   const messages=[user("u1","t1"),thought("r1","t1"),user("u2","t2"),reply("a2","t2"),user("u3","t3"),user("u4","t4"),reply("a4","t4"),user("u5","t5"),user("u6",null)];
   const rows=turnEndRows(messages,{harnessLabel:"Grok Build",turnInfo,threadId:"th"});
-  // A reply carries its own pill (t4); a completed turn has nothing to add (t2, t5); an unfinished one has no outcome yet.
-  assert.deepEqual([...rows.keys()],["r1","u3"]);
+  // A reply carries its own pill (t2, t4); a turn completed with no reply says so (t5); an unfinished one has no outcome yet.
+  assert.deepEqual([...rows.keys()],["r1","u3","u5"]);
   assert.deepEqual(rows.get("r1"),[{turnId:"t1",heading:"Grok Build · Supervised",outcomeLabel:"failed · 2.1s",outcomeTone:"err",message:"Usage limit reached.",latest:false}]);
   // A stop recorded no error: the pill alone.
   assert.deepEqual(rows.get("u3"),[{turnId:"t3",heading:"Grok Build",outcomeLabel:"stopped",outcomeTone:"warn",message:"",latest:false}]);
+  assert.deepEqual(rows.get("u5"),[{turnId:"t5",heading:"Grok Build",outcomeLabel:"done",outcomeTone:"ok",message:"Finished without a reply.",latest:false}]);
   assert.equal(turnEndRows(messages,{harnessLabel:"",turnInfo,threadId:"th"}).get("r1")[0].heading,"");
   assert.equal(turnEndRows(messages,{harnessLabel:"Grok Build",turnInfo,threadId:"other"}).size,0);
   assert.equal(turnEndRows(messages,{harnessLabel:"Grok Build",turnInfo:null,threadId:"th"}).size,0);
@@ -250,4 +250,88 @@ test("the turn order takes older pages in front and new turns at the end, each t
   assert.deepEqual(prependTurnOrder([],["t1"]),["t1"]);
   assert.deepEqual(appendTurnOrder(order,["t5","t4","t5"]),["t3","t4","t5"]);
   assert.equal(appendTurnOrder(order,["t4"]),order);
+});
+
+test("a turn completed with no reply and no rows of its own says so where the turn before it ends",()=>{
+  const turnInfo={[turnInfoKey("th","t2")]:{status:"completed",durationMs:1000}};
+  const rows=turnEndRows([user("u1","t1"),reply("a1","t1"),user("u3","t3")],{harnessLabel:"Codex",turnInfo,threadId:"th",turnOrder:["t1","t2","t3"]});
+  assert.deepEqual(rows.get("a1"),[{turnId:"t2",heading:"Codex",outcomeLabel:"done · 1.0s",outcomeTone:"ok",message:"Finished without a reply.",latest:false}]);
+  assert.deepEqual([...rows.keys()],["a1"]);
+});
+
+test("a turn whose steps are not all loaded never reads as finished without a reply, and a stop or failure still does",()=>{
+  const turnInfo={[turnInfoKey("th","t1")]:{status:"completed",durationMs:900},[turnInfoKey("th","t2")]:{status:"failed",error:"Boom."}};
+  const messages=[user("u1","t1"),user("u2","t2")];
+  assert.deepEqual([...turnEndRows(messages,{turnInfo,threadId:"th"}).keys()],["u1","u2"]);
+  assert.deepEqual([...turnEndRows(messages,{turnInfo,threadId:"th",incompleteTurnIds:new Set(["t1","t2"])}).keys()],["u2"]);
+  assert.deepEqual([...turnEndRows(messages,{turnInfo,threadId:"th",incompleteTurnIds:["t1"]}).keys()],["u2"]);
+});
+
+test("the card's own turn's no-reply row reads below the card; an earlier turn's stays above it",()=>{
+  const turnInfo={[turnInfoKey("th","t1")]:{status:"completed",durationMs:900},[turnInfoKey("th","t2")]:{status:"completed",durationMs:1200}};
+  const messages=[user("u1","t1"),user("u2","t2")];
+  const latest=options=>Object.fromEntries([...turnEndRows(messages,{turnInfo,threadId:"th",...options})].map(([id,rows])=>[id,rows[0].latest]));
+  assert.deepEqual(latest({cardTurnId:"t2"}),{u1:false,u2:true});
+  assert.deepEqual(latest({cardTurnId:"t1"}),{u1:false,u2:false});
+  assert.deepEqual(latest({cardTurnId:"t2",reorder:false}),{u1:false,u2:false});
+});
+
+// Lists a trailers map as {row id: ["card:t1", "end:t1"]} to read the placements at a glance.
+const listed=map=>Object.fromEntries([...map].map(([id,entries])=>[id,entries.map(entry=>entry.kind+":"+entry.turnId)]));
+const trailers=(messages,options={})=>{const {before,after}=turnTrailers(messages,{threadId:"th",...options});return {before:listed(before),after:listed(after)}};
+
+test("a past card reads where the live card did: after its turn's message, a steered message staying above it",()=>{
+  const messages=[user("u1","t1"),reply("a1","t1"),user("u2","t2"),user("s2","t2"),thought("r2","t2"),reply("a2","t2")];
+  assert.deepEqual(trailers(messages,{cardTurnIds:["t1","t2"],turnOrder:["t1","t2"]}),{before:{},after:{u1:["card:t1"],s2:["card:t2"]}});
+  // A turn with no stored steps has no card.
+  assert.deepEqual(trailers(messages,{cardTurnIds:["t2"]}),{before:{},after:{s2:["card:t2"]}});
+});
+
+test("a goal turn with no message of its own has its card before its first row, below the history gap when that row opens the newest pages",()=>{
+  const messages=[user("u1","t1"),reply("a1","t1"),thought("r2","t2"),reply("a2","t2")];
+  assert.deepEqual(trailers(messages,{cardTurnIds:["t2"],turnOrder:["t1","t2"]}),{before:{r2:["card:t2"]},after:{}});
+  // The gap marker renders first at its row, then the cards before the row: the card stays with its turn, below the gap.
+  assert.deepEqual(trailers(messages,{cardTurnIds:["t2"],turnOrder:["t1","t2"],gapBeforeId:"r2"}),{before:{r2:["card:t2"]},after:{}});
+});
+
+test("the turn an item page cut, with none of its rows loaded, has its card at the top of the newest pages",()=>{
+  // The newest page holds only t3's tail and t2's last steps: t2 (the boundary) has no message loaded.
+  const messages=[reply("a3","t3")];
+  assert.deepEqual(trailers(messages,{cardTurnIds:["t2","t3"],boundaryTurnId:"t2",turnOrder:["t2","t3"]}),{before:{a3:["card:t2","card:t3"]},after:{}});
+  // Below a find hit's detached rows the newest pages start at the gap.
+  const detached=[user("h1","t9"),reply("h2","t9"),reply("a3","t3")];
+  assert.deepEqual(trailers(detached,{cardTurnIds:["t2"],boundaryTurnId:"t2",gapBeforeId:"a3"}),{before:{a3:["card:t2"]},after:{}});
+  // No rows at all: the card opens the conversation.
+  assert.deepEqual(trailers([],{cardTurnIds:["t2"],boundaryTurnId:"t2"}),{before:{},after:{"":["card:t2"]}});
+});
+
+test("a turn with no rows of its own has its card where its end row would be, and none where that place is not known",()=>{
+  const turnInfo={[turnInfoKey("th","t2")]:{status:"failed",error:"Usage limit reached."}};
+  const messages=[user("u1","t1"),reply("a1","t1"),user("u3","t3")];
+  // Its card comes before its end row; the turn after it keeps its own place.
+  assert.deepEqual(trailers(messages,{turnInfo,cardTurnIds:["t2","t3"],turnOrder:["t1","t2","t3"]}),{before:{},after:{a1:["card:t2","end:t2"],u3:["card:t3"]}});
+  assert.deepEqual(trailers(messages,{turnInfo,cardTurnIds:["t2"],turnOrder:["t1","t2","t3"],gapBeforeId:"u3"}),{before:{},after:{}});
+  assert.deepEqual(trailers(messages,{turnInfo,cardTurnIds:["t2"],turnOrder:null}),{before:{},after:{}});
+  // Opening the thread when its start is loaded.
+  assert.deepEqual(trailers([user("u3","t3")],{turnInfo,cardTurnIds:["t2"],turnOrder:["t2","t3"],startLoaded:true}),{before:{},after:{"":["card:t2","end:t2"]}});
+});
+
+test("at one row the turns keep their order, each turn's card before its end row",()=>{
+  const turnInfo={[turnInfoKey("th","t1")]:{status:"failed",error:"First."},[turnInfoKey("th","t2")]:{status:"interrupted"},[turnInfoKey("th","t3")]:{status:"completed",durationMs:500}};
+  const messages=[user("u1","t1"),user("u4","t4")];
+  assert.deepEqual(trailers(messages,{turnInfo,cardTurnIds:["t3","t2","t1"],turnOrder:["t1","t2","t3","t4"]}),{before:{},after:{u1:["card:t1","end:t1","card:t2","end:t2","card:t3","end:t3"]}});
+  // Without a turn order the turns sort by where their rows start.
+  const both=[user("u1","t1"),thought("r1","t1"),thought("r2","t2")];
+  assert.deepEqual(listed(turnTrailers(both,{threadId:"th",cardTurnIds:["t2","t1"]}).after),{u1:["card:t1"]});
+  assert.deepEqual(listed(turnTrailers(both,{threadId:"th",cardTurnIds:["t2","t1"]}).before),{r2:["card:t2"]});
+});
+
+test("the live card's turn has no past card, and its end row keeps the live order",()=>{
+  const turnInfo={[turnInfoKey("th","t2")]:{status:"completed",durationMs:500}};
+  const messages=[user("u1","t1"),reply("a1","t1"),user("u2","t2")];
+  assert.deepEqual(trailers(messages,{turnInfo,cardTurnIds:["t1","t2"],liveCardTurnId:"t2",cardTurnId:"t2"}),{before:{},after:{u1:["card:t1"],u2:["end:t2"]}});
+  const {after}=turnTrailers(messages,{threadId:"th",turnInfo,cardTurnIds:["t1","t2"],liveCardTurnId:"t2",cardTurnId:"t2"});
+  assert.equal(after.get("u2")[0].latest,true);assert.equal(after.get("u2")[0].message,"Finished without a reply.");
+  // Once the live card shows nothing for the turn, the turn's own card is back, above the row.
+  assert.deepEqual(trailers(messages,{turnInfo,cardTurnIds:["t1","t2"],cardTurnId:"t2"}),{before:{},after:{u1:["card:t1"],u2:["card:t2","end:t2"]}});
 });
