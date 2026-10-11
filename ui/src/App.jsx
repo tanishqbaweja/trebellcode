@@ -19,7 +19,7 @@ import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx";
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
-import { normalizeKeybindingRules, resolveKeybinding, shadowedKeybindings } from "./keybindings.js";
+import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, shadowedKeybindings } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
@@ -2254,7 +2254,7 @@ export default function App(){
         pullRequestOpen:Boolean(rightPanelOpen&&rightPanelTab==="source"&&sourceSelectedPr?.number),
         desktop:Boolean(window.trebellDesktop),
       };
-      const command=resolveKeybinding(event,settings,context);
+      const command=resolveKeybinding(event,settings,context,{scripts:projectlessMode?[]:currentProject?.scripts||[]});
       if(!command)return;
       event.preventDefault();
       if(command==="newChat")runUserAction(newChat,"Could not start a new thread");
@@ -4645,10 +4645,10 @@ export default function App(){
   // The sidebar shows the user's own keybindings (Settings > Shortcuts), not the defaults. A command whose key another command
   // takes over everywhere it runs (Settings > Shortcuts says which) shows no key, since pressing it runs the other command.
   const sidebarShortcuts=useMemo(()=>{
-    const rules=normalizeKeybindingRules(settings),shadowed=shadowedKeybindings(rules);
+    const rules=projectKeybindingRules(normalizeKeybindingRules(settings),projectlessMode?[]:currentProject?.scripts||[]),shadowed=shadowedKeybindings(rules);
     const key=command=>shadowed.has(command)?"":rules.find(rule=>rule.command===command)?.key||"";
     return {newChat:key("newChat"),commandPalette:key("commandPalette"),projects:key("projects"),settings:key("settings"),environments:key("environments"),previewToggle:key("previewToggle")};
-  },[settings.keybindingRules,settings.keyboardShortcuts]);
+  },[settings.keybindingRules,settings.keyboardShortcuts,projectlessMode,currentProject?.scripts]);
   const sidebarThreadAction=useLatestCallback(threadAction);
   const sidebarMoveThread=useLatestCallback(moveThreadOrder);
   const threadMoves=useMemo(()=>threadMoveAvailability(displayThreads,threadMeta),[displayThreads,threadMeta]);

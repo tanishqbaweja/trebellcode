@@ -6,6 +6,7 @@ import {
   defaultKeybindingRules,
   evaluateWhen,
   normalizeKeybindingRules,
+  projectKeybindingRules,
   resolveKeybinding,
   shadowedKeybindings,
   shortcutMatches,
@@ -142,6 +143,22 @@ test("dynamic project action keybindings survive normalization and resolve",()=>
   const rule=normalizeKeybindingRules(settings).find(item=>item.command===command);
   assert.deepEqual(rule,{command,key:"Alt+1",when:"projectOpen && !modalOpen"});
   assert.equal(resolveKeybinding(event("1",{altKey:true}),settings,{projectOpen:true,modalOpen:false}),command);
+});
+
+test("a project action's shortcut holds only in a project that has that action",()=>{
+  const settings={keybindingRules:[{command:"script.other-dev.run",key:"Ctrl+P",when:"projectOpen && !modalOpen"}]};
+  const context={projectOpen:true,modalOpen:false};
+  // Without the open project's actions, every saved rule is read, as before.
+  assert.equal(resolveKeybinding(event("p",{ctrlKey:true}),settings,context),"script.other-dev.run");
+  // In a project without the action, Ctrl+P stays with Workspace files; in one with it, the action runs.
+  assert.equal(resolveKeybinding(event("p",{ctrlKey:true}),settings,context,{scripts:[{id:"dev-server"}]}),"files");
+  assert.equal(resolveKeybinding(event("p",{ctrlKey:true}),settings,context,{scripts:[]}),"files");
+  assert.equal(resolveKeybinding(event("p",{ctrlKey:true}),settings,context,{scripts:[{id:"other-dev"}]}),"script.other-dev.run");
+  const rules=normalizeKeybindingRules(settings);
+  assert.deepEqual(shadowedKeybindings(projectKeybindingRules(rules,[]),false).size,0);
+  assert.deepEqual(shadowedKeybindings(projectKeybindingRules(rules,[{id:"other-dev"}]),false).get("files"),{key:"Ctrl+P",by:["script.other-dev.run"]});
+  // The commands' own rules are all kept.
+  assert.equal(projectKeybindingRules(rules,[]).length,rules.length-1);
 });
 
 // A key event for a shortcut as the rules write it, with Mod pressed as Ctrl (Windows and Linux).

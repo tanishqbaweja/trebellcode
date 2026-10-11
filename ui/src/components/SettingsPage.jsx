@@ -3,7 +3,7 @@ import { Activity, Bell, Bot, Boxes, Camera, Cloud, Download, FileText, GitPullR
 import { api } from "../api.js";
 import { formatBytes } from "../format-bytes.js";
 import { desktopBridgeToolAvailability } from "../desktop-tool-availability.js";
-import { KEYBINDING_COMMANDS, KEYBINDING_CONTEXTS, normalizeKeybindingRules, shadowedKeybindings, shortcutHint, shortcutProblem, whenProblem } from "../keybindings.js";
+import { KEYBINDING_COMMANDS, KEYBINDING_CONTEXTS, normalizeKeybindingRules, projectKeybindingRules, shadowedKeybindings, shortcutHint, shortcutProblem, whenProblem } from "../keybindings.js";
 import { searchSettings } from "../settings-search.js";
 import { normalizeCustomTheme } from "../theme-utils.js";
 import { sharedRuntimeCapabilities } from "../../../src/runtime-capabilities.mjs";
@@ -161,13 +161,13 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const selectedManagedInference=Boolean(sharedRuntimeCapabilities(selectedAgent).managedInference);
   const keybindingRules=useMemo(()=>normalizeKeybindingRules(settings),[settings.keybindingRules,settings.keyboardShortcuts]);
   // A shortcut another command takes over is said on both rows: the one that never runs names the commands that run instead, and
-  // each of those says whose key it takes.
+  // each of those says whose key it takes. Only this project's actions take keys here (projectKeybindingRules), as in the app.
   const keybindingNotes=useMemo(()=>{
-    const label=command=>KEYBINDING_COMMANDS.find(item=>item.id===command)?.label||(script=>script?"Run "+script.name:"an action in another project")(projectScripts.find(item=>"script."+item.id+".run"===command));
+    const label=command=>KEYBINDING_COMMANDS.find(item=>item.id===command)?.label||"Run "+(projectScripts.find(item=>"script."+item.id+".run"===command)?.name||"project action");
     const names=list=>list.length>1?list.slice(0,-1).join(", ")+" and "+list[list.length-1]:list[0];
     const keyOf=command=>keybindingRules.find(rule=>rule.command===command)?.key||"";
     const notes=new Map(),taken=new Map();
-    for(const [command,{key,by}] of shadowedKeybindings(keybindingRules)){
+    for(const [command,{key,by}] of shadowedKeybindings(projectKeybindingRules(keybindingRules,projectScripts))){
       const many=by.length>1;
       notes.set(command,{kind:"clash",text:`${names(by.map(label))} also ${many?"use":"uses"} ${shortcutHint(key)} and ${many?"run":"runs"} instead.`});
       for(const winner of by)taken.set(winner,[...(taken.get(winner)||[]),command]);

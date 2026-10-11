@@ -328,6 +328,34 @@ test.describe("Two commands on one key",()=>{
     await expect(row(page,"New terminal").getByRole("status")).toHaveText("Takes Ctrl+N from New thread.");
     await expect(page.locator(".keybindings-settings").getByRole("status")).toHaveCount(3);
   });
+
+  // Shortcuts for project actions are saved for every project, but an action exists only in its own project. Elsewhere its key
+  // stays with the command it would take, instead of running nothing.
+  test("a key saved for an action this project does not have stays with the command it would take",async({page,request})=>{
+    const boot=await open(page,request);
+    await request.post("/api/settings",{data:{keybindingRules:[{command:"script.other-dev.run",key:"Ctrl+P",when:"projectOpen && !modalOpen"}]}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await openShortcuts(page);
+    await expect(row(page,"Workspace files").getByRole("status"),"a note about an action this project does not have").toHaveCount(0);
+    await expect(page.locator(".keybindings-settings").getByRole("status")).toHaveCount(0);
+    await row(page,"Workspace files").scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+"other-project-action-key-dark-1280.png"});
+    await flipMode(page,"light");
+    await page.screenshot({animations:"disabled",path:shots+"other-project-action-key-light-1280.png"});
+    await flipMode(page,"dark");
+    // Ctrl+P opens Workspace files here.
+    await row(page,"Workspace files").locator("strong").click();
+    await page.keyboard.press("Control+P");
+    await expect(page.getByTestId("right-panel"),"Ctrl+P opens the files panel").toBeVisible();
+    // In a project that has the action, the action takes the key, and Settings says so on both rows.
+    await request.post("/api/projects",{data:{path:boot.cwd,name:MAIN,scripts:[{id:"other-dev",name:"Dev server",command:"npm run dev"}]}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await openShortcuts(page);
+    await expect(row(page,"Workspace files").getByRole("status")).toHaveText("Run Dev server also uses Ctrl+P and runs instead.");
+    await expect(row(page,"Run Dev server").getByRole("status")).toHaveText("Takes Ctrl+P from Workspace files.");
+  });
 });
 
 test("every shortcut field says which command it is for",async({page,request})=>{

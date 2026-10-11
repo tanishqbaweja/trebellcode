@@ -270,8 +270,16 @@ export function shadowedKeybindings(rules,mac=MAC_PLATFORM){
   return shadowed;
 }
 
-export function resolveKeybinding(event,settings={},context={}){
-  const rules=normalizeKeybindingRules(settings);
+// Shortcuts for project actions are saved for every project, but an action exists only in its project. Elsewhere its rule is left
+// out, so its key stays with the command it would take instead of running nothing.
+export function projectKeybindingRules(rules,scripts=[]){
+  const actions=new Set((scripts||[]).map(script=>"script."+script.id+".run"));
+  return rules.filter(rule=>!/^script\..+\.run$/.test(rule.command)||actions.has(rule.command));
+}
+
+// scripts: the open project's actions; given, the rules for actions it does not have are left out (projectKeybindingRules).
+export function resolveKeybinding(event,settings={},context={},{scripts}={}){
+  const all=normalizeKeybindingRules(settings),rules=scripts?projectKeybindingRules(all,scripts):all;
   for(let index=rules.length-1;index>=0;index--){
     const rule=rules[index];
     if(!shortcutMatches(event,rule.key))continue;
