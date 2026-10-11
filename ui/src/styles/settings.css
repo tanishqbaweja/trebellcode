@@ -220,6 +220,10 @@
 :root:root .settings-page.redesigned-settings .appearance-options{width:max-content;max-width:100%;display:inline-flex;flex-wrap:wrap;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);border-radius:10px;background:var(--bg3)}
 :root:root .settings-page.redesigned-settings .appearance-options:empty{display:none}
 :root:root .settings-page.redesigned-settings .settings-card .appearance-options button{height:auto!important;min-height:28px!important;padding:5.5px 13px!important;border:0!important;border-radius:7px!important;background:transparent!important;color:var(--tx2)!important;font-size:12px!important;font-weight:550!important;text-transform:none;box-shadow:none;transform:none!important;overflow-wrap:anywhere;text-align:center}
+/* A long theme name stays inside the card: the Mode and Theme rows are only as wide as the card (a row otherwise grows to its whole
+   control), the control wraps its buttons onto more lines there, and a name too long for one line wraps inside its button. */
+:root:root .settings-page.redesigned-settings .theme-settings>.settings-field{grid-template-columns:minmax(0,1fr)}
+:root:root .settings-page.redesigned-settings .settings-card .appearance-options button{max-width:100%;white-space:normal}
 /* Only the Mode values (system/light/dark) are capitalized; theme names are shown exactly as their authors wrote them. */
 :root:root .settings-page.redesigned-settings .theme-settings>.settings-field[aria-label="Mode"] .appearance-options button{text-transform:capitalize}
 :root:root .settings-page.redesigned-settings .settings-card .appearance-options button:hover:not(:disabled){background:transparent!important;color:var(--tx0)!important}

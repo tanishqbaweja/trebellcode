@@ -326,3 +326,28 @@ test.describe("Appearance choices",()=>{
     await expect(themes.getByRole("button",{pressed:true})).toHaveText(["Trebell"]);
   });
 });
+
+const LONG_THEME="Explore theme with a long name that keeps going for the layout check";
+for(const [mode,width] of [["dark",1280],["light",1280],["dark",900],["light",900]])test(`a long theme name stays inside the Appearance card (${mode} ${width})`,async({page,request})=>{
+  await open(page,request,{mode,width});
+  await nav(page,"Settings").click();
+  await section(page,"Appearance").click();
+  await page.getByRole("button",{name:"Create theme"}).click();
+  await page.locator(".theme-editor").getByRole("textbox",{name:"Name"}).fill(LONG_THEME);
+  await page.getByRole("button",{name:"Save & apply"}).click();
+  await expect.poll(async()=>((await saved(request)).customThemes||[]).length).toBe(1);
+  const pill=page.getByRole("group",{name:"Theme"}).getByRole("button",{name:LONG_THEME,exact:true});
+  await expect(pill).toBeVisible();
+  await pill.scrollIntoViewIfNeeded();
+  const fit=await pill.evaluate(node=>{
+    const card=node.closest(".settings-card"),control=node.closest(".appearance-options");
+    const box=element=>element.getBoundingClientRect();
+    return {pill:Math.round(box(node).right),control:Math.round(box(control).right),content:Math.round(box(card).right-parseFloat(getComputedStyle(card).paddingRight)),cut:node.scrollWidth>node.clientWidth+1,title:node.getAttribute("title")};
+  });
+  expect(fit.control,"the Theme control ends inside the card: "+JSON.stringify(fit)).toBeLessThanOrEqual(fit.content);
+  expect(fit.pill,"the theme button ends inside the Theme control: "+JSON.stringify(fit)).toBeLessThanOrEqual(fit.control);
+  if(fit.cut)expect(fit.title,"a shortened name shows in full on hover").toBe(LONG_THEME);
+  expect(await sideways(page)).toBeLessThanOrEqual(0);
+  await page.screenshot({animations:"disabled",path:shots+`theme-long-name-${mode}-${width}.png`});
+  await page.locator(".theme-settings").screenshot({animations:"disabled",path:shots+`theme-long-name-card-${mode}-${width}.png`});
+});
