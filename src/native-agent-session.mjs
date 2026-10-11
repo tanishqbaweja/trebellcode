@@ -366,21 +366,23 @@ export class NativeAgentSession{
     const draft=this.draft;if(!draft)return;this.draft=null;draft.state="withdrawn";
     if(draft.revealed)this.#draftUpdate({sessionUpdate:"agent_message_draft_reset",draftId:draft.id,reason});
   }
-  // The hook one provider call streams into. Events for a draft that is no longer the open one are ignored, so text that arrives
-  // after a tool call, after the call returned or after the turn moved on never shows.
+  // The hook one provider call streams into, live until the call returns or fails. Events for a draft that is no longer the open
+  // one are ignored, so text that arrives after a tool call, after the call returned or after the turn moved on never shows.
   #openDraftCall(){
-    let draft=this.#newDraft();
+    let draft=this.#newDraft(),live=true;
     const onStream=event=>{
+      if(!live)return;
+      // The same call is sent again: what it streamed so far belongs to an attempt that will not be used, a tool-call event
+      // included, so the attempt sent now streams into a fresh draft (unless a draft of another call has opened since).
+      if(event?.type==="restart"){if(this.draft===draft||this.draft===null){this.#withdrawDraft("restart");draft=this.#newDraft()}return}
       if(this.draft!==draft||draft.state!=="open")return;
       if(event?.type==="tool_call")return this.#withdrawDraft("tool_call");
-      // The same call is sent again: what it streamed so far belongs to an attempt that will not be used.
-      if(event?.type==="restart"){this.#withdrawDraft("restart");draft=this.#newDraft();return}
       if(event?.type!=="text"||typeof event.delta!=="string"||!event.delta)return;
       draft.text+=event.delta;if(event.hold!==true)draft.revealable=true;
       if(draft.revealed)return this.#draftUpdate({sessionUpdate:"agent_message_draft_delta",draftId:draft.id,content:{type:"text",text:event.delta}});
       if(nativeDraftRevealable(draft)){draft.revealed=true;this.#draftUpdate({sessionUpdate:"agent_message_draft_delta",draftId:draft.id,content:{type:"text",text:draft.text}})}
     };
-    return {onStream,current:()=>draft};
+    return {onStream,current:()=>draft,end:()=>{live=false}};
   }
   // A call that returned keeps its draft (parked) only when the draft is exactly its text-only answer.
   #parkDraft(draft,response){
@@ -582,7 +584,7 @@ export class NativeAgentSession{
             if(draftCall)this.#withdrawDraft(steering?"steered":this.controller?.signal.aborted?"cancelled":"error");
             if(steering){const steered=new Error("Native model request interrupted by steering");steered.code="NATIVE_STEER";steered.nativeSteered=true;throw steered}
             throw error;
-          }finally{if(this.modelController===modelController)this.modelController=null}
+          }finally{if(draftCall)draftCall.end();if(this.modelController===modelController)this.modelController=null}
         },executeTool:wrappedExecutor,executeInternalTool:call=>rawExecutor({...call,_trebellInternalRecovery:true}),
       });
       if(preserveCacheHistory){

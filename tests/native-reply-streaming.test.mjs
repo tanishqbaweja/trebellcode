@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -7,8 +8,10 @@ import { join } from "node:path";
 import { WebSocket } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { NATIVE_REPLY_STREAM } from "../src/native-agent-session.mjs";
+import { NATIVE_REPLY_STREAM, NativeAgentSession } from "../src/native-agent-session.mjs";
 import { NATIVE_CHAT_REPLY_STREAMING, NATIVE_CHAT_REPLY_STREAMING_BLOCKED, nativeStreamOptions } from "../src/native-reply-streaming.mjs";
+import { OpenAiResponsesWebSocket } from "../src/openai-responses-websocket.mjs";
+import { ProviderManager } from "../src/provider-manager.mjs";
 import { BENCHMARK_PATH_FIXTURE_URL, BENCHMARK_PATH_SCENARIOS, runBenchmarkPathScenario } from "./fixtures/native-benchmark-path-harness.mjs";
 
 const fixture=JSON.parse(await readFile(BENCHMARK_PATH_FIXTURE_URL,"utf8"));
@@ -129,4 +132,63 @@ test("the GUI server streams a Native OpenAI reply through the relay and sends o
       assert.ok(bodies.length>=1,provider);for(const {body} of bodies){assert.equal(body.stream,false,provider);assert.equal("stream_options" in body,false,provider)}
     }
   }finally{try{ws.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+// The WebSocket attempt streams a preamble and announces a tool call, then the API rejects it in a way the manager re-sends over
+// HTTPS (a 400 "No tool output found for function call"). The sink sends restart, so the re-sent answer streams as a fresh draft.
+const RESENT_PREAMBLE="I will search for the range helper first and then explain how it treats its end value, because slices and loops in this module both rely on it.\n\nThe search comes first.";
+const RESENT_REPLY="A half-open range includes its start and leaves out its end.\n\nSo range(1, 3) is [1, 2], and the count of items is always end minus start, which is what slices and loops rely on when they split work.";
+test("an HTTPS re-send after a WebSocket attempt announced a tool call streams the re-sent answer as a fresh draft",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-native-reply-resend-")),sent=[],forwarded=[],updates=[];
+  class ResendSocket extends EventEmitter{
+    static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;
+    constructor(){super();this.readyState=ResendSocket.CONNECTING;queueMicrotask(()=>{this.readyState=ResendSocket.OPEN;this.emit("open")})}
+    send(value){
+      sent.push("ws");const lane=JSON.parse(String(value)).stream_id;
+      const events=[
+        {type:"response.created",response:{id:"resp_ws_resend",object:"response",status:"in_progress"}},
+        {type:"response.output_item.added",output_index:0,item:{id:"msg_pre",type:"message",role:"assistant",status:"in_progress",content:[]}},
+        ...RESENT_PREAMBLE.match(/[^]{1,40}/g).map(delta=>({type:"response.output_text.delta",output_index:0,item_id:"msg_pre",content_index:0,delta})),
+        {type:"response.output_item.added",output_index:1,item:{id:"fc_1",type:"function_call",status:"in_progress",call_id:"call_1",name:"trebell_repo__search_symbols",arguments:""}},
+        {type:"error",status:400,error:{type:"invalid_request_error",code:null,message:"No tool output found for function call call_0."}},
+      ];
+      void (async()=>{for(const event of events){await new Promise(resolve=>setImmediate(resolve));if(this.readyState!==ResendSocket.OPEN)return;this.emit("message",JSON.stringify({...event,stream_id:lane}))}})();
+    }
+    terminate(){if(this.readyState===ResendSocket.CLOSED)return;this.readyState=ResendSocket.CLOSED;this.emit("close",1006,"terminated")}
+    close(){this.terminate()}
+  }
+  const fetchFn=async input=>{
+    sent.push("https "+new URL(String(input instanceof URL?input.href:input?.url||input)).pathname);
+    const encoder=new TextEncoder(),item={id:"msg_resent",type:"message",role:"assistant",status:"completed",phase:"final_answer",content:[{type:"output_text",text:RESENT_REPLY,annotations:[]}]};
+    const events=[
+      {type:"response.created",response:{id:"resp_resent",object:"response",status:"in_progress"}},
+      {type:"response.output_item.added",output_index:0,item:{...item,status:"in_progress",content:[]}},
+      ...RESENT_REPLY.match(/[^]{1,40}/g).map(delta=>({type:"response.output_text.delta",output_index:0,item_id:item.id,content_index:0,delta})),
+      {type:"response.output_item.done",output_index:0,item},
+      {type:"response.completed",response:{id:"resp_resent",object:"response",status:"completed",output:[item],usage:{input_tokens:30,output_tokens:50,total_tokens:80}}},
+    ];
+    return new Response(new ReadableStream({start(controller){for(const event of events)controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));controller.close()}}),{status:200,headers:{"content-type":"text/event-stream"}});
+  };
+  const manager=new ProviderManager({env:{OPENAI_API_KEY:"sk-resend-fixture",TREBELL_HOME:home},fetchFn,openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket({...options,WebSocketClass:ResendSocket})});
+  const session=new NativeAgentSession({
+    cwd:home,provider:"openai",model:"gpt-stream-fixture",semanticCompletionGate:true,streamDrafts:true,tools:[],permissionMode:"full",
+    executeTool:async()=>{throw new Error("this fixture runs no tools")},onUpdate:update=>updates.push(update.update),
+    // As gui-server's nativeProviderTurn passes the hook on, noting each event the session receives.
+    providerTurn:async request=>{
+      const {[NATIVE_REPLY_STREAM]:onStream,...providerRequest}=request,observe=typeof onStream==="function"?event=>{forwarded.push(event.type);onStream(event)}:null;
+      return manager.turn("openai",providerRequest,{signal:request.signal,promptCaching:false,streamResponses:true,...nativeStreamOptions("openai",observe)});
+    },
+  });
+  try{
+    await session.start({providerSessionId:"resend-lane",model:"gpt-stream-fixture"});
+    const result=await session.prompt([{type:"text",text:"Explain how a half-open range works. Do not change any files."}],{maxModelTurns:4});
+    assert.equal(result.stopReason,"end_turn");
+  }finally{await session.close().catch(()=>{});manager.close();await rm(home,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+  assert.deepEqual(sent,["ws","https /v1/responses"]);
+  assert.deepEqual(forwarded.filter((type,index)=>type!==forwarded[index-1]),["text","tool_call","restart","text"]);
+  assert.equal(updates.find(update=>update.sessionUpdate==="agent_message_chunk")?.content?.text,RESENT_REPLY);
+  const drafts=updates.filter(update=>String(update.sessionUpdate).startsWith("agent_message_draft_")),lastReset=drafts.map(update=>update.sessionUpdate).lastIndexOf("agent_message_draft_reset");
+  assert.equal(drafts[lastReset]?.reason,"tool_call","the WebSocket attempt's shown preamble is withdrawn at its tool call");
+  const shown=drafts.slice(lastReset+1);assert.equal(shown.map(update=>update.content.text).join(""),RESENT_REPLY,"the re-sent answer streams as a fresh draft");
+  assert.equal(new Set(shown.map(update=>update.draftId)).size,1);assert.notEqual(shown[0].draftId,drafts[0].draftId);
 });

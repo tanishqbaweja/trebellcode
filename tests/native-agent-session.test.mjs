@@ -1585,6 +1585,19 @@ test("a shown draft is withdrawn on an error, a restart, steering mid-call, stee
   const result=await stopped.run();assert.equal(result.stopReason,"cancelled");assert.deepEqual(stopped.visible(),[["draft",DRAFT_PARAGRAPH],["reset","cancelled"]]);
 });
 
+test("a restart after a tool-call event streams the re-sent call into a fresh draft, and a call that has ended opens none",async()=>{
+  const resent=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:DRAFT_PARAGRAPH});hook({type:"tool_call"});hook({type:"text",delta:"Not passed on."});hook({type:"restart"});hook({type:"text",delta:DRAFT_PARAGRAPH+" Re-sent."});return textReply(DRAFT_PARAGRAPH+" Re-sent.")}]});
+  await resent.run();assert.deepEqual(resent.visible(),[["draft",DRAFT_PARAGRAPH],["reset","tool_call"],["draft",DRAFT_PARAGRAPH+" Re-sent."],["chunk",DRAFT_PARAGRAPH+" Re-sent."]]);
+  const draftIds=resent.updates.filter(update=>update.sessionUpdate==="agent_message_draft_delta").map(update=>update.draftId);assert.notEqual(draftIds[0],draftIds[1]);
+  // The first call ended with its tool call, so a restart and text from its hook while the tool runs show nothing.
+  let late=null;
+  const ended=draftRun({steps:[
+    async(_request,hook)=>{late=hook;hook({type:"text",delta:DRAFT_PARAGRAPH});hook({type:"tool_call"});return {id:"c1",text:"",toolCalls:[{id:"read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"cache.mjs"}'}],usage:{}}},
+    async()=>textReply("Done."),
+  ],executeTool:async()=>{late({type:"restart"});late({type:"text",delta:"LATE "+DRAFT_PARAGRAPH});return {success:true,content:"tool output"}}});
+  await ended.run();assert.deepEqual(ended.visible(),[["draft",DRAFT_PARAGRAPH],["reset","tool_call"],["chunk","Done."]]);
+});
+
 test("a failed turn withdraws its shown draft",async()=>{
   const failing=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:DRAFT_PARAGRAPH});throw Object.assign(new Error("invalid request"),{status:400,retryable:false})}]});
   await assert.rejects(failing.run(),/invalid request/);assert.deepEqual(failing.visible(),[["draft",DRAFT_PARAGRAPH],["reset","error"]]);
