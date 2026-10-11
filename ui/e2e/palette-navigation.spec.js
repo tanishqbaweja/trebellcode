@@ -312,6 +312,52 @@ test.describe("Back and forward",()=>{
     await page.screenshot({animations:"disabled",path:shots+"history-after-reload-back-light-1280.png"});
   });
 
+  // The Browser panel's preview is a frame of its own: the pages it moves through are in the tab's history too, but they are not the
+  // app's, so the app's own Navigate back and forward step over them.
+  test("Navigate back goes to the page before the Browser panel after the preview moved between two addresses",async({page,request})=>{
+    await open(page,request);
+    await page.route(/^http:\/\/localhost:4599\//,route=>{const path=new URL(route.request().url()).pathname;return route.fulfill({status:200,contentType:"text/html",body:`<!doctype html><title>${path}</title><h1>Preview ${path}</h1>`})});
+    await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+    await nav(page,"Usage").click();await expect(usageHeading(page)).toBeVisible();
+    await nav(page,"Browser").click();
+    const address=page.getByRole("textbox",{name:"Page address"}),frame=page.locator('iframe[title="Trebell preview"]'),preview=page.frameLocator('iframe[title="Trebell preview"]');
+    await address.fill("http://localhost:4599/a");await address.press("Enter");
+    await expect(preview.locator("h1")).toHaveText("Preview /a");
+    await address.fill("http://localhost:4599/b");await address.press("Enter");
+    await expect(preview.locator("h1")).toHaveText("Preview /b");
+    await page.screenshot({animations:"disabled",path:shots+"history-preview-moved-dark-1280.png"});
+    await pressShortcut(page,"Control+BracketLeft");
+    await expect(usageHeading(page),"Navigate back stepped the preview back instead of the app").toBeVisible();
+    if(await frame.count())await expect(preview.locator("h1")).toHaveText("Preview /b");
+    await expect.poll(()=>page.evaluate(()=>history.state?.trebellNav?.section)).toBe("usage");
+    await page.screenshot({animations:"disabled",path:shots+"history-preview-back-usage-dark-1280.png"});
+    await pressShortcut(page,"Control+BracketLeft");
+    await expect(projectsHeading(page)).toBeVisible();
+    await pressShortcut(page,"Control+BracketRight");
+    await expect(usageHeading(page)).toBeVisible();
+    await pressShortcut(page,"Control+BracketRight");
+    await expect(address).toBeVisible();
+    await expect.poll(()=>page.evaluate(()=>Boolean(history.state?.trebellNav?.rightPanelOpen))).toBe(true);
+  });
+
+  test("Navigate back goes to the page before the Browser panel after a click inside a previewed single-page app",async({page,request})=>{
+    await open(page,request,{mode:"light"});
+    const spa=`<!doctype html><title>SPA</title><h1 id=title>Home</h1><button id=go onclick="history.pushState({},'', '/spa/about');document.getElementById('title').textContent='About'">About</button><script>addEventListener('popstate',()=>{document.getElementById('title').textContent=location.pathname==='/spa/about'?'About':'Home'})</script>`;
+    await page.route(/^http:\/\/localhost:4599\//,route=>route.fulfill({status:200,contentType:"text/html",body:spa}));
+    await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+    await nav(page,"Browser").click();
+    const address=page.getByRole("textbox",{name:"Page address"}),frame=page.locator('iframe[title="Trebell preview"]'),preview=page.frameLocator('iframe[title="Trebell preview"]');
+    await address.fill("http://localhost:4599/spa");await address.press("Enter");
+    await expect(preview.locator("h1")).toHaveText("Home");
+    await preview.getByRole("button",{name:"About"}).click();
+    await expect(preview.locator("h1")).toHaveText("About");
+    await page.screenshot({animations:"disabled",path:shots+"history-preview-app-moved-light-1280.png"});
+    await pressShortcut(page,"Control+BracketLeft");
+    await expect(projectsHeading(page),"Navigate back stepped the previewed app back instead of the app").toBeVisible();
+    if(await frame.count())await expect(preview.locator("h1")).toHaveText("About");
+    await page.screenshot({animations:"disabled",path:shots+"history-preview-app-back-projects-light-1280.png"});
+  });
+
   test("the desktop window keeps its history to itself and its shortcuts still work",async({page,request})=>{
     await page.addInitScript(()=>{Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{}})});
     await open(page,request);

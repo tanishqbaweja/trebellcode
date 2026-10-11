@@ -1046,8 +1046,18 @@ export default function App(){
   async function navigateHistory(delta){
     const nav=navigationHistoryRef.current,next=stepTarget(nav,delta);
     if(next<0)return;
-    // In a browser tab the browser takes the step, so its Back and Forward stay where the app is; popstate shows the entry.
-    if(BROWSER_NAVIGATION){nav.pending=next;window.history.go(delta);return}
+    // In a browser tab the browser takes the step, so its Back and Forward stay where the app is; popstate shows the entry. The step
+    // goes to the tab's own entry for it (Navigation API): history.go counts the pages a frame moved through as well (the Browser
+    // panel's preview, a document preview), and would step that frame instead of the app.
+    if(BROWSER_NAVIGATION){
+      nav.pending=next;
+      const navigation=window.navigation,current=navigation?.currentEntry;
+      const target=current&&current.index>=0&&typeof navigation.traverseTo==="function"?navigation.entries()[current.index+next-nav.index]:null;
+      if(!target){window.history.go(delta);return}
+      const traversal=navigation.traverseTo(target.key),dropped=()=>{if(nav.pending===next)nav.pending=null};
+      traversal?.committed?.catch?.(dropped);traversal?.finished?.catch?.(dropped);
+      return;
+    }
     await showNavigationEntry(next);
   }
   const browserNavigated=useLatestCallback(event=>{
