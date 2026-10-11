@@ -219,6 +219,32 @@ test("a Codex turn that finished without a reply says so under its card, live, a
   }finally{await harness.close()}
 });
 
+test("an imported conversation never says a request finished without a reply",async({page})=>{
+  test.setTimeout(60_000);
+  const { claudeMessagesToTurns }=await import("../../src/agent-history-import.mjs");
+  const harness=await startRelayHarness();
+  // A Claude Code transcript: a request interrupted before any text (its tool call is not imported), the interrupt marker, and a
+  // request answered. The import keeps the messages and calls every turn completed.
+  const turns=claudeMessagesToTurns([
+    {type:"user",uuid:"u1",message:{role:"user",content:"Refactor the parser"}},
+    {type:"assistant",uuid:"a1",message:{role:"assistant",content:[{type:"tool_use",id:"t1",name:"Read",input:{file_path:"src/parser.js"}}]}},
+    {type:"user",uuid:"u2",message:{role:"user",content:[{type:"text",text:"[Request interrupted by user]"}]}},
+    {type:"user",uuid:"u3",message:{role:"user",content:"Just rename parse to parseInput"}},
+    {type:"assistant",uuid:"a3",message:{role:"assistant",content:[{type:"text",text:"Renamed parse to parseInput everywhere."}]}},
+  ],{createdAt:Date.now()-60_000});
+  harness.threads.push(harness.threadStore.importHistory({runtime:"native",cwd:harness.repo,providerSessionId:"imported-claude",model:"gpt-5.6",name:"Imported conversation",preview:"Imported",turns,providerMeta:{runtimeInstanceId:"native-default",modelProvider:"agentrouter",permissionProfile:"auto",projectless:false,environmentId:null,historyImport:{source:"claude",sourceId:"imported-claude",importedAt:Date.now()}}}));
+  try{
+    await routeRelayApp(page,harness);
+    await page.goto("/");await openThreadRow(page,"Imported conversation");
+    const answered=reply(page,"Renamed parse to parseInput everywhere.");
+    await expect(answered).toBeVisible({timeout:10_000});await expect(userRow(page,"[Request interrupted by user]")).toBeVisible();
+    // The answer reads done; the turns without one claim nothing, as the import cannot tell them from interrupted ones.
+    await expect(answered.getByTestId("turn-outcome")).toHaveText("done");
+    await expect(page.getByTestId("turn-outcome-row")).toHaveCount(0);await expect(pastCards(page)).toHaveCount(0);
+    await auditCards(page,"imported-no-reply",answered);
+  }finally{await harness.close()}
+});
+
 test("a newest relay turn longer than the open page is completed with one request and keeps its steps when earlier messages load",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startRelayHarness();

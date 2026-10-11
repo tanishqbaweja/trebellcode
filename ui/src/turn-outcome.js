@@ -167,7 +167,8 @@ export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=nu
 // loaded (startLoaded). Rows after one row keep the turns' order. A failure the live activity card lists (cardFailedTurnIds) has
 // no row, so it shows once: in the card while it is on screen, here once the card moves to a later turn or after a reload. A
 // stop always has its row: the card never says so. A turn whose steps are not all loaded (incompleteTurnIds) may have a reply
-// that is not loaded either, so it never reads as finished without one.
+// that is not loaded either, so it never reads as finished without one; nor does a turn the relay's history import made
+// ("import-…"): it keeps a conversation's messages only and calls every turn completed, an interrupted request too.
 // latest: the row is the card's turn's own and reads below the card with the rest of that turn (conversation-order.js);
 // never in a virtualized list, which keeps its order.
 function turnEndPlacement(messages=[],{harnessLabel="",turnInfo=null,threadId=null,cardFailedTurnIds=null,cardTurnId=null,reorder=true,turnOrder=null,gapBeforeId=null,startLoaded=false,incompleteTurnIds=null}={}){
@@ -185,7 +186,7 @@ function turnEndPlacement(messages=[],{harnessLabel="",turnInfo=null,threadId=nu
   const ending=turnId=>{
     const info=turnInfo?.[turnInfoKey(threadId,turnId)]||null,pill=turnOutcomePill(info);
     if(!pill||(pill.tone==="err"&&cardFailedTurnIds?.has?.(turnId)))return null;
-    if(pill.tone==="ok")return incomplete.has(turnId)?null:{info,pill,note:"Finished without a reply."};
+    if(pill.tone==="ok")return incomplete.has(turnId)||turnId.startsWith("import-")?null:{info,pill,note:"Finished without a reply."};
     return {info,pill};
   };
   const add=(key,turnId,{info,pill,note=""},index)=>{

@@ -267,6 +267,15 @@ test("a turn whose steps are not all loaded never reads as finished without a re
   assert.deepEqual([...turnEndRows(messages,{turnInfo,threadId:"th",incompleteTurnIds:["t1"]}).keys()],["u2"]);
 });
 
+test("a turn the history import made never reads as finished without a reply, while an imported reply keeps its pill",()=>{
+  // The import keeps a conversation's messages only and calls every turn it makes completed: an interrupted request, and Claude
+  // Code's interrupt marker, are turns without a reply too.
+  const turnInfo=Object.fromEntries(["import-u1","import-u2","import-u3","t4"].map(id=>[turnInfoKey("th",id),{status:"completed",durationMs:null}]));
+  const messages=[user("u1","import-u1"),user("u2","import-u2"),user("u3","import-u3"),reply("a3","import-u3"),user("u4","t4")];
+  assert.deepEqual([...turnEndRows(messages,{harnessLabel:"Trebell Native",turnInfo,threadId:"th"}).keys()],["u4"]);
+  assert.equal(assistantRowDecorations(messages,{turnInfo,threadId:"th"}).get("a3").outcomeLabel,"done");
+});
+
 test("the card's own turn's no-reply row reads below the card; an earlier turn's stays above it",()=>{
   const turnInfo={[turnInfoKey("th","t1")]:{status:"completed",durationMs:900},[turnInfoKey("th","t2")]:{status:"completed",durationMs:1200}};
   const messages=[user("u1","t1"),user("u2","t2")];
