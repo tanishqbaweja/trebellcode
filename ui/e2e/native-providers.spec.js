@@ -36,16 +36,19 @@ async function startNativeRelay(){
   return {wsUrl:"ws://127.0.0.1:"+port+"/api/agent/ws",requests,async close(){for(const ws of open)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
 
-// The GUI server's side for Trebell Native on one provider. Without a key the catalog is empty with "API key required", as
-// ProviderManager.models answers; refuseKey makes a typed key fail its check the way the GUI server's checkKey reports it.
+// The GUI server's side for Trebell Native on one provider. Without a key the catalog has no models (a fixed-model provider
+// still lists its model) with "API key required", as ProviderManager.models answers; refuseKey makes a typed key fail its
+// check the way the GUI server's checkKey reports it.
+const STATIC_MODELS={justworker:["claude-opus-4-8"],hcnsec:["glm-5.3"]};
 async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false}){
   const server={provider,hasKey,keyCheck:null,posts:[]};
   const relay=await startNativeRelay();
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:server.provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const bootstrap=()=>({mock:false,provider:server.provider,providerReady:server.hasKey,agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeReady:true,appServerReady:true,wsUrl:relay.wsUrl,cwd:process.cwd(),platform:process.platform,version:"native-providers-fixture",activeEnvironmentId:null,activeEnvironment:null});
+  const keyless=()=>STATIC_MODELS[server.provider]||[];
   const catalog=()=>server.hasKey
     ?{provider:server.provider,agentRuntime:"native",ready:true,models,defaultModel,metadata:{provider:server.provider,source:"live",models:models.map(id=>({id,provider:server.provider}))},error:null}
-    :{provider:server.provider,agentRuntime:"native",ready:false,models:[],defaultModel:null,metadata:{provider:server.provider,source:"none",models:[]},error:"API key required"};
+    :{provider:server.provider,agentRuntime:"native",ready:false,models:keyless(),defaultModel:keyless()[0]||null,metadata:{provider:server.provider,source:keyless().length?"static":"none",models:keyless().map(id=>({id,provider:server.provider}))},error:"API key required"};
   const row=id=>({id,name:PROVIDER_NAMES[id],official:["openai","anthropic","gemini"].includes(id),requiresKey:true,hasKey:id===server.provider&&server.hasKey,keyCheck:id===server.provider?server.keyCheck:null});
   const providers=()=>({selected:server.provider,providers:Object.keys(PROVIDER_NAMES).map(row),status:{...row(server.provider),ready:server.hasKey},ready:server.hasKey});
   const runtimes=()=>({selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[{id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true,version:"Built into Trebell Code"}]});
@@ -116,6 +119,28 @@ for(const mode of MODES)test(`a provider without a key offers no Thinking picker
     await page.screenshot({animations:"disabled",path:auditDir+`native-provider-no-key-settings-${mode}.png`});
     // The field takes typing at once, as a person would paste a key right after Configure.
     await page.keyboard.type("gm-fixture");await expect(keyField).toHaveValue("gm-fixture");
+  }finally{await close()}
+});
+
+for(const provider of ["justworker","hcnsec"])for(const mode of MODES)test(`${PROVIDER_NAMES[provider]}, a provider with a fixed model, is set up first without a key: a neutral next step and Configure (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  // Its catalog lists the model even without a key; the composer used to show a red "API key required" and no Configure.
+  const {relay,close}=await startNativeHarness(page,{provider,mode});
+  try{
+    await openGeneralChat(page,relay);
+    const wrap=composerWrap(page),configure=wrap.getByRole("button",{name:"Configure "+PROVIDER_NAMES[provider],exact:true});
+    await expect(configure).toBeVisible();await expect(configure).toHaveCount(1);
+    const status=wrap.locator(".composer-status");
+    await expect(status).toContainText("API key required");
+    await expect(status).not.toHaveClass(/(?:^|\s)error(?:\s|$)/);
+    await expect(page.getByTestId("send")).toBeDisabled();
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-${provider}-no-key-composer-${mode}.png`});
+
+    await configure.click();
+    await expect(page.getByTestId("provider-api-key")).toBeFocused();
+    const providerStatus=page.getByTestId("provider-status");
+    await expect(providerStatus).toHaveText(PROVIDER_NAMES[provider]+" · API key required");
+    await expect(providerStatus).not.toHaveClass(/provider-status-error/);
   }finally{await close()}
 });
 

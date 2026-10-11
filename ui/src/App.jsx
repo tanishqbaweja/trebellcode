@@ -783,9 +783,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   // Every usable harness catalog lists at least one model; a prompt never goes out without one of the active runtime's models.
   // A running turn takes steers and queued follow-ups without a model (as Enter does); a queued one drains through startTurn, which checks the catalog.
   const modelReady=chosenModels.some(id=>(models||[]).includes(id));
-  const modelBlocker=runtimeSwitchLabel||modelReady||running?"":modelsLoading?"Loading models…":modelError||"No models available — check Settings";
-  // While Trebell is starting it does not know which harness to set up yet: the model picker waits for the catalog instead.
-  const configureLabel="Configure "+(modelProviderRuntime?providerLabel:agentRuntimeLabel),setupRequired=!starting&&!providerReady&&!models.length;
+  // While Trebell is starting it does not know which harness to set up yet: the model picker waits for the catalog instead. A
+  // model provider without a key is set up first, also one whose catalog lists its fixed model anyway (JustWorker, HCNSec).
+  const configureLabel="Configure "+(modelProviderRuntime?providerLabel:agentRuntimeLabel),setupRequired=!starting&&!providerReady&&(!models.length||modelProviderRuntime);
+  const modelBlocker=runtimeSwitchLabel||(modelReady&&!setupRequired)||running?"":modelsLoading?"Loading models…":modelError||"No models available — check Settings";
   // A model provider with no key yet is a next step (Configure), so its status line is not shown as an error.
   const providerKeyStep=setupRequired&&modelProviderRuntime;
   // While a turn runs the same Send button queues or steers; its label and tooltip name which (the icon stays the send icon).
