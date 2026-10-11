@@ -150,7 +150,8 @@ function ContextExplorer({root,environmentId=null}){
       <pre>{String(preview.content??"").split("\n").map((text,index)=><span key={index} className={preview.startLine+index===preview.line?"match":undefined}><i>{preview.startLine+index}</i>{text}</span>)}</pre>
     </div>}
     {relations&&<div className="context-explorer-relations" data-testid="context-file-relations">
-      <div><strong>{relations.path}</strong><span>{relations.definitions?.length||0} definition{(relations.definitions?.length||0)===1?"":"s"} · {relations.importers?.length||0} importer{(relations.importers?.length||0)===1?"":"s"}</span></div>
+      {/* The space keeps the path and its counts apart in the text ("session.js 1 definition"); the grid does not render it. */}
+      <div><strong>{relations.path}</strong>{" "}<span>{relations.definitions?.length||0} definition{(relations.definitions?.length||0)===1?"":"s"} · {relations.importers?.length||0} importer{(relations.importers?.length||0)===1?"":"s"}</span></div>
       <p className="context-explorer-relation-actions"><button type="button" onClick={loadDiagnostics} disabled={Boolean(busy)}>{busy==="diagnostics"?"Checking…":diagnostics?"Refresh diagnostics":"Diagnostics"}</button>{diagnostics&&<span>{diagnostics.semantic?`${diagnostics.semanticEngine||"semantic"} + ${diagnostics.engine||"parser"}`:(diagnostics.engine||"parser")}</span>}</p>
       {(relations.relatedTests||[]).length>0&&<p><b>Related tests</b>{relations.relatedTests.map(path=><button type="button" key={path} onClick={()=>inspect(path)}>{path}</button>)}</p>}
       {relationPaths.length>0&&<p><b>Related files</b>{relationPaths.map(path=><button type="button" key={path} onClick={()=>inspect(path)}>{path}</button>)}</p>}
