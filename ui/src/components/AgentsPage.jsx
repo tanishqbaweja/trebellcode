@@ -165,8 +165,8 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,onD
       <button className="agent-refresh" aria-label="Refresh agents" title="Refresh agents" onClick={refresh} disabled={busy}><RefreshCw size={13}/></button>
     </div>
     <div className="agent-fleet-stats">
-      {/* The accent marks live work, so a zero count stays neutral like the other counts. */}
-      <span className={counts.working?"working":undefined}>{counts.working} working</span><span>{counts.idle} idle</span><span>{counts.sleeping} sleeping</span>{counts.error>0&&<span className="error">{counts.error} error</span>}
+      {/* The accent marks live work and the green dot ready agents, so a zero count stays neutral like the other counts. */}
+      <span className={counts.working?"working":undefined}>{counts.working} working</span><span className={counts.idle?"idle":undefined}>{counts.idle} idle</span><span>{counts.sleeping} sleeping</span>{counts.error>0&&<span className="error">{counts.error} error</span>}
     </div>
     <section className="delegate-card">
       <div className="delegate-head"><div><GitBranch size={15}/><span><strong>Delegate a bounded task</strong><small>{canModelDelegate?"The model can also invoke Trebell delegation when parallel work is useful.":"Manual delegation is available; this runtime does not expose Trebell's delegation tool directly to the model."}</small></span></div>{activeThread?.id&&onDelegate&&<button onClick={()=>{setDelegateOpen(value=>!value);setDelegateError("")}} disabled={busy}>{delegateOpen?"Close":"Delegate"}</button>}</div>

@@ -638,7 +638,8 @@
 :root:root .agents-page .agent-fleet-stats span::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--tx3)}
 :root:root .agents-page .agent-fleet-stats span.working{border-color:color-mix(in srgb,var(--ac) 35%,transparent)!important;background:var(--acsoft)!important;color:var(--ac)!important}
 :root:root .agents-page .agent-fleet-stats span.working::before{background:var(--ac)}
-:root:root .agents-page .agent-fleet-stats span:nth-child(2)::before{background:var(--ok)}
+/* Idle agents are ready for work: the green dot follows a non-zero idle count, not the chip's position. */
+:root:root .agents-page .agent-fleet-stats span.idle::before{background:var(--ok)}
 :root:root .agents-page .agent-fleet-stats span.error{border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
 :root:root .agents-page .agent-fleet-stats span.error::before{background:var(--err)}
 

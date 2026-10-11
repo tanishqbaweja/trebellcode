@@ -50,11 +50,12 @@ async function openAgents(page,fixture){
   return agents;
 }
 
-// The chip's text color, beside what the accent token resolves to in the current mode.
+// The chips' text and status-dot colors, beside what the accent and ok tokens resolve to in the current mode.
 const chipColors=agents=>agents.evaluate(node=>{
-  const color=element=>getComputedStyle(element).color,chips=[...node.querySelectorAll(".agent-fleet-stats span")];
-  const probe=document.createElement("span");probe.style.color="var(--ac)";node.appendChild(probe);const accent=color(probe);probe.remove();
-  return {accent,working:color(chips.find(chip=>/working$/.test(chip.textContent))),sleeping:color(chips.find(chip=>/sleeping$/.test(chip.textContent)))};
+  const color=element=>getComputedStyle(element).color,chips=[...node.querySelectorAll(".agent-fleet-stats span")],chip=name=>chips.find(item=>new RegExp(name+"$").test(item.textContent));
+  const dot=element=>getComputedStyle(element,"::before").backgroundColor;
+  const probe=document.createElement("span");node.appendChild(probe);probe.style.color="var(--ac)";const accent=color(probe);probe.style.color="var(--ok)";const ok=color(probe);probe.remove();
+  return {accent,ok,working:color(chip("working")),sleeping:color(chip("sleeping")),idleDot:dot(chip("idle")),sleepingDot:dot(chip("sleeping"))};
 });
 
 test("the fleet working chip stays neutral while no agent works",async({page})=>{
@@ -65,11 +66,14 @@ test("the fleet working chip stays neutral while no agent works",async({page})=>
     const working=agents.locator(".agent-fleet-stats span").filter({hasText:/working$/});
     await expect(working).toHaveText("0 working");
     await expect(working).not.toHaveClass(/\bworking\b/);
+    await expect(agents.locator(".agent-fleet-stats span").filter({hasText:/idle$/})).toHaveText("1 idle");
     for(const mode of ["dark","light"]){
       await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
       const colors=await chipColors(agents);
       // Zero working reads like the other neutral counts, not in the accent that marks live work.
       expect(colors.working,mode).toBe(colors.sleeping);expect(colors.working,mode).not.toBe(colors.accent);
+      // An idle agent is ready for work, so a non-zero idle count keeps its green dot.
+      expect(colors.idleDot,mode).toBe(colors.ok);
       await page.screenshot({animations:"disabled",path:auditDir+`agents-fleet-idle-${mode}-1600x980.png`});
     }
   }finally{await fixture.close()}
@@ -83,8 +87,14 @@ test("the fleet working chip takes the accent while an agent works",async({page}
     const working=agents.locator(".agent-fleet-stats span").filter({hasText:/working$/});
     await expect(working).toHaveText("1 working");
     await expect(working).toHaveClass(/\bworking\b/);
-    const colors=await chipColors(agents);
-    expect(colors.working).toBe(colors.accent);
-    await page.screenshot({animations:"disabled",path:auditDir+"agents-fleet-working-dark-1600x980.png"});
+    await expect(agents.locator(".agent-fleet-stats span").filter({hasText:/idle$/})).toHaveText("0 idle");
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      const colors=await chipColors(agents);
+      expect(colors.working,mode).toBe(colors.accent);
+      // "0 idle" keeps a neutral dot like "0 sleeping": the green follows the count, not the chip's position.
+      expect(colors.idleDot,mode).toBe(colors.sleepingDot);expect(colors.idleDot,mode).not.toBe(colors.ok);
+      await page.screenshot({animations:"disabled",path:auditDir+`agents-fleet-working-${mode}-1600x980.png`});
+    }
   }finally{await fixture.close()}
 });
