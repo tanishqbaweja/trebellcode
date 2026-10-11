@@ -203,7 +203,8 @@ test("Codex thread history opens from bounded item pages and loads older items o
     expect(resumeCall?.params?.excludeTurns).toBe(true);expect(resumeCall?.params?.initialTurnsPage).toBeUndefined();
     const initialItems=calls.find(call=>call.method==="thread/items/list"&&call.params?.cursor==="latest-items");
     expect(initialItems?.params).toEqual({threadId:thread.id,cursor:"latest-items",limit:100,sortDirection:"desc"});
-    expect(calls.some(call=>call.method==="thread/turns/list")).toBe(false);
+    // The rows come from item pages; the one turn page read beside them has no items, only how each turn ended.
+    expect(calls.filter(call=>call.method==="thread/turns/list").map(call=>call.params)).toEqual([{threadId:thread.id,cursor:"latest-turn",limit:200,sortDirection:"desc",itemsView:"notLoaded"}]);
     const restoredCommand=page.locator(".tool-event").filter({hasText:"npm test -- --runInBand"});await expect(restoredCommand).toBeVisible();await restoredCommand.locator("summary").click();await expect(restoredCommand).toContainText("20 tests passed");
     // The expanded command shows the command and its output once each, not again inside a raw event dump.
     await expect(restoredCommand.locator(".tool-json")).toHaveCount(0);

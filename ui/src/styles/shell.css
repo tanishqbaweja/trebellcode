@@ -245,6 +245,13 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .turn-outcome.tone-warn{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
 .conversation-column .turn-outcome.tone-err{border-color:var(--errb);background:var(--errt);color:var(--err)}
 .conversation-column .turn-outcome svg{flex:none}
+/* A turn that failed or was stopped before any reply ends with a row of its own (TurnOutcomeRow): the heading and the pill on
+   one line (two when narrow), then the error it ended with in full, wrapped however long it is, unbroken URLs included. */
+.conversation-column .turn-outcome-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-height:28px}
+.conversation-column .turn-outcome-head .assistant-heading{padding-top:0}
+.conversation-column .turn-outcome-head .turn-outcome{margin-top:0}
+.conversation-column .turn-outcome-message{margin:3px 0 0;font-size:12.5px;line-height:1.6;color:var(--err);white-space:pre-wrap;overflow-wrap:anywhere}
+.conversation-column .turn-outcome-message.tone-warn{color:var(--warn)}
 .conversation-column .assistant-message-text::selection{background:color-mix(in srgb,var(--ac) 32%,transparent);color:var(--tx0)}
 /* Markdown in replies (ChatMarkdown): blocks keep the reply's rhythm, code reads as code, and wide tables and code scroll
    inside the reply instead of widening the conversation. */
@@ -744,9 +751,11 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* The latest turn reads top-down: the user's message, the activity card, then the reply with its outcome pill. The card stays
    a sibling of the history in the DOM (live reasoning rows stay out of .conversation-history); only the visual order changes,
    and only the card's own turn's rows move: those after the .latest-turn-start marker the conversation places (a turn that
-   started without a user message, as a goal continuing, keeps the previous turn's reply above its card). */
+   started without a user message, as a goal continuing, keeps the previous turn's reply above its card). The outcome row of
+   the card's turn moves with them, also when it follows the turn's message directly and no marker is placed. */
 .chat-workspace .conversation-column:has(> .agent-block){display:flex;flex-direction:column}
 .chat-workspace .conversation-column:has(> .agent-block)>.conversation-history{display:contents}
 .chat-workspace .conversation-column:has(> .agent-block)>.agent-block{order:2}
 .chat-workspace .conversation-column:has(> .agent-block)>.conversation-history>.latest-turn-start~:is(.history-assistant,.reasoning-row){order:3}
+.chat-workspace .conversation-column:has(> .agent-block)>.conversation-history>.turn-outcome-row.latest-turn-end{order:3}
 .chat-workspace .conversation-column:has(> .agent-block)>.agent-block~*{order:4}

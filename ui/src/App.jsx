@@ -25,7 +25,7 @@ import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
 import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId } from "./thread-history.js";
-import { assistantRowDecorations, mergeTurnOutcomes, permissionModeLabel, turnInfoKey, turnOutcomeStatus } from "./turn-outcome.js";
+import { assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, turnEndRows, turnFailureText, turnInfoKey, turnOutcomeStatus } from "./turn-outcome.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
@@ -170,6 +170,8 @@ const MAX_COMPOSER_CHARS=120_000;
 const HISTORY_ITEM_PAGE_LIMIT=100;
 const HISTORY_ITEM_SCAN_PAGES=4;
 const HISTORY_TURN_PAGE_LIMIT=40;
+// Turns per page of outcomes (turns without items) for an item-paged history: more than one item page can show.
+const HISTORY_TURN_OUTCOME_LIMIT=200;
 
 function visibleHistoryEntry(entry){
   const item=entry?.item;
@@ -187,12 +189,36 @@ async function loadItemHistoryPage(rpc,threadId,cursor){
   return {data,nextCursor,backwardsCursor};
 }
 
+// Item pages say nothing of how a turn ended, so an item-paged history reads it from turn pages without items, newest first:
+// a page of them beside the first item page, and more as older item pages need them (turnOutcomesForItemPage). A harness
+// that cannot list them leaves those turns without an outcome, as before.
+async function loadTurnOutcomePage(rpc,threadId,cursor){
+  if(!cursor)return {data:[],nextCursor:null};
+  try{const page=await rpc.request("thread/turns/list",{threadId,cursor,limit:HISTORY_TURN_OUTCOME_LIMIT,sortDirection:"desc",itemsView:"notLoaded"});return {data:page?.data||[],nextCursor:page?.nextCursor||null}}
+  catch{return {data:[],nextCursor:null}}
+}
+// The turns of an older item page that the turn pages read so far do not cover, read on from where they stopped (meta holds
+// that cursor and the turn ids read, for one thread).
+async function turnOutcomesForItemPage(rpc,threadId,meta,entries=[]){
+  if(!meta||meta.threadId!==threadId)return [];
+  const wanted=[...new Set((entries||[]).map(entry=>String(entry?.turnId||"")).filter(Boolean))],turns=[];
+  for(let pageIndex=0;meta.cursor&&pageIndex<HISTORY_ITEM_SCAN_PAGES&&wanted.some(id=>!meta.covered.has(id));pageIndex++){
+    const page=await loadTurnOutcomePage(rpc,threadId,meta.cursor);
+    for(const turn of page.data)if(turn?.id){meta.covered.add(String(turn.id));turns.push(turn)}
+    meta.cursor=page.nextCursor;
+  }
+  return turns;
+}
+
 async function resumeWithBoundedHistory(rpc,params){
   try{
     const resumed=await rpc.request("thread/resume",{...params,excludeTurns:true});
     const itemCursor=resumed?.itemsBackwardsCursor||null;
     if(itemCursor){
-      try{return {...resumed,__trebellHistoryPage:{kind:"items",...await loadItemHistoryPage(rpc,params.threadId,itemCursor)}}}catch{}
+      try{
+        const [items,outcomes]=await Promise.all([loadItemHistoryPage(rpc,params.threadId,itemCursor),loadTurnOutcomePage(rpc,params.threadId,resumed?.turnsBackwardsCursor||null)]);
+        return {...resumed,__trebellHistoryPage:{kind:"items",...items,turns:outcomes.data,turnsCursor:outcomes.nextCursor}};
+      }catch{}
     }
     const turnCursor=resumed?.turnsBackwardsCursor||null;
     if(turnCursor){
@@ -395,6 +421,9 @@ function ThreadFindBar({state,inputRef,barRef,onQuery,onPrevious,onNext,onClose}
   </div>;
 }
 
+function TurnOutcomePill({label,tone}){
+  return <span className={"turn-outcome tone-"+(tone||"ok")} data-testid="turn-outcome">{tone==="err"?<X size={11} aria-hidden="true"/>:tone==="warn"?<CircleStop size={11} aria-hidden="true"/>:<Check size={11} aria-hidden="true"/>}{label}</span>;
+}
 const ConversationMessageRow=memo(function ConversationMessageRow({message,activeFind,allowRevert,projectPath,environmentId,threadId,onEditFromHere,heading="",outcomeLabel="",outcomeTone=""}){
   const parsed=useMemo(()=>message.role==="user"?null:parseVisualizationMessage(message.text),[message.role,message.text]);
   if(message.role==="reasoning")return <ReasoningRow id={message.id} messageId={message.id} text={message.text}/>;
@@ -402,8 +431,14 @@ const ConversationMessageRow=memo(function ConversationMessageRow({message,activ
   return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text chat-markdown" data-assistant-citation-source={message.id}><ChatMarkdown text={parsed.text}/></div>}{(parsed?.visualizations||[]).map((visualization,index)=>{
     const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
     return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
-  })}{outcomeLabel&&<span className={"turn-outcome tone-"+(outcomeTone||"ok")} data-testid="turn-outcome">{outcomeTone==="err"?<X size={11} aria-hidden="true"/>:outcomeTone==="warn"?<CircleStop size={11} aria-hidden="true"/>:<Check size={11} aria-hidden="true"/>}{outcomeLabel}</span>}</div></div>;
+  })}{outcomeLabel&&<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/>}</div></div>;
 },sameConversationMessageRowProps);
+// How a turn that failed or was stopped before any reply ended (turn-outcome.js turnEndRows), where its reply would have
+// been: the heading and pill on one line, then the error it ended with, in full. No message id: it is not a message, so
+// find, scroll anchors and citations pass it by.
+const TurnOutcomeRow=memo(function TurnOutcomeRow({turnId,heading="",outcomeLabel,outcomeTone,message="",latest=false}){
+  return <div className={"history-assistant turn-outcome-row"+(latest?" latest-turn-end":"")} data-testid="turn-outcome-row" data-turn-id={turnId}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body"><div className="turn-outcome-head">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/></div>{message&&<p className={"turn-outcome-message tone-"+outcomeTone}>{message}</p>}</div></div>;
+});
 
 const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,rootRef,forceMount=false,initialMount=false,renderMessage}){
   const ref=useRef(null),[mounted,setMounted]=useState(Boolean(initialMount||forceMount)),[placeholderHeight,setPlaceholderHeight]=useState(Math.max(1,Number(chunk.estimatedHeight)||1));
@@ -433,7 +468,9 @@ const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,roo
   return <div ref={ref} className={"conversation-virtual-chunk"+(mounted?" mounted":" placeholder")} data-virtual-chunk={chunk.key} style={mounted?undefined:{height:placeholderHeight}}>{mounted?chunk.messages.map(renderMessage):null}</div>;
 });
 
-const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,activeFindItemId=null,anchorItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null}){
+// cardFailedTurns: the turns whose failure the live activity card lists, one id per line (a string, so the memo holds while
+// the card's events change around them).
+const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,activeFindItemId=null,anchorItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null,cardFailedTurns=""}){
   const historyRef=useRef(null);
   // The chunks holding the active find match and an older page's anchor row mount at once, so both can be scrolled to exactly.
   const virtualized=shouldVirtualizeConversation(messages),chunks=useMemo(()=>virtualized?conversationVirtualChunks(messages):[],[messages,virtualized]),forcedChunk=virtualized?conversationChunkIndexForMessage(chunks,activeFindItemId):-1,anchorChunk=virtualized?conversationChunkIndexForMessage(chunks,anchorItemId):-1;
@@ -442,23 +479,27 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
   const latestStart=useMemo(()=>virtualized?-1:latestTurnRowsStart(messages,cardTurnId),[messages,cardTurnId,virtualized]);
   // A turn's first reply names the harness (and the mode this window sent it with); its last reply says how it ended.
   const decorations=useMemo(()=>assistantRowDecorations(messages,{harnessLabel,turnInfo,threadId}),[messages,harnessLabel,turnInfo,threadId]);
-  const renderMessage=useCallback(message=>{const decoration=decorations.get(String(message.id));const row=<ConversationMessageRow
-    key={message.id}
-    message={message}
-    activeFind={String(message.id)===String(activeFindItemId||"")}
-    allowRevert={allowRevert}
-    projectPath={projectPath}
-    environmentId={environmentId}
-    threadId={threadId}
-    onEditFromHere={onEditFromHere}
-    heading={decoration?.heading||""}
-    outcomeLabel={decoration?.outcomeLabel||""}
-    outcomeTone={decoration?.outcomeTone||""}
-  />;
-    // The turns not loaded between a detached find hit and the newest pages are marked where they belong, and load from there.
-    if(!historyGap||String(message.id)!==String(historyGap.beforeId))return row;
-    return <React.Fragment key={message.id}><div className="history-page-control history-gap" data-testid="history-gap"><button type="button" disabled={historyBusy} onClick={onLoadGap}>{loadingGap?"Loading turns…":<>{historyGapLabel(historyGap.missing)}<span className="history-gap-load">· Load</span></>}</button></div>{row}</React.Fragment>;
-  },[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations,historyGap,historyBusy,loadingGap,onLoadGap]);
+  // A turn that failed or was stopped before any reply ends with a row saying so, unless the live card lists that failure.
+  const cardFailedTurnSet=useMemo(()=>new Set(String(cardFailedTurns||"").split("\n").filter(Boolean)),[cardFailedTurns]);
+  const turnEnds=useMemo(()=>turnEndRows(messages,{harnessLabel,turnInfo,threadId,cardFailedTurnIds:cardFailedTurnSet,cardTurnId,reorder:!virtualized}),[messages,harnessLabel,turnInfo,threadId,cardFailedTurnSet,cardTurnId,virtualized]);
+  // One fragment per message whatever goes with it, so no row remounts when a gap marker or its turn's outcome row comes or goes.
+  const renderMessage=useCallback(message=>{const id=String(message.id),decoration=decorations.get(id),end=turnEnds.get(id);return <React.Fragment key={message.id}>
+    {/* The turns not loaded between a detached find hit and the newest pages are marked where they belong, and load from there. */}
+    {historyGap&&id===String(historyGap.beforeId)&&<div className="history-page-control history-gap" data-testid="history-gap"><button type="button" disabled={historyBusy} onClick={onLoadGap}>{loadingGap?"Loading turns…":<>{historyGapLabel(historyGap.missing)}<span className="history-gap-load">· Load</span></>}</button></div>}
+    <ConversationMessageRow
+      message={message}
+      activeFind={id===String(activeFindItemId||"")}
+      allowRevert={allowRevert}
+      projectPath={projectPath}
+      environmentId={environmentId}
+      threadId={threadId}
+      onEditFromHere={onEditFromHere}
+      heading={decoration?.heading||""}
+      outcomeLabel={decoration?.outcomeLabel||""}
+      outcomeTone={decoration?.outcomeTone||""}
+    />
+    {end&&<TurnOutcomeRow {...end}/>}
+  </React.Fragment>},[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations,turnEnds,historyGap,historyBusy,loadingGap,onLoadGap]);
   return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={historyBusy} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{virtualized
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
@@ -788,7 +829,8 @@ export default function App(){
   const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
   const assistantStreamBufferRef=useRef(null);
   // Per thread and turn: the mode this window sent the turn with, and how and how fast it ended (see turn-outcome.js).
-  const [turnInfo,setTurnInfo]=useState({});const turnClockRef=useRef(new Map());
+  // turnOutcomePagesRef: for the open item-paged thread, where its turn outcome pages stopped and the turns they covered.
+  const [turnInfo,setTurnInfo]=useState({});const turnClockRef=useRef(new Map());const turnOutcomePagesRef=useRef(null);
   const [resolvedMode,setResolvedMode]=useState(()=>typeof document!=="undefined"&&document.documentElement.dataset.mode==="light"?"light":"dark");
   if(!assistantStreamBufferRef.current)assistantStreamBufferRef.current=createTextFrameBuffer({
     schedule:callback=>requestAnimationFrame(callback),
@@ -2483,9 +2525,10 @@ export default function App(){
       if(outcomeKey){
         const startedAtMs=turnClockRef.current.get(outcomeKey);turnClockRef.current.delete(outcomeKey);
         const measuredMs=startedAtMs?Math.max(0,Date.now()-startedAtMs):null,reportedMs=Number(p.turn?.durationMs);
-        const durationMs=measuredMs||(Number.isFinite(reportedMs)&&reportedMs>0?reportedMs:null);
-        // A repeated completion (a replay after a reconnect) keeps the time measured the first time.
-        if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:{...prev[outcomeKey],status:outcomeStatus,durationMs:prev[outcomeKey]?.durationMs??durationMs??null}}));
+        const durationMs=measuredMs||(Number.isFinite(reportedMs)&&reportedMs>0?reportedMs:null),error=turnFailureText(p.turn);
+        // A repeated completion (a replay after a reconnect) keeps the time measured the first time. The error is what a turn
+        // without a reply shows once the card moves on.
+        if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:{...prev[outcomeKey],status:outcomeStatus,durationMs:prev[outcomeKey]?.durationMs??durationMs??null,...(error&&!prev[outcomeKey]?.error?{error}:{})}}));
       }
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});markThreadTurn(threadId,false);
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
@@ -3031,8 +3074,11 @@ export default function App(){
       if(resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
         const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
-        if(page.kind!=="items")setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,page.data||[]));setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",itemHistory:page.kind==="items",loading:false});
-      }else{setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
+        // An item-paged thread takes the failed and stopped turns from its outcome pages: a done pill is left to turn pages, so
+        // it shows none on only some turns, while a failure or stop always says so.
+        turnOutcomePagesRef.current=page.kind==="items"?{threadId:resumed.thread.id,cursor:page.turnsCursor||null,covered:new Set((page.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean))}:null;
+        setTurnInfo(prev=>page.kind==="items"?mergeTurnOutcomes(prev,resumed.thread.id,page.turns||[],{failuresOnly:true}):mergeTurnOutcomes(prev,resumed.thread.id,page.data||[]));setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",itemHistory:page.kind==="items",loading:false});
+      }else{turnOutcomePagesRef.current=null;setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex")applyProviderInventory(harnessInventory(runtimeInventoryRef.current,resumed.thread.providerMeta))
     }
     if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
@@ -3100,6 +3146,8 @@ export default function App(){
           ?await loadItemHistoryPage(rpc,threadId,cursor)
           :await rpc.request("thread/turns/list",{threadId,cursor,limit:HISTORY_TURN_PAGE_LIMIT,sortDirection:"desc",itemsView:"full"});
         if(activeThreadRef.current?.id!==threadId)return;
+        const outcomeTurns=itemPaging?await turnOutcomesForItemPage(rpc,threadId,turnOutcomePagesRef.current,page?.data):page?.data||[];
+        if(activeThreadRef.current?.id!==threadId)return;
         const data=[...(page?.data||[])].reverse(),nextCursor=page?.nextCursor||null;
         const earlier=itemPaging?historyFromItemEntries(data,checkpointByTurn):historyFromTurns(data,checkpointByTurn);
         const pageTurnIds=[...new Set(data.map(entry=>itemPaging?entry?.turnId:entry?.id).filter(Boolean).map(String))];
@@ -3110,9 +3158,9 @@ export default function App(){
           const anchor=captureHistoryPrependAnchor(node);
           pendingHistoryPrependRef.current={threadId,scrollHeight:node.scrollHeight,scrollTop:node.scrollTop,anchor};setHistoryAnchorItemId(anchor?.messageId??null);
         }
-        // A thread opened on item pages has no turn outcomes for the turns shown; turn pages loaded into it later (above a find hit,
-        // or after one joined the history) add none either, so no turn shows a pill the others cannot.
-        if(!itemPaging&&!historyPage.itemHistory)setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
+        // A thread opened on item pages takes only failed and stopped turns, from its outcome pages and from turn pages loaded into
+        // it later (above a find hit, or after one joined the history), so no turn shows a done pill the others cannot.
+        setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,outcomeTurns,{failuresOnly:itemPaging||Boolean(historyPage.itemHistory)}));
         if(above){
           // Older turns join the detached hit's group; the gap below it is unchanged.
           if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
@@ -3144,7 +3192,8 @@ export default function App(){
     if(!page?.nextCursor||!occurrence.turnCursor||windowTurnIds.includes(turnId)){setMessages(current=>mergeHistoryMessages(found,current));return}
     const [earlierCursor,missing]=await Promise.all([
       // The cursor of the turn before the hit, to load what lies above it (failing that, the hit's own cursor: its repeat is dropped).
-      rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,sortDirection:"desc",itemsView:"notLoaded"}).then(result=>result?.nextCursor||null,()=>occurrence.turnCursor),
+      // The page holds the hit's own turn, which says whether that turn failed or was stopped.
+      rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,sortDirection:"desc",itemsView:"notLoaded"}).then(result=>{setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,result?.data||[],{failuresOnly:true}));return result?.nextCursor||null},()=>occurrence.turnCursor),
       countUnloadedTurns((method,params)=>rpc.request(method,params),{threadId,turnCursor:occurrence.turnCursor,turnId,loadedTurnIds:windowTurnIds}).catch(()=>null),
     ]);
     if(stale())return;
@@ -3191,7 +3240,7 @@ export default function App(){
         if(!found.some(message=>String(message.id)===itemId)&&occurrence.turnCursor){
           const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
           found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn));
-          if(!historyPage.itemHistory)setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
+          setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[],{failuresOnly:Boolean(historyPage.itemHistory)}));
         }
         if(stale())return;
         if(found.length)await placeFoundHistory(threadId,occurrence,found,stale);
@@ -4590,7 +4639,7 @@ export default function App(){
           <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId}/>
+              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {shownApproval&&<div className="inline-approval"><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
