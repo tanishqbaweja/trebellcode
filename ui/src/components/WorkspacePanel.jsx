@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { Check, FileCode2, FileDiff, FileImage, FileText, Folder, LoaderCircle, Music2, Paperclip, RefreshCw, Save, Search, Video, WrapText, X } from "lucide-react";
 import { api } from "../api.js";
-import { actionError, gitStatusBadge, gitStatusEntry, splitPath } from "../inspector-labels.js";
+import { actionError, fileNameParts, gitStatusBadge, gitStatusEntry, splitPath } from "../inspector-labels.js";
 import { highlightSyntax } from "../syntax-language.js";
 import { WORKSPACE_CHANGED_PAGE_SIZE, WORKSPACE_DIFF_CHUNK_CHARS, WORKSPACE_TREE_PAGE_SIZE, workspaceListWindow, workspaceTextWindow } from "../workspace-view-window.js";
 import OpenInPicker from "./OpenInPicker.jsx";
@@ -90,10 +90,17 @@ function treeLabel(entry,searching){
 // ("src/new-fe…" before). The separator is only hidden, so the row's text is still the path ("dir/name"), and its button names the
 // whole path for screen readers.
 // An untracked folder ("name/") is named like a file instead of showing as a folder hint with no name.
-function ChangedFilePath({path}){
+// A name too long for the row is cut in the middle (fileNameParts), so its extension and the part that tells it apart from the other
+// changed names stay in view. The end sits in a right-to-left box that a narrow row clips from its start; the inner isolate keeps
+// the name itself reading left to right.
+function ChangedFileName({name,parts}){
+  if(!parts?.lead)return <bdi className="changed-file-name">{name}</bdi>;
+  return <bdi className="changed-file-name parted"><span className="changed-file-lead">{parts.lead}</span><span className="changed-file-tail"><bdi dir="ltr">{parts.tail}</bdi></span></bdi>;
+}
+function ChangedFilePath({path,parts}){
   const {dir,sep,name}=splitPath(path);
-  if(!dir)return <span className="changed-file-path split"><bdi className="changed-file-name">{name}</bdi></span>;
-  return <span className="changed-file-path split"><bdi className="changed-file-dir">{dir}</bdi><span className="changed-file-sep">{sep}</span><bdi className="changed-file-name">{name}</bdi></span>;
+  if(!dir)return <span className="changed-file-path split"><ChangedFileName name={name} parts={parts}/></span>;
+  return <span className="changed-file-path split"><bdi className="changed-file-dir">{dir}</bdi><span className="changed-file-sep">{sep}</span><ChangedFileName name={name} parts={parts}/></span>;
 }
 
 // The inspector's Files and Diff tabs and this panel's Files | Changes switch are one choice, which the inspector holds (`tab`): the
@@ -228,6 +235,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const changes=useMemo(()=>String(diff.status||"").split(/\r?\n/).filter(Boolean).map(gitStatusEntry),[diff.status]);
   const changedPaths=useMemo(()=>changes.map(change=>change.path),[changes]);
   const changedBadges=useMemo(()=>new Map(changes.map(change=>[change.path,gitStatusBadge(change.code)])),[changes]);
+  // Each name's cut is worked out against every changed name, shown or not, so it keeps what tells it apart from all of them.
+  const changedNameParts=useMemo(()=>{const parts=fileNameParts(changedPaths.map(path=>splitPath(path).name));return new Map(changedPaths.map((path,index)=>[path,parts[index]]))},[changedPaths]);
   const diffPanelError=[diffError&&actionError("Could not refresh the diff",diffError),reviewError].filter(Boolean).join(" · ");
   const source=query?searchResults:entries;
   const treeWindow=useMemo(()=>query?{visible:source,total:source.length,shown:source.length,hasMore:false,nextCount:0}:workspaceListWindow(source,{limit:treeLimit,pageSize:WORKSPACE_TREE_PAGE_SIZE}),[source,query,treeLimit]);
@@ -264,7 +273,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     </div>}
     {tab==="diff"&&(changedPaths.length?<div className={"changes-view"+(diffPanelError?" has-action-error":"")}>
       {diffPanelError&&<div className="inline-error workspace-diff-error" role="alert">{diffPanelError}</div>}
-      <div className="changed-files">{changedWindow.visible.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>changeReviewed(path,!reviewedFiles.includes(path))} disabled={actionBusy==="reviewed:"+path} aria-label={path} title={path+(reviewedFiles.includes(path)?" · reviewed. Click to mark as not reviewed":" · click to mark as reviewed")}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span><ChangedFilePath path={path}/></button><em className="changed-file-code" data-kind={changedBadges.get(path)?.kind} title={changedBadges.get(path)?.title}>{changedBadges.get(path)?.label}</em><button className="review-comment" title="Add review comment as context" onClick={()=>addReviewComment(path)} disabled={actionBusy==="comment:"+path}>+</button></div>)}{changedWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setChangedLimit(limit=>limit+WORKSPACE_CHANGED_PAGE_SIZE)}>Show {changedWindow.nextCount} more changed files</button><span>{changedWindow.shown} of {changedWindow.total} shown</span></div>}</div>
+      <div className="changed-files">{changedWindow.visible.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>changeReviewed(path,!reviewedFiles.includes(path))} disabled={actionBusy==="reviewed:"+path} aria-label={path} title={path+(reviewedFiles.includes(path)?" · reviewed. Click to mark as not reviewed":" · click to mark as reviewed")}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span><ChangedFilePath path={path} parts={changedNameParts.get(path)}/></button><em className="changed-file-code" data-kind={changedBadges.get(path)?.kind} title={changedBadges.get(path)?.title}>{changedBadges.get(path)?.label}</em><button className="review-comment" title="Add review comment as context" onClick={()=>addReviewComment(path)} disabled={actionBusy==="comment:"+path}>+</button></div>)}{changedWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setChangedLimit(limit=>limit+WORKSPACE_CHANGED_PAGE_SIZE)}>Show {changedWindow.nextCount} more changed files</button><span>{changedWindow.shown} of {changedWindow.total} shown</span></div>}</div>
       <div className="workspace-diff-preview"><pre className={"git-diff"+(wrapDiff?" wrap":"")} data-testid="workspace-diff-preview">{diffLines}</pre>{diffWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setDiffLimit(limit=>limit+WORKSPACE_DIFF_CHUNK_CHARS)}>Show more diff</button><span>{Math.round(diffWindow.shown/1000)}k of {Math.round(diffWindow.total/1000)}k characters shown</span></div>}</div>
     </div>:(diffError||diff.error)?<div className="changes-empty error"><FileDiff size={20}/><strong>Could not load changes</strong><span>{diffError||diff.error}</span></div>
       :!projectPath?<div className="changes-empty"><FileDiff size={20}/><strong>No project open</strong><span>Open a project to review its changes.</span></div>

@@ -1,6 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionError, actionErrorUnlessNamed, asSentence, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusEntry, gitStatusPath, splitPath } from "../ui/src/inspector-labels.js";
+import { actionError, actionErrorUnlessNamed, asSentence, distinctPathParts, distinctTextParts, fileNameParts, gitStatusBadge, gitStatusEntry, gitStatusPath, splitPath } from "../ui/src/inspector-labels.js";
+
+test("a changed file's name is cut in the middle, keeping the end that tells it apart and its extension",()=>{
+  const cut=names=>fileNameParts(names).map(({lead,tail})=>[lead,tail]);
+  // Names alike to their last characters keep their own ends, from the start of the word where they part.
+  assert.deepEqual(cut(["artifact_1791317470236_d6b22939.png","artifact_1791317477991_ae1a8b66.png","google_startups_window.png","capcut-network-capture/"]),
+    [["artifact_1791317470236_","d6b22939.png"],["artifact_1791317477991_","ae1a8b66.png"],["google_startups_","window.png"],["capcut-network-","capture/"]]);
+  assert.deepEqual(cut(["tool-activity.js","tool-activity-summary.js","native-agent-session-recovery.mjs","native-agent-session-recorder.mjs"]),
+    [["tool-","activity.js"],["tool-activity-","summary.js"],["native-agent-session-","recovery.mjs"],["native-agent-session-","recorder.mjs"]]);
+  // The tail starts at the nearer word: the next one when the word it falls in starts far back or is the name's own start.
+  assert.deepEqual(cut(["ui-tool-activity.test.mjs","package-lock.json","tool-activity.js"]).slice(0,2),[["ui-tool-activity.","test.mjs"],["package-","lock.json"]]);
+  // Names that differ in the middle keep where they part, even past the extension's room.
+  assert.deepEqual(cut(["workspace-panel-dark-1280x800.png","workspace-panel-light-1280x800.png"]),[["workspace-panel-","dark-1280x800.png"],["workspace-panel-","light-1280x800.png"]]);
+  // Short names, one word and its extension, dotfiles and names alike in full are not cut in the middle at all.
+  for(const name of ["goal.md","package.json","visual.spec.js","README",".gitignore","verylongname.png"])assert.deepEqual(cut([name,"package-lock.json","visual-tour.spec.js"])[0],["",name]);
+  assert.deepEqual(cut(["index.js","index.js"]),[["","index.js"],["","index.js"]]);
+  // A long word with no boundary near is cut inside it, so the extension stays; a cut never splits a surrogate pair or leaves a lead
+  // of one character.
+  assert.deepEqual(cut(["supercalifragilisticexpialidocious.ts"]),[["supercalifragilisticexpialid","ocious.ts"]]);
+  for(const [lead,tail] of cut(["notes-😀😀😀😀😀😀😀😀😀a.txt","notes-😀😀😀😀😀😀😀😀😁a.txt","ab.txt"])){assert.doesNotMatch(tail,/^[\uDC00-\uDFFF]/);assert.ok(lead.length!==1)}
+  // Nothing is lost, for any list.
+  for(const names of [["a/b.js","b.js"],["",""],["x"],["same.txt","same.txt"],["é-long-name-thing.md","é-long-name-other.md"]])for(const [index,{lead,tail}] of fileNameParts(names).entries())assert.equal(lead+tail,names[index]);
+  assert.deepEqual(fileNameParts(),[]);
+});
 
 test("a reason followed by another sentence ends as a sentence",()=>{
   assert.equal(asSentence("Deliberate context refresh failure"),"Deliberate context refresh failure.");

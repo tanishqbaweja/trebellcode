@@ -1119,6 +1119,16 @@
    hidden second line instead of leaving a stray letter. */
 :root:root .context-panel .changed-file-path.split{flex-wrap:wrap;height:18px;line-height:18px;row-gap:0;overflow:hidden}
 :root:root .context-panel .changed-file-path.split>.changed-file-dir{min-width:4.5em;line-height:18px}
+/* A name too long for its row is cut in the middle (fileNameParts): its start gives way to an ellipsis first, so its end (the extension,
+   and the part where it differs from the other changed names) stays in view, "artif…d6b22939.png" rather than "artifact_179…".
+   The start keeps two characters, since an ellipsis never replaces the first one. When the row cannot hold that end as well, the end
+   loses characters from its own start, behind the same ellipsis ("a…6b22939.png"), so the extension stays. Both boxes are whole
+   characters wide, so the ellipsis meets the end with no gap and no half glyph shows; the half pixel keeps float error from costing
+   the start its ellipsis. */
+:root:root .context-panel .changed-file-path.split>.changed-file-name.parted{display:flex;min-width:0;max-width:calc(round(down,100%,1ch) + .5px)}
+:root:root .context-panel .changed-file-name.parted>span{overflow:hidden;white-space:nowrap}
+:root:root .context-panel .changed-file-name.parted>.changed-file-lead{flex:0 1 auto;min-width:calc(2ch + .5px);text-overflow:ellipsis}
+:root:root .context-panel .changed-file-name.parted>.changed-file-tail{flex:none;max-width:calc(100% - 2ch - .5px);max-width:round(down,100% - 2ch,1ch);direction:rtl;text-overflow:clip}
 
 /* Files in a narrow inspector (the 520px drawer, a dragged-in docked panel): one column. With no file open the tree takes the
    whole height; with a file open the tree keeps the top third and the viewer gets the full width below it. */

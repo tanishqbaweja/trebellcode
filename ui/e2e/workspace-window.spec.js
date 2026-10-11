@@ -331,3 +331,71 @@ test("a general chat keeps its Files view, with no Changes switch beside the dis
   await expect(right.locator(".file-head strong")).toHaveText("scratch.md");
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-general-chat-files-1280x800.png",fullPage:true});
 });
+
+// The text a reader sees in each changed file's name, left to right: the characters drawn inside every clipping box, "…" where an
+// ellipsis stands (after the last character kept, or before the first in a right-to-left box), "▒" for a character drawn only in
+// part, and a space wherever a visible gap parts two drawn pieces.
+function drawnChangedNames(right){
+  return right.locator(".changed-file-row .changed-file-name").evaluateAll(names=>names.map(element=>{
+    const canvas=document.createElement("canvas").getContext("2d"),row=element.closest(".changed-file-row"),pieces=[];
+    const walker=document.createTreeWalker(element,NodeFilter.SHOW_TEXT);
+    for(let node=walker.nextNode();node;node=walker.nextNode()){
+      let box=node.parentElement;while(box!==element&&getComputedStyle(box).overflowX==="visible")box=box.parentElement;
+      const style=getComputedStyle(box),own=box.getBoundingClientRect();let clip={left:own.left,right:own.right};
+      for(let outer=box.parentElement;outer&&outer!==row;outer=outer.parentElement)if(getComputedStyle(outer).overflowX!=="visible"){const rect=outer.getBoundingClientRect();clip={left:Math.max(clip.left,rect.left),right:Math.min(clip.right,rect.right)}}
+      const ellipsis=box.scrollWidth>box.clientWidth&&style.textOverflow==="ellipsis",rtl=style.direction==="rtl";
+      canvas.font=style.font;const mark=ellipsis?canvas.measureText("…").width:0;
+      const from=ellipsis&&rtl?own.left+mark:clip.left,to=ellipsis&&!rtl?Math.min(clip.right,own.right-mark):clip.right,shown=[];
+      for(let index=0;index<node.length;index++){
+        const range=document.createRange();range.setStart(node,index);range.setEnd(node,index+1);const rect=range.getBoundingClientRect();
+        if(rect.left>=from-0.5&&rect.right<=to+0.5)shown.push({text:node.data[index],left:rect.left,right:rect.right});
+        else if(!ellipsis&&rect.right>clip.left+0.5&&rect.left<clip.right-0.5)shown.push({text:"▒",left:rect.left,right:rect.right});
+      }
+      // An ellipsis never replaces the first character of its line: a box too narrow for both shows that character clipped.
+      if(ellipsis&&!shown.length)shown.push({text:"▒",left:own.left,right:own.left});
+      if(ellipsis&&rtl){const first=Math.min(...shown.map(piece=>piece.left));pieces.push({text:"…",left:first-mark,right:first})}
+      if(ellipsis&&!rtl){const last=Math.max(...shown.map(piece=>piece.right));pieces.push({text:"…",left:last,right:last+mark})}
+      pieces.push(...shown);
+    }
+    let text="",edge=null;
+    for(const piece of pieces.sort((a,b)=>a.left-b.left)){if(edge!==null&&piece.left-edge>2)text+=" ";text+=piece.text;edge=piece.right}
+    return text;
+  }));
+}
+
+test("changed files too long for the Diff list keep the end that tells them apart in view",async({page,request})=>{
+  test.setTimeout(45_000);
+  // This checkout's untracked files as they stood when the list cut them all to "artifact_179…", beside long names that share their
+  // start or their end.
+  const status=[["??","artifact_1791317470236_d6b22939.png"],["??","artifact_1791317477991_ae1a8b66.png"],["??","artifact_1791317484338_7c659e6b.png"],["??","artifact_1791317494127_7b87f9be.png"],
+    ["??","capcut-network-capture/"],["??","goal.md"],["??","google_startups_window.png"],[" M","ui/src/tool-activity.js"],["??","ui/src/tool-activity-summary.js"],[" M","tests/ui-tool-activity.test.mjs"],
+    [" M","src/native-agent-session-recovery.mjs"],["??","src/native-agent-session-recorder.mjs"],[" M","package.json"],[" M","package-lock.json"]];
+  await page.route("**/api/workspace/diff?**",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,status:status.map(([code,path])=>code+" "+path).join("\n"),diff:"diff --git a/goal.md b/goal.md\n--- a/goal.md\n+++ b/goal.md\n@@ -1 +1 @@\n-old\n+new\n",stderr:""})}));
+  const {right,top}=await openProjectInspector(page,request,"Workspace long names");
+  await top.getByRole("button",{name:"Diff",exact:true}).click();
+  const rows=right.locator(".changed-file-row");
+  await expect(rows).toHaveCount(status.length);
+  const names=status.map(([,path])=>path.replace(/\/$/,"").split("/").pop()+(path.endsWith("/")?"/":""));
+  // The text a drawn one can stand for: its pieces in order, with at least one character left out where an ellipsis stands.
+  const readAs=shown=>new RegExp("^"+shown.split("…").map(piece=>piece.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join(".+")+"$");
+  for(const [viewport,mode] of [[{width:1280,height:800},"dark"],[{width:1600,height:980},"light"],[{width:1280,height:800},"light"],[{width:1600,height:980},"dark"]]){
+    await page.setViewportSize(viewport);await page.evaluate(mode=>{document.documentElement.dataset.mode=mode},mode);
+    const tag=mode+"-"+viewport.width+"x"+viewport.height;
+    await expect.poll(async()=>(await drawnChangedNames(right)).some(name=>name.includes("…")),tag+": the list is narrow enough to cut names").toBe(true);
+    const drawn=await drawnChangedNames(right),shown=tag+": "+JSON.stringify(drawn);
+    // No row shows half a character, every row reads as its own name and no two read alike.
+    expect(drawn.filter(name=>name.includes("▒")),shown).toEqual([]);
+    expect(new Set(drawn).size,shown).toBe(drawn.length);
+    for(const [index,name] of names.entries())expect(name,tag).toMatch(readAs(drawn[index]));
+    // A cut name keeps its extension, and the end after its ellipsis tells it apart from every other cut name: the four artifacts end in
+    // their own hashes, and the tool-activity files in their own words.
+    for(const [index,name] of names.entries())if(/\.\w+$/.test(name))expect(drawn[index],tag+": "+name).toMatch(/\.\w+$/);
+    const ends=drawn.filter(name=>name.includes("…")).map(name=>name.slice(name.lastIndexOf("…")+1));
+    expect(new Set(ends).size,tag+": "+JSON.stringify(ends)).toBe(ends.length);
+    for(const index of [0,1,2,3])expect(drawn[index],shown).toMatch(/…\w{6,}\.png$/);
+    for(const [index,end] of [[7,/activity\.js$/],[8,/summary\.js$/],[9,/test\.mjs$/]])expect(drawn[index],shown).toMatch(end);
+    // The row still names the whole path, for the tooltip and for screen readers.
+    for(const [index,[,path]] of status.entries())await expect(rows.nth(index).locator("button").first()).toHaveAttribute("aria-label",path);
+    await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-long-names-"+tag+".png",fullPage:true});
+  }
+});

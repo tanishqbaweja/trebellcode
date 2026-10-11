@@ -121,3 +121,45 @@ export function distinctTextParts(texts=[]){
     return {lead:text.slice(0,start),tail,keep:Math.min(tail.length,Math.max(0,shared-start)+8)};
   });
 }
+
+// Where each changed file's name may be cut, in a list too narrow for whole names: in the middle, so the end stays in view. `tail` is
+// the end that stays, `lead` the start an ellipsis may cut ("artifa…d6b22939.png", never "artifact_179…" for four names alike).
+// The tail reaches back past the end the name shares with any other (".png" in "…d6b22939.png" and "…ae1a8b66.png"), so the
+// character where they part is in it, and it would hold the extension and about 6 characters before it. It starts at the nearer
+// word start: the start of the word that point falls in (if close, within 8, and not the name's own start) or the next word before
+// the extension that still holds where the names part ("package-" "lock.json", "ui-tool-activity." "test.mjs"). With neither, a
+// long start is cut mid-word and a short one not at all. A name with no lead is cut at its end as before, as are names alike in full
+// (one name in two folders): their folders tell them apart.
+export function fileNameParts(names=[]){
+  const list=(Array.isArray(names)?names:[]).map(name=>String(name??""));
+  // The longest end each name shares with a different name: sorted by their reversed text, it is shared with a neighbour.
+  const reversed=list.map(name=>name.split("").reverse().join("")),shared=list.map(()=>0);
+  const order=list.map((_,index)=>index).sort((a,b)=>reversed[a]<reversed[b]?-1:reversed[a]>reversed[b]?1:0);
+  const common=(a,b)=>{let length=0;while(length<a.length&&length<b.length&&a[length]===b[length])length++;return length};
+  for(let first=0;first<order.length;){
+    let end=first;while(end<order.length&&reversed[order[end]]===reversed[order[first]])end++;
+    const own=reversed[order[first]],value=Math.max(first>0?common(own,reversed[order[first-1]]):0,end<order.length?common(own,reversed[order[end]]):0);
+    for(let index=first;index<end;index++)shared[order[index]]=value;
+    first=end;
+  }
+  return list.map((name,index)=>{
+    const dot=name.lastIndexOf("."),extension=dot>0&&name.length-dot<=10?name.length-dot:0;
+    // The tail starts at or before `latest` (so it holds where the names part) and, if it can, at or before `target`.
+    const latest=name.length-Math.min(name.length,shared[index]+1),target=Math.min(latest,name.length-Math.min(name.length,extension+6));
+    const wordStart=at=>at<name.length&&WORD_CHARACTER.test(name[at])&&(at===0||!WORD_CHARACTER.test(name[at-1]));
+    let start=0;
+    if(target>0){
+      const limit=extension?Math.min(latest,dot-1):latest;
+      let back=target;while(back>0&&!wordStart(back))back--;
+      let next=target+1;while(next<=limit&&!wordStart(next))next++;
+      const backFits=back>=2&&target-back<=8,nextFits=next<=limit;
+      if(backFits&&(!nextFits||target-back<=next-target))start=back;
+      else if(nextFits)start=next;
+      else if(target>=8)start=target;
+    }
+    // Never between the two halves of a surrogate pair, and never a lead of one character, which a cut could only clip.
+    if(start>0&&/[\uDC00-\uDFFF]/.test(name[start]))start--;
+    if(start<2||start>=name.length)start=0;
+    return {lead:name.slice(0,start),tail:name.slice(start)};
+  });
+}
