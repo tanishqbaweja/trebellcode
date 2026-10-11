@@ -35,6 +35,30 @@ test("OpenAI GPT-6 point releases offer the Native effort levels OpenAI accepts 
   assert.deepEqual(supportedReasoningEfforts("native","hcnsec","gpt-6.1-sol",{}),[]);
 });
 
+test("the Native Thinking picker offers only effort levels the OpenAI Responses API accepts for the model",()=>{
+  // Live, 2026-10-11: any other level came back HTTP 400 "Unsupported value: '<effort>' is not supported with the '<model>'
+  // model. Supported values are: ...", which fails the turn. These are OpenAI's own lists from those answers.
+  const accepted={
+    "gpt-5":["minimal","low","medium","high"],"gpt-5-mini":["minimal","low","medium","high"],"gpt-5-nano":["minimal","low","medium","high"],"gpt-5-2025-08-07":["minimal","low","medium","high"],
+    "gpt-5.1":["none","low","medium","high"],
+    "gpt-5.2":["none","low","medium","high","xhigh"],"gpt-5.3-codex":["none","low","medium","high","xhigh"],"gpt-5.4":["none","low","medium","high","xhigh"],"gpt-5.4-mini":["none","low","medium","high","xhigh"],"gpt-5.4-nano":["none","low","medium","high","xhigh"],"gpt-5.5":["none","low","medium","high","xhigh"],
+    "gpt-5.6-sol":["none","low","medium","high","xhigh","max"],"gpt-5.6-terra":["none","low","medium","high","xhigh","max"],
+    "gpt-5-pro":["high"],"gpt-5.2-pro":["medium","high","xhigh"],"gpt-5.4-pro":["medium","high","xhigh"],"gpt-5.5-pro":["medium","high","xhigh"],
+    "o1":["low","medium","high"],"o1-pro":["low","medium","high"],"o3":["low","medium","high"],"o3-mini":["low","medium","high"],"o4-mini":["low","medium","high"],
+    "gpt-6-luna":["none","low","medium","high","xhigh","max"],"gpt-6-astra":["low","medium","high","xhigh","max"],"gpt-6.1-sol":["low","medium","high","xhigh","max"],
+  };
+  const rejected={},missing=[];
+  for(const [model,ok] of Object.entries(accepted)){
+    const offered=supportedReasoningEfforts("native","openai",model,{});
+    const bad=offered.filter(effort=>!ok.includes(effort));if(bad.length)rejected[model]=bad;
+    if(!offered.length)missing.push(model);
+  }
+  assert.deepEqual(rejected,{},"offered levels the model rejects with HTTP 400");
+  assert.deepEqual(missing,[],"each of these models takes a level, so the picker stays");
+  assert.deepEqual(supportedReasoningEfforts("native","openai","gpt-5-pro",{}),["high"]);
+  assert.deepEqual(supportedReasoningEfforts("native","openai","o3",{}),["low","medium","high"]);
+});
+
 test("Codex effort levels are the ones its model list advertises, Ultra included, as T3 Code keeps them",()=>{
   assert.deepEqual(supportedReasoningEfforts("codex","ignored","custom",{supportedReasoningEfforts:["low","MAX","ultra","x-high_2","has spaces","","low"]}),["low","max","ultra","x-high_2"]);
   assert.deepEqual(supportedReasoningEfforts("codex","ignored","custom",{supportedReasoningEfforts:[{reasoningEffort:"xhigh"},{effort:"ultra"}]}),["xhigh","ultra"]);

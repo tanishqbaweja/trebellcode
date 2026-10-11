@@ -40,7 +40,14 @@ export function supportedReasoningEfforts(runtime,provider,model,metadata={}){
       if(/^gpt-6-astra(?:$|-)/.test(id))return ["low","medium","high","xhigh","max"];
       // Point releases (gpt-6.1-sol, OpenAI's default model): the Responses API accepts Low through Max and rejects None.
       if(/^gpt-6\.\d+-(?:luna|sol|astra)(?:$|-)/.test(id))return ["low","medium","high","xhigh","max"];
-      if(/^(?:gpt-5(?:\.|-|$)|o\d)/.test(id))return ["low","medium","high","xhigh"];
+      // Live, the Responses API refuses a level outside the model's own list with HTTP 400 and the turn fails: the o-series,
+      // gpt-5 (with its mini and nano) and gpt-5.1 stop at High, gpt-5-pro takes only High and later -pro models start at
+      // Medium.
+      if(/^o\d/.test(id))return ["low","medium","high"];
+      if(/^gpt-5-pro(?:$|-)/.test(id))return ["high"];
+      if(/^gpt-5\.\d+-pro(?:$|-)/.test(id))return ["medium","high","xhigh"];
+      if(/^gpt-5(?:-mini|-nano)?(?:$|-\d)|^gpt-5\.1(?:$|-)/.test(id))return ["low","medium","high"];
+      if(/^gpt-5(?:\.|-|$)/.test(id))return ["low","medium","high","xhigh"];
     }
     // Gemini's thinking levels belong to a model: without one (no key, so no catalog) there is nothing to set them on.
     if(provider==="gemini")return id?["low","medium","high"]:[];
