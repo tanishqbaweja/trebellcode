@@ -58,6 +58,8 @@ async function startHarness(page,{runtime="opencode",saved=[],extraProjects=[]}=
       const held=params.excludeTurns!==false?server.holds.get(params.threadId):null;
       if(held){server.holds.delete(params.threadId);await held}
       if(params.excludeTurns!==false&&server.resumeDelay[params.threadId])await new Promise(resolve=>setTimeout(resolve,server.resumeDelay[params.threadId]));
+      // Runs while the whole-history resume (what a harness without history pages answers after the first resume) is answered.
+      if(params.excludeTurns===false&&server.onFullResume)await server.onFullResume(params.threadId);
       const thread=threads.find(item=>item.id===params.threadId);
       if(server.fail[params.threadId]||!thread)return send({id:message.id,error:{code:-32000,message:server.fail[params.threadId]||"Unknown fixture thread"}});
       return send({id:message.id,result:{thread:{...thread,turns:params.excludeTurns===false?thread.turns:[]},itemsBackwardsCursor:null,turnsBackwardsCursor:params.excludeTurns!==false&&server.turnsCursor[params.threadId]?"turns-cursor":null}});
@@ -935,5 +937,71 @@ test("a thread of another project is named by that project in the crumb from the
     await expect(headerTitle(page)).toHaveText("Landing page copy");await expect(projectCrumb(page)).toHaveText("Website");
     release();
     await expect(answer(page,SITE)).toBeVisible();await expect(projectCrumb(page)).toHaveText("Website");
+  }finally{await harness.close()}
+});
+
+// A thread's notifications are held from the answer of its first resume, before its history is read. What the harness sends
+// while that history is read is already in it, so the held notifications are handled on top of it without doubling anything,
+// and a turn they start and end is timed from when they came.
+async function runAndEndTurn(harness,saved,turnId){
+  const threadId=saved.thread.id;
+  harness.emit({method:"turn/started",params:{threadId,turn:{id:turnId,status:"inProgress",startedAt:Date.now()/1000}}});
+  await new Promise(resolve=>setTimeout(resolve,1200));
+  saved.thread.turns.push({id:turnId,status:"completed",items:[{id:turnId+"-ask",type:"userMessage",content:[{type:"text",text:"Live question."}]},{id:turnId+"-answer",type:"agentMessage",text:"Live answer."}]});
+  harness.emit({method:"item/completed",params:{threadId,turnId,item:{id:turnId+"-answer",type:"agentMessage",text:"Live answer."}}});
+  harness.emit({method:"turn/completed",params:{threadId,turn:{id:turnId,status:"completed",completedAt:Date.now()/1000}}});
+  await new Promise(resolve=>setTimeout(resolve,50));
+}
+
+test("a turn that runs and ends while an opened thread's whole history is read keeps its measured done pill",async({page})=>{
+  test.setTimeout(60_000);
+  const QUIET=savedThread("quiet-thread","Quiet refactor",{minutesAgo:3});
+  const harness=await startHarness(page,{saved:[ALPHA,QUIET]});
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    harness.server.onFullResume=async threadId=>{if(threadId!==QUIET.thread.id)return;harness.server.onFullResume=null;await runAndEndTurn(harness,QUIET,"quiet-live")};
+    await row(page,QUIET).locator(".thread-main").click();
+    const reply=page.locator('[data-message-id="quiet-live-answer"]');
+    await expect(reply).toBeVisible({timeout:15_000});await expect(page.getByTestId("composer")).toBeEnabled();await page.waitForTimeout(300);
+    await expect(reply).toHaveCount(1);
+    // The turn ran about 1.2 s, and its reply says so, as it does when the same turn ends while another thread is open.
+    await expect(reply.getByTestId("turn-outcome")).toHaveText(/^done · 1\.\ds$/);
+  }finally{await harness.close()}
+});
+
+test("a turn that runs and ends while an opened thread's first history page is read keeps its measured done pill",async({page})=>{
+  test.setTimeout(60_000);
+  const PAGED=savedThread("paged-quiet","Paged refactor",{minutesAgo:3});
+  const harness=await startHarness(page,{saved:[ALPHA,PAGED]});harness.server.turnsCursor[PAGED.thread.id]=true;
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    harness.server.onTurnsList=async()=>{harness.server.onTurnsList=null;await runAndEndTurn(harness,PAGED,"paged-live")};
+    await row(page,PAGED).locator(".thread-main").click();
+    const reply=page.locator('[data-message-id="paged-live-answer"]');
+    await expect(reply).toBeVisible({timeout:15_000});await expect(page.getByTestId("composer")).toBeEnabled();await page.waitForTimeout(300);
+    await expect(reply).toHaveCount(1);
+    await expect(reply.getByTestId("turn-outcome")).toHaveText(/^done · 1\.\ds$/);
+  }finally{await harness.close()}
+});
+
+test("a queued follow-up the harness starts while an opened thread's whole history is read shows once",async({page})=>{
+  test.setTimeout(60_000);
+  const BUSY=savedThread("busy-thread","Busy migration",{minutesAgo:2});BUSY.thread.status={type:"active",turnId:"busy-thread-run"};
+  const harness=await startHarness(page,{saved:[ALPHA,BUSY]});
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    // While the whole history is read, the running turn ends and the harness starts the follow-up queued in it (its native queue).
+    harness.server.onFullResume=async threadId=>{
+      if(threadId!==BUSY.thread.id)return;harness.server.onFullResume=null;
+      harness.emit({method:"turn/completed",params:{threadId,turn:{id:"busy-thread-run",status:"completed",completedAt:Date.now()/1000}}});
+      harness.emit({method:"turn/started",params:{threadId,turn:{id:"busy-thread-next",status:"inProgress",startedAt:Date.now()/1000}}});
+      const ask={id:"busy-next-ask",type:"userMessage",clientId:"trebell-queue-verify",content:[{type:"text",text:"Queued follow-up."}]};
+      harness.emit({method:"item/completed",params:{threadId,turnId:"busy-thread-next",item:ask}});
+      BUSY.thread.turns.push({id:"busy-thread-next",status:"inProgress",items:[ask]});BUSY.thread.status={type:"active",turnId:"busy-thread-next"};
+      await new Promise(resolve=>setTimeout(resolve,100));
+    };
+    await row(page,BUSY).locator(".thread-main").click();
+    await expect(answer(page,BUSY)).toBeVisible({timeout:15_000});await page.waitForTimeout(300);
+    await expect(page.locator(".conversation-column .user-row").filter({hasText:"Queued follow-up."})).toHaveCount(1);
   }finally{await harness.close()}
 });

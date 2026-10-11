@@ -2517,10 +2517,12 @@ export default function App(){
       if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-plan-error-"+turnId,kind:"error",title:"Could not plan turn verification: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId}}]);
     }
   }
-  function handleNotification(message,client=null){
+  // receivedAt: when the notification arrived. A notification held while its thread opens is handled later, and a turn it
+  // starts or ends is still timed from when it really came.
+  function handleNotification(message,client=null,receivedAt=Date.now()){
     const p=message.params||{};
     const threadId=p.threadId||null;
-    if(threadId&&heldNotificationsRef.current?.threadId===String(threadId)){heldNotificationsRef.current.messages.push([message,client]);return}
+    if(threadId&&heldNotificationsRef.current?.threadId===String(threadId)){heldNotificationsRef.current.messages.push([message,client,receivedAt]);return}
     const isCurrent=notificationIsActive(threadId);
     if(message.method==="serverRequest/resolved"){
       // Request ids restart on every socket: only the request of this id from the socket that resolved it goes.
@@ -2580,10 +2582,10 @@ export default function App(){
     else if(message.method==="thread/reverted"&&isCurrent)reloadActiveThread();
     else if(message.method==="turn/started"){
       const id=p.turn?.id||p.turnId;
-      const clockKey=turnInfoKey(threadId,id);if(clockKey&&!turnClockRef.current.has(clockKey))turnClockRef.current.set(clockKey,Date.now());
+      const clockKey=turnInfoKey(threadId,id);if(clockKey&&!turnClockRef.current.has(clockKey))turnClockRef.current.set(clockKey,receivedAt);
       // A turn that starts again (the relay's restart recovery) is running, not ended: its next completion is recorded whole.
       if(clockKey)setTurnInfo(prev=>{const known=turnStartedAgain(prev[clockKey]);return known===prev[clockKey]?prev:{...prev,[clockKey]:known}});
-      updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:Date.now(),lastActivityAt:Date.now()});markThreadTurn(threadId,true);
+      updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:receivedAt,lastActivityAt:Date.now()});markThreadTurn(threadId,true);
       if(isCurrent){
         // The open thread's turns in order, where one without rows ends (a thread this window started begins its order here).
         if(threadId&&id)setTurnOrder(prev=>prev.threadId===threadId?{...prev,ids:appendTurnOrder(prev.ids,[id])}:{threadId,ids:[String(id)]});
@@ -2592,12 +2594,12 @@ export default function App(){
       }
     }
     else if(message.method==="turn/completed"){
-      const completedTurnId=p.turn?.id||p.turnId||null,completedAtMs=p.turn?.completedAt?Number(p.turn.completedAt)*1000:Date.now();
+      const completedTurnId=p.turn?.id||p.turnId||null,completedAtMs=p.turn?.completedAt?Number(p.turn.completedAt)*1000:receivedAt;
       // The reply's "done · 3.2s": measured here when this window saw the turn start, else the harness's own duration.
       const outcomeKey=turnInfoKey(threadId,completedTurnId),outcomeStatus=turnOutcomeStatus(p.turn?.status||"completed");
       if(outcomeKey){
         const startedAtMs=turnClockRef.current.get(outcomeKey);turnClockRef.current.delete(outcomeKey);
-        const measuredMs=startedAtMs?Math.max(0,Date.now()-startedAtMs):null,reportedMs=Number(p.turn?.durationMs);
+        const measuredMs=startedAtMs?Math.max(0,receivedAt-startedAtMs):null,reportedMs=Number(p.turn?.durationMs);
         const durationMs=measuredMs||(Number.isFinite(reportedMs)&&reportedMs>0?reportedMs:null),error=turnFailureText(p.turn);
         // A repeated completion (a replay after a reconnect) keeps the time measured the first time; one that ends the turn anew
         // replaces it (recordTurnCompletion). The error is what a turn without a reply shows once the card moves on.
@@ -2655,8 +2657,9 @@ export default function App(){
       if(isActivityItem)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===item.id?null:current.currentActivity,lastActivity:{id:item.id,kind:item.kind,title:item.title,durationMs:p.item?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs}));
       if(isCurrent){
         if(p.item.type==="userMessage"&&String(p.item.clientId||"").startsWith("trebell-queue-")){
-          const draft=queuedSubmissionDraft({input:p.item.content||[]});const id=p.item.clientId;
-          setMessages(prev=>prev.some(message=>message.id===id)?prev:[...prev,{id,role:"user",text:draft.draftText||draft.text,turnId:p.turnId||null}]);
+          const draft=queuedSubmissionDraft({input:p.item.content||[]}),id=p.item.clientId,itemId=p.item.id?String(p.item.id):null;
+          // History that already has the message lists it by its item id (a held completion replayed over a fresh history).
+          setMessages(prev=>prev.some(message=>message.id===id||(itemId&&String(message.id)===itemId))?prev:[...prev,{id,role:"user",text:draft.draftText||draft.text,turnId:p.turnId||null}]);
         }
         if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);resetAssistantStream()}
         // A finished thought leaves the live activity for the conversation, where a reopened thread shows it too.
@@ -3117,7 +3120,7 @@ export default function App(){
   function holdThreadNotifications(token,threadId){heldNotificationsRef.current={token,threadId:String(threadId),messages:[]}}
   function releaseThreadNotifications(token){
     const held=heldNotificationsRef.current;if(!held||held.token!==token)return;
-    heldNotificationsRef.current=null;for(const [message,client] of held.messages)notificationHandlerRef.current?.(message,client);
+    heldNotificationsRef.current=null;for(const [message,client,receivedAt] of held.messages)notificationHandlerRef.current?.(message,client,receivedAt);
   }
   async function openThreadInternal(thread,{client=rpc,preserveSection=false,from=sectionRef.current,token=openSeqRef.current}={}){
     if(await switchRuntimeForThread(thread,{preserveSection,from}))return thread;
