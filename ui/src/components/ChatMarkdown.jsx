@@ -4,11 +4,14 @@ import remarkGfm from "remark-gfm";
 import { Check, Copy } from "lucide-react";
 import { writeClipboardText } from "../clipboard.js";
 import { externalHref } from "../markdown-links.js";
+import { remarkSoftBreaks } from "../markdown-breaks.js";
 
 // Assistant replies are Markdown, rendered as T3 Code renders them: react-markdown with GitHub-flavored Markdown. Raw HTML in a
 // reply stays text (react-markdown only renders it with rehype-raw, which is not used), and react-markdown drops unsafe link
 // protocols such as javascript:.
 const REMARK_PLUGINS=[remarkGfm];
+// lineBreaks (a harness's thinking) also keeps a single newline as a line break; replies keep Markdown's soft breaks.
+const LINE_BREAK_PLUGINS=[remarkGfm,remarkSoftBreaks];
 
 // A link that is not an absolute web or mail link stays text, with its target in the tooltip.
 function MarkdownLink({href,children}){
@@ -38,6 +41,6 @@ function CodeBlock({children}){
 
 const COMPONENTS={a:MarkdownLink,pre:CodeBlock};
 
-export default memo(function ChatMarkdown({text}){
-  return <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={COMPONENTS}>{String(text||"")}</ReactMarkdown>;
+export default memo(function ChatMarkdown({text,lineBreaks=false}){
+  return <ReactMarkdown remarkPlugins={lineBreaks?LINE_BREAK_PLUGINS:REMARK_PLUGINS} components={COMPONENTS}>{String(text||"")}</ReactMarkdown>;
 });

@@ -20,8 +20,9 @@ const ReasoningRow=memo(function ReasoningRow({id,messageId,text="",active=false
       <span className="reasoning-preview">{open?"":line}</span>
       {body&&<ChevronRight className="reasoning-chevron" size={13} aria-hidden="true"/>}
     </button>
-    {/* The opened thought reads as formatted text, as its one-line preview already does (no literal ** or backticks). */}
-    {open&&body&&<div className="reasoning-text chat-markdown" data-testid="reasoning-text"><ChatMarkdown text={body}/></div>}
+    {/* The opened thought reads as formatted text, as its one-line preview already does (no literal ** or backticks). A model's
+        thinking often puts one thought per line, so a single newline stays a line break. */}
+    {open&&body&&<div className="reasoning-text chat-markdown" data-testid="reasoning-text"><ChatMarkdown text={body} lineBreaks/></div>}
   </div>;
 });
 
