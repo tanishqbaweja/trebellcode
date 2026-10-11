@@ -410,6 +410,50 @@ test.describe("Renaming a project",()=>{
     expect(saves).toEqual(["Sent Once"]);
   });
 
+  // A name Enter sent is the saved name while it is on its way: Escape then has no edit to give up, and an emptied field gets
+  // that name back, so neither puts the old name in the field for leaving it to send.
+  test("Escape or an emptied field while a name sent with Enter is still saving keeps the new name",async({page,request})=>{
+    const boot=await open(page,request);
+    const saves=[];
+    await page.route(/\/api\/projects$/,async route=>{
+      if(route.request().method()!=="POST")return route.fallback();
+      saves.push(route.request().postDataJSON()?.name);
+      await new Promise(resolve=>setTimeout(resolve,800));
+      return route.fallback();
+    });
+    await openProjects(page);
+    const card=page.locator(".project-card.active"),title=card.locator(".project-open strong");
+    await card.getByRole("button",{name:/Project identity/}).click();
+    const name=card.getByRole("textbox",{name:"Name"});
+    const savedName=async()=>(await listedProjects(request)).find(project=>project.path===boot.cwd&&!project.environmentId)?.name;
+    await name.fill("Renamed Then Escaped");
+    await name.press("Enter");
+    await name.press("Escape");
+    await expect(name).toHaveValue("Renamed Then Escaped");
+    await expect(title).toHaveText("Renamed Then Escaped");
+    await expect(name,"the field once the name is saved").toHaveValue("Renamed Then Escaped");
+    await card.locator(".project-identity-editor").scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+"project-name-escape-while-saving-dark-1280.png"});
+    await flipMode(page,"light");
+    await page.screenshot({animations:"disabled",path:shots+"project-name-escape-while-saving-light-1280.png"});
+    await flipMode(page,"dark");
+    await name.press("Tab");
+    await page.waitForTimeout(1200);
+    expect(saves,"leaving the field sends nothing more").toEqual(["Renamed Then Escaped"]);
+    await expect(title).toHaveText("Renamed Then Escaped");
+    expect(await savedName()).toBe("Renamed Then Escaped");
+    // Emptied while the next name is on its way: that name comes back, not the one before it.
+    await name.fill("Second Name");
+    await name.press("Enter");
+    await name.fill("");
+    await name.press("Tab");
+    await expect(name).toHaveValue("Second Name");
+    await expect(title).toHaveText("Second Name");
+    await page.waitForTimeout(1200);
+    expect(saves).toEqual(["Renamed Then Escaped","Second Name"]);
+    expect(await savedName()).toBe("Second Name");
+  });
+
   for(const mode of MODES)test(`clearing the name puts the saved name back and says why (${mode})`,async({page,request})=>{
     const boot=await open(page,request,{mode});
     await openProjects(page);
