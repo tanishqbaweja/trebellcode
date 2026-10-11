@@ -185,6 +185,45 @@ export function shortcutProblem(value,mac=MAC_PLATFORM){
   return held.length?`Add a key after “${shortcutHint(held.join("+"),mac)}+”.`:"Type a key, such as F2 or Ctrl+Alt+K.";
 }
 
+const KEY_SPELLINGS={esc:"escape",comma:",",period:".",slash:"/","{":"[","}":"]"};
+// The keys a shortcut answers to, in one spelling: Mod as Ctrl (⌘ on macOS), the modifiers in a fixed order and the key as the
+// matcher reads it, so "Mod+N" and "ctrl+n" are one shortcut on Windows and Linux. A blank or unusable shortcut has none.
+export function shortcutSignature(value,mac=MAC_PLATFORM){
+  if(!String(value??"").trim()||shortcutProblem(value,mac))return "";
+  const parts=String(value).toLowerCase().split("+").map(part=>part.trim()).filter(Boolean);
+  const key=parts.pop();
+  const has=(...names)=>names.some(name=>parts.includes(name));
+  const ctrl=has("ctrl","control")||(!mac&&has("mod")),meta=has("cmd","command","meta")||(mac&&has("mod"));
+  return [ctrl&&"ctrl",meta&&"meta",has("alt","option")&&"alt",has("shift")&&"shift",KEY_SPELLINGS[key]||key].filter(Boolean).join("+");
+}
+
+const conditionNames=expression=>tokenize(expression).filter(token=>!["&&","||","!","(",")"].includes(token));
+const holds=(expression,context)=>{try{return evaluateWhen(expression,context)}catch{return false}};
+// Rules that never run: every time such a rule's condition holds, a later rule on the same keys holds too, and the later one wins
+// (resolveKeybinding reads the rules from the end). The defaults reuse keys only under conditions that never meet (Mod+D, Mod+W,
+// Ctrl+`, Mod+1-9) or for a narrower context that should win (Mod+N in a focused terminal), so none of them is listed. Conditions
+// are compared over every combination of the contexts they name. Returns a Map of command -> {key, by: commands that run instead}.
+export function shadowedKeybindings(rules,mac=MAC_PLATFORM){
+  const usable=rules.map((rule,index)=>({rule,index,signature:shortcutSignature(rule.key,mac)})).filter(item=>item.signature&&!whenProblem(item.rule.when));
+  const shadowed=new Map();
+  for(const item of usable){
+    const later=usable.filter(other=>other.index>item.index&&other.signature===item.signature).reverse();
+    if(!later.length)continue;
+    const names=[...new Set([item,...later].flatMap(other=>conditionNames(other.rule.when)))];
+    if(names.length>12)continue;
+    const by=new Set();let runs=false,reachable=false;
+    for(let mask=0;mask<2**names.length&&!runs;mask++){
+      const context=Object.fromEntries(names.map((name,bit)=>[name,Boolean(mask>>bit&1)]));
+      if(!holds(item.rule.when,context))continue;
+      reachable=true;
+      const winner=later.find(other=>holds(other.rule.when,context));
+      if(winner)by.add(winner);else runs=true;
+    }
+    if(reachable&&!runs)shadowed.set(item.rule.command,{key:item.rule.key,by:[...by].sort((a,b)=>a.index-b.index).map(other=>other.rule.command)});
+  }
+  return shadowed;
+}
+
 export function resolveKeybinding(event,settings={},context={}){
   const rules=normalizeKeybindingRules(settings);
   for(let index=rules.length-1;index>=0;index--){

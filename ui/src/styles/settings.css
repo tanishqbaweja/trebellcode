@@ -292,6 +292,9 @@
 :root:root .settings-page.redesigned-settings .keybindings-settings>h4{margin:6px 0 0;font-size:11px!important;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--tx3)!important}
 /* A row's note sits under its two fields: a shortcut or condition that cannot be saved is said in red, its field outlined in red. */
 :root:root .settings-page.redesigned-settings .keybinding-row>.keybinding-note{grid-column:2/-1;margin:-3px 0 0;font-size:11.5px!important;line-height:1.45!important;color:var(--err)!important;overflow-wrap:anywhere}
+/* A key shared with another command: amber on the row that never runs, muted on the row that takes the key. */
+:root:root .settings-page.redesigned-settings .keybinding-row>.keybinding-note.clash{color:var(--warn)!important}
+:root:root .settings-page.redesigned-settings .keybinding-row>.keybinding-note.takes{color:var(--tx3)!important}
 :root:root .settings-page.redesigned-settings .keybinding-row input[aria-invalid="true"],:root:root .settings-page.redesigned-settings .keybinding-row input[aria-invalid="true"]:focus{border-color:var(--errb)!important;box-shadow:0 0 0 3px var(--errt)!important}
 /* Light mode's shared field line and focus colour (pages.css) outweigh that, so the red line is repeated at their weight. */
 :root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page .settings-page .keybinding-row input[aria-invalid="true"]:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]),

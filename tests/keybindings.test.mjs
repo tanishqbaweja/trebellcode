@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  defaultKeybindingRules,
   evaluateWhen,
   normalizeKeybindingRules,
   resolveKeybinding,
+  shadowedKeybindings,
   shortcutMatches,
   shortcutProblem,
+  shortcutSignature,
   whenProblem,
 } from "../ui/src/keybindings.js";
 
@@ -139,6 +142,14 @@ test("dynamic project action keybindings survive normalization and resolve",()=>
   assert.equal(resolveKeybinding(event("1",{altKey:true}),settings,{projectOpen:true,modalOpen:false}),command);
 });
 
+// A key event for a shortcut as the rules write it, with Mod pressed as Ctrl (Windows and Linux).
+function eventFor(value){
+  const parts=String(value).split("+").map(part=>part.trim().toLowerCase());
+  const key=parts.pop();
+  return event(key,{ctrlKey:parts.includes("mod")||parts.includes("ctrl"),metaKey:parts.includes("cmd")||parts.includes("meta"),shiftKey:parts.includes("shift"),altKey:parts.includes("alt")});
+}
+const contextNames=expression=>String(expression||"").match(/[A-Za-z_][A-Za-z0-9_.-]*/g)||[];
+
 test("a shortcut that stops on a modifier or names a modifier that does not exist says what to change",()=>{
   for(const value of ["","Ctrl+B","Escape","Mod+Shift+[","Ctrl+,","Ctrl+Alt+Shift+A","F5","Ctrl + B"])assert.equal(shortcutProblem(value,false),"",value);
   assert.equal(shortcutProblem("Ctrl+",false),"Add a key after “Ctrl+”.");
@@ -167,4 +178,63 @@ test("a condition the parser refuses says what to change, and a finished one pas
   assert.equal(whenProblem("threadOpen & running"),"“&” can't be used in a condition. Join contexts with &&, || and !.");
   // Each refused condition is one the resolver skips, so the shortcut would stop working.
   assert.throws(()=>evaluateWhen("!modalOpen &&",{}));
+});
+
+test("one shortcut has one signature however it is written, with Mod as Ctrl off macOS and as Cmd on it",()=>{
+  assert.equal(shortcutSignature("Mod+N",false),shortcutSignature("ctrl+n",false));
+  assert.notEqual(shortcutSignature("Mod+N",true),shortcutSignature("Ctrl+N",true));
+  assert.equal(shortcutSignature("Mod+N",true),shortcutSignature("Cmd+N",true));
+  assert.equal(shortcutSignature("Ctrl+,",false),shortcutSignature("Ctrl+comma",false));
+  assert.equal(shortcutSignature("Shift+Ctrl+K",false),shortcutSignature("Ctrl+Shift+K",false));
+  assert.equal(shortcutSignature("Ctrl+Alt+Shift+A",false),shortcutSignature("Ctrl+Shift+Alt+A",false));
+  assert.notEqual(shortcutSignature("Ctrl+K",false),shortcutSignature("Ctrl+Shift+K",false));
+  for(const value of ["","Ctrl+","Ctlr+B"])assert.equal(shortcutSignature(value,false),"",value);
+});
+
+test("the shipped shortcuts never shadow each other: each one runs in some context",()=>{
+  const rules=defaultKeybindingRules();
+  assert.deepEqual([...shadowedKeybindings(rules,false).keys()],[]);
+  assert.deepEqual([...shadowedKeybindings(rules,true).keys()],[]);
+  // The defaults reuse keys on purpose, under conditions that never meet, or for a narrower context that should win.
+  const shared=new Map();
+  for(const rule of rules.filter(rule=>rule.key)){const signature=shortcutSignature(rule.key,false);shared.set(signature,[...(shared.get(signature)||[]),rule])}
+  const reused=[...shared.values()].filter(group=>group.length>1).map(group=>group.map(rule=>rule.command).join("/"));
+  for(const group of ["terminalSplit/diffToggle","rightPanelClose/terminalClose","terminalFocus/composerFocus","newChat/terminalNew","threadJump1/modelJump1"])assert.ok(reused.includes(group),group+" in "+reused.join(" "));
+  // Proof by the resolver itself: for every bound default there is a context in which its key runs it.
+  for(const rule of rules.filter(rule=>rule.key)){
+    const names=[...new Set(shared.get(shortcutSignature(rule.key,false)).flatMap(other=>contextNames(other.when)))];
+    let runs=false;
+    for(let mask=0;mask<2**names.length&&!runs;mask++){
+      const context=Object.fromEntries(names.map((name,bit)=>[name,Boolean(mask>>bit&1)]));
+      runs=resolveKeybinding(eventFor(rule.key),{},context)===rule.command;
+    }
+    assert.ok(runs,rule.command+" never runs on "+rule.key);
+  }
+});
+
+test("a rule is flagged only when later rules on its key take every context it runs in",()=>{
+  const withRules=(...changes)=>normalizeKeybindingRules({keybindingRules:changes});
+  // New thread on Ctrl+K: Command palette is read later and always on, so New thread never runs.
+  const clash=shadowedKeybindings(withRules({command:"newChat",key:"Ctrl+K",when:"!modalOpen"}),false);
+  assert.deepEqual(clash.get("newChat"),{key:"Ctrl+K",by:["commandPalette"]});
+  assert.equal(clash.size,1);
+  assert.equal(resolveKeybinding(event("k",{ctrlKey:true}),{keybindingRules:[{command:"newChat",key:"Ctrl+K",when:"!modalOpen"}]},{modalOpen:false}),"commandPalette");
+  // A later rule that only overlaps part of the time leaves New thread running elsewhere, so it is not flagged.
+  assert.equal(shadowedKeybindings(withRules({command:"newChat",key:"Ctrl+K",when:"!modalOpen"},{command:"commandPalette",key:"Ctrl+K",when:"threadOpen"}),false).size,0);
+  // Command palette on Mod+N takes Ctrl+N from New thread off macOS (New terminal takes it in a focused terminal); on macOS Mod+N is ⌘N.
+  const palette=withRules({command:"commandPalette",key:"Mod+N",when:""});
+  assert.deepEqual(shadowedKeybindings(palette,false).get("newChat"),{key:"Ctrl+N",by:["commandPalette","terminalNew"]});
+  assert.equal(shadowedKeybindings(palette,false).size,1);
+  assert.equal(shadowedKeybindings(palette,true).size,0);
+  // Later rules can share the contexts between them: Toggle main sidebar on Ctrl+` in an open project never runs, since Focus
+  // terminal takes the key outside the terminal and Focus composer inside it. Outside a project it still runs, so that is not flagged.
+  const grave=String.fromCharCode(96);
+  assert.deepEqual(shadowedKeybindings(withRules({command:"sidebarToggle",key:"Ctrl+"+grave,when:"projectOpen && !modalOpen"}),false).get("sidebarToggle"),{key:"Ctrl+"+grave,by:["terminalFocus","composerFocus"]});
+  assert.equal(shadowedKeybindings(withRules({command:"sidebarToggle",key:"Ctrl+"+grave,when:"!modalOpen"}),false).size,0);
+  // A project action is read last, so it wins over a command with the same key and condition.
+  const action="script.dev-server.run";
+  assert.deepEqual(shadowedKeybindings(withRules({command:"terminal",key:"Alt+T",when:"projectOpen && !modalOpen"},{command:action,key:"Alt+T",when:"projectOpen && !modalOpen"}),false).get("terminal"),{key:"Alt+T",by:[action]});
+  // Unfinished shortcuts and conditions answer to nothing, so they neither shadow nor are shadowed.
+  assert.equal(shadowedKeybindings(withRules({command:"newChat",key:"Ctrl+K",when:"!modalOpen &&"}),false).size,0);
+  assert.equal(shadowedKeybindings(withRules({command:"commandPalette",key:"Ctrl+",when:""},{command:"newChat",key:"Ctrl+",when:""}),false).size,0);
 });

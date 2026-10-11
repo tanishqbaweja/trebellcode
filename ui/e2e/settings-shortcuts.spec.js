@@ -154,3 +154,66 @@ test.describe("Typing a shortcut",()=>{
     expect(saves.length).toBe(1);
   });
 });
+
+test.describe("Two commands on one key",()=>{
+  test("the shipped shortcuts show no clash",async({page,request})=>{
+    await open(page,request);
+    await openShortcuts(page);
+    await expect(page.locator(".keybinding-row")).toHaveCount(61);
+    await expect(page.locator(".keybindings-settings").getByRole("status")).toHaveCount(0);
+    await expect(page.locator(".keybindings-settings")).not.toContainText("runs instead");
+  });
+
+  for(const mode of MODES)test(`a shortcut another command takes over says which one runs instead (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    await openShortcuts(page);
+    const chip=page.getByRole("button",{name:"New task",exact:true});
+    await expect(chip.locator("kbd")).toHaveText("Ctrl+N");
+    const field=keyField(page,"New thread");
+    await retype(field,"Ctrl+K");
+    await field.press("Enter");
+    await expect.poll(async()=>(await savedRule(request,"newChat"))?.key).toBe("Ctrl+K");
+    const lost=row(page,"New thread").getByRole("status");
+    await expect(lost).toHaveText("Command palette also uses Ctrl+K and runs instead.");
+    await expect(field).toHaveAccessibleDescription("Command palette also uses Ctrl+K and runs instead.");
+    await expect(row(page,"Command palette").getByRole("status")).toHaveText("Takes Ctrl+K from New thread.");
+    await expect(page.locator(".keybindings-settings").getByRole("status")).toHaveCount(2);
+    // The sidebar stops offering Ctrl+K for New task: Ctrl+K opens the command palette.
+    await expect(chip.locator("kbd")).toHaveCount(0);
+    await expect(chip).not.toHaveAttribute("aria-keyshortcuts",/./);
+    await page.screenshot({animations:"disabled",path:shots+`shortcut-clash-${mode}-1280.png`});
+    await page.setViewportSize({width:900,height:800});
+    await row(page,"New thread").scrollIntoViewIfNeeded();
+    expect(await sideways(page)).toBeLessThanOrEqual(0);
+    await page.screenshot({animations:"disabled",path:shots+`shortcut-clash-${mode}-900.png`});
+    await page.setViewportSize({width:1280,height:800});
+    await row(page,"New thread").locator("strong").click();
+    await page.keyboard.press("Control+K");
+    await expect(page.getByTestId("command-palette")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("command-palette")).toBeHidden();
+
+    // A key of its own clears both notes, and the sidebar shows it again.
+    await retype(field,"Ctrl+Alt+N");
+    await field.press("Enter");
+    await expect.poll(async()=>(await savedRule(request,"newChat"))?.key).toBe("Ctrl+Alt+N");
+    await expect(page.locator(".keybindings-settings").getByRole("status")).toHaveCount(0);
+    await expect(chip.locator("kbd")).toHaveText("Ctrl+Alt+N");
+  });
+
+  test("Mod is Ctrl here, so Command palette on Mod+N takes Ctrl+N from New thread",async({page,request})=>{
+    await open(page,request);
+    await openShortcuts(page);
+    const field=keyField(page,"Command palette");
+    await retype(field,"Mod+N");
+    await field.press("Enter");
+    await expect.poll(async()=>(await savedRule(request,"commandPalette"))?.key).toBe("Mod+N");
+    // In a focused terminal New terminal runs, everywhere else Command palette: New thread never does.
+    await expect(row(page,"New thread").getByRole("status")).toHaveText("Command palette and New terminal also use Ctrl+N and run instead.");
+    // Command palette and New terminal only meet in a focused terminal, where New terminal runs as it should: neither is flagged
+    // as never running.
+    await expect(row(page,"Command palette").getByRole("status")).toHaveText("Takes Ctrl+N from New thread.");
+    await expect(row(page,"New terminal").getByRole("status")).toHaveText("Takes Ctrl+N from New thread.");
+    await expect(page.locator(".keybindings-settings").getByRole("status")).toHaveCount(3);
+  });
+});
