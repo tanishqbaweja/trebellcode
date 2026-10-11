@@ -135,6 +135,21 @@ function CommandPaletteLoading({seed,onClose}){
   </div>;
 }
 
+// Focus for a person whose control went away with the view a palette command left (the composer, when the command opens a page):
+// the heading of the page now shown, once that page has loaded, so Tab carries on from the top of that page instead of from the start
+// of the document. The chat has no heading; there it is the composer. Anything focused meanwhile keeps focus.
+function focusShownView(){
+  const started=performance.now();
+  const attempt=()=>{
+    const active=document.activeElement;if(active&&active!==document.body)return;
+    const frame=document.querySelector(".main-frame"),page=frame?.querySelector(".secondary-page");
+    const target=page?page.querySelector("h1,h2"):frame?.querySelector('[data-testid="composer"]');
+    if(target){if(!target.matches("input,textarea,select,button,a[href],[tabindex]"))target.setAttribute("tabindex","-1");target.focus({preventScroll:true});return}
+    if(performance.now()-started<4000)requestAnimationFrame(attempt);
+  };
+  attempt();
+}
+
 function DeferredSurface({children,label="Loading…",compact=false}){
   return <Suspense fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</Suspense>;
 }
@@ -4947,7 +4962,7 @@ export default function App(){
     {!elicitations.length&&question?.request&&<Suspense fallback={null}><QuestionModal request={question.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/></Suspense>}
     {snoozeRequest&&<Suspense fallback={null}><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/></Suspense>}
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><UndoCountdown expiresAt={threadUndo.expiresAt}/></div>}
-    {paletteOpen&&<Suspense fallback={<CommandPaletteLoading seed={paletteSeedRef} onClose={closePalette}/>}><CommandPalette open seed={paletteSeedRef} onClose={closePalette} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></Suspense>}
+    {paletteOpen&&<Suspense fallback={<CommandPaletteLoading seed={paletteSeedRef} onClose={closePalette}/>}><CommandPalette open seed={paletteSeedRef} focusFallback={focusShownView} onClose={closePalette} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></Suspense>}
     {initialLoaded&&settings.onboardingComplete===false&&<Suspense fallback={null}><OnboardingModal open projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={managedInference?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/></Suspense>}
   </div>;
 }

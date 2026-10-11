@@ -35,6 +35,10 @@
 :root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar{display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:16px 24px;margin:0 0 26px!important}
 :root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar>div:first-child{flex:1 1 420px;min-width:0}
 
+/* A page title takes focus after a palette command opens its page (App.jsx focusShownView), so Tab carries on inside the page.
+   It is not a control, so it shows no focus ring of its own; the next Tab stop shows one. */
+:root:root .main-frame .secondary-page :is(h1,h2)[tabindex="-1"]:focus{outline:none}
+
 /* While a page's code loads (the DeferredSurface fallback in App.jsx), its frame and App.jsx header already sit where the
    loaded page puts them (Settings included), so the title does not jump when the page arrives. */
 :root:root .secondary-page:has(> .surface-loading){padding:44px 56px 72px;background:transparent!important;color:var(--tx0)!important}

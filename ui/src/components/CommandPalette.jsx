@@ -45,7 +45,8 @@ export default function CommandPalette(props){
 }
 
 // seed: App's handoff from the stand-in search box it shows while this code loads ({opener,query}, see CommandPaletteLoading).
-function CommandPaletteOpen({open,onClose,seed,actions=[],projects=[],threads=[],environmentNames={},dataError="",onOpenProject,onOpenThread,onSearchThreadMessages}){
+// focusFallback: where focus goes when the control the palette was opened from has gone with the view a command left.
+function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects=[],threads=[],environmentNames={},dataError="",onOpenProject,onOpenThread,onSearchThreadMessages}){
   const [query,setQuery]=useState("");
   const [selected,setSelected]=useState(0);
   const [messageMatches,setMessageMatches]=useState([]);
@@ -71,11 +72,15 @@ function CommandPaletteOpen({open,onClose,seed,actions=[],projects=[],threads=[]
     inputRef.current?.focus({preventScroll:true});
   },[]);
   // Closing gives focus back to what had it when the palette opened (the button or menu it was chosen from, the composer it was called
-  // up from), so a keyboard user carries on from there rather than from the page's start. A command that put focus somewhere keeps it.
+  // up from), so a keyboard user carries on from there rather than from the page's start. A command that put focus somewhere keeps it,
+  // and when the opener went with the view the command left (the composer, for a command that opens a page) focusFallback places it.
+  const focusFallbackRef=useRef(focusFallback);
+  focusFallbackRef.current=focusFallback;
   useEffect(()=>()=>{
     const focused=document.activeElement,opener=openerRef.current;
     if(focused&&focused!==document.body&&!dialogRef.current?.contains(focused))return;
     if(opener instanceof HTMLElement&&opener!==document.body&&opener.isConnected&&opener.getClientRects().length)opener.focus({preventScroll:true});
+    else focusFallbackRef.current?.();
   },[]);
   const messageSearchRef=useRef(onSearchThreadMessages);
   messageSearchRef.current=onSearchThreadMessages;
