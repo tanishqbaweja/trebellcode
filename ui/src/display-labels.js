@@ -21,6 +21,24 @@ export function agentName(id){const text=String(id||"").trim();return AGENT_NAME
 const MCP_AUTH_LABELS={unsupported:"No sign-in",notLoggedIn:"Sign-in required",loggedIn:"Signed in",bearerToken:"Bearer token",oAuth:"OAuth",oauth:"OAuth"};
 export function mcpAuthLabel(status){return status?MCP_AUTH_LABELS[status]||humanizeIdentifier(status):"Sign-in unknown"}
 
+// Each failed item of an external agent-config import as a person reads it: its kind ("MCP server config"), what went
+// wrong (the runtime's message, else its error type) and the stage it failed at. Takes per-type results, or
+// [{failures}] for a history entry, whose failures carry their own item type.
+export function importFailures(results=[]){
+  const rows=[];
+  for(const result of Array.isArray(results)?results:[]){
+    for(const failure of Array.isArray(result?.failures)?result.failures:[]){
+      if(!failure||typeof failure!=="object")continue;
+      rows.push({
+        type:humanizeIdentifier(failure.itemType||result.itemType)||"Item",
+        message:String(failure.message||"").trim()||humanizeIdentifier(failure.errorType)||"Could not be imported.",
+        stage:humanizeIdentifier(failure.failureStage),
+      });
+    }
+  }
+  return rows;
+}
+
 // "Import complete · Skills, MCP server config · 1 imported · 1 failed" for an external agent-config import.
 export function importResultSummary(results=[],prefix="Importing"){
   let successes=0,failures=0;const types=[];

@@ -1,6 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { agentName, countLabel, humanizeIdentifier, importResultSummary, mcpAuthLabel } from "../ui/src/display-labels.js";
+import { agentName, countLabel, humanizeIdentifier, importFailures, importResultSummary, mcpAuthLabel } from "../ui/src/display-labels.js";
+
+test("each import failure reads as its kind, the runtime's message and its stage",()=>{
+  const results=[
+    {itemType:"SKILLS",successes:[{}],failures:[]},
+    {itemType:"MCP_SERVER_CONFIG",successes:[],failures:[{itemType:"MCP_SERVER_CONFIG",errorType:"invalid_config",failureStage:"write",message:"One connector could not be imported."}]},
+    // A failure without its own type takes its result's; one without a message falls back to its error type.
+    {itemType:"AGENTS_MD",failures:[{errorType:"permission_denied"},{},null,"bad"]},
+  ];
+  assert.deepEqual(importFailures(results),[
+    {type:"MCP server config",message:"One connector could not be imported.",stage:"Write"},
+    {type:"AGENTS.md",message:"Permission denied",stage:""},
+    {type:"AGENTS.md",message:"Could not be imported.",stage:""},
+  ]);
+  // A history entry's flat failure list.
+  assert.deepEqual(importFailures([{failures:[{itemType:"HOOKS",message:"Hook path is outside the workspace."}]}]),[{type:"Hooks",message:"Hook path is outside the workspace.",stage:""}]);
+  assert.deepEqual(importFailures([{failures:[{message:"No type"}]}]),[{type:"Item",message:"No type",stage:""}]);
+  assert.deepEqual(importFailures(undefined),[]);assert.deepEqual(importFailures([null,{failures:null}]),[]);
+});
 
 test("a count names one thing in the singular and any other number in the plural",()=>{
   assert.equal(countLabel(1,"skill"),"1 skill");

@@ -1,14 +1,18 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
-import { Blocks, Brain, CheckCircle2, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
+import { Blocks, Brain, CheckCircle2, ChevronRight, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { api } from "../api.js";
-import { agentName, countLabel, humanizeIdentifier, importResultSummary, mcpAuthLabel } from "../display-labels.js";
+import { agentName, countLabel, humanizeIdentifier, importFailures, importResultSummary, mcpAuthLabel } from "../display-labels.js";
 import { formatBytes } from "../format-bytes.js";
 import { allowedWindowsSetupModes, windowsSandboxStatus, worldWritableWarningText } from "../windows-sandbox.js";
 
-function Section({title,icon:Icon,count,children}){
-  return <section className="capability-card"><div className="capability-card-head"><span><Icon size={15}/><strong>{title}</strong></span>{Number.isFinite(count)&&<em>{count}</em>}</div>{children}</section>;
+// A header badge is a bare count, or a label that says what it counts when the card lists more than one kind of row.
+function Section({title,icon:Icon,count,badge,children}){
+  return <section className="capability-card"><div className="capability-card-head"><span><Icon size={15}/><strong>{title}</strong></span>{badge?<em>{badge}</em>:Number.isFinite(count)&&<em>{count}</em>}</div>{children}</section>;
 }
 function ErrorLine({value}){return value?<p className="capability-error">{value}</p>:null}
+function ImportFailureList({failures}){
+  return <ul className="import-failure-list" aria-label="Import failures">{failures.map((failure,index)=><li key={index}><strong>{failure.type}</strong><span>{failure.message}{failure.stage?" · "+failure.stage+" stage":""}</span></li>)}</ul>;
+}
 function titleCaseWords(value){
   return String(value||"").trim().split(/[-_\s]+/).filter(Boolean).map(part=>part.slice(0,1).toUpperCase()+part.slice(1)).join(" ");
 }
@@ -41,6 +45,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [migrations,setMigrations]=useState(null);
   const [migrationHistory,setMigrationHistory]=useState({data:[],connectors:[]});
   const [migrationMessage,setMigrationMessage]=useState("");
+  const [migrationFailures,setMigrationFailures]=useState([]);
   const [migrationImportId,setMigrationImportId]=useState(null);
   const [historyImport,setHistoryImport]=useState(null);
   const [historyMessage,setHistoryMessage]=useState("");
@@ -210,6 +215,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         setMigrationMessage(importResultSummary(message.params?.itemTypeResults,"Importing"));
       }else if(message.method==="externalAgentConfig/import/completed"&&message.params?.importId===migrationImportId){
         setMigrationMessage(importResultSummary(message.params?.itemTypeResults,"Import complete"));
+        setMigrationFailures(importFailures(message.params?.itemTypeResults));
         setMigrationImportId(null);
         Promise.all([loadMigrationHistory(),loadExternalConfig()]).catch(error=>setErrors(prev=>({...prev,"externalAgentConfig/import":error.message||String(error)})));
       }else if((message.method==="hook/started"||message.method==="hook/completed")&&message.params?.run){
@@ -367,12 +373,12 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     setMigrationHistory({data:result?.data||[],connectors:result?.connectors||[]});return result;
   }
   async function detectExternalConfig(){
-    if(!rpc)return;setBusy("migration:detect");setMigrationMessage("");setErrors(prev=>({...prev,"externalAgentConfig/detect":null}));
+    if(!rpc)return;setBusy("migration:detect");setMigrationMessage("");setMigrationFailures([]);setErrors(prev=>({...prev,"externalAgentConfig/detect":null}));
     try{await Promise.all([loadExternalConfig(),loadMigrationHistory()])}
     catch(error){setErrors(prev=>({...prev,"externalAgentConfig/detect":error.message||String(error)}))}finally{setBusy("")}
   }
   async function importExternalConfig(){
-    if(!rpc||!migrations?.items?.length)return;setBusy("migration:import");setMigrationMessage("");setErrors(prev=>({...prev,"externalAgentConfig/import":null}));
+    if(!rpc||!migrations?.items?.length)return;setBusy("migration:import");setMigrationMessage("");setMigrationFailures([]);setErrors(prev=>({...prev,"externalAgentConfig/import":null}));
     try{
       const started=await request("externalAgentConfig/import",{migrationItems:migrations.items,source:"trebell-code"});
       const importId=started?.importId;if(!importId)throw new Error("Codex did not return an import id.");
@@ -531,11 +537,12 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <ErrorLine value={errors["windowsSandbox/readiness"]}/><ErrorLine value={errors["windowsSandbox/setupStart"]}/><ErrorLine value={errors["configRequirements/read"]}/>
       </Section>}
 
-      <Section title="Configuration layers" icon={ShieldCheck} count={data.config?.layers?.length||0}>
+      {/* The card lists layers and then the warnings and notices Codex sent, so its badge counts each by name. */}
+      <Section title="Configuration layers" icon={ShieldCheck} badge={[countLabel(data.config?.layers?.length||0,"layer"),configWarnings.length+runtimeNotices.length?countLabel(configWarnings.length+runtimeNotices.length,"notice"):""].filter(Boolean).join(" · ")}>
         {data.config&&!(data.config.layers||[]).length&&<p>Codex reported no configuration layers.</p>}
         <div className="capability-list">{(data.config?.layers||[]).map((layer,index)=>{const presentation=configLayerPresentation(layer,index);return <div key={presentation.label+":"+String(layer.version||index)}><div><strong>{presentation.label}</strong><span>{presentation.detail}</span></div><em className={layer.disabledReason?"":"ok"}>{layer.disabledReason?"disabled":"active"}</em></div>})}</div>
-        {configWarnings.length>0&&<div className="capability-list config-warning-list">{configWarnings.map((warning,index)=><div key={(warning.path||"global")+":"+(warning.summary||index)}><div><strong>{warning.summary||"Configuration warning"}</strong><span>{warning.details||warning.path||"Codex reported a configuration warning."}</span></div><em>warning</em></div>)}</div>}
-        {runtimeNotices.length>0&&<div className="capability-list runtime-notice-list">{runtimeNotices.map(notice=><div key={notice.id}><div><strong>{notice.summary}</strong><span>{notice.details||"Reported by the Codex runtime."}</span></div><em>{notice.kind}</em></div>)}</div>}
+        {configWarnings.length>0&&<div className="capability-list config-warning-list">{configWarnings.map((warning,index)=><div key={(warning.path||"global")+":"+(warning.summary||index)}><div><strong>{warning.summary||"Configuration warning"}</strong><span>{warning.details||warning.path||"Codex reported a configuration warning."}</span></div><em className="warn">warning</em></div>)}</div>}
+        {runtimeNotices.length>0&&<div className="capability-list runtime-notice-list">{runtimeNotices.map(notice=><div key={notice.id}><div><strong>{notice.summary}</strong><span>{notice.details||"Reported by the Codex runtime."}</span></div><em className={notice.kind==="warning"?"warn":""}>{notice.kind}</em></div>)}</div>}
         {data.config&&<details className="capability-details"><summary>Effective config</summary><pre>{JSON.stringify(data.config.config,null,2)}</pre></details>}
         <ErrorLine value={errors["config/read"]}/>
       </Section>
@@ -639,7 +646,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <div className="capability-list">{(migrations?.items||[]).map((item,index)=><div key={index}><div><strong>{item.description||humanizeIdentifier(item.itemType)}</strong><span>{item.cwd||"User scope"}</span></div><em>{humanizeIdentifier(item.itemType)}</em></div>)}</div>
         {(migrations?.connectors||[]).length>0&&<p>{migrations.connectors.length} connector candidate{migrations.connectors.length===1?"":"s"} detected.</p>}
         {migrationMessage&&<p className="capability-status">{migrationMessage}</p>}
-        {(migrationHistory.data||[]).length>0&&<details className="capability-details"><summary>Previous native imports · {migrationHistory.data.length}</summary><div className="capability-list migration-history-list">{migrationHistory.data.slice(0,8).map(entry=>{const successes=entry.successes?.length||0,failures=entry.failures?.length||0;return <div key={entry.importId}><div><strong>{entry.providerId?agentName(entry.providerId):"External agent import"}</strong><span>{new Date(Number(entry.completedAtMs)||0).toLocaleString()} · {successes} imported{failures?" · "+failures+" failed":""}</span></div><em className={failures?"":"ok"}>{failures?"review":"done"}</em></div>})}</div></details>}
+        {migrationFailures.length>0&&<ImportFailureList failures={migrationFailures}/>}
+        {/* A history row with failures opens to list them; its badge names how many failed and is the toggle. */}
+        {(migrationHistory.data||[]).length>0&&<details className="capability-details"><summary>Previous native imports · {migrationHistory.data.length}</summary><div className="capability-list migration-history-list">{migrationHistory.data.slice(0,8).map(entry=>{const successes=entry.successes?.length||0,failures=importFailures([{failures:entry.failures}]),completed=Number(entry.completedAtMs)>0?new Date(Number(entry.completedAtMs)).toLocaleString():"";const head=<div><strong>{entry.providerId?agentName(entry.providerId):"External agent import"}</strong><span>{[completed,successes+" imported"].filter(Boolean).join(" · ")}</span></div>;return failures.length?<details key={entry.importId}><summary>{head}<em className="warn"><ChevronRight size={11} aria-hidden="true"/>{failures.length} failed</em></summary><ImportFailureList failures={failures}/></details>:<div key={entry.importId}>{head}<em className="ok">done</em></div>})}</div></details>}
         {(migrationHistory.connectors||[]).length>0&&<details className="capability-details"><summary>Imported connector candidates · {migrationHistory.connectors.length}</summary><div className="capability-list">{migrationHistory.connectors.map(item=><div key={item.name}><div><strong>{item.name}</strong><span>{Number(item.sessionCount||0).toLocaleString()} imported session{Number(item.sessionCount||0)===1?"":"s"}</span></div><em>candidate</em></div>)}</div></details>}
         <ErrorLine value={errors["externalAgentConfig/detect"]}/><ErrorLine value={errors["externalAgentConfig/import"]}/><ErrorLine value={errors["externalAgentConfig/import/readHistories"]}/>
       </Section>

@@ -338,9 +338,24 @@
 :root:root :is(.capabilities-page,.environments-page) .capability-list>div>div:first-child>span{display:block;margin-top:2px;font-size:11.5px!important;line-height:1.45!important;color:var(--tx3)!important;overflow-wrap:anywhere}
 :root:root :is(.capabilities-page,.environments-page) .capability-list em{flex:none;padding:3px 9px;border:1px solid var(--line2)!important;border-radius:99px;background:var(--bg3)!important;color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-style:normal;font-weight:600;white-space:nowrap}
 :root:root :is(.capabilities-page,.environments-page) .capability-list em.ok{border-color:var(--okb)!important;background:var(--okt)!important;color:var(--ok)!important}
-/* An MCP server that still needs sign-in reads as a warning, not as healthy. */
+/* One warning badge: an MCP server that still needs sign-in, a config warning and a runtime warning all read alike. */
 :root:root .capabilities-page .capability-list em.warn{border-color:var(--warnb)!important;background:var(--warnt)!important;color:var(--warn)!important}
-:root:root .capabilities-page .config-warning-list em{border-color:var(--warnb)!important;background:var(--warnt)!important;color:var(--warn)!important}
+/* A list row that opens (an import with failures): the row is the summary, laid out like the plain rows above. */
+:root:root .capabilities-page .capability-list>details{min-width:0;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important}
+:root:root .capabilities-page .capability-list>details>summary{min-height:46px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 12px;border-radius:var(--r-m);list-style:none;cursor:pointer}
+:root:root .capabilities-page .capability-list>details>summary::-webkit-details-marker{display:none}
+:root:root .capabilities-page .capability-list>details>summary:focus-visible{outline:2px solid var(--ac);outline-offset:-2px}
+:root:root .capabilities-page .capability-list>details>summary>div{min-width:0}
+:root:root .capabilities-page .capability-list>details>summary>div>span{display:block;margin-top:2px;font-size:11.5px!important;line-height:1.45!important;color:var(--tx3)!important;overflow-wrap:anywhere}
+:root:root .capabilities-page .capability-list>details>summary em{display:inline-flex;align-items:center;gap:4px}
+:root:root .capabilities-page .capability-list>details>summary em svg{flex:none;transition:transform .15s}
+:root:root .capabilities-page .capability-list>details[open]>summary em svg{transform:rotate(90deg)}
+:root:root .capabilities-page .capability-list>details>.import-failure-list{margin:0;padding:0 12px 10px}
+/* What failed in an import: the item's kind, then the runtime's message and the stage it failed at. */
+:root:root .capabilities-page .import-failure-list{display:grid;gap:6px;margin:8px 0 0;padding:0;list-style:none}
+:root:root .capabilities-page .import-failure-list li{display:grid;gap:2px;min-width:0;padding:8px 10px;border:1px solid var(--errb);border-left-width:3px;border-radius:var(--r-s);background:var(--errt)}
+:root:root .capabilities-page .import-failure-list strong{font-size:12px!important;font-weight:600;color:var(--tx0)!important;white-space:normal}
+:root:root .capabilities-page .import-failure-list span{font-size:11.5px!important;line-height:1.45;color:var(--tx2)!important;overflow-wrap:anywhere}
 
 /* ============ Usage ============ */
 :root:root .usage-page{display:grid;gap:14px;container:pg/inline-size}

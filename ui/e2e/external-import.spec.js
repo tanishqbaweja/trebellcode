@@ -68,9 +68,23 @@ test("external agent imports use native progress and completion notifications",a
     await card.getByRole("button",{name:"Scan"}).click();await expect(card).toContainText("Claude skills");await expect(card.locator(".capability-list>div").filter({hasText:"Claude skills"}).locator("em")).toHaveText("Skills");await card.getByRole("button",{name:"Import 1 item",exact:true}).click();
     await expect(card).toContainText("Importing · Skills · 1 imported");
     await expect(card).toContainText("Import complete · Skills, MCP server config · 1 imported · 1 failed",{timeout:10_000});expect(postImportHistoryReads).toBe(1);
+    // A partly failed import says what failed: the item's kind and the runtime's message.
+    const failuresAfterImport=card.getByRole("list",{name:"Import failures"});
+    await expect(failuresAfterImport.getByRole("listitem")).toHaveCount(1);
+    await expect(failuresAfterImport.getByRole("listitem")).toContainText("MCP server config");
+    await expect(failuresAfterImport.getByRole("listitem")).toContainText("One connector could not be imported.");
+    await expect(failuresAfterImport).not.toContainText("MCP_SERVER_CONFIG");
     const importCall=calls.find(call=>call.method==="externalAgentConfig/import");expect(importCall?.params).toEqual({migrationItems:[migrationItem],source:"trebell-code"});
     await expect(card).toContainText("Previous native imports · 2");
     await card.getByText("Previous native imports · 2",{exact:true}).click();await expect(card).toContainText("1 imported · 1 failed");await expect(card.locator(".migration-history-list strong").first()).toHaveText("Claude Code");
+    // Each history row with failures opens to list them; its badge names the failures instead of a bare "review".
+    const failedEntry=card.locator(".migration-history-list>details").filter({hasText:"1 failed"});
+    await expect(card.locator(".migration-history-list")).not.toContainText("review");
+    await expect(failedEntry.getByRole("list",{name:"Import failures"})).toBeHidden();
+    await failedEntry.locator("summary").click();
+    const entryFailures=failedEntry.getByRole("list",{name:"Import failures"});
+    await expect(entryFailures).toBeVisible();
+    await expect(entryFailures).toContainText("MCP server config");await expect(entryFailures).toContainText("One connector could not be imported.");await expect(entryFailures).toContainText("Write stage");
     await card.getByText("Imported connector candidates · 1",{exact:true}).click();await expect(card).toContainText("linear");await expect(card).toContainText("3 imported sessions");
     await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"tools-native-import-history-1280x800.png",fullPage:false});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"tools-native-import-history-light-1280x800.png",fullPage:false});
