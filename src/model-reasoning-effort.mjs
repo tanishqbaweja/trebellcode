@@ -42,7 +42,8 @@ export function supportedReasoningEfforts(runtime,provider,model,metadata={}){
       if(/^gpt-6\.\d+-(?:luna|sol|astra)(?:$|-)/.test(id))return ["low","medium","high","xhigh","max"];
       if(/^(?:gpt-5(?:\.|-|$)|o\d)/.test(id))return ["low","medium","high","xhigh"];
     }
-    if(provider==="gemini")return ["low","medium","high"];
+    // Gemini's thinking levels belong to a model: without one (no key, so no catalog) there is nothing to set them on.
+    if(provider==="gemini")return id?["low","medium","high"]:[];
     if(provider==="anthropic"&&/(?:claude-(?:opus|sonnet)-(?:4-[6-9]|5)|claude-(?:fable|mythos)-5)/.test(id))return ["low","medium","high"];
     return [];
   }

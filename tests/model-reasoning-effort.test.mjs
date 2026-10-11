@@ -19,6 +19,13 @@ test("reasoning effort capability lists stay provider/model specific",()=>{
   assert.deepEqual(supportedReasoningEfforts("native","vyceai","whatever",{}),[]);
 });
 
+test("a Native provider offers no effort levels until a model is chosen",()=>{
+  // Live: Gemini without a key (no model in the catalog) still showed a Thinking picker.
+  for(const model of [null,undefined,""," "])assert.deepEqual(supportedReasoningEfforts("native","gemini",model,{}),[],String(model));
+  assert.deepEqual(supportedReasoningEfforts("native","gemini","gemini-3.8-flash",{}),["low","medium","high"]);
+  assert.deepEqual(supportedReasoningEfforts("native","openai","",{}),[]);
+});
+
 test("OpenAI GPT-6 point releases offer the Native effort levels OpenAI accepts for them",()=>{
   // gpt-6.1-sol, OpenAI's default model, accepts Low through Max; the Responses API rejects "none" for it, which gpt-6-sol
   // accepts (live, 2026-10-11). Codex's model metadata for gpt-6.1-sol lists the same levels, plus its own Ultra.
