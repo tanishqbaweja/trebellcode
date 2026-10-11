@@ -140,11 +140,21 @@ test("a relay turn that failed without a reply says how it ended once the next t
 
 // A Codex app-server that keeps the turns it runs, so a reload reads them back: it opens threads on item pages (with a turn
 // cursor beside them, as Codex does) and answers turn/start by running the next scripted turn. An item page holds the items
-// of pageTurns turns and a turn page outcomeTurns turns (all of them by default), newest first.
+// of pageTurns turns and a turn page outcomeTurns turns (all of them by default), newest first. A step can start a turn of
+// the harness's own, with no user message, as a goal continuing does.
 async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinity,outcomeTurns=Infinity}={}){
-  const turns=[...seed];let socket=null,interrupt=null;
+  const turns=[...seed];let socket=null,interrupt=null,userSteps=0;
   const emit=message=>socket?.send(JSON.stringify(message));
   const now=()=>Math.floor(Date.now()/1000);
+  const toolsFor=turn=>({
+    emit:value=>emit(value),threadId:thread.id,
+    finish:(status,extra={})=>{Object.assign(turn,{status,completedAt:now(),durationMs:2100,...extra});emit({method:"turn/completed",params:{threadId:thread.id,turn:{...turn}}})},
+    onInterrupt:handler=>{interrupt=handler},
+    startOwnTurn:step=>{
+      const own={id:"codex-turn-"+(turns.length+1),status:"inProgress",startedAt:now(),completedAt:null,durationMs:null,error:null,items:[]};
+      turns.push(own);emit({method:"turn/started",params:{threadId:thread.id,turn:{...own,items:[]}}});setTimeout(()=>step(own,toolsFor(own)),60);
+    },
+  });
   // A cursor "<kind>@<n>" starts a page n turns back from the newest; the page names the cursor of the one before it.
   const pageOf=(kind,cursor,size)=>{
     const [name,offset]=String(cursor||"").split("@"),start=Number(offset);if(name!==kind||!Number.isInteger(start))return {data:[],next:null};
@@ -162,9 +172,9 @@ async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinity,outco
       else if(message.method==="thread/items/list"){const page=pageOf("items",params.cursor,pageTurns);result={data:page.data.flatMap(turn=>turn.items.map(item=>({turnId:turn.id,item})).reverse()),nextCursor:page.next,backwardsCursor:"items@0"}}
       else if(message.method==="thread/turns/list"){const page=pageOf("turns",params.cursor,outcomeTurns);result={data:page.data.map(turn=>({...turn,items:params.itemsView==="notLoaded"?[]:turn.items,itemsView:params.itemsView||"summary"})),nextCursor:page.next,backwardsCursor:null}}
       else if(message.method==="turn/start"){
-        const step=script[turns.length],id="codex-turn-"+(turns.length+1),text=(params.input||[]).map(part=>part?.text||"").join("");
+        const step=script[userSteps++],id="codex-turn-"+(turns.length+1),text=(params.input||[]).map(part=>part?.text||"").join("");
         const turn={id,status:"inProgress",startedAt:now(),completedAt:null,durationMs:null,error:null,items:[{id:"user-"+id,type:"userMessage",content:[{type:"text",text}]}]};
-        turns.push(turn);result={turn:{...turn,items:[]}};after=()=>step(turn,{emit:value=>emit(value),threadId:thread.id,finish:(status,extra={})=>{Object.assign(turn,{status,completedAt:now(),durationMs:2100,...extra});emit({method:"turn/completed",params:{threadId:thread.id,turn:{...turn}}})},onInterrupt:handler=>{interrupt=handler}});
+        turns.push(turn);result={turn:{...turn,items:[]}};after=()=>step(turn,toolsFor(turn));
       }
       else if(message.method==="turn/interrupt"){const handler=interrupt;interrupt=null;after=()=>handler?.()}
       else if(message.method==="thread/goal/get")result={goal:null};
@@ -307,4 +317,181 @@ test("older item pages read how their turns ended from turn pages read on just a
     expect(outcomeCursors).toEqual(["turns@0","turns@1","turns@2","turns@3","turns@4"]);
     await expect(rows).toHaveCount(2);await expect(page.locator(".conversation-history .turn-outcome.tone-ok")).toHaveCount(0);
   }finally{await harness.close()}
+});
+
+// Row a sits below row b on screen.
+async function expectBelow(a,b){const [upper,lower]=[await box(b),await box(a)];expect(lower.y).toBeGreaterThanOrEqual(upper.y+upper.height-1)}
+
+test("a goal turn that fails before any item, a stop after a denial and a code-only error each end with their row, live and after a reload",async({page})=>{
+  test.setTimeout(90_000);
+  const thread={id:"codex-goal-failure",name:"Codex goal failure",preview:"A goal hits the usage limit",cwd:process.cwd(),status:{type:"idle"},model:"test/coding-fast",createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
+  const usage={message:"You have hit your usage limit. Try again in 3 hours.",codexErrorInfo:"usageLimitExceeded",additionalDetails:null},usageShown=usage.message+" · See Usage for your Codex limits.";
+  const unauthorized={message:"",codexErrorInfo:"unauthorized",additionalDetails:null},unauthorizedShown="Agent error · Sign in to Codex again from Agents & models, or run codex login.";
+  const harness=await startCodexHarness(thread,[
+    // The goal's first step answers, then Codex goes on by itself and its first request hits the usage limit: no item at all.
+    (turn,{emit,threadId,finish,startOwnTurn})=>{
+      emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});
+      const answer={id:"agent-"+turn.id,type:"agentMessage",text:"Goal step one done."};turn.items.push(answer);
+      emit({method:"item/completed",params:{threadId,turnId:turn.id,item:answer}});finish("completed");
+      setTimeout(()=>startOwnTurn((own,tools)=>{tools.emit({method:"error",params:{threadId,turnId:own.id,error:usage,willRetry:false}});tools.finish("failed",{error:usage})}),200);
+    },
+    // Codex could not sign in: an error code with no text.
+    (turn,{emit,threadId,finish})=>{emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});emit({method:"error",params:{threadId,turnId:turn.id,error:unauthorized,willRetry:false}});finish("failed",{error:unauthorized})},
+    // An auto review denies a command, then the person stops the turn.
+    (turn,{emit,threadId,finish,onInterrupt})=>{
+      emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});
+      const command={id:"cmd-"+turn.id,type:"commandExecution",command:"rm generated.tmp",cwd:process.cwd(),status:"inProgress",aggregatedOutput:"",exitCode:null},action={type:"command",command:"rm generated.tmp",cwd:process.cwd()},at=Date.now();
+      turn.items.push(command);emit({method:"item/started",params:{threadId,turnId:turn.id,item:command}});
+      emit({method:"item/autoApprovalReview/started",params:{threadId,turnId:turn.id,startedAtMs:at,reviewId:"review-"+turn.id,targetItemId:command.id,review:{status:"inProgress",riskLevel:null,userAuthorization:null,rationale:null},action}});
+      emit({method:"item/autoApprovalReview/completed",params:{threadId,turnId:turn.id,startedAtMs:at,completedAtMs:at+50,reviewId:"review-"+turn.id,targetItemId:command.id,decisionSource:"agent",review:{status:"denied",riskLevel:"high",userAuthorization:"low",rationale:"Deleting this file needs explicit user approval."},action}});
+      onInterrupt(()=>{Object.assign(command,{status:"declined"});emit({method:"item/completed",params:{threadId,turnId:turn.id,item:command}});finish("interrupted")});
+    },
+    (turn,{emit,threadId,finish})=>{
+      emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});
+      const answer={id:"agent-"+turn.id,type:"agentMessage",text:"Last answer."};turn.items.push(answer);
+      emit({method:"item/completed",params:{threadId,turnId:turn.id,item:answer}});finish("completed");
+    },
+  ]);
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Codex goal failure");
+    const composer=page.getByTestId("composer"),rows=page.getByTestId("turn-outcome-row"),stop=page.getByRole("button",{name:"Stop",exact:true}),card=page.locator(".agent-block");
+    const rowOf=turnId=>page.locator(`[data-testid=turn-outcome-row][data-turn-id="${turnId}"]`),userRow=text=>page.locator(".user-row").filter({hasText:text});
+    const reply=page.locator(".history-assistant:not([data-testid=turn-outcome-row])").filter({hasText:"Goal step one done."});
+    await composer.fill("Codex goal request");await page.getByTestId("send").click();
+    await expect(page.getByText("Goal step one done.",{exact:true})).toBeVisible({timeout:10_000});
+    await expect(card.locator(".tool-event.kind-error").filter({hasText:usageShown})).toBeVisible({timeout:10_000});await expect(stop).toHaveCount(0,{timeout:10_000});
+    // The card lists the goal turn's failure while it is on screen: no row repeats it.
+    await expect(rows).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"turn-failure-goal-card-dark-1600x980.png"});
+
+    // Once the card moves on, the goal turn ends after the turn before it, above the next message.
+    await composer.fill("Codex unauthorized request");await page.getByTestId("send").click();
+    const goalRow=rowOf("codex-turn-2");
+    await expect(goalRow).toBeVisible({timeout:10_000});
+    await expect(goalRow.getByTestId("assistant-heading")).toHaveText("Codex");await expect(goalRow.getByTestId("turn-outcome")).toHaveText(/^failed · \d/);
+    await expect(goalRow.locator(".turn-outcome-message")).toHaveText(usageShown);
+    await expectBelow(goalRow,reply);await expectBelow(userRow("Codex unauthorized request"),goalRow);
+    await expect(card.locator(".tool-event.kind-error").filter({hasText:unauthorizedShown})).toBeVisible({timeout:10_000});await expect(stop).toHaveCount(0,{timeout:10_000});
+
+    // The code-only failure keeps the card's wording once the card moves on.
+    await composer.fill("Codex denied request");await page.getByTestId("send").click();
+    await expect(rowOf("codex-turn-3").locator(".turn-outcome-message")).toHaveText(unauthorizedShown,{timeout:10_000});
+    // The denial is on the card, the stop is not: the stopped row reads below the card while it is on screen.
+    await expect(stop).toBeVisible({timeout:10_000});await expect(card.locator(".tool-event").filter({hasText:"denied"})).toBeVisible({timeout:10_000});
+    await stop.click();await expect(stop).toHaveCount(0,{timeout:10_000});
+    const stoppedRow=rowOf("codex-turn-4");
+    await expect(stoppedRow.getByTestId("turn-outcome")).toHaveText(/^stopped · \d/);await expect(stoppedRow.locator(".turn-outcome-message")).toHaveCount(0);
+    await expectBelow(stoppedRow,card);
+    await page.screenshot({animations:"disabled",path:auditDir+"turn-failure-denied-stopped-under-card-dark-1600x980.png"});
+
+    await composer.fill("Codex last request");await page.getByTestId("send").click();
+    await expect(page.getByText("Last answer.",{exact:true})).toBeVisible({timeout:10_000});
+    await expect(rows).toHaveCount(3);expect(await rows.evaluateAll(nodes=>nodes.map(node=>node.dataset.turnId))).toEqual(["codex-turn-2","codex-turn-3","codex-turn-4"]);
+    await goalRow.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"turn-failure-goal-row-live-dark-1600x980.png"});
+    await auditOutcomeRows(page,"turn-failure-goal-live",rows);
+
+    // After a reload the goal turn, which has no item to page through, is placed from the turn pages beside the item pages.
+    await page.reload();await openThreadRow(page,"Codex goal failure");
+    await expect(page.getByText("Last answer.",{exact:true})).toBeVisible({timeout:10_000});
+    await expect(rows).toHaveCount(3);expect(await rows.evaluateAll(nodes=>nodes.map(node=>node.dataset.turnId))).toEqual(["codex-turn-2","codex-turn-3","codex-turn-4"]);
+    await expect(goalRow.getByTestId("turn-outcome")).toHaveText("failed · 2.1s");await expect(goalRow.locator(".turn-outcome-message")).toHaveText(usageShown);
+    await expectBelow(goalRow,reply);await expectBelow(userRow("Codex unauthorized request"),goalRow);
+    await expect(rowOf("codex-turn-3").locator(".turn-outcome-message")).toHaveText(unauthorizedShown);
+    await expect(stoppedRow.getByTestId("turn-outcome")).toHaveText("stopped · 2.1s");
+    await goalRow.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"turn-failure-goal-row-reloaded-dark-1600x980.png"});
+    await auditOutcomeRows(page,"turn-failure-goal-reloaded",rows);
+  }finally{await harness.close()}
+});
+
+test("a turn the harness runs again after a restart ends with the error of its last run, not the first",async({page})=>{
+  test.setTimeout(60_000);
+  const thread={id:"codex-turn-again",name:"Codex turn again",preview:"Recovered, then failed",cwd:process.cwd(),status:{type:"idle"},model:"test/coding-fast",createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
+  const note={message:"Trebell restarted while this turn was running. Recovery is queued."},real={message:"Could not continue after restart: provider refused the session."};
+  const harness=await startCodexHarness(thread,[
+    // The relay's restart recovery: the turn ends interrupted with a note, starts again under the same id, and fails.
+    (turn,{emit,threadId,finish})=>{
+      emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});finish("interrupted",{error:note});
+      setTimeout(()=>{
+        Object.assign(turn,{status:"inProgress",error:null,completedAt:null,durationMs:null});emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});
+        setTimeout(()=>{emit({method:"error",params:{threadId,turnId:turn.id,error:real,willRetry:false}});finish("failed",{error:real})},200);
+      },400);
+    },
+    (turn,{emit,threadId,finish})=>{
+      emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});
+      const answer={id:"agent-"+turn.id,type:"agentMessage",text:"Second answer."};turn.items.push(answer);
+      emit({method:"item/completed",params:{threadId,turnId:turn.id,item:answer}});finish("completed");
+    },
+  ]);
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Codex turn again");
+    const composer=page.getByTestId("composer"),rows=page.getByTestId("turn-outcome-row");
+    await composer.fill("Recovered request");await page.getByTestId("send").click();
+    await expect(page.locator(".agent-block .tool-event.kind-error").filter({hasText:real.message})).toBeVisible({timeout:10_000});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:10_000});await expect(rows).toHaveCount(0);
+    await composer.fill("Next request");await page.getByTestId("send").click();
+    await expect(page.getByText("Second answer.",{exact:true})).toBeVisible({timeout:10_000});
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first().getByTestId("turn-outcome")).toHaveText(/^failed · \d/);await expect(rows.first().locator(".turn-outcome-message")).toHaveText(real.message);
+    await page.screenshot({animations:"disabled",path:auditDir+"turn-failure-run-again-live-dark-1600x980.png"});
+    await page.reload();await openThreadRow(page,"Codex turn again");
+    await expect(page.getByText("Second answer.",{exact:true})).toBeVisible({timeout:10_000});
+    await expect(rows).toHaveCount(1);await expect(rows.first().locator(".turn-outcome-message")).toHaveText(real.message);
+  }finally{await harness.close()}
+});
+
+test("a relay wake turn that failed before any item keeps its row after a reload, also when it opens the thread",async({page})=>{
+  test.setTimeout(60_000);
+  const root=await mkdtemp(join(tmpdir(),"trebell-wake-failure-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
+  state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);
+  const providerMeta={runtimeInstanceId:"native-default",modelProvider:"agentrouter",permissionProfile:"supervised",projectless:false,environmentId:null};
+  const wakeError="Claude Code could not authenticate. Run claude login, then try again.";
+  // A user turn and its answer, then (wake) a turn of the harness's own with no item at all, failed as the relay stores it.
+  const seed=(name,turns)=>{
+    const thread=threadStore.create({runtime:"native",cwd:repo,providerSessionId:"wake-"+name,model:"gpt-5.6",name,preview:name,providerMeta});
+    for(const [index,step] of turns.entries()){
+      const turn=threadStore.addTurn(thread.id,{inputText:step.user||"",items:step.reply?[{type:"agentMessage",id:"answer-"+name.length+"-"+index,text:step.reply}]:[]});
+      threadStore.finishTurn(thread.id,turn.id,step.reply?{status:"completed"}:{status:"failed",error:{message:wakeError}});
+    }
+    return thread;
+  };
+  const middle=seed("Wake failure between",[{user:"Start the background check",reply:"Started it in the background."},{},{user:"Anything new?",reply:"Nothing new yet."}]);
+  const opening=seed("Wake failure first",[{},{user:"What happened?",reply:"The background check could not sign in."}]);
+  const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
+  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn:async()=>{throw new Error("No turn runs in this test.")},version:"wake-failure-fixture"});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  const project={id:"wake-failure-project",name:"Wake Failure Project",path:repo,environmentId:null,effectiveSettings:{}};
+  const uiMeta={projectless:false,environmentId:null,cwd:repo,runtime:"native",runtimeInstanceId:"native-default"};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"wake-failure-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:{[middle.id]:uiMeta,[opening.id]:uiMeta}}));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["gpt-5.6"],metadata:{provider:"agentrouter",models:[{id:"gpt-5.6",name:"GPT-5.6",provider:"agentrouter",agent:"Trebell Native"}]}}));
+    await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{project}:{projects:[project]}));
+    await page.route(/\/api\/worktree\/ensure$/,route=>json(route,{ok:true}));
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:false,cwd:repo,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]}));
+    await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>json(route,uiMeta));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,{checkpoints:[]}));
+    await page.route(/\/api\/verification\/plan-turn$/,route=>json(route,{supported:false}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const rows=page.getByTestId("turn-outcome-row"),userRow=text=>page.locator(".user-row").filter({hasText:text});
+    await openThreadRow(page,"Wake failure between");
+    await expect(page.getByText("Nothing new yet.",{exact:true})).toBeVisible({timeout:10_000});
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first().getByTestId("assistant-heading")).toHaveText("Trebell Native");await expect(rows.first().getByTestId("turn-outcome")).toHaveText(/^failed/);
+    await expect(rows.first().locator(".turn-outcome-message")).toHaveText(wakeError);
+    await expectBelow(rows.first(),page.locator(".history-assistant:not([data-testid=turn-outcome-row])").filter({hasText:"Started it in the background."}));
+    await expectBelow(userRow("Anything new?"),rows.first());
+    await page.screenshot({animations:"disabled",path:auditDir+"turn-failure-wake-between-dark-1600x980.png"});
+    // A thread that opens with the wake turn starts with its row, above the first message.
+    await openThreadRow(page,"Wake failure first");
+    await expect(page.getByText("The background check could not sign in.",{exact:true})).toBeVisible({timeout:10_000});
+    await expect(rows).toHaveCount(1);await expect(rows.first().locator(".turn-outcome-message")).toHaveText(wakeError);
+    await expectBelow(userRow("What happened?"),rows.first());
+    await page.screenshot({animations:"disabled",path:auditDir+"turn-failure-wake-first-dark-1600x980.png"});
+  }finally{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });

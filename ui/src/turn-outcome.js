@@ -31,44 +31,94 @@ function positiveDuration(value){
 }
 
 // The error a turn ended with (Turn.error: Codex sends {message, additionalDetails, codexErrorInfo}, the relay {message}),
-// worded as the activity card words that error, hint included. "" when the turn recorded none.
+// worded as the activity card words that error, hint included. A code with no text reads as the card reads it when the code
+// carries a hint (a usage limit, a sign-in); without one the card's "Agent error" says nothing the pill does not. "" when the
+// turn recorded none.
 export function turnFailureText(turn){
   const error=turn?.error;
   if(typeof error==="string")return error.trim();
-  if(!error||typeof error!=="object"||!(String(error.additionalDetails??"").trim()||String(error.message??"").trim()))return "";
-  return codexErrorNotice({error}).title;
+  if(!error||typeof error!=="object")return "";
+  const notice=codexErrorNotice({error});
+  return (String(error.additionalDetails??"").trim()||String(error.message??"").trim()||notice.hint)?notice.title:"";
 }
 
 // How finished turns ended, by turn id, from a page of history turns. Imported history reports durationMs 0, which is
-// not a measurement, so it is dropped.
+// not a measurement, so it is dropped. completedAt (seconds) tells a later completion of a turn from a replay of one.
 export function turnOutcomesFromTurns(turns=[]){
   const out={};
   for(const turn of turns||[]){
     const id=turn?.id;if(!id)continue;
     const status=turnOutcomeStatus(turn.status);if(!status)continue;
-    const error=turnFailureText(turn);
-    out[String(id)]={status,durationMs:positiveDuration(turn.durationMs),...(error?{error}:{})};
+    const error=turnFailureText(turn),completedAt=positiveDuration(turn.completedAt);
+    out[String(id)]={status,durationMs:positiveDuration(turn.durationMs),...(completedAt?{completedAt}:{}),...(error?{error}:{})};
   }
   return out;
 }
 
 // Adds a history page's outcomes for one thread. Facts this window already holds (a mode it sent, a duration it measured
-// to the millisecond, the error it was sent) are kept over the page's values; a page never removes anything.
-// failuresOnly takes only the failed and stopped turns (a thread opened on item pages: see App's resumeWithBoundedHistory).
+// to the millisecond, the error it was sent) are kept over the page's values, unless the page holds a later completion of
+// the turn than the one this window recorded (the relay runs an interrupted turn again after a restart): that one replaces
+// it, error and all. A page never removes a turn's outcome. failuresOnly takes only the failed and stopped turns (a thread
+// opened on item pages: see App's resumeWithBoundedHistory), and the turns this window already holds an outcome for.
 export function mergeTurnOutcomes(current={},threadId,turns=[],{failuresOnly=false}={}){
   const outcomes=turnOutcomesFromTurns(turns);
   let next=current;
   for(const [turnId,outcome] of Object.entries(outcomes)){
-    if(failuresOnly&&outcome.status==="completed")continue;
     const key=turnInfoKey(threadId,turnId);if(!key)continue;
     const known=current?.[key]||{};
-    const merged={...known,status:known.status||outcome.status,durationMs:known.durationMs??outcome.durationMs};
-    const error=known.error||outcome.error;if(error)merged.error=error;
-    if(known.status===merged.status&&known.durationMs===merged.durationMs&&known.mode===merged.mode&&known.error===merged.error)continue;
+    if(failuresOnly&&outcome.status==="completed"&&!known.status)continue;
+    const later=Boolean(known.status&&known.completedAt&&outcome.completedAt>known.completedAt),{error:knownError,...kept}=known;
+    const merged=later?{...kept,...outcome}:{...kept,status:known.status||outcome.status,durationMs:known.durationMs??outcome.durationMs};
+    const completedAt=later?outcome.completedAt:known.completedAt??outcome.completedAt;if(completedAt)merged.completedAt=completedAt;
+    const error=later?outcome.error:knownError||outcome.error;if(error)merged.error=error;else delete merged.error;
+    if(known.status===merged.status&&known.durationMs===merged.durationMs&&known.mode===merged.mode&&known.error===merged.error&&known.completedAt===merged.completedAt)continue;
     if(next===current)next={...current};
     next[key]=merged;
   }
   return next;
+}
+
+// What a turn's completion notification records (App's turn/completed): its status, the time this window measured (else the
+// harness's), when it completed and the error it ended with. A repeated completion with the same status (a replay after a
+// reconnect) keeps the first time and, when it sends none, the first error; a completion that changes the status ended the
+// turn anew and replaces them. A turn that starts again has its outcome cleared first (turnStartedAgain).
+export function recordTurnCompletion(known={},{status,durationMs=null,completedAt=null,error=""}={}){
+  const replay=known?.status===status,{error:knownError,...kept}=known||{};
+  const next={...kept,status,durationMs:(replay?known.durationMs:null)??durationMs??null,completedAt:(replay?known.completedAt:null)??completedAt??null};
+  const ended=error||(replay?knownError:"");if(ended)next.error=ended;
+  return next;
+}
+
+// A turn the harness starts again under the same id (the relay's restart recovery) has not ended any more: its recorded
+// outcome goes, the mode it was sent with stays. Unchanged (the same object) when it had none.
+export function turnStartedAgain(known){
+  if(!known?.status)return known;
+  const {status,durationMs,completedAt,error,...kept}=known;
+  return kept;
+}
+
+// The thread's turn ids, oldest first, from a page of turns listed newest first (a history page, a page of outcomes).
+export function turnIdsOldestFirst(turns=[]){
+  return [...(turns||[])].reverse().map(turn=>String(turn?.id||"")).filter(Boolean);
+}
+
+// The turn order with turns added after it (a turn that just started, the turns this window saw start while a history page
+// loaded), each once.
+export function appendTurnOrder(order=[],turnIds=[]){
+  const known=new Set((order||[]).map(String)),added=[...new Set((turnIds||[]).map(String).filter(id=>id&&!known.has(id)))];
+  return added.length?[...(order||[]),...added]:order||[];
+}
+
+// The turn order with an older run of turns in front of it (an older page of turns, read newest first and given oldest first).
+// A run that reaches into the known turns adds only the turns before them; one that lies inside them adds nothing.
+export function prependTurnOrder(order=[],older=[]){
+  const known=(order||[]).map(String),run=[...new Set((older||[]).map(String).filter(Boolean))];
+  if(!run.length)return order||[];
+  if(!known.length)return run;
+  const at=run.indexOf(known[0]);
+  if(at>=0)return at?[...run.slice(0,at),...known]:order;
+  const seen=new Set(known);
+  return run.some(id=>seen.has(id))?order:[...run,...known];
 }
 
 export function formatTurnDuration(ms){
@@ -110,44 +160,70 @@ export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=nu
   return out;
 }
 
-// The rows that end a turn which failed or was stopped before any reply, by the id of the turn's last row (its message or a
-// thought), which the outcome row follows: the heading its reply would have had, the pill, and the error it ended with. A
-// turn whose failure the live activity card lists (cardFailedTurnIds) has none, so the failure shows once: in the card while
-// it is on screen, here once the card moves to a later turn or after a reload. latest: the row is the card's turn's own and
-// reads below the card with the rest of that turn (conversation-order.js); never in a virtualized list, which keeps its order.
-export function turnEndRows(messages=[],{harnessLabel="",turnInfo=null,threadId=null,cardFailedTurnIds=null,cardTurnId=null,reorder=true}={}){
+// The rows that end the turns which failed or were stopped before any reply, as lists keyed by the id of the row they follow:
+// the heading the reply would have had, the pill, and the error the turn ended with. A turn with rows (its message, a thought)
+// ends after its last row. A turn with none (a goal continuing, or a harness's wake turn, that failed before any item) ends
+// after the rows of the turn before it in turnOrder (the thread's turn ids, oldest first), where those rows meet the next
+// turn's rows in the loaded history, not across the history gap (gapBeforeId) nor before rows of a turn turnOrder does not
+// hold; key "" when it opens the thread, the thread's start being loaded (startLoaded). Rows after one row keep the turns'
+// order. A failure the live activity card lists (cardFailedTurnIds) has no row, so it shows once: in the card while it is on
+// screen, here once the card moves to a later turn or after a reload. A stop always has its row: the card never says so.
+// latest: the row is the card's turn's own and reads below the card with the rest of that turn (conversation-order.js);
+// never in a virtualized list, which keeps its order.
+export function turnEndRows(messages=[],{harnessLabel="",turnInfo=null,threadId=null,cardFailedTurnIds=null,cardTurnId=null,reorder=true,turnOrder=null,gapBeforeId=null,startLoaded=false}={}){
   const list=Array.isArray(messages)?messages:[];
-  const lastRow=new Map(),replied=new Set();let lastUser=-1;
+  const firstRow=new Map(),lastRow=new Map(),replied=new Set();let lastUser=-1;
   list.forEach((message,index)=>{
     if(message?.role==="user")lastUser=index;
     const turnId=message?.turnId;if(!turnId)return;
-    lastRow.set(String(turnId),index);
-    if(message.role==="assistant")replied.add(String(turnId));
+    const id=String(turnId);if(!firstRow.has(id))firstRow.set(id,index);lastRow.set(id,index);
+    if(message.role==="assistant")replied.add(id);
   });
-  const out=new Map(),card=cardTurnId==null?"":String(cardTurnId);
-  for(const [turnId,index] of lastRow){
-    if(replied.has(turnId)||cardFailedTurnIds?.has?.(turnId))continue;
+  const out=new Map(),card=cardTurnId==null?"":String(cardTurnId),gap=gapBeforeId==null?null:String(gapBeforeId);
+  const ending=turnId=>{
     const info=turnInfo?.[turnInfoKey(threadId,turnId)]||null,pill=turnOutcomePill(info);
-    if(!pill||pill.tone==="ok")continue;
-    out.set(String(list[index].id),{
+    return !pill||pill.tone==="ok"||(pill.tone==="err"&&cardFailedTurnIds?.has?.(turnId))?null:{info,pill};
+  };
+  const add=(key,turnId,{info,pill},index)=>{
+    const row={
       turnId,
       heading:harnessLabel?[harnessLabel,info.mode].filter(Boolean).join(" · "):"",
       outcomeLabel:pill.label,outcomeTone:pill.tone,
       message:String(info.error||""),
       latest:Boolean(reorder)&&index>=lastUser&&(!card||card===turnId),
-    });
+    };
+    const rows=out.get(key);if(rows)rows.push(row);else out.set(key,[row]);
+  };
+  for(const [turnId,index] of lastRow){
+    const end=replied.has(turnId)?null:ending(turnId);
+    if(end)add(String(list[index].id),turnId,end,index);
   }
+  const order=[...new Set((turnOrder||[]).map(String).filter(Boolean))],before=[],after=[];
+  for(let index=0,seen=-1;index<order.length;index++){before[index]=seen;if(lastRow.has(order[index]))seen=index}
+  for(let index=order.length-1,seen=-1;index>=0;index--){after[index]=seen;if(lastRow.has(order[index]))seen=index}
+  order.forEach((turnId,position)=>{
+    if(lastRow.has(turnId))return;
+    const end=ending(turnId);if(!end)return;
+    const previous=before[position]<0?-1:lastRow.get(order[before[position]]),next=after[position]<0?-1:firstRow.get(order[after[position]]);
+    let at=null;
+    if(previous>=0)at=next>=0
+      ?(next===previous+1&&String(list[next].id)!==gap?previous:null)
+      :(list.slice(previous+1).every(message=>!message?.turnId)?previous:null);
+    else if(startLoaded&&(next===0?String(list[0].id)!==gap:next<0&&!list.length))at=-1;
+    if(at!=null)add(at<0?"":String(list[at].id),turnId,end,at);
+  });
   return out;
 }
 
-// The turns whose failure the live activity card lists: an error row raised for the turn (an error notification carries its
-// turnId; a failed Codex turn's row is "codex-error-<turn id>"). A retry row is not the failure: the turn went on after it.
+// The turns whose failure the live activity card lists: the row of a failed Codex turn ("codex-error-<turn id>") and the row of
+// a harness's error notification for the turn ("error-<time>", its turnId in raw). Other error rows are not the turn's failure:
+// a retry (the turn went on after it), an auto review's denial or time-out, a verification or queue error.
 export function cardFailedTurnIds(events=[]){
   const ids=new Set();
   for(const event of events||[]){
     if(event?.kind!=="error")continue;
-    const id=String(event.id||"");if(id.startsWith("codex-retry-"))continue;
-    const turnId=id.startsWith("codex-error-")?id.slice("codex-error-".length):event.raw?.turnId;
+    const id=String(event.id||"");
+    const turnId=id.startsWith("codex-error-")?id.slice("codex-error-".length):/^error-\d+$/.test(id)?event.raw?.turnId:null;
     if(turnId)ids.add(String(turnId));
   }
   return [...ids].sort();

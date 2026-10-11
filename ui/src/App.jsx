@@ -25,7 +25,7 @@ import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
 import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId } from "./thread-history.js";
-import { assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, turnEndRows, turnFailureText, turnInfoKey, turnOutcomeStatus } from "./turn-outcome.js";
+import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnEndRows, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain } from "./turn-outcome.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
@@ -439,6 +439,8 @@ const ConversationMessageRow=memo(function ConversationMessageRow({message,activ
 const TurnOutcomeRow=memo(function TurnOutcomeRow({turnId,heading="",outcomeLabel,outcomeTone,message="",latest=false}){
   return <div className={"history-assistant turn-outcome-row"+(latest?" latest-turn-end":"")} data-testid="turn-outcome-row" data-turn-id={turnId}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body"><div className="turn-outcome-head">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/></div>{message&&<p className={"turn-outcome-message tone-"+outcomeTone}>{message}</p>}</div></div>;
 });
+// The outcome rows that follow one row (or open the thread), in their turns' order.
+function turnOutcomeRows(rows){return (rows||[]).map(row=><TurnOutcomeRow key={"turn-end:"+row.turnId} {...row}/>)}
 
 const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,rootRef,forceMount=false,initialMount=false,renderMessage}){
   const ref=useRef(null),[mounted,setMounted]=useState(Boolean(initialMount||forceMount)),[placeholderHeight,setPlaceholderHeight]=useState(Math.max(1,Number(chunk.estimatedHeight)||1));
@@ -469,8 +471,8 @@ const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,roo
 });
 
 // cardFailedTurns: the turns whose failure the live activity card lists, one id per line (a string, so the memo holds while
-// the card's events change around them).
-const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,activeFindItemId=null,anchorItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null,cardFailedTurns=""}){
+// the card's events change around them). turnOrder: the thread's turn ids, oldest first, where a turn without rows ends.
+const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,activeFindItemId=null,anchorItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null,cardFailedTurns="",turnOrder=null}){
   const historyRef=useRef(null);
   // The chunks holding the active find match and an older page's anchor row mount at once, so both can be scrolled to exactly.
   const virtualized=shouldVirtualizeConversation(messages),chunks=useMemo(()=>virtualized?conversationVirtualChunks(messages):[],[messages,virtualized]),forcedChunk=virtualized?conversationChunkIndexForMessage(chunks,activeFindItemId):-1,anchorChunk=virtualized?conversationChunkIndexForMessage(chunks,anchorItemId):-1;
@@ -479,11 +481,13 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
   const latestStart=useMemo(()=>virtualized?-1:latestTurnRowsStart(messages,cardTurnId),[messages,cardTurnId,virtualized]);
   // A turn's first reply names the harness (and the mode this window sent it with); its last reply says how it ended.
   const decorations=useMemo(()=>assistantRowDecorations(messages,{harnessLabel,turnInfo,threadId}),[messages,harnessLabel,turnInfo,threadId]);
-  // A turn that failed or was stopped before any reply ends with a row saying so, unless the live card lists that failure.
+  // A turn that failed or was stopped before any reply ends with a row saying so, unless the live card lists that failure; one
+  // with no rows at all ends after the turn before it, or opens the thread.
   const cardFailedTurnSet=useMemo(()=>new Set(String(cardFailedTurns||"").split("\n").filter(Boolean)),[cardFailedTurns]);
-  const turnEnds=useMemo(()=>turnEndRows(messages,{harnessLabel,turnInfo,threadId,cardFailedTurnIds:cardFailedTurnSet,cardTurnId,reorder:!virtualized}),[messages,harnessLabel,turnInfo,threadId,cardFailedTurnSet,cardTurnId,virtualized]);
+  const gapBeforeId=historyGap?.beforeId??null;
+  const turnEnds=useMemo(()=>turnEndRows(messages,{harnessLabel,turnInfo,threadId,cardFailedTurnIds:cardFailedTurnSet,cardTurnId,reorder:!virtualized,turnOrder,gapBeforeId,startLoaded:!canLoadEarlier}),[messages,harnessLabel,turnInfo,threadId,cardFailedTurnSet,cardTurnId,virtualized,turnOrder,gapBeforeId,canLoadEarlier]);
   // One fragment per message whatever goes with it, so no row remounts when a gap marker or its turn's outcome row comes or goes.
-  const renderMessage=useCallback(message=>{const id=String(message.id),decoration=decorations.get(id),end=turnEnds.get(id);return <React.Fragment key={message.id}>
+  const renderMessage=useCallback(message=>{const id=String(message.id),decoration=decorations.get(id),ends=turnEnds.get(id);return <React.Fragment key={message.id}>
     {/* The turns not loaded between a detached find hit and the newest pages are marked where they belong, and load from there. */}
     {historyGap&&id===String(historyGap.beforeId)&&<div className="history-page-control history-gap" data-testid="history-gap"><button type="button" disabled={historyBusy} onClick={onLoadGap}>{loadingGap?"Loading turns…":<>{historyGapLabel(historyGap.missing)}<span className="history-gap-load">· Load</span></>}</button></div>}
     <ConversationMessageRow
@@ -498,9 +502,10 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
       outcomeLabel={decoration?.outcomeLabel||""}
       outcomeTone={decoration?.outcomeTone||""}
     />
-    {end&&<TurnOutcomeRow {...end}/>}
+    {turnOutcomeRows(ends)}
   </React.Fragment>},[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations,turnEnds,historyGap,historyBusy,loadingGap,onLoadGap]);
-  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={historyBusy} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{virtualized
+  // A thread that opens with turns that have no rows (a goal's first turn failing at once) starts with their outcome rows.
+  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={historyBusy} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{turnOutcomeRows(turnEnds.get(""))}{virtualized
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
@@ -830,7 +835,8 @@ export default function App(){
   const assistantStreamBufferRef=useRef(null);
   // Per thread and turn: the mode this window sent the turn with, and how and how fast it ended (see turn-outcome.js).
   // turnOutcomePagesRef: for the open item-paged thread, where its turn outcome pages stopped and the turns they covered.
-  const [turnInfo,setTurnInfo]=useState({});const turnClockRef=useRef(new Map());const turnOutcomePagesRef=useRef(null);
+  // turnOrder: the open thread's turn ids, oldest first, so a turn with no rows of its own still ends in its place.
+  const [turnInfo,setTurnInfo]=useState({});const turnClockRef=useRef(new Map());const turnOutcomePagesRef=useRef(null);const [turnOrder,setTurnOrder]=useState({threadId:null,ids:[]});
   const [resolvedMode,setResolvedMode]=useState(()=>typeof document!=="undefined"&&document.documentElement.dataset.mode==="light"?"light":"dark");
   if(!assistantStreamBufferRef.current)assistantStreamBufferRef.current=createTextFrameBuffer({
     schedule:callback=>requestAnimationFrame(callback),
@@ -2512,8 +2518,12 @@ export default function App(){
     else if(message.method==="turn/started"){
       const id=p.turn?.id||p.turnId;
       const clockKey=turnInfoKey(threadId,id);if(clockKey&&!turnClockRef.current.has(clockKey))turnClockRef.current.set(clockKey,Date.now());
+      // A turn that starts again (the relay's restart recovery) is running, not ended: its next completion is recorded whole.
+      if(clockKey)setTurnInfo(prev=>{const known=turnStartedAgain(prev[clockKey]);return known===prev[clockKey]?prev:{...prev,[clockKey]:known}});
       updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:Date.now(),lastActivityAt:Date.now()});markThreadTurn(threadId,true);
       if(isCurrent){
+        // The open thread's turns in order, where one without rows ends (a thread this window started begins its order here).
+        if(threadId&&id)setTurnOrder(prev=>prev.threadId===threadId?{...prev,ids:appendTurnOrder(prev.ids,[id])}:{threadId,ids:[String(id)]});
         setRunning(true);setActiveTurnId(id);
         setMessages(prev=>{const index=[...prev].reverse().findIndex(m=>m.role==="user"&&!m.turnId);if(index<0)return prev;const real=prev.length-1-index;return prev.map((m,i)=>i===real?{...m,turnId:id}:m)});
       }
@@ -2526,9 +2536,9 @@ export default function App(){
         const startedAtMs=turnClockRef.current.get(outcomeKey);turnClockRef.current.delete(outcomeKey);
         const measuredMs=startedAtMs?Math.max(0,Date.now()-startedAtMs):null,reportedMs=Number(p.turn?.durationMs);
         const durationMs=measuredMs||(Number.isFinite(reportedMs)&&reportedMs>0?reportedMs:null),error=turnFailureText(p.turn);
-        // A repeated completion (a replay after a reconnect) keeps the time measured the first time. The error is what a turn
-        // without a reply shows once the card moves on.
-        if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:{...prev[outcomeKey],status:outcomeStatus,durationMs:prev[outcomeKey]?.durationMs??durationMs??null,...(error&&!prev[outcomeKey]?.error?{error}:{})}}));
+        // A repeated completion (a replay after a reconnect) keeps the time measured the first time; one that ends the turn anew
+        // replaces it (recordTurnCompletion). The error is what a turn without a reply shows once the card moves on.
+        if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:recordTurnCompletion(prev[outcomeKey],{status:outcomeStatus,durationMs,completedAt:completedAtMs/1000,error})}));
       }
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});markThreadTurn(threadId,false);
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
@@ -3058,7 +3068,7 @@ export default function App(){
     rememberConversationPosition();
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
     const resumedRunning=openedThread.status?.type==="active",resumedTurnId=resumedActiveTurnId(resumed);
-    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
@@ -3077,8 +3087,11 @@ export default function App(){
         // An item-paged thread takes the failed and stopped turns from its outcome pages: a done pill is left to turn pages, so
         // it shows none on only some turns, while a failure or stop always says so.
         turnOutcomePagesRef.current=page.kind==="items"?{threadId:resumed.thread.id,cursor:page.turnsCursor||null,covered:new Set((page.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean))}:null;
+        // The turns in order come from the same pages (item pages skip a turn that has no items), then any this window saw start.
+        const orderIds=turnIdsOldestFirst(page.kind==="items"?page.turns||[]:page.data||[]);
+        setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder(orderIds,prev.threadId===resumed.thread.id?prev.ids:[])}));
         setTurnInfo(prev=>page.kind==="items"?mergeTurnOutcomes(prev,resumed.thread.id,page.turns||[],{failuresOnly:true}):mergeTurnOutcomes(prev,resumed.thread.id,page.data||[]));setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",itemHistory:page.kind==="items",loading:false});
-      }else{turnOutcomePagesRef.current=null;setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
+      }else{turnOutcomePagesRef.current=null;setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder((resumed.thread.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean),prev.threadId===resumed.thread.id?prev.ids:[])}));setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex")applyProviderInventory(harnessInventory(runtimeInventoryRef.current,resumed.thread.providerMeta))
     }
     if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
@@ -3161,6 +3174,8 @@ export default function App(){
         // A thread opened on item pages takes only failed and stopped turns, from its outcome pages and from turn pages loaded into
         // it later (above a find hit, or after one joined the history), so no turn shows a done pill the others cannot.
         setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,outcomeTurns,{failuresOnly:itemPaging||Boolean(historyPage.itemHistory)}));
+        // Older turns go in front of the turn order (a run that lies apart from it, above a find hit, is told apart by the gap).
+        setTurnOrder(prev=>prev.threadId===threadId?{...prev,ids:prependTurnOrder(prev.ids,turnIdsOldestFirst(outcomeTurns))}:prev);
         if(above){
           // Older turns join the detached hit's group; the gap below it is unchanged.
           if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
@@ -4639,7 +4654,7 @@ export default function App(){
           <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")}/>
+              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={turnOrder.threadId===activeThread?.id?turnOrder.ids:null}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {shownApproval&&<div className="inline-approval"><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
