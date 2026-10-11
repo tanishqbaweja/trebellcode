@@ -84,8 +84,9 @@ test("large source control collections mount bounded windows",async({page,reques
   await expect(right.getByRole("button",{name:"Show 60 more changes"})).toBeVisible();
   await expect(right.getByRole("button",{name:"Show 60 more PRs"})).toBeVisible();
 
-  // Footers count what is shown ("mounted" was a React word for it).
-  const footer=label=>right.locator(".source-window-footer").filter({has:right.getByRole("button",{name:label})}).locator("span");
+  // Footers count what is shown ("mounted" was a React word for it). A has: locator is matched inside each footer, so it starts
+  // from page rather than from the panel.
+  const footer=label=>right.locator(".source-window-footer").filter({has:page.getByRole("button",{name:label})}).locator("span");
   await expect(footer("Show 60 more changes")).toHaveText("60 of 200 shown");
   await expect(footer("Show 60 more PRs")).toHaveText("60 of 150 shown");
   await right.getByRole("button",{name:"Show 60 more changes"}).click();
