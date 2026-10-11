@@ -344,6 +344,12 @@ test("fetching the task's own upstream project is a leak only when content comes
   assert.equal(blocked.upstreamLeaks,0);assert.equal(blocked.status,"review");
   assert.equal(fetchUrl("https://api.github.com/repos/psf/requests/issues/1",'{"title":"An issue in another project, with its full body text"}').upstreamLeaks,0);
   assert.equal(fetchUrl("https://api.github.com/repos/django/django/pulls/12663",'{"title":"Fixed #31420 -- Fixed crash when using subquery"}',{}).upstreamLeaks,0);
+  // A pull request's patch, from GitHub's patch host and from the repository page, is the fix itself.
+  const patch="From 06ebaa9e287137d4496a2736b055f1c6aed95839 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] Fixed #31420 -- Fixed crash when using subquery in SimpleLazyObject\n\n django/db/models/sql/query.py | 2 +-";
+  for(const url of ["https://patch-diff.githubusercontent.com/raw/django/django/pull/12663.patch","https://github.com/django/django/pull/12663.diff"]){
+    const fetched=fetchUrl(url,patch);assert.equal(fetched.upstreamLeaks,1,url);assert.equal(fetched.status,"invalid",url);
+  }
+  assert.equal(fetchUrl("https://patch-diff.githubusercontent.com/raw/psf/requests/pull/1.patch",patch).upstreamLeaks,0);
 });
 
 test("project packages, benchmark sources and benchmark text in fetched output are leaks; Native fetches need review",()=>{

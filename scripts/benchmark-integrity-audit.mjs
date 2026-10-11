@@ -163,8 +163,9 @@ function projectPatterns({org,repo}){
   const key=`${org}/${repo}`;
   if(!PROJECT_PATTERNS.has(key)){
     const path=`${escapeRegExp(org)}\\/${escapeRegExp(repo)}`,name=escapeRegExp(repo);
+    // GitHub serves pull-request patches from patch-diff.githubusercontent.com/raw/<org>/<repo>/pull/<n>.patch.
     PROJECT_PATTERNS.set(key,{
-      upstream:new RegExp(String.raw`(?:\bgithub\.com|\bgitlab\.com|\bbitbucket\.org|\bgithubusercontent\.com|\bapi\.github\.com\/repos)[\/:]${path}(?:\.git)?(?![\w.-])|\brepo:${path}(?![\w.-])`,"i"),
+      upstream:new RegExp(String.raw`(?:\bgithub\.com|\bgitlab\.com|\bbitbucket\.org|\bgithubusercontent\.com(?:\/raw)?|\bapi\.github\.com\/repos)[\/:]${path}(?:\.git)?(?![\w.-])|\brepo:${path}(?![\w.-])`,"i"),
       copy:new RegExp(String.raw`(?:site|dist)-packages\/${name}(?=[\/\s'"\`]|$)|\b_vendor\/${name}\b|\/pkgs\/${name}-\d`,"i"),
     });
   }
