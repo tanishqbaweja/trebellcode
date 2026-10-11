@@ -109,8 +109,8 @@
 :root:root .settings-page.redesigned-settings :is(.settings-card,.diagnostics-log) button:disabled{opacity:.5;cursor:default}
 :root:root .settings-page.redesigned-settings :is(.settings-card,.diagnostics-log) button svg{flex:none;width:13px;height:13px}
 /* Primary actions (save, import, install) and outline openers ("Add …" directly in a card) */
-:root:root .settings-page.redesigned-settings .settings-card .setting-action{border-color:transparent!important;background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow)}
-:root:root .settings-page.redesigned-settings .settings-card .setting-action:hover:not(:disabled){background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;filter:brightness(1.1)}
+:root:root .settings-page.redesigned-settings .settings-card .setting-action{border-color:transparent!important;background:var(--acfill)!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow)}
+:root:root .settings-page.redesigned-settings .settings-card .setting-action:hover:not(:disabled){background:var(--acfill)!important;color:#fff!important;filter:brightness(1.1)}
 :root:root .settings-page.redesigned-settings .settings-card .setting-action:disabled{box-shadow:none}
 :root:root .settings-page.redesigned-settings .settings-card>.setting-action{border-color:color-mix(in srgb,var(--ac) 40%,var(--line))!important;background:transparent!important;color:var(--ac)!important;box-shadow:none}
 :root:root .settings-page.redesigned-settings .settings-card>.setting-action:hover:not(:disabled){background:var(--acsoft)!important;color:var(--ac)!important;filter:none}

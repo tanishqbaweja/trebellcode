@@ -115,9 +115,9 @@
 ):disabled{opacity:.5;cursor:default}
 /* Primary actions. */
 :root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button){
-  border-color:transparent!important;background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow);
+  border-color:transparent!important;background:var(--acfill)!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow);
 }
-:root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button):hover:not(:disabled){filter:brightness(1.1);background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important}
+:root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button):hover:not(:disabled){filter:brightness(1.1);background:var(--acfill)!important;color:#fff!important}
 :root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button):disabled{box-shadow:none}
 /* Destructive actions. */
 :root:root .context-panel :is(.goal-actions .danger,.linked-pr-unlink){border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
@@ -998,7 +998,7 @@
 :root:root .terminal-drawer :is(.terminal-command-line,.terminal-foot) button{height:24px;margin:0;display:inline-flex;align-items:center;gap:5px;padding:0 10px;border:1px solid var(--line2)!important;border-radius:7px;background:var(--bg3)!important;color:var(--tx1)!important;font:550 11.5px/1 var(--font);white-space:nowrap;cursor:pointer;transition:background .14s,color .14s}
 :root:root .terminal-drawer :is(.terminal-command-line,.terminal-foot) button:hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
 :root:root .terminal-drawer :is(.terminal-command-line,.terminal-foot) button:disabled{opacity:.45;cursor:default}
-:root:root .terminal-drawer .terminal-command-line button:last-child{border-color:transparent!important;background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important}
+:root:root .terminal-drawer .terminal-command-line button:last-child{border-color:transparent!important;background:var(--acfill)!important;color:#fff!important}
 :root:root .terminal-drawer .terminal-command-line button:last-child:hover:not(:disabled){filter:brightness(1.1);color:#fff!important}
 :root:root .terminal-drawer .terminal-command-line button:first-of-type{font-family:var(--mono);font-size:11px}
 :root:root .terminal-drawer .terminal-foot{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 8px 4px 14px;border-top:1px solid var(--line);color:var(--tx3)!important;font:400 10.5px/1.3 var(--mono)}
@@ -1007,7 +1007,7 @@
 :root:root .terminal-drawer .terminal-empty{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border:1.5px dashed var(--line2)!important;border-radius:var(--r-l);background:transparent!important;color:var(--tx3)!important;text-align:center}
 :root:root .terminal-drawer .terminal-empty>svg{box-sizing:content-box;width:20px;height:20px;padding:10px;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);border-radius:12px;background:var(--acsoft);color:var(--ac)}
 :root:root .terminal-drawer .terminal-empty strong{font-size:13px;font-weight:600;color:var(--tx1)!important}
-:root:root .terminal-drawer .terminal-empty button{height:30px;margin-top:4px;padding:0 14px;border:0!important;border-radius:var(--r-s);background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;font:550 12px/1 var(--font);box-shadow:0 3px 14px var(--acglow);cursor:pointer}
+:root:root .terminal-drawer .terminal-empty button{height:30px;margin-top:4px;padding:0 14px;border:0!important;border-radius:var(--r-s);background:var(--acfill)!important;color:#fff!important;font:550 12px/1 var(--font);box-shadow:0 3px 14px var(--acglow);cursor:pointer}
 :root:root .terminal-drawer .terminal-empty button:hover{filter:brightness(1.1)}
 :root:root .terminal-drawer .terminal-resizer:hover::after,:root:root .layout-resizing .terminal-drawer .terminal-resizer::after{background:var(--ac)}
 /* Short drawers: an error floats over the top of the panes (dismissable) instead of taking the rows the command line needs. */
@@ -1087,7 +1087,7 @@
   background:var(--bg3)!important;color:var(--tx1)!important;font:550 12.5px/1 var(--font);cursor:pointer;transition:background .14s,color .14s,filter .14s;
 }
 :root:root .inspector-text-prompt-actions button:hover{background:var(--bg4)!important;color:var(--tx0)!important}
-:root:root .inspector-text-prompt-actions button.primary{border-color:transparent!important;background:linear-gradient(135deg,var(--ac2),var(--ac))!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow)}
+:root:root .inspector-text-prompt-actions button.primary{border-color:transparent!important;background:var(--acfill)!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow)}
 :root:root .inspector-text-prompt-actions button.primary:hover{filter:brightness(1.1);color:#fff!important}
 :root:root .inspector-text-prompt-actions button:focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 60%,transparent);outline-offset:2px}
 
