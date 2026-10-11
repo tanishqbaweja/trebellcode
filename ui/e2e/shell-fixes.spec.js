@@ -529,6 +529,45 @@ for(const [width,height] of [[1180,800],[1280,800]])for(const mode of ["dark","l
   }finally{await harness.close()}
 });
 
+// The inspector opens over the spot where its header toggle was clicked, so the pointer comes to rest on one of the tab strip's
+// last tabs (Runtime, at 1280px with the 520px inspector). That tab is hovered, and the reference design fills a hovered tab; the
+// selected look is the accent underline. While the panel still loads, as after, only the tab being opened is underlined, the
+// hovered tab alone is filled, and no tab is once the pointer moves off.
+for(const mode of ["dark","light"])test(`while the inspector's panel loads only the tab being opened looks selected, in ${mode} mode`,async({page})=>{
+  test.setTimeout(35_000);
+  const project={id:"tabs-project",name:"Billing reconciliation service",path:process.cwd(),environmentId:null,branch:"main"};
+  const thread={id:"tabs-thread",name:"Check the inspector tabs while the panel loads",preview:"Tabs",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[]};
+  const harness=await startHarness([thread]);
+  // The Files panel's code is held, so the inspector says "Loading panel…" until the test lets it load.
+  let releasePanel=()=>{};const panelHeld=new Promise(resolve=>{releasePanel=resolve});
+  await page.route(/\/assets\/WorkspacePanel-[^/]+\.js$/,async route=>{await panelHeld;await route.fallback()});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:false,environmentId:null}},project,settings:{appearanceMode:mode},layout:{sidebarWidth:258,rightPanelWidth:520,terminalHeight:330}});
+    await openThread(page,thread.name);
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel"),tabs=panel.locator(".context-panel-tab");
+    await expect(panel.getByRole("status")).toHaveText("Loading panel…");
+    const looks=()=>tabs.evaluateAll(nodes=>nodes.map(node=>({tab:node.getAttribute("aria-label"),hovered:node.matches(":hover"),filled:getComputedStyle(node).backgroundColor!=="rgba(0, 0, 0, 0)",underlined:getComputedStyle(node,"::after").backgroundColor!=="rgba(0, 0, 0, 0)"})));
+    const named=(list,key)=>list.filter(item=>item[key]).map(item=>item.tab);
+    await expect(tabs.filter({hasText:"Files"})).toHaveClass(/\bactive\b/);
+    const state=async()=>{const list=await looks();return {filled:named(list,"filled"),hovered:named(list,"hovered"),underlined:named(list,"underlined")}};
+    // With the pointer on Runtime, as it rests after the click: Runtime is filled because it is hovered, and Files alone is underlined.
+    await panel.getByRole("button",{name:"Runtime",exact:true}).hover();
+    await expect.poll(state).toEqual({filled:["Runtime"],hovered:["Runtime"],underlined:["Files"]});
+    await page.screenshot({path:join(shotsDir,`inspector-tabs-loading-pointer-${mode}-1280x800.png`),animations:"disabled"});
+    // Moved off the strip, no tab is filled; Files alone looks selected.
+    await page.mouse.move(400,420);
+    await expect.poll(state).toEqual({filled:[],hovered:[],underlined:["Files"]});
+    await expect(panel.getByRole("status")).toHaveText("Loading panel…");
+    await page.screenshot({path:join(shotsDir,`inspector-tabs-loading-${mode}-1280x800.png`),animations:"disabled"});
+    // Once the panel loads, the strip looks the same.
+    releasePanel();
+    await expect(panel.getByRole("status")).toHaveCount(0);
+    await expect.poll(state).toEqual({filled:[],hovered:[],underlined:["Files"]});
+  }finally{releasePanel();await harness.close()}
+});
+
 test("while a search filters the sidebar, Move up and Move down follow the threads it shows, in the list's order",async({page})=>{
   test.setTimeout(35_000);
   const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[]};
