@@ -243,3 +243,40 @@ for(const mode of MODES){
     for(const [size,issues] of Object.entries(found))expect.soft(issues,`${mode} ${size}`).toEqual([]);
   });
 }
+
+test.describe("search field",()=>{
+  test.use({deviceScaleFactor:2});
+  test("the light search field is one even box, like the Projects search",async({page,request})=>{
+    await open(page,request,{mode:"light"});
+    await openLicenses(page);
+    const field=page.locator(".licenses-search");
+    const look=await field.evaluate(node=>{const s=getComputedStyle(node),i=getComputedStyle(node.querySelector("input"));return {fieldBg:s.backgroundColor,fieldBorder:s.borderTopColor,inputBg:i.backgroundColor}});
+    console.log("LICENSE-SEARCH light "+JSON.stringify(look));
+    await field.screenshot({animations:"disabled",path:shots+"search-light-zoom.png"});
+    await page.screenshot({animations:"disabled",path:shots+"search-light-1280.png"});
+    expect.soft(look.inputBg,"the input paints its own box inside the field").toBe("rgba(0, 0, 0, 0)");
+    await field.locator("input").focus();
+    await field.screenshot({animations:"disabled",path:shots+"search-light-focus-zoom.png"});
+    await page.screenshot({animations:"disabled",path:shots+"search-light-focus-1280.png"});
+    await nav(page,"Projects").click();
+    const projects=await page.locator(".project-search").evaluate(node=>{const s=getComputedStyle(node);return {bg:s.backgroundColor,border:s.borderTopColor}});
+    await page.screenshot({animations:"disabled",path:shots+"search-light-projects-1280.png"});
+    expect(look.fieldBg,"the field matches the Projects search field").toBe(projects.bg);
+    expect(look.fieldBorder,"the field's line matches the Projects search field").toBe(projects.border);
+  });
+
+  test("the dark search field stays one even box",async({page,request})=>{
+    await open(page,request,{mode:"dark"});
+    await openLicenses(page);
+    const field=page.locator(".licenses-search");
+    const look=await field.evaluate(node=>{const s=getComputedStyle(node),i=getComputedStyle(node.querySelector("input"));return {fieldBg:s.backgroundColor,inputBg:i.backgroundColor}});
+    await field.screenshot({animations:"disabled",path:shots+"search-dark-zoom.png"});
+    expect(look.inputBg).toBe("rgba(0, 0, 0, 0)");
+    await field.locator("input").focus();
+    await field.screenshot({animations:"disabled",path:shots+"search-dark-focus-zoom.png"});
+    await page.screenshot({animations:"disabled",path:shots+"search-dark-focus-1280.png"});
+    await nav(page,"Projects").click();
+    const projects=await page.locator(".project-search").evaluate(node=>getComputedStyle(node).backgroundColor);
+    expect(look.fieldBg).toBe(projects);
+  });
+});

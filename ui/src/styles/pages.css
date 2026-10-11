@@ -903,7 +903,11 @@
 :root:root .environments-page .environment-list>div{flex-wrap:wrap;row-gap:8px}
 :root:root .environments-page .environment-list>div>div:last-child{flex:0 0 auto;flex-wrap:nowrap;margin-left:auto}
 
-/* One light field style across Settings, Projects, Environments, Usage and Tools: white with the firmer line. The settings
-   search input is not a field of its own: its search box is the field (settings.css). */
-:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):not(.settings-search-box>input),select,textarea){background-color:var(--bg1)!important;border-color:var(--line2)!important}
-:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):not(.settings-search-box>input),select,textarea):focus{border-color:var(--ac)!important}
+/* One light field style across Settings, Projects, Environments, Usage, Tools and Licenses: white with the firmer line. The
+   settings and licenses search inputs are not fields of their own: their search box is the field (settings.css, and the
+   licenses box below, which takes the same look as the Projects search), so they stay clear instead of painting a white
+   box inside it. */
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):not(.settings-search-box>input):not(.licenses-search>input),select,textarea){background-color:var(--bg1)!important;border-color:var(--line2)!important}
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):not(.settings-search-box>input):not(.licenses-search>input),select,textarea):focus{border-color:var(--ac)!important}
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .licenses-page .licenses-search{background:var(--bg1)!important;border-color:var(--line2)!important}
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .licenses-page .licenses-search:focus-within{border-color:var(--ac)!important}
