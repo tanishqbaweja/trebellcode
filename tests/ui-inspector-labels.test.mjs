@@ -1,6 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionError, distinctPathParts, gitStatusBadge, gitStatusEntry, gitStatusPath, splitPath } from "../ui/src/inspector-labels.js";
+import { actionError, actionErrorUnlessNamed, distinctPathParts, gitStatusBadge, gitStatusEntry, gitStatusPath, splitPath } from "../ui/src/inspector-labels.js";
+
+test("a reason that already names what failed is not prefixed a second time",()=>{
+  const gitText=/\bGit text\b/i;
+  assert.equal(actionErrorUnlessNamed("Could not generate the commit message",new Error("fetch failed"),gitText),"Could not generate the commit message: fetch failed");
+  assert.equal(actionErrorUnlessNamed("Could not generate the commit message",new Error("OpenCode returned an empty reply. Try again."),gitText),"Could not generate the commit message: OpenCode returned an empty reply. Try again.");
+  // Harness writers' errors as the server words them.
+  for(const reason of ["OpenCode could not write the Git text: Payment Required: Insufficient balance.","Grok Build did not return the Git text within 90 seconds. Try again, or choose a faster Grok Build model.","Cursor cannot write Git text in Trebell Code"])
+    assert.equal(actionErrorUnlessNamed("Could not generate the pull request text",new Error(reason),gitText),reason);
+  assert.equal(actionErrorUnlessNamed("Could not generate the commit message",new Error(""),gitText),"Could not generate the commit message.");
+  const linkedThread=/\blinked thread\b/i;
+  assert.equal(actionErrorUnlessNamed("Could not open the linked thread",new Error("Could not load linked thread: thread not found"),linkedThread),"Could not load linked thread: thread not found");
+  assert.equal(actionErrorUnlessNamed("Could not open the linked thread",new Error("The agent harness is not connected."),linkedThread),"Could not open the linked thread: The agent harness is not connected.");
+});
 
 test("git status paths are unquoted back to their names",()=>{
   // What git status --short printed for these names (core.quotePath on, the default).

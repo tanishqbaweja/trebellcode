@@ -6524,7 +6524,7 @@ test("failed linked-thread unarchive keeps the PR and archived state intact",asy
     ws.on("message",data=>{
       const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
       if(message.method==="thread/unarchive"&&message.params?.threadId===archivedId){
-        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate linked thread unarchive failure"}}));return;
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate thread unarchive failure"}}));return;
       }
       let result={};
       if(message.method==="initialize")result={userAgent:"linked-thread-fixture"};
@@ -6567,7 +6567,8 @@ test("failed linked-thread unarchive keeps the PR and archived state intact",asy
     await expect(linked).toBeVisible();
     await linked.click();
     const alert=panel.getByRole("alert");
-    await expect(alert).toContainText("Could not restore archived thread: Deliberate linked thread unarchive failure");
+    // The runtime's bare reason comes after the action that failed, named once: App names the restore, so the panel adds nothing.
+    await expect(alert).toHaveText("Could not restore archived thread: Deliberate thread unarchive failure");
     await expect(alert).toBeInViewport();
     // The error sticks to the top of the scrolled panel, over the cards scrolled under it: it is drawn on top of them and is
     // opaque, so none of them shows through it.
@@ -6631,7 +6632,8 @@ test("linked-thread read failures report the runtime error instead of claiming t
     await expect(linked).toBeVisible();
     await linked.click();
     const alert=panel.getByRole("alert");
-    await expect(alert).toContainText("Could not load linked thread: Deliberate linked thread read failure");
+    // App's error already names the linked thread, so the panel adds no second "Could not …".
+    await expect(alert).toHaveText("Could not load linked thread: Deliberate linked thread read failure");
     await expect(alert).not.toContainText("Linked thread was not found");
     await expect(alert).toBeInViewport();
     // As in the unarchive failure: the sticky error covers the cards scrolled under it, opaquely.

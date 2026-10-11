@@ -260,3 +260,46 @@ test("the Git panel lines its loading and clean text up with its rows, ends a lo
   await checkPlacement();
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-layout-light-1280x800.png",fullPage:true});
 });
+
+test("Generate failures name the text that could not be written, unless the writer already did",async({page,request})=>{
+  test.setTimeout(35_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Source control text errors"}});
+  const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route("**/api/git/info?**",route=>json(route,{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:"origin/main",status:[{code:" M",path:"src/app.js"}],worktrees:[{path:boot.cwd,branch:"main"}],remotes:[{name:"origin",url:"https://example.test/repo.git"}]}));
+  await page.route("**/api/source-control/diagnostics?**",route=>json(route,{selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,comment:true,review:true,merge:true}}}));
+  await page.route("**/api/source-control/prs?**",route=>json(route,{provider:"github",capabilities:{create:true,comment:true,review:true,merge:true},items:[]}));
+  // What the server answers when the writer fails: a Native provider's bare reason, or a harness writer's own sentence.
+  let reason="fetch failed";
+  await page.route("**/api/git/commit-message",route=>json(route,{error:reason},400));
+  await page.route("**/api/git/review-text",route=>json(route,{error:reason},400));
+
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const project=page.locator(".project-card").filter({hasText:"Source control text errors"});
+  await expect(project).toBeVisible();await project.locator(".project-open").click();
+  await page.getByTestId("right-panel-toggle").click();
+  const right=page.getByTestId("right-panel");await right.getByRole("button",{name:"Git",exact:true}).click();
+  const generate=right.getByRole("button",{name:/^Generate with /}),generatePr=right.getByRole("button",{name:"Generate PR",exact:true}),alert=right.locator(".source-control-error");
+  await expect(right.locator(".status-list > div")).toHaveCount(1);
+
+  await generate.click();
+  await expect(alert).toHaveText("Could not generate the commit message: fetch failed");
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-generate-error-1280x800.png"});
+  await generatePr.click();
+  await expect(alert).toHaveText("Could not generate the pull request text: fetch failed");
+  // A harness reply that says nothing of what it was writing gets the action too.
+  reason="OpenCode returned an empty reply. Try again.";
+  await generate.click();
+  await expect(alert).toHaveText("Could not generate the commit message: OpenCode returned an empty reply. Try again.");
+  // A harness writer's own error already names the Git text it could not write, so it is not prefixed a second time.
+  for(const harnessError of ["OpenCode could not write the Git text: Payment Required: Insufficient balance.","OpenCode did not return the Git text within 90 seconds. Try again, or choose a faster OpenCode model."]){
+    reason=harnessError;
+    await generate.click();
+    await expect(alert).toHaveText(harnessError);
+    await generatePr.click();
+    await expect(alert).toHaveText(harnessError);
+  }
+});

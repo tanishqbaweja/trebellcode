@@ -6,6 +6,12 @@ export function actionError(action,error){
   const detail=String(error?.message??error??"").trim();
   return detail?action+": "+detail:action+".";
 }
+// The same, for a reason that may already name what failed: a harness writer's "OpenCode could not write the Git text: …" is shown
+// as it is (`named` matches it), while a bare one such as a Native provider's "fetch failed" gets the action first.
+export function actionErrorUnlessNamed(action,error,named){
+  const detail=String(error?.message??error??"").trim();
+  return detail&&named.test(detail)?detail:actionError(action,error);
+}
 
 // git status --short codes (index column, then working-tree column). AA and DD are unmerged too, though they hold no U.
 const UNMERGED=new Set(["DD","AU","UD","UA","DU","AA","UU"]);
