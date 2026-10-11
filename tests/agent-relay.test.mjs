@@ -936,6 +936,37 @@ test("restart recovery continues an ACP harness turn inside the fenced envelope"
   }
 });
 
+// A turn that cannot go on after a restart fails with one error: the open window is told what the turn stores and shows
+// after a reload, not a shorter message.
+test("restart recovery that cannot resume the harness tells the open window the error the turn stores",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-recovery-failed-")),fixture=join(root,"fake-acp.mjs"),recorded=join(root,"prompts.jsonl");
+  const fallthrough=`  return send({jsonrpc:"2.0",id:m.id,result:{}});`;
+  assert.ok(FAKE_ACP_AGENT.includes(fallthrough));
+  await writeFile(fixture,FAKE_ACP_AGENT.replace(fallthrough,`  if(m.method==="session/resume")return send({jsonrpc:"2.0",id:m.id,error:{code:-32000,message:"session expired"}});\n${fallthrough}`),"utf8");
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  const thread=threadStore.create({runtime:"grok",cwd:root,providerSessionId:"fixture-session",providerMeta:{runtimeInstanceId:FAKE_GROK_INSTANCE.id,permissionProfile:"supervised"}});
+  threadStore.update(thread.id,{runtimeInstanceId:FAKE_GROK_INSTANCE.id});
+  const interrupted=threadStore.addTurn(thread.id,{inputText:"Fix the refresh bug"});
+  assert.deepEqual(threadStore.reconcileRestart({continueAfterRestart:true}).map(item=>item.turnId),[interrupted.id]);
+  const runtimeManager=fakeAcpRuntimeManager(fixture,recorded),state=memoryThreadState({continueThreadsAfterRestart:true});
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
+  const port=await listen(server),ws=await connect("ws://127.0.0.1:"+port+"/api/agent/ws");
+  try{
+    const errors=[];ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method==="error")errors.push(message.params)});
+    const completed=turnCompleted(ws);
+    ws.send(JSON.stringify({method:"initialized"}));
+    const settled=await completed;
+    assert.equal(settled.turn.id,interrupted.id);assert.equal(settled.turn.status,"failed");
+    const stored=settled.turn.error?.message;
+    assert.match(stored,/^Could not continue after restart: Grok Build could not resume this conversation: .*session expired/);
+    assert.deepEqual(errors.map(error=>[error.turnId,error.message]),[[interrupted.id,stored]]);
+    assert.equal(threadStore.get(thread.id).turns.find(turn=>turn.id===interrupted.id).error.message,stored);
+  }finally{
+    try{ws.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+  }
+});
+
 test("restart recovery keeps Trebell Native's benchmark-measured working-context envelope",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-recovery-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",activeEnvironmentId:null,continueThreadsAfterRestart:true});

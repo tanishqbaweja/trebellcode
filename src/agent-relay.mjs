@@ -1072,7 +1072,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const prompt=await contextualAgentPrompt([{type:"text",text:continueText}],await withDurableContext(thread.id,{},continueText),{runtime:thread.runtime});
         settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:thread.agent||null,...(thread.runtime==="native"?nativeGoalPromptOptions(goal):{})}),model:thread.model||null,context});
       }catch(error){
-        const failed=threadStore.finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message:`Could not continue after restart: ${error.message}`}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message:error.message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
+        // The open window says what the turn stores, so the error reads the same live and after a reload.
+        const message=`Could not continue after restart: ${error.message}`;
+        const failed=threadStore.finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
       }
     }
     for(const thread of threadStore.list()){
