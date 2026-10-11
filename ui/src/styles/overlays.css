@@ -277,11 +277,14 @@
 /* Action error toast (App.jsx .app-action-error-toast, a child of .workspace-shell). It sits just above the composer
    (CSS anchor positioning, so it follows the composer's height: one, two or three rows, chips, long drafts, terminal)
    and moves below the header when a composer menu is open, when the right panel is maximized and on other pages. */
-.workspace-shell>.app-action-error-toast{position:absolute;z-index:165;top:calc(var(--top) + 12px);bottom:auto;left:var(--tb-toast-center,50%);right:auto;width:var(--tb-toast-width,min(520px,calc(100% - 32px)));transform:none;translate:-50% 0;padding:10px 14px 10px 38px;border:1px solid var(--errb);border-radius:var(--r-m);background:color-mix(in srgb,var(--err) 9%,var(--panel));color:var(--tx0);box-shadow:var(--shadow);font-size:12.5px;line-height:1.5;text-align:left;overflow-wrap:anywhere;animation:tb-toast-in .24s var(--ease-out)}
+/* Its place under the header: in the desktop app the 32px window bar sits above the header (and the page header) too. */
+.workspace-shell{--tb-toast-top:calc(var(--top) + 12px)}
+.app-shell.desktop-shell .workspace-shell{--tb-toast-top:calc(32px + var(--top) + 12px)}
+.workspace-shell>.app-action-error-toast{position:absolute;z-index:165;top:var(--tb-toast-top);bottom:auto;left:var(--tb-toast-center,50%);right:auto;width:var(--tb-toast-width,min(520px,calc(100% - 32px)));transform:none;translate:-50% 0;padding:10px 14px 10px 38px;border:1px solid var(--errb);border-radius:var(--r-m);background:color-mix(in srgb,var(--err) 9%,var(--panel));color:var(--tx0);box-shadow:var(--shadow);font-size:12.5px;line-height:1.5;text-align:left;overflow-wrap:anywhere;animation:tb-toast-in .24s var(--ease-out)}
 .workspace-shell>.app-action-error-toast::before{content:"";position:absolute;left:13px;top:12px;width:16px;height:16px;background:var(--err);-webkit-mask:var(--tb-icon-alert) center/contain no-repeat;mask:var(--tb-icon-alert) center/contain no-repeat}
 .workspace-shell.right-open:not(.right-maximized){--tb-toast-center:calc((100% - var(--right-panel-width,460px))/2);--tb-toast-width:min(480px,calc(100% - var(--right-panel-width,460px) - 32px))}
 /* On other pages the toast sits under the page header, never over its sidebar, inspector, theme and palette buttons. */
-.workspace-shell.workspace-shell>.app-action-error-toast.secondary-surface-error{top:calc(var(--top) + 12px);bottom:auto;left:auto;right:18px;translate:none;width:min(460px,calc(100% - 36px))}
+.workspace-shell.workspace-shell>.app-action-error-toast.secondary-surface-error{top:var(--tb-toast-top);bottom:auto;left:auto;right:18px;translate:none;width:min(460px,calc(100% - 36px))}
 .workspace-shell.right-open:not(.right-maximized)>.app-action-error-toast.secondary-surface-error{right:calc(var(--right-panel-width,460px) + 18px);width:min(420px,calc(100% - var(--right-panel-width,460px) - 36px))}
 
 /* Undo toast (App.jsx .thread-undo-toast, fixed to the viewport). */
@@ -301,11 +304,12 @@
 }
 @supports not (anchor-name:--tb-composer){
   .app-shell:has(.chat-workspace)>.thread-undo-toast{top:calc(var(--top) + 12px);bottom:auto}
-  .workspace-shell>.app-action-error-toast.with-thread-undo:not(.secondary-surface-error){top:calc(var(--top) + 64px)}
+  .app-shell.desktop-shell:has(.chat-workspace)>.thread-undo-toast{top:calc(32px + var(--top) + 12px)}
+  .workspace-shell>.app-action-error-toast.with-thread-undo:not(.secondary-surface-error){top:calc(var(--tb-toast-top) + 52px)}
 }
 /* Composer menus open upward over the space above the composer: keep the error below the header instead. */
-html:has(.composer-wrap :is(.file-mention-menu,.model-picker-menu,.slash-menu)) .workspace-shell.workspace-shell>.app-action-error-toast{top:calc(var(--top) + 12px);bottom:auto}
-.workspace-shell.right-maximized.right-maximized>.app-action-error-toast{top:calc(var(--top) + 12px);bottom:auto;left:50%;translate:-50% 0}
+html:has(.composer-wrap :is(.file-mention-menu,.model-picker-menu,.slash-menu)) .workspace-shell.workspace-shell>.app-action-error-toast{top:var(--tb-toast-top);bottom:auto}
+.workspace-shell.right-maximized.right-maximized>.app-action-error-toast{top:var(--tb-toast-top);bottom:auto;left:50%;translate:-50% 0}
 
 /* ============ Startup failure ============ */
 .startup-failure-shell{background:radial-gradient(60% 50% at 50% 0%,color-mix(in srgb,var(--err) 7%,transparent),transparent 70%),var(--bg0)}
