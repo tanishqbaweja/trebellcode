@@ -59,6 +59,16 @@ function CommandPaletteOpen({open,onClose,actions=[],projects=[],threads=[],envi
   const refocusRef=useRef(false);
   const dialogRef=useRef(null);
   useModalFocus(dialogRef,open,false);
+  // Closing gives focus back to what had it when the palette opened (the button or menu it was chosen from, the composer it was called
+  // up from), so a keyboard user carries on from there rather than from the page's start. A command that put focus somewhere keeps it.
+  useEffect(()=>{
+    const opener=document.activeElement;
+    return()=>{
+      const focused=document.activeElement;
+      if(focused&&focused!==document.body&&!dialogRef.current?.contains(focused))return;
+      if(opener instanceof HTMLElement&&opener!==document.body&&opener.isConnected&&opener.getClientRects().length)opener.focus({preventScroll:true});
+    };
+  },[]);
   const messageSearchRef=useRef(onSearchThreadMessages);
   messageSearchRef.current=onSearchThreadMessages;
   useEffect(()=>{if(!open)return;setQuery("");setSelected(0);setMessageMatches([]);setMessageSearching(false);setRunningId(null);setActionError("");setSearchWarning("");const t=setTimeout(()=>inputRef.current?.focus(),0);return()=>clearTimeout(t)},[open]);

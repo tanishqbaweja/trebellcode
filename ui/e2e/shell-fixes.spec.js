@@ -717,6 +717,30 @@ for(const mode of ["dark","light"])test(`a More actions item chosen with the key
   }finally{await harness.close()}
 });
 
+// The command palette gives focus back to what opened it once it closes, so a keyboard user carries on from there: the More button
+// it was chosen from, the header's own palette button, or the composer it was called up from with Ctrl+K.
+for(const mode of ["dark","light"])test(`the command palette gives focus back to what opened it when it closes, in ${mode} mode`,async({page})=>{
+  test.setTimeout(45_000);
+  const {harness,header,more,menu}=await openHeaderFixture(page,{width:1180,mode,running:false,prCount:0});
+  const palette=page.getByPlaceholder(/Search commands/i);
+  const closePalette=async()=>{await expect(palette).toBeFocused();await page.keyboard.press("Escape");await expect(palette).toHaveCount(0)};
+  try{
+    // From the More actions menu, with the keyboard.
+    await more.focus();await page.keyboard.press("Enter");await expect(menu).toBeVisible();
+    await tabToMenuItem(page,menu,/^Command palette/);await page.keyboard.press("Enter");
+    await closePalette();await expect(more).toBeFocused();expect(await focusVisible(more)).toBe(true);
+    // From the header's own palette button, where the row has room for it.
+    await page.getByTestId("right-panel-toggle").click();await page.setViewportSize({width:1600,height:980});await settle(page);
+    const button=header.getByRole("button",{name:"Command palette",exact:true});await expect(button).toBeVisible();
+    await button.focus();await page.keyboard.press("Enter");
+    await closePalette();await expect(button).toBeFocused();
+    // From the composer, with Ctrl+K.
+    const composer=page.getByTestId("composer");await composer.focus();await page.keyboard.press("Control+K");
+    await closePalette();await expect(composer).toBeFocused();
+    await page.screenshot({path:join(shotsDir,`palette-closed-focus-${mode}-1600x980.png`),animations:"disabled"});
+  }finally{await harness.close()}
+});
+
 // The More actions menu's Open-in picker is the header's own: an editor chosen in either is the one both open, Open closes the
 // menu like its other actions, and a failed Open is reported once the menu has closed (the app's action error, as the menu's
 // other actions report theirs) instead of over the menu's next items. The row's picker still shows its own failure beside it.
