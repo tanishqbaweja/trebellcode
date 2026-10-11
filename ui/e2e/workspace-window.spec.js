@@ -47,7 +47,8 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   await page.getByTestId("right-panel-toggle").click();
   const right=page.getByTestId("right-panel");
   await page.setViewportSize({width:1280,height:800});
-  await right.getByRole("button",{name:"Files",exact:true}).click();
+  // The panel tab, not the Files | Changes switch the workspace panel draws once it loads (both are named Files).
+  await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Files",exact:true}).click();
   await expect(right.locator("[data-workspace-entry]")).toHaveCount(120);
   await expect(right.getByRole("button",{name:"Show 120 more files"})).toBeVisible();
   await right.getByRole("button",{name:"Show 120 more files"}).click();
