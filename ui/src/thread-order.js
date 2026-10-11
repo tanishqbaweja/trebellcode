@@ -53,6 +53,20 @@ export function threadPlacement(threads,thread,threadMeta={}){
   return {beforeThreadId:index>=0?group[index+1]?.id||null:null,anchorThreadId:placed?threadPlacementAnchor(threads,thread,threadMeta):null,placed};
 }
 
+// The order an undo of several threads puts them back in (items: {threadId, anchorThreadId, beforeThreadId}, as the action moved them):
+// each one after the thread it goes back before when that thread is put back too, so that thread is in the section again by then (a
+// thread to go before that is not there is dropped, and the thread would go to the end). The others go back last moved first.
+export function undoOrder(items=[]){
+  const list=[...(items||[])].filter(Boolean),byId=new Map(list.map(item=>[String(item.threadId),item])),done=new Set(),order=[];
+  const visit=item=>{
+    const id=String(item.threadId);if(done.has(id))return;done.add(id);
+    const next=item.anchorThreadId??item.beforeThreadId,before=next==null?null:byId.get(String(next));if(before)visit(before);
+    order.push(item);
+  };
+  for(const item of list.reverse())visit(item);
+  return order;
+}
+
 // The order a Codex section shown by recent activity is written in when a person first moves a thread in it: the threads as the
 // sidebar shows them (shown: ids, top first), then the section's other threads (members: Codex's listing of the section, which goes
 // beyond the sidebar's page) newest first, with the thread moved before beforeThreadId (null: the end).

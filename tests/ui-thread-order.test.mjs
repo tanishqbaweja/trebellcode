@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadPlacementAnchor, threadsInListOrder } from "../ui/src/thread-order.js";
+import { orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadPlacementAnchor, threadsInListOrder, undoOrder } from "../ui/src/thread-order.js";
 
 const pinned={name:"Pinned",id:"pinned"};
 // Each thread's place in its section in list order, as the agent relay lists them (sectionRank).
@@ -146,6 +146,23 @@ test("a Codex section's first ordering writes the order the sidebar shows, with 
   // A thread that left the section since, or a thread to go before that did, is not guessed at.
   assert.throws(()=>orderedSectionWithMove(["gamma"],members,"gone",null),/no longer in this section/);
   assert.throws(()=>orderedSectionWithMove(["gamma"],members,"beta","gone"),/thread to go before is no longer in this section/);
+});
+
+test("an undo of several threads puts each back after the thread it goes before, whatever order they were picked in",()=>{
+  // R4 and R5 sat above R3, placed there by a person; a bulk Pin took R5 first, then R4. Put back as the runtime does it (before the
+  // thread to go before when that one is in the section, else at the end), they hold their places again only in this order.
+  const items=[{threadId:"r5",anchorThreadId:"r3",beforeThreadId:"r3"},{threadId:"r4",anchorThreadId:"r5",beforeThreadId:"r5"}];
+  const putBack=(section,order)=>order.reduce((current,item)=>{const at=current.indexOf(item.anchorThreadId);return at<0?[...current,item.threadId]:[...current.slice(0,at),item.threadId,...current.slice(at)]},section);
+  assert.deepEqual(undoOrder(items).map(item=>item.threadId),["r5","r4"]);
+  assert.deepEqual(putBack(["r1","r2","r3"],undoOrder(items)),["r1","r2","r4","r5","r3"]);
+  assert.deepEqual(putBack(["r1","r2","r3"],[...items].reverse()),["r1","r2","r5","r3","r4"]);
+  assert.deepEqual(undoOrder([...items].reverse()).map(item=>item.threadId),["r5","r4"]);
+  // A chain picked out of order; a thread with no place (nobody moved it) goes before the thread the list showed after it.
+  assert.deepEqual(undoOrder([{threadId:"a",anchorThreadId:"b"},{threadId:"c",anchorThreadId:"d"},{threadId:"b",anchorThreadId:"c"}]).map(item=>item.threadId),["c","b","a"]);
+  assert.deepEqual(undoOrder([{threadId:"x",anchorThreadId:null,beforeThreadId:"y"},{threadId:"y",anchorThreadId:null,beforeThreadId:null}]).map(item=>item.threadId),["y","x"]);
+  // Threads unrelated to each other go back last moved first, as before.
+  assert.deepEqual(undoOrder([{threadId:"p",anchorThreadId:null,beforeThreadId:null},{threadId:"q",anchorThreadId:null,beforeThreadId:null}]).map(item=>item.threadId),["q","p"]);
+  assert.deepEqual(undoOrder([]),[]);
 });
 
 test("a thread that is not in the ordered list has no moves",()=>{

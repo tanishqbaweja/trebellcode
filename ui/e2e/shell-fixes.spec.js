@@ -1136,6 +1136,59 @@ async function selectInOrder(page,names){
   await expect(page.locator(".bulk-bar span")).toHaveText(names.length+" selected");
 }
 
+test("on a relay harness a bulk Pin un-done puts the threads a person placed back in their places, whatever order they were selected in",async({page})=>{
+  test.setTimeout(60_000);
+  const home=await mkdtemp(join(tmpdir(),"trebell-relay-bulk-undo-"));const relay=await startRelay(home);
+  const base=Math.floor(Date.now()/1000)-3600,names=["Bulk R1","Bulk R2","Bulk R3","Bulk R4","Bulk R5"];
+  const ids=names.map((name,index)=>relay.threadStore.importHistory({runtime:"native",cwd:process.cwd(),providerSessionId:"relay-bulk-undo-"+index,model:"fixture-model",name,preview:name,createdAt:base-600,updatedAt:base-index*60}).id);
+  const meta=Object.fromEntries(ids.map(id=>[id,{projectless:false,environmentId:null,runtime:"native"}])),menu=rowMenu(page);
+  const move=async(name,label)=>(await menu(name)).getByRole("button",{name:label,exact:true}).click();
+  try{
+    await openApp(page,{harness:relay,threads:[],meta,runtime:"native"});
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",names]]);
+    // A person places R4 and R5, then pins both, selecting the lower one first, and undoes it.
+    await move("Bulk R4","Move up");await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",["Bulk R1","Bulk R2","Bulk R4","Bulk R3","Bulk R5"]]]);
+    await move("Bulk R5","Move up");
+    const placed=[["Active",["Bulk R1","Bulk R2","Bulk R4","Bulk R5","Bulk R3"]]];
+    await expect.poll(()=>sidebarGroups(page)).toEqual(placed);
+    await selectInOrder(page,["Bulk R5","Bulk R4"]);
+    await page.locator(".bulk-bar").getByRole("button",{name:"Pin",exact:true}).click();
+    await expect.poll(()=>sidebarGroups(page).then(groups=>groups.find(group=>group[0]==="Pinned")?.[1].length)).toBe(2);
+    await page.getByTestId("thread-undo-toast").getByRole("button",{name:"Undo",exact:true}).click();
+    await expect.poll(()=>sidebarGroups(page)).toEqual(placed);
+    await page.screenshot({path:join(shotsDir,"sidebar-relay-bulk-undo-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+    // The relay keeps that order.
+    await page.reload();await expect.poll(()=>sidebarGroups(page)).toEqual(placed);
+    await expect(page.getByText(/Undo failed/)).toHaveCount(0);
+  }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
+});
+
+test("on Codex a bulk Pin un-done puts the threads of a section a person ordered back in its order, whatever order they were selected in",async({page})=>{
+  test.setTimeout(45_000);
+  const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-900,turns:[]},section=id=>orderSections.find(item=>item.id===id);
+  const threads=[
+    {...base,id:"pinned-gamma",name:"Pinned gamma",updatedAt:now()-100,section:section("0198-pinned")},
+    {...base,id:"active-one",name:"Codex active one",updatedAt:now()-10,section:null},
+    {...base,id:"research-a",name:"Research A",updatedAt:now()-60,section:section("0199-research")},
+    {...base,id:"research-b",name:"Research B",updatedAt:now()-40,section:section("0199-research")},
+    {...base,id:"research-c",name:"Research C",updatedAt:now()-50,section:section("0199-research")},
+  ];
+  const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  const harness=await startCodexHarness(threads,orderSections);harness.order.set("0199-research",["research-a","research-b","research-c"]);
+  try{
+    await openApp(page,{harness,threads,meta,settings:{orderedThreadSections:["0198-pinned","0199-research"]}});
+    const ordered=[["Pinned",["Pinned gamma"]],["Active",["Codex active one"]],["Research",["Research A","Research B","Research C"]]];
+    await expect.poll(()=>sidebarGroups(page)).toEqual(ordered);
+    await selectInOrder(page,["Research B","Research A"]);
+    await page.locator(".bulk-bar").getByRole("button",{name:"Pin",exact:true}).click();
+    await expect.poll(()=>sidebarGroups(page).then(groups=>groups.find(group=>group[0]==="Pinned")?.[1].length)).toBe(3);
+    await page.getByTestId("thread-undo-toast").getByRole("button",{name:"Undo",exact:true}).click();
+    await expect.poll(()=>harness.order.get("0199-research")).toEqual(["research-a","research-b","research-c"]);
+    await expect.poll(()=>sidebarGroups(page)).toEqual(ordered);
+    await expect(page.getByText(/Undo failed/)).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
 test("on a relay harness Archive and then Undo puts a thread nobody moved back in its place, with its age",async({page})=>{
   test.setTimeout(45_000);
   const home=await mkdtemp(join(tmpdir(),"trebell-relay-archive-undo-"));const relay=await startRelay(home);

@@ -50,7 +50,7 @@ import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
-import { orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadsInListOrder } from "./thread-order.js";
+import { orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadsInListOrder, undoOrder } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { userVerificationAvailability } from "./mcp-elicitation.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
@@ -2737,16 +2737,19 @@ export default function App(){
     return {section:thread.section||null,...threadPlacement(threads,thread,threadMeta),snoozedUntil:threadMeta[thread.id]?.snoozedUntil??null};
   }
   // The anchor only while it is still in that section when the undo runs (Codex refuses a thread to go before that is not in the
-  // destination section); an undo made seconds later reads the list as it is then, not as it was when the thread moved.
-  const placementAnchor=useLatestCallback(snapshot=>{
-    const anchor=snapshot.anchorThreadId?threads.find(item=>item.id===snapshot.anchorThreadId):null;
-    return anchor&&(anchor.section?.id||null)===(snapshot.section?.id||null)?anchor.id:null;
+  // destination section); an undo made seconds later reads the list as it is then, not as it was when the thread moved. restored: the
+  // threads an undo of several has put back so far (id -> section id), which the list may not show yet.
+  const placementAnchor=useLatestCallback((snapshot,restored=null)=>{
+    const id=snapshot.anchorThreadId,sectionId=snapshot.section?.id||null;if(!id)return null;
+    if(restored?.has(id))return restored.get(id)===sectionId?id:null;
+    const anchor=threads.find(item=>item.id===id);
+    return anchor&&(anchor.section?.id||null)===sectionId?anchor.id:null;
   });
   // Back to its section: before the thread that followed it when it held a place a person gave it, at the end when it held the last
   // one (entering a section with no thread to go before takes the place by recent activity, and a move within it with none goes to its
   // end), and by recent activity when it held none, so a thread nobody moved still rises with its activity.
-  async function restoreSectionPlace(thread,snapshot){
-    const sectionId=snapshot.section?.id||null,anchor=snapshot.placed?placementAnchor(snapshot):null;
+  async function restoreSectionPlace(thread,snapshot,restored=null){
+    const sectionId=snapshot.section?.id||null,anchor=snapshot.placed?placementAnchor(snapshot,restored):null;
     await rpc.request("thread/section/move",{threadId:thread.id,sectionId,beforeThreadId:anchor});
     if(snapshot.placed&&!anchor)await rpc.request("thread/section/move",{threadId:thread.id,sectionId,beforeThreadId:null});
   }
@@ -2759,9 +2762,9 @@ export default function App(){
     if(activeThread?.id===thread.id)setActiveThread(restored);
     return restored;
   }
-  async function restoreThreadPlacement(thread,snapshot){
+  async function restoreThreadPlacement(thread,snapshot,restored=null){
     if(!rpc||rpcStatus!=="connected")return;
-    await restoreSectionPlace(thread,snapshot);
+    await restoreSectionPlace(thread,snapshot,restored);restored?.set(thread.id,snapshot.section?.id||null);
     restoreThreadLocally(thread,snapshot);await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null});
     loadThreads(rpc);
   }
@@ -2783,32 +2786,35 @@ export default function App(){
     const snapshot=captureThreadPlacement(thread);const wasActive=activeThread?.id===thread.id;let label="Thread updated";let undo=null;
     if(action==="pin"){
       if(thread.section?.name==="Pinned")return null;
-      await moveThread(thread,"pin");label="Thread pinned";undo=()=>restoreThreadPlacement(thread,snapshot);
+      await moveThread(thread,"pin");label="Thread pinned";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
     }else if(action==="settle"){
       if(thread.section?.name==="Settled")return null;
-      await moveThread(thread,"settle");label="Thread settled";undo=()=>restoreThreadPlacement(thread,snapshot);
+      await moveThread(thread,"settle");label="Thread settled";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
     }else if(action==="active"){
       const previous=thread.section?.name||"Active";if(previous==="Active"&&!snapshot.snoozedUntil)return null;
       await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null});
       label=previous==="Pinned"?"Thread unpinned":previous==="Snoozed"?"Thread woken":previous==="Settled"?"Thread restored":"Thread moved to Active";
-      undo=()=>restoreThreadPlacement(thread,snapshot);
+      undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
     }else if(action==="snooze"){
       if(!Number.isFinite(Number(snoozeUntil))||Number(snoozeUntil)<=Date.now())throw new Error("Choose a future snooze time.");
-      await updateThreadMeta(thread.id,{snoozedUntil:Number(snoozeUntil)});await moveThread(thread,"snooze");label="Thread snoozed";undo=()=>restoreThreadPlacement(thread,snapshot);
+      await updateThreadMeta(thread.id,{snoozedUntil:Number(snoozeUntil)});await moveThread(thread,"snooze");label="Thread snoozed";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
     }else if(action==="archive"){
       if(!rpc)return null;
       await rpc.request("thread/archive",{threadId:thread.id});await updateThreadMeta(thread.id,{archived:true});setThreads(prev=>prev.filter(t=>t.id!==thread.id));if(wasActive)await newChat();label="Thread archived";
-      undo=async()=>{
+      undo=async(restored=null)=>{
         const result=await rpc.request("thread/unarchive",{threadId:thread.id});
         const restoredThread=result?.thread||thread;
         // Unarchiving keeps a thread's section and its place there (Codex and the agent relay both do): it moves only if it came back elsewhere.
-        if((restoredThread.section?.id||null)!==(snapshot.section?.id||null))await restoreSectionPlace(thread,snapshot);
-        await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null,archived:false,sectionName:snapshot.section?.name||"Active"});const restored=restoreThreadLocally(restoredThread,snapshot);
-        loadThreads(rpc);if(wasActive)await openThread(restored);
+        if((restoredThread.section?.id||null)!==(snapshot.section?.id||null))await restoreSectionPlace(thread,snapshot,restored);
+        restored?.set(thread.id,snapshot.section?.id||null);
+        await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null,archived:false,sectionName:snapshot.section?.name||"Active"});const shown=restoreThreadLocally(restoredThread,snapshot);
+        loadThreads(rpc);if(wasActive)await openThread(shown);
       };
     }else return null;
-    const result={label,undo};if(offerUndo&&undo)offerThreadUndo(label,undo);return result;
+    const result={label,undo,threadId:thread.id,anchorThreadId:snapshot.anchorThreadId,beforeThreadId:snapshot.beforeThreadId};if(offerUndo&&undo)offerThreadUndo(label,undo);return result;
   }
+  // An undo of several threads puts each back after the thread it goes before, when that one is put back too (thread-order.js).
+  async function undoThreadActions(results){const restored=new Map();for(const result of undoOrder(results))await result.undo?.(restored)}
   async function threadAction(thread,action){
     if(action==="pin"||action==="settle"||action==="active"||action==="archive"){await reversibleThreadAction(thread,action);return}
     if(action==="snooze"){setSnoozeRequest({threads:[thread],bulk:false});return}
@@ -2851,14 +2857,14 @@ export default function App(){
     if(action==="snooze"){setSnoozeRequest({threads:selected,bulk:true});return}
     const results=[];for(const thread of selected){const result=await reversibleThreadAction(thread,action,{offerUndo:false});if(result)results.push(result)}
     setSelectedThreadIds(new Set());
-    if(results.length){const noun=results.length===1?"thread":results.length+" threads";const verb=action==="pin"?"pinned":action==="settle"?"settled":action==="archive"?"archived":"updated";offerThreadUndo(noun+" "+verb,async()=>{for(const result of [...results].reverse())await result.undo?.()})}
+    if(results.length){const noun=results.length===1?"thread":results.length+" threads";const verb=action==="pin"?"pinned":action==="settle"?"settled":action==="archive"?"archived":"updated";offerThreadUndo(noun+" "+verb,()=>undoThreadActions(results))}
   }
   async function submitSnooze(until){
     const request=snoozeRequest;if(!request)return;const results=[];
     try{
       for(const thread of request.threads||[]){const result=await reversibleThreadAction(thread,"snooze",{snoozeUntil:until,offerUndo:false});if(result)results.push(result)}
       if(request.bulk)setSelectedThreadIds(new Set());setSnoozeRequest(null);
-      if(results.length){const label=results.length===1?"Thread snoozed":results.length+" threads snoozed";offerThreadUndo(label,async()=>{for(const result of [...results].reverse())await result.undo?.()})}
+      if(results.length){const label=results.length===1?"Thread snoozed":results.length+" threads snoozed";offerThreadUndo(label,()=>undoThreadActions(results))}
     }catch(error){setEvents(prev=>[...prev,{id:"snooze-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}])}
   }
 
