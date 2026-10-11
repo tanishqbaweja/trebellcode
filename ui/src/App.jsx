@@ -2560,12 +2560,14 @@ export default function App(){
         // The open thread's turns in order, where one without rows ends (a thread this window started begins its order here).
         if(threadId&&id)setTurnOrder(prev=>prev.threadId===threadId?{...prev,ids:appendTurnOrder(prev.ids,[id])}:{threadId,ids:[String(id)]});
         // The live card moves to this turn: every other turn of this thread on it takes its rows into its own card and they leave the
-        // list (notices stay). A turn that starts again under its id gets back the steps its card holds.
+        // list, as do the other rows that name the turn (its failure, a retry, its diff, its auto reviews); notices stay. A diff still
+        // waiting to show goes in first, so one that came just before its turn ended (and Codex went on) leaves with the rest. A turn
+        // that starts again under its id gets back the steps its card holds.
         const owner=threadId||activeThreadRef.current?.id;
         if(owner&&id){
           liveTurnKeyRef.current=turnInfoKey(owner,id);
           for(const entry of [...liveItemRowsRef.current.values()])if(entry.threadId===String(owner)&&entry.turnId!==String(id))sealLiveTurn(owner,entry.turnId);
-          setEvents(prev=>{const next=prev.filter(event=>!event.turnId||event.turnId===String(id));return next.length===prev.length?prev:next});
+          diffEventBufferRef.current?.flush();setEvents(prev=>{const next=prev.filter(event=>!event.turnId||event.turnId===String(id));return next.length===prev.length?prev:next});
           const stored=turnActivityRef.current;seedLiveRows(owner,id,stored.threadId===owner?stored.turns[String(id)]?.rows:null);
         }
         setRunning(true);setActiveTurnId(id);
@@ -2590,7 +2592,7 @@ export default function App(){
       const codexFailure=agentRuntime==="codex"?codexTurnFailure(p.turn):null,codexGoalContinues=agentRuntime==="codex"&&isCurrent&&goal?.status==="active";
       if(isCurrent){
         sealLiveTurn(threadId,completedTurnId);if(liveTurnKeyRef.current===turnInfoKey(threadId||activeThreadRef.current?.id,completedTurnId))liveTurnKeyRef.current=null;
-        setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>e.status==="running"?{...e,status:"done"}:e);return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{}}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
+        setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>e.status==="running"?{...e,status:"done"}:e);return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{},turnId:completedTurnId?String(completedTurnId):null}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
         if(codexFailure)desktopNotify("Trebell Code error",codexFailure.message);else if(!codexGoalContinues)desktopNotify("Trebell Code finished",titleOf(activeThreadRef.current)+" is ready for review.");
       }else if(threadId&&backgroundThreadsRef.current.has(threadId)){
         backgroundThreadsRef.current.delete(threadId);loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Background task completed, but the thread list could not refresh"));const thread=threads.find(item=>item.id===threadId);desktopNotify("Background task finished",(thread?titleOf(thread):"A background Trebell task")+" is ready for review.");
@@ -2655,13 +2657,13 @@ export default function App(){
     else if(message.method==="item/autoApprovalReview/started"){
       const id="auto-review-"+String(p.reviewId||Date.now()),title="Auto review · "+guardianActionSummary(p.action||{});
       updateThreadTelemetry(threadId,{currentActivity:{id,kind:"autoReview",title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
-      if(isCurrent)setEvents(prev=>{const event={id,kind:"autoReview",title,status:"running",raw:p};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?event:item):[...prev,event]});
+      if(isCurrent)setEvents(prev=>{const event={id,kind:"autoReview",title,status:"running",raw:p,turnId:p.turnId?String(p.turnId):null};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?event:item):[...prev,event]});
     }
     else if(message.method==="item/autoApprovalReview/completed"){
       const id="auto-review-"+String(p.reviewId||Date.now()),status=p.review?.status||"completed",title="Auto review · "+guardianActionSummary(p.action||{});
       updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===id?null:current.currentActivity,lastActivity:{id,kind:"autoReview",title,durationMs:p.completedAtMs&&p.startedAtMs?Math.max(0,p.completedAtMs-p.startedAtMs):null,completedAtMs:p.completedAtMs||Date.now()},lastActivityAt:p.completedAtMs||Date.now()}));
       if(isCurrent){
-        setEvents(prev=>{const failed=status==="denied"||status==="timedOut";const event={id,kind:failed?"error":"autoReview",title:status==="denied"?title+" · denied":status==="timedOut"?title+" · timed out":title,status:failed?"error":"done",raw:p};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?event:item):[...prev,event]});
+        setEvents(prev=>{const failed=status==="denied"||status==="timedOut";const event={id,kind:failed?"error":"autoReview",title:status==="denied"?title+" · denied":status==="timedOut"?title+" · timed out":title,status:failed?"error":"done",raw:p,turnId:p.turnId?String(p.turnId):null};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?event:item):[...prev,event]});
         if(status==="denied"){
           setGuardianDenials(prev=>[...prev.filter(item=>item.reviewId!==p.reviewId),p].slice(-5));
           desktopNotify("Auto review denied an action",titleOf(activeThreadRef.current)+" needs your decision.");
@@ -2672,7 +2674,7 @@ export default function App(){
       if(isCurrent){
         const id="strict-review-"+String(p.turnId||p.startedAtMs||Date.now());
         const title="Additional safety checks are running; some tool calls may take extra time";
-        setEvents(prev=>prev.some(item=>item.id===id)?prev:[...prev,{id,kind:"autoReview",title,status:"warning",raw:p}]);
+        setEvents(prev=>prev.some(item=>item.id===id)?prev:[...prev,{id,kind:"autoReview",title,status:"warning",raw:p,turnId:p.turnId?String(p.turnId):null}]);
         desktopNotify("Additional safety review",title);
       }
     }
@@ -2696,7 +2698,7 @@ export default function App(){
       }
     }
     else if(message.method==="turn/diff/updated"&&isCurrent){
-      const id="diff-"+String(p.turnId||activeTurnId||threadId||"current"),event={id,kind:"fileChange",title:"Workspace diff updated",status:"done",raw:p.diff||p};
+      const id="diff-"+String(p.turnId||activeTurnId||threadId||"current"),event={id,kind:"fileChange",title:"Workspace diff updated",status:"done",raw:p.diff||p,turnId:p.turnId?String(p.turnId):null};
       diffEventBufferRef.current?.push(id,event);
     }
     else if(message.method==="thread/tokenUsage/updated"){
@@ -2771,14 +2773,14 @@ export default function App(){
       if(notice.willRetry){
         // Codex retries the turn itself: it keeps running, with one row showing the retry.
         updateThreadTelemetry(threadId,{lastError:notice.message,lastActivityAt:Date.now()});
-        if(isCurrent)setEvents(prev=>upsertEvent(prev,{id:"codex-retry-"+(p.turnId||threadId),kind:"error",title:notice.title,status:"running",raw:p}));
+        if(isCurrent)setEvents(prev=>upsertEvent(prev,{id:"codex-retry-"+(p.turnId||threadId),kind:"error",title:notice.title,status:"running",raw:p,turnId:p.turnId?String(p.turnId):null}));
         return;
       }
       if(threadId&&compactionWaitersRef.current.has(String(threadId)))settleCompactionWaiter(threadId,new Error(notice.message||"Context compaction failed"));
       updateThreadTelemetry(threadId,{currentActivity:null,lastError:notice.message,lastActivityAt:Date.now()});
       // A Codex turn error ends the turn at turn/completed, which reports it once more and notifies.
-      if(isCurrent&&codexTurnError)setEvents(prev=>upsertEvent(prev,{id:"codex-error-"+p.turnId,kind:"error",title:notice.title,status:"done",raw:p}));
-      else if(isCurrent){setEvents(prev=>[...prev,{id:"error-"+Date.now(),kind:"error",title:notice.title,status:"done",raw:p}]);setRunning(false);desktopNotify("Trebell Code error",notice.message||"The agent stopped with an error.")}
+      if(isCurrent&&codexTurnError)setEvents(prev=>upsertEvent(prev,{id:"codex-error-"+p.turnId,kind:"error",title:notice.title,status:"done",raw:p,turnId:String(p.turnId)}));
+      else if(isCurrent){setEvents(prev=>[...prev,{id:"error-"+Date.now(),kind:"error",title:notice.title,status:"done",raw:p,turnId:p.turnId?String(p.turnId):null}]);setRunning(false);desktopNotify("Trebell Code error",notice.message||"The agent stopped with an error.")}
     }
   }
 

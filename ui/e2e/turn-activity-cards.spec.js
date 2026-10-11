@@ -405,3 +405,38 @@ test("a goal going on in a turn of its own closes the previous card once and kee
     await expect(cardOf(page,"codex-turn-2")).toHaveAttribute("data-state","open");await expect(cardOf(page,"codex-turn-1")).toHaveAttribute("data-state","closed");
   }finally{await harness.close()}
 });
+
+test("a turn Codex starts on its own leaves the previous turn's failure and diff with that turn",async({page})=>{
+  test.setTimeout(90_000);
+  const thread=codexThread("codex-own-turn-rows","Codex own turn rows");
+  const diff=(turn,{emit,threadId},file)=>emit({method:"turn/diff/updated",params:{threadId,turnId:turn.id,diff:`diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-old\n+new\n`}});
+  const harness=await startCodexHarness(thread,[
+    // The first turn runs its tests and changes a file, then fails; Codex goes on at once with a turn of its own, as a goal does,
+    // while the first turn's diff still waits to show.
+    (turn,tools)=>{
+      tools.emit({method:"turn/started",params:{threadId:tools.threadId,turn:{...turn,items:[]}}});
+      codexCommand(turn,tools,"cmd-"+turn.id,"npm test");
+      setTimeout(()=>{
+        diff(turn,tools,"src/one.js");tools.finish("failed",{error:{message:"The model stream broke off."}});
+        tools.startOwnTurn((own,ownTools)=>{codexCommand(own,ownTools,"cmd-"+own.id,"npm run build");diff(own,ownTools,"src/two.js");setTimeout(()=>{codexReply(own,ownTools,"The build is done.");ownTools.finish("completed")},400)});
+      },400);
+    },
+  ]);
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Codex own turn rows");
+    await page.getByTestId("composer").fill("Test, then build");await page.getByTestId("send").click();
+    await expect(reply(page,"The build is done.")).toBeVisible({timeout:10_000});
+    // The live card is the new turn's alone: its build step and its own diff, and no failure.
+    const live=liveCard(page),steps=live.locator(".tool-event");
+    await expect(live.locator(".activity-card-summary")).toHaveText("2 steps");await expect(live.locator(".activity-card-failed")).toHaveCount(0);
+    await expect(steps).toHaveCount(2);await expect(steps.filter({hasText:"npm run build"})).toHaveCount(1);await expect(steps.filter({hasText:"Workspace diff updated"})).toHaveCount(1);
+    // The failed turn says so once, under its own closed card.
+    const first=cardOf(page,"codex-turn-1"),ended=page.locator('[data-testid=turn-outcome-row][data-turn-id="codex-turn-1"]');
+    await expect(first).toHaveAttribute("data-state","closed");await expect(first.locator(".activity-card-summary")).toHaveText("1 step");
+    await expect(ended).toHaveCount(1);await expect(ended.getByTestId("turn-outcome")).toHaveText(/^failed/);
+    await expect(ended.locator(".turn-outcome-message")).toHaveText("The model stream broke off.");
+    expect(await inDocumentOrder(page,userRow(page,"Test, then build"),first,ended)).toBe(true);
+    await auditCards(page,"own-turn-rows",live.locator(".activity-card-head"));
+  }finally{await harness.close()}
+});
