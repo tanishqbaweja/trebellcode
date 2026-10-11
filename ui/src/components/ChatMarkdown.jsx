@@ -10,7 +10,8 @@ import { remarkSoftBreaks } from "../markdown-breaks.js";
 // reply stays text (react-markdown only renders it with rehype-raw, which is not used), and react-markdown drops unsafe link
 // protocols such as javascript:.
 const REMARK_PLUGINS=[remarkGfm];
-// lineBreaks (a harness's thinking) also keeps a single newline as a line break; replies keep Markdown's soft breaks.
+// lineBreaks (a harness's thinking) also keeps a single newline as a line break, raw HTML's included; replies keep Markdown's
+// soft breaks.
 const LINE_BREAK_PLUGINS=[remarkGfm,remarkSoftBreaks];
 
 // A link that is not an absolute web or mail link stays text, with its target in the tooltip.

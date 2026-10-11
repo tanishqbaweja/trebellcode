@@ -115,6 +115,66 @@ test("an opened thought keeps one thought per line without blank lines in lists 
   }finally{await harness.close()}
 });
 
+test("an opened thought keeps the lines of raw HTML in it, and an HTML block is spaced like a paragraph",async({page})=>{
+  test.setTimeout(45_000);
+  // Raw HTML stays text in a thought (no rehype-raw). Each case lists the lines it was written in, in order: an XML-style block
+  // with a paragraph after a blank line, one in a quote, an HTML block that interrupts a tight list item's paragraph and one
+  // that is a whole item, and inline HTML that spans a line.
+  const thoughts=[
+    ["block","<plan>\nstep 1\nstep 2\n</plan>\n\nAfter the plan\nnext line",["<plan>","step 1","step 2","</plan>","After the plan","next line"]],
+    ["quote","> <note>\n> keep this line\n> </note>",["<note>","keep this line","</note>"]],
+    ["list","- Check the config\n  <details>\n  more detail\n  </details>\n- <answer>\n- Next item",["Check the config","<details>","more detail","</details>","<answer>","Next item"]],
+    ["inline","Use <span\nclass=\"note\">this</span> here",["Use <span","class=\"note\">this</span> here"]],
+  ];
+  const thread={id:"review-reasoning-html",name:"Reasoning HTML fixture",preview:"Reasoning HTML",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[{id:"turn-1",status:"completed",items:[
+    {type:"userMessage",id:"user-1",content:[{type:"text",text:"Plan the config check."}]},
+    ...thoughts.map(([id,text])=>({type:"reasoning",id:"reasoning-"+id,summary:[],content:[text]})),
+    {type:"agentMessage",id:"assistant-1",text:"Done."},
+  ]}]};
+  const harness=await startHarness(thread);
+  try{
+    await page.setViewportSize({width:1280,height:1000});
+    await openApp(page,{harness,thread});
+    const rows=page.locator(".conversation-history [data-testid=reasoning-row]");
+    await expect(rows).toHaveCount(thoughts.length);
+    for(let index=0;index<thoughts.length;index++)await rows.nth(index).locator(".reasoning-toggle").click();
+    const texts=page.locator(".conversation-history [data-testid=reasoning-text]");
+    await expect(texts).toHaveCount(thoughts.length);
+    for(const [index,[id,,lines]] of thoughts.entries()){
+      // The top of each written line as laid out (found in the rendered text in order, across text nodes), the thought's line
+      // height and a paragraph's bottom margin.
+      const layout=await texts.nth(index).evaluate((node,lines)=>{
+        const walker=document.createTreeWalker(node,NodeFilter.SHOW_TEXT),spans=[];let all="";
+        for(let text=walker.nextNode();text;text=walker.nextNode()){spans.push({text,start:all.length});all+=text.data}
+        const at=offset=>{const span=spans.findLast(span=>span.start<=offset);return [span.text,offset-span.start]};
+        let from=0;
+        const tops=lines.map(line=>{
+          const start=all.indexOf(line,from);if(start<0)return null;from=start+line.length;
+          const range=document.createRange();range.setStart(...at(start));range.setEnd(...at(start+line.length-1));range.setEnd(range.endContainer,range.endOffset+1);
+          return Math.round([...range.getClientRects()].find(rect=>rect.width>0)?.top??NaN);
+        });
+        const probe=document.createElement("p");node.prepend(probe);const margin=parseFloat(getComputedStyle(probe).marginBottom);probe.remove();
+        return {tops,lineHeight:parseFloat(getComputedStyle(node).lineHeight),margin};
+      },lines);
+      const detail=id+" "+JSON.stringify({lines,...layout});
+      expect(layout.tops.every(Number.isFinite),detail).toBe(true);
+      // Every written line is its own line, and none is followed by a blank line.
+      for(let line=1;line<lines.length;line++){
+        const step=layout.tops[line]-layout.tops[line-1];
+        expect.soft(step,detail+" before "+JSON.stringify(lines[line])).toBeGreaterThanOrEqual(layout.lineHeight-1);
+        expect.soft(step,detail+" before "+JSON.stringify(lines[line])).toBeLessThan(layout.lineHeight*1.6);
+      }
+      // The block written before a blank line keeps a paragraph's spacing below it, as a paragraph there would.
+      if(id==="block")expect.soft(layout.tops[4]-layout.tops[3],detail).toBeGreaterThanOrEqual(layout.lineHeight+layout.margin-1);
+    }
+    await expect(texts.first()).toContainText("<plan>");
+    await rows.first().scrollIntoViewIfNeeded();await settle(page);
+    await page.screenshot({path:join(shotsDir,"review-reasoning-html-dark-1280x1000.png"),animations:"disabled"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await settle(page);
+    await page.screenshot({path:join(shotsDir,"review-reasoning-html-light-1280x1000.png"),animations:"disabled"});
+  }finally{await harness.close()}
+});
+
 test("both Context Inspector notices stay readable while the panel scrolls",async({page})=>{
   test.setTimeout(45_000);
   const project={id:"review-context-project",name:"Review Context Project",path:process.cwd(),environmentId:null};
