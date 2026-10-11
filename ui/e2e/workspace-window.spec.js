@@ -222,3 +222,112 @@ test("the Files viewer colours code with its own language's grammar and shows pr
     if(name==="notes.txt")await page.screenshot({animations:"disabled",path:auditDir+"workspace-syntax-plain-text-dark-1280x800.png"});
   }
 });
+
+// Opens a project registered under `name` and the inspector beside it.
+async function openProjectInspector(page,request,name){
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name}});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const project=page.locator(".project-card").filter({hasText:name});
+  await expect(project).toBeVisible();
+  await project.locator(".project-open").click();
+  await page.getByTestId("right-panel-toggle").click();
+  const right=page.getByTestId("right-panel");
+  return {boot,right,top:right.locator(".context-panel-tab-scroll"),inner:right.locator(".workspace-panel .panel-tabs")};
+}
+
+test("the Diff tab says it is loading until the working tree answers, and the inspector tabs and the Files | Changes switch agree",async({page,request})=>{
+  test.setTimeout(45_000);
+  const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route("**/api/workspace/tree?**",route=>json(route,{entries:["app.js","notes.txt","readme.md"].map(name=>({name,path:name,relativePath:name,isFile:true,isDirectory:false,depth:0})),truncated:false}));
+  await page.route("**/api/workspace/file?**",route=>{const path=new URL(route.request().url()).searchParams.get("path");return json(route,{name:path,path,content:"// "+path+"\n"})});
+  // Every diff read waits until the test answers it, so the panel can be read while the working tree is still being read.
+  const held=[];
+  await page.route("**/api/workspace/diff?**",route=>{held.push(route)});
+  const answer=async(value,status=200)=>{await expect.poll(()=>held.length).toBeGreaterThan(0);for(const route of held.splice(0))await json(route,value,status)};
+  const dirty={isGit:true,status:" M src/app.js\n?? notes.txt",diff:"diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+new\n",stderr:""};
+  await page.setViewportSize({width:1280,height:800});
+  const {right,top,inner}=await openProjectInspector(page,request,"Workspace diff loading");
+  const changesButton=inner.getByRole("button",{name:/^Changes/}),filesButton=inner.getByRole("button",{name:"Files",exact:true});
+  const diffTab=top.getByRole("button",{name:"Diff",exact:true}),filesTab=top.getByRole("button",{name:"Files",exact:true});
+  await diffTab.click();
+
+  // Nothing has answered: the Diff tab says it is loading, never that the tree is clean, and the switch counts nothing yet.
+  const loading=right.locator(".changes-loading");
+  await expect(loading).toHaveText("Loading changes…");
+  await expect(loading).toHaveAttribute("aria-busy","true");
+  await expect(right.getByText("Working tree clean")).toHaveCount(0);
+  await expect(right.locator(".changes-empty")).toHaveCount(0);
+  await expect(changesButton).toHaveText("Changes");
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-loading-dark-1280x800.png",fullPage:true});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-loading-light-1280x800.png",fullPage:true});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+
+  // A failed read is an error, not a clean tree, and a retry reads as loading again until it answers.
+  await answer({error:"Deliberate working tree read failure"},500);
+  const failed=right.locator(".changes-empty.error");
+  await expect(failed).toContainText("Could not load changes");
+  await expect(failed).toContainText("Deliberate working tree read failure");
+  await right.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
+  await expect(loading).toBeVisible();
+  await expect(right.getByText("Working tree clean")).toHaveCount(0);
+  await answer(dirty);
+  await expect(right.locator(".changed-file-row")).toHaveCount(2);
+  await expect(changesButton).toHaveText("Changes (2)");
+
+  // The tabs above and the switch inside are one choice: each follows the other, and switching keeps the panel as it was.
+  const panel=await right.locator(".workspace-panel").elementHandle();
+  await expect(diffTab).toHaveClass(/active/);await expect(changesButton).toHaveClass(/active/);
+  await filesButton.click();
+  await expect(filesTab).toHaveClass(/active/);await expect(diffTab).not.toHaveClass(/active/);await expect(filesButton).toHaveClass(/active/);
+  await right.locator("[data-workspace-entry]").filter({hasText:"notes.txt"}).click();
+  await expect(right.locator(".file-head strong")).toHaveText("notes.txt");
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-tabs-agree-files-dark-1280x800.png",fullPage:true});
+  // Opening Changes from the tabs above reads the working tree again; the last answer stays on screen until the new one lands.
+  await diffTab.click();
+  await expect(changesButton).toHaveClass(/active/);await expect(filesButton).not.toHaveClass(/active/);
+  await expect.poll(()=>held.length).toBe(1);
+  await expect(right.locator(".changed-file-row")).toHaveCount(2);
+  await answer({isGit:true,status:"",diff:"",stderr:""});
+  await expect(right.locator(".changes-empty")).toContainText("Working tree clean");
+  await expect(changesButton).toHaveText("Changes");
+  // Back to Files from above: the file is still open, in the same panel.
+  await filesTab.click();
+  await expect(filesButton).toHaveClass(/active/);
+  await expect(right.locator(".file-head strong")).toHaveText("notes.txt");
+  expect(await panel.evaluate(node=>node.isConnected)).toBe(true);
+  // The switch inside opens Changes and reads the tree again, and the tab above follows.
+  await changesButton.click();
+  await expect(diffTab).toHaveClass(/active/);await expect(filesTab).not.toHaveClass(/active/);
+  await answer(dirty);
+  await expect(right.locator(".changed-file-row")).toHaveCount(2);
+  expect(await panel.evaluate(node=>node.isConnected)).toBe(true);
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-tabs-agree-changes-light-1280x800.png",fullPage:true});
+});
+
+test("a general chat keeps its Files view, with no Changes switch beside the disabled Diff tab",async({page,request})=>{
+  test.setTimeout(35_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route("**/api/workspace/tree?**",route=>json(route,{entries:[{name:"scratch.md",path:"scratch.md",relativePath:"scratch.md",isFile:true,isDirectory:false,depth:0}],truncated:false}));
+  await page.route("**/api/workspace/file?**",route=>json(route,{name:"scratch.md",path:"scratch.md",content:"# Scratch\n"}));
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await page.locator(".general-chat-card").click();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByTestId("right-panel-toggle").click();
+  const right=page.getByTestId("right-panel"),top=right.locator(".context-panel-tab-scroll"),inner=right.locator(".workspace-panel .panel-tabs");
+  await top.getByRole("button",{name:"Files",exact:true}).click();
+  await expect(top.getByRole("button",{name:"Files",exact:true})).toHaveClass(/active/);
+  await expect(top.getByRole("button",{name:"Diff",exact:true})).toBeDisabled();
+  await expect(inner.locator(".workspace-seg button")).toHaveText(["Files"]);
+  await expect(inner.getByRole("button",{name:"Files",exact:true})).toHaveClass(/active/);
+  await right.locator("[data-workspace-entry]").filter({hasText:"scratch.md"}).click();
+  await expect(right.locator(".file-head strong")).toHaveText("scratch.md");
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-general-chat-files-1280x800.png",fullPage:true});
+});

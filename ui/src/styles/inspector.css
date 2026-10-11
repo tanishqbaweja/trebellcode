@@ -333,6 +333,13 @@
 :root:root .context-panel .changes-empty span{max-width:320px;font-size:12px;line-height:1.55;color:var(--tx3)!important;overflow-wrap:anywhere}
 :root:root .context-panel .changes-empty.error svg{border-color:var(--errb);background:var(--errt);color:var(--err)!important}
 :root:root .context-panel .changes-empty.error strong{color:var(--err)!important}
+/* Still reading (the working tree here, the pull requests in the Git panel): a quiet spinner and what is being read, where the empty
+   state would stand and as tall, with no dashed frame or tile, so it never reads as an answer. */
+:root:root .context-panel :is(.changes-loading,.pr-loading){box-sizing:border-box;display:grid;place-items:center;align-content:center;gap:10px;text-align:center;color:var(--tx2)!important}
+:root:root .context-panel .changes-loading{min-height:220px;margin:16px;padding:32px 22px}
+:root:root .context-panel .pr-loading{min-height:180px;padding:28px 20px}
+:root:root .context-panel :is(.changes-loading,.pr-loading) svg{width:18px;height:18px;color:var(--tx3)!important;animation:tb-spin 1.1s linear infinite}
+:root:root .context-panel :is(.changes-loading,.pr-loading) strong{font-size:12.5px;font-weight:550;color:var(--tx2)!important}
 
 /* --------------------------------------------------------------------- Context */
 :root:root .context-panel .context-inspector{box-sizing:border-box;padding:14px;display:grid;gap:12px;align-content:start;min-width:0}
@@ -620,6 +627,9 @@
 :root:root .context-panel .pr-empty-state svg{box-sizing:content-box;width:20px;height:20px;margin-bottom:8px;padding:11px;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);border-radius:13px;background:var(--acsoft);color:var(--ac)!important}
 :root:root .context-panel .pr-empty-state strong{font-size:13.5px;font-weight:600;color:var(--tx1)!important}
 :root:root .context-panel .pr-empty-state span{max-width:300px;font-size:12px;line-height:1.55;color:var(--tx3)!important}
+:root:root .context-panel .pr-empty-state.error svg{border-color:var(--errb);background:var(--errt);color:var(--err)!important}
+:root:root .context-panel .pr-empty-state.error strong{color:var(--err)!important}
+:root:root .context-panel .pr-empty-state.error span{overflow-wrap:anywhere;white-space:pre-line}
 :root:root .context-panel .pr-stack{display:grid;gap:8px;margin:10px 0;padding:10px;border:1px solid color-mix(in srgb,var(--ac) 30%,var(--line))!important;border-radius:var(--r-m);background:var(--acsoft)!important}
 :root:root .context-panel .pr-stack-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 10px}
 :root:root .context-panel .pr-stack-head strong{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--ac)!important}
@@ -1122,5 +1132,5 @@
 
 /* Git panel while it loads, and the clean state: inside the list's border, so the text starts where the rows' badges and the
    commit message do (12px in), not against the border. */
-:root:root .context-panel .status-list>p:is(.sc-loading,.sc-clean){margin:0;padding:10px 12px;color:var(--tx3)!important;font-size:12px}
+:root:root .context-panel .status-list>p:is(.sc-loading,.sc-clean,.sc-unavailable){margin:0;padding:10px 12px;color:var(--tx3)!important;font-size:12px}
 :root:root .context-panel .sc-branch select:disabled{opacity:.7;cursor:progress}

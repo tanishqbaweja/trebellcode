@@ -4805,7 +4805,16 @@ test("right panel tabs are functional and visually bounded",async({page,request}
       await panel.getByRole("button",{name:"Cancel",exact:true}).click();
       await search.fill("");
     }
-    if(label==="Diff")await expect(panel.locator(".changes-empty")).toBeVisible();
+    if(label==="Diff"){
+      // The tab answers once it has read this checkout's working tree, with what the server reads there: its changed files, or a
+      // clean tree. Until then it says it is loading, never that the tree is clean.
+      await expect(panel.locator(".changes-loading")).toHaveCount(0,{timeout:15_000});
+      const boot=await (await request.get("/api/bootstrap")).json();
+      const tree=await (await request.get("/api/workspace/diff?"+new URLSearchParams({path:boot.cwd,environmentId:""}))).json();
+      const changed=String(tree.status||"").split(/\r?\n/).filter(Boolean).length;
+      if(changed)await expect(panel.locator(".changed-file-row")).toHaveCount(Math.min(changed,80));
+      else await expect(panel.locator(".changes-empty")).toContainText("Working tree clean");
+    }
     if(label==="Browser"){
       await expect(panel.locator(".preview-empty-state")).toBeVisible();
       await expect(panel).toContainText("Desktop Agent Browser is unavailable here");
@@ -4816,7 +4825,11 @@ test("right panel tabs are functional and visually bounded",async({page,request}
     }
     if(label==="Git"){
       await expect(panel.locator(".source-provider-field")).toBeVisible();
-      await expect(panel.locator(".pr-empty-state")).toBeVisible();
+      // Each part shows its answer once the repository, Git and the code host have answered: the list of pull requests, none, or why
+      // they could not be listed. The shot is of those answers, not of the loading states before them.
+      await expect(panel.locator(".pr-loading, .source-control [aria-busy=true]")).toHaveCount(0,{timeout:40_000});
+      await expect(panel.getByText(/checking…|Detecting the code host/)).toHaveCount(0);
+      await expect(panel.locator(".pr-layout, .pr-empty-state").first()).toBeVisible();
     }
     if(label==="Goal"){
       await expect(panel).toContainText("No active thread");

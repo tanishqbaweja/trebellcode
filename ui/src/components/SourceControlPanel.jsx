@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
-import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, Eye, EyeOff, Pencil, ShieldCheck, Layers3 } from "lucide-react";
+import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, Eye, EyeOff, Pencil, ShieldCheck, Layers3, LoaderCircle } from "lucide-react";
 import { api } from "../api.js";
 import { actionError, actionErrorUnlessNamed, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusPath } from "../inspector-labels.js";
 import { SOURCE_CONTROL_PAGE_SIZE, sourceControlWindow } from "../source-control-window.js";
@@ -49,7 +49,11 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   // An error carries the scope it describes (repository, writer or thread); see source-control-context.js.
   const [errorState,setErrorState]=useState(null);
   const error=errorState?.message||"";
-  const [diagnosticsLoading,setDiagnosticsLoading]=useState(false);
+  // What each read last said for the repository on screen: null until it answers, then {ok:true} or {error}. A part whose read has
+  // not answered says it is loading rather than drawing an empty answer ("Changes 0", "Git: not found", "No pull requests found"),
+  // and a part that could not be read says so. A later refresh keeps the last answer on screen until its own lands.
+  const [reads,setReads]=useState({info:null,diagnostics:null,prs:null});
+  const infoRef=useRef(info);infoRef.current=info;
   const [statusLimit,setStatusLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [prLimit,setPrLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [fileLimit,setFileLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
@@ -92,31 +96,40 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     const started=contextRef.current;
     if(reportErrors)setError("");
     refreshFailureRef.current=null;
+    const reason=error=>String(error?.message??error??"").trim()||"No reason was given.";
+    const settle=(part,outcome)=>{if(stillShown(started))setReads(current=>({...current,[part]:outcome}))};
     let i;
     try{i=await api("/api/git/info?"+query({path:projectPath}))}
     catch(error){
       refreshFailureRef.current={stage:"info"};
-      if(stillShown(started)&&(reportErrors||!info))setError(actionError("Could not refresh repository information",error));
+      if(stillShown(started)&&(reportErrors||!infoRef.current))setError(actionError("Could not refresh repository information",error));
+      // Nothing else is read without the repository, so a part that never answered could not be read either.
+      if(stillShown(started))setReads(current=>({info:{error:reason(error)},diagnostics:current.diagnostics||{error:reason(error)},prs:current.prs||{error:reason(error)}}));
       return false;
     }
     if(!stillShown(started))return false;
+    // The repository shows as soon as it answers; Git and the code host are checked after it.
+    setInfo(i);settle("info",{ok:true});
     let d=null;
-    setDiagnosticsLoading(true);
     try{d=await api("/api/source-control/diagnostics?"+query({path:projectPath,...(providerOverride?{provider:providerOverride}:{})}))}
     catch(error){
       if(reportErrors)reportError(started,actionError("Could not refresh source-control diagnostics",error));
-    }finally{setDiagnosticsLoading(false)}
+      settle("diagnostics",{error:reason(error)});
+    }
     if(!stillShown(started))return false;
-    setInfo(i);if(d)setDiagnostics(d);
+    if(d){setDiagnostics(d);settle("diagnostics",{ok:true})}
     const chosen=providerOverride||d?.selectedProvider||(d?.detectedProvider&&d.detectedProvider!=="unknown"?d.detectedProvider:"");
     if(chosen&&!sourceProvider)setSourceProvider(chosen);
     try{
       const p=await api("/api/source-control/prs?"+query({path:projectPath,...(chosen?{provider:chosen}:{})}));
       if(!stillShown(started))return false;
       setPrs(p.items||[]);if(p.capabilities)setCapabilities(p.capabilities);else if(chosen&&d?.capabilities?.[chosen])setCapabilities(d.capabilities[chosen]);
+      // A host whose client could not list them answers ok:false with its reason: that is a failure, not an empty list.
+      settle("prs",p.ok===false?{error:reason(p.error)}:{ok:true});
     }catch(error){
       refreshFailureRef.current={stage:"prs",message:error.message||String(error)||"Could not refresh pull requests."};
       if(stillShown(started)&&(reportErrors||i?.remotes?.length))setError(actionError("Could not refresh pull requests",error));
+      settle("prs",{error:reason(error)});
       return false;
     }
     return true;
@@ -142,7 +155,8 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     if(action==="merge"&&extra.auto)return "Could not turn on auto-merge";
     return ({edit:"Could not edit the pull request",checkout:"Could not check out the pull request","request-reviewer":"Could not request the reviewer","approve-workflows":"Could not approve the workflows",revert:"Could not revert the pull request",merge:"Could not merge the pull request",comment:"Could not add the comment",review:"Could not submit the review","edit-comment":"Could not edit the comment"}[action]||"Pull request action "+action+" failed");
   }
-  useEffect(()=>{setSourceProvider("");setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});setLinkedThreads([]);setLinkedThreadsKey(null);refresh("")},[projectPath,environmentId]);
+  // Another repository starts unread: what the last one answered does not describe it.
+  useEffect(()=>{infoRef.current=null;setInfo(null);setDiagnostics(null);setPrs([]);setReads({info:null,diagnostics:null,prs:null});setSourceProvider("");setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});setLinkedThreads([]);setLinkedThreadsKey(null);refresh("")},[projectPath,environmentId]);
   useEffect(()=>{setStackMergeMethod(defaultMergeMethod)},[defaultMergeMethod]);
   useEffect(()=>{setStatusLimit(SOURCE_CONTROL_PAGE_SIZE);setPrLimit(SOURCE_CONTROL_PAGE_SIZE)},[projectPath,environmentId,sourceProvider]);
   useEffect(()=>{setFileLimit(SOURCE_CONTROL_PAGE_SIZE)},[selectedPr?.number]);
@@ -356,23 +370,27 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   },[info?.worktrees]);
   // Commit and PR text comes from the active harness; only Trebell Native calls the model provider directly.
   const textGeneratorLabel=agentRuntime&&agentRuntime!=="native"?(agentRuntimeLabel||agentRuntime):modelProviderLabel(provider);
+  // Until a read answers its parts say so; a failed one leaves them unknown (the banner, or the title, names the failure).
+  const infoLoading=!info&&!reads.info?.error,infoPending=infoLoading?"checking…":"unknown";
+  const diagnosticsLoading=!diagnostics&&!reads.diagnostics?.error;
+  const gitVersion=diagnostics?diagnostics.git?.version||"not found":diagnosticsLoading?"checking…":"unknown";
 
   if(!projectPath)return <div className="empty-state">Open a project to use source control.</div>;
   if(info&&!info.isGit)return <div className="source-control"><div className="empty-state"><GitBranch size={28}/><strong>Not a Git repository</strong><span>{projectPath}</span><button onClick={()=>action("init")} disabled={!!busy}><Plus size={13}/> Initialize Git</button></div></div>;
 
   return <div className="source-control">
     <div className="sc-toolbar">
-      <div className="sc-branch"><GitBranch size={16}/><select aria-label="Current branch" title={info?.branch?info.branch+" · switch branch":"Switch branch"} value={info?.branch||""} disabled={!info} aria-busy={!info||undefined} onChange={e=>action("branch-switch",{name:e.target.value})}>{!info&&<option value="">Loading branches…</option>}{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button aria-label="Create branch" title="Create branch" onClick={async()=>{const n=await askText("New branch name");if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
+      <div className="sc-branch"><GitBranch size={16}/><select aria-label="Current branch" title={info?.branch?info.branch+" · switch branch":"Switch branch"} value={info?.branch||""} disabled={!info} aria-busy={infoLoading||undefined} onChange={e=>action("branch-switch",{name:e.target.value})}>{!info&&<option value="">{infoLoading?"Loading branches…":"Branches unavailable"}</option>}{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button aria-label="Create branch" title="Create branch" onClick={async()=>{const n=await askText("New branch name");if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
       <div><button onClick={()=>action("fetch")} disabled={!!busy}><RefreshCw size={13}/> Fetch</button><button onClick={()=>action("pull")} disabled={!!busy}><Download size={13}/> Pull</button><button onClick={()=>action("push",{setUpstream:!info?.upstream})} disabled={!!busy}><Upload size={13}/> Push</button></div>
     </div>
     {error&&<div className="inline-error source-control-error" role="alert">{error}</div>}
     {branchPr&&<div className="branch-pr-badge"><GitPullRequest size={13}/><span><strong>Branch PR #{branchPr.number}</strong><small>{branchPr.title}</small></span><button onClick={()=>openPr(branchPr)}>Review</button>{threadId&&!branchPrLinked&&<button onClick={()=>runCallback("link-pr",()=>onLinkPr?.(branchPr))} disabled={!!busy}>Link this PR</button>}{threadId&&branchPrLinked&&<em>Linked</em>}</div>}
     <div className="sc-grid">
-      <section className="sc-card"><h3>Changes <span>{info?.status?.length||0}</span></h3><div className="status-list">{statusWindow.visible.map(s=>{const badge=gitStatusBadge(s.code),path=gitStatusPath(s.path);return <div key={s.path} title={path}><code data-state={badge.kind} title={badge.title}>{badge.label}</code><span>{path}</span></div>})}{!info?<p className="sc-loading">Loading changes…</p>:!info.status?.length&&<p className="sc-clean">Working tree clean.</p>}</div>
+      <section className="sc-card"><h3>Changes {info&&<span>{info.status?.length||0}</span>}</h3><div className="status-list" aria-busy={infoLoading||undefined}>{statusWindow.visible.map(s=>{const badge=gitStatusBadge(s.code),path=gitStatusPath(s.path);return <div key={s.path} title={path}><code data-state={badge.kind} title={badge.title}>{badge.label}</code><span>{path}</span></div>})}{!info?(infoLoading?<p className="sc-loading">Loading changes…</p>:<p className="sc-unavailable">Changes unavailable.</p>):!info.status?.length&&<p className="sc-clean">Working tree clean.</p>}</div>
         {statusWindow.hasMore&&<div className="source-window-footer"><button onClick={()=>setStatusLimit(limit=>limit+SOURCE_CONTROL_PAGE_SIZE)}>Show {statusWindow.nextCount} more changes</button><span>{statusWindow.shown} of {statusWindow.total} shown</span></div>}
         <div className="commit-box"><textarea value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder="Commit message"/><button onClick={generate} disabled={busy==="generate"}><WandSparkles size={13}/> Generate with {textGeneratorLabel}</button><button className="primary" onClick={()=>action("commit",{message:commitMessage})} disabled={!commitMessage.trim()||!!busy}><GitCommit size={13}/> Commit</button></div>
       </section>
-      <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?info.root||"—":"—"}</code></p><p>Upstream: <code>{info?info.upstream||"none":"—"}</code></p><p>Git: {diagnostics?.git?.version||(diagnosticsLoading?"checking…":"not found")}</p><label className="source-provider-field"><span>Code host</span><select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});refresh(e.target.value,{reportErrors:true})}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?diagnostics?.providers?.[sourceProvider]?.label||sourceProvider:"Detected: "+(diagnostics?.detectedProvider||"unknown")} · {sourceProvider?(diagnostics?.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics?.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):"choose a provider if auto-detection is ambiguous"}</p>
+      <section className="sc-card"><h3>Repository</h3><p>Root: {info?<code>{info.root||"—"}</code>:infoPending}</p><p>Upstream: {info?<code>{info.upstream||"none"}</code>:infoPending}</p><p title={!diagnostics&&reads.diagnostics?.error?"Could not check Git: "+reads.diagnostics.error:undefined}>Git: {gitVersion}</p><label className="source-provider-field"><span>Code host</span><select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});refresh(e.target.value,{reportErrors:true})}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?(diagnostics?.providers?.[sourceProvider]?.label||sourceProvider)+" · "+(diagnostics?(diagnostics.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):diagnosticsLoading?"checking…":"status unknown"):diagnosticsLoading?"Detecting the code host…":"Detected: "+(diagnostics?.detectedProvider||"unknown")+" · choose a provider if auto-detection is ambiguous"}</p>
         {!info?.remotes?.some(remote=>remote.name==="origin")&&sourceProvider&&diagnostics?.capabilities?.[sourceProvider]?.publish&&<button onClick={publishRepository} disabled={!!busy||!diagnostics?.providers?.[sourceProvider]?.authenticated}><Upload size={13}/> Publish repository</button>}
         {info&&<h4>Worktrees</h4>}{worktreeRows.map(({worktree:w,path,name,branch})=><div className="worktree-row" key={w.path} title={w.path} onCopy={copyAsWritten}><span className="worktree-branch" title={w.branch||undefined}><DistinctText {...branch}/></span><code><bdi className="worktree-dir">{path.dir}</bdi><span className="worktree-sep">{path.sep}</span><bdi className="worktree-name"><DistinctText {...name}/></bdi></code>{w.path!==info?.root&&<button onClick={()=>openProjectPath(w.path)} disabled={busy==="open-project"}>Open</button>}</div>)}
         {(remote||window.trebellDesktop?.pickDirectory)&&<button onClick={addWorktree} disabled={!!busy}><Plus size={13}/> Add worktree</button>}
@@ -390,7 +408,11 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
         <h4>Conversation</h4><div className="review-list">{(selectedPr.comments||[]).length?(selectedPr.comments||[]).map((entry,i)=><div key={entry.id||i}><strong>{entry.author?.login||entry.author?.name||"Commenter"}</strong><span>{entry.canEdit?"yours":"comment"}</span><p>{entry.body||""}</p>{capabilities.editComments&&entry.canEdit&&<button className="pr-comment-edit" onClick={async()=>{const body=await askText("Edit comment",entry.body||"");if(body!=null&&body!==entry.body)prAction("edit-comment",{commentId:entry.id,body})}} disabled={!!busy}><Pencil size={11}/> Edit comment</button>}</div>):<p>No comments yet.</p>}</div>
         <h4>Reviews</h4><div className="review-list">{(selectedPr.reviews||[]).length?(selectedPr.reviews||[]).map((review,i)=><div key={review.id||i}><strong>{review.author?.login||review.author?.name||"Reviewer"}</strong><span>{review.state||"reviewed"}</span><p>{review.body||""}</p></div>):<p>No reviews yet.</p>}</div>
         <h4>Checks</h4><pre>{JSON.stringify(selectedPr.statusCheckRollup||[],null,2)}</pre>
-      </>:<p>Select a pull request to inspect it.</p>}</div></div>:<div className="pr-empty-state"><GitPullRequest size={20}/><strong>No pull requests found</strong><span>Create a pull request or refresh after one is opened on the remote.</span></div>}
+      </>:<p>Select a pull request to inspect it.</p>}</div></div>
+        :!reads.prs?<div className="pr-loading" role="status" aria-busy="true"><LoaderCircle size={18} aria-hidden="true"/><strong>Loading pull requests…</strong></div>
+        :reads.prs.error&&info&&!info.remotes?.length?<div className="pr-empty-state"><GitPullRequest size={20}/><strong>No remote yet</strong><span>Pull requests are listed once this repository has a remote on a code host.</span></div>
+        :reads.prs.error?<div className="pr-empty-state error"><GitPullRequest size={20}/><strong>Could not list pull requests</strong><span>{reads.prs.error}</span></div>
+        :<div className="pr-empty-state"><GitPullRequest size={20}/><strong>No pull requests found</strong><span>Create a pull request or refresh after one is opened on the remote.</span></div>}
     </section>
   </div>;
 }

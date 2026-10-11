@@ -369,3 +369,143 @@ test("Generate failures name the text that could not be written, unless the writ
     await expect(alert).toHaveText(harnessError);
   }
 });
+
+// Opens the Git panel of a project registered under `name`.
+async function openGitPanel(page,request,name){
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name}});
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const project=page.locator(".project-card").filter({hasText:name});
+  await expect(project).toBeVisible();await project.locator(".project-open").click();
+  await page.getByTestId("right-panel-toggle").click();
+  const right=page.getByTestId("right-panel");await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  return {boot,right,changes:right.locator(".sc-card").filter({has:page.getByRole("heading",{name:/^Changes/})}),repository:right.locator(".sc-card").filter({has:page.getByRole("heading",{name:"Repository"})}),pulls:right.locator(".pr-card")};
+}
+// What the panel must never say before the matching read has answered ("Detected: unknown" is the answer once detection failed).
+const EMPTY_CLAIMS=[/Git: not found/,/^Changes\s*0$/,/Root: —/,/Upstream: —/,/No pull requests found/,/Working tree clean/,/client\/credentials missing/,/Detected: unknown/];
+async function expectNoEmptyClaims(right,claims=EMPTY_CLAIMS){
+  const text=await right.locator(".source-control").evaluate(node=>[...node.querySelectorAll("h3,p,strong,option")].map(item=>item.textContent.replace(/\s+/g," ").trim()));
+  for(const claim of claims)expect(text.filter(line=>claim.test(line)),String(claim)).toEqual([]);
+}
+
+test("the Git panel says what it is still reading, and never an empty answer, until each read answers",async({page,request})=>{
+  test.setTimeout(45_000);
+  const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  // Each read waits for its own release, so every stage of the first load can be read.
+  const gate=()=>{let open;const opened=new Promise(resolve=>{open=resolve});return {opened,open}};
+  const infoGate=gate(),diagnosticsGate=gate(),prsGate=gate();
+  const capabilities={create:true,comment:true,review:true,merge:true};
+  let prs={provider:"github",capabilities,items:[]};
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await page.route("**/api/git/info?**",async route=>{await infoGate.opened;return json(route,{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:"origin/main",status:[{code:" M",path:"src/app.js"}],worktrees:[{path:boot.cwd,branch:"main"}],remotes:[{name:"origin",url:"https://github.com/owner/repo.git"}]})});
+  await page.route("**/api/source-control/diagnostics?**",async route=>{await diagnosticsGate.opened;return json(route,{selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:capabilities}})});
+  await page.route("**/api/source-control/prs?**",async route=>{await prsGate.opened;return json(route,prs)});
+  const {right,changes,repository,pulls}=await openGitPanel(page,request,"Source control first load");
+
+  // Nothing has answered: each part says it is loading.
+  await expect(changes.locator(".sc-loading")).toHaveText("Loading changes…");
+  await expect(changes.getByRole("heading")).toHaveText("Changes");
+  await expect(repository).toContainText("Root: checking…");
+  await expect(repository).toContainText("Upstream: checking…");
+  await expect(repository).toContainText("Git: checking…");
+  await expect(repository).toContainText("Detecting the code host…");
+  await expect(pulls.locator(".pr-loading")).toHaveText("Loading pull requests…");
+  await expect(pulls.locator(".pr-loading")).toHaveAttribute("aria-busy","true");
+  await expectNoEmptyClaims(right);
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-first-load-dark-1280x800.png",fullPage:true});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-first-load-light-1280x800.png",fullPage:true});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+
+  // The repository answers: its changes, root and upstream show at once, while Git, the code host and the pull requests are still read.
+  infoGate.open();
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  await expect(changes.locator(".status-list > div")).toHaveCount(1);
+  await expect(repository.locator("p").filter({hasText:"Root:"}).locator("code")).toHaveText(boot.cwd);
+  await expect(repository.locator("p").filter({hasText:"Upstream:"}).locator("code")).toHaveText("origin/main");
+  await expect(repository).toContainText("Git: checking…");
+  await expect(pulls.locator(".pr-loading")).toBeVisible();
+  await expectNoEmptyClaims(right);
+  diagnosticsGate.open();
+  await expect(repository).toContainText("Git: git version fixture");
+  await expect(repository).toContainText("GitHub · authenticated");
+  await expect(pulls.locator(".pr-loading")).toBeVisible();
+  await expectNoEmptyClaims(right);
+  await pulls.scrollIntoViewIfNeeded();
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pull-requests-loading-light-1280x800.png",fullPage:true});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pull-requests-loading-dark-1280x800.png",fullPage:true});
+  // Only the answered list says it is empty.
+  prsGate.open();
+  await expect(pulls.locator(".pr-empty-state")).toContainText("No pull requests found");
+  await expect(pulls.locator(".pr-loading")).toHaveCount(0);
+  // A host client that could not list them answers ok:false: that is a failure, not an empty list. Refreshing keeps the last answer
+  // on screen until the new one lands.
+  prs={ok:false,provider:"github",capabilities,items:[],error:"gh: To get started with GitHub CLI, please run: gh auth login"};
+  await pulls.getByRole("button",{name:"Refresh pull requests"}).click();
+  const failed=pulls.locator(".pr-empty-state.error");
+  await expect(failed).toContainText("Could not list pull requests");
+  await expect(failed).toContainText("gh auth login");
+  await expect(right.getByText("No pull requests found")).toHaveCount(0);
+  await pulls.scrollIntoViewIfNeeded();
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pull-requests-failed-dark-1280x800.png",fullPage:true});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-pull-requests-failed-light-1280x800.png",fullPage:true});
+});
+
+test("a Git panel whose first reads fail says so, instead of loading for ever or answering empty",async({page,request})=>{
+  test.setTimeout(35_000);
+  const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  let failInfo=true;const boot=await (await request.get("/api/bootstrap")).json();
+  const info={isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:null,status:[],worktrees:[{path:boot.cwd,branch:"main"}],remotes:[{name:"origin",url:"https://github.com/owner/repo.git"}]};
+  await page.route("**/api/git/info?**",route=>failInfo?json(route,{error:"Deliberate repository read failure"},400):json(route,info));
+  await page.route("**/api/source-control/diagnostics?**",route=>json(route,{error:"Deliberate diagnostics failure"},400));
+  await page.route("**/api/source-control/prs?**",route=>json(route,{provider:"github",capabilities:{create:true},items:[]}));
+  const {right,changes,repository,pulls}=await openGitPanel(page,request,"Source control failed load");
+  await expect(right.locator(".source-control-error")).toHaveText("Could not refresh repository information: Deliberate repository read failure");
+  await expect(changes.locator(".sc-unavailable")).toHaveText("Changes unavailable.");
+  await expect(right.getByRole("combobox",{name:"Current branch"})).not.toHaveAttribute("aria-busy","true");
+  await expect(right.getByRole("combobox",{name:"Current branch"}).locator("option")).toHaveText(["Branches unavailable"]);
+  await expect(repository).toContainText("Root: unknown");
+  await expect(repository).toContainText("Git: unknown");
+  await expect(pulls.locator(".pr-empty-state.error")).toContainText("Deliberate repository read failure");
+  await expect(right.locator("[aria-busy=true]")).toHaveCount(0);
+  await expect(right.getByText(/checking…|Loading/)).toHaveCount(0);
+  await expectNoEmptyClaims(right,EMPTY_CLAIMS.filter(claim=>!claim.test("Detected: unknown")));
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-first-load-failed-dark-1280x800.png",fullPage:true});
+  await pulls.scrollIntoViewIfNeeded();
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-first-load-failed-pulls-light-1280x800.png",fullPage:true});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+  // Once the repository reads, its parts answer; Git stays unknown (its check failed) and names the failure in its title.
+  failInfo=false;
+  await pulls.getByRole("button",{name:"Refresh pull requests"}).click();
+  await expect(changes.locator(".sc-clean")).toHaveText("Working tree clean.");
+  await expect(repository.locator("p").filter({hasText:"Upstream:"}).locator("code")).toHaveText("none");
+  const git=repository.locator("p").filter({hasText:"Git:"});
+  await expect(git).toHaveText("Git: unknown");
+  await expect(git).toHaveAttribute("title","Could not check Git: Deliberate diagnostics failure");
+  await expect(pulls.locator(".pr-empty-state")).toContainText("No pull requests found");
+});
+
+test("a repository with no remote says it has none instead of failing to list pull requests",async({page,request})=>{
+  test.setTimeout(35_000);
+  const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await page.route("**/api/git/info?**",route=>json(route,{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:null,status:[],worktrees:[{path:boot.cwd,branch:"main"}],remotes:[]}));
+  await page.route("**/api/source-control/diagnostics?**",route=>json(route,{selectedProvider:null,detectedProvider:"unknown",git:{version:"git version fixture"},providers:{},capabilities:{}}));
+  // What the server answers when no code host can be named for the repository.
+  await page.route("**/api/source-control/prs?**",route=>json(route,{error:"Could not identify this Git host. Choose GitHub, GitLab, Forgejo/Gitea, Bitbucket, or Azure DevOps."},400));
+  const {right,pulls}=await openGitPanel(page,request,"Source control no remote");
+  const empty=pulls.locator(".pr-empty-state");
+  await expect(empty).toContainText("No remote yet");
+  await expect(empty).not.toHaveClass(/error/);
+  await expect(right.locator(".source-control-error")).toHaveCount(0);
+  await expect(right.getByText("No pull requests found")).toHaveCount(0);
+  await pulls.scrollIntoViewIfNeeded();
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-no-remote-dark-1280x800.png",fullPage:true});
+});
