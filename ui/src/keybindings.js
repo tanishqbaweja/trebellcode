@@ -110,9 +110,11 @@ export function evaluateWhen(expression,context={}){
   return Boolean(result);
 }
 
-// Why a typed condition cannot be used, or "" when it can (blank means always). The resolver skips a condition it cannot read,
-// so saving one would switch the shortcut off; the message says how to finish it instead.
-export function whenProblem(expression){
+// The contexts the app sets for each key press (the keydown handler in App.jsx). Any other name reads as false.
+export const KEYBINDING_CONTEXTS=["chatFocus","codexRuntime","threadSearch","terminalFocus","terminalOpen","previewFocus","modelPickerOpen","textInputFocus","projectOpen","threadOpen","running","modalOpen","rightPanelOpen","sidebarOpen","undoAvailable","pullRequestOpen","desktop"];
+
+// Why the resolver cannot read a condition, or "" when it can. It skips a condition it cannot read.
+function whenSyntaxProblem(expression){
   try{evaluateWhen(expression,{});return ""}
   catch(error){
     if(error.code==="character")return `“${error.token}” can't be used in a condition. Join contexts with &&, || and !.`;
@@ -121,6 +123,32 @@ export function whenProblem(expression){
     if(error.code==="extra")return error.token===")"?"Remove the extra “)”.":`“${error.token}” is out of place. Join contexts with && or ||.`;
     return "This condition can't be read.";
   }
+}
+function editDistance(a,b){
+  const row=Array.from({length:b.length+1},(_,index)=>index);
+  for(let i=1;i<=a.length;i++){
+    let diagonal=row[0];row[0]=i;
+    for(let j=1;j<=b.length;j++){const above=row[j];row[j]=Math.min(above+1,row[j-1]+1,diagonal+(a[i-1]===b[j-1]?0:1));diagonal=above}
+  }
+  return row[b.length];
+}
+// The context a misspelt name most likely meant: the same name in other case, or one at most two letters off.
+function nearestContext(name){
+  const lower=name.toLowerCase();
+  let best=null,bestDistance=3;
+  for(const context of KEYBINDING_CONTEXTS){const distance=editDistance(lower,context.toLowerCase());if(distance<bestDistance){best=context;bestDistance=distance}}
+  return best;
+}
+// Why a typed condition cannot be used, or "" when it can (blank means always). The resolver skips a condition it cannot read,
+// and a name that is not a context is false every time, so saving either would switch the shortcut off; the message says how
+// to fix it instead.
+export function whenProblem(expression){
+  const syntax=whenSyntaxProblem(expression);if(syntax)return syntax;
+  const unknown=conditionNames(expression).find(name=>!KEYBINDING_CONTEXTS.includes(name));
+  if(!unknown)return "";
+  if(unknown.toLowerCase()==="always")return `“${unknown}” is not a context. Leave When empty to use the shortcut everywhere.`;
+  const near=nearestContext(unknown);
+  return near?`“${unknown}” is not a context. Use ${near}.`:`“${unknown}” is not a context. Use one from Available contexts below.`;
 }
 
 function normalizedKey(value){
@@ -222,7 +250,7 @@ const holds=(expression,context)=>{try{return evaluateWhen(expression,context)}c
 // Ctrl+`, Mod+1-9) or for a narrower context that should win (Mod+N in a focused terminal), so none of them is listed. Conditions
 // are compared over every combination of the contexts they name. Returns a Map of command -> {key, by: commands that run instead}.
 export function shadowedKeybindings(rules,mac=MAC_PLATFORM){
-  const usable=rules.map((rule,index)=>({rule,index,signature:shortcutSignature(rule.key,mac)})).filter(item=>item.signature&&!whenProblem(item.rule.when));
+  const usable=rules.map((rule,index)=>({rule,index,signature:shortcutSignature(rule.key,mac)})).filter(item=>item.signature&&!whenSyntaxProblem(item.rule.when));
   const shadowed=new Map();
   for(const item of usable){
     const later=usable.filter(other=>other.index>item.index&&other.signature===item.signature).reverse();

@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
+  KEYBINDING_CONTEXTS,
   defaultKeybindingRules,
   evaluateWhen,
   normalizeKeybindingRules,
@@ -186,7 +188,7 @@ test("a shortcut naming a key the browser names otherwise, or no key at all, is 
 });
 
 test("a condition the parser refuses says what to change, and a finished one passes",()=>{
-  for(const value of ["","!modalOpen","threadOpen && !modalOpen","(threadOpen || pullRequestOpen) && !terminalFocus && !modalOpen","!(a || b)"])assert.equal(whenProblem(value),"",value);
+  for(const value of ["","!modalOpen","threadOpen && !modalOpen","(threadOpen || pullRequestOpen) && !terminalFocus && !modalOpen","!(running || sidebarOpen)"])assert.equal(whenProblem(value),"",value);
   assert.equal(whenProblem("!modalOpen &&"),"Add a context after “&&”.");
   assert.equal(whenProblem("threadOpen ||"),"Add a context after “||”.");
   assert.equal(whenProblem("!"),"Add a context after “!”.");
@@ -198,6 +200,30 @@ test("a condition the parser refuses says what to change, and a finished one pas
   assert.equal(whenProblem("threadOpen & running"),"“&” can't be used in a condition. Join contexts with &&, || and !.");
   // Each refused condition is one the resolver skips, so the shortcut would stop working.
   assert.throws(()=>evaluateWhen("!modalOpen &&",{}));
+});
+
+test("a condition naming a context the app never sets is refused, with the context meant when it is close",()=>{
+  assert.equal(whenProblem("Always"),"“Always” is not a context. Leave When empty to use the shortcut everywhere.");
+  assert.equal(whenProblem("!modalOpen && projectopen"),"“projectopen” is not a context. Use projectOpen.");
+  assert.equal(whenProblem("threadOpn && !modalOpen"),"“threadOpn” is not a context. Use threadOpen.");
+  assert.equal(whenProblem("!(runing || sidebarOpen)"),"“runing” is not a context. Use running.");
+  assert.equal(whenProblem("!modalOpen && somewhere"),"“somewhere” is not a context. Use one from Available contexts below.");
+  // Such a name is false in every context the app sets, so the shortcut would never run.
+  assert.equal(evaluateWhen("Always",Object.fromEntries(KEYBINDING_CONTEXTS.map(name=>[name,true]))),false);
+  // A parse error is said first.
+  assert.equal(whenProblem("somewhere &&"),"Add a context after “&&”.");
+  // Every shipped condition names contexts the app sets.
+  for(const rule of defaultKeybindingRules())assert.equal(whenProblem(rule.when),"",rule.command+" "+rule.when);
+  assert.equal(whenProblem("projectOpen && !modalOpen"),"","the condition a project action starts with");
+});
+
+test("the contexts Settings accepts are the ones the app sets for a key press",()=>{
+  const app=readFileSync(new URL("../ui/src/App.jsx",import.meta.url),"utf8");
+  const end=app.indexOf("const command=resolveKeybinding(event,");
+  const start=app.lastIndexOf("const context={",end);
+  assert.ok(end>0&&start>0,"the keydown handler's context object");
+  const names=[...app.slice(start,end).matchAll(/^\s*([A-Za-z]+):/gm)].map(match=>match[1]);
+  assert.deepEqual([...names].sort(),[...KEYBINDING_CONTEXTS].sort());
 });
 
 test("one shortcut has one signature however it is written, with Mod as Ctrl off macOS and as Cmd on it",()=>{

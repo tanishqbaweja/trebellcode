@@ -219,6 +219,52 @@ test.describe("Typing a shortcut",()=>{
     await expect(message).toHaveCount(0);
     expect(saves.length).toBe(1);
   });
+
+  // A name that is not a context reads as false for ever, so the shortcut would stop working. "Always" is the word an empty When
+  // field shows.
+  test("a condition naming a context that does not exist is refused, and the saved one keeps working",async({page,request})=>{
+    await open(page,request);
+    const saves=keybindingSaves(page);
+    await openShortcuts(page);
+    const sidebarRow=row(page,"Toggle main sidebar"),field=whenField(page,"Toggle main sidebar"),message=sidebarRow.getByRole("alert");
+    await expect(whenField(page,"Command palette")).toHaveAttribute("placeholder","Always");
+    await retype(field,"Always");
+    await field.press("Tab");
+    await expect(message).toHaveText("“Always” is not a context. Leave When empty to use the shortcut everywhere. Until then the saved condition is used.");
+    await expect(field).toHaveAttribute("aria-invalid","true");
+    expect(saves,"a condition naming no context is never saved").toEqual([]);
+    await sidebarRow.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+"condition-unknown-context-dark-1280.png"});
+    await flipMode(page,"light");
+    await page.screenshot({animations:"disabled",path:shots+"condition-unknown-context-light-1280.png"});
+    await flipMode(page,"dark");
+    await sidebarRow.locator("strong").click();
+    await page.keyboard.press("Control+B");
+    await expect.poll(()=>sidebarCollapsed(page)).toBe(true);
+    await page.keyboard.press("Control+B");
+    await expect.poll(()=>sidebarCollapsed(page)).toBe(false);
+    // A misspelt context names the one meant.
+    await retype(field,"!modalOpen && projectopen");
+    await field.press("Tab");
+    await expect(message).toHaveText("“projectopen” is not a context. Use projectOpen. Until then the saved condition is used.");
+    await retype(field,"threadOpn && !modalOpen");
+    await field.press("Tab");
+    await expect(message).toHaveText("“threadOpn” is not a context. Use threadOpen. Until then the saved condition is used.");
+    await retype(field,"!modalOpen && somewhere");
+    await field.press("Tab");
+    await expect(message).toHaveText("“somewhere” is not a context. Use one from Available contexts below. Until then the saved condition is used.");
+    expect(saves).toEqual([]);
+    // Every context the list below names can be saved.
+    const note=page.locator(".keybindings-settings .provider-note").filter({hasText:"Available contexts"});
+    const listed=(await note.innerText()).match(/Available contexts: ([^.]+)\./)[1].split(", ");
+    expect(listed).toContain("undoAvailable");
+    await note.scrollIntoViewIfNeeded();
+    for(const mode of MODES){await flipMode(page,mode);await page.screenshot({animations:"disabled",path:shots+`available-contexts-${mode}-1280.png`})}
+    await retype(field,"!modalOpen && ("+listed.join(" || ")+")");
+    await field.press("Enter");
+    await expect(message).toHaveCount(0);
+    await expect.poll(()=>saves.length).toBe(1);
+  });
 });
 
 test.describe("Two commands on one key",()=>{
