@@ -20,7 +20,7 @@ import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx"
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
 import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, shadowedKeybindings, shortcutHint } from "./keybindings.js";
-import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
+import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, navigationKey, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
@@ -154,6 +154,8 @@ function focusShownView(){
 // In a browser tab the app's pages are entries of the tab's history too (see the navigation history in App). The desktop window
 // (window.trebellDesktop) has no browser Back or Forward and keeps that history in memory only.
 const BROWSER_NAVIGATION=typeof window!=="undefined"&&!window.trebellDesktop&&typeof window.history?.pushState==="function";
+// The tab history entry this page load opened on: another one when the app starts means Back or Forward was pressed meanwhile.
+const LOADED_BROWSER_ENTRY_ID=BROWSER_NAVIGATION?window.history.state?.trebellNav?.id||null:null;
 
 function DeferredSurface({children,label="Loading…",compact=false}){
   return <Suspense fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</Suspense>;
@@ -1000,7 +1002,11 @@ export default function App(){
     if(nav.index<0){
       let stored=null;
       if(BROWSER_NAVIGATION)try{stored=JSON.parse(sessionStorage.getItem(NAVIGATION_STORE_KEY)||"null")}catch{}
-      writeNavigationEntry("replace",startNavigationHistory(nav,location,{browserEntryId:BROWSER_NAVIGATION?window.history.state?.trebellNav?.id:null,stored}));
+      const browserEntryId=BROWSER_NAVIGATION?window.history.state?.trebellNav?.id||null:null,moved=Boolean(browserEntryId)&&browserEntryId!==LOADED_BROWSER_ENTRY_ID;
+      const entry=startNavigationHistory(nav,location,{browserEntryId,stored,moved});
+      // Back or Forward pressed while the app was starting: show the page it went to rather than write this one over it.
+      if(moved&&entry.id===browserEntryId&&navigationKey(entry)!==navigationKey(location))runUserAction(()=>showNavigationEntry(nav.index),"Could not navigate back");
+      else writeNavigationEntry("replace",entry);
       return;
     }
     if(nav.landed){nav.landed=false;const settled=settleLocation(nav,location);if(settled.action==="replace")writeNavigationEntry("replace",settled.entry);return}

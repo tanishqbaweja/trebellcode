@@ -88,6 +88,16 @@ test("after a reload the entry reloaded shows the page the app opened on, and th
   assert.equal(recordLocation(nav,page("history")).entry.id,"second-1","new ids never repeat an earlier load's");
 });
 
+test("an entry the browser went to while the app was starting keeps its own page",()=>{
+  const before=createNavigationHistory("first");startNavigationHistory(before,page("chat"));
+  const projects=recordLocation(before,page("projects")).entry;recordLocation(before,page("usage"));
+  const nav=createNavigationHistory("second");
+  const entry=startNavigationHistory(nav,page("chat"),{browserEntryId:projects.id,stored:storedNavigation(before),moved:true});
+  assert.equal(entry.section,"projects");
+  assert.deepEqual(sections(nav),["chat","projects","usage"]);
+  assert.equal(nav.index,1);
+});
+
 test("a stored history that does not hold the browser's entry, or is damaged, starts afresh",()=>{
   const nav=createNavigationHistory("doc");
   startNavigationHistory(nav,page("chat"),{browserEntryId:"gone-1",stored:{entries:[{id:"x-1",section:"projects"}],index:0}});
