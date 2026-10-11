@@ -33,6 +33,7 @@ import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./f
 import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-message-search.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
 import { captureHistoryPrependAnchor, captureThreadScrollPosition, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
+import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
 import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
@@ -731,6 +732,9 @@ export default function App(){
   const [bootstrap,setBootstrap]=useState({mock:false,wsUrl:null,cwd:"",platform:""});
   const [rpc,setRpc]=useState(null); const [rpcStatus,setRpcStatus]=useState("disconnected"); const transportConnectedRef=useRef(false);
   const [threads,setThreads]=useState([]); const [sections,setSections]=useState({}); const [threadMeta,setThreadMeta]=useState({});
+  // threadListError: the last thread-list load failed, so the sidebar says so instead of "No threads yet". threadTurnStates: the
+  // turn starts and ends this window saw per thread (the sidebar's running dot).
+  const [threadListError,setThreadListError]=useState(""); const [threadTurnStates,setThreadTurnStates]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]);
   const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
@@ -1486,15 +1490,24 @@ export default function App(){
   }
   async function loadThreads(client,{strict=false}={}){
     try{
+      if(!client)throw new Error("Agent harness is not connected");
       const listed=await client.request("thread/list",threadListParams(100));
       const incoming=listed.data||[];rememberThreadCatalog(incoming);
       setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
+      setThreadListError("");setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
       return mergeThreadCatalog([],incoming,{runtime:agentRuntime,provider});
     }catch(error){
+      setThreadListError(error?.message||String(error)||"Unknown error");
       if(strict)throw error;
       return null;
     }
   }
+  function markThreadTurn(threadId,running){
+    const id=String(threadId||"");if(!id)return;
+    setThreadTurnStates(previous=>previous[id]===Boolean(running)?previous:{...previous,[id]:Boolean(running)});
+  }
+  // A turn/start reply can carry a turn that already ended (a harness that answers after the run); that one is not running.
+  function turnStillRuns(turn){const status=String(turn?.status||"");return !status||status==="inProgress"||status==="running"}
   useEffect(()=>{
     if(section!=="history")return;
     let cancelled=false;
@@ -1508,6 +1521,7 @@ export default function App(){
       if(cancelled)return;
       const incoming=result?.data||[];rememberThreadCatalog(incoming);
       setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
+      setThreadListError("");setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
       setThreadHistory(current=>{
         const sameSource=current.runtimeSource===sourceKey,alreadyExhausted=sameSource&&current.runtimeExhausted,nextCursor=result?.nextCursor||null;
         return {...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:alreadyExhausted||!nextCursor,items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:alreadyExhausted?null:nextCursor,loading:false,error:""};
@@ -2282,7 +2296,7 @@ export default function App(){
       desktopNotify("Delegated task started",child.name||child.preview||"A child task is running in the background.");
     }
     else if(message.method==="thread/status/changed"&&threadId&&p.status){
-      setThreads(prev=>prev.map(t=>t.id===threadId?{...t,status:p.status,updatedAt:Date.now()/1000}:t));
+      setThreads(prev=>prev.map(t=>t.id===threadId?{...t,status:p.status,updatedAt:Date.now()/1000}:t));markThreadTurn(threadId,p.status.type==="active");
       if(isCurrent)setActiveThread(prev=>prev?.id===threadId?{...prev,status:p.status,updatedAt:Date.now()/1000}:prev);
       updateThreadTelemetry(threadId,{status:p.status,lastActivityAt:Date.now()});
     }
@@ -2310,7 +2324,7 @@ export default function App(){
     else if(message.method==="turn/started"){
       const id=p.turn?.id||p.turnId;
       const clockKey=turnInfoKey(threadId,id);if(clockKey&&!turnClockRef.current.has(clockKey))turnClockRef.current.set(clockKey,Date.now());
-      updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:Date.now(),lastActivityAt:Date.now()});
+      updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:Date.now(),lastActivityAt:Date.now()});markThreadTurn(threadId,true);
       if(isCurrent){
         setRunning(true);setActiveTurnId(id);
         setMessages(prev=>{const index=[...prev].reverse().findIndex(m=>m.role==="user"&&!m.turnId);if(index<0)return prev;const real=prev.length-1-index;return prev.map((m,i)=>i===real?{...m,turnId:id}:m)});
@@ -2327,7 +2341,7 @@ export default function App(){
         // A repeated completion (a replay after a reconnect) keeps the time measured the first time.
         if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:{...prev[outcomeKey],status:outcomeStatus,durationMs:prev[outcomeKey]?.durationMs??durationMs??null}}));
       }
-      updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});
+      updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});markThreadTurn(threadId,false);
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
       // A failed Codex turn ends with its error (T3 Code); an active Codex goal goes on with a turn Codex starts itself.
       const codexFailure=agentRuntime==="codex"?codexTurnFailure(p.turn):null,codexGoalContinues=agentRuntime==="codex"&&isCurrent&&goal?.status==="active";
@@ -3244,7 +3258,7 @@ export default function App(){
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
       const turnContext={...repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
       if(goalActivation)await activateCodexGoal(goalActivation);
       if(turnId){const key=turnInfoKey(thread.id,turnId),mode=permissionModeLabel(permissionModeOverride||permissionMode);if(key&&mode)setTurnInfo(prev=>({...prev,[key]:{...prev[key],mode}}))}
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
@@ -3276,6 +3290,8 @@ export default function App(){
       const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true}),contextEntries=repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text});
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(contextEntries).length?{additionalContext:contextEntries}:{})});const turnId=result?.turn?.id||null;
+      // The sidebar row shows the task running even when the harness sends no turn/started for a thread that is not open.
+      if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
       if(checkpoint?.id&&turnId)try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}})}catch(error){reportCheckpointIssue("Background file checkpoint was created but could not be linked to its turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}
       return {thread,turnId,cwd};
     }catch(error){
@@ -4031,9 +4047,11 @@ export default function App(){
   const shownApprovalThreadId=approvalForeignThreadId(shownApproval,activeThread?.id);
   const shownApprovalOwner=shownApprovalThreadId?threads.find(thread=>String(thread.id)===shownApprovalThreadId)||null:null;
   const shownApprovalThreadLabel=shownApprovalThreadId?(shownApprovalOwner?titleOf(shownApprovalOwner):"another thread"):"";
-  // The crumb names the workspace folder: its accessible name is the folder (project-identity.spec checks it), so the name from
-  // Projects > Project identity stays on the Projects page.
-  const projectLabel=projectlessMode?"No project":String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
+  // The crumb names the project as the sidebar and Projects page do (its record's name); a folder without a record, or one the
+  // record does not describe yet, shows the folder name.
+  const projectFolderName=String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
+  const projectRecordName=currentProject&&sameWorkspacePath(currentProject.path,projectPath)?String(currentProject.name||"").trim():"";
+  const projectLabel=projectlessMode?"No project":projectRecordName||projectFolderName;
   const providerLabel=modelProviderLabel(provider);
   const agentRuntimeLabel=AGENT_RUNTIME_LABELS[agentRuntime]||agentRuntime;
   // Git text is written by the runtime the server runs (bootstrap), so the Source Control label names that harness.
@@ -4097,6 +4115,9 @@ export default function App(){
   const threadMoves=useMemo(()=>threadMoveAvailability(threads),[threads]);
   const sidebarBulkAction=useLatestCallback(bulkAction);
   const sidebarCollapse=useLatestCallback(()=>setSidebarOpen(false));
+  // Retry's outcome (the list, or the error again) shows in the sidebar itself.
+  const sidebarRetryThreads=useLatestCallback(()=>loadThreads(rpcRef.current).then(()=>undefined));
+  const runningSidebarIds=useMemo(()=>runningThreadIds(displayThreads,{activeThreadId:activeThread?.id,activeRunning:running,turnStates:threadTurnStates}),[displayThreads,activeThread?.id,running,threadTurnStates]);
   const completedEvents=events.filter(event=>event.status==="done").length;
   const paletteActions=paletteOpen?[
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:"Ctrl+N",onRun:newChat},
@@ -4215,7 +4236,7 @@ export default function App(){
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
-    <ThreadSidebar runtimeStarting={!runtimeKnown} connection={sidebarConnection} threadMoves={threadMoves} section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab} onOpenPalette={sidebarOpenPalette} shortcuts={sidebarShortcuts}/>
+    <ThreadSidebar runtimeStarting={!runtimeKnown} connection={sidebarConnection} threadMoves={threadMoves} section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab} onOpenPalette={sidebarOpenPalette} shortcuts={sidebarShortcuts} listError={threadListError} onRetryList={sidebarRetryThreads} runningIds={runningSidebarIds}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" {...layoutSeparatorProps("sidebar")} onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>

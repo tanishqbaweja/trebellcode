@@ -1,6 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { groupSidebarThreads, THREAD_GROUP_NAMES } from "../ui/src/thread-sidebar-groups.js";
+import { groupSidebarThreads, runningThreadIds, settleTurnStates, THREAD_GROUP_NAMES } from "../ui/src/thread-sidebar-groups.js";
+
+test("a thread shows as running from the open window's state, the turn events seen, or its listed status",()=>{
+  const threads=[{id:"open"},{id:"detached"},{id:"listed",status:{type:"active"}},{id:"finished",status:{type:"active"}},{id:"idle",status:{type:"idle"}}];
+  const ids=runningThreadIds(threads,{activeThreadId:"open",activeRunning:true,turnStates:{detached:true,finished:false}});
+  assert.deepEqual([...ids],["open","detached","listed"]);
+  // The open thread follows its own state even when an older event said otherwise.
+  assert.deepEqual([...runningThreadIds(threads,{activeThreadId:"detached",activeRunning:false,turnStates:{detached:true}})],["listed","finished"]);
+  // A listing that reports a status replaces the events seen for that thread; others keep theirs.
+  assert.deepEqual(settleTurnStates({finished:false,detached:true},[{id:"finished",status:{type:"idle"}},{id:"detached"}]),{detached:true});
+  const unchanged={detached:true};assert.equal(settleTurnStates(unchanged,[{id:"other",status:{type:"idle"}}]),unchanged);
+});
 
 test("sidebar grouping classifies each thread exactly once in display order",()=>{
   const threads=[

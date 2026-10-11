@@ -3871,8 +3871,9 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     entries.push({turnId,item:{id:"agent-"+turnId,type:"agentMessage",text:"Assistant history "+(index+1)}});
   }
   const descending=[...entries].reverse();
-  const requests=[];
+  const requests=[];let detachedThread=null;
   const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  const push=(method,params)=>{for(const ws of sockets)ws.send(JSON.stringify({method,params}))};
   wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
     sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
@@ -3881,14 +3882,14 @@ test("non-Codex runtimes open long threads with bounded history and load older p
       requests.push({method:message.method,params:message.params||{}});
       let result={};
       if(message.method==="initialize")result={userAgent:"opencode-history-fixture"};
-      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/list")result={data:detachedThread?[detachedThread,thread]:[thread],nextCursor:null};
       else if(message.method==="thread/resume")result={thread:{...thread,turns:[],historyMode:"paginated"},itemsBackwardsCursor:"latest",turnsBackwardsCursor:null};
       else if(message.method==="thread/items/list"){
         result=message.params?.cursor==="older"
           ?{data:descending.slice(100),nextCursor:null,backwardsCursor:"older"}
           :{data:descending.slice(0,100),nextCursor:"older",backwardsCursor:"latest"};
       }else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
-      else if(message.method==="thread/start")result={thread:{id:"opencode-detached-task",name:"OpenCode detached task fixture",preview:"Running separately",cwd:process.cwd(),createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]}};
+      else if(message.method==="thread/start")result={thread:detachedThread={id:"opencode-detached-task",name:"OpenCode detached task fixture",preview:"Running separately",cwd:process.cwd(),createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]}};
       else if(message.method==="turn/start")result={turn:{id:"opencode-detached-turn",status:"inProgress"}};
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="thread/attachment/list"||message.method==="thread/queue/list")result={data:[],nextCursor:null};
@@ -3915,8 +3916,17 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     await expect.poll(()=>requests.some(item=>item.method==="thread/start")).toBe(true);
     await expect.poll(()=>requests.some(item=>item.method==="turn/start")).toBe(true);
     await expect(page.getByRole("button",{name:/OpenCode detached task fixture/})).toBeVisible();
+    // The detached task's row says its turn is running (the pulsing dot, named for assistive tech) until the turn ends.
+    const detachedRow=page.locator(".thread-row").filter({hasText:"OpenCode detached task fixture"});
+    await expect(detachedRow.getByRole("img",{name:"Running"})).toBeVisible();
     await page.setViewportSize({width:1280,height:800});
     await page.screenshot({animations:"disabled",path:auditDir+"opencode-detached-task-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"opencode-detached-task-light-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    push("turn/completed",{threadId:"opencode-detached-task",turn:{id:"opencode-detached-turn",status:"completed"}});
+    await expect(detachedRow.getByRole("img",{name:"Running"})).toHaveCount(0);
+    await expect(detachedRow).toBeVisible();
     await page.getByRole("button",{name:/OpenCode bounded history/}).click();
     await page.getByTestId("right-panel-toggle").click();
     const runtimePanel=page.getByTestId("right-panel");
@@ -3932,9 +3942,19 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     const resume=requests.find(item=>item.method==="thread/resume");
     expect(resume?.params?.excludeTurns).toBe(true);
     await expect(page.getByRole("button",{name:"Load earlier messages",exact:true})).toBeVisible();
+    const scroller=page.locator(".conversation-scroll");
+    const frames=count=>page.evaluate(total=>new Promise(resolve=>{let left=total;const tick=()=>--left>0?requestAnimationFrame(tick):resolve();requestAnimationFrame(tick)}),count);
+    const rowOffset=id=>scroller.evaluate((node,messageId)=>{const row=[...node.querySelectorAll("[data-message-id]")].find(item=>item.dataset.messageId===messageId);return row?row.getBoundingClientRect().top-node.getBoundingClientRect().top:null},id);
+    await scroller.evaluate(node=>{node.scrollTop=0});await frames(2);
+    const anchor=await scroller.evaluate(node=>{const root=node.getBoundingClientRect();const row=[...node.querySelectorAll("[data-message-id]")].find(item=>{const rect=item.getBoundingClientRect();return rect.bottom>root.top&&rect.top<root.bottom});return {id:row.dataset.messageId,offset:row.getBoundingClientRect().top-root.top}});
     await page.getByRole("button",{name:"Load earlier messages",exact:true}).click();
     await expect(page.locator("[data-message-id]")).toHaveCount(130);
-    for(const ws of sockets)ws.send(JSON.stringify({method:"turn/started",params:{threadId:thread.id,turn:{id:"opencode-running-turn",status:"inProgress"}}}));
+    // Older messages load above without moving what was on screen.
+    await frames(14);expect(Math.abs(Number(await rowOffset(anchor.id))-anchor.offset)).toBeLessThan(4);
+    push("turn/started",{threadId:thread.id,turn:{id:"opencode-running-turn",status:"inProgress"}});
+    push("item/started",{threadId:thread.id,turnId:"opencode-running-turn",item:{id:"opencode-running-command",type:"commandExecution",command:"npm test",cwd:process.cwd(),status:"inProgress"},startedAtMs:Date.now()});
+    const boundedRow=page.locator(".thread-row").filter({hasText:"OpenCode bounded history"});
+    await expect(boundedRow.getByRole("img",{name:"Running"})).toBeVisible();
     const composer=page.getByTestId("composer");
     // OpenCode steers a busy turn the way T3 Code does (a4cd8196 made it advertise steering), so with followUpMode "steer" the
     // follow-up goes into the running turn instead of the queue.
@@ -3954,6 +3974,8 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     const metrics=await page.locator(".conversation-history").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({animations:"disabled",path:auditDir+"opencode-bounded-history-1280x800.png",fullPage:true});
+    push("turn/completed",{threadId:thread.id,turn:{id:"opencode-running-turn",status:"completed"}});
+    await expect(boundedRow.getByRole("img",{name:"Running"})).toHaveCount(0);
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
@@ -4048,6 +4070,8 @@ test("automatic pull failures stay visible without blocking project open",async(
   await expect(card).toBeVisible();
   await card.locator(".project-open").click();
   await expect(page.getByTestId("composer")).toBeVisible();
+  // The header names the project as the Projects page does, not by its folder.
+  await expect(page.locator(".workspace-breadcrumb .project-crumb").filter({hasNot:page.locator(".sidebar-reopen")})).toHaveText(target.name);
   const alert=page.getByTestId("app-action-error");
   await expect(alert).toContainText("Could not automatically pull project: Deliberate auto-pull failure");
   await expect(alert).toBeInViewport();
@@ -4526,11 +4550,17 @@ test("open externally failures stay visible beside the editor picker",async({pag
   await picker.getByRole("button",{name:"Open",exact:true}).click();
   await expect(picker.getByRole("alert")).toContainText("Deliberate external editor launch failure");
   await expect(picker.getByLabel("Choose external editor")).toHaveValue("vscode");
+  // The editor select draws the app's own chevron (the theme's --chev), as every other select does, not the native arrow.
+  const chevron=()=>picker.getByLabel("Choose external editor").evaluate(node=>{const style=getComputedStyle(node);return {appearance:style.appearance,image:style.backgroundImage}});
+  expect(await chevron()).toEqual({appearance:"none",image:expect.stringContaining("7e7e8a")});
   await page.setViewportSize({width:1280,height:800});
   const header=page.locator(".workspace-header");
   const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({animations:"disabled",path:auditDir+"open-in-editor-error-1280x800.png",fullPage:true});
+  await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
+  expect(await chevron()).toEqual({appearance:"none",image:expect.stringContaining("595963")});
+  await page.screenshot({animations:"disabled",path:auditDir+"open-in-editor-error-light-1280x800.png",fullPage:true});
 });
 
 test("failed workspace activation leaves the current project untouched",async({page,request})=>{
@@ -5004,7 +5034,9 @@ test("onboarding finish failures stay visible and keep setup open",async({page,r
 test("onboarding completion surfaces a failed thread-list refresh",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"onboarding-refresh-thread",name:"Onboarding refresh fixture",preview:"Onboarding partial success",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
-  let failThreadList=false;
+  // Every thread-list load fails until Retry: the one on connect and the one onboarding completion asks for. (Failing only the
+  // second made the sidebar's state depend on whether the first landed before onboarding showed.)
+  let failThreadList=true;
   const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
     if(message.method==="thread/list"&&failThreadList){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate onboarding thread refresh failure"}}));return true}
     return false;
@@ -5019,15 +5051,26 @@ test("onboarding completion surfaces a failed thread-list refresh",async({page})
     await page.goto("/");
     const onboarding=page.getByTestId("onboarding");
     await expect(onboarding).toBeVisible();
-    failThreadList=true;
     await onboarding.getByRole("button",{name:"Finish setup",exact:true}).click();
     await expect(onboarding).toBeHidden();
     await expect(page.getByTestId("app-action-error")).toContainText("Onboarding finished, but the thread list could not refresh: Deliberate onboarding thread refresh failure");
     await expect(page.getByTestId("composer")).toBeVisible();
+    // The sidebar does not claim there are no threads when it could not load them: it says so and offers Retry.
+    const sidebar=page.locator(".sidebar"),listError=sidebar.getByRole("alert").filter({hasText:"Could not load threads"});
+    await expect(listError).toBeVisible();await expect(listError).toContainText("Deliberate onboarding thread refresh failure");
+    await expect(sidebar).not.toContainText("No threads yet");
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({animations:"disabled",path:auditDir+"onboarding-thread-refresh-error-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"onboarding-thread-refresh-error-light-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // A later load that works clears the error and lists the threads.
+    failThreadList=false;
+    await listError.getByRole("button",{name:"Retry",exact:true}).click();
+    await expect(sidebar.getByRole("button",{name:/Onboarding refresh fixture/})).toBeVisible();
+    await expect(listError).toHaveCount(0);
   }finally{await harness.close()}
 });
 

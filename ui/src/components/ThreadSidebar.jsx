@@ -21,7 +21,7 @@ function threadCanFork(thread,runtimeCapabilities={}){
   return thread?.providerMeta?.initialize?.agentCapabilities?.sessionCapabilities?.fork!=null;
 }
 
-const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,canMoveUp=false,canMoveDown=false,runAction,agentRuntime="codex",runtimeCapabilities={}}){
+const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,running=false,onOpen,onSelect,onAction,onMove,canMoveUp=false,canMoveDown=false,runAction,agentRuntime="codex",runtimeCapabilities={}}){
   const menuRef=useRef(null);
   const [menuOpen,setMenuOpen]=useState(false);
   // One row menu is open at a time, and it closes like other menus: Escape (focus returns to its button) or a click outside it.
@@ -58,7 +58,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
     <button className="thread-main" onClick={()=>runAction(()=>onOpen(thread))} title={titleOf(thread)}>
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
       <div>
-        <strong className="thread-title-line"><span className="thread-title-text">{titleOf(thread)}</span>{foreignRuntime&&<em className="thread-runtime-chip" title={"Owned by "+rowRuntimeLabel}>{rowRuntimeLabel}</em>}{reviewLabel&&<em className={linked.length?"thread-pr-chip linked":"thread-pr-chip detected"} title={linked.length?"Linked pull request":"Detected from saved branch"}><GitPullRequest size={9}/>{reviewLabel}</em>}</strong>
+        <strong className="thread-title-line">{running&&<i className="tb-dot thread-running-dot" role="img" aria-label="Running" title="Running"/>}<span className="thread-title-text">{titleOf(thread)}</span>{foreignRuntime&&<em className="thread-runtime-chip" title={"Owned by "+rowRuntimeLabel}>{rowRuntimeLabel}</em>}{reviewLabel&&<em className={linked.length?"thread-pr-chip linked":"thread-pr-chip detected"} title={linked.length?"Linked pull request":"Detected from saved branch"}><GitPullRequest size={9}/>{reviewLabel}</em>}</strong>
         <span title={section==="Snoozed"&&meta?.snoozedUntil?undefined:fullDateTime(thread.updatedAt)||undefined}>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model||rowRuntimeLabel)+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
@@ -144,11 +144,13 @@ const ThreadSidebar=memo(function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
   selectedIds,setSelectedIds,onBulkAction,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="codex",threadMeta={},onCollapse,
   rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={},onOpenProviderSettings,runtimeStarting=false,connection={tone:"ok",label:""},threadMoves=null,
-  onOpenPalette,shortcuts={}
+  onOpenPalette,shortcuts={},listError="",onRetryList,runningIds=null
 }){
   const searchRef=useRef(null);
   const sectionsRef=useRef(null);
   const [actionError,setActionError]=useState("");
+  const [retryingList,setRetryingList]=useState(false);
+  const retryList=useCallback(()=>{setRetryingList(true);Promise.resolve().then(()=>onRetryList?.()).catch(()=>{}).finally(()=>setRetryingList(false))},[onRetryList]);
   const runAction=useCallback(action=>{
     setActionError("");
     return Promise.resolve().then(action).catch(error=>setActionError(error?.message||String(error)||"Action failed."));
@@ -190,7 +192,10 @@ const ThreadSidebar=memo(function ThreadSidebar({
   const runtimeLabel=runtimeStarting?"Starting…":{native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
   const toggle=useCallback(id=>{const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)},[selectedIds,setSelectedIds]);
   const firstGroupName=THREAD_GROUP_NAMES.find(name=>groups[name]?.length)||null;
-  const renderRow=useCallback(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} canMoveUp={Boolean(threadMoves?.get(t.id)?.up)} canMoveDown={Boolean(threadMoves?.get(t.id)?.down)} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>,[threadMeta,activeThreadId,bulk,selectedIds,onOpen,toggle,onThreadAction,onMove,threadMoves,runAction,agentRuntime,runtimeCapabilities]);
+  const renderRow=useCallback(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} running={Boolean(runningIds?.has(t.id))} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} canMoveUp={Boolean(threadMoves?.get(t.id)?.up)} canMoveDown={Boolean(threadMoves?.get(t.id)?.down)} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>,[threadMeta,activeThreadId,bulk,selectedIds,runningIds,onOpen,toggle,onThreadAction,onMove,threadMoves,runAction,agentRuntime,runtimeCapabilities]);
+  // A failed load is not an empty list: with nothing listed the sidebar says it could not load them, and over an older list it says
+  // the refresh failed. Either way Retry asks again.
+  const listFailure=listError&&!query?<div className="sidebar-list-error" role="alert"><strong>{threads.length?"Could not refresh threads":"Could not load threads"}</strong><span>{listError}</span>{onRetryList&&<button type="button" className="tb-btn tb-btn--sm" onClick={retryList} disabled={retryingList}>{retryingList?"Retrying…":"Retry"}</button>}</div>:null;
 
   return <aside className="sidebar">
     <div className="sidebar-titlebar">
@@ -227,11 +232,12 @@ const ThreadSidebar=memo(function ThreadSidebar({
     </div>}
 
     <div className="thread-sections" ref={sectionsRef}>
+      {listFailure}
       {THREAD_GROUP_NAMES.map(name=>{const items=groups[name],virtualized=shouldVirtualizeSidebarGroup(items),chunks=virtualized?sidebarVirtualChunks(items):[],activeChunk=virtualized?sidebarChunkIndexForThread(chunks,activeThreadId):-1;return items.length>0&&<section key={name}>
         <h4>{name}<span>{items.length}</span></h4>
         {virtualized?chunks.map((chunk,index)=><SidebarVirtualChunk key={chunk.key} chunk={chunk} rootRef={sectionsRef} forceMount={index===activeChunk} initialMount={name===firstGroupName&&index===0} activeThreadId={activeThreadId} renderRow={renderRow}/>):items.map(renderRow)}
       </section>})}
-      {!threads.length&&<div className="sidebar-empty">{query?"No matching threads.":<>No threads yet.<br/>Start a task to create one.</>}</div>}
+      {!threads.length&&!listFailure&&<div className="sidebar-empty">{query?"No matching threads.":<>No threads yet.<br/>Start a task to create one.</>}</div>}
     </div>
 
     <div className="sidebar-footer">

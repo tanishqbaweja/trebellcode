@@ -98,6 +98,14 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .sidebar .thread-menu-popover button:disabled{color:var(--tx3);cursor:default}
 .sidebar .thread-menu-popover button.danger{color:var(--err)}
 .sidebar .thread-menu-popover button.danger:hover{background:var(--errt);color:var(--err)}
+/* A thread list that failed to load says so in the list, with Retry, instead of the "No threads yet" empty state. The top margin
+   keeps it below the list's edge fade. */
+.sidebar .sidebar-list-error{margin:6px 4px 4px;display:grid;gap:3px;padding:10px 12px;border:1px solid var(--errb);border-radius:10px;background:var(--errt);color:var(--tx2);font-size:11.5px;line-height:1.45}
+.sidebar .sidebar-list-error strong{color:var(--err);font-size:12px;font-weight:600}
+.sidebar .sidebar-list-error span{overflow-wrap:anywhere}
+.sidebar .sidebar-list-error button{justify-self:start;margin-top:6px}
+/* A running thread's row leads its title with the live dot (theme .tb-dot); the label carries the state for screen readers. */
+.sidebar .thread-main .thread-running-dot{margin:0 2px 0 1px}
 .sidebar .sidebar-empty{padding:26px 14px;color:var(--tx3);font-size:12px;line-height:1.7;text-align:center}
 .sidebar .sidebar-empty::before{content:"";display:block;width:20px;height:20px;margin:0 auto 8px;background:currentColor;opacity:.6;-webkit-mask:var(--tb-empty-icon) center/contain no-repeat;mask:var(--tb-empty-icon) center/contain no-repeat}
 .sidebar{--tb-empty-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3C/svg%3E")}
@@ -186,7 +194,11 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header .open-in-picker{height:28px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--bg2)}
 .workspace-header .open-in-picker>button{gap:6px;padding:0 9px;color:var(--tx1);font-size:11.5px}
 .workspace-header .open-in-picker>button:hover{background:var(--bg3);color:var(--tx0)}
-.workspace-header .open-in-picker>select{border-left:1px solid var(--line);background-color:var(--bg2);color:var(--tx2);font-size:11.5px}
+/* The editor select draws the theme's chevron like every other select (.tb-select), not the native arrow. */
+.workspace-header .open-in-picker>select{border-left:1px solid var(--line);appearance:none;-webkit-appearance:none;padding:0 24px 0 9px;background:var(--bg2) var(--chev) right 8px center/10px no-repeat;color:var(--tx2);font-size:11.5px;cursor:pointer}
+.workspace-header .open-in-picker>select:hover{background-color:var(--bg3);color:var(--tx0)}
+.workspace-header .open-in-picker>select:focus-visible{outline:none;box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--ac) 55%,transparent)}
+.workspace-header .open-in-picker>select option{color:var(--tx0);background:var(--bg2)}
 .workspace-header .open-in-error{border-color:var(--errb);background:var(--panel);color:var(--err);border-radius:9px;font-size:11.5px;box-shadow:var(--shadow)}
 
 /* Find in thread */
@@ -455,6 +467,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .main-frame{background:var(--bg0)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .main-frame>.window-bar{background:var(--bg0)!important;border-color:var(--line)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .chat-workspace .workspace-header{background:var(--bgtop)!important;border-color:var(--line)!important}
+/* The header's editor picker: the legacy field rules repaint it and reset the select's background shorthand, dropping its chevron. */
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .open-in-picker{background:var(--bg2)!important;border-color:var(--line)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .open-in-picker>select{background:var(--bg2) var(--chev) right 8px center/10px no-repeat!important;border-color:var(--line)!important;color:var(--tx2)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .open-in-picker>select:hover{background-color:var(--bg3)!important;color:var(--tx0)!important}
 
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .sidebar .sidebar-provider{background:var(--bg2)!important;border-color:var(--line)!important;color:var(--tx0)!important;box-shadow:none!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .sidebar .sidebar-provider:hover{background:var(--bg3)!important;border-color:var(--line2)!important}

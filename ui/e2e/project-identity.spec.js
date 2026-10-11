@@ -59,7 +59,8 @@ test("local Trebell projects become native Codex project ownership for existing 
     await expect.poll(()=>calls.filter(call=>call.method==="thread/metadata/update").length).toBe(1);
     const created=calls.find(call=>call.method==="project/create");expect(created?.params).toEqual({name:trebellProject.name,roots:[{path:cwd}],metadata:{trebellManaged:"true",trebellProjectId:trebellProject.id},idempotencyKey:"trebell-code:"+trebellProject.id});
     const assigned=calls.find(call=>call.method==="thread/metadata/update");expect(assigned?.params).toEqual({threadId:thread.id,projectId:nativeProject.id});
-    await expect(page.getByRole("button",{name:basename(cwd),exact:true})).toBeVisible();
+    // The header crumb names the project by its record (as the sidebar and Projects page do), not by its folder.
+    await expect(page.getByRole("button",{name:trebellProject.name,exact:true})).toBeVisible();await expect(page.getByRole("button",{name:basename(cwd),exact:true})).toHaveCount(0);
     await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"chat-native-project-identity-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"chat-native-project-identity-light-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.getByRole("button",{name:"New thread"}).click();await page.getByTestId("composer").fill("Start a project-linked thread.");await page.getByTestId("send").click();
