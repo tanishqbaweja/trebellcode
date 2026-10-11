@@ -47,6 +47,7 @@ import { collaborationModePayload, normalizeCollaborationModes } from "./collabo
 import { ensureRuntimeProject, sameWorkspacePath } from "./codex-projects.js";
 import { writeClipboardText } from "./clipboard.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
+import { EMPTY_ASSISTANT_STREAM, assistantStreamDelta } from "./assistant-stream-sync.js";
 import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
@@ -786,7 +787,8 @@ export default function App(){
   // The anchor row of an older page landing now: its virtual chunk mounts with the page, so the anchor is placed exactly.
   const [historyAnchorItemId,setHistoryAnchorItemId]=useState(null);
   const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
-  const assistantStreamBufferRef=useRef(null);
+  // assistantStreamSyncRef: how much of the live reply is shown, so a Native draft delta lands where its offset says.
+  const assistantStreamBufferRef=useRef(null);const assistantStreamSyncRef=useRef(EMPTY_ASSISTANT_STREAM);
   // Per thread and turn: the mode this window sent the turn with, and how and how fast it ended (see turn-outcome.js).
   // turnOutcomePagesRef: for the open item-paged thread, where its turn outcome pages stopped and the turns they covered.
   // turnOrder: the open thread's turn ids, oldest first, so a turn with no rows of its own still ends in its place.
@@ -891,8 +893,10 @@ export default function App(){
   const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeRequestRef=useRef(Promise.resolve());const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
   modelsRef.current=models;modelRef.current=model;
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
-  function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
+  function resetAssistantStream(){assistantStreamSyncRef.current=EMPTY_ASSISTANT_STREAM;assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
+  // Clears only the live reply text (a withdrawn Native draft), leaving command, diff and tool streams as they are.
+  function clearAssistantText(){assistantStreamSyncRef.current=EMPTY_ASSISTANT_STREAM;assistantStreamBufferRef.current?.reset();assistantTextRef.current="";activityTimelineRef.current?.setText("")}
   // The live card's steps for each turn of the open thread, merged as the list merges them (the list cannot be read while a
   // notification is handled): what a turn's own card takes once the turn ends (sealLiveTurn). Card items only.
   function trackLiveRow(threadId,turnId,row,{phase,streamed=""}={}){
@@ -2687,7 +2691,9 @@ export default function App(){
         desktopNotify("Auto review warning",p.message||"Codex reported an auto-review warning.");
       }
     }
-    else if(message.method==="item/agentMessage/delta"&&isCurrent)appendAssistantStream(p.delta||p.text||"");
+    else if(message.method==="item/agentMessage/delta"&&isCurrent){const step=assistantStreamDelta(assistantStreamSyncRef.current,p.delta||p.text||"",p.offset);if(step.restart)clearAssistantText();assistantStreamSyncRef.current=step.state;if(step.append)appendAssistantStream(step.append)}
+    // A Native draft that went another way (a tool call, an error, steering, Stop) is taken off the screen.
+    else if(message.method==="item/agentMessage/reset"&&isCurrent)clearAssistantText();
     else if(message.method==="item/commandExecution/outputDelta"&&isCurrent)commandStreamBufferRef.current?.push(p.itemId||"command",p.delta||"");
     // A thought streams like command output, by its item id (Codex's summary parts and raw text, a relay harness's thinking).
     else if((message.method==="item/reasoning/summaryTextDelta"||message.method==="item/reasoning/textDelta")&&isCurrent&&p.itemId)commandStreamBufferRef.current?.push(p.itemId,p.delta||"");

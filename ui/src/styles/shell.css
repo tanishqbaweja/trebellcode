@@ -378,7 +378,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .timeline .tool-event-diff>.diff-meta{color:var(--tx3)}
 .conversation-column .timeline-window-controls{margin:0 0 6px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg1);color:var(--tx3);font:10.5px var(--mono)}
 .conversation-column .timeline-window-controls button{height:24px;padding:0 8px;border:1px solid var(--line2);border-radius:7px;background:var(--bg3);color:var(--tx1);font-size:11px}
-.conversation-column .agent-block .assistant-answer{margin:12px 0 0;padding:0;font-size:13.5px;line-height:1.7;color:var(--tx1)}
+/* A reply still being written reads as the message it becomes: the old light theme's card behind it is dropped. */
+.conversation-column .agent-block .assistant-answer{margin:12px 0 0;padding:0;border:0;background:transparent;font-size:13.5px;line-height:1.7;color:var(--tx1)}
 .conversation-column .agent-block .assistant-answer:first-child{margin-top:0}
 .conversation-column .history-page-control button{height:30px;padding:0 12px;border:1px solid var(--line2);border-radius:99px;background:var(--bg2);color:var(--tx1);font-size:12px}
 .conversation-column .history-page-control button:hover:not(:disabled){background:var(--bg3);color:var(--tx0)}
