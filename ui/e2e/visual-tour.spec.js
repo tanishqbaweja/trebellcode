@@ -3,6 +3,7 @@
 // layout problems (horizontal overflow, covered controls, unnamed buttons, console errors) fail the run
 // when TREBELL_TOUR_STRICT=1 (set once the redesign lands); otherwise they are attached as annotations.
 import { test, expect } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -85,6 +86,18 @@ function overprintedDiffLines(diff) {
   }).length);
 }
 
+// A clean checkout has no diff to show, so the Diff tab is served the patch of its latest commit (not a merge) as the working-tree
+// diff instead, and the overprint check runs on real code either way. Git's --name-status letters become short-status codes.
+function latestCommitChanges(cwd) {
+  const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, maxBuffer: 256 * 1024 * 1024 });
+  const commit = git("log", "--no-merges", "--diff-filter=ACDMR", "-n", "1", "--format=%H").trim();
+  const status = git("show", "--format=", "--name-status", commit).split(/\r?\n/).filter(Boolean).map(line => {
+    const [code, ...paths] = line.split("\t");
+    return /^[RC]/.test(code) ? code[0] + "  " + paths.join(" -> ") : ({ A: "A ", D: " D" }[code[0]] || " M") + " " + paths[0];
+  }).join("\n");
+  return { cwd, isGit: true, status, diff: git("show", "--format=", "--patch", "--no-color", "--no-ext-diff", commit), stderr: "" };
+}
+
 // Destinations live in the sidebar's "Destinations" nav landmark; a page-wide name match would also hit thread rows
 // whose titles start with the same word (a "Tools reliability fixture" thread opened instead of the Tools page).
 const nav = (page, label) => page.getByRole("navigation", { name: "Destinations" }).getByRole("button", { name: label, exact: true });
@@ -124,16 +137,21 @@ for (const mode of MODES) {
       await expect(page.getByText(/Mock (direct|Trebell Native) reply/).first()).toBeVisible({ timeout: 15_000 });
       found.push(...await capture(page, `${tag}-30-conversation`, testInfo));
 
-      // The Diff tab shows this checkout's own changes, when it has any.
+      // The Diff tab shows this checkout's own changes, or its latest commit when it has none (see latestCommitChanges).
       const boot = await (await request.get("/api/bootstrap")).json();
       const changes = await (await request.get("/api/workspace/diff?" + new URLSearchParams({ path: boot.cwd, environmentId: "" }))).json();
+      if (!String(changes.diff || "").trim()) {
+        const committed = latestCommitChanges(boot.cwd);
+        expect(committed.diff, "the latest commit's patch").toContain("diff --git");
+        await page.route("**/api/workspace/diff?**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(committed) }));
+      }
       await page.getByTestId("right-panel-toggle").click();
       for (const [index, label] of ["Files", "Diff", "Context", "Browser", "Git", "Agents", "Goal", "Runtime"].entries()) {
         const tab = page.getByTestId("right-panel").getByRole("button", { name: label, exact: true });
         if (!(await tab.count()) || await tab.isDisabled()) continue;
         await tab.click();
-        const diff = label === "Diff" && String(changes.diff || "").trim() ? page.getByTestId("workspace-diff-preview") : null;
-        if (diff) await expect(diff).toBeVisible();
+        const diff = label === "Diff" ? page.getByTestId("workspace-diff-preview") : null;
+        if (diff) await expect(diff).toContainText("diff --git");
         found.push(...await capture(page, `${tag}-4${index}-inspector-${label.toLowerCase()}`, testInfo));
         // Lines wrap by default, and a wrapped line takes the rows its text needs: none paints over the lines under it.
         if (diff) expect(await overprintedDiffLines(diff), "overprinted diff lines").toBe(0);

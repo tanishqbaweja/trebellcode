@@ -29,7 +29,8 @@ test("large workspace trees and diffs render bounded progressive windows",async(
     isDirectory:false,isFile:true,depth:0,
   }));
   const changed=Array.from({length:220},(_,index)=>" M src/file-"+String(index).padStart(3,"0")+".js").join("\n");
-  const diff=Array.from({length:420},(_,index)=>"diff --git a/src/file-"+index+".js b/src/file-"+index+".js\n"+"+"+"changed-content-".repeat(70)+"\n").join("");
+  // Each file is a real hunk: its "-" and long "+" lines are deleted and added lines (a line before any @@ is a header line).
+  const diff=Array.from({length:420},(_,index)=>"diff --git a/src/file-"+index+".js b/src/file-"+index+".js\n--- a/src/file-"+index+".js\n+++ b/src/file-"+index+".js\n@@ -1 +1 @@\n-old-content-"+index+"\n+"+"changed-content-".repeat(70)+"\n").join("");
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   await page.route("**/api/workspace/tree?**",route=>json(route,{root,entries,truncated:true}));
   await page.route("**/api/workspace/diff?**",route=>json(route,{cwd:root,isGit:true,status:changed,diff,stderr:""}));
@@ -74,7 +75,7 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   await expect(right.locator(".changed-files .workspace-window-footer span")).toHaveText("160 of 220 shown");
   await right.getByRole("button",{name:"Show more diff"}).click();
   await expect.poll(()=>diffPreview.evaluate(node=>node.textContent.length)).toBeGreaterThan(120_000);
-  await expect(right.locator(".workspace-diff-preview .workspace-window-footer span")).toHaveText("240k of 491k characters shown");
+  await expect(right.locator(".workspace-diff-preview .workspace-window-footer span")).toHaveText("240k of "+Math.round(diff.length/1000)+"k characters shown");
   expect(await overprintedDiffLines(diffPreview)).toBe(0);
 
   const metrics=await right.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
@@ -84,8 +85,10 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   // Without wrapping each line keeps one row and the diff scrolls sideways instead.
   await right.getByRole("button",{name:"Disable diff line wrapping"}).click();
   await expect(diffPreview).not.toHaveClass(/\bwrap\b/);
-  const unwrapped=await diffPreview.evaluate(node=>{const heights=[...node.querySelectorAll(".diff-line.add")].map(line=>line.getBoundingClientRect().height);return {client:node.clientWidth,scroll:node.scrollWidth,tallest:Math.max(...heights),lineHeight:parseFloat(getComputedStyle(node).lineHeight)}});
+  // The changed lines, long ones included, are one line tall each; the count guards against measuring no lines at all.
+  const unwrapped=await diffPreview.evaluate(node=>{const heights=[...node.querySelectorAll(".diff-line:is(.add,.del)")].map(line=>line.getBoundingClientRect().height);return {client:node.clientWidth,scroll:node.scrollWidth,lines:heights.length,tallest:Math.max(0,...heights),lineHeight:parseFloat(getComputedStyle(node).lineHeight)}});
   expect(unwrapped.scroll).toBeGreaterThan(unwrapped.client);
+  expect(unwrapped.lines).toBeGreaterThan(100);
   expect(unwrapped.tallest).toBeLessThanOrEqual(unwrapped.lineHeight+1);
   expect(await overprintedDiffLines(diffPreview)).toBe(0);
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-windowing-nowrap-dark-1280x800.png",fullPage:true});
