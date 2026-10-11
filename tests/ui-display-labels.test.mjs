@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { agentName, countLabel, failureText, humanizeIdentifier, importFailures, importResultSummary, mcpAuthLabel } from "../ui/src/display-labels.js";
+import { agentName, countLabel, failureText, humanizeIdentifier, importFailures, importResultSummary, listCount, mcpAuthLabel } from "../ui/src/display-labels.js";
 
 test("a failure names its action before the reason, and only once",()=>{
   assert.equal(failureText("Could not clear local usage history",new Error("Deliberate usage clear failure")),"Could not clear local usage history: Deliberate usage clear failure");
@@ -45,6 +45,28 @@ test("a count names one thing in the singular and any other number in the plural
   assert.equal(countLabel(undefined,"hook"),"0 hooks");
   assert.equal(countLabel("2","app"),"2 apps");
   assert.equal(countLabel(2,"entry","entries"),"2 entries");
+});
+
+test("a list card's count speaks for the rows on screen or a list that loaded empty, and waits otherwise",()=>{
+  // Not loaded yet: no count, whether or not a read is running or failed.
+  assert.equal(listCount(null),undefined);
+  assert.equal(listCount(undefined,{loading:true}),undefined);
+  assert.equal(listCount(null,{error:"Could not load hooks: offline"}),undefined);
+  // Rows on screen are counted while they are read again and beside a failed read, which keeps them.
+  assert.equal(listCount([1,2]),2);
+  assert.equal(listCount([1,2],{loading:true}),2);
+  assert.equal(listCount([1],{error:"Could not load MCP servers: offline"}),1);
+  // A list that loaded empty reads 0, but not while it is read again or once that read failed.
+  assert.equal(listCount([]),0);
+  assert.equal(listCount([],{loading:true}),undefined);
+  assert.equal(listCount([],{error:"Could not load MCP servers: offline"}),undefined);
+  assert.equal(listCount([],{error:true}),undefined);
+  assert.equal(listCount([],{loading:false,error:null}),0);
+  // A card that counts something other than the list's items (hooks inside their entries) gives that count by the same rule.
+  assert.equal(listCount([{hooks:[]},{hooks:[]}],{count:0}),0);
+  assert.equal(listCount([{hooks:[]}],{count:0,loading:true}),undefined);
+  assert.equal(listCount([{hooks:[1,2,3]}],{count:3,loading:true}),3);
+  assert.equal(listCount([],{count:undefined}),0);
 });
 
 test("a runtime identifier reads as words, and prose comes through unchanged",()=>{

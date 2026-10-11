@@ -311,6 +311,20 @@ test("Tools cards claim a runtime list is empty only once it has loaded empty",a
     await expect(card("Apps / connectors")).toContainText("No app connectors reported by Codex.");
     await expect(card("Hooks").locator(".capability-card-head em")).toHaveText("0");
     await expect(card("Configuration layers").locator(".capability-card-head em")).toHaveText("0 layers");
+    // While a refresh runs, a list keeps its rows on screen and so its count; a list that loaded empty says it is loading again,
+    // and its card head drops the "0" until this answer lands, so head and body agree.
+    fixture.control.hold=true;
+    await refresh.click();
+    await expect(refresh).toHaveText("Refreshing…");
+    for(const title of ["Permission profiles","MCP servers","Experimental features"])await expect(card(title).locator(".capability-card-head em"),title).toHaveText("1");
+    await expect(card("Hooks")).toContainText("Loading hooks…");
+    await expect(card("Hooks").locator(".capability-card-head em")).toHaveCount(0);
+    await expect(card("Configuration layers")).toContainText("Loading configuration layers…");
+    await expect(card("Configuration layers").locator(".capability-card-head em")).toHaveCount(0);
+    fixture.release();
+    await expect(refresh).toHaveText("Refresh");
+    await expect(card("Hooks").locator(".capability-card-head em")).toHaveText("0");
+    await expect(card("Configuration layers").locator(".capability-card-head em")).toHaveText("0 layers");
 
     // A refresh that answers every list empty shows each claim.
     fixture.control.mcp="empty";fixture.control.lists="empty";
@@ -332,11 +346,91 @@ test("Tools cards claim a runtime list is empty only once it has loaded empty",a
     await expect(mcpError).toHaveCount(0);
     await expectNoClaims(listClaims);
     await expect(card("MCP servers")).toContainText("Loading MCP servers…");
+    // Every list here loaded empty before, so every card says it is loading and none keeps a "0" (or "0 layers") in its head.
+    const emptyLists=["Permission profiles","MCP servers","Plugins","Shared plugins","Marketplaces","Apps / connectors","Hooks","Experimental features","Configuration layers"];
+    for(const title of emptyLists)await expect(card(title).locator(".capability-card-head em"),title).toHaveCount(0);
     await card("MCP servers").scrollIntoViewIfNeeded();
     await page.screenshot({animations:"disabled",path:auditDir+"tools-refresh-after-failure-pending-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await card("Permission profiles").scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-refresh-after-failure-pending-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     fixture.release();
     await expect(refresh).toHaveText("Refresh");
     for(const claim of listClaims)await expect(tools.getByText(claim,{exact:true}),claim).toBeVisible();
+    for(const title of emptyLists.slice(0,-1))await expect(card(title).locator(".capability-card-head em"),title).toHaveText("0");
+    await expect(card("Configuration layers").locator(".capability-card-head em")).toHaveText("0 layers");
     await page.screenshot({animations:"disabled",path:auditDir+"tools-loaded-empty-lists-1280x800.png",fullPage:false});
+
+    // The refresh an action runs once it succeeds (here Reload MCP) is the same: the empty lists' counts wait for it too.
+    fixture.control.hold=true;
+    await card("MCP servers").getByRole("button",{name:"Reload MCP",exact:true}).click();
+    await expect(refresh).toHaveText("Refreshing…");
+    await expect(card("Permission profiles")).toContainText("Loading permission profiles…");
+    for(const title of emptyLists)await expect(card(title).locator(".capability-card-head em"),title).toHaveCount(0);
+    fixture.release();
+    await expect(refresh).toHaveText("Refresh");
+    await expect(card("Permission profiles").locator(".capability-card-head em")).toHaveText("0");
   }finally{await fixture.close()}
+});
+
+test("Tools Conversation history claims no history only for the latest scan, and names a failed scan or import",async({page})=>{
+  test.setTimeout(45_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  let scan="empty";const heldScans=[];
+  const session={id:"history-claude-1",source:"claude",providerSessionId:"claude-history-1",cwd:process.cwd(),title:"Recent Claude conversation",preview:"Recent Claude conversation",alreadyImported:false};
+  const answer=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route(/\/api\/history-import$/,route=>{
+    if(route.request().method()==="POST")return answer(route,{error:"Deliberate history import failure"},500);
+    if(scan==="fail")return answer(route,{error:"Deliberate history scan failure"},500);
+    if(scan==="hold")return heldScans.push(route);
+    return answer(route,{codexImportAvailable:true,sessions:scan==="sessions"?[session]:[]});
+  });
+  const shoot=async name=>{
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+  };
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    const history=page.locator(".capabilities-page .capability-card").filter({has:page.getByText("Conversation history",{exact:true})}).first();
+    const claim=history.getByText("No recent local agent history was found.",{exact:true}),badge=history.locator(".capability-card-head em");
+    const scanButton=history.getByRole("button",{name:"Scan history",exact:true}),alert=history.getByRole("alert");
+    // Nothing is claimed before the first scan.
+    await expect(claim).toHaveCount(0);await expect(badge).toHaveCount(0);
+    await scanButton.click();
+    await expect(claim).toBeVisible();await expect(badge).toHaveText("0");
+
+    // A re-scan fails: the alert names the scan, and the card no longer says there is no history, as that answer is not the latest.
+    scan="fail";await scanButton.click();
+    await expect(alert).toHaveText("Could not scan conversation history: Deliberate history scan failure");
+    await expect(claim).toHaveCount(0);await expect(badge).toHaveCount(0);
+    await history.scrollIntoViewIfNeeded();
+    await shoot("tools-history-scan-failed");
+
+    // While the next scan runs, the card claims nothing either.
+    scan="hold";await scanButton.click();
+    await expect(history.getByRole("button",{name:"Scanning…",exact:true})).toBeDisabled();
+    await expect.poll(()=>heldScans.length).toBe(1);
+    await expect(alert).toHaveCount(0);await expect(claim).toHaveCount(0);await expect(badge).toHaveCount(0);
+    await shoot("tools-history-scan-pending");
+
+    // That scan finds nothing, and the card says so again.
+    for(const route of heldScans.splice(0))await answer(route,{codexImportAvailable:true,sessions:[]});
+    await expect(claim).toBeVisible();await expect(badge).toHaveText("0");
+
+    // A scan that finds a conversation lists it. Importing it fails: the alert names the import, and the row stays importable.
+    scan="sessions";await scanButton.click();
+    const rows=history.locator(".history-import-list");
+    await expect(rows).toContainText("Recent Claude conversation");
+    await expect(claim).toHaveCount(0);await expect(badge).toHaveText("1");
+    await rows.getByRole("button",{name:"Import",exact:true}).click();
+    await expect(alert).toHaveText("Could not import conversations: Deliberate history import failure");
+    await expect(rows).toContainText("available");
+    await expect(rows.getByRole("button",{name:"Import",exact:true})).toBeEnabled();
+    await expect(badge).toHaveText("1");
+    await shoot("tools-history-import-failed");
+  }finally{for(const route of heldScans.splice(0))await answer(route,{sessions:[]}).catch(()=>{});await fixture.close()}
 });

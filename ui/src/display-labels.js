@@ -3,6 +3,14 @@ import { actionError } from "./inspector-labels.js";
 
 export function countLabel(count,singular,plural=singular+"s"){const value=Number(count)||0;return value+" "+(value===1?singular:plural)}
 
+// The count a list card's head shows, or undefined for none. It speaks for what the card body shows: rows on screen, or a list
+// that has loaded empty and says so. An empty list being read again, or whose last read failed, has no count to give, as its
+// card says it is loading or shows the error instead. `count` is for a card that counts something other than the list's items.
+export function listCount(list,{loading=false,error=null,count=list?.length}={}){
+  if(!list)return undefined;
+  return count>0||!(loading||error)?count:undefined;
+}
+
 // A failure names the action before the reason ("Could not clear local usage history: EPERM", or "Could not load usage." when
 // there is no reason). A reason that already starts with the action, as a server that words its own errors sends it, is shown
 // as it is, so the action is never named twice.

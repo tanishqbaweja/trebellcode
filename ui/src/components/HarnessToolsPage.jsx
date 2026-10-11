@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { Blocks, Brain, CheckCircle2, ChevronRight, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { api } from "../api.js";
-import { agentName, countLabel, failureText, humanizeIdentifier, importFailures, importResultSummary, mcpAuthLabel } from "../display-labels.js";
+import { agentName, countLabel, failureText, humanizeIdentifier, importFailures, importResultSummary, listCount, mcpAuthLabel } from "../display-labels.js";
 import { formatBytes } from "../format-bytes.js";
 import { allowedWindowsSetupModes, windowsSandboxStatus, worldWritableWarningText } from "../windows-sandbox.js";
 
@@ -71,6 +71,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [migrationFailures,setMigrationFailures]=useState([]);
   const [migrationImportId,setMigrationImportId]=useState(null);
   const [historyImport,setHistoryImport]=useState(null);
+  // Whether the latest history scan failed. Sessions an earlier scan listed stay on screen beside the failure, but an earlier
+  // empty answer is not claimed there.
+  const [historyScanFailed,setHistoryScanFailed]=useState(false);
   const [historyMessage,setHistoryMessage]=useState("");
   const historyMessageRef=useRef(null);
   const [mcpResult,setMcpResult]=useState(null);
@@ -274,6 +277,10 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const plugins=useMemo(()=>(data.marketplaces||[]).flatMap(m=>(m.plugins||[]).map(p=>({...p,marketplace:m}))),[data.marketplaces]);
   const installedAppsById=useMemo(()=>Object.fromEntries((data.installedApps||[]).map(app=>[app.id,app])),[data.installedApps]);
   const hookCount=(data.hooks||[]).reduce((n,x)=>n+(x.hooks?.length||0),0);
+  // A runtime list's head count waits for its list on every refresh, not only the first: while an empty list is read again its
+  // card says it is loading, so the head shows no "0" beside that.
+  const counted=(list,name,count)=>listCount(list,{loading,error:errors[name],count});
+  const layerCount=counted(data.config&&(data.config.layers||[]),"config/read");
 
   async function reloadMcp(){
     if(!rpc)return;setBusy("mcp");setErrors(prev=>({...prev,"config/mcpServer/reload":null}));
@@ -418,9 +425,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     finally{setBusy("")}
   }
   async function scanHistory(){
-    setBusy("history:scan");setHistoryMessage("");
+    setBusy("history:scan");setHistoryMessage("");setHistoryScanFailed(false);
     try{setHistoryImport(await api("/api/history-import"))}
-    catch(error){setHistoryMessage(failureText("Could not scan conversation history",error))}
+    catch(error){setHistoryScanFailed(true);setHistoryMessage(failureText("Could not scan conversation history",error))}
     finally{setBusy("")}
   }
   async function importHistory(sessionIds){
@@ -572,7 +579,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>}
 
       {/* The card lists layers and then the warnings and notices Codex sent, so its badge counts each by name. */}
-      <Section title="Configuration layers" icon={ShieldCheck} badge={[data.config?countLabel(data.config.layers?.length||0,"layer"):"",configWarnings.length+runtimeNotices.length?countLabel(configWarnings.length+runtimeNotices.length,"notice"):""].filter(Boolean).join(" · ")}>
+      <Section title="Configuration layers" icon={ShieldCheck} badge={[layerCount!==undefined?countLabel(layerCount,"layer"):"",configWarnings.length+runtimeNotices.length?countLabel(configWarnings.length+runtimeNotices.length,"notice"):""].filter(Boolean).join(" · ")}>
         {!(data.config?.layers||[]).length&&<EmptyState loaded={!!data.config} loading={loading} error={errors["config/read"]} pending="Loading configuration layers…">Codex reported no configuration layers.</EmptyState>}
         <div className="capability-list">{(data.config?.layers||[]).map((layer,index)=>{const presentation=configLayerPresentation(layer,index);return <div key={presentation.label+":"+String(layer.version||index)}><div><strong>{presentation.label}</strong><span>{presentation.detail}</span></div><em className={layer.disabledReason?"":"ok"}>{layer.disabledReason?"disabled":"active"}</em></div>})}</div>
         {configWarnings.length>0&&<div className="capability-list config-warning-list">{configWarnings.map((warning,index)=><div key={(warning.path||"global")+":"+(warning.summary||index)}><div><strong>{warning.summary||"Configuration warning"}</strong><span>{warning.details||warning.path||"Codex reported a configuration warning."}</span></div><em className="warn">warning</em></div>)}</div>}
@@ -591,13 +598,13 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <ErrorLine value={errors["modelProvider/capabilities/read"]}/>
       </Section>
 
-      <Section title="Permission profiles" icon={ShieldCheck} count={data.permissions?.length}>
+      <Section title="Permission profiles" icon={ShieldCheck} count={counted(data.permissions,"permissionProfile/list")}>
         {!data.permissions?.length&&<EmptyState loaded={!!data.permissions} loading={loading} error={errors["permissionProfile/list"]} pending="Loading permission profiles…">This runtime reported no permission profiles.</EmptyState>}
         <div className="capability-list">{(data.permissions||[]).map(p=><div key={p.id}><div><strong>{p.id}</strong><span>{p.description||"Codex permission profile"}</span></div><em className={p.allowed?"ok":""}>{p.allowed?"allowed":"blocked"}</em></div>)}</div>
         <ErrorLine value={errors["permissionProfile/list"]}/>
       </Section>
 
-      <Section title="MCP servers" icon={PlugZap} count={data.mcp?.length}>
+      <Section title="MCP servers" icon={PlugZap} count={counted(data.mcp,"mcpServerStatus/list")}>
         <div className="capability-actions"><button onClick={reloadMcp} disabled={!!busy}><RefreshCw size={12}/> Reload MCP</button></div>
         {!data.mcp?.length&&<EmptyState loaded={!!data.mcp} loading={loading} error={errors["mcpServerStatus/list"]} pending="Loading MCP servers…">No MCP servers are configured for this runtime.</EmptyState>}
         <div className="capability-list">{(data.mcp||[]).map(server=><div className="mcp-server-row" key={server.name}><div><strong>{server.name}</strong><span>{server.runtimeStatus||"unknown"} · {countLabel(Object.keys(server.tools||{}).length,"tool")} · {countLabel((server.resources||[]).length,"resource")}</span></div><div className="capability-inline-actions"><em className={server.authStatus==="notLoggedIn"?"warn":server.runtimeStatus==="connected"?"ok":""}>{mcpAuthLabel(server.authStatus)}</em>{server.authStatus==="notLoggedIn"&&<button onClick={()=>loginMcp(server.name)} disabled={!!busy}>Sign in</button>}</div>{((server.resources||[]).length>0||Object.keys(server.tools||{}).length>0)&&<details className="mcp-server-details"><summary>Resources & tools</summary>
@@ -617,7 +624,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <ErrorLine value={errors["skills/list"]}/><ErrorLine value={errors["skills/config/write"]}/><ErrorLine value={errors["skills/extraRoots/set"]}/>
       </Section>
 
-      <Section title="Plugins" icon={Blocks} count={data.marketplaces?plugins.length:undefined}>
+      <Section title="Plugins" icon={Blocks} count={counted(data.marketplaces,"plugin/list",plugins.length)}>
         <div className="plugin-search-controls"><input value={pluginSearchTerm} onChange={e=>{setPluginSearchTerm(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}} onKeyDown={e=>{if(e.key==="Enter")searchPlugins()}} placeholder="Search plugins" title="Search the plugin catalog"/><select value={pluginSearchScope} onChange={e=>{setPluginSearchScope(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}}><option value="global">Global</option><option value="workspace">Workspace</option><option value="personal">Personal</option></select><button onClick={()=>searchPlugins()} disabled={!!busy||pluginSearchTerm.trim().length<2}>{busy==="plugin:search"?"Searching…":"Search"}</button><button onClick={reconcilePlugins} disabled={!!busy}>Reconcile</button></div>
         {pluginSearchResults.length>0&&<div className="capability-list plugin-search-results">{pluginSearchResults.map(result=>{const plugin=result.plugin||{};const marketplace={name:result.marketplaceName,path:result.marketplacePath};return <div key={(result.marketplaceName||"")+":"+(plugin.id||plugin.name)}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.interface?.shortDescription||plugin.interface?.longDescription||result.marketplaceName}{plugin.version?" · "+plugin.version:""}</span></div><div className="capability-inline-actions"><button onClick={()=>readPlugin(plugin,marketplace)} disabled={!!busy}>Details</button><button onClick={()=>togglePlugin({...plugin,marketplace})} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>})}</div>}
         {pluginSearchCursor&&<div className="capability-actions"><button onClick={()=>searchPlugins({append:true})} disabled={!!busy}>Load more</button></div>}
@@ -629,20 +636,20 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <ErrorLine value={errors["plugin/list"]}/><ErrorLine value={errors["plugin/install"]}/><ErrorLine value={errors["plugin/uninstall"]}/><ErrorLine value={errors["plugin/search"]}/><ErrorLine value={errors["plugin/read"]}/><ErrorLine value={errors["plugin/skill/read"]}/><ErrorLine value={errors["plugin/reconcile"]}/><ErrorLine value={errors["plugin/share/save"]}/>
       </Section>
 
-      <Section title="Shared plugins" icon={Blocks} count={data.sharedPlugins?.length}>
+      <Section title="Shared plugins" icon={Blocks} count={counted(data.sharedPlugins,"plugin/share/list")}>
         <p>Codex plugin sharing is account-backed. Local plugins are first shared privately; visibility can then be changed without inventing recipients.</p>
         <div className="capability-list shared-plugin-list">{(data.sharedPlugins||[]).map(item=>{const plugin=item.plugin||{};const context=plugin.shareContext||{};const remotePluginId=plugin.remotePluginId||context.remotePluginId;return <div key={remotePluginId||plugin.id}><div><strong>{plugin.name||plugin.id}</strong><span>{plugin.version||plugin.localVersion||"shared plugin"}{context.creatorName?` · ${context.creatorName}`:""}</span></div><div className="capability-inline-actions">{context.shareUrl&&<button onClick={()=>window.open(context.shareUrl,"_blank","noopener,noreferrer")}>Open</button>}{!item.localPluginPath&&remotePluginId&&<button onClick={()=>checkoutSharedPlugin(item)} disabled={!!busy}>Checkout</button>}{context.discoverability&&<select value={context.discoverability} onChange={e=>updateShareDiscoverability(item,e.target.value)} disabled={!!busy}><option value="PRIVATE">Private</option><option value="UNLISTED">Unlisted</option><option value="LISTED">Listed</option></select>}{remotePluginId&&<button onClick={()=>deleteSharedPlugin(item)} disabled={!!busy}>Delete share</button>}</div></div>})}</div>
         {!data.sharedPlugins?.length&&<EmptyState loaded={!!data.sharedPlugins} loading={loading} error={errors["plugin/share/list"]} pending="Loading shared plugins…">No shared plugins were returned for this account.</EmptyState>}
         <ErrorLine value={errors["plugin/share/list"]}/><ErrorLine value={errors["plugin/share/checkout"]}/><ErrorLine value={errors["plugin/share/delete"]}/><ErrorLine value={errors["plugin/share/updateTargets"]}/>
       </Section>
 
-      <Section title="Marketplaces" icon={Blocks} count={data.marketplaces?.length}>
+      <Section title="Marketplaces" icon={Blocks} count={counted(data.marketplaces,"plugin/list")}>
         <div className="capability-actions marketplace-add"><input value={marketplaceSource} onChange={e=>setMarketplaceSource(e.target.value)} placeholder="Git URL or local path" title="Marketplace source: a Git URL or a local path"/><button onClick={addMarketplace} disabled={!!busy||!marketplaceSource.trim()}>Add</button><button onClick={()=>upgradeMarketplace(null)} disabled={!!busy||!data.marketplaces?.length}>Upgrade all</button></div>
         <div className="capability-list">{(data.marketplaces||[]).map(marketplace=><div key={marketplace.name}><div><strong>{marketplace.interface?.displayName||marketplace.name}</strong><span>{marketplace.path||countLabel((marketplace.plugins||[]).length,"catalog plugin")}</span></div><div className="capability-inline-actions"><button onClick={()=>upgradeMarketplace(marketplace.name)} disabled={!!busy}>Upgrade</button>{marketplace.path&&<button onClick={()=>removeMarketplace(marketplace.name)} disabled={!!busy}>Remove</button>}</div></div>)}</div>
         <ErrorLine value={errors["marketplace/add"]}/><ErrorLine value={errors["marketplace/remove"]}/><ErrorLine value={errors["marketplace/upgrade"]}/>
       </Section>
 
-      <Section title="Apps / connectors" icon={CheckCircle2} count={data.apps?.length}>
+      <Section title="Apps / connectors" icon={CheckCircle2} count={counted(data.apps,"app/list")}>
         <div className="connector-runtime-summary"><span>{data.installedApps?`${data.installedApps.length} installed · ${data.installedApps.filter(app=>app.callable).length} callable now`:""}</span><button onClick={refreshInstalledApps} disabled={!!busy}>{busy==="apps:installed"?"Refreshing…":"Refresh runtime"}</button></div>
         <div className="capability-list">{(data.apps||[]).map(app=>{const runtime=installedAppsById[app.id];const status=runtime?(runtime.callable?"callable":runtime.enabled?"installed":"disabled"):(app.isEnabled?"catalog only":"disabled");return <div key={app.id}><div><strong>{app.name}</strong><span>{app.description||app.id}</span></div><div className="capability-inline-actions"><em className={runtime?.callable?"ok":""}>{status}</em><button onClick={()=>readApp(app)} disabled={busy==="app:"+app.id}>Details</button></div></div>})}</div>
         {!data.apps?.length&&<EmptyState loaded={!!data.apps} loading={loading} error={errors["app/list"]} pending="Loading app connectors…">No app connectors reported by Codex.</EmptyState>}
@@ -650,20 +657,20 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <ErrorLine value={errors["app/list"]}/><ErrorLine value={errors["app/installed"]}/><ErrorLine value={errors["app/read"]}/>
       </Section>
 
-      <Section title="Hooks" icon={Wrench} count={data.hooks?hookCount:undefined}>
+      <Section title="Hooks" icon={Wrench} count={counted(data.hooks,"hooks/list",hookCount)}>
         <div className="capability-list">{(data.hooks||[]).flatMap(entry=>(entry.hooks||[]).map((hook,index)=><div key={entry.cwd+":"+index}><div><strong>{hook.name||hook.event||"Hook"}</strong><span>{entry.cwd}</span></div><em className="ok">loaded</em></div>))}</div>
         {!hookCount&&<EmptyState loaded={!!data.hooks} loading={loading} error={errors["hooks/list"]} pending="Loading hooks…">No project hooks loaded.</EmptyState>}
         {hookRuns.length>0&&<details className="capability-details" open><summary>Recent hook runs · {hookRuns.length}</summary><div className="capability-list hook-run-list">{hookRuns.map(run=><div key={run.id}><div><strong>{run.eventName||run.id}</strong><span>{run.statusMessage||run.sourcePath||run.handlerType||"Hook execution"}</span></div><em className={run.status==="completed"||run.status==="success"?"ok":""}>{run.durationMs!=null?`${Number(run.durationMs).toLocaleString()} ms`:run.status||"running"}</em></div>)}</div></details>}
         <ErrorLine value={errors["hooks/list"]}/>
       </Section>
 
-      <Section title="Experimental features" icon={FlaskConical} count={data.features?.length}>
+      <Section title="Experimental features" icon={FlaskConical} count={counted(data.features,"experimentalFeature/list")}>
         {!data.features?.length&&<EmptyState loaded={!!data.features} loading={loading} error={errors["experimentalFeature/list"]} pending="Loading experimental features…">This runtime reported no experimental features.</EmptyState>}
         <div className="capability-list feature-list">{(data.features||[]).map(feature=><div key={feature.name}><div><strong>{feature.displayName||feature.name}</strong><span>{feature.description||feature.stage}</span></div><button className={feature.enabled?"active":""} onClick={()=>toggleFeature(feature)} disabled={!!busy}>{feature.enabled?"On":"Off"}</button></div>)}</div>
         <ErrorLine value={errors["experimentalFeature/list"]}/><ErrorLine value={errors["experimentalFeature/enablement/set"]}/>
       </Section>
 
-      <Section title="Conversation history" icon={RefreshCw} count={historyImport?(historyImport.sessions||[]).length:undefined}>
+      <Section title="Conversation history" icon={RefreshCw} count={listCount(historyImport&&(historyImport.sessions||[]),{loading:busy==="history:scan",error:historyScanFailed})}>
         <p>Copy recent local Codex and Claude conversations into Trebell. Source transcripts stay untouched; imported Codex sessions become independent Trebell forks.</p>
         <div className="capability-actions">
           <button onClick={scanHistory} disabled={!!busy}>{busy==="history:scan"?"Scanning…":"Scan history"}</button>
@@ -671,7 +678,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         </div>
         {historyMessage&&<p ref={historyMessageRef} className={/failed|could not|error/i.test(historyMessage)?"provider-status-error":"capability-status"} role={/failed|could not|error/i.test(historyMessage)?"alert":undefined}>{historyMessage}</p>}
         <div className="capability-list history-import-list">{(historyImport?.sessions||[]).slice(0,30).map(item=><div key={item.id}><div><strong>{item.title||"Untitled conversation"}</strong><span>{item.source==="codex"?"Codex":"Claude"} · {item.cwd}</span></div><div className="capability-inline-actions"><em className={item.alreadyImported?"ok":""} title={!item.alreadyImported&&item.source==="codex"&&!historyImport.codexImportAvailable?historyImport.codexImportUnavailable?.message||undefined:undefined}>{item.alreadyImported?"imported":item.source==="codex"&&!historyImport.codexImportAvailable?"needs local Codex":"available"}</em>{!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable)&&<button onClick={()=>importHistory([item.id])} disabled={!!busy}>Import</button>}</div></div>)}</div>
-        {historyImport&&!(historyImport.sessions||[]).length&&<p>No recent local agent history was found.</p>}
+        {/* Claimed only for the latest scan: not while the next one runs (its button says so) and not beside a failed one. */}
+        {historyImport&&!(historyImport.sessions||[]).length&&busy!=="history:scan"&&!historyScanFailed&&<p>No recent local agent history was found.</p>}
       </Section>
 
       <Section title="Import agent configuration" icon={RefreshCw} count={migrations?(migrations.items||[]).length:undefined}>
