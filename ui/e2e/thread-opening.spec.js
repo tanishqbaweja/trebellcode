@@ -800,6 +800,33 @@ test("a turn that ends while the first page of an opened thread's history is rea
   }finally{await harness.close()}
 });
 
+test("a turn the harness starts again under its id while its thread opens keeps the steps it had on the live card",async({page})=>{
+  test.setTimeout(60_000);
+  const CUT=savedThread("cut-thread","Recovered migration",{minutesAgo:2});
+  const cut={id:"cut-thread-cut",status:"interrupted",items:[userItem("cut-ask","Run the migration."),commandItem("cut-build","npm run build")]};CUT.thread.turns.push(cut);
+  const harness=await startHarness(page,{saved:[ALPHA,CUT]});harness.server.turnsCursor[CUT.thread.id]=true;
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    // The harness came back from a restart and runs the cut turn again under its id (the relay's restart recovery) as the person
+    // opens the thread: the resume answers idle, and the turn starts again with a new step while the first page is read.
+    harness.server.onTurnsList=async()=>{
+      harness.server.onTurnsList=null;CUT.thread.status={type:"active",turnId:cut.id};cut.status="inProgress";
+      const retry=commandItem("cut-retry","npm run retry",{status:"inProgress"});cut.items.push(retry);
+      harness.emit({method:"turn/started",params:{threadId:CUT.thread.id,turn:{id:cut.id,status:"inProgress",startedAt:Date.now()/1000}}});
+      harness.emit({method:"item/started",params:{threadId:CUT.thread.id,turnId:cut.id,item:{...retry}}});
+      await new Promise(resolve=>setTimeout(resolve,150));
+    };
+    await row(page,CUT).locator(".thread-main").click();
+    await expect(answer(page,CUT)).toBeVisible({timeout:15_000});await expect(page.locator(".workspace-header .stop-control")).toBeVisible();
+    // The live card is the turn's: the step it ran before the restart, then the one it runs now, once each.
+    const live=page.locator(".agent-block [data-testid=activity-card]");
+    await expect(live).toHaveAttribute("data-turn-id",cut.id);await expect(live.locator(".activity-card-summary")).toHaveText("2 steps");
+    await expect(steps(page,"npm run build")).toHaveCount(1);await expect(live.locator(".tool-event").filter({hasText:"npm run build"})).toHaveCount(1);
+    await expect(steps(page,"npm run retry")).toHaveCount(1);await expect(steps(page,"npm run retry").locator("summary em")).toHaveText("running");
+    await shootConversation(page,"opened-turn-started-again",live);
+  }finally{await harness.close()}
+});
+
 test("a thread clicked while a restarted harness reopens the thread shown opens, and if it fails the thread shown still resumes on the new connection",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});harness.server.fail[GAMMA.thread.id]=FAILURE;

@@ -3209,8 +3209,9 @@ export default function App(){
         openedCards={rows:cardRowsFromTurns((resumed.thread.turns||[]).slice(-200),{activeTurnId:resumedTurnId}),merge:{mode:"replace",complete:true},boundaryTurnId:null};
         turnOutcomePagesRef.current=null;setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder((resumed.thread.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean),prev.threadId===resumed.thread.id?prev.ids:[])}));setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})
       }
-      // The running turn's stored steps start its live card.
-      const cards=openedCards;setTurnActivity(prev=>prev.threadId===thread.id?{...mergeTurnActivity(prev,cards.rows,cards.merge),boundaryTurnId:cards.boundaryTurnId}:prev);
+      // The running turn's stored steps start its live card. The notifications handled as the thread shows read its cards from the
+      // ref (a turn that starts again under its id gets its stored steps back), so the ref holds them from here, before the render.
+      const cards=openedCards,opened={...mergeTurnActivity(emptyTurnActivity(thread.id),cards.rows,cards.merge),boundaryTurnId:cards.boundaryTurnId};turnActivityRef.current=opened;setTurnActivity(opened);
       if(resumedTurnId)seedLiveRows(thread.id,resumedTurnId,cards.rows[String(resumedTurnId)]);
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex")applyProviderInventory(harnessInventory(runtimeInventoryRef.current,resumed.thread.providerMeta))
     }
