@@ -93,29 +93,69 @@ test("the Clone repository form gives a repository URL room at desktop widths an
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   const clone=page.locator(".clone-card"),url=clone.getByLabel("Clone URL"),parent=clone.getByLabel("Clone parent directory");
   await expect(parent).toBeVisible();
-  await url.fill("https://github.com/example/visual-audit.git");
+  // A 50-character repository URL, longer than the 43-character example the form was first tuned to.
+  await url.fill("https://github.com/openai/openai-agents-python.git");
   await parent.fill("/srv/projects");
-  const layout=()=>clone.evaluate(node=>{
+  // 1424 and 1440 are just above the width where the local form keeps one row; 1416 is just below it.
+  for(const [width,height,mode] of [[1600,980,"dark"],[1280,800,"dark"],[1600,980,"light"],[1280,800,"light"],[1920,1080,"dark"],[1440,900,"dark"],[1424,900,"dark"],[1416,900,"dark"],[1024,768,"dark"],[900,800,"dark"]]){
+    await page.setViewportSize({width,height});
+    await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+    const metrics=await cloneLayout(clone),field=label=>metrics.fields.find(item=>item.label===label);
+    // The whole URL fits in its field at desktop widths; narrower windows stack the fields without overlap or overflow.
+    if(width>=1280)expect(metrics.url.scroll,`URL field at ${width}px`).toBeLessThanOrEqual(metrics.url.client+1);
+    // A remote clone has a parent directory to fill as well, so its URL sits on a row of its own under the environment.
+    if(width>=1024)expect(field("Clone URL").top,`URL under the environment at ${width}px`).toBeGreaterThanOrEqual(field("Clone environment").bottom-1);
+    expect(metrics.card.scroll,`clone card at ${width}px`).toBeLessThanOrEqual(metrics.card.client+1);
+    expect(fieldOverlaps(metrics.fields),`overlapping fields at ${width}px`).toEqual([]);
+    for(const field of metrics.fields)expect(field.right,`${field.label} at ${width}px`).toBeLessThanOrEqual(metrics.card.right+1);
+    await page.screenshot({animations:"disabled",path:auditDir+`projects-clone-form-${mode}-${width}x${height}.png`});
+  }
+});
+
+test("a local clone keeps the Clone repository form on one row with room for a 50-character URL",async({page})=>{
+  test.setTimeout(40_000);
+  // The desktop app clones to this machine through its folder picker; a remote environment is still listed.
+  await page.addInitScript(()=>{window.trebellDesktop={pickDirectory:async()=>null}});
+  await routeProjectsShell(page,{
+    projects:[{id:"clone-local",name:"Clone Local Project",path:"C:/repos/clone-local",environmentId:null,environment:{id:null,name:"Local machine",type:"local"},scripts:[],lastOpenedAt:Date.now()}],
+    environments:{profiles:[BUILD_BOX]},
+    git:async path=>({isGit:true,root:path,branch:"main",remotes:[]}),
+  });
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const clone=page.locator(".clone-card"),url=clone.getByLabel("Clone URL");
+  await expect(clone.getByLabel("Clone environment")).toHaveValue("local");
+  await expect(clone.getByLabel("Clone parent directory")).toHaveCount(0);
+  await url.fill("https://github.com/openai/openai-agents-python.git");
+  for(const [width,height,mode] of [[1920,1080,"dark"],[1600,980,"dark"],[1600,980,"light"],[1440,900,"dark"],[1424,900,"dark"]]){
+    await page.setViewportSize({width,height});
+    await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+    const metrics=await cloneLayout(clone),field=label=>metrics.fields.find(item=>item.label===label);
+    expect(Math.abs(field("Clone URL").top-field("Clone environment").top),`one row at ${width}px`).toBeLessThan(2);
+    expect(metrics.url.scroll,`URL field at ${width}px`).toBeLessThanOrEqual(metrics.url.client+1);
+    expect(fieldOverlaps(metrics.fields),`overlapping fields at ${width}px`).toEqual([]);
+    expect(metrics.card.scroll,`clone card at ${width}px`).toBeLessThanOrEqual(metrics.card.client+1);
+    await page.screenshot({animations:"disabled",path:auditDir+`projects-clone-local-${mode}-${width}x${height}.png`});
+  }
+  // Switching to the remote environment adds the parent directory and moves the URL to its own row.
+  await page.setViewportSize({width:1600,height:980});
+  await clone.getByLabel("Clone environment").selectOption("build-box");
+  await expect(clone.getByLabel("Clone parent directory")).toHaveValue("/srv/projects");
+  const remote=await cloneLayout(clone),field=label=>remote.fields.find(item=>item.label===label);
+  expect(field("Clone URL").top).toBeGreaterThanOrEqual(field("Clone environment").bottom-1);
+  expect(remote.url.scroll).toBeLessThanOrEqual(remote.url.client+1);
+});
+
+// Each field of the Clone repository form with its box, and the URL field's text width against its own.
+function cloneLayout(clone){
+  return clone.evaluate(node=>{
     const box=element=>element.getBoundingClientRect(),card=box(node);
     const fields=[...node.querySelectorAll("input,select,button")].map(element=>({label:element.getAttribute("aria-label")||element.textContent.trim(),box:box(element)}));
     const field=node.querySelector('[aria-label="Clone URL"]');
     return {card:{left:card.left,right:card.right,scroll:node.scrollWidth,client:node.clientWidth},url:{scroll:field.scrollWidth,client:field.clientWidth},fields:fields.map(item=>({label:item.label,left:item.box.left,right:item.box.right,top:item.box.top,bottom:item.box.bottom}))};
   });
-  const overlaps=fields=>fields.flatMap((a,i)=>fields.slice(i+1).filter(b=>a.left<b.right-1&&b.left<a.right-1&&a.top<b.bottom-1&&b.top<a.bottom-1).map(b=>a.label+" / "+b.label));
-  for(const [width,height,mode] of [[1600,980,"dark"],[1280,800,"dark"],[1600,980,"light"],[1280,800,"light"],[1024,768,"dark"],[900,800,"dark"]]){
-    await page.setViewportSize({width,height});
-    await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
-    const metrics=await layout(),field=label=>metrics.fields.find(item=>item.label===label);
-    // The whole URL fits in its field at desktop widths; narrower windows stack the fields without overlap or overflow.
-    if(width>=1280)expect(metrics.url.scroll,`URL field at ${width}px`).toBeLessThanOrEqual(metrics.url.client+1);
-    // At 1600 the form keeps its single row (the columns are rebalanced rather than the form being split in two).
-    if(width===1600)expect(Math.abs(field("Clone URL").top-field("Clone environment").top),"one row at 1600px").toBeLessThan(2);
-    expect(metrics.card.scroll,`clone card at ${width}px`).toBeLessThanOrEqual(metrics.card.client+1);
-    expect(overlaps(metrics.fields),`overlapping fields at ${width}px`).toEqual([]);
-    for(const field of metrics.fields)expect(field.right,`${field.label} at ${width}px`).toBeLessThanOrEqual(metrics.card.right+1);
-    await page.screenshot({animations:"disabled",path:auditDir+`projects-clone-form-${mode}-${width}x${height}.png`});
-  }
-});
+}
+function fieldOverlaps(fields){return fields.flatMap((a,i)=>fields.slice(i+1).filter(b=>a.left<b.right-1&&b.left<a.right-1&&a.top<b.bottom-1&&b.top<a.bottom-1).map(b=>a.label+" / "+b.label))}
 
 function projects(count){
   return Array.from({length:count},(_,index)=>({
