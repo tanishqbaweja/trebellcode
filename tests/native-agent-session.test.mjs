@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread, openAiServerCompactionArmTokens } from "../src/native-agent-session.mjs";
+import { NATIVE_REPLY_STREAM, NativeAgentSession, nativeCompactionMessage, nativeDraftEligible, nativeMessagesFromThread, openAiServerCompactionArmTokens } from "../src/native-agent-session.mjs";
 import { NativeToolOutputStore } from "../src/native-tool-output-store.mjs";
 import { agentToolLifecycle, contextualAgentPrompt } from "../src/agent-relay.mjs";
 import { attachNativePromptProvenance } from "../src/native-request-metrics.mjs";
@@ -1501,4 +1501,143 @@ test("Native steering skips remaining old-plan tools without replaying side effe
   },executeTool:async call=>{executed.push(call.id);if(call.id==="tool-one")session.steer([{type:"text",text:"Do not create two.txt"}]);return {success:true,content:"done"}}});
   await session.start({model:"model"});const result=await session.prompt([{type:"text",text:"Create both files"}]);
   assert.equal(result.stopReason,"end_turn");assert.deepEqual(executed,["tool-one"]);assert.equal(requests.length,2);
+});
+
+// Native drafts: reply text shown while a provider call streams (streamDrafts, used by the app relay only).
+const DRAFT_PARAGRAPH="The cache keeps one entry per normalized request path, so two requests that differ only in a trailing slash share an entry.\n\nEntries expire after the configured TTL and are refreshed on the next read.";
+const DRAFT_PLAIN="x".repeat(399);
+const draftTools=[
+  {type:"namespace",name:"trebell_repo",tools:[{name:"search_files"},{name:"read_source"}]},
+  {type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"},{name:"replace_text"}]},
+  {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+];
+function draftRun({steps,prompt="Explain how the request cache works.",streamDrafts=true,semanticCompletionGate=true,tools=draftTools,executeTool=null}={}){
+  const updates=[],events=[],requests=[];let calls=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",streamDrafts,semanticCompletionGate,tools,onUpdate:update=>updates.push(update.update),onEvent:event=>events.push(event),
+    providerTurn:async request=>{requests.push(request);const step=steps[calls++];if(!step)throw new Error("unexpected provider call "+calls);return step(request,request[NATIVE_REPLY_STREAM]||null,session)},
+    executeTool:executeTool||(async()=>({success:true,content:"tool output"})),
+  });
+  const visible=()=>updates.filter(update=>/^agent_message_(?:chunk|draft_delta|draft_reset)$/.test(update.sessionUpdate)).map(update=>update.sessionUpdate==="agent_message_draft_reset"?["reset",update.reason]:[update.sessionUpdate==="agent_message_chunk"?"chunk":"draft",update.content.text]);
+  return {session,updates,events,requests,visible,run:async()=>{await session.start({providerSessionId:"draft-session",model:"model-a"});return session.prompt([{type:"text",text:prompt}])}};
+}
+const textReply=(text,extra={})=>({id:"resp-"+text.length,text,toolCalls:[],usage:{},...extra});
+const streamText=(hook,text,size=40)=>{for(let index=0;index<text.length;index+=size)hook({type:"text",delta:text.slice(index,index+size)})};
+
+test("Native drafts are off by default: no hook rides on any request and no draft update is sent",async()=>{
+  const plain=draftRun({streamDrafts:false,steps:[async(request,hook)=>{assert.equal(hook,null);return textReply(DRAFT_PARAGRAPH)}]});await plain.run();
+  const request=plain.requests[0];
+  assert.equal(Object.getOwnPropertySymbols(request).includes(NATIVE_REPLY_STREAM),false);assert.equal("onStream" in request,false);
+  assert.equal(plain.updates.some(update=>String(update.sessionUpdate).startsWith("agent_message_draft")),false);
+  assert.deepEqual(plain.visible(),[["chunk",DRAFT_PARAGRAPH]]);
+  const streaming=draftRun({steps:[async(request,hook)=>{assert.equal(typeof hook,"function");return textReply(DRAFT_PARAGRAPH)}]});await streaming.run();
+  assert.deepEqual(Object.keys(streaming.requests[0]),Object.keys(request),"the hook adds only its Symbol key");
+  assert.deepEqual(Object.getOwnPropertySymbols(streaming.requests[0]).filter(symbol=>symbol!==NATIVE_REPLY_STREAM),Object.getOwnPropertySymbols(request));
+  assert.equal(JSON.stringify(streaming.requests[0].messages),JSON.stringify(request.messages));
+});
+
+test("a draft shows once it reads as an answer and then streams each delta; the reply chunk is unchanged",async()=>{
+  const parts=[DRAFT_PARAGRAPH.slice(0,100),DRAFT_PARAGRAPH.slice(100,150),DRAFT_PARAGRAPH.slice(150,170),DRAFT_PARAGRAPH.slice(170,185),DRAFT_PARAGRAPH.slice(185)];
+  const run=draftRun({steps:[async(_request,hook)=>{for(const delta of parts)hook({type:"text",delta});return textReply(DRAFT_PARAGRAPH)}]});
+  await run.run();
+  assert.equal(/\n\s*\n/.test(parts[0]),false);assert.equal(/\n\s*\n/.test(parts[0]+parts[1]),true,"the break arrives before 160 characters");
+  assert.deepEqual(run.visible(),[["draft",parts[0]+parts[1]+parts[2]],["draft",parts[3]],["draft",parts[4]],["chunk",DRAFT_PARAGRAPH]]);
+  const ids=new Set(run.updates.filter(update=>update.sessionUpdate==="agent_message_draft_delta").map(update=>update.draftId));assert.equal(ids.size,1);
+});
+
+test("one paragraph shows only from 400 characters, and tool-call markup and held commentary never show on their own",async()=>{
+  const plain=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:DRAFT_PLAIN});hook({type:"text",delta:"y"});return textReply(DRAFT_PLAIN+"y")}]});await plain.run();
+  assert.deepEqual(plain.visible(),[["draft",DRAFT_PLAIN+"y"],["chunk",DRAFT_PLAIN+"y"]]);
+  const markup="<tool_call>"+"z".repeat(420)+"</tool_call>";
+  const marked=draftRun({steps:[async(_request,hook)=>{streamText(hook,markup);return textReply("A plain answer.")}]});await marked.run();
+  assert.deepEqual(marked.visible(),[["chunk","A plain answer."]]);
+  const commentary="I will look at the cache module first. ".repeat(14),answer="\n\nThe cache is keyed by normalized path.";
+  const held=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:commentary,hold:true});assert.equal(held.visible().length,0);hook({type:"text",delta:answer});return textReply(commentary+answer)}]});await held.run();
+  assert.deepEqual(held.visible(),[["draft",commentary+answer],["chunk",commentary+answer]]);
+  const heldOnly=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:commentary,hold:true});hook({type:"tool_call"});return {id:"call",text:commentary,toolCalls:[{id:"read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"cache.mjs"}'}],usage:{}}},async()=>textReply("Short final.")]});await heldOnly.run();
+  assert.deepEqual(heldOnly.visible(),[["chunk","Short final."]]);
+});
+
+test("a shown draft is withdrawn at a tool call, a reply with calls, a mismatch and an output limit, and late text is ignored",async()=>{
+  let late=null;
+  const toolEvent=draftRun({steps:[async(_request,hook)=>{late=hook;hook({type:"text",delta:DRAFT_PARAGRAPH});hook({type:"tool_call"});hook({type:"text",delta:"after the call"});return {id:"c1",text:DRAFT_PARAGRAPH,toolCalls:[{id:"read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"cache.mjs"}'}],usage:{}}},async()=>{late({type:"text",delta:DRAFT_PARAGRAPH});return textReply("Done.")}]});
+  await toolEvent.run();assert.deepEqual(toolEvent.visible(),[["draft",DRAFT_PARAGRAPH],["reset","tool_call"],["chunk","Done."]]);
+  const replyCalls=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:DRAFT_PARAGRAPH});return {id:"c1",text:DRAFT_PARAGRAPH,toolCalls:[{id:"read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"cache.mjs"}'}],usage:{}}},async()=>textReply("Done.")]});
+  await replyCalls.run();assert.deepEqual(replyCalls.visible(),[["draft",DRAFT_PARAGRAPH],["reset","tool_call"],["chunk","Done."]]);
+  const mismatch=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:DRAFT_PARAGRAPH});return textReply(DRAFT_PARAGRAPH+" (edited)")}]});
+  await mismatch.run();assert.deepEqual(mismatch.visible(),[["draft",DRAFT_PARAGRAPH],["reset","mismatch"],["chunk",DRAFT_PARAGRAPH+" (edited)"]]);
+  const limited=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:DRAFT_PARAGRAPH});return textReply(DRAFT_PARAGRAPH,{finishReason:"length"})},async(_request,hook)=>{hook({type:"text",delta:DRAFT_PARAGRAPH+" Complete."});return textReply(DRAFT_PARAGRAPH+" Complete.")}]});
+  await limited.run();assert.deepEqual(limited.visible(),[["draft",DRAFT_PARAGRAPH],["reset","output_limit"],["draft",DRAFT_PARAGRAPH+" Complete."],["chunk",DRAFT_PARAGRAPH+" Complete."]]);
+  assert.ok(limited.events.some(event=>event.name==="native.model.action_output_cap_relaxed"));
+});
+
+test("a shown draft is withdrawn on an error, a restart, steering mid-call, steering after the call and Stop",async()=>{
+  const failed=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:"SENTINEL "+DRAFT_PARAGRAPH});throw Object.assign(new Error("HTTP 503"),{status:503,retryable:true})},async()=>textReply("Second attempt answer.")]});
+  await failed.run();assert.deepEqual(failed.visible(),[["draft","SENTINEL "+DRAFT_PARAGRAPH],["reset","error"],["chunk","Second attempt answer."]]);
+  const restarted=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:DRAFT_PARAGRAPH});hook({type:"restart"});hook({type:"text",delta:DRAFT_PARAGRAPH+"!"});return textReply(DRAFT_PARAGRAPH+"!")}]});
+  await restarted.run();assert.deepEqual(restarted.visible(),[["draft",DRAFT_PARAGRAPH],["reset","restart"],["draft",DRAFT_PARAGRAPH+"!"],["chunk",DRAFT_PARAGRAPH+"!"]]);
+  const draftIds=restarted.updates.filter(update=>update.sessionUpdate==="agent_message_draft_delta").map(update=>update.draftId);assert.notEqual(draftIds[0],draftIds[1]);
+  const steeredMid=draftRun({steps:[async(request,hook,session)=>{hook({type:"text",delta:DRAFT_PARAGRAPH});session.steer([{type:"text",text:"Also mention expiry."}]);await new Promise((resolve,reject)=>{if(request.signal.aborted)return reject(request.signal.reason);request.signal.addEventListener("abort",()=>reject(request.signal.reason),{once:true})})},async()=>textReply("Steered answer.")]});
+  await steeredMid.run();assert.deepEqual(steeredMid.visible(),[["draft",DRAFT_PARAGRAPH],["reset","steered"],["chunk","Steered answer."]]);
+  const steeredAfter=draftRun({steps:[async(_request,hook,session)=>{hook({type:"text",delta:DRAFT_PARAGRAPH});session.steer([{type:"text",text:"Also mention expiry."}]);return textReply(DRAFT_PARAGRAPH)},async(_request,hook)=>{hook({type:"text",delta:"Short."});return textReply("Short.")}]});
+  await steeredAfter.run();assert.deepEqual(steeredAfter.visible(),[["draft",DRAFT_PARAGRAPH],["reset","next_request"],["chunk","Short."]]);
+  const stopped=draftRun({steps:[async(request,hook,session)=>{hook({type:"text",delta:DRAFT_PARAGRAPH});queueMicrotask(()=>session.cancel());return await new Promise((resolve,reject)=>request.signal.addEventListener("abort",()=>reject(Object.assign(new Error("aborted"),{name:"AbortError"})),{once:true}))}]});
+  const result=await stopped.run();assert.equal(result.stopReason,"cancelled");assert.deepEqual(stopped.visible(),[["draft",DRAFT_PARAGRAPH],["reset","cancelled"]]);
+});
+
+test("a failed turn withdraws its shown draft",async()=>{
+  const failing=draftRun({steps:[async(_request,hook)=>{hook({type:"text",delta:DRAFT_PARAGRAPH});throw Object.assign(new Error("invalid request"),{status:400,retryable:false})}]});
+  await assert.rejects(failing.run(),/invalid request/);assert.deepEqual(failing.visible(),[["draft",DRAFT_PARAGRAPH],["reset","error"]]);
+  assert.equal(failing.session.draft,null);
+});
+
+test("prompts the gate judges or that name a tool never carry the hook, nor do gate, compaction and forced-tool requests",async()=>{
+  const gated=draftRun({prompt:"Fix the stale entry bug in src/cache.mjs.",steps:[
+    async(request,hook)=>{assert.equal(hook,null);return {id:"edit",text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/cache.mjs","old_text":"a","new_text":"b"}'}],usage:{}}},
+    async(request,hook)=>{assert.equal(hook,null);return textReply("Fixed the stale entry bug in src/cache.mjs.")},
+    async(request,hook)=>{assert.equal(hook,null);assert.equal(request.metadata.completionGate,true);return textReply('{"status":"complete","unresolved":[],"reason":"Done."}')},
+  ],executeTool:async()=>({path:"src/cache.mjs",replacements:1})});
+  await gated.run();assert.equal(gated.requests.length,3);assert.ok(gated.events.some(event=>event.name==="native.completion.gate_requested"));
+  assert.deepEqual(gated.visible(),[["chunk","Fixed the stale entry bug in src/cache.mjs."]]);
+  const named=draftRun({prompt:"Use trebell_repo/search_files to find the cache module and explain it.",steps:[
+    async(request,hook)=>{assert.equal(hook,null);return textReply(DRAFT_PARAGRAPH)},
+    async(request,hook)=>{assert.equal(hook,null);assert.equal(request.toolChoice.name,"search_files");return {id:"s",text:"",toolCalls:[{id:"s",namespace:"trebell_repo",name:"search_files",arguments:'{"query":"cache"}'}],usage:{}}},
+    async(request,hook)=>{assert.equal(hook,null);return textReply(DRAFT_PARAGRAPH)},
+  ]});
+  await named.run();assert.ok(named.events.some(event=>event.name==="native.model.required_tool_recovery"));assert.deepEqual(named.visible(),[["chunk",DRAFT_PARAGRAPH]]);
+  for(const toolChoice of ["required",{type:"allowed_tools",mode:"required",tools:[{namespace:"trebell_repo",name:"search_files"}]},{namespace:"trebell_repo",name:"search_files"},{type:"function",name:"trebell_repo__search_files"}])assert.equal(nativeDraftEligible({toolChoice}),false,JSON.stringify(toolChoice));
+  for(const toolChoice of [undefined,null,"auto","none"])assert.equal(nativeDraftEligible({toolChoice}),true,String(toolChoice));
+  assert.equal(nativeDraftEligible({metadata:{completionGate:true},toolChoice:"none"}),false);assert.equal(nativeDraftEligible({metadata:{compaction:true}}),false);assert.equal(nativeDraftEligible({responseJsonSchema:{name:"x",schema:{}}}),false);
+  const compacting=new NativeAgentSession({provider:"fixture",model:"model-a",streamDrafts:true,providerTurn:async request=>{assert.equal(request[NATIVE_REPLY_STREAM],undefined);return textReply("Continuation brief.")},executeTool:async()=>({}),initialMessages:[{role:"user",content:"earlier"},{role:"assistant",content:"answer"}]});
+  await compacting.start({model:"model-a"});const compacted=await compacting.compact({});assert.equal(compacted.modelSummary,"Continuation brief.");
+});
+
+test("the session's prompt holds cover every prompt the loop would reject a text-only answer for",async()=>{
+  const corpus=[
+    ["Explain how the request cache works.",false],
+    ["Fix the bug in src/cache.mjs.",false],
+    ["Use trebell_repo/search_files to find the cache module.",true],
+    ["Please call the trebell_workspace.read_file tool on README.md and summarize it.",true],
+    ["invoke trebell_repo/read_source for src/a.mjs and tell me what it exports",true],
+    ["Do not use trebell_terminal/run; just describe the build.",true],
+    ["Why is the login test failing?",false],
+    ["Add a --verbose flag to the CLI.",false],
+    ["What does `parse()` return for empty input?",false],
+    ["Summarize the README without editing anything.",false],
+    ["Refactor the parser into smaller functions.",false],
+    ["Review src/cache.mjs for race conditions and report what you find.",false],
+  ];
+  for(const [prompt,namesTool] of corpus){
+    const run=draftRun({prompt,steps:Array.from({length:6},()=>async request=>{
+      if(request.metadata?.completionGate)return textReply('{"status":"complete","unresolved":[],"reason":"Done."}');
+      if(request.toolChoice&&typeof request.toolChoice==="object"&&request.toolChoice.name)return {id:"forced",text:"",toolCalls:[{id:"forced-"+request.toolChoice.name,namespace:request.toolChoice.namespace,name:request.toolChoice.name,arguments:"{}"}],usage:{}};
+      return textReply("Here is the answer to: "+prompt);
+    })});
+    await run.run();
+    const hooked=run.requests.some(request=>typeof request[NATIVE_REPLY_STREAM]==="function"),recovered=run.events.some(event=>event.name==="native.model.required_tool_recovery"),gated=run.events.some(event=>event.name==="native.completion.gate_requested");
+    if(recovered)assert.equal(hooked,false,prompt);
+    if(gated)assert.equal(hooked,false,prompt);
+    if(namesTool)assert.equal(hooked,false,prompt);else assert.equal(hooked,!gated,prompt);
+    const chunks=run.updates.filter(update=>update.sessionUpdate==="agent_message_chunk");assert.equal(chunks.length,1,prompt);
+  }
 });
