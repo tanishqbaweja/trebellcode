@@ -4414,11 +4414,12 @@ export default function App(){
   const toggleTerminalPanel=()=>setPanel(panel==="terminal"?null:"terminal");
   const toggleAppearanceMode=()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance");
   const appearanceToggleLabel=resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode";
-  // One Open-in state for the row's picker and the menu's copy, so both open the editor last chosen in either. The menu closes as
-  // Open runs, so a failure there is reported like the menu's other actions, not beside a picker that has gone.
-  const headerOpenIn=useOpenInEditors(section==="chat"||section==="new");
+  // One Open-in state for the row's picker and the menu's copy, so both open the editor last chosen in either, and an Open from
+  // either replaces the failure the row's picker shows. The menu closes as Open runs, so a failure there is reported like the
+  // menu's other actions, not beside a picker that has gone.
+  const headerOpenIn=useOpenInEditors(projectPath,section==="chat"||section==="new");
   const headerOpenInShown=!projectlessMode&&!workspaceRemote&&Boolean(projectPath)&&headerOpenIn.editors.length>0;
-  const openProjectFromMenu=()=>runUserAction(()=>headerOpenIn.open(projectPath),headerOpenIn.active?"Could not open in "+headerOpenIn.active.label:"Could not open externally");
+  const openProjectFromMenu=()=>runUserAction(()=>headerOpenIn.open(),headerOpenIn.active?"Could not open in "+headerOpenIn.active.label:"Could not open externally");
   const sidebarBulkAction=useLatestCallback(bulkAction);
   const sidebarCollapse=useLatestCallback(()=>setSidebarOpen(false));
   // Retry's outcome (the list, or the error again) shows in the sidebar itself.
@@ -4560,7 +4561,7 @@ export default function App(){
             <div className="workspace-header-actions">
               {/* data-fold names the actions header-fit.js folds into the More actions menu when the title needs their room. */}
               {gitInfo?.isGit&&<button className="header-control branch-control" data-fold="source" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
-              {headerOpenInShown&&<OpenInControl openIn={headerOpenIn} path={projectPath} fold="open-in"/>}
+              {headerOpenInShown&&<OpenInControl openIn={headerOpenIn} fold="open-in"/>}
               {headerScript&&<button className="header-control script-control" data-fold="script" onClick={runHeaderScript} aria-label={headerScript.name} title={headerScript.command}><Play size={13}/><span>{headerScript.name}</span></button>}
               {activeThread?.id&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} aria-label="Review" title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
               {running&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label="Stop" title="Stop the running turn"><CircleStop size={14}/><span>Stop</span></button>}
@@ -4573,7 +4574,7 @@ export default function App(){
                   set aside by then. */}
               <HeaderOverflowMenu items={[
                 gitInfo?.isGit&&{id:"source",fold:"source",Icon:GitBranch,label:"Source control",detail:gitInfo.branch||"detached",onSelect:()=>openRightPanel("source")},
-                headerOpenInShown&&{id:"open-in",fold:"open-in",render:close=><OpenInControl openIn={headerOpenIn} path={projectPath} onOpen={()=>{close();openProjectFromMenu()}}/>},
+                headerOpenInShown&&{id:"open-in",fold:"open-in",render:close=><OpenInControl openIn={headerOpenIn} onOpen={()=>{close();openProjectFromMenu()}}/>},
                 headerScript&&{id:"script",fold:"script",Icon:Play,label:headerScript.name,title:headerScript.command,onSelect:runHeaderScript},
                 activeThread?.id&&gitInfo?.isGit&&{id:"review",fold:"review",Icon:ShieldCheck,label:"Review",title:"Review uncommitted changes",onSelect:reviewFromHeader},
                 {id:"terminal",fold:"terminal",Icon:PanelBottom,label:"Terminal",pressed:panel==="terminal",onSelect:toggleTerminalPanel},

@@ -474,16 +474,17 @@ for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(
 
 // The header fixture for the narrow-window tests below: every header action there is (the branch, the desktop app's Open-in
 // picker, a project action, Review, the terminal and goal toggles), long names, prCount linked pull requests, and Stop while a
-// turn runs. The desktop bridge records each Open in window.__opens and fails one while window.__openFails is set.
-async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,running=true,editors=[{id:"vscode",label:"Visual Studio Code"}]}){
-  await page.addInitScript(editors=>{window.__opens=[];window.__openFails=false;Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors}),open:async(path,id)=>{window.__opens.push(id);if(window.__openFails)throw new Error("Deliberate open failure: the editor could not be started")}}}})},editors);
+// turn runs. The desktop bridge records each Open in window.__opens, answers it once window.__openHold (a promise, when set)
+// settles, and fails it while window.__openFails is set. others are more threads for the sidebar.
+async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,running=true,editors=[{id:"vscode",label:"Visual Studio Code"}],others=[]}){
+  await page.addInitScript(editors=>{window.__opens=[];window.__openFails=false;Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors}),open:async(path,id)=>{window.__opens.push(id);await window.__openHold;if(window.__openFails)throw new Error("Deliberate open failure: the editor could not be started")}}}})},editors);
   const project={id:"header-project",name:"Billing reconciliation service with a very long project name",path:process.cwd(),environmentId:null,branch:"feature/reconcile-refunds-in-the-ledger-export",scripts:[{id:"dev-server",name:"Start the billing dev server",command:"npm run dev -- --port 4173"}],preferredScriptId:"dev-server"};
   const thread={id:"header-thread",name:"Investigate why the nightly billing reconciliation job double counts refunds in the ledger export",preview:"Refunds",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Why are refunds counted twice?"}]},{type:"agentMessage",id:"assistant-1",text:"Looking."}]}]};
   const prs=Array.from({length:prCount},(_,index)=>({url:"https://github.com/acme/billing/pull/"+(12345+index),number:12345+index,title:"Refund fix "+index,state:"open"}));
-  const harness=await startHarness([thread]);
+  const harness=await startHarness([thread,...others]);
   try{
     await page.setViewportSize({width,height});
-    await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:false,environmentId:null,linkedPullRequests:prs}},project,settings:{appearanceMode:mode},layout:{sidebarWidth:258,rightPanelWidth:520,terminalHeight:330}});
+    await openApp(page,{harness,threads:[thread,...others],meta:{[thread.id]:{projectless:false,environmentId:null,linkedPullRequests:prs},...Object.fromEntries(others.map(other=>[other.id,{projectless:false,environmentId:null}]))},project,settings:{appearanceMode:mode},layout:{sidebarWidth:258,rightPanelWidth:520,terminalHeight:330}});
     await openThread(page,thread.name);
     const header=page.locator(".chat-workspace .workspace-header");
     await expect(header.locator(".open-in-wrap")).toBeVisible();
@@ -497,6 +498,10 @@ async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,ru
 async function startTurn(page,header){
   await page.getByTestId("composer").fill("Keep going.");await page.getByTestId("send").click();
   await expect(header.getByRole("button",{name:"Stop",exact:true})).toBeVisible();await settle(page);
+}
+async function endTurn(page,harness,thread,header){
+  harness.push("turn/completed",{threadId:thread.id,turn:{id:"turn-live",status:"completed",completedAt:now()}});
+  await expect(header.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);await settle(page);
 }
 // The order the header's actions fold in (their data-fold), from the end of the row; Stop and the inspector toggle never fold.
 const HEADER_FOLD_ORDER=["goal","terminal","review","script","open-in","source"];
@@ -696,6 +701,56 @@ for(const mode of ["dark","light"])test(`the More actions menu opens the editor 
     await rowOpen.click();
     await expect(rowPicker.getByRole("alert")).toHaveCount(0);
     await expect.poll(opens).toEqual(["cursor","cursor","cursor","cursor"]);expect(await preferred()).toBe("cursor");
+  }finally{await harness.close()}
+});
+
+// The row's Open-in picker shows its own failed Open beside it, and only until something replaces it: a later Open from the More
+// actions menu (the row's copy stays mounted, hidden, while it is folded), whether that Open works or fails (the app reports a
+// failure from the menu), another editor chosen in either copy, or another project.
+for(const mode of ["dark","light"])test(`the row's Open-in picker drops its failure once a later Open, another editor or another project replaces it, at 1180x800 in ${mode} mode`,async({page})=>{
+  test.setTimeout(60_000);
+  const other={id:"other-thread",name:"Tidy the ledger export's logging",preview:"Logging",cwd:join(process.cwd(),"ui"),model:"fixture-model",status:{type:"idle"},createdAt:now()-120,updatedAt:now()-60,turns:[]};
+  const {harness,thread,header,more,menu}=await openHeaderFixture(page,{width:1180,mode,running:false,editors:[{id:"vscode",label:"Visual Studio Code"},{id:"cursor",label:"Cursor"}],others:[other]});
+  const opens=()=>page.evaluate(()=>window.__opens);
+  const rowPicker=header.locator(".workspace-header-actions>.open-in-wrap"),rowAlert=rowPicker.getByRole("alert"),toast=page.getByTestId("app-action-error");
+  const togglePanel=async()=>{await page.getByTestId("right-panel-toggle").click();await settle(page)};
+  const failRowOpen=async()=>{await page.evaluate(()=>{window.__openFails=true});await rowPicker.locator(".open-in-picker>button").click();await expect(rowAlert).toHaveText("Deliberate open failure: the editor could not be started")};
+  const openFromMenu=async()=>{await more.click();await menu.getByRole("button",{name:"Open",exact:true}).click();await expect(menu).toHaveCount(0)};
+  try{
+    // The fixture opens the inspector, which folds the picker into the menu at this width; with it closed the picker is in the row.
+    expect((await headerFold(header)).folded).toContain("open-in");
+    await togglePanel();await expect(rowPicker).toBeVisible();
+    await failRowOpen();
+    // A later Open from the menu works, while a turn runs: the picker comes back to the row without the old failure.
+    await togglePanel();await startTurn(page,header);
+    await page.evaluate(()=>{window.__openFails=false});
+    await openFromMenu();await expect.poll(opens).toEqual(["vscode","vscode"]);
+    await endTurn(page,harness,thread,header);await togglePanel();
+    await expect(rowPicker).toBeVisible();await expect(rowAlert).toHaveCount(0);
+    await page.screenshot({path:join(shotsDir,`header-open-in-row-after-menu-open-${mode}-1180x800.png`),animations:"disabled"});
+    // A later Open from the menu fails: the app names it, and the row does not show it again afterwards.
+    await failRowOpen();
+    await togglePanel();await openFromMenu();
+    await expect(toast).toHaveText("Could not open in Visual Studio Code: Deliberate open failure: the editor could not be started");
+    await togglePanel();await expect(rowPicker).toBeVisible();await expect(rowAlert).toHaveCount(0);
+    // Another editor, chosen in the menu's copy.
+    await failRowOpen();
+    await togglePanel();await more.click();await menu.getByLabel("Choose external editor").selectOption("cursor");await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    await togglePanel();await expect(rowPicker.getByLabel("Choose external editor")).toHaveValue("cursor");await expect(rowAlert).toHaveCount(0);
+    // Another project, and the first one again.
+    await failRowOpen();
+    await openThread(page,other.name);await expect(rowPicker).toBeVisible();await expect(rowAlert).toHaveCount(0);
+    const box=await header.boundingBox();
+    await page.screenshot({path:join(shotsDir,`header-open-in-row-other-project-${mode}-1180x800.png`),animations:"disabled",clip:{x:box.x,y:0,width:box.width,height:box.y+box.height+60}});
+    await openThread(page,thread.name);await expect(rowPicker).toBeVisible();await expect(rowAlert).toHaveCount(0);
+    // An Open that fails only after another project has opened is not kept for the first one either.
+    await page.evaluate(()=>{window.__openHold=new Promise(resolve=>{window.__releaseOpen=resolve})});
+    const rowOpen=rowPicker.locator(".open-in-picker>button");
+    await rowOpen.click();await expect(rowOpen).toHaveText("Opening…");
+    await openThread(page,other.name);await page.evaluate(()=>window.__releaseOpen());
+    await expect(rowOpen).toHaveText("Open");await expect(rowAlert).toHaveCount(0);
+    await openThread(page,thread.name);await expect(rowPicker).toBeVisible();await expect(rowAlert).toHaveCount(0);
+    expect(await opens()).toEqual(["vscode","vscode","vscode","vscode","vscode","cursor","cursor"]);
   }finally{await harness.close()}
 });
 
