@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
 import { AcpAgentSession, acpApprovalOptions, acpClientCapabilities, acpCommandsFromAvailable, acpDecisionOption, acpFileSlice, acpModeAgents, acpPermissionChoice, acpSlashCommandPrompt, grokCompletionFailure, grokPromptError, grokQuestionResponse, GROK_PLAN_FEEDBACK, GROK_USAGE_LIMIT_MESSAGE } from "../src/acp-agent-session.mjs";
 import { acpRequestError } from "../src/acp-client.mjs";
+import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
 import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "../src/acp-session-config.mjs";
 import { acpToolFrame, mergeAcpToolUpdate } from "../src/acp-tool-state.mjs";
 import { acpRuntimeTempRoot, createRunTemp, sweepRunTemps } from "../src/acp-runtime-temp.mjs";
@@ -68,6 +69,7 @@ function handle(m){
   if(m.method==="session/cancel"){cancelled=true;wakeCancel?.();wakeCancel=null;return}
   if(m.id==null)return;
   const reply=result=>send({jsonrpc:"2.0",id:m.id,result});
+  if(config.exitOn?.[m.method]!==undefined)process.exit(config.exitOn[m.method]);
   if(config.errors?.[m.method])return send({jsonrpc:"2.0",id:m.id,error:config.errors[m.method]});
   if(m.method==="initialize")return reply(config.initialize||{protocolVersion:1,agentCapabilities:{}});
   if(m.method==="session/new")return reply({...(config.sessionNew||{sessionId:"fixture-session"}),...(options?{configOptions:options}:{})});
@@ -243,15 +245,24 @@ test("Grok and Antigravity resume the thread's conversation with session/resume,
   }
 });
 
-test("Cursor loads its conversation, and a conversation that cannot be resumed fails instead of starting over",async t=>{
+test("Cursor loads its conversation, and one the harness no longer has is a lost session, not a silent new one",async t=>{
   const cursor=await scenario(t,{...CURSOR,resumed:{models:CURSOR_SETUP.models}});
   const loaded=harness(t,cursor,{runtime:"cursor"});
   await loaded.session.start({providerSessionId:"cursor-thread"});
   assert.equal(requested(await cursor.log(),"session/load")[0]?.params.sessionId,"cursor-thread");
   const missing=await scenario(t,{...GROK,errors:{"session/resume":{code:-32603,message:"Internal error",data:{message:"Session not found"}}}});
   const {session}=harness(t,missing,{runtime:"grok"});
-  await assert.rejects(session.start({providerSessionId:"gone"}),/Grok Build could not resume this conversation: Session not found/);
-  assert.equal(requested(await missing.log(),"session/new").length,0,"no silent new conversation");
+  // The relay, told by the error's type, continues the thread in a fresh session that the turn shows; the session itself never starts one.
+  await assert.rejects(session.start({providerSessionId:"gone"}),error=>error instanceof HarnessSessionLostError&&/Grok Build could not resume this conversation: Session not found/.test(error.message)&&error.sessionId==="gone"&&error.code===-32603);
+  assert.equal(requested(await missing.log(),"session/new").length,0,"the session starts no new conversation of its own");
+  // A harness that asks to sign in cannot run at all: that is its own failure, not a lost session.
+  const signedOut=await scenario(t,{...CURSOR,errors:{"session/load":{code:-32000,message:"Authentication required"}}});
+  const refused=harness(t,signedOut,{runtime:"cursor"});
+  await assert.rejects(refused.session.start({providerSessionId:"cursor-thread"}),error=>!(error instanceof HarnessSessionLostError)&&/Cursor could not resume this conversation: Authentication required/.test(error.message));
+  // Neither is a harness whose process ends while it loads.
+  const crashed=await scenario(t,{...CURSOR,exitOn:{"session/load":3}});
+  const dying=harness(t,crashed,{runtime:"cursor"});
+  await assert.rejects(dying.session.start({providerSessionId:"cursor-thread"}),error=>!(error instanceof HarnessSessionLostError)&&/Cursor could not resume this conversation/.test(error.message));
 });
 
 test("Cursor pins the thread's model in every session and sets effort with the model's own effort option",async t=>{

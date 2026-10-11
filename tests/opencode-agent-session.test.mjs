@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OPENCODE_RETRY_LIMITS, OPENCODE_UNSUPPORTED_SERVER, OpenCodeAgentSession, connectedOpenCodeModels, discoverOpenCodeModelCatalog, openCodeLongRequestFetch, openCodeMessageId, openCodeModelPreferences, openCodePermissionRules, openCodeRetryStop, openCodeStateDirectory, readOpenCodeRecentModels, remapOpenCodeTurns, startOpenCodeServer } from "../src/opencode-agent-session.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "../src/native-request-metrics.mjs";
+import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function eventually(check,{timeoutMs=5000,message="condition was not met in time"}={}){
@@ -265,6 +266,39 @@ test("a message naming one of OpenCode's commands runs that command, with only t
     await session.prompt([{type:"text",text:"/unknown thing"}]);await session.prompt([{type:"text",text:"/src/app.js is broken"}]);
     assert.deepEqual(fixture.called("POST /session/ses_fixture/message").map(call=>call.body.parts.map(part=>part.text)),[["/unknown thing"],["/src/app.js is broken"]]);
     assert.equal(fixture.called("POST /session/ses_fixture/command").length,1);
+  }finally{await session.close();await fixture.close()}
+});
+
+test("an OpenCode session the server no longer has is a lost session, and any other failure to open it is OpenCode's own",async()=>{
+  const fixture=await fakeOpenCode({routes:{"GET /session/ses_broken":({json})=>json(500,{name:"UnknownError",data:{message:"database is locked"}})}});
+  try{
+    const lost=new OpenCodeAgentSession({cwd:"/repo",serverUrl:fixture.url});
+    await assert.rejects(lost.start({providerSessionId:"ses_gone",model:PROVIDER_DEFAULT}),error=>error instanceof HarnessSessionLostError&&error.sessionId==="ses_gone"&&/^OpenCode could not resume this conversation: /.test(error.message));
+    await lost.close();
+    const broken=new OpenCodeAgentSession({cwd:"/repo",serverUrl:fixture.url});
+    await assert.rejects(broken.start({providerSessionId:"ses_broken",model:PROVIDER_DEFAULT}),error=>!(error instanceof HarnessSessionLostError)&&/database is locked/.test(error.message));
+    await broken.close();
+    assert.equal(fixture.called("POST /session").length,0,"the session never starts a new one of its own");
+  }finally{await fixture.close()}
+});
+
+test("an OpenCode prompt is delivered once OpenCode records its user message, and a command, which leaves Trebell's context behind, never is",async()=>{
+  let release;const held=new Promise(resolve=>{release=resolve});
+  const fixture=await fakeOpenCode({commands:[{name:"review",description:"Review"}],routes:{"POST /session/ses_fixture/message":async({body,json})=>{
+    fixture.emit({type:"message.updated",properties:{sessionID:"ses_fixture",info:{id:body.messageID,sessionID:"ses_fixture",role:"user"}}});
+    await held;json(200,{info:{id:"msg_a1",parentID:body.messageID,role:"assistant",tokens:{}},parts:[{id:"prt_1",type:"text",text:"OK"}]});
+  }}});
+  const {session}=await startedSession(fixture);
+  try{
+    const told=[],context=Object.defineProperty({type:"text",text:"<trebell_context>\nhistory\n</trebell_context>"},NATIVE_PROMPT_PROVENANCE,{value:{kind:"working_context"}});
+    const reply=session.prompt([context,{type:"text",text:"Which word?"}],{onDelivered:()=>told.push("prompt")});
+    await eventually(()=>told.length===1,{message:"the recorded user message did not deliver the prompt"});
+    release();
+    assert.equal((await reply).stopReason,"end_turn");
+    assert.deepEqual(told,["prompt"],"told once, before OpenCode answered");
+    await session.prompt([context,{type:"text",text:"/review the diff"}],{onDelivered:()=>told.push("command")});
+    assert.equal(fixture.called("POST /session/ses_fixture/command").length,1);
+    assert.deepEqual(told,["prompt"],"a command is not a delivery");
   }finally{await session.close();await fixture.close()}
 });
 

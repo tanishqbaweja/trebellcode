@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, query, renameSession } from "@anthropic-ai/claude-agent-sdk";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
 import { fileUriPath } from "./file-uri.mjs";
+import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
@@ -24,6 +25,8 @@ const CLAUDE_USAGE_LIMIT_WINDOWS=Object.freeze({five_hour:"5-hour",seven_day:"7-
 // account or billing issue): that message is the turn's error, not "Claude gave up after repeated API errors."
 const CLAUDE_EXPLAINED_API_ERRORS=new Set(["invalid_request","model_not_found","billing_error","oauth_org_not_allowed","account_on_hold","verification_required","cloud_credential_error"]);
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// What Claude Code prints, and exits on, when it is asked to resume a session it has no transcript for.
+const CLAUDE_NO_CONVERSATION=/No conversation found with session ID/i;
 
 function sdkPermissionMode(mode,collaborationMode="default"){
   if(collaborationMode==="plan")return "plan";
@@ -251,13 +254,16 @@ export class ClaudeAgentSession{
     if(this.pendingFork){this.pendingFork.targetSessionId=this.sessionId;this.startedOnce=false}
     else if(providerSessionId){
       // A thread whose first prompt never ran (for example, started before a restart) has no transcript yet: its first
-      // query creates the session under this id instead of resuming it. A thread with turns Claude recorded always resumes
-      // (T3 Code resumes whenever the native thread has turns): were its transcript gone (Claude Code's cleanup removes old
-      // ones), a fresh session would carry on silently without the conversation the thread shows; resuming fails the turn with
-      // Claude's error instead.
-      this.startedOnce=this.helperSharesRuntime
-        ?this.persistedTurns===true||Boolean(await this.sdk.getSessionInfo(providerSessionId,{dir:this.cwd}).catch(()=>undefined))
-        :this.persistedTurns!==false;
+      // query creates the session under this id instead of resuming it. A thread with turns Claude recorded resumes (T3 Code
+      // resumes whenever the native thread has turns). Its transcript can be gone (Claude Code's cleanup removes old ones):
+      // where this process reads Claude's transcripts, that is a lost session (HarnessSessionLostError), and the relay continues
+      // the thread in one fresh session with its earlier messages handed over, which the turn shows. Elsewhere Claude Code says
+      // so when the turn's query opens (#finishTurn).
+      if(this.helperSharesRuntime){
+        const info=await Promise.resolve().then(()=>this.sdk.getSessionInfo(providerSessionId,{dir:this.cwd})).then(value=>({value}),()=>null);
+        if(this.persistedTurns===true&&info&&!info.value)throw new HarnessSessionLostError(`Claude Code could not resume this conversation: it has no transcript for session ${providerSessionId}.`,{harness:"claude",sessionId:providerSessionId});
+        this.startedOnce=this.persistedTurns===true||Boolean(info?.value);
+      }else this.startedOnce=this.persistedTurns!==false;
     }
     // Slash commands and agents are known before the first message (T3 Code's capability probe): the machine-wide probe the
     // model list already ran is shown at once, and this folder's own probe (project commands and agents) replaces it.
@@ -273,7 +279,17 @@ export class ClaudeAgentSession{
     return {initialize:this.initializeResult,session:this.sessionSetup};
   }
 
-  async prompt(parts,{messageId=null,agent=null}={}){
+  // The relay's one fresh session for a thread whose conversation Claude Code no longer has (it said so as the turn's query
+  // opened): a new conversation under a new id, with this session's model and modes; its first query creates it.
+  async startFresh(){
+    await this.#closeLive();
+    this.pendingFork=null;this.persistedTurns=false;this.startedOnce=false;
+    return this.start({model:this.model});
+  }
+
+  // onDelivered: told once Claude Code has the prompt: queued to a process whose session started, or that process reporting its
+  // session (init) after taking the prompt in.
+  async prompt(parts,{messageId=null,agent=null,onDelivered=null}={}){
     if(this.closed)throw new Error("Claude session is closed");
     // A prompt still opening its query counts as running, so two prompts never share one turn.
     if(this.promptOpening||(this.turn&&!this.turn.settled))throw new Error("Claude Code is still running a turn. Stop it or wait for it to finish first.");
@@ -285,10 +301,16 @@ export class ClaudeAgentSession{
       // Fresh for every offer: Claude acknowledges a prompt whose uuid its transcript already holds without running a turn.
       const promptUuid=UUID.test(String(messageId||""))?String(messageId):randomUUID();
       const turn=this.#newTurn({promptUuid,live});
+      turn.onDelivered=typeof onDelivered==="function"?onDelivered:null;
       this.turn=turn;clearTimeout(this.idleTimer);
       live.input.push({type:"user",message:{role:"user",content},parent_tool_use_id:null,uuid:promptUuid});
+      if(live.sawInit)this.#delivered(turn);
       return turn.promise;
     }finally{this.promptOpening=false}
+  }
+  #delivered(turn){
+    const notify=turn?.onDelivered;if(!notify)return;
+    turn.onDelivered=null;try{notify()}catch{}
   }
 
   // Mid-turn input: a "now" priority user message the running turn takes up at once.
@@ -423,7 +445,8 @@ export class ClaudeAgentSession{
         :this.startedOnce?{resume:this.sessionId}:{sessionId:this.sessionId}),
     };
     const runtime=this.sdk.query({prompt:input,options});
-    const live={query:runtime,input,key,fork,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,pump:null};
+    // resumed: the session this query asked Claude Code to resume, which it may no longer have.
+    const live={query:runtime,input,key,fork,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,pump:null};
     this.live=live;
     live.pump=this.#pump(live);
     Promise.resolve(runtime.initializationResult?.()).then(init=>{
@@ -494,6 +517,12 @@ export class ClaudeAgentSession{
       return turn.reject(Object.assign(new Error(reason),{code:"CLAUDE_REWIND_REJECTED",claudeFork:{...fork}}));
     }
     if(turn.cancelRequested||isAbortResult(result)||isStoppedResult(result))return turn.resolve({stopReason:"cancelled",...ids,raw});
+    // Claude Code that has no transcript for the session it was asked to resume says so and exits before it starts the session
+    // or answers: a lost session, which the relay continues once in a fresh one (startFresh) with the earlier messages handed over.
+    if(live?.resumed&&!live.sawInit&&!turn.emittedText){
+      const said=[String(turn.queryError?.message||""),...(result?userFacingErrors(result):[])].find(text=>CLAUDE_NO_CONVERSATION.test(text));
+      if(said)return turn.reject(new HarnessSessionLostError(`Claude Code could not resume this conversation: ${said.replace(/^Claude Code returned an error result:\s*/,"")}`,{harness:"claude",sessionId:live.resumed}));
+    }
     // A turn the process started is in the transcript even when it failed: its ids let a later turn be edited.
     const failedIds=live?.sawInit&&turn.echoed?ids:{};
     if(!result){
@@ -537,6 +566,7 @@ export class ClaudeAgentSession{
     if(type==="system"&&(subtype==="init"||subtype==="status")&&message.permissionMode)live.permissionMode=message.permissionMode;
     if(type==="system"&&subtype==="init"){
       live.sawInit=true;this.sessionId=message.session_id||this.sessionId;this.startedOnce=true;
+      if(this.turn?.live===live&&!this.turn.settled)this.#delivered(this.turn);
       if(live.fork&&this.pendingFork===live.fork){
         this.pendingFork=null;
         // The process now holds the materialized session: later prompts keep using it instead of reopening for the fork.

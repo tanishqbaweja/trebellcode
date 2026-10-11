@@ -14,6 +14,7 @@ import {
   describeClaudeUsageLimit,
 } from "../src/claude-agent-session.mjs";
 import { createClaudeRepositoryMcp } from "../src/claude-repository-tools.mjs";
+import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
 
 const SOURCE="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -433,19 +434,24 @@ test("Claude threads whose first prompt never ran start their session instead of
   const again=session(existing);await again.start({providerSessionId:SOURCE});
   await again.prompt([{type:"text",text:"next"}]);
   assert.equal(resumed[0].options.resume,SOURCE);assert.equal(resumed[0].options.sessionId,undefined);
-  // A thread with turns Claude recorded resumes even when the host has no transcript for it (Claude Code removed an old one):
-  // a fresh session would answer without the conversation the thread shows.
+  // A thread with turns Claude recorded whose transcript the host no longer has (Claude Code removed an old one) is a lost
+  // session before any query runs: the relay continues it in a fresh session with the earlier messages handed over.
   const {sdk:gone,calls:goneCalls}=fakeClaude({sessionExists:false});
-  const recorded=session(gone,{persistedTurns:true});await recorded.start({providerSessionId:SOURCE});
-  assert.equal(recorded.startedOnce,true);
-  await recorded.prompt([{type:"text",text:"continue"}]);
-  assert.equal(goneCalls[0].options.resume,SOURCE);assert.equal(goneCalls[0].options.sessionId,undefined);
+  const recorded=session(gone,{persistedTurns:true});
+  await assert.rejects(recorded.start({providerSessionId:SOURCE}),error=>error instanceof HarnessSessionLostError&&error.sessionId===SOURCE&&/Claude Code could not resume this conversation/.test(error.message));
+  assert.equal(goneCalls.length,0,"no query was opened");
+  // A transcript store that cannot be read decides nothing: the thread resumes, and Claude Code says at query time if it lost it.
+  const {sdk:unreadable,calls:unreadableCalls}=fakeClaude();
+  const blind=session({...unreadable,getSessionInfo:async()=>{throw new Error("EACCES")}},{persistedTurns:true});await blind.start({providerSessionId:SOURCE});
+  assert.equal(blind.startedOnce,true);
+  await blind.prompt([{type:"text",text:"continue"}]);
+  assert.equal(unreadableCalls[0].options.resume,SOURCE);assert.equal(unreadableCalls[0].options.sessionId,undefined);
   // A thread whose turns Claude never recorded still starts its own session.
   const {sdk:unrecorded,calls:unrecordedCalls}=fakeClaude({sessionExists:false});
   const fresh=session(unrecorded,{persistedTurns:false});await fresh.start({providerSessionId:SOURCE});
   await fresh.prompt([{type:"text",text:"first"}]);
   assert.equal(unrecordedCalls[0].options.sessionId,SOURCE);assert.equal(unrecordedCalls[0].options.resume,undefined);
-  await Promise.all([claude.close(),again.close(),recorded.close(),fresh.close()]);
+  await Promise.all([claude.close(),again.close(),recorded.close(),blind.close(),fresh.close()]);
 });
 
 test("custom or remote Claude homes decide resume from the thread's saved turns, not the host transcript store",async()=>{
@@ -462,6 +468,38 @@ test("custom or remote Claude homes decide resume from the thread's saved turns,
   await assert.rejects(()=>remote.history(),/custom or remote Claude home/);
   await assert.rejects(()=>remote.delete(),/custom or remote Claude home/);
   assert.equal(deleteCalls,0);
+});
+
+// The CLI exits on a resume it has no transcript for, before it starts the session; resumes of other sessions run as usual.
+function exitsOnResume(base,stderr){
+  return {...base,query:args=>{
+    if(!args.options.resume)return base.query(args);
+    const failure=new Error(`Claude Code process exited with code 1. stderr: ${stderr(args.options.resume)}`);
+    return {next:()=>new Promise((_,reject)=>setTimeout(()=>reject(failure),20)),return:()=>Promise.resolve({value:undefined,done:true}),[Symbol.asyncIterator](){return this},async interrupt(){},close(){},async setPermissionMode(){},initializationResult:async()=>({})};
+  }};
+}
+
+test("a Claude transcript lost by query time fails the prompt as a lost session, and startFresh opens a new conversation once",async()=>{
+  const {sdk:base,calls}=fakeClaude();
+  const claude=session(exitsOnResume(base,id=>`No conversation found with session ID: ${id}`),{persistedTurns:true});
+  await claude.start({providerSessionId:SOURCE});
+  assert.equal(claude.startedOnce,true,"the host still lists the transcript");
+  const told=[];
+  await assert.rejects(claude.prompt([{type:"text",text:"continue"}],{onDelivered:()=>told.push("lost")}),error=>error instanceof HarnessSessionLostError&&error.sessionId===SOURCE&&/^Claude Code could not resume this conversation: .*No conversation found with session ID/.test(error.message));
+  assert.deepEqual(told,[],"a prompt Claude never took is not delivered");
+  const fresh=await claude.startFresh();
+  assert.notEqual(fresh.session.sessionId,SOURCE);assert.equal(claude.sessionId,fresh.session.sessionId);assert.equal(claude.startedOnce,false);
+  const result=await claude.prompt([{type:"text",text:"continue"}],{onDelivered:()=>told.push("fresh")});
+  assert.equal(result.stopReason,"end_turn");
+  assert.equal(calls.length,1);assert.equal(calls[0].options.sessionId,fresh.session.sessionId);assert.equal(calls[0].options.resume,undefined,"the new conversation is created, not resumed");
+  assert.deepEqual(told,["fresh"],"delivered once, when Claude Code reported the new session");
+  await claude.prompt([{type:"text",text:"and again"}],{onDelivered:()=>told.push("running")});
+  assert.deepEqual(told,["fresh","running"],"a prompt queued to a started process is delivered at once");
+  // Any other early exit is Claude Code's own failure, not a lost session.
+  const {sdk:other}=fakeClaude();
+  const broken=session(exitsOnResume(other,()=>"Invalid API key · Please run /login"),{persistedTurns:true});await broken.start({providerSessionId:SOURCE});
+  await assert.rejects(broken.prompt([{type:"text",text:"continue"}]),error=>!(error instanceof HarnessSessionLostError)&&/Invalid API key/.test(error.message));
+  await Promise.all([claude.close(),broken.close()]);
 });
 
 test("Claude edit-from-here resumes at the kept turn's cursor in a new session, or starts fresh before the first turn",async()=>{

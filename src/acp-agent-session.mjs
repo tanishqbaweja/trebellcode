@@ -8,6 +8,7 @@ import { cursorEffortOption, cursorEffortValue, cursorFastOption, cursorSwitchVa
 import { acpToolFrame, mergeAcpToolUpdate } from "./acp-tool-state.mjs";
 import { CursorTransportFailure } from "./cursor-transport-failure.mjs";
 import { fileUriPath } from "./file-uri.mjs";
+import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizeModelOptionValues } from "./model-options.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
@@ -27,6 +28,8 @@ const TOOL_STATE_LIMIT=1000;
 const GROK_CANCEL_META=Object.freeze({cancelTrigger:"ctrl_c"});
 const GROK_TASK_PROMPT_PREFIX="task-completed-";
 const GROK_RATE_LIMIT_CODE=-32003;
+// ACP's auth_required error: the harness is signed out (T3 isAcpAuthenticationRequired).
+const ACP_AUTH_REQUIRED=-32000;
 // After Grok's prompt_complete, how long to wait for the session/prompt answer that carries the detail.
 const GROK_COMPLETION_GRACE_MS=3000;
 const GROK_STOP_WAIT_MS=15_000;
@@ -340,11 +343,13 @@ export class AcpAgentSession{
   }
 
   // T3 keeps the id it asked for: session/load and session/resume answers carry no sessionId.
-  // A conversation that cannot be resumed is an error, never a silent new session.
+  // A conversation the harness refuses to load or resume is a lost session (HarnessSessionLostError): the relay continues the
+  // thread in one fresh session with its earlier messages handed over, and the turn says so. A harness that asks to sign in
+  // (ACP auth_required, as T3 reads it) or whose process ended cannot run at all, and fails as it is.
   async #resume(client,sessionId){
     const caps=this.initializeResult?.agentCapabilities||{},canLoad=caps.loadSession===true,canResume=caps.sessionCapabilities?.resume!=null;
     const method=canResume&&(RESUME_FIRST.has(this.runtime)||!canLoad)?"resume":canLoad?"load":null;
-    if(!method)throw new Error(`${this.label} could not resume this conversation: it offers neither session/load nor session/resume.`);
+    if(!method)throw new HarnessSessionLostError(`${this.label} could not resume this conversation: it offers neither session/load nor session/resume.`,{harness:this.runtime,sessionId});
     this.sessionId=sessionId;this.loading=true;
     try{
       const additionalDirectories=this.#additionalDirectories();
@@ -352,7 +357,11 @@ export class AcpAgentSession{
         ?await client.resumeSession({sessionId,cwd:this.cwd,mcpServers:this.mcpServers,additionalDirectories})
         :await client.loadSession({sessionId,cwd:this.cwd,mcpServers:this.mcpServers,additionalDirectories});
     }catch(error){
-      throw Object.assign(new Error(`${this.label} could not resume this conversation: ${error?.message||error}`),{code:error?.code,cause:error});
+      const message=`${this.label} could not resume this conversation: ${error?.message||error}`;
+      if(error?.code===ACP_AUTH_REQUIRED||client.closed)throw Object.assign(new Error(message),{code:error?.code,cause:error});
+      // The harness does not have the session, so closing this one does not ask it to close that session.
+      this.sessionId=null;
+      throw new HarnessSessionLostError(message,{harness:this.runtime,sessionId,code:error?.code,cause:error});
     }finally{this.loading=false}
   }
 
@@ -365,7 +374,9 @@ export class AcpAgentSession{
     return acpConfigSelect(this.sessionSetup,"model").choices.find(choice=>choice.value===model)?.name||model;
   }
 
-  async prompt(content,{messageId=null,agent=undefined}={}){
+  // onDelivered: told once the prompt, with the Trebell context beside it, is written to the harness (a slash command goes
+  // without that context, so it never tells).
+  async prompt(content,{messageId=null,agent=undefined,onDelivered=null}={}){
     if(!this.client||!this.sessionId)throw new Error("ACP session is not started");
     if(this.dead)throw this.deadError||new Error(`${this.label} stopped`);
     this.#finishWake("end_turn");
@@ -378,8 +389,10 @@ export class AcpAgentSession{
     let markDone;const done=new Promise(resolve=>{markDone=resolve});
     const active={promptId:this.runtime==="grok"?randomUUID():null,cancelled:false,transport:this.runtime==="cursor"?new CursorTransportFailure():null,done};
     this.activePrompt=active;
+    // The client writes a request at once or not at all (a closed client refuses it), so an open client after the call has it sent.
+    const sent=()=>{if(!command&&typeof onDelivered==="function"&&!this.client.closed)try{onDelivered()}catch{}};
     try{
-      const result=this.runtime==="grok"?await this.#grokPrompt(parts,active,messageId):await this.client.prompt(this.sessionId,parts,{messageId});
+      const result=this.runtime==="grok"?await this.#grokPrompt(parts,active,messageId,sent):await this.#sendPrompt(parts,messageId,sent);
       if(!command)this.runtimeContextSent=true;
       // Cursor streams a lost backend connection as the reply and ends the turn normally (T3 CursorTransportFailure).
       const failure=active.transport?.failure;
@@ -394,8 +407,13 @@ export class AcpAgentSession{
     }
   }
 
+  #sendPrompt(parts,messageId,sent){
+    const request=this.client.prompt(this.sessionId,parts,{messageId});
+    sent();return request;
+  }
+
   // Races session/prompt against Grok's own completion signals, keyed by the prompt id Trebell sends.
-  #grokPrompt(parts,active,messageId){
+  #grokPrompt(parts,active,messageId,sent=()=>{}){
     const promptId=active.promptId;
     return new Promise((resolve,reject)=>{
       let notice=null,timer=null,done=false;
@@ -409,6 +427,7 @@ export class AcpAgentSession{
         result=>{const failure=notice?grokCompletionFailure(notice):null;failure?finish(false,failure):finish(true,result)},
         error=>finish(false,grokPromptError(error,notice)),
       );
+      sent();
     });
   }
 

@@ -11,6 +11,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk";
 import { createOpencodeClient as createOpencodeV2Client } from "@opencode-ai/sdk/v2";
 import spawn from "cross-spawn";
 import { fileUriPath } from "./file-uri.mjs";
+import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
@@ -448,7 +449,13 @@ export class OpenCodeAgentSession{
     const inventory=await openCodeInventory(this.client,this.v2Client,this.cwd);
     this.trustedDirectories=openCodeTrustedDirectories(inventory.agents);
     let info=null;
-    if(providerSessionId)info=unwrap(await this.client.session.get({path:{id:providerSessionId},query:{directory:this.cwd}}),"session get");
+    if(providerSessionId){
+      const found=await this.client.session.get({path:{id:providerSessionId},query:{directory:this.cwd}});
+      // OpenCode answers a session it no longer has (deleted, or kept by another data folder) with 404: a lost session, which the
+      // relay continues in one fresh session with the thread's earlier messages handed over. Any other failure is OpenCode's own.
+      if(found?.response?.status===404)throw new HarnessSessionLostError(`OpenCode could not resume this conversation: ${openCodeErrorText(found.error)||"session not found"}`,{harness:"opencode",sessionId:providerSessionId});
+      info=unwrap(found,"session get");
+    }
     if(info){this.#useSession(info);await this.#applyPermissionRules()}
     else{
       // No title: OpenCode names the session from its first prompt only when it is created without one (T3 Code).
@@ -469,7 +476,9 @@ export class OpenCodeAgentSession{
   }
   // The composer's reasoning level: an OpenCode variant, sent only with a model that has it.
   setReasoningEffort(value){this.variant=typeof value==="string"&&value.trim()?value.trim():null;return this.variant}
-  async prompt(parts,{agent=null}={}){
+  // onDelivered: told once OpenCode has recorded the prompt with the Trebell context beside it (a slash command sends the user's
+  // attachments only, so it never tells).
+  async prompt(parts,{agent=null,onDelivered=null}={}){
     const given=Array.isArray(parts)?parts:[];
     const bodyParts=openCodeBodyParts(given);
     const selected=toProviderModel(this.model,this.modelMap),modelId=selected?`${selected.providerID}/${selected.modelID}`:null;
@@ -482,6 +491,8 @@ export class OpenCodeAgentSession{
     let response;
     try{
       const command=await this.#slashCommand(given);
+      // OpenCode has the prompt once it records the user message under Trebell's ID (its message.updated event), or answers it.
+      if(!command&&typeof onDelivered==="function"){let told=false;turn.messageID=messageID;turn.delivered=()=>{if(told)return;told=true;try{onDelivered()}catch{}}}
       if(turn.cancelled||turn.stopError)response=PROMPT_STOPPED;
       else{
         const query={directory:this.cwd},path={id:this.sessionId};
@@ -502,6 +513,7 @@ export class OpenCodeAgentSession{
       }
     }catch(error){response={transportError:error}}
     finally{turn.done=true;turn.sent();clearTimeout(turn.timer)}
+    if(response?.data)turn.delivered?.();
     try{
       if(turn.stopError)throw Object.assign(turn.stopError,{providerMessageId:messageID});
       if(response===PROMPT_STOPPED)return cancelled;
@@ -785,6 +797,7 @@ export class OpenCodeAgentSession{
     if(p.sessionID&&p.sessionID!==this.sessionId&&p.info?.sessionID!==this.sessionId)return;
     if(event.type==="message.updated"){
       if(p.info?.sessionID===this.sessionId&&p.info?.id)this.#noteMessage(p.info.id,p.info.role||null);
+      const turn=this.activePrompt;if(turn?.delivered&&p.info?.sessionID===this.sessionId&&p.info?.role==="user"&&p.info?.id===turn.messageID)turn.delivered();
       return;
     }
     // OpenCode 1.x streams a text or reasoning part as message.part.delta events between the part's first update (empty) and its last
