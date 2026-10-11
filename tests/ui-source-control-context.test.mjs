@@ -80,7 +80,7 @@ test("Source Control scopes its errors and cancels Git text written for a previo
   assert.match(panel,/if\(!sourceControlContextCurrent\(previous,context,"writer"\)\)cancelTextRequests\(\)/,"a writer or repository change cancels Git text in flight");
   assert.match(panel,/const \[textRequests\]=useState\(createGitTextRequests\)/,"commit text and pull request text are tracked per kind");
   assert.ok(panel.includes('api("/api/git/commit-message",{method:"POST",body:environmentBody({cwd:projectPath,model}),signal:request.controller.signal})'),"the commit text request can be cancelled");
-  assert.match(panel,/catch\(e\)\{if\(textRequests\.current\(request\)\)setError\(e\.message,"writer"\)\}/,"a Git text error is a writer error, shown only while its request is current");
+  assert.match(panel,/catch\(e\)\{if\(textRequests\.current\(request\)\)setError\(actionErrorUnlessNamed\("Could not generate the commit message",e,NAMES_GIT_TEXT\),"writer"\)\}/,"a Git text error is a writer error, shown only while its request is current");
   const app=readFileSync(join(root,"ui","src","App.jsx"),"utf8");
   assert.match(app,/<SourceControlPanel [^>]*agentRuntimeInstanceId=\{sourceControlRuntimeInstanceId\}/,"the panel knows which harness profile writes the text");
 });
