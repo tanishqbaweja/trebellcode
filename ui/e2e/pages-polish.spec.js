@@ -369,15 +369,28 @@ async function settle(page){
   await expect(page.locator(".tb-skeleton").filter({visible:true})).toHaveCount(0,{timeout:15_000});
   await page.waitForTimeout(400);
 }
+// Settings > Agents & models is read with its harness list answered, not while every row still says "Checking…": the
+// active harness (with its profile), one to switch to, one that needs setup and offers Sign in, and one that is not
+// installed and offers Install. The answer is fixed so the rows do not depend on what this machine has installed.
+const HARNESS_ROWS=[
+  ["native","Trebell Native","native",{},{available:true,installed:true,authenticated:true,version:"Built in"}],
+  ["codex","Codex","codex",{},{available:true,installed:true,authenticated:true,version:"0.46.0"}],
+  ["opencode","OpenCode","http",{canAuthenticate:true},{available:true,installed:true,authenticated:null,message:"Sign-in could not be checked"}],
+  ["claude","Claude Code","claude",{installable:true},{available:false,installed:false,authenticated:false,message:"Not installed on this machine"}],
+];
+const harnessList={selectedRuntime:"native",selectedInstanceId:"native-default",definitions:HARNESS_ROWS.map(([id,name,protocol,flags])=>({id,name,protocol,multipleInstances:true,...flags})),instances:HARNESS_ROWS.map(([kind,name])=>({id:kind+"-default",kind,displayName:name,enabled:true})),statuses:HARNESS_ROWS.map(([kind,name,,,status])=>({id:kind+"-default",kind,name,...status}))};
 
-for(const mode of MODES){
-  test(`small labels and helper lines read at 4.5:1 on every secondary page and panel (${mode})`,async({page,request})=>{
+// The explorer met these at 1600x980; the audit also runs at 1280x800 (where the screenshots are taken) and 900x800, where
+// the pages and panels lay out differently.
+for(const [width,height] of [[1600,980],[1280,800],[900,800]])for(const mode of MODES){
+  test(`small labels and helper lines read at 4.5:1 on every secondary page and panel (${mode} ${width})`,async({page,request})=>{
     test.setTimeout(240_000);
-    await open(page,request,{mode});
+    await page.route(/\/api\/agent-runtimes$/,route=>route.request().method()==="GET"?json(route,harnessList):route.continue());
+    await open(page,request,{mode,width,height});
     const found={};
     const check=async(name,scope="main")=>{
       await settle(page);
-      await page.screenshot({animations:"disabled",path:shots+`contrast-${name}-${mode}-1280.png`});
+      if(width===1280)await page.screenshot({animations:"disabled",path:shots+`contrast-${name}-${mode}-1280.png`});
       found[name]=await page.evaluate(lowContrastText,scope);
     };
     // The tiers stay in order: a field label or a sub-line still reads quieter than the value or the name it goes with.
@@ -412,11 +425,25 @@ for(const mode of MODES){
     const sections=page.getByRole("navigation",{name:"Settings categories"}).getByRole("button");
     await expect(sections.first()).toBeVisible({timeout:15_000});
     const count=await sections.count();expect(count).toBeGreaterThanOrEqual(6);
+    const harness=name=>page.locator(".agent-runtime-option").filter({hasText:name});
     for(let i=0;i<count;i++){
       const section=sections.nth(i);const label=(await section.locator("strong").textContent()).trim();
       await section.click();
       await expect(section).toHaveAttribute("aria-current","page");
+      if(label==="Agents & models"){
+        await expect(page.getByTestId("agent-runtime-skeleton")).toHaveCount(0,{timeout:15_000});
+        await expect(harness("Trebell Native").locator("em")).toHaveText("Active");
+        await expect(harness("Codex").locator("em")).toHaveText("Switch");
+        await expect(harness("OpenCode").locator("em")).toHaveText("Needs setup");
+        await expect(harness("OpenCode").getByRole("button",{name:"Sign in",exact:true})).toBeVisible();
+        await expect(harness("Claude Code").getByRole("button",{name:"Install",exact:true})).toBeVisible();
+        await expect(page.locator(".runtime-profile-row>button.active em")).toHaveText("Active");
+      }
       await check("settings-"+label.toLowerCase().replace(/[^a-z]+/g,"-").replace(/-$/,""));
+      if(label==="Agents & models"){
+        await quieter("Settings harness status line",harness("Codex").locator("small"),harness("Codex").locator("strong"));
+        await quieter("active harness status line",harness("Trebell Native").locator("small"),harness("Trebell Native").locator("strong"));
+      }
       if(i===0)await quieter("open Settings section description",section.locator("small"),section.locator("strong"));
       if(i===1)await quieter("Settings section description",sections.first().locator("small"),sections.first().locator("strong"));
       if(label==="Workspace")await quieter("Settings field label",page.locator(".settings-page .settings-card label:has(>select)"),page.locator(".settings-page .settings-card label>select"));
@@ -425,8 +452,8 @@ for(const mode of MODES){
     await page.getByRole("button",{name:"View licenses"}).click();
     await expect(page.locator(".licenses-list>button").first()).toBeVisible({timeout:15_000});
     await check("licenses");
-    console.log("CONTRAST "+mode+" "+JSON.stringify(found,null,1));
-    console.log("TIERS "+mode+" "+JSON.stringify(tiers,null,1));
-    for(const [name,issues] of Object.entries(found))expect.soft(issues,`${mode} ${name}: text under 4.5:1`).toEqual([]);
+    console.log("CONTRAST "+mode+" "+width+" "+JSON.stringify(found,null,1));
+    console.log("TIERS "+mode+" "+width+" "+JSON.stringify(tiers,null,1));
+    for(const [name,issues] of Object.entries(found))expect.soft(issues,`${mode} ${width} ${name}: text under 4.5:1`).toEqual([]);
   });
 }

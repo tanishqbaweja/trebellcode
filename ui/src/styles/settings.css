@@ -179,6 +179,11 @@
 :root:root .settings-page.redesigned-settings .runtime-profile-row em{flex:none;padding:3px 9px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-weight:600;font-style:normal;white-space:nowrap}
 :root:root .settings-page.redesigned-settings .runtime-profile-row>button.active em{border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:var(--acsoft);color:var(--ac)!important}
 :root:root .settings-page.redesigned-settings .runtime-profile-row>button:not(:first-child){flex:none;min-height:30px!important;padding:5px 11px!important;font-size:12px!important}
+/* The active harness and profile rows sit on an accent tint. In dark mode the muted status line falls under 4.5:1 there,
+   so it steps up one tier (still quieter than the name above it), and the Active pill keeps its accent text and border but
+   not its own tint, which doubled the row's and left the text at 4:1. */
+:root:root:not([data-mode="light"]) .settings-page.redesigned-settings :is(.agent-runtime-option>button.active,.runtime-profile-row>button.active) small{color:var(--tx1)!important}
+:root:root:not([data-mode="light"]) .settings-page.redesigned-settings :is(.agent-runtime-option>button.active em.is-active,.runtime-profile-row>button.active em){background:transparent}
 
 /* Inset editors (profile, custom model, MCP server, theme) */
 :root:root .settings-page.redesigned-settings :is(.runtime-profile-editor,.custom-model-editor,.theme-editor){display:grid;gap:14px;min-width:0;margin:0;padding:16px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--st-inset)!important}
