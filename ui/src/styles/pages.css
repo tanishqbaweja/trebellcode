@@ -874,6 +874,9 @@
 :root:root .secondary-page .history-page>.history-thread-row:first-of-type{border-top-width:1px!important;border-top-left-radius:var(--r-l)!important;border-top-right-radius:var(--r-l)!important}
 :root:root .secondary-page .history-page>.history-thread-row:last-of-type{border-bottom-left-radius:var(--r-l)!important;border-bottom-right-radius:var(--r-l)!important}
 :root:root .secondary-page .history-page>.history-thread-row:hover{border-color:var(--line)!important;background:var(--bg2)!important}
+/* A long title wraps onto a second line and the path stays on one; each carries its whole text as a tooltip. The chip and
+   time stay centred on the row, so their columns line up with the one-line rows. */
+:root:root .secondary-page .history-page>.history-thread-row strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-height:1.4;white-space:normal;overflow-wrap:anywhere}
 /* A focused row draws its ring just inside its own edges. Drawn outside them, the next row (painted after it, and white in
    light mode) covered the ring's bottom edge. */
 :root:root .secondary-page .history-page>.history-thread-row:focus-visible{outline-offset:-2px}

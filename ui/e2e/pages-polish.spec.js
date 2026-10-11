@@ -170,6 +170,45 @@ async function openCodexHistory(page,fixture,threads,{mode="dark",width=1280,hei
   return rows;
 }
 
+for(const [mode,width] of [["dark",1600],["dark",1280],["light",1280],["dark",900],["light",900]]){
+  test(`a long History title and path can be read in full and the rows keep their columns (${mode} ${width})`,async({page})=>{
+    const threads=historyThreads(6,{long:true});
+    const fixture=await startCodex(threads);
+    try{
+      const rows=await openCodexHistory(page,fixture,threads,{mode,width,height:width===1600?980:800});
+      await page.waitForTimeout(300);
+      await page.screenshot({animations:"disabled",path:shots+`history-long-title-${mode}-${width}.png`});
+      const layout=await page.evaluate(()=>{
+        const out=[];const root=document.documentElement;if(root.scrollWidth>root.clientWidth+1)out.push("page scrolls sideways");
+        for(const node of document.querySelectorAll(".secondary-page"))if(node.scrollWidth>node.clientWidth+1)out.push("History scrolls sideways");
+        const rows=[...document.querySelectorAll(".history-thread-row")];
+        for(const row of rows){const b=row.getBoundingClientRect();for(const el of row.querySelectorAll("*")){const r=el.getBoundingClientRect();if(r.width&&(r.right>b.right+1||r.left<b.left-1||r.bottom>b.bottom+1||r.top<b.top-1))out.push(`"${(el.textContent||"").slice(0,40)}" runs outside its row`)}}
+        // The text column starts, and the chip and time columns end, at the same x in every row.
+        const edge=(selector,side)=>[...new Set(rows.map(row=>{const el=row.querySelector(selector);return el&&getComputedStyle(el).display!=="none"?Math.round(el.getBoundingClientRect()[side]):"none"}))];
+        for(const [selector,side] of [["strong","left"],["em","right"],["time","right"]]){const xs=edge(selector,side);if(xs.length>1)out.push(`${selector} ${side} edges differ between rows: ${xs.join(", ")}`)}
+        // The chip and time stay centred on their row, in a row with a two-line title as in a one-line row.
+        for(const row of rows){const b=row.getBoundingClientRect();for(const el of row.querySelectorAll(":scope>em,:scope>time")){if(getComputedStyle(el).display==="none")continue;const r=el.getBoundingClientRect();if(Math.abs((r.top+r.height/2)-(b.top+b.height/2))>2)out.push(`${el.tagName.toLowerCase()} is off the middle of "${row.querySelector("strong").textContent.slice(0,30)}"`)}}
+        return [...new Set(out)];
+      });
+      expect(layout).toEqual([]);
+      // Each long text either shows whole or carries its whole text as a tooltip; the title also wraps instead of stopping
+      // after one line.
+      const read=async locator=>locator.evaluate(el=>{const s=getComputedStyle(el);return {cut:el.scrollWidth>el.clientWidth+1||el.scrollHeight>el.clientHeight+1,tooltip:el.getAttribute("title")||"",lines:Math.round(el.getBoundingClientRect().height/(parseFloat(s.lineHeight)||parseFloat(s.fontSize)*1.21))}});
+      const title=await read(rows.first().locator("strong")),preview=await read(rows.first().locator("span"));
+      console.log("HISTORY-LONG "+mode+" "+width+" "+JSON.stringify({title,preview}));
+      expect(!title.cut||title.tooltip===LONG_TITLE,"the long thread title is cut with no way to read it").toBe(true);
+      expect(!preview.cut||preview.tooltip===LONG_PREVIEW,"the long path is cut with no way to read it").toBe(true);
+      expect(title.tooltip,"the title's tooltip has its whole text").toBe(LONG_TITLE);
+      expect(preview.tooltip,"the path's tooltip has its whole text").toBe(LONG_PREVIEW);
+      expect(title.lines,"the long title wraps onto a second line").toBe(2);
+      // The row still opens its thread, and short rows stay one line each.
+      expect((await read(rows.nth(1).locator("strong"))).lines).toBe(1);
+      await rows.nth(2).click();
+      await expect(page.locator("main")).toContainText("Polish thread 2",{timeout:5000});
+    }finally{await fixture.close()}
+  });
+}
+
 for(const mode of MODES){
   test(`a History row reached by Tab shows its whole focus ring, the bottom edge included (${mode})`,async({page})=>{
     const threads=historyThreads(4);
