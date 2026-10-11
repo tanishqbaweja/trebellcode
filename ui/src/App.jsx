@@ -1092,6 +1092,9 @@ export default function App(){
     const from=nav.index,index=browserEntryIndex(nav,event.state);
     if(index<0)return;
     if(nav.pending===index)nav.pending=null;
+    // An entry whose page changed while the tab was on another one (the entry a reload opened on, when Back came while the app was
+    // starting) still holds its old page in the tab's state: it takes the one shown now.
+    if(navigationKey(event.state.trebellNav)!==navigationKey(nav.entries[index]))writeNavigationEntry("replace",nav.entries[index]);
     runUserAction(()=>showNavigationEntry(index),index<from?"Could not navigate back":"Could not navigate forward");
   });
   useEffect(()=>{

@@ -486,7 +486,8 @@ test.describe("Back and forward to a thread",()=>{
     });
   }
 
-  for(const mode of ["dark","light"])test(`Back to a thread right after a reload, before the thread list has come, opens that thread and keeps its entry (${mode})`,async({page})=>{
+  // Back comes after the app has started (dark) or while it is still starting (light, the themes held), each before the thread list.
+  for(const [mode,starting] of [["dark",false],["light",true]])test(`Back to a thread right after a reload, before the thread list has come, opens that thread and keeps its entry (${starting?"while the app starts":"once the app has started"}, ${mode})`,async({page})=>{
     const threads=fixtureThreads(["Alpha thread","Beta thread"]),delays={},fixture=await startCodex(threads,delays);
     try{
       await openCodex(page,fixture,threads,{mode});
@@ -495,9 +496,13 @@ test.describe("Back and forward to a thread",()=>{
       await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
       await expect.poll(()=>shownEntry(page)).toBe("projects:"+threads[0].id);
       delays.list=2500;
+      let release=()=>{};
+      if(starting){const held=new Promise(resolve=>{release=resolve});await page.route(/\/api\/environment\/themes$/,async route=>{await held;await route.fallback()})}
       await page.reload();
       await expect(page.getByTestId("composer")).toBeVisible();
+      if(!starting)await expect.poll(()=>shownEntry(page)).toBe("chat:");
       await page.goBack();
+      release();
       await expect(headerTitle(page),"Back before the thread list came did not open the thread it went back to").toHaveText("Alpha thread",{timeout:10000});
       await expect.poll(()=>shownEntry(page)).toBe("chat:"+threads[0].id);
       await page.screenshot({animations:"disabled",path:shots+`history-reload-back-thread-${mode}-1280.png`});
