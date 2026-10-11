@@ -168,22 +168,29 @@ test("opening, using and closing thread find never moves the rows being read",as
   }finally{await fixture.close()}
 });
 
-test("turns loaded above a find hit in an item-paged thread carry no outcome pills the rest of it lacks",async({page})=>{
+test("turns loaded above a find hit in an item-paged thread carry the done pills the rest of it shows",async({page})=>{
   test.setTimeout(45_000);
   const needle="middle-otter-marker-552";
   const fixture=await openNativeHistory(page,{turnCount:200,userText:index=>index===5?`Turn ${index} mentions ${needle} here.`:`Routine Native history message ${index}.`});
   try{
-    // Item pages carry no turn outcomes, so the window shows none.
-    const pills=page.locator(".conversation-history [data-testid=turn-outcome]");await expect(pills).toHaveCount(0);
+    // Every reply on screen has its done pill, from the outcome pages beside the item pages. The list is virtual, so the replies
+    // are read where they show, not counted across its chunks.
+    const pillsInView=()=>page.locator(".conversation-scroll").evaluate(node=>{
+      const view=node.getBoundingClientRect();
+      return [...node.querySelectorAll(".history-assistant[data-message-id]")].filter(row=>{const box=row.getBoundingClientRect();return box.height&&box.bottom>view.top&&box.top<view.bottom}).map(row=>row.querySelector("[data-testid=turn-outcome]")?.textContent||"none");
+    });
+    const expectDonePills=async()=>{const pills=await pillsInView();expect(pills.length).toBeGreaterThan(0);expect(pills).toEqual(pills.map(()=>"done · 1.0s"))};
+    await expectDonePills();
     await page.keyboard.press("Control+f");const find=page.getByTestId("thread-find-bar");await page.getByTestId("thread-find-input").fill(needle);
     await expect(find.locator(".thread-find-count")).toHaveText("1 / 1",{timeout:10_000});await expect(page.locator('[data-message-id="find-user-5"]')).toHaveClass(/find-active/);
     await expect(page.getByTestId("history-gap")).toBeVisible();
-    // The turn pages loaded above the hit add none either: no turn shows a pill the others cannot.
+    // The turn pages loaded above the hit carry theirs too: no turn lacks what the others show.
     await page.locator(".conversation-scroll").evaluate(node=>{node.scrollTop=0});await frames(page,4);
     await page.getByRole("button",{name:"Load earlier messages"}).click();
     await expect(page.locator('[data-message-id="find-user-0"]')).toBeAttached({timeout:10_000});await frames(page,8);
     await expect(page.locator('[data-message-id="find-answer-4"]')).toBeVisible();
-    await expect(pills).toHaveCount(0);
+    await expectDonePills();
+    for(const index of [0,1,2,3,4])await expect(page.locator(`[data-message-id="find-answer-${index}"] [data-testid=turn-outcome]`)).toHaveText("done · 1.0s");
     await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-loaded-above-hit-1280x800.png"});
   }finally{await fixture.close()}
 });

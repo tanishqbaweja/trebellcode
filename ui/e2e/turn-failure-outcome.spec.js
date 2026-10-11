@@ -5,13 +5,12 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WebSocketServer } from "ws";
 import { attachAgentRelay } from "../../src/agent-relay.mjs";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
-import { attachCodexRelay } from "../../src/codex-relay.mjs";
 import { ContextEngine } from "../../src/context-engine.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
+import { routeCodexApp, startCodexHarness } from "./codex-history-harness.js";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 mkdirSync(auditDir,{recursive:true});
@@ -138,79 +137,6 @@ test("a relay turn that failed without a reply says how it ended once the next t
   }finally{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 
-// A Codex app-server that keeps the turns it runs, so a reload reads them back: it opens threads on item pages (with a turn
-// cursor beside them, as Codex does) and answers turn/start by running the next scripted turn. An item page holds the items
-// of pageTurns turns and a turn page outcomeTurns turns (all of them by default), newest first. A step can start a turn of
-// the harness's own, with no user message, as a goal continuing does.
-async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinity,outcomeTurns=Infinity}={}){
-  const turns=[...seed];let socket=null,interrupt=null,userSteps=0;
-  const emit=message=>socket?.send(JSON.stringify(message));
-  const now=()=>Math.floor(Date.now()/1000);
-  const toolsFor=turn=>({
-    emit:value=>emit(value),threadId:thread.id,
-    finish:(status,extra={})=>{Object.assign(turn,{status,completedAt:now(),durationMs:2100,...extra});emit({method:"turn/completed",params:{threadId:thread.id,turn:{...turn}}})},
-    onInterrupt:handler=>{interrupt=handler},
-    startOwnTurn:step=>{
-      const own={id:"codex-turn-"+(turns.length+1),status:"inProgress",startedAt:now(),completedAt:null,durationMs:null,error:null,items:[]};
-      turns.push(own);emit({method:"turn/started",params:{threadId:thread.id,turn:{...own,items:[]}}});setTimeout(()=>step(own,toolsFor(own)),60);
-    },
-  });
-  // A cursor "<kind>@<n>" starts a page n turns back from the newest; the page names the cursor of the one before it.
-  const pageOf=(kind,cursor,size)=>{
-    const [name,offset]=String(cursor||"").split("@"),start=Number(offset);if(name!==kind||!Number.isInteger(start))return {data:[],next:null};
-    const end=start+size;return {data:[...turns].reverse().slice(start,end),next:end<turns.length?kind+"@"+end:null};
-  };
-  const upstreamHttp=createServer(),wss=new WebSocketServer({noServer:true});
-  upstreamHttp.on("upgrade",(req,raw,head)=>wss.handleUpgrade(req,raw,head,ws=>wss.emit("connection",ws,req)));
-  wss.on("connection",ws=>{
-    socket=ws;ws.on("message",raw=>{
-      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
-      const params=message.params||{};let result={},after=null;
-      if(message.method==="initialize")result={userAgent:"turn-failure-codex-fixture"};
-      else if(message.method==="thread/list")result={data:[{...thread,turns:[]}],nextCursor:null};
-      else if(message.method==="thread/resume")result=params.excludeTurns===false?{thread:{...thread,turns}}:{thread:{...thread,turns:[],historyMode:"paginated"},itemsBackwardsCursor:turns.length?"items@0":null,turnsBackwardsCursor:turns.length?"turns@0":null};
-      else if(message.method==="thread/items/list"){const page=pageOf("items",params.cursor,pageTurns);result={data:page.data.flatMap(turn=>turn.items.map(item=>({turnId:turn.id,item})).reverse()),nextCursor:page.next,backwardsCursor:"items@0"}}
-      else if(message.method==="thread/turns/list"){const page=pageOf("turns",params.cursor,outcomeTurns);result={data:page.data.map(turn=>({...turn,items:params.itemsView==="notLoaded"?[]:turn.items,itemsView:params.itemsView||"summary"})),nextCursor:page.next,backwardsCursor:null}}
-      else if(message.method==="turn/start"){
-        const step=script[userSteps++],id="codex-turn-"+(turns.length+1),text=(params.input||[]).map(part=>part?.text||"").join("");
-        const turn={id,status:"inProgress",startedAt:now(),completedAt:null,durationMs:null,error:null,items:[{id:"user-"+id,type:"userMessage",content:[{type:"text",text}]}]};
-        turns.push(turn);result={turn:{...turn,items:[]}};after=()=>step(turn,toolsFor(turn));
-      }
-      else if(message.method==="turn/interrupt"){const handler=interrupt;interrupt=null;after=()=>handler?.()}
-      else if(message.method==="thread/goal/get")result={goal:null};
-      else if(message.method==="thread/attachment/list"||message.method==="thread/queue/list")result={data:[],nextCursor:null};
-      else if(message.method==="thread/timeline/list")result={data:[],nextCursor:null,activeRealtimeSessionAtPageStart:null};
-      else if(message.method==="skills/list"||message.method==="collaborationMode/list"||message.method==="threadSection/list")result={data:[]};
-      else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
-      else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
-      ws.send(JSON.stringify({id:message.id,result}));
-      if(after)setTimeout(after,60);
-    });
-  });
-  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
-  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
-  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
-  return {
-    wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",turns,
-    async close(){relay.close();try{socket?.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])},
-  };
-}
-
-// The app's own API answered for a Codex window on the harness, with the thread outside any project.
-async function routeCodexApp(page,harness,thread){
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"};
-  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"turn-failure-codex",activeEnvironmentId:null,activeEnvironment:null}));
-  await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}}));
-  await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
-  await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,{projects:[]}));
-  await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?route.request().postDataJSON()?.patch||{}:{projectless:true,environmentId:null}));
-  await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,{supported:false}));
-  await page.route(/\/api\/verification\/plan-turn$/,route=>json(route,{supported:false}));
-  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
-  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
-  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
-}
-
 test("Codex turns that failed or were stopped without a reply keep their outcome rows live and after a reload",async({page})=>{
   test.setTimeout(90_000);
   const thread={id:"codex-turn-failure",name:"Codex turn failure",preview:"Failed, stopped, then answered",cwd:process.cwd(),status:{type:"idle"},model:"test/coding-fast",createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
@@ -267,8 +193,9 @@ test("Codex turns that failed or were stopped without a reply keep their outcome
     await expect(failed.getByTestId("turn-outcome")).toHaveText("failed · 2.1s");await expect(failed.locator(".turn-outcome-message")).toHaveText(shown);
     await expect(failed.getByTestId("assistant-heading")).toHaveText("Codex");
     await expect(stopped.getByTestId("turn-outcome")).toHaveText("stopped · 2.1s");await expect(stopped.locator(".turn-outcome-message")).toHaveCount(0);
-    // An item-paged thread still shows no done pill: only turn pages carry those.
-    await expect(page.locator(".conversation-history .turn-outcome.tone-ok")).toHaveCount(0);
+    // The answered turn's reply has its done pill after the reload too: the outcome pages beside the item pages carry it.
+    const answered=page.locator(".history-assistant:not([data-testid=turn-outcome-row])").filter({hasText:"Third turn answer."});
+    await expect(answered.getByTestId("turn-outcome")).toHaveText("done · 2.1s");await expect(page.locator(".conversation-history .turn-outcome.tone-ok")).toHaveCount(1);
     await auditOutcomeRows(page,"turn-failure-codex-reloaded",rows);
   }finally{await harness.close()}
 });
@@ -311,11 +238,12 @@ test("older item pages read how their turns ended from turn pages read on just a
     expect(stoppedBox.y).toBeGreaterThanOrEqual(stopping.y+stopping.height-1);expect(stoppedBox.y+stoppedBox.height).toBeLessThanOrEqual(middle.y+1);
     await failed.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"turn-failure-codex-older-pages-dark-1600x980.png"});
 
-    // The oldest page's turn answered: one more outcome page, no new row, and still no done pill on an item-paged thread.
+    // The oldest page's turn answered: one more outcome page, no new row, and each answered turn's reply has its done pill.
     await page.getByRole("button",{name:"Load earlier messages",exact:true}).click();
     await expect(page.getByText("Oldest answer.",{exact:true})).toBeVisible({timeout:10_000});
     expect(outcomeCursors).toEqual(["turns@0","turns@1","turns@2","turns@3","turns@4"]);
-    await expect(rows).toHaveCount(2);await expect(page.locator(".conversation-history .turn-outcome.tone-ok")).toHaveCount(0);
+    await expect(rows).toHaveCount(2);await expect(page.locator(".conversation-history .turn-outcome.tone-ok")).toHaveCount(3);
+    for(const answer of ["Oldest answer.","Middle answer.","Newest answer."])await expect(page.locator(".history-assistant:not([data-testid=turn-outcome-row])").filter({hasText:answer}).getByTestId("turn-outcome")).toHaveText("done · 2.1s");
   }finally{await harness.close()}
 });
 

@@ -142,7 +142,8 @@ test("the newest message stays in view when the view shrinks, and a view scrolle
     await expect.poll(newestInView).toBe(true);
     await page.screenshot({animations:"disabled",path:auditDir+"conversation-follows-end-terminal-open-dark-1280x800.png",fullPage:true});
 
-    await page.setViewportSize({width:1280,height:700});
+    // Shrunk as far as the newest reply, its done pill under it included, still fits between the view's top and the composer.
+    await page.setViewportSize({width:1280,height:760});
     await expect.poll(distanceFromEnd).toBeLessThanOrEqual(1);
     await expect.poll(newestInView).toBe(true);
     await page.setViewportSize({width:1280,height:800});
