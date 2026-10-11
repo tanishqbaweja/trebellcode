@@ -18,7 +18,9 @@
   color-scheme:dark;
   --bg0:#070709; --bg1:#0b0b0e; --bg2:#101014; --bg3:#16161b; --bg4:#1c1c22;
   --line:#1e1e26; --line2:#2c2c36;
-  --tx0:#f2f2f5; --tx1:#b6b6c2; --tx2:#7e7e8a; --tx3:#6e6e7a;
+  /* Small labels and helper lines use --tx2, which keeps 4.5:1 up to the --bg3 chips (the design's #7e7e8a sat at 4.49:1
+     there); --tx3 is for icons, placeholders and large text. */
+  --tx0:#f2f2f5; --tx1:#b6b6c2; --tx2:#80808c; --tx3:#6e6e7a;
   --ac:#8b7cff; --ac2:#6e5bef; --acsoft:rgba(139,124,255,.14); --acglow:rgba(124,92,255,.32);
   /* Fill of primary buttons with a text label. The --ac2 to --ac sweep leaves white 12-13px text at 3.3:1 at its light end
      in dark mode, so dark runs the same sweep a step deeper: at least 4.5:1 across it, hover brightening included. */

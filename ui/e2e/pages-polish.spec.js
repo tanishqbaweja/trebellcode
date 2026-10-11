@@ -301,3 +301,132 @@ for(const [mode,width] of [["dark",1600],["dark",1280],["light",1280],["dark",90
   });
 }
 
+// ============ Contrast: small text on every secondary page ============
+// Every text run needs 4.5:1 (3:1 from 24px, or 18.66px bold) against what is painted under it: its own and its
+// ancestors' translucent backgrounds laid over the first opaque one, each stop of a gradient counted, and its opacity and
+// its ancestors' applied. Disabled controls and code are left out, as in the explorer's audit this is adapted from.
+// Given a selector it lists the text under the threshold in that part of the page; given an element it returns the lowest
+// ratio of that element's own text.
+function lowContrastText(target){
+  const parse=value=>{
+    const text=String(value).trim();let match=text.match(/^rgba?\(([^)]+)\)$/);
+    if(match){const p=match[1].split(/[\s,/]+/).filter(Boolean).map(Number);return {r:p[0],g:p[1],b:p[2],a:p.length>3?p[3]:1}}
+    match=text.match(/^color\(srgb\s+([^)]+)\)$/);
+    if(match){const p=match[1].split(/[\s/]+/).filter(Boolean).map(Number);return {r:p[0]*255,g:p[1]*255,b:p[2]*255,a:p.length>3?p[3]:1}}
+    return null;
+  };
+  const over=(top,base)=>({r:top.r*top.a+base.r*(1-top.a),g:top.g*top.a+base.g*(1-top.a),b:top.b*top.a+base.b*(1-top.a),a:1});
+  const stops=image=>(String(image).match(/rgba?\([^)]*\)|color\(srgb[^)]*\)/g)||[]).map(parse).filter(Boolean);
+  // The colors that can be under an element's text: one per gradient stop, or the one flat color.
+  const backdrops=el=>{
+    const layers=[];
+    for(let node=el;node;node=node.parentElement){
+      const style=getComputedStyle(node);
+      const gradient=/gradient\(/.test(style.backgroundImage)?stops(style.backgroundImage):[];
+      if(gradient.length){layers.push({stops:gradient});if(gradient.every(stop=>stop.a>=1))break}
+      const color=parse(style.backgroundColor);
+      if(color&&color.a>0){layers.push({stops:[color]});if(color.a>=1)break}
+    }
+    let bases=[{r:255,g:255,b:255,a:1}];
+    for(const layer of layers.reverse())bases=layer.stops.flatMap(stop=>bases.map(base=>over(stop,base)));
+    return bases;
+  };
+  const luminance=c=>{const f=v=>{v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4)};return 0.2126*f(c.r)+0.7152*f(c.g)+0.0722*f(c.b)};
+  const ratioOf=(a,b)=>{const x=luminance(a)+.05,y=luminance(b)+.05;return x>y?x/y:y/x};
+  const visible=el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>1&&r.height>1&&s.visibility!=="hidden"&&s.display!=="none"&&(typeof el.checkVisibility!=="function"||el.checkVisibility({opacityProperty:true,visibilityProperty:true}))};
+  // A brightness() filter (a hovered primary button) lightens the text and the fill under it alike; the fills it is measured
+  // over here are the button's own opaque ones.
+  const brightness=el=>{let factor=1;for(let p=el;p;p=p.parentElement){const match=getComputedStyle(p).filter.match(/brightness\(([\d.]+)\)/);if(match)factor*=Number(match[1])}return factor};
+  const lit=(c,factor)=>factor===1?c:{...c,r:Math.min(255,c.r*factor),g:Math.min(255,c.g*factor),b:Math.min(255,c.b*factor)};
+  const lowestOf=el=>{
+    const fg=parse(getComputedStyle(el).color);if(!fg)return null;
+    let opacity=1;for(let p=el;p&&p!==document.documentElement;p=p.parentElement)opacity*=Number(getComputedStyle(p).opacity||1);
+    const factor=brightness(el);
+    let lowest=Infinity,under=null;
+    for(const raw of backdrops(el)){const base=lit(raw,factor);const ratio=ratioOf(over({...lit(fg,factor),a:fg.a*opacity},base),base);if(ratio<lowest){lowest=ratio;under=base}}
+    return {lowest,under};
+  };
+  if(target instanceof Element)return Number(lowestOf(target).lowest.toFixed(2));
+  const scope=document.querySelector(target)||document.body;
+  const issues=[],seen=new Set();
+  const walker=document.createTreeWalker(scope,NodeFilter.SHOW_TEXT);
+  for(let node=walker.nextNode();node;node=walker.nextNode()){
+    const text=node.textContent.trim();if(text.length<2)continue;
+    const el=node.parentElement;if(!el||!visible(el)||el.closest("[aria-hidden=true],[disabled],:disabled,svg,pre,code"))continue;
+    const style=getComputedStyle(el);const measured=lowestOf(el);if(!measured)continue;
+    const size=parseFloat(style.fontSize),bold=Number(style.fontWeight)>=700;
+    const need=size>=24||(size>=18.66&&bold)?3:4.5;
+    const {lowest,under}=measured;
+    if(lowest>=need)continue;
+    const where=`${el.tagName.toLowerCase()}.${String(el.className).trim().split(/\s+/)[0]||""} in ${el.parentElement?.tagName.toLowerCase()}.${String(el.parentElement?.className||"").trim().split(/\s+/)[0]||""}`;
+    const key=where+"|"+text.slice(0,30);if(seen.has(key))continue;seen.add(key);
+    issues.push(`${lowest.toFixed(2)}:1 (needs ${need}) "${text.slice(0,48)}" ${size}px ${style.color} on rgb(${Math.round(under.r)},${Math.round(under.g)},${Math.round(under.b)}) ${where}`);
+  }
+  return issues.slice(0,80);
+}
+async function settle(page){
+  await expect(page.locator(".surface-loading")).toHaveCount(0,{timeout:15_000});
+  await expect(page.locator(".tb-skeleton").filter({visible:true})).toHaveCount(0,{timeout:15_000});
+  await page.waitForTimeout(400);
+}
+
+for(const mode of MODES){
+  test(`small labels and helper lines read at 4.5:1 on every secondary page and panel (${mode})`,async({page,request})=>{
+    test.setTimeout(240_000);
+    await open(page,request,{mode});
+    const found={};
+    const check=async(name,scope="main")=>{
+      await settle(page);
+      await page.screenshot({animations:"disabled",path:shots+`contrast-${name}-${mode}-1280.png`});
+      found[name]=await page.evaluate(lowContrastText,scope);
+    };
+    // The tiers stay in order: a field label or a sub-line still reads quieter than the value or the name it goes with.
+    const tiers=[];
+    const quieter=async(what,quiet,loud)=>{
+      const low=await quiet.first().evaluate(lowContrastText),high=await loud.first().evaluate(lowContrastText);
+      tiers.push(`${what}: ${low} under ${high}`);
+      expect.soft(low,`${mode} ${what} reads quieter than what it goes with`).toBeLessThan(high);
+    };
+    for(const label of ["Projects","History","Usage","Environments"]){await nav(page,label).click();await check(label.toLowerCase())}
+    await quieter("Environments field label",page.locator(".environments-page .environment-create>label"),page.locator(".environments-page .environment-create select"));
+    await quieter("Environments card sub-line",page.locator(".environments-page .capability-card span").filter({hasText:/^This machine$/}),page.locator(".environments-page .capability-card strong").filter({hasText:/^Local$/}));
+    // A primary button keeps its white label readable while hovered, when its fill brightens.
+    const add=page.locator(".environments-page .environment-create .primary");
+    await add.hover();
+    await add.evaluate(el=>{for(const animation of el.getAnimations())animation.finish()});
+    await expect.poll(()=>add.evaluate(el=>getComputedStyle(el).filter)).toContain("brightness");
+    const hovered=await add.evaluate(lowContrastText);
+    tiers.push(`hovered primary button: ${hovered}`);
+    expect.soft(hovered,`${mode} hovered "Add environment" text`).toBeGreaterThanOrEqual(4.5);
+    await page.mouse.move(0,0);
+    await nav(page,"Projects").click();
+    await quieter("Projects field label",page.locator(".projects-page .project-overrides label"),page.locator(".projects-page .project-overrides select"));
+    for(const label of ["Agents","Browser"]){
+      await nav(page,label).click();
+      await expect(page.getByTestId("right-panel")).toBeVisible();
+      await check(label.toLowerCase(),"[data-testid=right-panel]");
+    }
+    const close=page.getByRole("button",{name:"Close right panel"});
+    if(await close.count())await close.click();
+    await nav(page,"Settings").click();
+    const sections=page.getByRole("navigation",{name:"Settings categories"}).getByRole("button");
+    await expect(sections.first()).toBeVisible({timeout:15_000});
+    const count=await sections.count();expect(count).toBeGreaterThanOrEqual(6);
+    for(let i=0;i<count;i++){
+      const section=sections.nth(i);const label=(await section.locator("strong").textContent()).trim();
+      await section.click();
+      await expect(section).toHaveAttribute("aria-current","page");
+      await check("settings-"+label.toLowerCase().replace(/[^a-z]+/g,"-").replace(/-$/,""));
+      if(i===0)await quieter("open Settings section description",section.locator("small"),section.locator("strong"));
+      if(i===1)await quieter("Settings section description",sections.first().locator("small"),sections.first().locator("strong"));
+      if(label==="Workspace")await quieter("Settings field label",page.locator(".settings-page .settings-card label:has(>select)"),page.locator(".settings-page .settings-card label>select"));
+    }
+    await sections.first().click();
+    await page.getByRole("button",{name:"View licenses"}).click();
+    await expect(page.locator(".licenses-list>button").first()).toBeVisible({timeout:15_000});
+    await check("licenses");
+    console.log("CONTRAST "+mode+" "+JSON.stringify(found,null,1));
+    console.log("TIERS "+mode+" "+JSON.stringify(tiers,null,1));
+    for(const [name,issues] of Object.entries(found))expect.soft(issues,`${mode} ${name}: text under 4.5:1`).toEqual([]);
+  });
+}
