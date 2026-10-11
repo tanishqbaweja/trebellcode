@@ -928,8 +928,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const storedCompaction=thread.providerMeta?.nativeCompaction||null;
       const compactionBoundary=storedCompaction?.throughTurnId&&thread.turns?.some(turn=>String(turn.id)===String(storedCompaction.throughTurnId))?storedCompaction:null;
       const compactedMessage=compactionBoundary?nativeCompactionMessage(compactionBoundary.summary):null;
+      // Native updates name the session that sent them, so a draft's frames belong to the turn that session is running.
       const runtime=new NativeAgentSession({
-        ...common,provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),semanticCompletionGate:true,tools,executeTool,toolOutputStore:outputStore,
+        ...common,streamDrafts:true,onUpdate:params=>handleUpdate(thread.id,params,runtime),provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),semanticCompletionGate:true,tools,executeTool,toolOutputStore:outputStore,
         onClose:()=>mcpBroker.close(),
         providerTurn:request=>nativeProviderTurn(request),initialMessages:[
           {role:"system",content:nativeSystemPrompt({tools,permissionMode:effectivePermissionMode,projectless})},
@@ -1016,6 +1017,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       threadStore.updateTurn(thread.id,turn.id,{modelTurns:Math.max(0,Math.floor(count))});
     };
     const settlement=promptPromise.then(result=>{
+      endNativeDraft(session,thread.id,turn.id);
       endReasoning(thread.id,turn.id);persistUsage(result);persistModelTurns(result?.raw?.modelTurns);
       const providerMessageId=result?.providerMessageId||result?.userMessageId||null;
       const providerUserMessageId=result?.userMessageId||null;
@@ -1025,6 +1027,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadMetadata(thread.id)?.status||{type:"idle"}});
       if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
     }).catch(error=>{
+      endNativeDraft(session,thread.id,turn.id);
       endReasoning(thread.id,turn.id);
       if(error?.code==="CLAUDE_REWIND_REJECTED"){
         // The next turn rebuilds the Claude session from the thread's restored provider state.
@@ -1076,6 +1079,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       try{
         const goal=assertGoalBudget(thread.id),session=await ensureSession(thread,context,{model:thread.model||null});const turn=threadStore.restartTurn(thread.id,recovery.turnId);
         if(!turn)throw new Error("Interrupted turn was not found");
+        if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;
         session.__assistant="";session.__usage=null;emit("turn/started",{threadId:thread.id,turn});emit("thread/status/changed",{threadId:thread.id,status:{type:"active",activeFlags:[]}});
         const continueText="Continue where you left off.";
         const prompt=await contextualAgentPrompt([{type:"text",text:continueText}],await withDurableContext(thread.id,{},continueText),promptContextOptions(thread,session));
@@ -1092,14 +1096,51 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }
   }
 
-  function handleUpdate(threadId,params){
+  // A Native draft is the reply of one provider call shown while it streams, as deltas of the turn's assistant item with the
+  // offset each one starts at. The first piece goes out at once and later ones at most every 50 ms; a draft the session
+  // withdraws after showing anything is cleared with a reset frame, which carries no text. Drafts are checked against the
+  // turn the emitting session runs, so they never read the stored thread.
+  function handleNativeDraft(threadId,update,source){
+    const turnId=source?.__liveTurnId;if(!turnId)return;
+    if(update.sessionUpdate==="agent_message_draft_reset"){if(source.__nativeDraft&&source.__nativeDraft.draftId===update.draftId)dropNativeDraft(source,threadId,String(update.reason||"withdrawn"));return}
+    const text=update.content?.type==="text"?String(update.content.text||""):"";if(!text||!update.draftId)return;
+    let state=source.__nativeDraft;
+    if(state&&(state.draftId!==update.draftId||state.turnId!==turnId)){dropNativeDraft(source,threadId,"replaced");state=null}
+    if(!state)state=source.__nativeDraft={draftId:update.draftId,turnId,itemId:"assistant-"+turnId,emitted:"",pending:"",timer:null};
+    state.pending+=text;
+    if(!state.emitted){endReasoning(threadId);flushNativeDraft(source,threadId);return}
+    if(!state.timer){state.timer=setTimeout(()=>{if(source.__nativeDraft===state){state.timer=null;flushNativeDraft(source,threadId)}},50);state.timer.unref?.()}
+  }
+  function flushNativeDraft(source,threadId){
+    const state=source?.__nativeDraft;if(!state)return;if(state.timer){clearTimeout(state.timer);state.timer=null}if(!state.pending)return;
+    emit("item/agentMessage/delta",{threadId,turnId:state.turnId,itemId:state.itemId,delta:state.pending,offset:state.emitted.length});state.emitted+=state.pending;state.pending="";
+  }
+  function dropNativeDraft(source,threadId,reason){
+    const state=source?.__nativeDraft;if(!state)return;if(state.timer)clearTimeout(state.timer);delete source.__nativeDraft;
+    if(state.emitted)emit("item/agentMessage/reset",{threadId,turnId:state.turnId,itemId:state.itemId,reason,chars:state.emitted.length});
+  }
+  // The turn's last draft ends with it; a session that already runs a later turn keeps that turn's draft.
+  function endNativeDraft(session,threadId,turnId){
+    if(!session||session.__liveTurnId!==turnId)return;dropNativeDraft(session,threadId,"turn_end");delete session.__liveTurnId;
+  }
+
+  function handleUpdate(threadId,params,source=null){
+    const draftType=params?.update?.sessionUpdate;
+    if(draftType==="agent_message_draft_delta"||draftType==="agent_message_draft_reset")return handleNativeDraft(threadId,params.update,source);
     const update=params?.update||{};const thread=threadStore.get(threadId);if(!thread)return;const turnId=thread.turns?.at(-1)?.id||null;
     const type=update.sessionUpdate;
     if(type==="tool_call"||type==="tool_call_update")endReasoning(threadId);
     if(type==="agent_message_chunk"){
       const session=sessions.get(threadId),text=agentTextAfterToolCall(session,update.content?.type==="text"?update.content.text||"":"");
       if(text)endReasoning(threadId);
-      if(text&&turnId)emit("item/agentMessage/delta",{threadId,turnId,delta:text});
+      // The final reply after a shown draft sends only what the draft did not show, or clears the draft and sends it whole.
+      const holder=source||session,draft=holder?.__nativeDraft?holder.__nativeDraft:null;
+      if(draft){flushNativeDraft(holder,threadId);delete holder.__nativeDraft}
+      if(draft?.emitted&&text.startsWith(draft.emitted)){const rest=text.slice(draft.emitted.length);if(rest)emit("item/agentMessage/delta",{threadId,turnId:draft.turnId,itemId:draft.itemId,delta:rest,offset:draft.emitted.length})}
+      else{
+        if(draft?.emitted)emit("item/agentMessage/reset",{threadId,turnId:draft.turnId,itemId:draft.itemId,reason:"replaced",chars:draft.emitted.length});
+        if(text&&turnId)emit("item/agentMessage/delta",{threadId,turnId,delta:text});
+      }
       if(session)session.__assistant=(session.__assistant||"")+text;
     }else if(type==="agent_thought_chunk"){
       const text=update.content?.type==="text"?String(update.content.text||""):"";
@@ -1603,6 +1644,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         session.setContextWindow(contextWindow);
       }
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
+      if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;
       // The stored message is the redacted one: a secret pasted into the first message never reaches the thread list.
       if(!thread.name&&!thread.preview){const stored=turn?.items?.find(item=>item?.type==="userMessage")?.content?.[0]?.text||"",preview=agentThreadTitleSeed(params.input||[],stored);if(preview)threadStore.update(thread.id,{preview})}
       session.__usage=null;

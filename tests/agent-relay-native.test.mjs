@@ -11,6 +11,7 @@ import { WebSocket } from "ws";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
+import { NATIVE_REPLY_STREAM } from "../src/native-agent-session.mjs";
 import { ContextEngine } from "../src/context-engine.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 import { RETIRED_MODEL_PROVIDERS } from "../src/legacy-provider-migration.mjs";
@@ -788,4 +789,119 @@ test("Trebell Native runs a Supervised command after Allow session and runs it a
     answer(askedAgain,"decline");await finished(third);
     assert.equal(runItem(2).success,false,"a declined command does not run");
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+// Native reply drafts through the relay. The fake provider drives the session's stream hook the way a provider stream does.
+const DRAFT_REPLY="Trebell Native keeps one thread per conversation, and each reply comes from the model that thread names.\n\nThe session builds every request from the stored turns and sends it to the thread's provider, which streams the answer back as it is written.";
+const SECOND_REPLY="The retried call answered on its own.\n\nNothing the first attempt streamed stays on screen: its draft was cleared before the second attempt began, and this text started again from the first character.";
+const STEERED_REPLY="The steered call starts a new draft.\n\nThe draft of the call the steering stopped was cleared, so this reply streams from its first character and nothing of the stopped call is left in it.";
+const OTHER_REPLY="The provider returned a different final text than it streamed, so the streamed draft was cleared and this reply replaced it whole.";
+
+function nativeDraftFrames(ws){
+  const frames=[];
+  ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method==="item/agentMessage/delta"||message.method==="item/agentMessage/reset")frames.push({method:message.method,...message.params})});
+  return turnId=>frames.filter(frame=>frame.turnId===turnId);
+}
+// What a client shows once a turn's frames are applied: a delta continues at its offset and a reset clears the text.
+function textAfterLastReset(frames){
+  const last=frames.map(frame=>frame.method).lastIndexOf("item/agentMessage/reset");
+  return frames.slice(last+1).filter(frame=>frame.method==="item/agentMessage/delta").map(frame=>frame.delta).join("");
+}
+function assertContiguousDraft(frames){
+  let shown=0;
+  for(const frame of frames){
+    if(frame.method==="item/agentMessage/reset"){assert.equal(frame.chars,shown);assert.equal("delta" in frame,false);shown=0;continue}
+    if(frame.offset==null)continue;
+    assert.equal(frame.offset,shown);assert.equal(frame.itemId,"assistant-"+frame.turnId);shown+=frame.delta.length;
+  }
+}
+let nativeReplyCount=0;
+const nativeReply=(request,text,extra={})=>({id:"draft-reply-"+(++nativeReplyCount),provider:request.provider,model:request.model,text,toolCalls:[],finishReason:"stop",usage:{inputTokens:5,outputTokens:9,totalTokens:14},...extra});
+const untilAborted=signal=>new Promise((_resolve,reject)=>signal.addEventListener("abort",()=>reject(Object.assign(new Error("provider request aborted"),{name:"AbortError"})),{once:true}));
+
+test("Trebell Native streams a reply as deltas of its turn's assistant item while the provider call runs, and ends on the same text",async()=>{
+  const burst=Array.from({length:100},(_,index)=>" part"+index),reply=DRAFT_REPLY+burst.join("");let releaseCall,hookType=null;const released=new Promise(resolve=>{releaseCall=resolve});
+  const fixture=await nativeRelayFixture("trebell-native-draft-stream-",{},async request=>{
+    const hook=request[NATIVE_REPLY_STREAM];hookType=typeof hook;
+    hook({type:"text",delta:DRAFT_REPLY});await released;
+    // A hundred deltas in one burst, well inside the relay's 50 ms window.
+    for(const piece of burst)hook({type:"text",delta:piece});
+    await new Promise(resolve=>setTimeout(resolve,150));
+    return nativeReply(request,reply);
+  });
+  const {rpc,repo,ws,threadStore}=fixture,framesOf=nativeDraftFrames(ws),readThread=threadStore.get.bind(threadStore);let draftReads=0;
+  threadStore.get=id=>{const limit=Error.stackTraceLimit;Error.stackTraceLimit=80;const stack=String(new Error().stack||"");Error.stackTraceLimit=limit;if(/NativeDraft/.test(stack))draftReads++;return readThread(id)};
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",permissionProfile:"auto",input:[{type:"text",text:"Explain how a Native thread picks the model it answers with. Do not change any files."}]})).turn;
+    const first=await rpc.waitFor(message=>message.method==="item/agentMessage/delta"&&message.params?.turnId===turn.id);
+    assert.equal(hookType,"function");assert.deepEqual(first.params,{threadId:thread.id,turnId:turn.id,itemId:"assistant-"+turn.id,delta:DRAFT_REPLY,offset:0});
+    releaseCall();
+    const completed=await rpc.waitFor(message=>message.method==="item/completed"&&message.params?.turnId===turn.id&&message.params?.item?.type==="agentMessage");
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);
+    const frames=framesOf(turn.id);
+    assert.ok(frames.every(frame=>frame.method==="item/agentMessage/delta"&&frame.offset!=null),"only draft deltas, no reset and no second copy of the reply");
+    assert.ok(frames.length>=2&&frames.length<=3,"the burst is coalesced: "+frames.length+" frames");
+    assertContiguousDraft(frames);
+    assert.equal(completed.params.item.id,"assistant-"+turn.id);assert.equal(completed.params.item.text,reply);assert.equal(textAfterLastReset(frames),completed.params.item.text);
+    assert.deepEqual(threadStore.get(thread.id).turns.at(-1).items.filter(item=>item.type==="agentMessage").map(item=>item.text),[reply]);
+    assert.equal(draftReads,0,"draft handling never reads the stored thread");
+  }finally{threadStore.get=readThread;await fixture.close()}
+});
+
+test("Trebell Native clears a shown draft with a reset frame when its call goes another way, and never for a draft it did not show",async()=>{
+  const script=[];let calls=0;
+  const fixture=await nativeRelayFixture("trebell-native-draft-reset-",{},async request=>{calls++;const step=script.shift();assert.ok(step,"unexpected provider call "+calls);return step(request,request[NATIVE_REPLY_STREAM])});
+  const {rpc,repo,ws}=fixture,framesOf=nativeDraftFrames(ws);
+  await writeFile(join(repo,"session.js"),"export class SessionManager { refresh(){ return true; } }\n","utf8");
+  const searchCall={id:"repo-call",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"SessionManager"}'};
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const run=async(text,during=null)=>{
+      const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",permissionProfile:"auto",input:[{type:"text",text}]})).turn;
+      if(during){await rpc.waitFor(message=>message.method==="item/agentMessage/delta"&&message.params?.turnId===turn.id);await during(turn)}
+      const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id,10000);
+      const frames=framesOf(turn.id);assertContiguousDraft(frames);
+      return {turn,frames,status:completed.params.turn.status,resets:frames.filter(frame=>frame.method==="item/agentMessage/reset").map(frame=>frame.reason)};
+    };
+    const completedText=async turnId=>(await rpc.waitFor(message=>message.method==="item/completed"&&message.params?.turnId===turnId&&message.params?.item?.type==="agentMessage")).params.item.text;
+
+    // A tool call: the draft goes as the call turns to tools, and text the call sends after that is never shown.
+    script.push(async(request,hook)=>{hook({type:"text",delta:DRAFT_REPLY});hook({type:"tool_call"});hook({type:"text",delta:" late text"});return nativeReply(request,"",{toolCalls:[searchCall],finishReason:"tool_calls"})},
+      async request=>nativeReply(request,"SessionManager is defined in session.js."));
+    const tool=await run("Where is SessionManager defined? Do not change any files.");
+    assert.deepEqual(tool.resets,["tool_call"]);assert.equal(tool.frames[0].delta,DRAFT_REPLY);assert.ok(tool.frames.every(frame=>!String(frame.delta||"").includes("late text")));
+    assert.equal(textAfterLastReset(tool.frames),"SessionManager is defined in session.js.");assert.equal(await completedText(tool.turn.id),"SessionManager is defined in session.js.");
+
+    // A failed attempt: cleared before the retry, whose own draft starts again at offset 0.
+    script.push(async(request,hook)=>{hook({type:"text",delta:DRAFT_REPLY});throw Object.assign(new Error("HTTP 503: upstream unavailable"),{status:503,retryable:true})},
+      async(request,hook)=>{hook({type:"text",delta:SECOND_REPLY});return nativeReply(request,SECOND_REPLY)});
+    const retried=await run("Explain why the retry happened.");
+    assert.deepEqual(retried.resets,["error"]);assert.deepEqual(retried.frames.filter(frame=>frame.offset===0).map(frame=>frame.delta),[DRAFT_REPLY,SECOND_REPLY]);
+    assert.equal(textAfterLastReset(retried.frames),SECOND_REPLY);assert.equal(await completedText(retried.turn.id),SECOND_REPLY);
+
+    // Steering mid-stream: the stopped call's draft is cleared and the steered call streams from offset 0.
+    script.push(async(request,hook)=>{hook({type:"text",delta:DRAFT_REPLY});await untilAborted(request.signal)},
+      async(request,hook)=>{assert.match(JSON.stringify(request.messages.at(-1).content),/provider part only/);hook({type:"text",delta:STEERED_REPLY});return nativeReply(request,STEERED_REPLY)});
+    const steered=await run("Describe how a steered turn continues.",async turn=>{const result=await rpc.request("turn/steer",{threadId:thread.id,expectedTurnId:turn.id,input:[{type:"text",text:"Explain the provider part only."}]});assert.equal(result.accepted,true)});
+    assert.deepEqual(steered.resets,["steered"]);assert.equal(steered.status,"completed");assert.equal(textAfterLastReset(steered.frames),STEERED_REPLY);assert.equal(await completedText(steered.turn.id),STEERED_REPLY);
+
+    // Stop mid-stream: the draft is cleared and the turn keeps no reply.
+    script.push(async(request,hook)=>{hook({type:"text",delta:DRAFT_REPLY});await untilAborted(request.signal)});
+    const stopped=await run("Explain what happens when I press Stop.",async()=>{await rpc.request("turn/interrupt",{threadId:thread.id})});
+    assert.deepEqual(stopped.resets,["cancelled"]);assert.equal(stopped.status,"cancelled");assert.equal(textAfterLastReset(stopped.frames),"");
+    assert.equal((await rpc.request("thread/read",{threadId:thread.id})).thread.turns.find(turn=>turn.id===stopped.turn.id).items.some(item=>item.type==="agentMessage"),false);
+
+    // A final reply that is not the streamed text replaces the draft whole.
+    script.push(async(request,hook)=>{hook({type:"text",delta:DRAFT_REPLY});return nativeReply(request,OTHER_REPLY)});
+    const replaced=await run("Summarize what session.js exports.");
+    assert.deepEqual(replaced.resets,["mismatch"]);assert.equal(replaced.frames.at(-1).offset,undefined);assert.equal(textAfterLastReset(replaced.frames),OTHER_REPLY);assert.equal(await completedText(replaced.turn.id),OTHER_REPLY);
+
+    // A short preamble before a tool call never shows, so nothing is reset and the reply arrives as today's single delta.
+    script.push(async(request,hook)=>{hook({type:"text",delta:"Let me look at the session file first."});hook({type:"tool_call"});return nativeReply(request,"",{toolCalls:[{...searchCall,id:"repo-call-2"}],finishReason:"tool_calls"})},
+      async request=>nativeReply(request,"session.js exports SessionManager."));
+    const quiet=await run("Explain session.js in one paragraph.");
+    assert.deepEqual(quiet.frames.map(frame=>({method:frame.method,offset:frame.offset,delta:frame.delta})),[{method:"item/agentMessage/delta",offset:undefined,delta:"session.js exports SessionManager."}]);
+    assert.equal(script.length,0);
+  }finally{await fixture.close()}
 });

@@ -34,6 +34,8 @@ import { configureAntigravityAuth } from "./antigravity-runtime-installer.mjs";
 import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { importClaudeHistory, publicHistoryCandidate, scanLocalAgentHistory } from "./agent-history-import.mjs";
 import { agentPermissionModeFromStart, attachAgentRelay } from "./agent-relay.mjs";
+import { NATIVE_REPLY_STREAM } from "./native-agent-session.mjs";
+import { nativeStreamOptions } from "./native-reply-streaming.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
@@ -1605,7 +1607,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
     if(!knownModelProvider(request.provider||selectedProvider))throw Object.assign(new Error("Trebell Native cannot use this thread's model provider because it is not available. Choose a model provider in Settings > Agents & models."),{retryable:false});
     if(isRetiredProviderModel(model))throw Object.assign(new Error("Trebell Native cannot use this thread's model because it is no longer available. Choose another model and send again."),{retryable:false});
-    return providers.turn(provider,request,{signal:request.signal,promptCaching:provider==="anthropic",streamResponses:provider==="openai"});
+    if(typeof request[NATIVE_REPLY_STREAM]!=="function")return providers.turn(provider,request,{signal:request.signal,promptCaching:provider==="anthropic",streamResponses:provider==="openai"});
+    // A request the session wants to show as it streams carries its observer under a Symbol; the provider gets the request
+    // without it (its other Symbol keys stay, the identity caches are keyed by them) and only the options say how to stream.
+    const {[NATIVE_REPLY_STREAM]:onStream,...providerRequest}=request;
+    return providers.turn(provider,providerRequest,{signal:request.signal,promptCaching:provider==="anthropic",streamResponses:provider==="openai",...nativeStreamOptions(provider,onStream)});
   }
   function sourceControlStyleInstruction(style,kind,customInstructions=""){
     if(style==="conventional")return kind==="review"
