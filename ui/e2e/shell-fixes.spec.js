@@ -11,14 +11,15 @@ const shotsDir=process.env.TREBELL_E2E_SHOTS_DIR||fileURLToPath(new URL("../../v
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
 // The harness end of the agent socket: it lists the threads, starts the turns it is sent, records every request, and pushes
-// what the test sends.
-async function startHarness(threads){
+// what the test sends. respond(message) answers a request itself when it returns a result.
+async function startHarness(threads,{respond=()=>undefined}={}){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set(),requests=[];
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{sockets.add(ws);ws.on("close",()=>sockets.delete(ws));ws.on("message",raw=>{
     const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;requests.push({method:message.method,params:message.params});let result={};
-    const thread=threads.find(item=>item.id===message.params?.threadId)||threads[0];
-    if(message.method==="initialize")result={userAgent:"shell-fixes-fixture"};
+    const thread=threads.find(item=>item.id===message.params?.threadId)||threads[0],answer=respond(message);
+    if(answer!==undefined)result=answer;
+    else if(message.method==="initialize")result={userAgent:"shell-fixes-fixture"};
     else if(message.method==="thread/list")result={data:threads.map(item=>({...item,turns:[]})),nextCursor:null};
     else if(message.method==="thread/resume")result=message.params?.excludeTurns?{thread:{...thread,turns:[]}}:{thread};
     else if(message.method==="turn/start")result={turn:{id:"turn-live",status:"inProgress",items:[]}};
@@ -64,6 +65,8 @@ test("an opened step keeps its details: a command's exit code, folder, duration 
   const thread={id:"details-general",name:"Step details fixture",preview:"Notes",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Tidy my notes."}]},{type:"agentMessage",id:"assistant-1",text:"On it."}]}]};
   const harness=await startHarness([thread]);
   try{
+    // The turn's verification plan has checks still to run: that row stays incomplete after the turn ends.
+    await page.route(/\/api\/verification\/plan-turn$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:true,record:{id:"plan-1",turnId:"turn-2",risk:"medium",status:"planned",assessment:{status:"planned",summary:{required:2,passed:0}}},nextAction:{action:"run_check",nextStep:{id:"unit-tests"}},changedPaths:["notes/todo.md"]})}));
     await page.setViewportSize({width:1280,height:800});
     await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:true,environmentId:null}},runtime:"cursor"});
     await openThread(page,thread.name);
@@ -72,7 +75,9 @@ test("an opened step keeps its details: a command's exit code, folder, duration 
     harness.push("turn/started",{threadId:thread.id,turn:{id:turnId,status:"inProgress",startedAt:now()}});
     const items=[
       {type:"commandExecution",id:"cmd-silent",command:"test -f missing.txt",cwd:"/work/notes",exitCode:1,durationMs:42,status:"failed",aggregatedOutput:""},
+      // A relay harness reports every finished tool call completed, whatever the command's exit code.
       {type:"commandExecution",id:"cmd-relay",command:"Run the unit tests",cwd:"",exitCode:3,durationMs:null,aggregatedOutput:"2 failing",rawInput:{command:"npm test -- --grep auth",description:"Run the unit tests"},status:"completed"},
+      {type:"commandExecution",id:"cmd-ok",command:"git status --short",cwd:"/work/notes",exitCode:0,durationMs:1250,status:"completed",aggregatedOutput:" M notes/todo.md"},
       {type:"fileChange",id:"change-codex",status:"completed",changes:[
         {path:"notes/todo.md",kind:{type:"add"},diff:"remember the milk\n- and the bread\n"},
         {path:"notes/old-plan.md",kind:{type:"update",move_path:"notes/plan.md"},diff:"@@ -1,2 +1,2 @@\n-# Plan\n+# Plan for October\n keep the list short"},
@@ -91,16 +96,23 @@ test("an opened step keeps its details: a command's exit code, folder, duration 
     await expect(silent.locator(".tool-event-facts>span")).toHaveText(["exit 1","/work/notes","42 ms"]);
     await expect(silent.locator(".tool-event-facts .fact-exit")).toHaveClass(/tone-err/);
     await expect(silent.locator(".tool-event-body>pre").first()).toHaveText("test -f missing.txt");
-    // A relay command titled by what it does prints the line it ran, its output and its exit code.
+    // A relay command titled by what it does prints the line it ran, its output and its exit code; exit 3 is a failure, so the
+    // row says failed (as Codex does for such a command), not done above a red exit code.
     await expect(relay.locator(".tool-event-body>pre").first()).toHaveText("npm test -- --grep auth");
     await expect(relay.locator(".tool-event-body>pre").nth(1)).toHaveText("2 failing");
     await expect(relay.locator(".tool-event-facts>span")).toHaveText(["exit 3"]);
+    await expect(relay.locator("summary em")).toHaveText("failed");
+    await expect(relay).toHaveClass(/status-error/);
+    const ok=rows.filter({hasText:"git status --short"});
+    await expect(ok.locator("summary em")).toHaveText("done");
+    await expect(ok).not.toHaveClass(/status-error/);
     // A change lists its files with what happened to each and the diff; a General chat has no Git diff, so no Inspect button.
     const codexFiles=codexChange.locator(".tool-event-change");
     await expect(codexFiles).toHaveCount(2);
     await expect(codexFiles.nth(0).locator(".tool-event-change-head")).toHaveText("notes/todo.mdadded");
     await expect(codexFiles.nth(0).locator(".tool-event-diff .diff-add")).toHaveText(["+remember the milk","+- and the bread"]);
-    await expect(codexFiles.nth(1).locator(".tool-event-change-head")).toHaveText("notes/old-plan.mdmoved to notes/plan.md");
+    await expect(codexFiles.nth(1).locator(".tool-event-change-head .change-kind")).toHaveText("moved");
+    await expect(codexFiles.nth(1).locator(".tool-event-change-head :is(code,.change-move-to)")).toHaveText(["notes/old-plan.md","to","notes/plan.md"]);
     await expect(codexFiles.nth(1).locator(".tool-event-diff>span")).toHaveText(["@@ -1,2 +1,2 @@","-# Plan","+# Plan for October"," keep the list short"]);
     await expect(codexFiles.nth(1).locator(".tool-event-diff .diff-del")).toHaveText("-# Plan");
     await expect(relayChange.locator(".tool-event-change-head")).toHaveText("notes/ideas.mdedited");
@@ -119,12 +131,120 @@ test("an opened step keeps its details: a command's exit code, folder, duration 
     await page.screenshot({path:join(shotsDir,"activity-step-details-light-1280x800.png"),fullPage:true,animations:"disabled"});
     await relayChange.scrollIntoViewIfNeeded();await settle(page);
     await page.screenshot({path:join(shotsDir,"activity-step-changes-light-1280x800.png"),fullPage:true,animations:"disabled"});
-    // Once the turn ends nothing runs: the notice row and the failed command count as finished steps.
+    // Once the turn ends nothing runs: the notice row and the failed commands count as finished steps, while the planned
+    // verification, whose checks have not run, does not.
+    const planned=rows.filter({hasText:"Verification planned"});
+    await expect(planned.locator("summary em")).toHaveText("incomplete");
     await page.getByTestId("right-panel-toggle").click();
     await page.getByTestId("right-panel").locator(".context-panel-tab-scroll").getByRole("button",{name:"Runtime",exact:true}).click();
-    await expect(page.getByTestId("runtime-activity-steps")).toHaveText(/^(\d+)\/\1 current activity steps complete$/);
+    await expect(page.getByTestId("runtime-activity-steps")).toHaveText(/^\d+\/\d+ current activity steps complete$/);
     const [done,total]=(await page.getByTestId("runtime-activity-steps").textContent()).match(/\d+/g).map(Number);
-    expect(done).toBe(total);expect(total).toBeGreaterThanOrEqual(5);
+    // The count agrees with the timeline: every row but the planned verification shows an outcome.
+    const pills=await rows.locator("summary em").allTextContents();
+    expect(pills.filter(text=>!["done","failed","declined","error","warning"].includes(text))).toEqual(["incomplete"]);
+    expect(total).toBe(pills.length);expect(total).toBeGreaterThanOrEqual(7);expect(done).toBe(total-1);
+  }finally{await harness.close()}
+});
+
+// Long paths in a narrow column: each file keeps what happened to it whole while its path gives way, and a command's facts stay
+// on one line however long the folder it ran in.
+for(const [width,height,inspector,mode] of [[1280,800,true,"dark"],[1280,800,true,"light"],[1600,980,false,"dark"]])test(`long paths keep a change's kinds whole and a command's facts on one line at ${width}x${height}${inspector?" with the inspector":""} in ${mode} mode`,async({page})=>{
+  test.setTimeout(40_000);
+  const thread={id:"heads-thread",name:"Change heads fixture",preview:"Heads",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Fix the refund export."}]},{type:"agentMessage",id:"assistant-1",text:"On it."}]}]};
+  const harness=await startHarness([thread]);
+  try{
+    await page.setViewportSize({width,height});
+    await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:true,environmentId:null}},settings:{appearanceMode:mode}});
+    await openThread(page,thread.name);
+    const turnId="turn-2",deep="services/billing/reconciliation/src/ledger/export/adapters/";
+    harness.push("turn/started",{threadId:thread.id,turn:{id:turnId,status:"inProgress",startedAt:now()}});
+    const command={type:"commandExecution",id:"cmd-worktree",command:"pnpm test --filter billing",cwd:"C:/Users/someone/.trebell/worktrees/billing-reconciliation-service/feature-reconcile-refunds",exitCode:0,durationMs:8300,status:"completed",aggregatedOutput:"ok"};
+    const change={type:"fileChange",id:"change-heads",status:"completed",changes:[
+      {path:deep+"refund-ledger-export-adapter.ts",kind:{type:"update",move_path:null},diff:"@@ -1 +1 @@\n-a\n+b"},
+      {path:deep+"legacy-refund-ledger-export-adapter.ts",kind:{type:"delete"},diff:"old line"},
+      {path:deep+"refund-adapter.ts",kind:{type:"update",move_path:deep+"refunds/refund-ledger-adapter.ts"},diff:"@@ -1 +1 @@\n-x\n+y"},
+      {path:"README.md",kind:{type:"add"},diff:"hello"},
+    ]};
+    for(const item of [command,change]){harness.push("item/started",{threadId:thread.id,turnId,item:{...item,status:"inProgress"}});harness.push("item/completed",{threadId:thread.id,turnId,item})}
+    harness.push("turn/completed",{threadId:thread.id,turn:{id:turnId,status:"completed",completedAt:now()}});
+    const rows=page.locator(".agent-block .tool-event");
+    const changeRow=rows.filter({has:page.locator("summary",{hasText:"Editing files"})}),commandRow=rows.filter({hasText:"pnpm test --filter billing"});
+    await changeRow.locator("summary").click();await commandRow.locator("summary").click();
+    if(inspector){await page.getByTestId("right-panel-toggle").click();await expect(page.getByTestId("right-panel")).toBeVisible()}
+    await settle(page);
+    const fits=locator=>locator.evaluateAll(nodes=>nodes.map(node=>({text:node.textContent,whole:node.scrollWidth<=node.clientWidth+1})));
+    // Every kind pill shows its whole word; the long paths are the ones cut, and only in their own boxes.
+    expect(await fits(changeRow.locator(".change-kind"))).toEqual(["edited","deleted","moved","added"].map(text=>({text,whole:true})));
+    expect(await fits(changeRow.locator(".change-move-to"))).toEqual([{text:"to",whole:true}]);
+    const paths=await fits(changeRow.locator(".tool-event-change-head code"));
+    expect(paths.map(path=>path.text)).toEqual([deep+"refund-ledger-export-adapter.ts",deep+"legacy-refund-ledger-export-adapter.ts",deep+"refund-adapter.ts",deep+"refunds/refund-ledger-adapter.ts","README.md"]);
+    expect(paths.at(-1).whole).toBe(true);
+    for(const head of await changeRow.locator(".tool-event-change-head").all()){const box=await head.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(box.scroll).toBeLessThanOrEqual(box.client+1)}
+    // A cut path keeps its end in view (the file name), with the ellipsis in front: the visible text ends where the box ends.
+    const pathEnds=await changeRow.locator(".tool-event-change-head code").evaluateAll(nodes=>nodes.map(node=>{const range=document.createRange();range.selectNodeContents(node);const text=range.getBoundingClientRect(),box=node.getBoundingClientRect();return Math.abs(text.right-box.right)<=2||text.width<=box.width+1}));
+    expect(pathEnds).toEqual([true,true,true,true,true]);
+    // The facts are one line: exit code and duration whole, the folder cut at its start.
+    const facts=await commandRow.locator(".tool-event-facts").evaluate(node=>{const spans=[...node.querySelectorAll(":scope>span")];return {tops:[...new Set(spans.map(span=>Math.round(span.getBoundingClientRect().top)))].length,height:Math.round(node.getBoundingClientRect().height),spans:spans.map(span=>({text:span.textContent,whole:span.scrollWidth<=span.clientWidth+1}))}});
+    expect(facts.tops).toBe(1);expect(facts.height).toBeLessThanOrEqual(18);
+    expect(facts.spans.map(span=>span.text)).toEqual(["exit 0",command.cwd,"8.3 s"]);
+    expect(facts.spans[0].whole&&facts.spans[2].whole).toBe(true);
+    await expect(commandRow.locator(".tool-event-facts .fact-cwd")).toHaveAttribute("title","Ran in "+command.cwd);
+    const bounds=await page.locator(".conversation-scroll").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
+    await commandRow.scrollIntoViewIfNeeded();await settle(page);
+    await commandRow.locator(".tool-event-body").screenshot({path:join(shotsDir,`activity-step-facts-${mode}-${width}x${height}.png`),animations:"disabled"});
+    await changeRow.locator(".tool-event-changes").screenshot({path:join(shotsDir,`activity-step-change-heads-${mode}-${width}x${height}.png`),animations:"disabled"});
+  }finally{await harness.close()}
+});
+
+test("a turn's workspace diff is capped like a change's, and stays capped as it updates",async({page})=>{
+  test.setTimeout(40_000);
+  const thread={id:"turn-diff-thread",name:"Turn diff fixture",preview:"Deps",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Update the dependencies."}]},{type:"agentMessage",id:"assistant-1",text:"Updating."}]}]};
+  const harness=await startHarness([thread]);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:true,environmentId:null}}});
+    await openThread(page,thread.name);
+    const turnId="turn-2",added=5000;
+    // A lockfile rewrite: four header lines and thousands of added ones.
+    const diff="diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1,1 +1,"+added+" @@\n"+Array.from({length:added},(_,index)=>`+    "node_modules/pkg-${index}": {"version": "1.0.${index}"},`).join("\n");
+    harness.push("turn/started",{threadId:thread.id,turn:{id:turnId,status:"inProgress",startedAt:now()}});
+    harness.push("turn/diff/updated",{threadId:thread.id,turnId,diff});
+    const turnRow=page.locator(".agent-block .tool-event").filter({has:page.locator("summary",{hasText:"Workspace diff updated"})});
+    await expect(turnRow).toHaveCount(1);
+    await turnRow.locator("summary").click();
+    const lines=turnRow.locator(".tool-event-diff>span");
+    await expect(lines).toHaveCount(401);
+    await expect(lines.nth(3)).toHaveText("@@ -1,1 +1,5000 @@");
+    await expect(lines.last()).toHaveText("… 4,604 more lines");
+    // A later update while the row is open re-renders the same capped view, with the new count.
+    harness.push("turn/diff/updated",{threadId:thread.id,turnId,diff:diff+"\n+  \"extra\": 1"});
+    await expect(lines.last()).toHaveText("… 4,605 more lines");
+    await expect(lines).toHaveCount(401);
+    // A General chat has no Git diff to send the person to.
+    await expect(turnRow.getByRole("button",{name:"Inspect changes"})).toHaveCount(0);
+    await turnRow.locator(".tool-event-diff").evaluate(node=>{node.scrollTop=node.scrollHeight});
+    await turnRow.scrollIntoViewIfNeeded();await settle(page);
+    await page.screenshot({path:join(shotsDir,"activity-turn-diff-capped-1280x800.png"),animations:"disabled"});
+  }finally{await harness.close()}
+});
+
+test("in a project with Git a capped turn diff offers the whole diff in the Diff tab",async({page})=>{
+  test.setTimeout(35_000);
+  const project={id:"diff-project",name:"Shop",path:process.cwd(),environmentId:null,branch:"main"};
+  const thread={id:"turn-diff-git",name:"Turn diff Git fixture",preview:"Deps",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Update the dependencies."}]},{type:"agentMessage",id:"assistant-1",text:"Updating."}]}]};
+  const harness=await startHarness([thread]);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:false,environmentId:null}},project});
+    await openThread(page,thread.name);
+    const diff="@@ -1 +1,600 @@\n"+Array.from({length:600},(_,index)=>"+line "+index).join("\n");
+    harness.push("turn/started",{threadId:thread.id,turn:{id:"turn-2",status:"inProgress",startedAt:now()}});
+    harness.push("turn/diff/updated",{threadId:thread.id,turnId:"turn-2",diff});
+    const turnRow=page.locator(".agent-block .tool-event").filter({has:page.locator("summary",{hasText:"Workspace diff updated"})});
+    await turnRow.locator("summary").click();
+    await expect(turnRow.locator(".tool-event-diff>span").last()).toHaveText("… 201 more lines");
+    await turnRow.getByRole("button",{name:"Inspect changes"}).click();
+    await expect(page.getByTestId("right-panel").locator(".context-panel-tab.active")).toHaveAccessibleName("Diff");
   }finally{await harness.close()}
 });
 
@@ -144,7 +264,8 @@ test("Move up and Move down follow the sidebar's groups: General chats and proje
     const general=await menu("General fixture chat");
     await expect(general.getByRole("button",{name:"Move up",exact:true})).toBeDisabled();
     await expect(general.getByRole("button",{name:"Move down",exact:true})).toBeDisabled();
-    await page.keyboard.press("Escape");
+    // Closed by its own button: an Escape sent before the menu's key listener is set up (an effect after the toggle) is missed.
+    await general.locator(".thread-menu summary").click();await expect(general.locator(".thread-menu")).not.toHaveAttribute("open","");
     const first=await menu("Project thread A");
     await expect(first.getByRole("button",{name:"Move up",exact:true})).toBeDisabled();
     await expect(first.getByRole("button",{name:"Move down",exact:true})).toBeEnabled();
@@ -245,6 +366,95 @@ for(const [width,height] of [[1280,800],[1600,980]])for(const mode of ["dark","l
     await page.getByTestId("right-panel-toggle").click();await settle(page);
     await expect(header).toHaveAttribute("data-fit","0");
     await expect(header.locator(".review-control")).toContainText("Review");
+  }finally{await harness.close()}
+});
+
+// Linked pull requests give way too: several fold into the first one's chip (#12345 +1, as the sidebar row reads), then the chip
+// keeps only its icon and count, before the title is squeezed under a readable width.
+for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(`the header keeps the thread title readable beside ${prCount} linked pull request${prCount>1?"s":""} with the 520px inspector at 1280x800 in ${mode} mode`,async({page})=>{
+  test.setTimeout(35_000);
+  const project={id:"header-project",name:"Billing reconciliation service with a very long project name",path:process.cwd(),environmentId:null,branch:"feature/reconcile-refunds-in-the-ledger-export"};
+  const thread={id:"header-thread",name:"Investigate why the nightly billing reconciliation job double counts refunds in the ledger export",preview:"Refunds",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Why are refunds counted twice?"}]},{type:"agentMessage",id:"assistant-1",text:"Looking."}]}]};
+  const prs=Array.from({length:prCount},(_,index)=>({url:"https://github.com/acme/billing/pull/"+(12345+index),number:12345+index,title:"Refund fix "+index,state:"open"}));
+  const harness=await startHarness([thread]);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:false,environmentId:null,linkedPullRequests:prs}},project,settings:{appearanceMode:mode},layout:{sidebarWidth:258,rightPanelWidth:520,terminalHeight:330}});
+    await openThread(page,thread.name);
+    const header=page.locator(".chat-workspace .workspace-header"),title=header.locator(".thread-title-button strong"),chips=header.locator(".header-pr");
+    await expect(chips).toHaveCount(prCount);
+    // Wide, every chip names its pull request.
+    for(const [index,pr] of prs.entries())await expect(chips.nth(index)).toBeVisible();
+    expect(await chips.evaluateAll(nodes=>nodes.map(node=>node.innerText.trim()))).toEqual(prs.map(pr=>"#"+pr.number));
+    await page.getByTestId("composer").fill("Keep going.");await page.getByTestId("send").click();
+    await expect(header.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
+    for(const phase of ["running","idle"]){
+      if(phase==="idle"){harness.push("turn/completed",{threadId:thread.id,turn:{id:"turn-live",status:"completed",completedAt:now()}});await expect(header.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0)}
+      if(!(await page.getByTestId("right-panel").isVisible())){await page.getByTestId("right-panel-toggle").click();await expect(page.getByTestId("right-panel")).toBeVisible()}
+      await settle(page);
+      await expect(title).toBeVisible();
+      expect((await title.boundingBox()).width).toBeGreaterThanOrEqual(80);
+      const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+      // The first chip is always there, named and labelled with every linked pull request; the others fold into it.
+      const first=chips.first();
+      await expect(first).toBeVisible();
+      await expect(first).toHaveAccessibleName("Pull request #12345");
+      await expect(first).toHaveAttribute("title",prCount>1?"Open pull request #12345 · also linked: "+prs.slice(1).map(pr=>"#"+pr.number).join(", "):"Open pull request #12345");
+      const shown=await chips.evaluateAll(nodes=>nodes.filter(node=>node.offsetParent).map(node=>node.innerText.replace(/\s+/g,"")));
+      const fit=Number(await header.getAttribute("data-fit"));
+      expect(shown).toEqual(prCount===1?[fit>=4?"":"#12345"]:fit>=4?[String(prCount)]:fit>=2?["#12345+"+(prCount-1)]:prs.map(pr=>"#"+pr.number));
+      await page.screenshot({path:join(shotsDir,`header-linked-prs-${prCount}-${phase}-${mode}-1280x800.png`),animations:"disabled"});
+    }
+    // Closing the inspector gives every chip its number back.
+    await page.getByTestId("right-panel-toggle").click();await settle(page);
+    await expect(header).toHaveAttribute("data-fit","0");
+    expect(await chips.evaluateAll(nodes=>nodes.map(node=>node.innerText.trim()))).toEqual(prs.map(pr=>"#"+pr.number));
+  }finally{await harness.close()}
+});
+
+test("while a search filters the sidebar, Move up and Move down follow the threads it shows, in the list's order",async({page})=>{
+  test.setTimeout(35_000);
+  const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[]};
+  const threads=[{...base,id:"gamma-zero",name:"Gamma zero",preview:"G0"},{...base,id:"alpha-one",name:"Alpha one",preview:"A1"},{...base,id:"beta-two",name:"Beta two",preview:"B2"},{...base,id:"alpha-three",name:"Alpha three",preview:"A3"}];
+  const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  // Gamma zero matches "alpha" in a message only, so the search finds it after the title matches.
+  const harness=await startHarness(threads,{respond:message=>message.method==="thread/items/list"?{data:message.params?.threadId==="gamma-zero"?[{type:"userMessage",text:"Compare this with the alpha release."}]:[],nextCursor:null}:undefined});
+  try{
+    await openApp(page,{harness,threads,meta});
+    await expect(threadRow(page,"Alpha three")).toBeVisible();
+    const search=page.getByRole("textbox",{name:"Search threads"});
+    const shown=()=>page.locator(".thread-sections section").evaluateAll(sections=>sections.map(section=>[section.querySelector("h4").firstChild.textContent,[...section.querySelectorAll(".thread-main")].map(node=>node.title)]));
+    const menu=async name=>{const row=threadRow(page,name);await row.hover();await row.locator(".thread-menu summary").click();return row};
+    const moves=async name=>{
+      const row=await menu(name);const state=[await row.getByRole("button",{name:"Move up",exact:true}).isEnabled(),await row.getByRole("button",{name:"Move down",exact:true}).isEnabled()];
+      await row.locator(".thread-menu summary").click();await expect(row.locator(".thread-menu")).not.toHaveAttribute("open","");
+      return state;
+    };
+    const moveRequests=()=>harness.requests.filter(request=>request.method==="thread/section/move").map(request=>request.params);
+    // A thread alone among the results has nowhere to move.
+    await search.fill("beta");
+    await expect.poll(shown).toEqual([["Active",["Beta two"]]]);
+    const lone=await menu("Beta two");
+    await expect(lone.getByRole("button",{name:"Move up",exact:true})).toBeDisabled();
+    await expect(lone.getByRole("button",{name:"Move down",exact:true})).toBeDisabled();
+    await page.screenshot({path:join(shotsDir,"sidebar-search-lone-thread-1600x980.png"),animations:"disabled"});
+    await lone.locator(".thread-menu summary").click();await expect(lone.locator(".thread-menu")).not.toHaveAttribute("open","");
+    // The results keep the list's order (the message match Gamma zero first, as in the list), and the moves follow them.
+    await search.fill("alpha");
+    await expect.poll(shown).toEqual([["Active",["Gamma zero","Alpha one","Alpha three"]]]);
+    expect(await moves("Gamma zero")).toEqual([false,true]);
+    expect(await moves("Alpha one")).toEqual([true,true]);
+    expect(await moves("Alpha three")).toEqual([true,false]);
+    // Alpha one moves down past Alpha three, the next result: it goes right after it in the list (the end), past the hidden Beta two.
+    await (await menu("Alpha one")).getByRole("button",{name:"Move down",exact:true}).click();
+    await expect.poll(moveRequests).toEqual([{threadId:"alpha-one",sectionId:null,beforeThreadId:null}]);
+    // Alpha three moves up past Alpha one, the result above it, not past the hidden Beta two next to it in the list.
+    await (await menu("Alpha three")).getByRole("button",{name:"Move up",exact:true}).click();
+    await expect.poll(()=>moveRequests().at(-1)).toEqual({threadId:"alpha-three",sectionId:null,beforeThreadId:"alpha-one"});
+    // Gamma zero moves down past Alpha one: right before the hidden Beta two, which keeps its place.
+    await (await menu("Gamma zero")).getByRole("button",{name:"Move down",exact:true}).click();
+    await expect.poll(()=>moveRequests().at(-1)).toEqual({threadId:"gamma-zero",sectionId:null,beforeThreadId:"beta-two"});
+    await page.screenshot({path:join(shotsDir,"sidebar-search-moves-1600x980.png"),animations:"disabled"});
   }finally{await harness.close()}
 });
 

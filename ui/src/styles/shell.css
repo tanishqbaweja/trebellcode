@@ -307,18 +307,25 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .timeline .tool-event-body pre{margin:0 0 6px;max-height:200px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg0);color:var(--tx2);font:11px/1.55 var(--mono)}
 .conversation-column .timeline .tool-event-body button{height:28px;padding:0 10px;gap:6px;border:1px solid var(--line2);border-radius:var(--r-s);background:var(--bg3);color:var(--tx1);font-size:11.5px}
 .conversation-column .timeline .tool-event-body button:hover{background:var(--bg4);color:var(--tx0)}
-/* A command's exit code, folder and duration as one quiet line under its command; a non-zero exit reads as a failure. */
-.conversation-column .timeline .tool-event-facts{display:flex;flex-wrap:wrap;align-items:center;gap:2px 0;min-width:0;margin:-1px 0 7px;padding:0 2px;color:var(--tx3);font:500 10.5px/1.5 var(--mono)}
-.conversation-column .timeline .tool-event-facts>span{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.conversation-column .timeline .tool-event-facts>span+span::before{content:"·";margin:0 7px;color:var(--tx3)}
+/* A path that gives way at its start: an RTL box puts the cut and the ellipsis on the left, and the bdi keeps the path itself
+   reading left to right, so its last folders and file name stay in view. */
+.conversation-column .timeline .path-tail{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+.conversation-column .timeline .path-tail>bdi{direction:ltr;unicode-bidi:isolate}
+/* A command's exit code, folder and duration as one quiet line under its command, however long the folder: the exit code and
+   duration stay whole and the folder gives way. A non-zero exit reads as a failure. */
+.conversation-column .timeline .tool-event-facts{display:flex;align-items:center;min-width:0;margin:-1px 0 7px;padding:0 2px;color:var(--tx3);font:500 10.5px/1.5 var(--mono);white-space:nowrap}
+.conversation-column .timeline .tool-event-facts>:is(span,i){flex:none}
+.conversation-column .timeline .tool-event-facts>.fact-cwd{flex:0 1 auto}
+.conversation-column .timeline .tool-event-facts>.fact-sep{margin:0 7px;color:var(--tx3);font-style:normal}
 .conversation-column .timeline .tool-event-facts>.tone-ok{color:var(--ok)}
 .conversation-column .timeline .tool-event-facts>.tone-err{color:var(--err)}
-/* A change step's files: each path with what happened to it, then its diff. */
+/* A change step's files: each path with what happened to it, then its diff. The kind pill and "to" stay whole; the paths give
+   way. */
 .conversation-column .timeline .tool-event-change-head{display:flex;align-items:center;gap:7px;min-width:0;margin:1px 0 5px;color:var(--tx2)}
 .conversation-column .timeline .tool-event-change-head>svg{flex:none;color:var(--tx3)}
-.conversation-column .timeline .tool-event-change-head code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tx0);font:500 11.5px/1.4 var(--mono)}
-.conversation-column .timeline .tool-event-change-head .change-kind{display:inline-flex;align-items:center;gap:4px;flex:0 1 auto;min-width:0;padding:1px 7px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2);font:500 10px/1.4 var(--mono);font-style:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.conversation-column .timeline .tool-event-change-head .change-kind code{color:inherit;font:inherit}
+.conversation-column .timeline .tool-event-change-head>code{flex:0 1 auto;color:var(--tx0);font:500 11.5px/1.4 var(--mono)}
+.conversation-column .timeline .tool-event-change-head .change-kind{flex:none;padding:1px 7px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2);font:500 10px/1.4 var(--mono);font-style:normal;white-space:nowrap}
+.conversation-column .timeline .tool-event-change-head .change-move-to{flex:none;color:var(--tx3);font:500 10.5px/1.4 var(--mono)}
 .conversation-column .timeline .tool-event-change-head .change-kind.kind-added{border-color:var(--okb);background:var(--okt);color:var(--ok)}
 .conversation-column .timeline .tool-event-change-head .change-kind.kind-deleted{border-color:var(--errb);background:var(--errt);color:var(--err)}
 .conversation-column .timeline .tool-event-body pre.tool-event-diff{overflow:auto}
@@ -613,20 +620,27 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* Topbar in narrow main columns (a mid-size window with the inspector open): the thread title is the last thing to give way.
    The project crumb shrinks first, to a few letters (its large flex-shrink takes the whole squeeze before the title takes any);
    then header-fit.js measures the title and, while it shows less than a readable width, sets data-fit: 1 drops the labels of the
-   labelled actions, 2 also the project name, 3 also hides the theme and palette buttons (the palette, Settings and the
-   sidebar's search reach both). Each labelled control keeps its icon, tooltip and accessible name. */
+   labelled actions, 2 also the project name and folds several linked pull requests into the first one's chip ("#482 +1", as the
+   sidebar row reads), 3 also hides the theme and palette buttons (the palette, Settings and the sidebar's search reach both), 4
+   leaves the pull request chip its icon and how many are linked. Each control keeps its tooltip and accessible name. */
 .workspace-header .workspace-breadcrumb{flex:1 1 auto}
 .workspace-header .project-crumb:not(.sidebar-reopen){flex:0 1000 auto;min-width:calc(39px + 4ch)}
 .workspace-header .thread-title-button{flex:0 1 auto;min-width:0}
 .workspace-header .thread-title-button strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control){width:30px;padding:0;justify-content:center}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control)>span{display:none}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .open-in-picker>button{width:28px;padding:0;justify-content:center}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .open-in-picker>button>span{display:none}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .open-in-picker>select{width:24px;min-width:0;padding:0;color:transparent}
-.workspace-header:is([data-fit="2"],[data-fit="3"]) .project-crumb:not(.sidebar-reopen){width:30px;min-width:30px;padding:0;justify-content:center}
-.workspace-header:is([data-fit="2"],[data-fit="3"]) .project-crumb:not(.sidebar-reopen)>span{display:none}
-.workspace-header[data-fit="3"] .workspace-header-actions>:is(.theme-toggle,.palette-control){display:none}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control){width:30px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control)>span{display:none}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"]) .open-in-picker>button{width:28px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"]) .open-in-picker>button>span{display:none}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"]) .open-in-picker>select{width:24px;min-width:0;padding:0;color:transparent}
+.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"]) .project-crumb:not(.sidebar-reopen){width:30px;min-width:30px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"]) .project-crumb:not(.sidebar-reopen)>span{display:none}
+.workspace-header:is([data-fit="3"],[data-fit="4"]) .workspace-header-actions>:is(.theme-toggle,.palette-control){display:none}
+.workspace-header .header-pr>:is(.header-pr-more,.header-pr-count){display:none}
+.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"]) .header-pr+.header-pr{display:none}
+.workspace-header:is([data-fit="2"],[data-fit="3"]) .header-pr>.header-pr-more{display:inline}
+.workspace-header[data-fit="4"] .header-pr{padding:0 7px}
+.workspace-header[data-fit="4"] .header-pr>.header-pr-number{display:none}
+.workspace-header[data-fit="4"] .header-pr>.header-pr-count{display:inline}
 
 /* Composer footer: "Context" with a meter that is always drawn (dashed while the window size is unknown) and the token
    value beside it; the hints keep their own end of the row with the Enter key as a key cap. */

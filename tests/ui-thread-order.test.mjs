@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { threadMoveAvailability, threadOrderGroup } from "../ui/src/thread-order.js";
+import { threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadsInListOrder } from "../ui/src/thread-order.js";
 
 const pinned={name:"Pinned",id:"pinned"};
 
@@ -42,6 +42,43 @@ test("General chats and project threads are separate groups, as the sidebar show
   const sectioned=[{id:"general-chat",section:pinned},{id:"a",section:pinned},{id:"b"}];
   assert.deepEqual(threadMoveAvailability(sectioned,meta).get("general-chat"),{up:false,down:true});
   assert.deepEqual(threadMoveAvailability(sectioned,meta).get("b"),{up:false,down:false});
+});
+
+test("a move steps past the neighbour the sidebar shows and lands right next to it in the full list",()=>{
+  const threads=[{id:"g0"},{id:"a1"},{id:"b2"},{id:"a3"},{id:"b4"}];
+  // Unfiltered: down goes before the thread after the next one (null at the end), up goes before the previous one.
+  assert.deepEqual(threadMoveTarget(threads,threads[1],1),{beforeThreadId:"a3"});
+  assert.deepEqual(threadMoveTarget(threads,threads[3],1),{beforeThreadId:null});
+  assert.deepEqual(threadMoveTarget(threads,threads[1],-1),{beforeThreadId:"g0"});
+  assert.equal(threadMoveTarget(threads,threads[0],-1),null);
+  assert.equal(threadMoveTarget(threads,threads[4],1),null);
+  // A search shows g0, a1 and a3: a1 down steps past a3 and goes right after it, before the hidden b4 (which keeps its place);
+  // a3 up steps past a1, not the hidden b2 next to it; the shown last and first cannot go further.
+  const shown=[threads[0],threads[1],threads[3]];
+  assert.deepEqual(threadMoveTarget(threads,threads[1],1,{},shown),{beforeThreadId:"b4"});
+  assert.deepEqual(threadMoveTarget(threads,threads[3],-1,{},shown),{beforeThreadId:"a1"});
+  assert.deepEqual(threadMoveTarget(threads,threads[0],1,{},shown),{beforeThreadId:"b2"});
+  assert.equal(threadMoveTarget(threads,threads[3],1,{},shown),null);
+  assert.equal(threadMoveTarget(threads,threads[2],1,{},shown),null);
+  // The availability over what is shown agrees: a thread alone among the results can do nothing.
+  assert.deepEqual(threadMoveAvailability([threads[2]]).get("b2"),{up:false,down:false});
+  assert.deepEqual([...threadMoveAvailability(shown).entries()],[["g0",{up:false,down:true}],["a1",{up:true,down:true}],["a3",{up:true,down:false}]]);
+  // Groups still apply: a General chat between project threads is no step for them.
+  const meta={g0:{projectless:true}};
+  assert.deepEqual(threadMoveTarget(threads,threads[1],-1,meta),null);
+  assert.deepEqual(threadMoveTarget(threads,threads[1],1,meta,shown),{beforeThreadId:"b4"});
+  assert.equal(threadMoveTarget(threads,{id:"elsewhere"},1),null);
+  assert.equal(threadMoveTarget(threads,threads[1],0),null);
+});
+
+test("search results keep the list's order, with threads the list does not hold after them",()=>{
+  const threads=[{id:"g0"},{id:"a1"},{id:"b2"},{id:"a3"}];
+  // Title matches first, then message matches, as the search finds them.
+  const found=[threads[1],threads[3],{id:"older"},threads[0]];
+  assert.deepEqual(threadsInListOrder(found,threads).map(thread=>thread.id),["g0","a1","a3","older"]);
+  assert.deepEqual(threadsInListOrder([{id:"x"},{id:"y"}],threads).map(thread=>thread.id),["x","y"]);
+  assert.deepEqual(threadsInListOrder(null,threads),[]);
+  assert.deepEqual(threadsInListOrder(found,null).map(thread=>thread.id),["a1","a3","older","g0"]);
 });
 
 test("a thread that is not in the ordered list has no moves",()=>{

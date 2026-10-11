@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commandFacts, commandLine, diffLines, durationLabel, fileChangeRows, finishedActivitySteps, textChangeLines } from "../ui/src/activity-details.js";
+import { activityItemStatus, commandFacts, commandLine, diffLines, durationLabel, exitCodeOf, fileChangeRows, finishedActivitySteps, textChangeLines, turnDiffLines } from "../ui/src/activity-details.js";
 
 test("a command prints the line it ran: the relay's rawInput line over a descriptive title",()=>{
   assert.equal(commandLine({command:"test -f missing.txt"}),"test -f missing.txt");
@@ -76,9 +76,43 @@ test("a long diff is capped with a count of the lines left out",()=>{
   assert.deepEqual(row.lines.at(-1),{text:"… 50 more lines",tone:"meta"});
 });
 
-test("finished steps count every step that no longer runs, notice rows included",()=>{
+test("a turn's workspace diff is capped like a change's",()=>{
+  const diff="diff --git a/package-lock.json b/package-lock.json\n@@ -1 +1,20000 @@\n"+Array.from({length:20_000},(_,index)=>"+  \"pkg-"+index+"\": {}").join("\n");
+  const lines=turnDiffLines(diff);
+  assert.equal(lines.length,401);
+  assert.deepEqual(lines.slice(0,3).map(line=>line.tone),["meta","hunk","add"]);
+  assert.deepEqual(lines.at(-1),{text:"… 19,602 more lines",tone:"meta"});
+  assert.deepEqual(turnDiffLines("@@ -1 +1 @@\n-a\n+b").map(line=>line.text),["@@ -1 +1 @@","-a","+b"]);
+  assert.deepEqual(turnDiffLines(""),[]);
+});
+
+test("a command that exited non-zero failed, whichever harness ran it",()=>{
+  assert.equal(exitCodeOf({exitCode:3}),3);
+  assert.equal(exitCodeOf({exitCode:" 0 "}),0);
+  assert.equal(exitCodeOf({exitCode:"failed"}),null);
+  assert.equal(exitCodeOf({exitCode:1.5}),null);
+  assert.equal(exitCodeOf(null),null);
+  // A relay harness reports every finished tool call completed; Codex already says failed.
+  assert.equal(activityItemStatus({type:"commandExecution",status:"completed",exitCode:3}),"failed");
+  assert.equal(activityItemStatus({type:"commandExecution",status:"completed",exitCode:"-1"}),"failed");
+  assert.equal(activityItemStatus({type:"commandExecution",status:"completed",exitCode:0}),"done");
+  assert.equal(activityItemStatus({type:"commandExecution",status:"completed",exitCode:null}),"done");
+  assert.equal(activityItemStatus({type:"commandExecution",status:"failed",exitCode:1}),"failed");
+  assert.equal(activityItemStatus({type:"commandExecution",status:"declined"}),"declined");
+  // Only a command's exit code counts; a running item runs.
+  assert.equal(activityItemStatus({type:"mcpToolCall",status:"completed",exitCode:2}),"done");
+  assert.equal(activityItemStatus({type:"commandExecution",status:"inProgress",exitCode:null}),"running");
+  assert.equal(activityItemStatus({type:"fileChange"}),"running");
+  assert.equal(activityItemStatus(undefined),"running");
+});
+
+test("finished steps count every step with an outcome, notice rows included, and not a plan still waiting for its checks",()=>{
   const events=[{status:"error"},{status:"done"},{status:"failed"},{status:"warning"},{status:"done"},{status:"declined"}];
   assert.equal(finishedActivitySteps(events),6);
-  assert.equal(finishedActivitySteps([...events,{status:"running"},{status:"pending"}]),6);
+  assert.equal(finishedActivitySteps([...events,{status:"running"},{status:"pending"},{status:"inProgress"}]),6);
+  // A planned verification (verificationPlanEvent's "incomplete") has checks still to run.
+  assert.equal(finishedActivitySteps([{status:"done"},{kind:"verification",status:"incomplete"}]),1);
+  // A status the timeline does not know is not claimed complete.
+  assert.equal(finishedActivitySteps([{status:"queued"},{status:undefined},null]),0);
   assert.equal(finishedActivitySteps(null),0);
 });

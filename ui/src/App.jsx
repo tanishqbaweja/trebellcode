@@ -49,7 +49,7 @@ import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
-import { threadMoveAvailability, threadOrderGroup } from "./thread-order.js";
+import { threadMoveAvailability, threadMoveTarget, threadsInListOrder } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { userVerificationAvailability } from "./mcp-elicitation.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
@@ -63,7 +63,7 @@ import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verif
 import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openThreadTitleSource, sameCatalogSnapshot, threadCatalogRuntime, threadOwnerElsewhere, threadsFromCatalogMeta, threadTitle, threadKeptBySwitch } from "./thread-catalog.js";
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "./activity-window.js";
-import { commandFacts, commandLine, diffLines, fileChangeRows, finishedActivitySteps } from "./activity-details.js";
+import { activityItemStatus, commandFacts, commandLine, fileChangeRows, finishedActivitySteps, turnDiffLines } from "./activity-details.js";
 import { observeHeaderFit } from "./header-fit.js";
 import { sidebarAutoCollapses } from "./sidebar-layout.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
@@ -242,8 +242,9 @@ function normalizeItem(item={}){
   if(type==="enteredReviewMode")title="Reviewing changes";
   if(type==="exitedReviewMode")title="Finished review";
   const output=type==="commandExecution"?String(item.aggregatedOutput??item.output??""):"";
-  // Codex and the relay mark a running item "inProgress"; the timeline calls it running, as plan steps already do.
-  const status=item.status==="completed"?"done":item.status==="inProgress"?"running":item.status||"running";
+  // Codex and the relay mark a running item "inProgress"; the timeline calls it running, as plan steps already do. A command
+  // that exited non-zero reads as failed whichever harness ran it.
+  const status=activityItemStatus(item);
   return {id:item.id||crypto.randomUUID(),kind:type,title:String(title).split("\n")[0].slice(0,160),status,raw:item,output};
 }
 function presetFor(mode){
@@ -355,6 +356,10 @@ const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChan
 function DiffBlock({lines}){
   return <pre className="tool-event-diff">{lines.map((line,index)=><span key={index} className={"diff-"+line.tone}>{line.text||" "}</span>)}</pre>;
 }
+// A path cut at its start, so its last folders and file name stay in view (the tooltip has all of it).
+function PathTail({as:Tag="code",path,title=path,className=""}){
+  return <Tag className={"path-tail"+(className?" "+className:"")} title={title}><bdi>{path}</bdi></Tag>;
+}
 // An expanded row shows what the step did, once each: a command's line (the one it ran, when the harness titled it with a
 // description) with its exit code, folder and duration, then its output; a change's files with what happened to each and its
 // diff, which a General chat or a folder without Git has no other place to show. The raw event is shown only for a step that
@@ -362,16 +367,17 @@ function DiffBlock({lines}){
 function ActivityEventBody({event,onInspectChanges}){
   const raw=event.raw&&typeof event.raw==="object"?event.raw:null;
   const command=raw?.command?commandLine(raw):"",facts=command?commandFacts(raw):[];
-  const changes=Array.isArray(raw?.changes)?fileChangeRows(raw.changes):null;
+  // Worked out once per version of the step: an open row re-renders as the turn goes on (a turn diff on every update).
+  const changes=useMemo(()=>Array.isArray(raw?.changes)?fileChangeRows(raw.changes):null,[raw]);
   // A turn's diff update carries the diff itself.
-  const turnDiff=event.kind==="fileChange"&&typeof event.raw==="string"?diffLines(event.raw):[];
+  const turnDiff=useMemo(()=>event.kind==="fileChange"&&typeof event.raw==="string"?turnDiffLines(event.raw):[],[event.kind,event.raw]);
   return <div className="tool-event-body">
     {command&&<pre>{command}</pre>}
-    {facts.length>0&&<div className="tool-event-facts" data-testid="tool-event-facts">{facts.map(fact=><span key={fact.key} className={"fact-"+fact.key+(fact.tone?" tone-"+fact.tone:"")} title={fact.title}>{fact.label}</span>)}</div>}
+    {facts.length>0&&<div className="tool-event-facts" data-testid="tool-event-facts">{facts.map((fact,index)=><React.Fragment key={fact.key}>{index>0&&<i className="fact-sep" aria-hidden="true">·</i>}{fact.key==="cwd"?<PathTail as="span" className="fact-cwd" path={fact.label} title={fact.title}/>:<span className={"fact-"+fact.key+(fact.tone?" tone-"+fact.tone:"")} title={fact.title}>{fact.label}</span>}</React.Fragment>)}</div>}
     {event.output&&<pre>{event.output}</pre>}
-    {changes?.length>0&&<div className="tool-event-changes" data-testid="tool-event-changes">{changes.map((change,index)=><div className="tool-event-change" key={change.path+":"+index}><div className="tool-event-change-head"><FileDiff size={12} aria-hidden="true"/><code title={change.path}>{change.path||"Unnamed file"}</code>{change.kind&&<em className={"change-kind kind-"+change.kind}>{change.kind}{change.movePath&&<> to <code title={change.movePath}>{change.movePath}</code></>}</em>}</div>{change.lines.length>0&&<DiffBlock lines={change.lines}/>}</div>)}</div>}
+    {changes?.length>0&&<div className="tool-event-changes" data-testid="tool-event-changes">{changes.map((change,index)=><div className="tool-event-change" key={change.path+":"+index}><div className="tool-event-change-head"><FileDiff size={12} aria-hidden="true"/><PathTail path={change.path||"Unnamed file"}/>{change.kind&&<em className={"change-kind kind-"+change.kind}>{change.kind}</em>}{change.movePath&&<><span className="change-move-to">to</span><PathTail path={change.movePath}/></>}</div>{change.lines.length>0&&<DiffBlock lines={change.lines}/>}</div>)}</div>}
     {turnDiff.length>0&&<DiffBlock lines={turnDiff}/>}
-    {changes&&onInspectChanges&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}
+    {(changes||turnDiff.length>0)&&onInspectChanges&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}
     {!(command||event.output||changes?.length||turnDiff.length)&&<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre>}
   </div>;
 }
@@ -2077,9 +2083,10 @@ export default function App(){
       try{
         const outcome=await searchThreadMessages(query);
         for(const match of outcome.matches||[]){const thread=match.thread||threads.find(item=>item.id===match.threadId);if(thread)found.set(thread.id,thread)}
-        if(!cancelled){setSearchResults([...found.values()]);setThreadSearchError(outcome.warning||"")}
+        // Message matches join the title matches where the list has them: the sidebar's order (and a move made in it) holds.
+        if(!cancelled){setSearchResults(threadsInListOrder([...found.values()],threads));setThreadSearchError(outcome.warning||"")}
       }catch(error){
-        if(!cancelled){setSearchResults([...found.values()]);setThreadSearchError("Could not search thread messages: "+(error?.message||String(error)))}
+        if(!cancelled){setSearchResults(threadsInListOrder([...found.values()],threads));setThreadSearchError("Could not search thread messages: "+(error?.message||String(error)))}
       }
     },250);return()=>{cancelled=true;clearTimeout(timer)}
   },[query,threads,threadMeta,rpc,rpcStatus,agentRuntime,runtimeCapabilities.threadSearch]);
@@ -2769,7 +2776,8 @@ export default function App(){
       return;
     }
   }
-  async function moveThreadOrder(thread,direction){const group=threadOrderGroup(threads,thread,threadMeta);const index=group.findIndex(t=>t.id===thread.id);const targetIndex=index+direction;if(targetIndex<0||targetIndex>=group.length)return;const before=direction<0?group[targetIndex].id:(group[targetIndex+1]?.id||null);await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:before});await loadThreads(rpc,{strict:true})}
+  // The move steps past the neighbour the sidebar shows (a search's results while one filters it), as the menu's enabled state says.
+  async function moveThreadOrder(thread,direction){const move=threadMoveTarget(threads,thread,direction,threadMeta,displayThreads);if(!move)return;await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:move.beforeThreadId});await loadThreads(rpc,{strict:true})}
   async function bulkAction(action){
     const selected=[...selectedThreadIds].map(id=>threads.find(thread=>thread.id===id)).filter(Boolean);if(!selected.length)return;
     if(action==="snooze"){setSnoozeRequest({threads:selected,bulk:true});return}
@@ -4280,7 +4288,7 @@ export default function App(){
   },[settings.keybindingRules,settings.keyboardShortcuts]);
   const sidebarThreadAction=useLatestCallback(threadAction);
   const sidebarMoveThread=useLatestCallback(moveThreadOrder);
-  const threadMoves=useMemo(()=>threadMoveAvailability(threads,threadMeta),[threads,threadMeta]);
+  const threadMoves=useMemo(()=>threadMoveAvailability(displayThreads,threadMeta),[displayThreads,threadMeta]);
   // The sidebar runtime card's dot follows the harness connection as the composer and the Runtime panel report it: green only
   // while connected and set up, amber while starting or (re)connecting, red after a failed connection. One object per tone and
   // label, so the memoized sidebar does not re-render on every App render (each composer keystroke).
@@ -4424,7 +4432,9 @@ export default function App(){
               <span>/</span>
               {/* Renaming needs a thread: before the first message the title is plain text, not a button that does nothing. */}
               {activeThread?.id?<button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} title="Rename thread"><strong>{activeTitle}</strong><ChevronDown size={13}/></button>:<span className="thread-title-button is-static"><strong>{activeTitle}</strong></span>}
-              {activeThread?.id&&linkedPullRequests.map(pr=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")}><GitBranch size={11}/>#{pr.number}</button>)}
+              {/* In a narrow header the first chip stands for every linked pull request ("#482 +1", then the icon and a count); its
+                  tooltip names the others. */}
+              {activeThread?.id&&linkedPullRequests.map((pr,index,all)=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")} aria-label={"Pull request #"+pr.number} title={"Open pull request #"+pr.number+(index===0&&all.length>1?" · also linked: "+all.slice(1).map(other=>"#"+other.number).join(", "):"")}><GitBranch size={11} aria-hidden="true"/><span className="header-pr-number">#{pr.number}</span>{index===0&&all.length>1&&<><span className="header-pr-more" aria-hidden="true">+{all.length-1}</span><span className="header-pr-count" aria-hidden="true">{all.length}</span></>}</button>)}
             </div>
             <div className="workspace-header-actions">
               {gitInfo?.isGit&&<button className="header-control branch-control" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}

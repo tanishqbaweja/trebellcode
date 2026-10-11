@@ -1,11 +1,12 @@
 // The workspace header keeps the open thread named. The project crumb gives way first (the stylesheet shrinks it before the
 // title); when the title would still be cut below a readable width, the labelled actions (branch, Review, Stop, the project
-// action and the Open-in picker) go icon-only, then the project crumb keeps only its icon, and last the theme and command
-// palette buttons step aside (the palette, Settings and the sidebar's "Search or jump to" reach both). The header is measured,
-// so any branch name, project action, linked pull request or window width is covered, not only the widths a breakpoint was
-// tuned for. Levels: 0 everything labelled, 1 labelled actions icon-only, 2 the project crumb icon-only too, 3 also without the
-// theme and palette buttons.
-export const HEADER_FIT_LEVELS=4;
+// action and the Open-in picker) go icon-only, then the project crumb keeps only its icon while several linked pull requests
+// fold into the first one's chip, then the theme and command palette buttons step aside (the palette, Settings and the sidebar's
+// "Search or jump to" reach both), and last the pull request chip keeps only its icon and count (its tooltip names them all).
+// The header is measured, so any branch name, project action, number of linked pull requests or window width is covered, not
+// only the widths a breakpoint was tuned for. Levels: 0 everything labelled, 1 labelled actions icon-only, 2 the project crumb
+// icon-only and one pull request chip, 3 also without the theme and palette buttons, 4 the pull request chip without numbers.
+export const HEADER_FIT_LEVELS=5;
 export const TITLE_READABLE_WIDTH=80;
 
 // Whether the title shows enough of itself: all of it, or at least the readable width.
