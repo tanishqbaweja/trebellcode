@@ -328,6 +328,10 @@
 :root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card-head>span>svg{flex:none;color:var(--ac)}
 :root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card-head strong{font-size:13.5px!important;font-weight:650;letter-spacing:-.01em;color:var(--tx0)!important}
 :root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card-head em{flex:none;padding:2.5px 9px!important;border:1px solid var(--line2)!important;border-radius:99px!important;background:var(--bg3)!important;color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-style:normal;font-weight:600;white-space:nowrap}
+/* A Usage or Tools card head is as tall without its count badge as with it, so titles side by side stay level while one
+   count is still loading. The badge's line box is fixed for the same reason. */
+:root:root :is(.usage-page,.capabilities-page) .capability-card-head{min-height:21px}
+:root:root :is(.usage-page,.capabilities-page) .capability-card-head em{line-height:14px}
 :root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card p:not([class]){margin:8px 0!important;font-size:12.5px!important;line-height:1.6!important;color:var(--tx2)!important}
 :root:root :is(.usage-page,.capabilities-page,.environments-page) .capability-card>p:not([class]):last-child{margin-bottom:0!important}
 

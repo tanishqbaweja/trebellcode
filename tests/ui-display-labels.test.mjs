@@ -1,6 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { agentName, countLabel, humanizeIdentifier, importFailures, importResultSummary, mcpAuthLabel } from "../ui/src/display-labels.js";
+import { agentName, countLabel, failureText, humanizeIdentifier, importFailures, importResultSummary, mcpAuthLabel } from "../ui/src/display-labels.js";
+
+test("a failure names its action before the reason, and only once",()=>{
+  assert.equal(failureText("Could not clear local usage history",new Error("Deliberate usage clear failure")),"Could not clear local usage history: Deliberate usage clear failure");
+  assert.equal(failureText("Could not load usage","  HTTP 500 "),"Could not load usage: HTTP 500");
+  // No reason at all still says what failed.
+  assert.equal(failureText("Could not load usage",new Error("")),"Could not load usage.");
+  assert.equal(failureText("Could not load usage",null),"Could not load usage.");
+  // A reason the server already words with the action is shown as it came, in any letter case, not after a second copy.
+  assert.equal(failureText("Could not clear local usage history",new Error("Could not clear local usage history: the usage file is read-only")),"Could not clear local usage history: the usage file is read-only");
+  assert.equal(failureText("Could not load usage",new Error("could not load usage.")),"could not load usage.");
+  assert.equal(failureText("Windows sandbox setup failed","Windows sandbox setup failed"),"Windows sandbox setup failed");
+  // Another failure, or one that only shares the first words, is a reason: the action still comes first.
+  assert.equal(failureText("Could not use the reset credit",new Error("Could not connect to Codex app-server")),"Could not use the reset credit: Could not connect to Codex app-server");
+  assert.equal(failureText("Could not load usage",new Error("Could not load usages.json")),"Could not load usage: Could not load usages.json");
+  assert.equal(failureText("Windows sandbox setup failed",undefined),"Windows sandbox setup failed.");
+});
 
 test("each import failure reads as its kind, the runtime's message and its stage",()=>{
   const results=[

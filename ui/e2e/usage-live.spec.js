@@ -80,11 +80,146 @@ test("Usage page refreshes native Codex account and quota updates live",async({p
     const unavailable=card.getByText("Unavailable Codex account data",{exact:true});
     await expect(unavailable).toBeVisible();
     await unavailable.click();
-    await expect(card).toContainText("rateLimits: Deliberate rate-limit refresh failure");
+    // Each unavailable read names what could not be loaded, not the request's internal key.
+    await expect(card.locator(".capability-details pre")).toHaveText("Could not load Codex rate limits: Deliberate rate-limit refresh failure");
     await expect(page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true})).toBeEnabled();
     await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"usage-live-codex-1280x800.png",fullPage:false});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"usage-live-codex-light-1280x800.png",fullPage:false});
   }finally{
     relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))]);
   }
+});
+
+// A Codex app-server behind the real relay for the Usage page. `control.rateLimits` answers the limits read with a quota and a
+// reset credit ("quota"), with no limits ("none"), or fails it ("fail"); using the reset credit always fails.
+async function startUsageFixture(control){
+  const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      const send=payload=>ws.send(JSON.stringify({id:message.id,...payload})),fail=reason=>send({error:{code:-32000,message:reason}});
+      if(message.method==="account/rateLimits/read"){
+        if(control.rateLimits==="fail")return fail("Deliberate rate-limit read failure");
+        return send({result:control.rateLimits==="none"?{rateLimits:null}:{rateLimits:{limitId:"main",limitName:"Coding quota",primary:{usedPercent:30,resetsAt:Math.floor(Date.now()/1000)+3600}},rateLimitResetCredits:{availableCount:1,credits:[{id:"credit-1",status:"available"}]}}});
+      }
+      if(message.method==="account/rateLimitResetCredit/consume")return fail("Deliberate reset credit failure");
+      let result={};
+      if(message.method==="initialize")result={userAgent:"usage-fixture"};
+      else if(message.method==="thread/list"||message.method==="threadSection/list"||message.method==="skills/list")result={data:[],nextCursor:null};
+      else if(message.method==="account/read")result={account:{type:"chatgpt",email:"usage@example.com",planType:"plus"},requiresOpenaiAuth:false};
+      else if(message.method==="account/usage/read")result={summary:{lifetimeTokens:1000,currentStreakDays:1,peakDailyTokens:1000,longestRunningTurnSec:30},threadUsage:null};
+      else if(message.method==="account/workspaceMessages/read")result={featureEnabled:false,messages:[]};
+      send({result});
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  return {wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",async close(){relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}};
+}
+// Opens the Usage page on Codex, answering /api/usage with `usage(route)`.
+async function openUsage(page,wsUrl,usage){
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd:process.cwd(),platform:"win32",version:"usage-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{}}));
+  await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  await page.route(/\/api\/environments$/,route=>json(route,{profiles:[],activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/usage(?:\?.*)?$/,usage);
+  await page.goto("/");await page.getByRole("button",{name:"Usage",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();
+}
+const emptyUsage={records:[],total:{},models:{},runtimes:{},daily:{}};
+
+test("Usage says a period or account limit is empty only once that answer has loaded",async({page})=>{
+  test.setTimeout(40_000);
+  const control={rateLimits:"fail"};const fixture=await startUsageFixture(control);
+  let usageMode="hold";const held=[];
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openUsage(page,fixture.wsUrl,route=>{
+      if(usageMode==="hold"){held.push(route);return}
+      if(usageMode==="fail")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate usage load failure"})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(emptyUsage)});
+    });
+    const usagePage=page.locator(".usage-page"),summary=page.locator(".usage-summary"),codexCard=page.getByTestId("codex-account-usage");
+    const claims=["No recorded usage in this period.","No model usage recorded yet.","No turns recorded in this period."];
+    const expectNoClaims=async()=>{
+      for(const claim of claims)await expect(usagePage.getByText(claim,{exact:true}),claim).toHaveCount(0);
+      // The totals do not read as zero either: no "0 recorded turns" and no "$0.00" for usage that has not loaded.
+      await expect(summary).not.toContainText("recorded turn");await expect(summary).not.toContainText("$0.00");
+      await expect(summary.locator("strong")).toHaveText(["—","—","—","—"]);
+      await expect(page.locator(".usage-recent .capability-card-head em")).toHaveCount(0);
+    };
+    // The first usage read is still in flight: the cards say they are loading and claim nothing about the period.
+    await expect.poll(()=>held.length).toBe(1);
+    await expectNoClaims();
+    await expect(usagePage.getByText("Loading recorded turns…",{exact:true})).toBeVisible();
+    await expect(usagePage.getByText("Loading daily usage…",{exact:true})).toBeVisible();
+    await expect(usagePage.getByText("Loading model usage…",{exact:true})).toBeVisible();
+    // The two cards side by side keep their titles level although only one has a badge yet.
+    const headHeights=()=>page.locator(".usage-grid .capability-card-head").evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().height*10)/10));
+    expect(new Set(await headHeights()).size,JSON.stringify(await headHeights())).toBe(1);
+    // The limits read failed: the Codex card does not claim the route has no limits, it lists the failure instead.
+    await expect(codexCard.getByText("Unavailable Codex account data",{exact:true})).toBeVisible();
+    await expect(codexCard).not.toContainText("did not return Codex account limits");
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-first-load-pending-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-first-load-pending-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+
+    // The read fails: the alert says so, and nothing claims the period is empty.
+    usageMode="fail";
+    for(const route of held.splice(0))await route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate usage load failure"})});
+    await expect(page.locator(".usage-page>.inline-error")).toHaveText("Could not load usage: Deliberate usage load failure");
+    await expect(usagePage.getByText(/^Loading /)).toHaveCount(0);
+    await expectNoClaims();
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-load-failed-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-load-failed-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+
+    // A refresh that loads an empty period and no account limits says both, as before.
+    usageMode="empty";control.rateLimits="none";
+    await page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true}).click();
+    for(const claim of claims)await expect(usagePage.getByText(claim,{exact:true}),claim).toBeVisible();
+    await expect(summary).toContainText("0 recorded turns");await expect(summary).toContainText("$0.00");
+    await expect(page.locator(".usage-recent .capability-card-head em")).toHaveText("0");
+    await expect(codexCard).toContainText("This inference route did not return Codex account limits.");
+    await expect(page.locator(".usage-page>.inline-error")).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-loaded-empty-1280x800.png",fullPage:false});
+  }finally{for(const route of held.splice(0))await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(emptyUsage)}).catch(()=>{});await fixture.close()}
+});
+
+test("Usage failures name the action before the reason, and only once",async({page})=>{
+  test.setTimeout(40_000);
+  const control={rateLimits:"quota"};const fixture=await startUsageFixture(control);
+  const record={id:"usage-failure-record",at:new Date().toISOString(),environmentId:null,runtime:"codex",provider:"openai",model:"test/coding-fast",usage:{inputTokens:1200,outputTokens:300,totalTokens:1500},cost:{currency:"USD",amount:0.0123}};
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openUsage(page,fixture.wsUrl,route=>{
+      // This server words its own failure with the action already: the alert shows it once, not after a second copy.
+      if(route.request().method()==="DELETE")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Could not clear local usage history: the usage file is read-only"})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({records:[record],total:{inputTokens:1200,outputTokens:300,totalTokens:1500},models:{},runtimes:{},daily:{}})});
+    });
+    await expect(page.locator(".usage-recent")).toContainText("test/coding-fast");
+    page.once("dialog",dialog=>dialog.accept());
+    await page.getByRole("button",{name:"Clear local history",exact:true}).click();
+    await expect(page.locator(".usage-page>.inline-error")).toHaveText("Could not clear local usage history: the usage file is read-only");
+    // Using a reset credit fails with a bare reason: the card's alert names the action first.
+    const codexCard=page.getByTestId("codex-account-usage");
+    await expect(codexCard).toContainText("1 reset credit available");
+    page.once("dialog",dialog=>dialog.accept());
+    await codexCard.getByRole("button",{name:"Use reset credit"}).click();
+    await expect(codexCard.getByRole("alert")).toHaveText("Could not use the reset credit: Deliberate reset credit failure");
+    await expect(codexCard.getByRole("button",{name:"Use reset credit"})).toBeEnabled();
+    await codexCard.getByRole("alert").scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-action-failures-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-action-failures-light-1280x800.png",fullPage:false});
+  }finally{await fixture.close()}
 });

@@ -4634,7 +4634,7 @@ test("usage clear failures keep recorded usage visible",async({page,request})=>{
   await expect(page.getByRole("button",{name:"Clear local history",exact:true})).toBeEnabled();
   page.once("dialog",dialog=>dialog.accept());
   await page.getByRole("button",{name:"Clear local history",exact:true}).click();
-  await expect(page.getByRole("alert")).toContainText("Could not clear local usage history: Deliberate usage clear failure");
+  await expect(page.getByRole("alert")).toHaveText("Could not clear local usage history: Deliberate usage clear failure");
   await expect(recent).toContainText("test/coding-fast");
   await expect(page.locator(".usage-summary")).toContainText("1 recorded turn");
   await expect(page.locator(".usage-summary")).not.toContainText("1 recorded turns");
@@ -4666,7 +4666,7 @@ test("usage environment refresh failures preserve the last valid filter catalog"
   await page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true}).click();
   const alert=page.getByText("Deliberate usage environment refresh failure",{exact:false});
   await expect(alert).toBeVisible();
-  await expect(alert).toContainText("Could not refresh environments: Deliberate usage environment refresh failure");
+  await expect(alert).toHaveText("Could not refresh environments: Deliberate usage environment refresh failure");
   // Refresh closes the open filter menu, so the menu never covers the error that click reports.
   await expect.poll(()=>filter.evaluate(node=>node.open)).toBe(false);
   expect(await alert.evaluate(node=>{const rect=node.getBoundingClientRect();return node.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2))})).toBe(true);

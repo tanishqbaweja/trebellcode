@@ -1,6 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { CalendarDays, CircleAlert, Cpu, History, RefreshCw, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import { api } from "../api.js";
+import { failureText } from "../display-labels.js";
 import { codexRateLimitEntries,formatRateReset,microsToCurrency,rateLimitReachedLabel,rateLimitRemainingPercent } from "../usage-account.js";
 import { estimateUsageCost } from "../usage-pricing.js";
 
@@ -11,12 +12,18 @@ function duration(value){const seconds=Number(value);if(!Number.isFinite(seconds
 function withoutKey(object,key){return Object.fromEntries(Object.entries(object||{}).filter(([name])=>name!==key))}
 // Meter tone from the remaining share: the bar turns warning at 25% left and critical at 10% left.
 function meterTone(remaining){const value=Number(remaining);if(remaining==null||!Number.isFinite(value))return "";return value<=10?" critical":value<=25?" low":""}
+// What each live Codex read loads, so a failed one is listed by what could not be loaded rather than by its request key.
+const CODEX_READS={account:"Could not load the Codex account",rateLimits:"Could not load Codex rate limits",usage:"Could not load Codex usage",messages:"Could not load workspace messages"};
+const SUBSCRIPTION_RUNTIMES=["claude","opencode","cursor","grok"];
 
 export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected",activeThread=null,agentRuntime="codex"}){
-  const [days,setDays]=useState(30);const [data,setData]=useState({records:[],total:{},models:{},runtimes:{},daily:{}});const [loading,setLoading]=useState(false);const [error,setError]=useState("");
+  // Each read starts out loading, as it runs when the page opens: nothing claims a period or an account is empty before it answers.
+  // `shownQuery` is the period and environments of the usage on screen (null until one loads).
+  const [days,setDays]=useState(30);const [data,setData]=useState({records:[],total:{},models:{},runtimes:{},daily:{}});const [loading,setLoading]=useState(true);const [error,setError]=useState("");
+  const [shownQuery,setShownQuery]=useState(null);const usageRequest=useRef(0);
   const [clearing,setClearing]=useState(false);
-  const [codex,setCodex]=useState({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false,notice:""});
-  const [runtimeUsage,setRuntimeUsage]=useState({data:null,loading:false,error:""});
+  const [codex,setCodex]=useState(()=>({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:agentRuntime==="codex"&&Boolean(rpc)&&rpcStatus==="connected",notice:"",failure:""}));
+  const [runtimeUsage,setRuntimeUsage]=useState(()=>({data:null,loading:SUBSCRIPTION_RUNTIMES.includes(agentRuntime),error:""}));
   const [environmentData,setEnvironmentData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null});
   const [environmentError,setEnvironmentError]=useState("");
   const [selectedEnvironments,setSelectedEnvironments]=useState([]);
@@ -33,7 +40,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   }
   async function refreshCodex(){
     if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"){setCodex(current=>({...current,account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false}));return}
-    setCodex(current=>({...current,loading:true,errors:{},notice:""}));
+    setCodex(current=>({...current,loading:true,errors:{},notice:"",failure:""}));
     const requests=[
       ["account",()=>rpc.request("account/read",{refreshToken:false})],
       ["rateLimits",()=>rpc.request("account/rateLimits/read",{excludeResetCreditDetails:false})],
@@ -50,19 +57,24 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       return next;
     });
   }
+  const usageQuery=days+"|"+selectedEnvironments.join("|");
   async function refreshLocal(){
+    // Only the latest read lands, so an earlier period's answer never replaces the one asked for last or ends its wait.
+    const request=++usageRequest.current,query=usageQuery;
     setLoading(true);setError("");
     try{
       const params=new URLSearchParams({days:String(days),limit:"5000"});
       for(const id of selectedEnvironments)params.append("environmentId",id);
-      setData(await api("/api/usage?"+params.toString()));
-    }catch(err){setError("Could not load usage: "+(err?.message||String(err)))}finally{setLoading(false)}
+      const next=await api("/api/usage?"+params.toString());
+      if(request===usageRequest.current){setData(next);setShownQuery(query)}
+    }catch(err){if(request===usageRequest.current)setError(failureText("Could not load usage",err))}
+    finally{if(request===usageRequest.current)setLoading(false)}
   }
   async function refreshRuntimeUsage(){
-    if(!["claude","opencode","cursor","grok"].includes(agentRuntime)){setRuntimeUsage({data:null,loading:false,error:""});return}
+    if(!SUBSCRIPTION_RUNTIMES.includes(agentRuntime)){setRuntimeUsage({data:null,loading:false,error:""});return}
     setRuntimeUsage(current=>({...current,loading:true,error:""}));
     try{setRuntimeUsage({data:await api("/api/agent-runtime-usage"),loading:false,error:""})}
-    catch(err){setRuntimeUsage(current=>({...current,loading:false,error:"Could not load subscription limits: "+(err?.message||String(err))}))}
+    catch(err){setRuntimeUsage(current=>({...current,loading:false,error:failureText("Could not load subscription limits",err)}))}
   }
   async function refreshEnvironments(){
     setEnvironmentError("");
@@ -70,7 +82,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       const next=await api("/api/environments");
       setEnvironmentData(next);return next;
     }catch(err){
-      setEnvironmentError("Could not refresh environments: "+(err?.message||String(err)));
+      setEnvironmentError(failureText("Could not refresh environments",err));
       return null;
     }
   }
@@ -134,25 +146,29 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     if(!confirm("Clear Trebell's locally recorded usage history? Provider account usage is not affected."))return;
     setClearing(true);setError("");
     try{await api("/api/usage",{method:"DELETE"});await refresh()}
-    catch(err){setError("Could not clear local usage history: "+(err?.message||String(err)))}
+    catch(err){setError(failureText("Could not clear local usage history",err))}
     finally{setClearing(false)}
   }
   async function resetCodexLimit(creditId=null){
     if(!rpc||!confirm("Use one earned Codex reset credit now? This can reset an eligible rate-limit window."))return;
-    setCodex(current=>({...current,loading:true,notice:""}));
+    setCodex(current=>({...current,loading:true,notice:"",failure:""}));
     try{
       const result=await rpc.request("account/rateLimitResetCredit/consume",{idempotencyKey:crypto.randomUUID(),creditId:creditId||null});
       const labels={reset:"Rate-limit window reset.",nothingToReset:"No current window is eligible for a reset.",noCredit:"No reset credit is available.",alreadyRedeemed:"That reset was already completed."};
       await refreshCodex();
       setCodex(current=>({...current,notice:labels[result?.outcome]||String(result?.outcome||"Reset request completed.")}));
-    }catch(err){setCodex(current=>({...current,loading:false,notice:err?.message||String(err)}))}
+    }catch(err){setCodex(current=>({...current,loading:false,failure:failureText("Could not use the reset credit",err)}))}
   }
   const codexLimits=codexRateLimitEntries(codex.rateLimits);
   const codexSummary=codex.usage?.summary||null;
   const threadUsage=codex.usage?.threadUsage||null;
   const resetCredits=codex.rateLimits?.rateLimitResetCredits||null;
   const showLiveCodex=agentRuntime==="codex"&&rpcStatus==="connected"&&(selectedEnvironments.length===0||selectedEnvironments.includes(activeEnvironmentKey));
-  const showLiveRuntime=["claude","opencode","cursor","grok"].includes(agentRuntime)&&(selectedEnvironments.length===0||selectedEnvironments.includes(activeEnvironmentKey));
+  const showLiveRuntime=SUBSCRIPTION_RUNTIMES.includes(agentRuntime)&&(selectedEnvironments.length===0||selectedEnvironments.includes(activeEnvironmentKey));
+  // The page speaks for recorded usage it has rows for, or for an answer to the period and environments now selected with nothing
+  // newer loading. Otherwise (loading, or a failed read) the totals read "—" and no card says the period is empty.
+  const records=data.records||[];
+  const usageCurrent=!loading&&shownQuery===usageQuery,usageKnown=records.length>0||usageCurrent,usagePending=loading?"Loading…":"Unavailable";
   return <div className="usage-page">
     <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Per-turn token and cost history across Trebell harnesses and environments, plus live account limits when the active harness exposes them.</p></div><div className="usage-toolbar"><details className="usage-environment-filter" ref={filterRef}><summary>{environmentFilterLabel}</summary><div><button onClick={()=>setSelectedEnvironments([])} className={selectedEnvironments.length===0?"active":""}>All environments</button>{environmentOptions.map(item=><label key={item.id}><input type="checkbox" checked={selectedEnvironments.includes(item.id)} onChange={()=>toggleEnvironment(item.id)}/><span>{item.name}</span><em>{item.type}</em></label>)}</div></details><select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button className="usage-refresh" onClick={refresh} disabled={loading||codex.loading||runtimeUsage.loading||clearing}><RefreshCw size={13}/>{loading||codex.loading||runtimeUsage.loading?"Refreshing…":"Refresh"}</button><button className="usage-clear" onClick={clear} disabled={!data.records?.length||clearing}><Trash2 size={13}/> {clearing?"Clearing…":"Clear local history"}</button></div></div>
     {error&&<div className="inline-error" role="alert">{error}</div>}
@@ -167,8 +183,9 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
         {snapshot.secondary&&<div className={"limit-window"+meterTone(rateLimitRemainingPercent(snapshot.secondary))}><span>Secondary</span><i><b style={{width:`${Math.max(2,rateLimitRemainingPercent(snapshot.secondary)??0)}%`}}/></i><strong>{rateLimitRemainingPercent(snapshot.secondary)}% left</strong><small>{formatRateReset(snapshot.secondary.resetsAt)}</small></div>}
         {snapshot.credits&&<div className="limit-meta"><span>Credits</span><strong>{snapshot.credits.unlimited?"Unlimited":snapshot.credits.balance??(snapshot.credits.hasCredits?"Available":"None")}</strong></div>}
         {snapshot.individualLimit&&<div className="limit-meta"><span>Spend control</span><strong>{snapshot.individualLimit.used} / {snapshot.individualLimit.limit}</strong><small>{snapshot.individualLimit.remainingPercent}% left · {formatRateReset(snapshot.individualLimit.resetsAt)}</small></div>}
-      </div>)}</div>:<p>{codex.loading?"Loading live Codex account limits…":"This inference route did not return Codex account limits."}</p>}
+      </div>)}</div>:codex.loading?<p aria-busy="true">Loading live Codex account limits…</p>:!codex.errors.rateLimits&&<p>This inference route did not return Codex account limits.</p>}
       {resetCredits?.availableCount>0&&<div className="reset-credit-row"><div><strong>{resetCredits.availableCount} reset credit{resetCredits.availableCount===1?"":"s"} available</strong><span>Earned reset credits can restore an eligible Codex rate-limit window.</span></div><button onClick={()=>resetCodexLimit(resetCredits.credits?.find(item=>item.status==="available")?.id||null)} disabled={codex.loading}><RotateCcw size={12}/> Use reset credit</button></div>}
+      {codex.failure&&<div className="inline-error" role="alert">{codex.failure}</div>}
       {codexSummary&&<div className="codex-usage-kv">
         <div><span>Lifetime tokens</span><strong>{codexSummary.lifetimeTokens==null?"—":formatTokens(codexSummary.lifetimeTokens)}</strong></div>
         <div><span>Peak day</span><strong>{codexSummary.peakDailyTokens==null?"—":formatTokens(codexSummary.peakDailyTokens)}</strong></div>
@@ -178,26 +195,26 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       {threadUsage&&<div className="thread-account-usage"><strong>Current thread estimate</strong><span>{formatTokens(threadUsage.groups?.reduce((sum,item)=>sum+Number(item.totalTokens||0),0)||0)} tokens · {money(microsToCurrency(threadUsage.estimatedUsageUsdMicros))} · {(Number(threadUsage.estimatedUsageCreditsMicros||0)/1_000_000).toFixed(3)} credits</span></div>}
       {codex.messages?.featureEnabled&&codex.messages.messages?.length>0&&<div className="workspace-messages"><strong>Workspace messages</strong>{codex.messages.messages.map(message=><div key={message.messageId}><span>{String(message.messageType||"notice").replaceAll("_"," ")}</span><p>{message.messageBody}</p></div>)}</div>}
       {codex.notice&&<p className="provider-note">{codex.notice}</p>}
-      {Object.values(codex.errors).length>0&&<details className="capability-details"><summary>Unavailable Codex account data</summary><pre>{Object.entries(codex.errors).map(([key,value])=>`${key}: ${value}`).join("\n")}</pre></details>}
+      {Object.values(codex.errors).length>0&&<details className="capability-details"><summary>Unavailable Codex account data</summary><pre>{Object.entries(codex.errors).map(([key,value])=>failureText(CODEX_READS[key]||"Could not load "+key,value)).join("\n")}</pre></details>}
     </section>}
     {showLiveRuntime&&<section className="capability-card codex-account-usage" data-testid="runtime-account-usage">
       <div className="capability-card-head"><span><Sparkles size={15}/><strong>{runtimeLabel(agentRuntime)} subscription limits</strong></span><em>{activeEnvironmentName} · {runtimeUsage.data?.account?.email?runtimeUsage.data.account.email+" · ":""}live</em></div>
       {runtimeUsage.data?.windows?.length>0?<div className="codex-limit-grid">{runtimeUsage.data.windows.map(window=>{
         const used=Math.max(0,Math.min(100,Number(window.usedPercent)||0));const remaining=Math.max(0,100-used);
         return <div className="codex-limit-card" key={window.id}><div><strong>{window.label}</strong><span>{window.kind}</span></div><div className={"limit-window"+meterTone(remaining)}><span>Usage</span><i><b style={{width:`${Math.max(2,used)}%`}}/></i><strong>{used.toFixed(used%1?1:0)}% used</strong><small>{remaining.toFixed(remaining%1?1:0)}% left{window.resetsAt?` · resets ${new Date(window.resetsAt).toLocaleString()}`:""}</small></div></div>;
-      })}</div>:<p>{runtimeUsage.loading?"Loading live subscription limits…":runtimeUsage.data?.unavailable?.message||(runtimeUsage.data&&!runtimeUsage.data.unavailable&&!runtimeUsage.data.error?"Nothing is metered for this account in the current period yet.":"This runtime/account does not expose subscription limits to Trebell.")}</p>}
+      })}</div>:runtimeUsage.loading?<p aria-busy="true">Loading live subscription limits…</p>:runtimeUsage.data&&<p>{runtimeUsage.data.unavailable?.message||(!runtimeUsage.data.unavailable&&!runtimeUsage.data.error?"Nothing is metered for this account in the current period yet.":"This runtime/account does not expose subscription limits to Trebell.")}</p>}
       {runtimeUsage.error&&<div className="usage-warning"><CircleAlert size={14}/><span>{runtimeUsage.error}</span></div>}
     </section>}
     <div className="usage-summary">
-      <div><span>Total tokens</span><strong>{formatTokens(data.total?.totalTokens)}</strong><small>{(data.records||[]).length} recorded turn{(data.records||[]).length===1?"":"s"}</small></div>
-      <div><span>Input</span><strong>{formatTokens(data.total?.inputTokens)}</strong><small>{formatTokens(data.total?.cachedInputTokens)} cache read · {formatTokens(data.total?.cacheWriteInputTokens)} cache write</small></div>
-      <div><span>Output</span><strong>{formatTokens(data.total?.outputTokens)}</strong><small>{formatTokens(data.total?.reasoningOutputTokens)} reasoning</small></div>
-      <div><span>Cost</span><strong className={computed.known||computed.estimated||!(data.records||[]).length?undefined:"usage-stat-muted"} title={computed.known||computed.estimated||!(data.records||[]).length?undefined:"No recorded turn reported or estimated a cost"}>{computed.known||computed.estimated?`$${computed.cost.toFixed(computed.cost<1?4:2)}`:(data.records||[]).length?"—":"$0.00"}</strong><small>{computed.known} provider · {computed.estimated} estimated</small></div>
+      <div><span>Total tokens</span><strong className={usageKnown?undefined:"usage-stat-muted"}>{usageKnown?formatTokens(data.total?.totalTokens):"—"}</strong><small>{usageKnown?`${records.length} recorded turn${records.length===1?"":"s"}`:usagePending}</small></div>
+      <div><span>Input</span><strong className={usageKnown?undefined:"usage-stat-muted"}>{usageKnown?formatTokens(data.total?.inputTokens):"—"}</strong><small>{usageKnown?`${formatTokens(data.total?.cachedInputTokens)} cache read · ${formatTokens(data.total?.cacheWriteInputTokens)} cache write`:usagePending}</small></div>
+      <div><span>Output</span><strong className={usageKnown?undefined:"usage-stat-muted"}>{usageKnown?formatTokens(data.total?.outputTokens):"—"}</strong><small>{usageKnown?`${formatTokens(data.total?.reasoningOutputTokens)} reasoning`:usagePending}</small></div>
+      <div><span>Cost</span><strong className={usageKnown&&(computed.known||computed.estimated||!records.length)?undefined:"usage-stat-muted"} title={!usageKnown||computed.known||computed.estimated||!records.length?undefined:"No recorded turn reported or estimated a cost"}>{!usageKnown?"—":computed.known||computed.estimated?`$${computed.cost.toFixed(computed.cost<1?4:2)}`:records.length?"—":"$0.00"}</strong><small>{usageKnown?`${computed.known} provider · ${computed.estimated} estimated`:usagePending}</small></div>
     </div>
     <div className="usage-grid">
-      <section className="capability-card"><div className="capability-card-head"><span><CalendarDays size={15} aria-hidden="true"/><strong>Daily tokens</strong></span><em>{days}d</em></div><div className="usage-bars">{daily.length?daily.map(([day,value])=><div key={day}><span>{new Date(day+"T00:00:00").toLocaleDateString(undefined,{month:"short",day:"numeric"})}</span><i><b style={{width:`${Math.max(2,Number(value.tokens||0)/maxDaily*100)}%`}}/></i><strong>{formatTokens(value.tokens)}</strong></div>):<p>No recorded usage in this period.</p>}</div></section>
-      <section className="capability-card"><div className="capability-card-head"><span><Cpu size={15} aria-hidden="true"/><strong>Models</strong></span><em>{computed.models.length}</em></div><div className="usage-models">{computed.models.length?computed.models.map(([name,value])=><div key={name}><span><strong>{name}</strong><small>{runtimeLabel(value.runtime)} · {value.turns} turn{value.turns===1?"":"s"}</small></span><b>{formatTokens(value.tokens)}</b><em>{value.costEntries?`$${value.cost.toFixed(value.cost<1?4:2)}`:"—"}</em></div>):<p>No model usage recorded yet.</p>}</div></section>
+      <section className="capability-card"><div className="capability-card-head"><span><CalendarDays size={15} aria-hidden="true"/><strong>Daily tokens</strong></span><em>{days}d</em></div><div className="usage-bars">{daily.length?daily.map(([day,value])=><div key={day}><span>{new Date(day+"T00:00:00").toLocaleDateString(undefined,{month:"short",day:"numeric"})}</span><i><b style={{width:`${Math.max(2,Number(value.tokens||0)/maxDaily*100)}%`}}/></i><strong>{formatTokens(value.tokens)}</strong></div>):usageCurrent?<p>No recorded usage in this period.</p>:loading&&<p aria-busy="true">Loading daily usage…</p>}</div></section>
+      <section className="capability-card"><div className="capability-card-head"><span><Cpu size={15} aria-hidden="true"/><strong>Models</strong></span>{usageKnown&&<em>{computed.models.length}</em>}</div><div className="usage-models">{computed.models.length?computed.models.map(([name,value])=><div key={name}><span><strong>{name}</strong><small>{runtimeLabel(value.runtime)} · {value.turns} turn{value.turns===1?"":"s"}</small></span><b>{formatTokens(value.tokens)}</b><em>{value.costEntries?`$${value.cost.toFixed(value.cost<1?4:2)}`:"—"}</em></div>):usageCurrent?<p>No model usage recorded yet.</p>:loading&&<p aria-busy="true">Loading model usage…</p>}</div></section>
     </div>
-    <section className="capability-card usage-recent"><div className="capability-card-head"><span><History size={15} aria-hidden="true"/><strong>Recent turns</strong></span><em>{Math.min(100,(data.records||[]).length)}</em></div><div className="usage-table"><div className="usage-table-head"><span>When</span><span>Environment</span><span>Harness</span><span>Model</span><span>Tokens</span><span>Cost</span></div>{(data.records||[]).slice(0,100).map(record=>{const cost=estimateUsageCost(record,settings);const environmentKey=record.environmentId||"local";return <div key={record.id}><span title={new Date(record.at).toLocaleString()}>{new Date(record.at).toLocaleString(undefined,{dateStyle:"short",timeStyle:"short"})}</span><span title={environmentNames[environmentKey]||environmentKey}>{environmentNames[environmentKey]||environmentKey}</span><span>{runtimeLabel(record.runtime)}</span><span title={record.model||""}>{record.model||"Unknown"}</span><span>{formatTokens(record.usage?.totalTokens)}</span><span>{cost?`${cost.estimated?"≈":""}$${cost.amount.toFixed(cost.amount<1?4:2)}`:"—"}</span></div>})}{!(data.records||[]).length&&<p className="usage-table-empty">{loading?"Loading recorded turns…":"No turns recorded in this period."}</p>}</div></section>
+    <section className="capability-card usage-recent"><div className="capability-card-head"><span><History size={15} aria-hidden="true"/><strong>Recent turns</strong></span>{usageKnown&&<em>{Math.min(100,records.length)}</em>}</div><div className="usage-table"><div className="usage-table-head"><span>When</span><span>Environment</span><span>Harness</span><span>Model</span><span>Tokens</span><span>Cost</span></div>{records.slice(0,100).map(record=>{const cost=estimateUsageCost(record,settings);const environmentKey=record.environmentId||"local";return <div key={record.id}><span title={new Date(record.at).toLocaleString()}>{new Date(record.at).toLocaleString(undefined,{dateStyle:"short",timeStyle:"short"})}</span><span title={environmentNames[environmentKey]||environmentKey}>{environmentNames[environmentKey]||environmentKey}</span><span>{runtimeLabel(record.runtime)}</span><span title={record.model||""}>{record.model||"Unknown"}</span><span>{formatTokens(record.usage?.totalTokens)}</span><span>{cost?`${cost.estimated?"≈":""}$${cost.amount.toFixed(cost.amount<1?4:2)}`:"—"}</span></div>})}{!records.length&&(loading||usageCurrent)&&<p className="usage-table-empty" aria-busy={loading||undefined}>{loading?"Loading recorded turns…":"No turns recorded in this period."}</p>}</div></section>
   </div>;
 }

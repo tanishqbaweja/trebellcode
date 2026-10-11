@@ -1,6 +1,16 @@
-// Words for counts and runtime identifiers shown in the Tools page.
+// Words for counts, runtime identifiers and failures shown in the Tools and Usage pages.
+import { actionError } from "./inspector-labels.js";
 
 export function countLabel(count,singular,plural=singular+"s"){const value=Number(count)||0;return value+" "+(value===1?singular:plural)}
+
+// A failure names the action before the reason ("Could not clear local usage history: EPERM", or "Could not load usage." when
+// there is no reason). A reason that already starts with the action, as a server that words its own errors sends it, is shown
+// as it is, so the action is never named twice.
+export function failureText(action,error){
+  const detail=String(error?.message??error??"").trim(),head=String(action??"").trim();
+  const named=head!==""&&detail.slice(0,head.length).toLowerCase()===head.toLowerCase()&&!/[\p{L}\p{N}]/u.test(detail.charAt(head.length));
+  return named?detail:actionError(head,error);
+}
 
 const IDENTIFIER_WORDS={mcp:"MCP",api:"API",url:"URL",uri:"URI",id:"ID",oauth:"OAuth",ssh:"SSH",json:"JSON"};
 // An API identifier ("highRiskCyberActivity", "mcp_server_config") as the words a person reads ("High risk cyber activity",
