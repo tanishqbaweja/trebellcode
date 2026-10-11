@@ -733,6 +733,10 @@
 :root:root .agents-page .agent-open>div>span{display:block;margin-top:2px!important;font-size:11.5px!important;line-height:1.45!important;color:var(--tx2)!important}
 :root:root .agents-page .agent-open>div>small{display:block;margin-top:2px;font-family:var(--mono);font-size:10.5px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 :root:root .agents-page .agent-open>div>small.agent-last-activity{font-style:italic;color:var(--tx3)!important}
+/* A long name wraps onto a second line (its whole text is the tooltip) and the meta lines wrap at their separators, so the
+   parent thread at the end of the line stays readable. */
+:root:root .agents-page .agent-open>div>strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-height:1.4;white-space:normal;overflow-wrap:anywhere}
+:root:root .agents-page .agent-open>div>small{line-height:1.5;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
 :root:root .agents-page .agent-live-phase b{font-weight:600;color:var(--tx1)}
 :root:root .agents-page .agent-row:has(.agent-status-dot.working) .agent-live-phase b{color:var(--ac)}
 :root:root .agents-page .agent-row:has(.agent-status-dot.error) .agent-live-phase b{color:var(--err)}

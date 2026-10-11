@@ -142,7 +142,7 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,onD
         <button className="agent-open" aria-current={isOpen?"true":undefined} onClick={()=>openAgent(t)} disabled={busy}>
           <span className={"agent-status-dot "+status.key}/>
           <div>
-            <strong>{delegatedLabel(t,meta)}</strong>
+            <strong title={delegatedLabel(t,meta)}>{delegatedLabel(t,meta)}</strong>
             <span className="agent-live-phase">{delegatedRole(t,meta)} · <b>{delegation.status==="uncertain"?"Uncertain launch":delegation.status==="failed"?"Launch failed":phase}</b>{flags.length?" · "+flags.join(", "):""}</span>
             <small>{t.model||delegation.model||model||"model"}{delegation.permissions||delegation.permission?" · "+(delegation.permissions||delegation.permission):""}{delegation.isolation?" · "+delegation.isolation:""}{delegation.branch?" · "+delegation.branch:""}{usage?" · "+usage:""}{activityAge?" · active "+activityAge+" ago":""} · parent {String(parentIdOf(t)||"").slice(0,8)}</small>
             {delegation.ownership?.length>0&&<small className="agent-last-activity">Owns · {delegation.ownership.join(", ")}</small>}

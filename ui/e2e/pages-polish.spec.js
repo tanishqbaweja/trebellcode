@@ -232,3 +232,72 @@ for(const mode of MODES){
   });
 }
 
+// ============ Agents fleet (a Codex app-server behind the real relay) ============
+const LONG_AGENT="Investigate the flaky reconciliation job across every payments microservice and summarise the root cause in detail";
+async function startFleet(children){
+  const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;let result={};
+      if(message.method==="thread/list")result={data:children,nextCursor:null};
+      else if(message.method==="initialize")result={userAgent:"polish-fleet"};
+      else if(["threadSection/list","thread/loaded/list","thread/attachment/list","thread/queue/list","app/list"].includes(message.method))result={data:[],nextCursor:null};
+      else if(message.method==="collaborationMode/list"||message.method==="skills/list")result={data:[]};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  return {
+    wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",
+    async close(){relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])},
+  };
+}
+function child(id,name,status,role="researcher"){return {id,parentThreadId:"fleet-parent-thread",name,preview:"Delegated: "+name,agentRole:role,status:{type:status},model:"test/coding-fast",cwd:process.cwd(),createdAt:Date.now()/1000-100,updatedAt:Date.now()/1000,turns:[]}}
+async function openAgents(page,fixture,{mode="dark",width=1280,height=800}={}){
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:fixture.wsUrl,cwd:process.cwd(),platform:"linux",version:"polish-fleet",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{}}));
+  await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  await page.setViewportSize({width,height});
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe(mode);
+  await page.locator('.sidebar .sidebar-utility[aria-label="Agents"]').click();
+  return page.locator(".agents-page");
+}
+
+for(const [mode,width] of [["dark",1600],["dark",1280],["light",1280],["dark",900],["light",900]]){
+  test(`a long delegated-agent name and its whole meta line can be read and the rows keep their columns (${mode} ${width})`,async({page})=>{
+    const fixture=await startFleet([child("c1",LONG_AGENT,"active"),child("c2","Write the migration","idle","worker"),child("c3","Review the docs","notLoaded","reviewer")]);
+    try{
+      const agents=await openAgents(page,fixture,{mode,width,height:width===1600?980:800});
+      await expect(agents).toContainText("Write the migration",{timeout:10000});
+      await page.waitForTimeout(400);
+      await page.screenshot({animations:"disabled",path:shots+`agents-long-name-${mode}-${width}.png`});
+      const problems=await agents.evaluate(node=>{
+        const out=[];if(node.scrollWidth>node.clientWidth+1)out.push("agents page scrolls sideways "+node.scrollWidth+">"+node.clientWidth);
+        for(const el of node.querySelectorAll(".agent-row :is(strong,span,em,small)")){const s=getComputedStyle(el);const cut=(el.scrollWidth>el.clientWidth+1&&/(hidden|clip)/.test(s.overflowX))||(el.scrollHeight>el.clientHeight+1&&/(hidden|clip)/.test(s.overflowY));if(cut&&el.getAttribute("title")!==el.textContent)out.push(`"${el.textContent.slice(0,50)}" cut with no full-text tooltip`)}
+        const rows=[...node.querySelectorAll(".agent-row")];
+        for(const row of rows){const b=row.getBoundingClientRect();for(const el of row.querySelectorAll("*")){const r=el.getBoundingClientRect();if(r.width&&(r.right>b.right+1||r.left<b.left-1||r.bottom>b.bottom+1))out.push(`"${(el.textContent||"").slice(0,40)}" runs outside its row`)}}
+        // The status dot, the name and the action buttons start at the same x in every row.
+        for(const [selector,side] of [[".agent-status-dot","left"],[".agent-open>div>strong","left"],[".agent-actions","left"]]){const xs=[...new Set(rows.map(row=>Math.round(row.querySelector(selector).getBoundingClientRect()[side])))];if(xs.length>1)out.push(`${selector} ${side} edges differ between rows: ${xs.join(", ")}`)}
+        return [...new Set(out)];
+      });
+      expect(problems).toEqual([]);
+      const row=agents.locator(".agent-row").filter({hasText:"Investigate the flaky"});
+      const name=row.locator(".agent-open>div>strong"),meta=row.locator(".agent-open>div>small").first();
+      await expect(name).toHaveAttribute("title",LONG_AGENT);
+      expect(await name.evaluate(el=>{const s=getComputedStyle(el);return Math.round(el.getBoundingClientRect().height/(parseFloat(s.lineHeight)||parseFloat(s.fontSize)*1.21))}),"the long name wraps onto a second line").toBe(2);
+      // The meta line ends with the parent thread, which used to be cut away.
+      await expect(meta).toContainText("parent fleet-pa");
+      expect(await meta.evaluate(el=>el.scrollWidth<=el.clientWidth+1&&el.scrollHeight<=el.clientHeight+1),"the meta line shows whole").toBe(true);
+    }finally{await fixture.close()}
+  });
+}
+
