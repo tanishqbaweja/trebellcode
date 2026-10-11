@@ -299,10 +299,13 @@
 /* A key shared with another command: amber on the row that never runs, muted on the row that takes the key. */
 :root:root .settings-page.redesigned-settings .keybinding-row>.keybinding-note.clash{color:var(--warn)!important}
 :root:root .settings-page.redesigned-settings .keybinding-row>.keybinding-note.takes{color:var(--tx3)!important}
-:root:root .settings-page.redesigned-settings .keybinding-row input[aria-invalid="true"],:root:root .settings-page.redesigned-settings .keybinding-row input[aria-invalid="true"]:focus{border-color:var(--errb)!important;box-shadow:0 0 0 3px var(--errt)!important}
-/* Light mode's shared field line and focus colour (pages.css) outweigh that, so the red line is repeated at their weight. */
-:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page .settings-page .keybinding-row input[aria-invalid="true"]:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]),
-:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page .settings-page .keybinding-row input[aria-invalid="true"]:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):focus{border-color:var(--errb)!important}
+/* The red line stays under the pointer (it outweighs the field hover line), and a field that has the keyboard shows it with a stronger
+   red line and ring, as a valid field does with the accent ring, so focus is never shown by the caret alone. */
+:root:root .settings-page.redesigned-settings .settings-card .keybinding-row input[aria-invalid="true"]:not(:focus){border-color:var(--errb)!important;box-shadow:0 0 0 3px var(--errt)!important}
+:root:root .settings-page.redesigned-settings .settings-card .keybinding-row input[aria-invalid="true"]:focus{border-color:color-mix(in srgb,var(--err) 72%,transparent)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--err) 22%,transparent)!important}
+/* Light mode's shared field line and focus colour (pages.css) outweigh that, so the red lines are repeated at their weight. */
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page .settings-page .keybinding-row input[aria-invalid="true"]:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):not(:focus){border-color:var(--errb)!important}
+:root:root[data-mode="light"]:not([data-custom-theme="true"]) .secondary-page .settings-page .keybinding-row input[aria-invalid="true"]:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]):not([type="range"]):focus{border-color:color-mix(in srgb,var(--err) 72%,transparent)!important}
 
 /* ============ Diagnostics ============ */
 :root:root .settings-page.redesigned-settings .diag-badges{display:flex;flex-wrap:wrap;gap:8px}

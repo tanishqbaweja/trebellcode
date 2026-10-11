@@ -82,6 +82,25 @@ test.describe("Typing a shortcut",()=>{
     expect(await sideways(page)).toBeLessThanOrEqual(0);
     await page.screenshot({animations:"disabled",path:shots+`shortcut-unfinished-${mode}-900.png`});
     await page.setViewportSize({width:1280,height:800});
+    // The red line stays under the pointer, and back in the field from the keyboard the field shows it has focus: its line and ring
+    // are not the ones it has when left. Fields ease between looks, so each look is read once it has settled.
+    const look=async()=>{
+      let last="";
+      await expect.poll(async()=>{const now=await field.evaluate(node=>{const style=getComputedStyle(node);return style.borderColor+" | "+style.boxShadow});const same=now===last;last=now;return same},{intervals:[250]}).toBe(true);
+      return last;
+    };
+    await page.mouse.move(1,1);
+    const leftLook=await look();
+    await field.hover();
+    expect(await look(),"the pointer takes the red line away").toBe(leftLook);
+    await page.keyboard.press("Shift+Tab");
+    await expect(field).toBeFocused();
+    await expect(field).toHaveAttribute("aria-invalid","true");
+    expect(await look(),"an invalid field looks the same with and without focus").not.toBe(leftLook);
+    await sidebarRow.screenshot({animations:"disabled",path:shots+`shortcut-unfinished-focused-${mode}-1280.png`});
+    await page.keyboard.press("Tab");
+    await expect(message).toHaveText("Add a key after “Ctrl+”. Until then the shortcut stays Ctrl+B.");
+    expect(saves,"leaving the unfinished shortcut again saves nothing").toEqual([]);
 
     // The saved Ctrl+B still works.
     await sidebarRow.locator("strong").click();
