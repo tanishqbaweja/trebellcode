@@ -1,8 +1,8 @@
 import React,{useEffect,useMemo,useState} from "react";
 import { Check, FileCode2, FileDiff, FileImage, FileText, Folder, Music2, Paperclip, RefreshCw, Save, Search, Video, WrapText, X } from "lucide-react";
-import Prism from "prismjs";
 import { api } from "../api.js";
 import { actionError, gitStatusBadge, gitStatusEntry, splitPath } from "../inspector-labels.js";
+import { highlightSyntax } from "../syntax-language.js";
 import { WORKSPACE_CHANGED_PAGE_SIZE, WORKSPACE_DIFF_CHUNK_CHARS, WORKSPACE_TREE_PAGE_SIZE, workspaceListWindow, workspaceTextWindow } from "../workspace-view-window.js";
 import OpenInPicker from "./OpenInPicker.jsx";
 import { askText } from "./RightPanel.jsx";
@@ -26,14 +26,6 @@ function previewKind(name=""){
   if(ext==="md"||ext==="markdown")return "markdown";
   if(TABLE_EXT.has(ext))return "table";
   return "text";
-}
-// The Prism grammar for a file, or "" for a type it has none for (.txt, .log, …): that file shows as plain text, not as JavaScript.
-function languageFor(name=""){
-  const ext=extension(name);
-  if(["js","mjs","cjs","jsx","ts","tsx","json"].includes(ext)) return "javascript";
-  if(["css","scss"].includes(ext)) return "css";
-  if(["html","htm","xml","svg"].includes(ext)) return "markup";
-  return "";
 }
 function parseDelimited(text,delimiter=","){
   const rows=[];let row=[],cell="",quoted=false;
@@ -219,9 +211,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     catch(err){setReviewError(actionError("Could not attach review comment",err))}
     finally{setActionBusy("")}
   }
-  const language=languageFor(file?.name);
-  // null: no grammar, so the text is rendered as text (React escapes it) with no token colors.
-  const highlighted=useMemo(()=>file?.content!=null&&language?Prism.highlight(file.content,Prism.languages[language],language):null,[file,language]);
+  // null: no grammar for this file type, so the text is rendered as text (React escapes it) with no token colors.
+  const highlighted=useMemo(()=>highlightSyntax(file?.content,file?.name),[file]);
   // Paths are unquoted here, so the list, review comments and reviewed state all name the file itself (New folder/, not git's "New folder/").
   const changes=useMemo(()=>String(diff.status||"").split(/\r?\n/).filter(Boolean).map(gitStatusEntry),[diff.status]);
   const changedPaths=useMemo(()=>changes.map(change=>change.path),[changes]);

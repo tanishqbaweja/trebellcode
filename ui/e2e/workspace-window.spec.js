@@ -167,3 +167,58 @@ test("the Diff and Git lists name an untracked folder and label untracked paths 
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-status-labels-light-1280x800.png",fullPage:true});
 });
+
+test("the Files viewer colours code with its own language's grammar and shows prose as plain text",async({page,request})=>{
+  test.setTimeout(45_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Workspace syntax"}});
+  // Each code file lists tokens its grammar finds ([class, text]); prose, logs and a licence have none. In Python "//" is floor
+  // division, which the JavaScript grammar read as a comment.
+  const files=[
+    ["main.go","package main\n\nimport \"fmt\"\n\n// Entry point\nfunc main() {\n\tfor i := 0; i < 3; i++ {\n\t\tfmt.Println(\"hello\", i)\n\t}\n}\n",[["comment","// Entry point"],["string","\"fmt\""],["keyword","import"],["keyword","func"]]],
+    ["tool.py","def halve(total):\n    # integer half\n    return total // 2\n",[["comment","# integer half"],["keyword","def"],["operator","//"]]],
+    ["Main.java","public class Main {\n  // entry\n  public static void main(String[] args) { System.out.println(\"hi\"); }\n}\n",[["comment","// entry"],["keyword","class"],["string","\"hi\""]]],
+    ["module.mts","export const n: number = 1; // typed\n",[["keyword","export"],["comment","// typed"]]],
+    ["legacy.cts","const fs = require(\"fs\");\n",[["keyword","const"],["string","\"fs\""]]],
+    ["tsconfig.jsonc","{\n  // strict mode\n  \"strict\": true\n}\n",[["comment","// strict mode"],["boolean","true"]]],
+    ["theme.less","@accent: #f00;\n.a { color: @accent; }\n",[["selector",".a"],["property","color"]]],
+    ["Dockerfile","FROM node:20\n# deps\nRUN npm ci\n",[["keyword","FROM"],["comment","# deps"]]],
+    ["build.sh","#!/bin/sh\n# build it\nif [ -f out ]; then echo built; fi\n",[["comment","# build it"],["keyword","if"]]],
+    ["config.yaml","name: trebell # app\nport: 8080\n",[["key","name"],["comment","# app"]]],
+    ["main.rs","fn main() {\n    let x = 1; // rust\n}\n",[["keyword","fn"],["comment","// rust"]]],
+    ["lib.c","#include <stdio.h>\nint main(void) { return 0; }\n",[["keyword","int"],["string","<stdio.h>"]]],
+    ["notes.txt","keep this file\nif (this) return <b>x</b>; // not code\n",[]],
+    ["server.log","INFO started in 3ms // ok\n",[]],
+    ["LICENSE","MIT License\nCopyright (c) 2026\n",[]],
+  ];
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route("**/api/workspace/tree?**",route=>json(route,{root:boot.cwd,entries:files.map(([name])=>({name,path:name,relativePath:name,isFile:true,isDirectory:false,depth:0})),truncated:false}));
+  await page.route("**/api/workspace/file?**",route=>{const name=new URL(route.request().url()).searchParams.get("path");return json(route,{name,path:name,content:files.find(file=>file[0]===name)[1]})});
+
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const project=page.locator(".project-card").filter({hasText:"Workspace syntax"});
+  await expect(project).toBeVisible();
+  await project.locator(".project-open").click();
+  await page.getByTestId("right-panel-toggle").click();
+  const right=page.getByTestId("right-panel");
+  await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Files",exact:true}).click();
+  for(const [name,content,expected] of files){
+    await right.locator("[data-workspace-entry]").filter({has:page.getByText(name,{exact:true})}).click();
+    await expect(right.locator(".file-head strong")).toHaveText(name);
+    const code=right.locator(".syntax-view code");
+    expect(await code.evaluate(node=>node.textContent)).toBe(content);
+    const tokens=await code.evaluate(node=>[...node.querySelectorAll(".token")].map(token=>({classes:[...token.classList],text:token.textContent})));
+    if(!expected.length)expect(tokens,name).toEqual([]);
+    for(const [kind,text] of expected)expect(tokens.some(token=>token.classes.includes(kind)&&token.text===text),`${name}: a ${kind} token "${text}"`).toBe(true);
+    if(name==="main.go")await page.screenshot({animations:"disabled",path:auditDir+"workspace-syntax-go-dark-1280x800.png"});
+    if(name==="tool.py"){
+      await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+      await page.screenshot({animations:"disabled",path:auditDir+"workspace-syntax-python-light-1280x800.png"});
+      await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    }
+    if(name==="notes.txt")await page.screenshot({animations:"disabled",path:auditDir+"workspace-syntax-plain-text-dark-1280x800.png"});
+  }
+});
