@@ -5,6 +5,8 @@ import {
   normalizeKeybindingRules,
   resolveKeybinding,
   shortcutMatches,
+  shortcutProblem,
+  whenProblem,
 } from "../ui/src/keybindings.js";
 
 function event(key,mods={}){
@@ -135,4 +137,34 @@ test("dynamic project action keybindings survive normalization and resolve",()=>
   const rule=normalizeKeybindingRules(settings).find(item=>item.command===command);
   assert.deepEqual(rule,{command,key:"Alt+1",when:"projectOpen && !modalOpen"});
   assert.equal(resolveKeybinding(event("1",{altKey:true}),settings,{projectOpen:true,modalOpen:false}),command);
+});
+
+test("a shortcut that stops on a modifier or names a modifier that does not exist says what to change",()=>{
+  for(const value of ["","Ctrl+B","Escape","Mod+Shift+[","Ctrl+,","Ctrl+Alt+Shift+A","F5","Ctrl + B"])assert.equal(shortcutProblem(value,false),"",value);
+  assert.equal(shortcutProblem("Ctrl+",false),"Add a key after “Ctrl+”.");
+  assert.equal(shortcutProblem("Ctrl",false),"Add a key after “Ctrl+”.");
+  assert.equal(shortcutProblem("ctrl+shift+",false),"Add a key after “Ctrl+Shift+”.");
+  assert.equal(shortcutProblem("Ctrl+Shift",false),"Add a key after “Ctrl+Shift+”.");
+  assert.equal(shortcutProblem("Mod+",false),"Add a key after “Ctrl+”.");
+  assert.equal(shortcutProblem("Mod+",true),"Add a key after “⌘+”.");
+  assert.equal(shortcutProblem("+",false),"Type a key, such as F2 or Ctrl+Alt+K.");
+  assert.equal(shortcutProblem("Ctlr+B",false),"“Ctlr” is not a modifier key. Use Ctrl, Alt, Shift or Mod.");
+  // The matcher never answers to an unfinished shortcut, and answers to "Ctlr+B" as a bare B: both are refused for that reason.
+  assert.equal(shortcutMatches(event("b",{ctrlKey:true}),"Ctrl+"),false);
+  assert.equal(shortcutMatches(event("b"),"Ctlr+B"),true);
+});
+
+test("a condition the parser refuses says what to change, and a finished one passes",()=>{
+  for(const value of ["","!modalOpen","threadOpen && !modalOpen","(threadOpen || pullRequestOpen) && !terminalFocus && !modalOpen","!(a || b)"])assert.equal(whenProblem(value),"",value);
+  assert.equal(whenProblem("!modalOpen &&"),"Add a context after “&&”.");
+  assert.equal(whenProblem("threadOpen ||"),"Add a context after “||”.");
+  assert.equal(whenProblem("!"),"Add a context after “!”.");
+  assert.equal(whenProblem("&& threadOpen"),"Add a context before “&&”.");
+  assert.equal(whenProblem("()"),"Add a context before “)”.");
+  assert.equal(whenProblem("!modalOpen && (projectOpen"),"Add a “)” to close the condition.");
+  assert.equal(whenProblem("threadOpen)"),"Remove the extra “)”.");
+  assert.equal(whenProblem("threadOpen running"),"“running” is out of place. Join contexts with && or ||.");
+  assert.equal(whenProblem("threadOpen & running"),"“&” can't be used in a condition. Join contexts with &&, || and !.");
+  // Each refused condition is one the resolver skips, so the shortcut would stop working.
+  assert.throws(()=>evaluateWhen("!modalOpen &&",{}));
 });

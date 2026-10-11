@@ -3,7 +3,7 @@ import { Activity, Bell, Bot, Boxes, Camera, Cloud, Download, FileText, GitPullR
 import { api } from "../api.js";
 import { formatBytes } from "../format-bytes.js";
 import { desktopBridgeToolAvailability } from "../desktop-tool-availability.js";
-import { KEYBINDING_COMMANDS, normalizeKeybindingRules, shortcutHint } from "../keybindings.js";
+import { KEYBINDING_COMMANDS, normalizeKeybindingRules, shortcutHint, shortcutProblem, whenProblem } from "../keybindings.js";
 import { searchSettings } from "../settings-search.js";
 import { normalizeCustomTheme } from "../theme-utils.js";
 import { sharedRuntimeCapabilities } from "../../../src/runtime-capabilities.mjs";
@@ -25,12 +25,58 @@ const PROVIDER_NOTES={
 let appliedSettingsEntryNonce=null;
 // The last harness snapshot this window saw: Agents & models renders it at once on later visits while a fresh probe runs.
 let lastAgentRuntimeInfo=null;
-// A shortcut shows as the app writes it elsewhere (Ctrl+Shift+P, or ⌘ on macOS) and in its stored form (mod+shift+p) while
-// it is being edited.
-function ShortcutInput({value,onChange}){
-  const [editing,setEditing]=useState(false);
-  const shown=editing?value:(shortcutHint(value)||value);
-  return <input value={shown} placeholder="Not set" title={value?(shortcutHint(value)||value)+" · stored as "+value:undefined} onFocus={()=>setEditing(true)} onBlur={()=>setEditing(false)} onChange={event=>onChange(event.target.value)}/>;
+// A shortcut or condition being typed is a draft. It is saved when the field is left or Enter is pressed, and only once it can work,
+// so a half-typed "Ctrl+" or "threadOpen &&" never replaces the one in use. A draft that cannot work stays in the field, marked
+// invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited.
+function useDraftField({saved,shown=saved,check,save}){
+  const [draft,setDraft]=useState(null);
+  const [focused,setFocused]=useState(false);
+  const [problem,setProblem]=useState("");
+  const sending=useRef(null);
+  const latest=useRef(null);latest.current={draft,saved,check,save};
+  function commit(){
+    if(draft===null)return;
+    const next=draft.trim(),message=check(next);
+    setProblem(message);
+    if(message||next===sending.current)return;
+    if(next===saved){setDraft(null);return}
+    sending.current=next;
+    Promise.resolve(save(next)).finally(()=>{if(sending.current===next)sending.current=null;setDraft(current=>current===draft?null:current)});
+  }
+  // Leaving Settings by a shortcut while the field has focus removes it without a blur: a finished draft is still saved.
+  useEffect(()=>()=>{
+    const {draft,saved,check,save}=latest.current;if(draft===null)return;
+    const next=draft.trim();if(next!==saved&&next!==sending.current&&!check(next))save(next);
+  },[]);
+  return {problem,props:{
+    value:draft??(focused?saved:shown),
+    "aria-invalid":problem?"true":undefined,
+    onFocus:()=>setFocused(true),
+    onBlur:()=>{setFocused(false);commit()},
+    // Once a problem shows, it follows the typing, so the field clears as soon as the value can work.
+    onChange:event=>{const value=event.target.value;setDraft(value);if(problem)setProblem(check(value.trim()))},
+    onKeyDown:event=>{
+      if(event.key==="Enter"){event.preventDefault();commit()}
+      else if(event.key==="Escape"&&(draft!==null||problem)){event.preventDefault();event.stopPropagation();setDraft(null);setProblem("")}
+    },
+  }};
+}
+// One command in Settings > Shortcuts. The shortcut reads as the app writes it elsewhere (Ctrl+Shift+P, or ⌘ on macOS) and in its
+// stored form (mod+shift+p) while it is edited. A problem with either field is said under the row, with what stays in use meanwhile.
+function KeybindingRow({id,label,rule,defaultWhen="",onUpdate}){
+  const savedKey=rule?.key||"",savedWhen=rule?.when||defaultWhen;
+  const key=useDraftField({saved:savedKey,shown:shortcutHint(savedKey)||savedKey,check:value=>shortcutProblem(value),save:value=>onUpdate({key:value})});
+  const when=useDraftField({saved:savedWhen,check:whenProblem,save:value=>onUpdate({when:value})});
+  const base="keybinding-"+id.replace(/[^a-z0-9-]/gi,"-");
+  const keyProblem=key.problem&&key.problem+(savedKey?` Until then the shortcut stays ${shortcutHint(savedKey)}.`:"");
+  const whenText=when.problem&&when.problem+" Until then the saved condition is used.";
+  return <div className="keybinding-row">
+    <strong>{label}</strong>
+    <label>Shortcut<input {...key.props} placeholder="Not set" title={savedKey?(shortcutHint(savedKey)||savedKey)+" · stored as "+savedKey:undefined} aria-describedby={keyProblem?base+"-key-problem":undefined}/></label>
+    <label>When<input {...when.props} placeholder={defaultWhen||"Always"} title={savedWhen||undefined} aria-describedby={whenText?base+"-when-problem":undefined}/></label>
+    {keyProblem&&<p className="keybinding-note" id={base+"-key-problem"} role="alert">{keyProblem}</p>}
+    {whenText&&<p className="keybinding-note" id={base+"-when-problem"} role="alert">{whenText}</p>}
+  </div>;
 }
 const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity"];
 
@@ -821,7 +867,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       {settingsSection==="desktop"&&window.trebellDesktop?.browser?.importSources&&<div className="settings-card browser-profile-settings"><h3><Globe2 size={14} aria-hidden="true"/> Browser profiles</h3><p>Copy a supported browser session into Trebell Agent Browser. This is a one-time local copy; the source browser and Trebell stay separate afterward.</p>{browserImport.sources?.length?<>{browserImport.sources.map(source=><div className="browser-import-source" key={source.id}><div><strong>{source.name}</strong><span>{source.profiles?.length||0} profile{source.profiles?.length===1?"":"s"}{source.running?" · running":""}</span></div>{source.running&&<em>Close {source.name} before importing</em>}</div>)}<label>Profile<select value={browserImportProfile} onChange={e=>setBrowserImportProfile(e.target.value)}>{browserImport.sources.flatMap(source=>(source.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{source.name} · {profile.name}</option>))}</select></label><div className="provider-key-actions"><button className="setting-action" onClick={importBrowserProfile} disabled={browserImportBusy||!browserImportProfile||browserImport.sources.some(source=>source.running&&source.profiles?.some(profile=>profile.id===browserImportProfile))}>{browserImportBusy?"Importing…":"Import selected profile"}</button><button onClick={()=>loadBrowserImportSources()} disabled={browserImportBusy}><RefreshCw size={12}/> Rescan</button></div></>:<>{!browserImportMessage.scanFailed&&<p className="provider-note">No directly importable browser profile was found. On Windows, Trebell supports Firefox and Helium. Other Chromium browsers use app-bound encryption and are intentionally not imported; JSON cookie import remains available in Agent Browser.</p>}<div className="provider-key-actions"><button onClick={()=>loadBrowserImportSources()} disabled={browserImportBusy}><RefreshCw size={12}/> Rescan</button></div></>}{browserImportMessage.text&&<p className={browserImportMessage.error?"provider-status-error":"provider-note"} role={browserImportMessage.error?"alert":undefined}>{browserImportMessage.text}</p>}</div>}
       {settingsSection==="desktop"&&window.trebellDesktop?.snapshots&&<div className="settings-card snapshot-settings"><h3><Camera size={14} aria-hidden="true"/> SnapShots</h3><p>Capture the foreground window from anywhere and attach it to the current draft. Captures are stored locally until Trebell successfully attaches them.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(snapshotInfo.enabled)} onChange={e=>configureSnapshots({enabled:e.target.checked})}/> Enable global SnapShot shortcut</label><label>Shortcut<input value={snapshotInfo.shortcut||""} onChange={e=>setSnapshotInfo(info=>({...info,shortcut:e.target.value}))} onBlur={()=>snapshotInfo.enabled&&configureSnapshots({shortcut:snapshotInfo.shortcut})} placeholder="CommandOrControl+Shift+S"/></label><label className="toggle-line"><input type="checkbox" checked={Boolean(snapshotInfo.includeText)} onChange={e=>configureSnapshots({includeText:e.target.checked})}/> Include accessibility text and control positions</label><label className="toggle-line"><input type="checkbox" checked={snapshotInfo.playSound!==false} onChange={e=>configureSnapshots({playSound:e.target.checked})}/> Play capture sound</label>{snapshotInfo.playSound!==false&&<label>Capture sound<select value={snapshotInfo.sound||"soft-pop"} onChange={e=>configureSnapshots({sound:e.target.value})}><option value="soft-pop">Soft pop</option><option value="camera-shutter">Camera shutter</option></select></label>}<label className="toggle-line"><input type="checkbox" checked={snapshotInfo.flash!==false} onChange={e=>configureSnapshots({flash:e.target.checked})}/> Flash captured window</label><label className="toggle-line"><input type="checkbox" checked={snapshotInfo.animations!==false} onChange={e=>configureSnapshots({animations:e.target.checked})}/> Animate capture feedback</label><p className="provider-note">App text is off by default because visible UI can contain sensitive information. Sound, flash and animation are local capture feedback only. {snapshotInfo.pending?`${snapshotInfo.pending} capture${snapshotInfo.pending===1?"":"s"} waiting to attach. `:""}</p>{snapshotMessage&&<p className={["Saving…","SnapShots ready.","SnapShots disabled."].includes(snapshotMessage)?"provider-note":"provider-status-error"}>{snapshotMessage}</p>}<div className="provider-key-actions"><button onClick={()=>window.trebellDesktop.snapshots.capture().catch(error=>setSnapshotMessage(error.message))}>Capture now</button><button onClick={()=>configureSnapshots({shortcut:snapshotInfo.shortcut})} disabled={!snapshotInfo.enabled}>Save shortcut</button></div></div>}
       {settingsSection==="desktop"&&window.trebellDesktop?.background&&<div className="settings-card"><h3><Power size={14} aria-hidden="true"/> Background mode</h3><p>Keep Trebell's local harness running in the system tray after the window closes, and start it automatically when you sign in.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.backgroundMode)} onChange={e=>setBackgroundMode(e.target.checked)}/> Keep Trebell running in background</label></div>}
-      <div className="settings-card keybindings-settings" hidden={settingsSection!=="shortcuts"}><h3><Keyboard size={14} aria-hidden="true"/> Keyboard shortcuts</h3><p>Shortcuts can be conditional. For example, <code>threadOpen && !modalOpen</code> means “only when a thread is open and no dialog is covering the app.”</p>{settingsSection==="shortcuts"&&KEYBINDING_COMMANDS.map(command=>{const rule=keybindingRules.find(item=>item.command===command.id);return <div className="keybinding-row" key={command.id}><strong>{command.label}</strong><label>Shortcut<ShortcutInput value={rule?.key||""} onChange={value=>updateKeybinding(command.id,{key:value})}/></label><label>When<input value={rule?.when||""} placeholder="Always" title={rule?.when||undefined} onChange={e=>updateKeybinding(command.id,{when:e.target.value})}/></label></div>})}{settingsSection==="shortcuts"&&projectScripts.length>0&&<><h4>Project actions</h4>{projectScripts.map(script=>{const command="script."+script.id+".run";const rule=keybindingRules.find(item=>item.command===command);return <div className="keybinding-row" key={command}><strong>Run {script.name}</strong><label>Shortcut<ShortcutInput value={rule?.key||""} onChange={value=>updateKeybinding(command,{key:value})}/></label><label>When<input value={rule?.when||"projectOpen && !modalOpen"} title={rule?.when||"projectOpen && !modalOpen"} onChange={e=>updateKeybinding(command,{when:e.target.value})}/></label></div>})}</>}<p className="provider-note">Available contexts: chatFocus, terminalFocus, terminalOpen, previewFocus, textInputFocus, modelPickerOpen, projectOpen, threadOpen, pullRequestOpen, running, modalOpen, rightPanelOpen, desktop. Combine them with <code>!</code>, <code>&&</code>, <code>||</code> and parentheses. Blank shortcuts stay unbound until you assign one.</p></div>
+      <div className="settings-card keybindings-settings" hidden={settingsSection!=="shortcuts"}><h3><Keyboard size={14} aria-hidden="true"/> Keyboard shortcuts</h3><p>Shortcuts can be conditional. For example, <code>threadOpen && !modalOpen</code> means “only when a thread is open and no dialog is covering the app.”</p>{settingsSection==="shortcuts"&&KEYBINDING_COMMANDS.map(command=><KeybindingRow key={command.id} id={command.id} label={command.label} rule={keybindingRules.find(item=>item.command===command.id)} onUpdate={patch=>updateKeybinding(command.id,patch)}/>)}{settingsSection==="shortcuts"&&projectScripts.length>0&&<><h4>Project actions</h4>{projectScripts.map(script=>{const command="script."+script.id+".run";return <KeybindingRow key={command} id={command} label={"Run "+script.name} rule={keybindingRules.find(item=>item.command===command)} defaultWhen="projectOpen && !modalOpen" onUpdate={patch=>updateKeybinding(command,patch)}/>})}</>}<p className="provider-note">Available contexts: chatFocus, terminalFocus, terminalOpen, previewFocus, textInputFocus, modelPickerOpen, projectOpen, threadOpen, pullRequestOpen, running, modalOpen, rightPanelOpen, desktop. Combine them with <code>!</code>, <code>&&</code>, <code>||</code> and parentheses. Blank shortcuts stay unbound until you assign one.</p></div>
       <div className="settings-card update-settings" hidden={settingsSection!=="general"}><h3><Download size={14} aria-hidden="true"/> Updates</h3>{desktopUpdate?.supported?<><p>Current: <strong>{desktopUpdate.currentVersion||update?.current||"unknown"}</strong>{desktopUpdate.availableVersion&&<><br/>Available: <strong>{desktopUpdate.availableVersion}</strong></>}<br/>Status: <strong>{updateStatusLabel}</strong></p>{desktopUpdate.status==="downloading"&&<div className="update-progress"><span style={{width:`${Math.max(0,Math.min(100,desktopUpdate.percent||0))}%`}}/></div>}{desktopUpdate.status==="downloading"&&<p className="provider-note">{Math.round(desktopUpdate.percent||0)}% downloaded</p>}{desktopUpdate.error&&<p className="provider-status-error">{desktopUpdate.error}</p>}<div className="provider-key-actions"><button onClick={checkDesktopUpdate} disabled={["checking","downloading","installing"].includes(desktopUpdate.status)}><RefreshCw size={12}/> Check now</button>{desktopUpdate.status==="available"&&<button className="setting-action" onClick={downloadDesktopUpdate}><Download size={12}/> Download update</button>}{desktopUpdate.status==="downloaded"&&<button className="setting-action" onClick={installDesktopUpdate}>Restart & install</button>}</div>{desktopUpdate.status==="downloaded"&&!settings.continueThreadsAfterRestart&&<p className="provider-note">Restart recovery is off. Finish active work first, or enable Restart recovery before installing.</p>}</>:<>{update?.latest?<p>Current: <strong>{update.current}</strong><br/>Latest: <strong>{String(update.latest).replace(/^v(?=\d)/,"")}</strong></p>:<p className={update?.error?"provider-status-error":undefined}>{update?.error||"Checking releases…"}</p>}{update?.error&&<button onClick={checkRelease} disabled={loading}><RefreshCw size={12}/> {loading?"Checking…":"Check again"}</button>}{update?.url&&<button onClick={()=>window.open(update.url,"_blank")}><Download size={13}/> Open latest release</button>}{desktopUpdate?.status==="development"&&<p className="provider-note">In-app installation is available in packaged Trebell builds.</p>}</>}</div>
       <div className="settings-card" hidden={settingsSection!=="diagnostics"}><h3><Stethoscope size={14} aria-hidden="true"/> Diagnostics</h3><p>Runtime and project diagnostics are local to this machine.</p><div className="diag-badges" aria-busy={runtimeChip==="pending"||(selectedManagedInference&&providerChip==="pending")}><span className={runtimeChip} title={harnessStateTitle(harness)}><Activity size={12}/> {selectedAgentName}</span>{selectedManagedInference&&<span className={providerChip} title={providerChipTitle}><ShieldCheck size={12}/> {MODEL_PROVIDER_LABELS[diagnostics?.runtime?.provider||selected]||"Provider"}</span>}</div></div>
     </div>

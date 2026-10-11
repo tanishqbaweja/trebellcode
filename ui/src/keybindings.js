@@ -71,6 +71,9 @@ export function normalizeKeybindingRules(settings={}){
   return [...staticRules,...dynamicRules];
 }
 
+// A parse error says what went wrong (code) and where (token, and the token before it), so Settings can say how to fix it.
+function whenError(message,code,token,previous){return Object.assign(new Error(message),{code,token,previous})}
+
 function tokenize(expression){
   const text=String(expression||"").trim();
   if(!text)return [];
@@ -81,7 +84,7 @@ function tokenize(expression){
     if(text.startsWith("&&",i)||text.startsWith("||",i)){tokens.push(text.slice(i,i+2));i+=2;continue}
     if(text[i]==="!"||text[i]==="("||text[i]===")"){tokens.push(text[i]);i++;continue}
     const match=text.slice(i).match(/^[A-Za-z_][A-Za-z0-9_.-]*/);
-    if(!match)throw new Error("Invalid keybinding when expression near: "+text.slice(i));
+    if(!match)throw whenError("Invalid keybinding when expression near: "+text.slice(i),"character",text[i]);
     tokens.push(match[0]);i+=match[0].length;
   }
   return tokens;
@@ -94,17 +97,30 @@ export function evaluateWhen(expression,context={}){
   const peek=()=>tokens[index];
   const take=value=>peek()===value?(index++,true):false;
   function primary(){
-    if(take("(")){const value=or();if(!take(")"))throw new Error("Missing ) in keybinding when expression");return value}
+    if(take("(")){const value=or();if(!take(")"))throw whenError("Missing ) in keybinding when expression","close");return value}
     const token=tokens[index++];
-    if(!token||["&&","||",")"].includes(token))throw new Error("Expected context key in keybinding when expression");
+    if(!token||["&&","||",")"].includes(token))throw whenError("Expected context key in keybinding when expression","name",token,tokens[index-2]);
     return Boolean(context[token]);
   }
   function unary(){return take("!")?!unary():primary()}
   function and(){let value=unary();while(take("&&"))value=Boolean(unary()&&value);return value}
   function or(){let value=and();while(take("||"))value=Boolean(and()||value);return value}
   const result=or();
-  if(index!==tokens.length)throw new Error("Unexpected token in keybinding when expression: "+tokens[index]);
+  if(index!==tokens.length)throw whenError("Unexpected token in keybinding when expression: "+tokens[index],"extra",tokens[index]);
   return Boolean(result);
+}
+
+// Why a typed condition cannot be used, or "" when it can (blank means always). The resolver skips a condition it cannot read,
+// so saving one would switch the shortcut off; the message says how to finish it instead.
+export function whenProblem(expression){
+  try{evaluateWhen(expression,{});return ""}
+  catch(error){
+    if(error.code==="character")return `“${error.token}” can't be used in a condition. Join contexts with &&, || and !.`;
+    if(error.code==="close")return "Add a “)” to close the condition.";
+    if(error.code==="name")return error.token?`Add a context before “${error.token}”.`:`Add a context after “${error.previous}”.`;
+    if(error.code==="extra")return error.token===")"?"Remove the extra “)”.":`“${error.token}” is out of place. Join contexts with && or ||.`;
+    return "This condition can't be read.";
+  }
 }
 
 function normalizedKey(value){
@@ -150,6 +166,23 @@ export function shortcutHint(value,mac=MAC_PLATFORM){
   if(!parts.length)return "";
   const names={mod:mac?"⌘":"Ctrl",ctrl:"Ctrl",control:"Ctrl",cmd:"⌘",command:"⌘",meta:"⌘",shift:"Shift",alt:mac?"⌥":"Alt",option:"⌥"};
   return parts.map(part=>names[part.toLowerCase()]||(part.length===1?part.toUpperCase():part)).join("+");
+}
+
+const MODIFIER_NAMES=new Set(["mod","ctrl","control","cmd","command","meta","shift","alt","option"]);
+// Why a typed shortcut cannot be used, or "" when it can. Blank (unbound) and a key with any modifiers are fine. "Ctrl+" and
+// "Ctrl+Shift" stop on a modifier and never match a key; "Ctlr+B" names a modifier that does not exist, which the matcher drops,
+// so it would answer to a bare B. The message names the modifiers as the field shows them (Mod as Ctrl, or ⌘ on macOS).
+export function shortcutProblem(value,mac=MAC_PLATFORM){
+  const text=String(value??"").trim();
+  if(!text)return "";
+  const parts=text.split("+").map(part=>part.trim());
+  const last=parts.pop();
+  const modifiers=parts.filter(Boolean);
+  const unknown=modifiers.find(part=>!MODIFIER_NAMES.has(part.toLowerCase()));
+  if(unknown)return `“${unknown}” is not a modifier key. Use Ctrl, Alt, Shift or Mod.`;
+  if(last&&!MODIFIER_NAMES.has(last.toLowerCase()))return "";
+  const held=last?[...modifiers,last]:modifiers;
+  return held.length?`Add a key after “${shortcutHint(held.join("+"),mac)}+”.`:"Type a key, such as F2 or Ctrl+Alt+K.";
 }
 
 export function resolveKeybinding(event,settings={},context={}){
