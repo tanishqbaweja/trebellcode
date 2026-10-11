@@ -110,6 +110,45 @@ test.describe("Command palette keys",()=>{
       await page.unroute(/\/assets\/CommandPalette-/);
     }
   });
+
+  test("Enter typed straight after the search on a first open runs the command once the palette's code arrives",async({page,request})=>{
+    for(const mode of ["dark","light"]){
+      await open(page,request,{mode});
+      const release=await holdChunk(page,"CommandPalette");
+      const composer=page.getByTestId("composer"),palette=page.getByTestId("command-palette");
+      await composer.click();
+      await page.keyboard.press("Control+K");
+      await page.keyboard.type("usage",{delay:30});
+      await page.keyboard.press("Enter");
+      await expect(palette.getByRole("status")).toHaveText("Loading commands…");
+      await expect(palette.getByRole("textbox")).toHaveValue("usage");
+      await page.screenshot({animations:"disabled",path:shots+`palette-loading-enter-${mode}-1280.png`});
+      release();
+      await expect(usageHeading(page),"the Enter pressed while the palette's code loaded was dropped").toBeVisible();
+      await expect(palette).toBeHidden();
+      await expect(usageHeading(page)).toBeFocused();
+      await page.screenshot({animations:"disabled",path:shots+`palette-loading-enter-ran-${mode}-1280.png`});
+      await page.unroute(/\/assets\/CommandPalette-/);
+    }
+  });
+
+  test("arrow keys pressed while the palette's code loads pick the command Enter runs once it arrives",async({page,request})=>{
+    await open(page,request);
+    const release=await holdChunk(page,"CommandPalette");
+    const palette=page.getByTestId("command-palette");
+    await page.getByTestId("composer").click();
+    await page.keyboard.press("Control+K");
+    // Appearance: System, Light, Dark. Up at the first result stays there, as in the palette itself, so Down then picks Light.
+    await page.keyboard.type("appearance",{delay:30});
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(palette.getByRole("status")).toHaveText("Loading commands…");
+    release();
+    await expect(palette).toBeHidden();
+    await expect.poll(async()=>(await (await request.get("/api/state")).json()).settings?.appearanceMode).toBe("light");
+    await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
+  });
 });
 
 test.describe("Focus after a palette command",()=>{

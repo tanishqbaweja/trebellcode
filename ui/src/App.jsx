@@ -107,14 +107,16 @@ const CommandPalette=lazy(()=>import("./components/CommandPalette.jsx"));
 const OnboardingModal=lazy(()=>import("./components/OnboardingModal.jsx"));
 
 // The command palette as it first appears while its code loads (on the first open only): its search box takes focus and the keys
-// typed straight after Ctrl+K, which would otherwise go into the composer it was opened from. seed hands the palette what was typed
-// and where focus came from; closed before the palette came, the stand-in gives focus back there itself.
+// typed straight after Ctrl+K, which would otherwise go into the composer it was opened from. seed hands the palette what was typed,
+// the arrow keys and Enter pressed (keys, which the palette applies to its results once they show) and where focus came from; closed
+// before the palette came, the stand-in gives focus back there itself. After Enter the search stays as Enter ran it, as the palette's
+// own search waits while its command runs.
 function CommandPaletteLoading({seed,onClose}){
   const inputRef=useRef(null);
   useLayoutEffect(()=>{
     // A second run in React's development checks finds focus already in this box: the control it came from is the first run's.
     const active=document.activeElement,opener=active?.closest?.('[data-testid="command-palette"]')?seed.current?.opener||null:active;
-    const handoff={opener,query:"",adopted:false};seed.current=handoff;
+    const handoff={opener,query:"",keys:[],adopted:false};seed.current=handoff;
     inputRef.current?.focus({preventScroll:true});
     return()=>queueMicrotask(()=>{
       if(handoff.adopted||seed.current!==handoff)return;
@@ -129,7 +131,13 @@ function CommandPaletteLoading({seed,onClose}){
   },[onClose]);
   return <div className="command-palette-backdrop" data-testid="command-palette" onMouseDown={event=>event.target===event.currentTarget&&onClose?.()}>
     <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" aria-busy="true">
-      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} defaultValue="" onChange={event=>{if(seed.current)seed.current.query=event.target.value}} onKeyDown={event=>{if(event.key==="Tab")event.preventDefault()}} placeholder="Search commands, threads, and messages…" spellCheck={false} autoComplete="off"/><kbd className="tb-kbd">Esc</kbd></div>
+      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} defaultValue="" onChange={event=>{if(seed.current)seed.current.query=event.target.value}} onKeyDown={event=>{
+        if(event.key==="Tab"){event.preventDefault();return}
+        const keys=seed.current?.keys;
+        if(!keys||keys.includes("Enter")||!["ArrowDown","ArrowUp","Enter"].includes(event.key))return;
+        event.preventDefault();keys.push(event.key);
+        if(event.key==="Enter")event.currentTarget.readOnly=true;
+      }} placeholder="Search commands, threads, and messages…" spellCheck={false} autoComplete="off"/><kbd className="tb-kbd">Esc</kbd></div>
       <div className="command-palette-results"><div className="command-palette-empty" role="status">Loading commands…</div></div>
       <div className="command-palette-footer" aria-hidden="true"><span><kbd className="tb-kbd">↑</kbd><kbd className="tb-kbd">↓</kbd> navigate</span><span><kbd className="tb-kbd">↵</kbd> run</span><span><kbd className="tb-kbd">esc</kbd> close</span><span className="command-palette-hint"><kbd className="tb-kbd">&gt;</kbd> commands only</span></div>
     </div>

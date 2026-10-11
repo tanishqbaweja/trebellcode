@@ -64,10 +64,12 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
   useModalFocus(dialogRef,open,false);
   // The search box takes focus as the palette appears, before the next key is handled, so keys typed straight after Ctrl+K land in it
   // rather than in the composer (or nowhere). On a first open, while this code loads, App's stand-in search box takes them: the palette
-  // starts from what was typed there, and from the control the stand-in was opened from.
+  // starts from what was typed there, and from the control the stand-in was opened from. The arrow keys and Enter pressed there act
+  // once the results for that search show (handedKeysRef), as they would have in the palette.
+  const handedKeysRef=useRef(null);
   useLayoutEffect(()=>{
     const handoff=seed?.current;
-    if(handoff){handoff.adopted=true;seed.current=null;if(handoff.query)setQuery(handoff.query)}
+    if(handoff){handoff.adopted=true;seed.current=null;if(handoff.query)setQuery(handoff.query);if(handoff.keys?.length)handedKeysRef.current={query:handoff.query||"",keys:handoff.keys}}
     if(!openerRef.current)openerRef.current=handoff?handoff.opener:document.activeElement;
     inputRef.current?.focus({preventScroll:true});
   },[]);
@@ -131,6 +133,17 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
     return (q?all.filter(item=>item.messageMatch||(item.label+" "+(item.detail||"")).toLowerCase().includes(q)):all).slice(0,24);
   },[actions,projects,threads,environmentNames,onOpenProject,onOpenThread,query,messageMatches]);
   useEffect(()=>{if(selected>=items.length)setSelected(Math.max(0,items.length-1))},[items.length,selected]);
+  useEffect(()=>{
+    const handed=handedKeysRef.current;if(!handed||handed.query!==query)return;
+    handedKeysRef.current=null;
+    let index=0;
+    for(const key of handed.keys){
+      if(key==="ArrowDown")index=Math.max(0,Math.min(items.length-1,index+1));
+      else if(key==="ArrowUp")index=Math.max(0,index-1);
+      else if(key==="Enter"){setSelected(index);run(items[index]);return}
+    }
+    setSelected(index);
+  },[query,items]);
   // Keep the keyboard selection visible when arrowing past the visible part of the list.
   useEffect(()=>{resultsRef.current?.querySelector("button.selected")?.scrollIntoView?.({block:"nearest"})},[selected,items]);
   // After a failed command, return focus to the search box once it is enabled again (a timeout could fire while it
@@ -143,6 +156,8 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
     catch(error){setActionError(error?.message||String(error)||"The command failed.");refocusRef.current=true;setRunningId(null)}
   }
   function keyDown(event){
+    // A key of the person's own that moves or runs comes after the ones handed over from the stand-in, which then no longer apply.
+    if(["ArrowDown","ArrowUp","Enter"].includes(event.key))handedKeysRef.current=null;
     if(event.key==="Escape"){event.preventDefault();onClose?.();return}
     if(event.key==="ArrowDown"){event.preventDefault();setSelected(i=>Math.min(items.length-1,i+1));return}
     if(event.key==="ArrowUp"){event.preventDefault();setSelected(i=>Math.max(0,i-1));return}
@@ -165,7 +180,7 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
   const warningOnly=Boolean(searchWarning)&&!dataError&&!actionError;
   return <div className="command-palette-backdrop" data-testid="command-palette" onMouseDown={event=>event.target===event.currentTarget&&onClose?.()}>
     <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={dialogRef} tabIndex={-1}>
-      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} value={query} onChange={event=>{setQuery(event.target.value);setSelected(0);setActionError("");setSearchWarning("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)} spellCheck={false} autoComplete="off"/>{messageSearching&&<span className="command-palette-searching">Searching messages…</span>}<kbd className="tb-kbd">Esc</kbd></div>
+      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} value={query} onChange={event=>{handedKeysRef.current=null;setQuery(event.target.value);setSelected(0);setActionError("");setSearchWarning("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)} spellCheck={false} autoComplete="off"/>{messageSearching&&<span className="command-palette-searching">Searching messages…</span>}<kbd className="tb-kbd">Esc</kbd></div>
       {visibleError&&<div className={"command-palette-error"+(warningOnly?" is-warning":"")} role="alert">{visibleError}</div>}
       <div className="command-palette-results" ref={resultsRef} onKeyDown={resultsKeyDown}>
         {items.map((item,index)=><React.Fragment key={item.id}>
