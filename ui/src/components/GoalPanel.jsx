@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, ChevronDown, Pause, Play, RefreshCw, Targe
 import { startSameThreadVerificationRepair } from "../verification-repair.js";
 import { verificationEvidenceMeta, verificationEvidenceSummary, verificationEvidenceView } from "../verification-evidence-view.js";
 import { codexGoalStatusLabel } from "../codex-turn-options.js";
+import { workspaceLabel } from "../workspace-label.js";
 
 function lines(value){return (Array.isArray(value)?value:[]).join("\n")}
 function parseLines(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean)}
@@ -151,9 +152,9 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const advancedBudgetCount=[goal?.turnBudget,goal?.toolCallBudget,goal?.childAgentBudget,goal?.costBudgetUsd].filter(value=>value!=null).length;
   const continuityNoteCount=["completedWork","unresolvedFailures","importantDecisions","artifactsCreated","pendingNextActions"].reduce((sum,key)=>sum+(continuity?.notes?.[key]?.length||0),0);
   const verificationLabel=continuity?.verification?[continuity.verification.status,continuity.verification.risk].filter(Boolean).join(" · "):"No verification recorded";
-  // The cell is narrow, so a folder shows by its own name (what tells checkouts apart); the full path is in the tooltip.
+  // The cell is narrow, so a folder shows by its own name (a root by its path); the full path is in the tooltip.
   const workspaceCwd=String(continuity?.workspace?.cwd||"");
-  const workspaceLabel=continuity?.workspace?.branch||workspaceCwd.split(/[\\/]+/).filter(Boolean).pop()||"No workspace metadata";
+  const workspaceCellLabel=workspaceLabel(continuity?.workspace);
   return <div className="goal-panel" data-testid="goal-panel">
     <div className="goal-panel-head"><Target size={19}/><div><strong>Thread goal</strong><span>Durable objective stored with this thread, independent of the chat transcript.</span></div><em className={"goal-status status-"+String(status).replace(/[^a-z]/gi,"").toLowerCase()}>{status}</em></div>
     {error&&<div className="inline-error">{error}</div>}
@@ -195,7 +196,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
       <summary><span><strong>Continuity state</strong><small>{continuityNoteCount?continuityNoteCount+" explicit note"+(continuityNoteCount===1?"":"s"):"Derived facts only"}{continuity?.meaningful?" · durable state available":""}</small></span><ChevronDown size={14}/></summary>
       <div className="goal-details-body continuity-body">
         <div className="continuity-derived" data-testid="continuity-derived">
-          <div><span>Workspace</span><strong title={[continuity?.workspace?.branch,workspaceCwd].filter(Boolean).join(" · ")||undefined}>{workspaceLabel}</strong></div>
+          <div><span>Workspace</span><strong title={[continuity?.workspace?.branch,workspaceCwd].filter(Boolean).join(" · ")||undefined}>{workspaceCellLabel}</strong></div>
           <div><span>Verification</span><strong>{verificationLabel}</strong></div>
           <div><span>Completed turns</span><strong>{Number(continuity?.completedTurnIds?.length||0)}</strong></div>
           <div><span>Unresolved / recent failures</span><strong>{Number(continuity?.unresolvedFailures?.length||0)+Number(continuity?.recentFailures?.length||0)}</strong></div>

@@ -185,3 +185,28 @@ test("both Context Inspector notices stay readable while the panel scrolls",asyn
     const bounds=await body.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
   }finally{await harness.close()}
 });
+
+test("the goal panel names a workspace at a filesystem root by its path",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"review-goal-root",name:"Root workspace fixture",preview:"Root workspace",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
+  const continuity={
+    threadId:thread.id,notes:{completedWork:[],unresolvedFailures:[],importantDecisions:[],artifactsCreated:[],pendingNextActions:[],updatedAt:0},
+    workspace:{cwd:"/",branch:null,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default"},verification:null,
+    completedTurnIds:["turn-1"],unresolvedFailures:[],recentFailures:[],artifactsCreated:[],pendingNextActions:[],completedWork:[],importantDecisions:[],meaningful:true,updatedAt:Date.now(),
+  };
+  const harness=await startHarness(thread,{continuity});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,thread});
+    await page.locator(".workspace-header").getByRole("button",{name:"Thread goal",exact:true}).click();
+    const panel=page.getByTestId("goal-panel");await expect(panel).toBeVisible();
+    await panel.locator(".goal-continuity-details>summary").click();
+    // The cwd is known: a root has no folder name, so the cell shows the path itself instead of "No workspace metadata".
+    const workspaceCell=panel.getByTestId("continuity-derived").locator("div").filter({hasText:"Workspace"}).locator("strong");
+    await expect.soft(workspaceCell).toHaveText("/");await expect(workspaceCell).toHaveAttribute("title","/");
+    await panel.getByTestId("continuity-derived").scrollIntoViewIfNeeded();await settle(page);
+    await page.screenshot({path:join(shotsDir,"review-goal-root-workspace-dark-1280x800.png"),animations:"disabled"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await settle(page);
+    await page.screenshot({path:join(shotsDir,"review-goal-root-workspace-light-1280x800.png"),animations:"disabled"});
+  }finally{await harness.close()}
+});
