@@ -271,12 +271,29 @@ test("official OpenAI catalog drops models that cannot run an agent turn and def
     const manager=new ProviderManager({env:{TREBELL_HOME:root,OPENAI_API_KEY:"oa-catalog"},fetchFn:async(url,init={})=>{requests.push({url,authorization:init.headers?.Authorization});return Response.json({object:"list",data:rows.map(row=>({...row,object:"model",owned_by:"openai"}))})}});
     const result=await manager.models("openai");
     assert.deepEqual(requests,[{url:"https://api.openai.com/v1/models",authorization:"Bearer oa-catalog"}]);
-    assert.deepEqual(result.models,["chatgpt-4o-latest","gpt-4.1","gpt-5.6-sol","gpt-6-chat-latest","gpt-6-codex","gpt-6-luna","gpt-6-luna-mini","gpt-6-luna-nano","gpt-6-search-preview","gpt-oss-120b","o4-mini"]);
+    assert.deepEqual(result.models,["chatgpt-4o-latest","gpt-4.1","gpt-5.6-sol","gpt-6-chat-latest","gpt-6-codex","gpt-6-luna","gpt-6-luna-mini","gpt-6-luna-nano","gpt-oss-120b","o4-mini"]);
     assert.equal(result.defaultModel,"gpt-6-luna");
     assert.equal(result.source,"live");
     assert.deepEqual(result.metadata.map(item=>item.id).sort(),result.models);
     assert.ok(result.metadata.every(item=>item.provider==="openai"&&item.protocolCompatibility?.[0]==="openai-responses"));
     assert.equal(result.models.includes(result.defaultModel),true);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("official OpenAI catalog drops video and search-only models and keeps legacy chat models that run Responses turns with tools",async()=>{
+  // Live, 2026-10-11: the Responses API refuses gpt-4o-search-preview and gpt-5-search-api ("not supported with the Responses
+  // API") and has no sora-2 (a video model), while gpt-3.5-turbo, gpt-3.5-turbo-16k and chat-latest answered a turn with a
+  // function tool by calling it.
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-video-search-"));
+  try{
+    const kept=["chat-latest","gpt-3.5-turbo","gpt-3.5-turbo-0125","gpt-3.5-turbo-16k","gpt-6.1-sol","ft:gpt-4.1-2025-04-14:acme:search-bot:S1","ft:gpt-4o-2024-08-06:sora-studio::V1"];
+    const dropped=["sora-2","sora-2-pro","gpt-4o-search-preview","gpt-4o-search-preview-2025-03-11","gpt-4o-mini-search-preview","gpt-4o-mini-search-preview-2025-03-11","gpt-5-search-api","gpt-5-search-api-2025-10-14"];
+    const rows=[...kept,...dropped].map((id,index)=>({id,created:id==="gpt-6.1-sol"?1795000000:1700000000+index}));
+    const manager=new ProviderManager({env:{TREBELL_HOME:root,OPENAI_API_KEY:"oa-video-search"},fetchFn:async()=>Response.json({data:rows})});
+    const result=await manager.models("openai");
+    assert.deepEqual(result.models,[...kept].sort());
+    assert.deepEqual(result.metadata.map(item=>item.id).sort(),result.models);
+    assert.equal(result.defaultModel,"gpt-6.1-sol");
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 

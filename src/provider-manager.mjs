@@ -97,11 +97,11 @@ export function normalizeProviderId(value) {
   return Object.prototype.hasOwnProperty.call(MODEL_PROVIDERS, id) ? id : DEFAULT_MODEL_PROVIDER;
 }
 
-// The official OpenAI /models list also returns embedding, audio, image, moderation, realtime and legacy
-// completion models; none of them can run a Trebell Native agent turn on the Responses API. The words match
-// whole id tokens only, and a fine-tune (ft:<base>:<org>:<suffix>:<id>) is judged by its base model, so an
-// organization or suffix such as "speechify" or "image-captions" never hides a chat fine-tune.
-const OPENAI_NON_AGENT_MODEL=/(?:^|[^a-z0-9])(?:embedding|audio|tts|whisper|transcribe|speech|dall-e|image|moderation|realtime|babbage|davinci|instruct)(?=[^a-z0-9]|$)/;
+// The official OpenAI /models list also returns embedding, audio, image, video (Sora), moderation, realtime, search-only
+// and legacy completion models; none of them can run a Trebell Native agent turn on the Responses API (it refuses the
+// search models outright). The words match whole id tokens only, and a fine-tune (ft:<base>:<org>:<suffix>:<id>) is judged
+// by its base model, so an organization or suffix such as "speechify" or "image-captions" never hides a chat fine-tune.
+const OPENAI_NON_AGENT_MODEL=/(?:^|[^a-z0-9])(?:embedding|audio|tts|whisper|transcribe|speech|dall-e|image|sora|video|moderation|realtime|search|babbage|davinci|instruct)(?=[^a-z0-9]|$)/;
 const OPENAI_DEFAULT_MODEL_EXCLUDED=/mini|nano|search|preview|audio|realtime|codex|oss|chat-latest/;
 // Expensive "-pro" variants (pro as a whole id token, e.g. gpt-6-pro, o3-pro) stay selectable but are never the silent default.
 const OPENAI_PRO_MODEL=/(?:^|[^a-z0-9])pro(?:[^a-z0-9]|$)/;
