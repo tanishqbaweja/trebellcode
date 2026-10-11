@@ -2011,6 +2011,9 @@ export default function App(){
     return()=>{disposed=true;clearInterval(timer);document.removeEventListener("visibilitychange",visible)};
   },[section,rightPanelOpen,rightPanelTab]);
 
+  // Threads being woken: the move reads the list again, and a listing that still shows the thread snoozed (one read before the move
+  // landed) arrives before its deadline is cleared, so the wake-up it starts must not move the thread a second time.
+  const wakingThreadsRef=useRef(new Set());
   useEffect(()=>{
     if(!rpc||rpcStatus!=="connected")return;
     const wakeAt=nextSnoozeWakeAt(threads,threadMeta);if(wakeAt==null)return;
@@ -2019,11 +2022,13 @@ export default function App(){
       if(disposed)return;
       const remaining=wakeAt-Date.now();
       if(remaining>0){timer=setTimeout(wake,Math.min(remaining,2_000_000_000));return}
-      const now=Date.now();
+      const now=Date.now(),waking=wakingThreadsRef.current;
       try{
         for(const thread of threads){
           const meta=threadMeta[thread.id];
-          if(thread.section?.name==="Snoozed"&&Number(meta?.snoozedUntil)>0&&Number(meta.snoozedUntil)<=now){await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null})}
+          if(thread.section?.name!=="Snoozed"||!(Number(meta?.snoozedUntil)>0)||Number(meta.snoozedUntil)>now||waking.has(thread.id))continue;
+          waking.add(thread.id);
+          try{await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null})}finally{waking.delete(thread.id)}
         }
       }catch(error){if(!disposed)showActionError(error,"Could not wake snoozed thread")}
     };
