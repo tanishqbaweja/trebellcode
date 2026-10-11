@@ -2457,7 +2457,8 @@ test("Codex repository tools query Trebell context intelligence end to end",asyn
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
     await page.goto("/");
-    await page.getByRole("button",{name:/Repository tools fixture/}).click();
+    // The sidebar's thread row: the header crumb names the project, which shares this name.
+    await page.locator(".sidebar").getByRole("button",{name:/Repository tools fixture/}).click();
     await expect(page.locator(".thread-row.active")).toContainText("Repository tools fixture");
 
     const symbolsResponse=await harness.request("item/tool/call",{threadId:thread.id,namespace:"trebell_repo",tool:"search_symbols",arguments:{query:"ContextEngine",limit:10}});
@@ -3965,8 +3966,12 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     await expect.poll(()=>requests.filter(item=>item.method==="turn/steer").map(item=>({threadId:item.params.threadId,expectedTurnId:item.params.expectedTurnId,input:item.params.input}))).toEqual([{threadId:thread.id,expectedTurnId:"opencode-running-turn",input:[{type:"text",text:"Steer this while OpenCode is busy",textElements:[]}]}]);
     await expect(composer).toHaveValue("");
     await expect(page.locator(".queued-message")).toHaveCount(0);
-    await page.locator(".conversation-scroll").evaluate(node=>{node.scrollTop=node.scrollHeight});
-    await expect(page.locator(".user-row").filter({hasText:"Steer this while OpenCode is busy"})).toBeVisible();
+    // The steered message comes into view with the running turn, although the view was anchored on the older page.
+    const steered=page.locator(".user-row").filter({hasText:"Steer this while OpenCode is busy"}),runningTurn=page.locator(".agent-block").filter({hasText:"npm test"});
+    await expect(steered).toBeInViewport();await expect(runningTurn).toBeInViewport();
+    // A scroll to the end stays at the end: the older page's anchor never pulls the view back.
+    await scroller.evaluate(node=>{node.scrollTop=node.scrollHeight});await frames(14);
+    await expect(steered).toBeInViewport();await expect(runningTurn).toBeInViewport();
     await page.screenshot({animations:"disabled",path:auditDir+"opencode-steer-follow-up-1280x800.png",fullPage:true});
     await expect(page.getByRole("button",{name:"Load earlier messages",exact:true})).toHaveCount(0);
     expect(requests.filter(item=>item.method==="thread/items/list").map(item=>item.params.cursor)).toEqual(["latest","older"]);

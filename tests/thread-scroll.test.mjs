@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { captureHistoryPrependAnchor, captureThreadScrollPosition, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "../ui/src/thread-scroll.js";
+import { captureHistoryPrependAnchor, captureThreadScrollPosition, historyAnchorDisturbed, historyAnchorOffset, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "../ui/src/thread-scroll.js";
 
 test("thread scroll capture distinguishes following-end from reading earlier content",()=>{
   assert.deepEqual(captureThreadScrollPosition({scrollTop:1450,scrollHeight:2000,clientHeight:500}),{top:1450,atEnd:false,distanceFromEnd:50});
@@ -41,4 +41,21 @@ test("history prepend anchors preserve the first visible message",()=>{
   targetTop=380;
   assert.equal(restoreHistoryPrependAnchor(node,anchor),true);
   assert.equal(node.scrollTop,430);
+});
+
+test("the history anchor yields to a scroll it did not make and keeps correcting layout drift",()=>{
+  let rowTop=150;
+  const row={dataset:{messageId:"anchor"},getBoundingClientRect:()=>({top:rowTop,bottom:rowTop+60})};
+  const node={scrollTop:500,querySelectorAll:()=>[row],getBoundingClientRect:()=>({top:100,bottom:700})};
+  const anchor={messageId:"anchor",offset:50};
+  // Rows above grew: the anchor row drifted but nobody scrolled, so the anchor corrects it.
+  rowTop=190;assert.equal(historyAnchorDisturbed(node,anchor,500),false);
+  // The browser's scroll anchoring moved scrollTop and kept the row in place: still the anchor's job.
+  node.scrollTop=540;rowTop=150;assert.equal(historyAnchorDisturbed(node,anchor,500),false);
+  // The person scrolled to the end: the view and the row both moved.
+  node.scrollTop=2400;rowTop=-1750;assert.equal(historyAnchorDisturbed(node,anchor,540),true);
+  // The anchor row is not mounted (a virtualized chunk still a placeholder): that alone is no sign of a scroll.
+  assert.equal(historyAnchorDisturbed({...node,querySelectorAll:()=>[]},anchor,540),false);
+  assert.equal(historyAnchorDisturbed(null,anchor,540),true);
+  assert.equal(historyAnchorOffset(node,anchor),-1850);
 });

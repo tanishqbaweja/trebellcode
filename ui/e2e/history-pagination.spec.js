@@ -48,7 +48,9 @@ test("Codex thread history opens from bounded item pages and loads older items o
       }
       else if(message.method==="thread/turns/list"){
         const direct=String(message.params.cursor||"").match(/^cursor-turn-(\d+)$/);
-        result=direct?{data:[turn(Number(direct[1]))],nextCursor:null,backwardsCursor:null}:{data:message.params.cursor==="older-page"?older:[],nextCursor:null,backwardsCursor:"older-anchor"};
+        // Ascending from a find hit's turn: that turn and every later one (how the window counts the turns it skips).
+        if(direct&&message.params.sortDirection==="asc")result={data:Array.from({length:21-Number(direct[1])},(_,index)=>turn(Number(direct[1])+index)),nextCursor:null,backwardsCursor:null};
+        else result=direct?{data:[turn(Number(direct[1]))],nextCursor:null,backwardsCursor:null}:{data:message.params.cursor==="older-page"?older:[],nextCursor:null,backwardsCursor:"older-anchor"};
       }
       else if(message.method==="thread/searchOccurrences"){
         if(message.params.cursor==="find-page-2")result={data:[{turnId:"turn-18",itemId:"assistant-18",snippet:"Assistant Message 18 needle history",snippetMatchRange:{start:21,end:27},turnCursor:"cursor-turn-18"}],nextCursor:null};
@@ -112,6 +114,10 @@ test("Codex thread history opens from bounded item pages and loads older items o
     await expect(findBar.locator(".thread-find-count")).toHaveText("1 / 2+");
     await expect(page.locator('[data-message-id="user-3"]')).toHaveClass(/find-active/);
     const directTurn=calls.find(call=>call.method==="thread/items/list"&&call.params?.turnId==="turn-3");expect(directTurn?.params).toEqual({threadId:thread.id,turnId:"turn-3",cursor:null,limit:100,sortDirection:"asc"});
+    // Turn 3 sits apart from the loaded turns 11-20: the turns between them are marked, counted from metadata pages, not skipped.
+    const gap=page.getByTestId("history-gap");await expect(gap).toContainText("7 turns not loaded");
+    expect(await page.locator(".conversation-history").evaluate(node=>[...node.querySelectorAll("[data-message-id],[data-testid=history-gap]")].slice(0,4).map(row=>row.dataset.messageId||"gap"))).toEqual(["user-3","assistant-3","gap","user-11"]);
+    expect(calls.find(call=>call.method==="thread/turns/list"&&call.params?.sortDirection==="asc")?.params).toEqual({threadId:thread.id,cursor:"cursor-turn-3",limit:200,sortDirection:"asc",itemsView:"notLoaded"});
     await page.screenshot({animations:"disabled",path:auditDir+"chat-thread-find-1600x980.png",fullPage:true});
     await findBar.getByRole("button",{name:"Next match"}).click();await expect(findBar.locator(".thread-find-count")).toHaveText("2 / 2+");await expect(page.locator('[data-message-id="assistant-15"]')).toHaveClass(/find-active/);
     await findBar.getByRole("button",{name:"Next match"}).click();await expect(findBar.locator(".thread-find-count")).toHaveText("3 / 3");await expect(page.locator('[data-message-id="assistant-18"]')).toHaveClass(/find-active/);
@@ -132,8 +138,9 @@ test("Codex thread history opens from bounded item pages and loads older items o
       const anchor=[...node.querySelectorAll("[data-message-id]")].find(row=>{const rect=row.getBoundingClientRect();return rect.bottom>root.top&&rect.top<root.bottom});
       return {top:node.scrollTop,height:node.scrollHeight,anchorId:anchor?.dataset?.messageId||null,anchorOffset:anchor?anchor.getBoundingClientRect().top-root.top:null};
     });
-    await page.getByRole("button",{name:"Load earlier messages"}).click();
-    await expect(page.getByText(/User Message 1 history/)).toBeVisible();await expect(page.getByRole("button",{name:"Load earlier messages"})).toHaveCount(0);
+    // The page before turn 11 reaches turn 3: the gap closes and the history runs unbroken from turn 1.
+    await gap.getByRole("button").click();
+    await expect(page.getByText(/User Message 1 history/)).toBeVisible();await expect(gap).toHaveCount(0);await expect(page.getByRole("button",{name:"Load earlier messages"})).toHaveCount(0);
     expect((await page.locator("[data-message-id]").evaluateAll(nodes=>nodes.map(node=>node.dataset.messageId))).slice(0,4)).toEqual(["user-1","assistant-1","user-2","assistant-2"]);
     const itemsCall=calls.find(call=>call.method==="thread/items/list"&&call.params?.cursor==="older-items");expect(itemsCall?.params).toEqual({threadId:thread.id,cursor:"older-items",limit:100,sortDirection:"desc"});
     const after=await scroller.evaluate((node,anchorId)=>{

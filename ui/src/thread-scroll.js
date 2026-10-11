@@ -45,12 +45,28 @@ export function captureHistoryPrependAnchor(node){
   return {messageId,offset:anchor.getBoundingClientRect().top-root.top};
 }
 
-export function restoreHistoryPrependAnchor(node,anchor){
-  if(!node?.querySelectorAll||!node?.getBoundingClientRect||!anchor?.messageId)return false;
+// The anchor row's distance from the top of the view now, or null when the row is gone.
+export function historyAnchorOffset(node,anchor){
+  if(!node?.querySelectorAll||!node?.getBoundingClientRect||!anchor?.messageId)return null;
   const target=[...node.querySelectorAll("[data-message-id]")].find(row=>String(messageIdForNode(row))===String(anchor.messageId));
-  if(!target?.getBoundingClientRect)return false;
-  const root=node.getBoundingClientRect(),currentOffset=target.getBoundingClientRect().top-root.top;
+  if(!target?.getBoundingClientRect)return null;
+  return target.getBoundingClientRect().top-node.getBoundingClientRect().top;
+}
+
+export function restoreHistoryPrependAnchor(node,anchor){
+  const currentOffset=historyAnchorOffset(node,anchor);if(currentOffset==null)return false;
   const delta=currentOffset-(Number(anchor.offset)||0);
   if(Math.abs(delta)>0.5)node.scrollTop=Math.max(0,(Number(node.scrollTop)||0)+delta);
   return true;
+}
+
+// Something other than the anchor moved the view since its last correction: the person scrolled, or a send scrolled to the
+// end. Rows growing above the anchor leave scrollTop alone, and the browser's own scroll anchoring moves scrollTop but keeps
+// the anchor row in place; neither counts. An anchor row not mounted yet (a virtualized chunk still a placeholder) tells
+// nothing either way, so it does not count; restoring it is a no-op until it mounts.
+export function historyAnchorDisturbed(node,anchor,expectedTop,tolerance=1){
+  if(!node)return true;
+  if(Math.abs((Number(node.scrollTop)||0)-(Number(expectedTop)||0))<=tolerance)return false;
+  const offset=historyAnchorOffset(node,anchor);
+  return offset!=null&&Math.abs(offset-(Number(anchor?.offset)||0))>tolerance;
 }

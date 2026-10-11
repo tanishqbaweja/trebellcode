@@ -215,6 +215,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* ============ Conversation ============ */
 .chat-workspace .conversation-scroll{top:var(--top);bottom:132px;padding:34px 28px 72px;scrollbar-width:auto;scrollbar-color:auto}
 .main-frame.terminal-open .chat-workspace .conversation-scroll{bottom:calc(var(--terminal-height,330px) + 128px)}
+/* While find is open the strip under its floating bar stays clear (App measures the bar into --thread-find-reserve): the first
+   rows start below it and a jump to a match lands below it. */
+.chat-workspace .conversation-scroll.find-open{padding-top:max(34px,var(--thread-find-reserve,34px));scroll-padding-top:var(--thread-find-reserve,0px)}
 .chat-workspace .conversation-column{width:min(100%,764px)}
 .conversation-column .conversation-history{gap:0}
 
@@ -309,6 +312,11 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .agent-block .assistant-answer:first-child{margin-top:0}
 .conversation-column .history-page-control button{height:30px;padding:0 12px;border:1px solid var(--line2);border-radius:99px;background:var(--bg2);color:var(--tx1);font-size:12px}
 .conversation-column .history-page-control button:hover:not(:disabled){background:var(--bg3);color:var(--tx0)}
+/* Turns not loaded between a find hit and the newest pages: a dashed break with their count, whose button loads them. */
+.conversation-column .history-page-control.history-gap{align-items:center;gap:12px;margin:4px 0 22px}
+.conversation-column .history-page-control.history-gap::before,.conversation-column .history-page-control.history-gap::after{content:"";flex:1;min-width:16px;border-top:1px dashed var(--line2)}
+.conversation-column .history-page-control.history-gap button{display:inline-flex;align-items:center;gap:6px;flex:none}
+.conversation-column .history-page-control.history-gap .history-gap-load{color:var(--ac);font-weight:600}
 
 /* Queued follow-ups and inline approvals line up with the assistant text column. */
 .conversation-column .inline-approval{margin:8px 0 22px 39px}
@@ -673,9 +681,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 
 /* The latest turn reads top-down: the user's message, the activity card, then the reply with its outcome pill. The card stays
    a sibling of the history in the DOM (live reasoning rows stay out of .conversation-history); only the visual order changes,
-   and only the rows after the last user message move. */
+   and only the card's own turn's rows move: those after the .latest-turn-start marker the conversation places (a turn that
+   started without a user message, as a goal continuing, keeps the previous turn's reply above its card). */
 .chat-workspace .conversation-column:has(> .agent-block){display:flex;flex-direction:column}
 .chat-workspace .conversation-column:has(> .agent-block)>.conversation-history{display:contents}
 .chat-workspace .conversation-column:has(> .agent-block)>.agent-block{order:2}
-.chat-workspace .conversation-column:has(> .agent-block)>.conversation-history>.user-row~:is(.history-assistant,.reasoning-row):not(:has(~ .user-row)){order:3}
+.chat-workspace .conversation-column:has(> .agent-block)>.conversation-history>.latest-turn-start~:is(.history-assistant,.reasoning-row){order:3}
 .chat-workspace .conversation-column:has(> .agent-block)>.agent-block~*{order:4}

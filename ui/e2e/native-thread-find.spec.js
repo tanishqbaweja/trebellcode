@@ -44,10 +44,29 @@ test("Trebell Native finds an old conversation match that is not initially mount
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native searchable history"]')});await expect(row).toBeVisible({timeout:10_000});await row.locator(".thread-main").click();
     await expect(page.getByText("Native historical answer 64.",{exact:true})).toBeVisible({timeout:10_000});await expect(page.getByText(`Please remember ${needle} from the oldest turn.`,{exact:true})).toHaveCount(0);
+    // The header names the project record, as the sidebar and Projects page do, not its folder ("repo").
+    await expect(page.locator(".workspace-breadcrumb .project-crumb").filter({hasNot:page.locator(".sidebar-reopen")})).toHaveText("Native Find Project");
     await page.keyboard.press("Control+f");const find=page.getByTestId("thread-find-bar");await expect(find).toBeVisible();await page.getByTestId("thread-find-input").fill(needle);
     await expect(find.locator(".thread-find-count")).toHaveText("1 / 1",{timeout:10_000});const oldMessage=page.locator(".user-row").filter({hasText:`Please remember ${needle} from the oldest turn.`});await expect(oldMessage).toBeVisible();await expect(oldMessage).toHaveClass(/find-active/);
+    // Turns 1-14 are not loaded: a marker in their place says how many, and nothing offers earlier messages above turn 0, the first.
+    const gap=page.getByTestId("history-gap");await expect(gap).toContainText("14 turns not loaded");
+    await expect(page.getByRole("button",{name:"Load earlier messages"})).toHaveCount(0);
+    const placement=()=>page.locator(".conversation-history").evaluate(node=>[...node.querySelectorAll("[data-message-id],[data-testid=history-gap]")].slice(0,4).map(row=>row.dataset.messageId||"gap"));
+    expect(await placement()).toEqual(["find-user-0","find-answer-0","gap","find-user-15"]);
+    // The find bar covers neither the match it jumped to nor the marker below it.
+    const clearOfFind=async target=>{const bar=await find.boundingBox(),box=await target.boundingBox();return box.y>=bar.y+bar.height||box.y+box.height<=bar.y||box.x>=bar.x+bar.width||box.x+box.width<=bar.x};
+    expect(await clearOfFind(oldMessage.locator(".user-bubble"))).toBe(true);expect(await clearOfFind(gap)).toBe(true);
     let metrics=await page.locator(".workspace-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-1600x980.png",fullPage:true});
-    await page.setViewportSize({width:1280,height:800});await expect(find).toBeVisible();await expect(oldMessage).toBeVisible();metrics=await page.locator(".workspace-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await expect(find).toBeVisible();await expect(oldMessage).toBeVisible();metrics=await page.locator(".workspace-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await oldMessage.evaluate(node=>node.scrollIntoView({block:"start"}));
+    expect(await clearOfFind(oldMessage.locator(".user-bubble"))).toBe(true);expect(await clearOfFind(gap)).toBe(true);
+    await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-light-1280x800.png",fullPage:true});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // The marker loads the missing turns in place; then the history runs unbroken from turn 0.
+    await gap.getByRole("button").click();await expect(gap).toHaveCount(0);await expect(page.locator("[data-message-id]")).toHaveCount(130);
+    expect(await placement()).toEqual(["find-user-0","find-answer-0","find-user-1","find-answer-1"]);
+    await expect(page.getByRole("button",{name:"Load earlier messages"})).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-gap-loaded-1280x800.png",fullPage:true});
   }finally{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 

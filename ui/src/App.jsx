@@ -23,7 +23,7 @@ import { normalizeKeybindingRules, resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
-import { historyFromItemEntries, historyFromTurns, mergeHistoryMessages, resumedActiveTurnId } from "./thread-history.js";
+import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId } from "./thread-history.js";
 import { assistantRowDecorations, mergeTurnOutcomes, permissionModeLabel, turnInfoKey, turnOutcomeStatus } from "./turn-outcome.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
@@ -32,8 +32,9 @@ import { isListedThread, prependThread } from "./thread-list-state.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
 import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-message-search.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
-import { captureHistoryPrependAnchor, captureThreadScrollPosition, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
+import { captureHistoryPrependAnchor, captureThreadScrollPosition, historyAnchorDisturbed, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
 import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
+import { latestTurnRowsStart } from "./conversation-order.js";
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
 import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
@@ -350,12 +351,12 @@ const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChan
     {expanded&&<div className="tool-event-body">{event.raw?.command&&<pre>{Array.isArray(event.raw.command)?event.raw.command.join(" "):event.raw.command}</pre>}{event.output&&<pre>{event.output}</pre>}{event.raw?.changes&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}{!(event.raw?.command||event.output||event.raw?.changes)&&<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre>}</div>}
   </details>;
 });
-function ThreadFindBar({state,inputRef,onQuery,onPrevious,onNext,onClose}){
+function ThreadFindBar({state,inputRef,barRef,onQuery,onPrevious,onNext,onClose}){
   if(!state.open)return null;
   const current=state.index>=0?state.results[state.index]:null;
   const range=current?.snippetMatchRange||{};const start=Math.max(0,Number(range.start)||0),end=Math.max(start,Number(range.end)||0);
   const snippet=String(current?.snippet||"");
-  return <div className="thread-find-bar" data-testid="thread-find-bar">
+  return <div className="thread-find-bar" data-testid="thread-find-bar" ref={barRef}>
     <Search size={13}/><input ref={inputRef} data-testid="thread-find-input" value={state.query} onChange={event=>onQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"){event.preventDefault();onClose()}else if(event.key==="Enter"){event.preventDefault();event.shiftKey?onPrevious():onNext()}}} placeholder="Find in this thread"/>
     <span className="thread-find-count">{state.loading?"Searching…":state.error?"Error":state.results.length?`${state.index+1} / ${state.results.length}${state.nextCursor?"+":""}`:state.query.trim().length>=2?"No matches":""}</span>
     <button type="button" onClick={onPrevious} disabled={state.loading||state.index<=0} aria-label="Previous match">↑</button><button type="button" onClick={onNext} disabled={state.loading||(!state.results.length)||(state.index>=state.results.length-1&&!state.nextCursor)} aria-label="Next match">↓</button><button type="button" onClick={onClose} aria-label="Close find">×</button>
@@ -401,12 +402,15 @@ const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,roo
   return <div ref={ref} className={"conversation-virtual-chunk"+(mounted?" mounted":" placeholder")} data-virtual-chunk={chunk.key} style={mounted?undefined:{height:placeholderHeight}}>{mounted?chunk.messages.map(renderMessage):null}</div>;
 });
 
-const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,activeFindItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null}){
+const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,activeFindItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null}){
   const historyRef=useRef(null);
   const virtualized=shouldVirtualizeConversation(messages),chunks=useMemo(()=>virtualized?conversationVirtualChunks(messages):[],[messages,virtualized]),forcedChunk=virtualized?conversationChunkIndexForMessage(chunks,activeFindItemId):-1;
+  // The rows of the live card's turn read below the card (shell.css orders the rows after this marker). A turn that started
+  // without a user message (a goal continuing) leaves the previous turn's reply above the card.
+  const latestStart=useMemo(()=>virtualized?-1:latestTurnRowsStart(messages,cardTurnId),[messages,cardTurnId,virtualized]);
   // A turn's first reply names the harness (and the mode this window sent it with); its last reply says how it ended.
   const decorations=useMemo(()=>assistantRowDecorations(messages,{harnessLabel,turnInfo,threadId}),[messages,harnessLabel,turnInfo,threadId]);
-  const renderMessage=useCallback(message=>{const decoration=decorations.get(String(message.id));return <ConversationMessageRow
+  const renderMessage=useCallback(message=>{const decoration=decorations.get(String(message.id));const row=<ConversationMessageRow
     key={message.id}
     message={message}
     activeFind={String(message.id)===String(activeFindItemId||"")}
@@ -418,10 +422,14 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
     heading={decoration?.heading||""}
     outcomeLabel={decoration?.outcomeLabel||""}
     outcomeTone={decoration?.outcomeTone||""}
-  />},[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations]);
-  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={loadingEarlier} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{virtualized
+  />;
+    // The turns not loaded between a detached find hit and the newest pages are marked where they belong, and load from there.
+    if(!historyGap||String(message.id)!==String(historyGap.beforeId))return row;
+    return <React.Fragment key={message.id}><div className="history-page-control history-gap" data-testid="history-gap"><button type="button" disabled={historyBusy} onClick={onLoadGap}>{loadingGap?"Loading turns…":<>{historyGapLabel(historyGap.missing)}<span className="history-gap-load">· Load</span></>}</button></div>{row}</React.Fragment>;
+  },[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations,historyGap,historyBusy,loadingGap,onLoadGap]);
+  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={historyBusy} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{virtualized
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
-    :messages.map(renderMessage)}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
+    :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
 // threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
 function ApprovalCard({request,onResolve,threadLabel=""}){
@@ -736,6 +744,11 @@ export default function App(){
   // turn starts and ends this window saw per thread (the sidebar's running dot).
   const [threadListError,setThreadListError]=useState(""); const [threadTurnStates,setThreadTurnStates]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
+  // The turn the live activity card shows: the running turn, and once it ends the last one (the card stays until the next turn).
+  // Layout effects, so the rows are ordered for the new turn before it paints.
+  const [cardTurnId,setCardTurnId]=useState(null);
+  useLayoutEffect(()=>{setCardTurnId(activeTurnId||null)},[activeThread?.id]);
+  useLayoutEffect(()=>{if(activeTurnId)setCardTurnId(activeTurnId)},[activeTurnId]);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]);
   const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
   const assistantStreamBufferRef=useRef(null);
@@ -819,7 +832,7 @@ export default function App(){
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
-  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
+  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
   modelsRef.current=models;modelRef.current=model;
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
@@ -933,21 +946,31 @@ export default function App(){
     const position=captureThreadScrollPosition(node);followConversationEndRef.current=position?.atEnd!==false;
     const threadId=activeThreadRef.current?.id;if(threadId&&position)rememberThreadScrollPosition(threadScrollPositionsRef.current,threadId,position);
   }
+  function stopHistoryAnchorSettle(){
+    const settle=historyAnchorSettleRef.current;historyAnchorSettleRef.current=null;
+    if(settle?.frame)cancelAnimationFrame(settle.frame);
+  }
+  // A send brings the newest message into view: the view follows the end again, and an older page's anchor stops holding it.
+  function followConversationEnd(){stopHistoryAnchorSettle();pendingHistoryPrependRef.current=null;followConversationEndRef.current=true}
   useLayoutEffect(()=>{
     const node=conversationScrollRef.current;const threadId=activeThread?.id;if(!node||!threadId)return;
     if(pendingHistoryPrependRef.current?.threadId===threadId){
-      const pending=pendingHistoryPrependRef.current;node.scrollTop=Math.max(0,pending.scrollTop+(node.scrollHeight-pending.scrollHeight));
+      // The older page is placed once: its first row keeps the spot the anchor row had. Rows above it can still change size for a
+      // few frames (content-visibility estimates, fonts), so each frame puts the anchor back until those settle or something else
+      // moves the view (the person scrolls, a send scrolls to the end). Later message or event changes do not re-pin it.
+      const pending=pendingHistoryPrependRef.current;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();
+      if(!restoreHistoryPrependAnchor(node,pending.anchor))node.scrollTop=Math.max(0,pending.scrollTop+(node.scrollHeight-pending.scrollHeight));
       followConversationEndRef.current=false;
-      let frame=0,attempt=0,cancelled=false;
-      const settleAnchor=()=>{
-        if(cancelled||pendingHistoryPrependRef.current!==pending)return;
-        restoreHistoryPrependAnchor(node,pending.anchor);
-        attempt++;
-        if(attempt<12)frame=requestAnimationFrame(settleAnchor);
-        else pendingHistoryPrependRef.current=null;
+      const settle={threadId,anchor:pending.anchor,top:node.scrollTop,frame:0,attempts:0};historyAnchorSettleRef.current=settle;
+      const step=()=>{
+        if(historyAnchorSettleRef.current!==settle)return;
+        const live=conversationScrollRef.current;
+        if(!live||activeThreadRef.current?.id!==settle.threadId||!pending.anchor||historyAnchorDisturbed(live,settle.anchor,settle.top)){historyAnchorSettleRef.current=null;return}
+        restoreHistoryPrependAnchor(live,settle.anchor);settle.top=live.scrollTop;
+        if(++settle.attempts<12)settle.frame=requestAnimationFrame(step);else historyAnchorSettleRef.current=null;
       };
-      frame=requestAnimationFrame(settleAnchor);
-      return()=>{cancelled=true;if(frame)cancelAnimationFrame(frame)};
+      settle.frame=requestAnimationFrame(step);
+      return;
     }
     if(pendingThreadScrollRestoreRef.current===threadId){
       const position=threadScrollPositionsRef.current.get(threadId)||null;
@@ -971,6 +994,20 @@ export default function App(){
     const id=requestAnimationFrame(()=>threadFindInputRef.current?.focus());
     return()=>cancelAnimationFrame(id);
   },[threadFind.open]);
+  // The find bar floats over the top of the conversation, so while it is open the conversation keeps that strip clear: a jump
+  // lands below the bar (scroll-padding) and the first rows and controls start below it (padding). The strip follows the bar's
+  // height, which grows with the match snippet.
+  useLayoutEffect(()=>{
+    const scroller=conversationScrollRef.current,bar=threadFindBarRef.current;
+    if(!scroller)return;
+    if(!threadFind.open||!bar){scroller.style.removeProperty("--thread-find-reserve");return}
+    const measure=()=>{const reserve=Math.ceil(bar.getBoundingClientRect().bottom-scroller.getBoundingClientRect().top+12);scroller.style.setProperty("--thread-find-reserve",Math.max(0,reserve)+"px")};
+    measure();
+    if(typeof ResizeObserver==="undefined")return;
+    // The scroller's border box: its padding, which the reserve itself sets, must not re-trigger the measure.
+    const observer=new ResizeObserver(measure);observer.observe(bar);observer.observe(scroller,{box:"border-box"});
+    return()=>observer.disconnect();
+  },[threadFind.open,section,activeThread?.id]);
 
   useEffect(()=>{
     const root=document.documentElement;const media=window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -2726,7 +2763,7 @@ export default function App(){
       pendingRuntimeThreadRef.current=null;throw error;
     }
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -2795,7 +2832,7 @@ export default function App(){
     rememberConversationPosition();
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
     const resumedRunning=openedThread.status?.type==="active",resumedTurnId=resumedActiveTurnId(resumed);
-    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
@@ -2864,27 +2901,72 @@ export default function App(){
     }
     if(persistentReadErrors.length)showActionError(new Error(persistentReadErrors.join(" · ")),"Opened thread, but some saved state could not be loaded");
   }
-  async function loadEarlierMessages(){
-    const threadId=activeThreadRef.current?.id;const cursor=historyPage.threadId===threadId?historyPage.nextCursor:null;
-    if(!rpc||rpcStatus!=="connected"||!threadId||!cursor||historyPage.loading)return;
-    const node=conversationScrollRef.current;
-    const prependSnapshot=node?{scrollHeight:node.scrollHeight,scrollTop:node.scrollTop,anchor:captureHistoryPrependAnchor(node)}:null;
-    setHistoryPage(current=>current.threadId===threadId?{...current,loading:true}:current);
-    try{
-      const page=historyPage.itemPaging
-        ?await loadItemHistoryPage(rpc,threadId,cursor)
-        :await rpc.request("thread/turns/list",{threadId,cursor,limit:HISTORY_TURN_PAGE_LIMIT,sortDirection:"desc",itemsView:"full"});
-      if(activeThreadRef.current?.id!==threadId)return;
-      const earlier=historyPage.itemPaging
-        ?historyFromItemEntries([...(page?.data||[])].reverse(),checkpointByTurn)
-        :historyFromTurns([...(page?.data||[])].reverse(),checkpointByTurn);
-      if(earlier.length&&node&&prependSnapshot)pendingHistoryPrependRef.current={threadId,...prependSnapshot};
-      if(!historyPage.itemPaging)setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
-      if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
-      setHistoryPage({threadId,nextCursor:page?.nextCursor||null,paginated:true,itemPaging:Boolean(historyPage.itemPaging),loading:false});
-    }catch(error){
-      if(activeThreadRef.current?.id===threadId){setHistoryPage(current=>current.threadId===threadId?{...current,loading:false}:current);setEvents(prev=>[...prev,{id:"history-page-error-"+Date.now(),kind:"error",title:"Could not load earlier messages: "+(error.message||String(error)),status:"done",raw:{}}])}
+  // "top" loads the page above the first message shown; "gap" the newest history's next older page, which sits below the gap
+  // under a detached find hit (with nothing detached the two are the same page). Above a detached hit, pages are turn pages.
+  function loadEarlierMessages(target="top"){
+    const threadId=activeThreadRef.current?.id;
+    if(!rpc||rpcStatus!=="connected"||!threadId||historyPage.threadId!==threadId||historyPage.loading)return Promise.resolve();
+    const detached=historyPage.detached||null,above=target==="top"&&Boolean(detached);
+    const cursor=above?detached.cursor:historyPage.nextCursor;if(!cursor)return Promise.resolve();
+    const itemPaging=!above&&Boolean(historyPage.itemPaging),detachedIds=new Set((detached?.ids||[]).map(String));
+    const windowTurnIds=[...new Set(messages.filter(message=>!detachedIds.has(String(message.id))).map(message=>message.turnId).filter(Boolean).map(String))];
+    setHistoryPage(current=>current.threadId===threadId?{...current,loading:detached&&!above?"gap":"top"}:current);
+    const run=(async()=>{
+      try{
+        const page=itemPaging
+          ?await loadItemHistoryPage(rpc,threadId,cursor)
+          :await rpc.request("thread/turns/list",{threadId,cursor,limit:HISTORY_TURN_PAGE_LIMIT,sortDirection:"desc",itemsView:"full"});
+        if(activeThreadRef.current?.id!==threadId)return;
+        const data=[...(page?.data||[])].reverse(),nextCursor=page?.nextCursor||null;
+        const earlier=itemPaging?historyFromItemEntries(data,checkpointByTurn):historyFromTurns(data,checkpointByTurn);
+        const pageTurnIds=[...new Set(data.map(entry=>itemPaging?entry?.turnId:entry?.id).filter(Boolean).map(String))];
+        // The view is measured when the page lands, not when it was asked for (the person may have scrolled or sent meanwhile); a
+        // view that follows the end keeps following it.
+        const node=conversationScrollRef.current;
+        if(earlier.length&&node&&!followConversationEndRef.current)pendingHistoryPrependRef.current={threadId,scrollHeight:node.scrollHeight,scrollTop:node.scrollTop,anchor:captureHistoryPrependAnchor(node)};
+        if(!itemPaging)setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
+        if(above){
+          // Older turns join the detached hit's group; the gap below it is unchanged.
+          if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
+          const grown={...detached,ids:[...detached.ids,...earlier.map(message=>String(message.id))],turnIds:[...detached.turnIds,...pageTurnIds],cursor:nextCursor};
+          setHistoryPage(current=>current.threadId===threadId?{...current,loading:false,detached:grown}:current);
+          return;
+        }
+        if(detached){
+          const step=historyGapPage(detached,{earlier,pageTurnIds,nextCursor,windowTurnIds});
+          setMessages(current=>mergeHistoryGapMessages(current,detached,earlier,step.joined));
+          setHistoryPage(current=>current.threadId===threadId?{...current,loading:false,nextCursor:step.nextCursor,itemPaging:step.itemPaging??current.itemPaging,detached:step.detached}:current);
+          return;
+        }
+        if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
+        setHistoryPage({threadId,nextCursor,paginated:true,itemPaging,loading:false,detached:null});
+      }catch(error){
+        if(activeThreadRef.current?.id===threadId){setHistoryPage(current=>current.threadId===threadId?{...current,loading:false}:current);setEvents(prev=>[...prev,{id:"history-page-error-"+Date.now(),kind:"error",title:"Could not load earlier messages: "+(error.message||String(error)),status:"done",raw:{}}])}
+      }
+    })();
+    historyLoadRef.current=run;run.then(()=>{if(historyLoadRef.current===run)historyLoadRef.current=null});
+    return run;
+  }
+  // A hit older than the loaded pages joins them when no turn lies between (paging then goes on above it). Otherwise it leads the
+  // list apart from them, with a marker in the gap that counts the turns between (from metadata pages) and loads them.
+  async function placeFoundHistory(threadId,occurrence,found,stale){
+    const page=historyPage.threadId===threadId?historyPage:null,detached=page?.detached||null,detachedIds=new Set((detached?.ids||[]).map(String));
+    const windowTurnIds=[...new Set(messages.filter(message=>!detachedIds.has(String(message.id))).map(message=>message.turnId).filter(Boolean).map(String))];
+    const turnId=String(occurrence.turnId||found[0]?.turnId||"");
+    if(!page?.nextCursor||!occurrence.turnCursor||windowTurnIds.includes(turnId)){setMessages(current=>mergeHistoryMessages(found,current));return}
+    const [earlierCursor,missing]=await Promise.all([
+      // The cursor of the turn before the hit, to load what lies above it (failing that, the hit's own cursor: its repeat is dropped).
+      rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,sortDirection:"desc",itemsView:"notLoaded"}).then(result=>result?.nextCursor||null,()=>occurrence.turnCursor),
+      countUnloadedTurns((method,params)=>rpc.request(method,params),{threadId,turnCursor:occurrence.turnCursor,turnId,loadedTurnIds:windowTurnIds}).catch(()=>null),
+    ]);
+    if(stale())return;
+    if(missing&&!missing.count&&!missing.more){
+      setMessages(current=>mergeHistoryMessages(found,current.filter(message=>!detachedIds.has(String(message.id)))));
+      setHistoryPage(current=>current.threadId===threadId?{...current,nextCursor:earlierCursor,itemPaging:false,detached:null}:current);
+      return;
     }
+    setMessages(current=>detachHistoryTurn(current,detached?.ids,found));
+    setHistoryPage(current=>current.threadId===threadId?{...current,detached:{ids:found.map(message=>String(message.id)),turnIds:turnId?[turnId]:[],cursor:earlierCursor,missing}}:current);
   }
   function openThreadFind(){
     if(!runtimeCapabilities.threadSearch||!activeThreadRef.current?.id)return;
@@ -2894,32 +2976,42 @@ export default function App(){
     threadFindSeqRef.current++;
     setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   }
-  async function focusThreadFindOccurrence(occurrence,expectedSeq=null){
+  async function focusThreadFindOccurrence(occurrence,expectedSeq=null,afterPage=false){
     if(!occurrence||!runtimeCapabilities.threadSearch||!rpc||rpcStatus!=="connected")return;
     const threadId=activeThreadRef.current?.id;if(!threadId)return;
     const itemId=String(occurrence.itemId||"");
+    const stale=()=>activeThreadRef.current?.id!==threadId||(expectedSeq!=null&&expectedSeq!==threadFindSeqRef.current);
     if(itemId&&!messages.some(message=>String(message.id)===itemId)){
-      let found=[];
-      if(historyPage.itemPaging){
-        try{
-          let cursor=null;
-          for(let pageIndex=0;pageIndex<HISTORY_ITEM_SCAN_PAGES;pageIndex++){
-            const page=await rpc.request("thread/items/list",{threadId,turnId:occurrence.turnId,cursor,limit:HISTORY_ITEM_PAGE_LIMIT,sortDirection:"asc"});
-            found=mergeHistoryMessages(found,historyFromItemEntries(page?.data||[],checkpointByTurn));
-            if(found.some(message=>String(message.id)===itemId)||!page?.nextCursor)break;
-            cursor=page.nextCursor;
-          }
-        }catch{}
+      // A history page still loading changes where the hit belongs: place it once that page has landed and rendered.
+      if(historyLoadRef.current&&!afterPage){await historyLoadRef.current;await new Promise(resolve=>requestAnimationFrame(resolve));return focusThreadFindLatest(occurrence,expectedSeq,true)}
+      // Paging waits while the hit is placed, for the same reason.
+      const holdPaging=historyPage.threadId===threadId&&!historyPage.loading;
+      if(holdPaging)setHistoryPage(current=>current.threadId===threadId&&!current.loading?{...current,loading:"find"}:current);
+      try{
+        let found=[];
+        if(historyPage.itemPaging){
+          try{
+            let cursor=null;
+            for(let pageIndex=0;pageIndex<HISTORY_ITEM_SCAN_PAGES;pageIndex++){
+              const page=await rpc.request("thread/items/list",{threadId,turnId:occurrence.turnId,cursor,limit:HISTORY_ITEM_PAGE_LIMIT,sortDirection:"asc"});
+              found=mergeHistoryMessages(found,historyFromItemEntries(page?.data||[],checkpointByTurn));
+              if(found.some(message=>String(message.id)===itemId)||!page?.nextCursor)break;
+              cursor=page.nextCursor;
+            }
+          }catch{}
+        }
+        if(!found.some(message=>String(message.id)===itemId)&&occurrence.turnCursor){
+          const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
+          found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn));
+          setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
+        }
+        if(stale())return;
+        if(found.length)await placeFoundHistory(threadId,occurrence,found,stale);
+      }finally{
+        if(holdPaging)setHistoryPage(current=>current.loading==="find"?{...current,loading:false}:current);
       }
-      if(!found.some(message=>String(message.id)===itemId)&&occurrence.turnCursor){
-        const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
-        found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn));
-        setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
-      }
-      if(activeThreadRef.current?.id!==threadId||(expectedSeq!=null&&expectedSeq!==threadFindSeqRef.current))return;
-      if(found.length)setMessages(current=>mergeHistoryMessages(found,current));
     }
-    if(activeThreadRef.current?.id!==threadId||(expectedSeq!=null&&expectedSeq!==threadFindSeqRef.current))return;
+    if(stale())return;
     setThreadFind(current=>({...current,activeItemId:itemId||current.activeItemId}));
     requestAnimationFrame(()=>requestAnimationFrame(()=>{
       const node=conversationScrollRef.current;if(!node)return;
@@ -3233,7 +3325,7 @@ export default function App(){
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
     const autoCompaction=thread?await maybeAutoCompactBeforeTurn(thread):{attempted:false,compacted:false,decision:null,error:null};
     if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>prependThread(prev,thread));setProjectPath(cwd)}
-    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);if(!goalResume)setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
+    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,{id:clientId,role:"user",text}])}setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
     try{
       let checkpoint=null;
       if(!projectlessMode){
@@ -3497,7 +3589,7 @@ export default function App(){
     }
     if(running){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
-      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,turnId:activeTurnId}])}catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);throw error}return}
+      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,turnId:activeTurnId}])}catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);throw error}return}
       if(runtimeCapabilities.nativeQueue&&rpc&&activeThread&&queueMode!=="local"){
         try{
           if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips))return;
@@ -3524,7 +3616,7 @@ export default function App(){
         setEvents([{id:"error",kind:"error",title:"Direct fallback cannot send attachments or context. Reconnect the agent harness and retry.",status:"done",raw:{}}]);
         return;
       }
-      const clientId="user-"+Date.now();setMessages(prev=>[...prev,{id:clientId,role:"user",text:draft.text}]);setRunning(true);
+      const clientId="user-"+Date.now();followConversationEnd();setMessages(prev=>[...prev,{id:clientId,role:"user",text:draft.text}]);setRunning(true);
       try{
         const d=await api("/api/chat/direct",{method:"POST",body:{prompt:draft.text,model:draft.model}});
         setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:(modelProviderLabel(provider)||"Provider")+" direct response",status:"done",raw:{}}]);
@@ -3584,7 +3676,7 @@ export default function App(){
         try{
           await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});
           await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:originalInput});
-          setQueued(prev=>prev.filter(q=>q.id!==item.id));setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,turnId:activeTurnId}]);return;
+          setQueued(prev=>prev.filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,turnId:activeTurnId}]);return;
         }catch(error){
           let restored;
           try{
@@ -3604,12 +3696,12 @@ export default function App(){
       if(running)return;
       const result=await rpc.request("thread/queue/start",{threadId:activeThread.id,queuedSubmissionId:item.id});const turnId=result?.turn?.id||null;
       setRunning(Boolean(turnId));setActiveTurnId(turnId);setQueued(prev=>prev.filter(q=>q.id!==item.id));
-      if(turnId)setMessages(prev=>[...prev,{id:item.clientUserMessageId||("queue-start-"+item.id),role:"user",text:item.draftText||item.text,turnId}]);return;
+      if(turnId){followConversationEnd();setMessages(prev=>[...prev,{id:item.clientUserMessageId||("queue-start-"+item.id),role:"user",text:item.draftText||item.text,turnId}])}return;
     }
     await validateAttachmentPaths(item.attachments||[]);
     if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
       await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});
-      await persistLocalQueue(activeThread.id,queued.filter(q=>q.id!==item.id));setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}]);return;
+      await persistLocalQueue(activeThread.id,queued.filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}]);return;
     }
     if(running)return;
     const threadId=activeThread?.id||null,dispatching=queued.map(q=>q.id===item.id?{...q,dispatchingAt:Date.now(),autoStartFailed:false}:q);
@@ -4058,7 +4150,12 @@ export default function App(){
   const sourceControlRuntime=bootstrap.agentRuntime||agentRuntime;
   const sourceControlRuntimeInstanceId=bootstrap.agentRuntimeInstanceId||(settings.agentRuntime===sourceControlRuntime?settings.agentRuntimeInstanceId:null)||null;
   const conversationEditFromHere=useLatestCallback(editFromHere);
-  const conversationLoadEarlier=useLatestCallback(loadEarlierMessages);
+  const conversationLoadEarlier=useLatestCallback(()=>loadEarlierMessages("top"));
+  const conversationLoadGap=useLatestCallback(()=>loadEarlierMessages("gap"));
+  const focusThreadFindLatest=useLatestCallback(focusThreadFindOccurrence);
+  // The marker for turns not loaded between a detached find hit and the newest pages, before the first message of those pages.
+  const historyDetached=historyPage.threadId===activeThread?.id?historyPage.detached||null:null;
+  const conversationHistoryGap=useMemo(()=>historyDetached&&historyPage.nextCursor?{beforeId:historyGapBeforeId(messages,historyDetached),missing:historyDetached.missing||null}:null,[messages,historyDetached,historyPage.nextCursor]);
   const conversationCite=useLatestCallback((message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text"));
   const composerPromptEdit=useLatestCallback(()=>setPromptHistoryIndex(-1));
   const composerSend=useLatestCallback(send);
@@ -4269,12 +4366,12 @@ export default function App(){
             </div>
           </header>
 
-          <ThreadFindBar state={threadFind} inputRef={threadFindInputRef} onQuery={query=>setThreadFind(current=>({...current,query,error:""}))} onPrevious={()=>stepThreadFind(-1)} onNext={()=>stepThreadFind(1)} onClose={closeThreadFind}/>
+          <ThreadFindBar state={threadFind} inputRef={threadFindInputRef} barRef={threadFindBarRef} onQuery={query=>setThreadFind(current=>({...current,query,error:""}))} onPrevious={()=>stepThreadFind(-1)} onNext={()=>stepThreadFind(1)} onClose={closeThreadFind}/>
 
-          <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
+          <div className={"conversation-scroll"+(threadFind.open?" find-open":"")} ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId} scrollContainerRef={conversationScrollRef}/>
+              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {shownApproval&&<div className="inline-approval"><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}

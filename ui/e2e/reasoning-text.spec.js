@@ -78,6 +78,9 @@ test("a relay harness's thinking streams as a quiet Thinking row, opens to its t
     for(const delta of ["**Inspecting the login handler**\n\nThe timeout is 30 s in `src/auth.js`, ","so the slow part must be the token refresh.\n","Next I will read the refresh call and time it"])harness.push("item/reasoning/textDelta",{turnId:"turn-2",itemId:item.id,delta,contentIndex:0});
     const live=page.locator(".agent-block [data-testid=reasoning-row]");
     await expect(live).toHaveCount(1);
+    // A turn started by a new message reads top-down as before: the earlier reply, the new message, then the activity card.
+    const sentBox=await page.locator(".user-row").last().boundingBox(),liveCardBox=await page.locator(".agent-block").boundingBox(),earlierReplyBox=await page.locator('.conversation-history [data-message-id="assistant-1"]').boundingBox();
+    expect(earlierReplyBox.y+earlierReplyBox.height).toBeLessThanOrEqual(sentBox.y+1);expect(liveCardBox.y).toBeGreaterThanOrEqual(sentBox.y+sentBox.height-1);
     await expect(live.locator(".reasoning-label")).toHaveText("Thinking");
     await expect(live.locator(".reasoning-preview")).toHaveText("Next I will read the refresh call and time it");
     await expect(live.getByTestId("reasoning-text")).toHaveCount(0);
@@ -143,7 +146,13 @@ test("Codex's reasoning summary parts stream into one Thinking row and settle in
     await expect(live.getByTestId("reasoning-text").locator("strong")).toHaveText(["Reading the handler","Timing the refresh"]);
     await expect(live.getByTestId("reasoning-text")).toContainText("It awaits the refresh.");
     await expect(live.getByTestId("reasoning-text")).not.toContainText("**");
+    // Turn 2 started without a new message (Codex going on with a goal): turn 1's reply stays above turn 2's activity card.
+    const previousReplyBox=await page.locator('.conversation-history [data-message-id="assistant-1"]').boundingBox(),cardBox=await page.locator(".agent-block").boundingBox();
+    expect(cardBox.y).toBeGreaterThanOrEqual(previousReplyBox.y+previousReplyBox.height-1);
     await page.screenshot({path:join(shotsDir,"reasoning-codex-streaming-expanded-1280x800.png"),fullPage:true,animations:"disabled"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({path:join(shotsDir,"reasoning-codex-streaming-expanded-light-1280x800.png"),fullPage:true,animations:"disabled"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     // An empty encrypted-only reasoning item shows nothing once it ends.
     harness.push("item/started",{turnId:"turn-2",item:{type:"reasoning",id:"rs_empty",summary:[],content:[]},startedAtMs:Date.now()});
     harness.push("item/completed",{turnId:"turn-2",item:{type:"reasoning",id:"rs_empty",summary:[],content:[]},completedAtMs:Date.now()});
