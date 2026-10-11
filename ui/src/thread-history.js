@@ -6,6 +6,23 @@ export function messageText(item){
   return "";
 }
 
+// The row a turn keeps when a fresh session took over a conversation its harness had lost (the relay's sessionHandoff item):
+// what happened, in the relay's wording, in the turn where it happened. It is neither a reply nor a failure, so it has a role of
+// its own ("handoff"); null for any other item.
+export function sessionHandoffMessage(item,turnId){
+  if(item?.type!=="sessionHandoff"||!turnId)return null;
+  const harness=String(item.harness||"").trim()||"The harness",text=String(item.title||"").trim()||harness+" no longer had this conversation, so it continues in a new session.";
+  return {id:item.id||"session-handoff-"+turnId,role:"handoff",text,turnId};
+}
+
+// A handoff row that comes live joins its turn after the rows the turn has (its message), as the turn stores it; once.
+export function withSessionHandoff(messages=[],row){
+  const list=Array.isArray(messages)?messages:[];
+  if(!row?.id||list.some(message=>String(message?.id)===String(row.id)))return list;
+  let at=list.length-1;while(at>=0&&String(list[at]?.turnId||"")!==String(row.turnId))at--;
+  return at<0?[...list,row]:[...list.slice(0,at+1),row,...list.slice(at+1)];
+}
+
 export function historyFromTurns(turns=[],checkpointByTurn={}){
   const out=[];
   for(const turn of turns||[]){
@@ -17,6 +34,8 @@ export function historyFromTurns(turns=[],checkpointByTurn={}){
         out.push({id:item.id,role:"assistant",text:item.text,turnId:turn.id});
       }else if(item?.type==="reasoning"){
         const thought=reasoningHistoryMessage(item,turn.id);if(thought)out.push(thought);
+      }else if(item?.type==="sessionHandoff"){
+        const handoff=sessionHandoffMessage(item,turn.id);if(handoff)out.push(handoff);
       }
     }
   }
@@ -35,6 +54,8 @@ export function historyFromItemEntries(entries=[],checkpointByTurn={}){
       out.push({id:item.id,role:"assistant",text:item.text,turnId});
     }else if(item.type==="reasoning"){
       const thought=reasoningHistoryMessage(item,turnId);if(thought)out.push(thought);
+    }else if(item.type==="sessionHandoff"){
+      const handoff=sessionHandoffMessage(item,turnId);if(handoff)out.push(handoff);
     }
   }
   return out;

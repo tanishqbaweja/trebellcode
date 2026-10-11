@@ -1,10 +1,10 @@
 // One activity row per harness item, the same row live and restored from history: what a step is called, its status and the
-// output it streamed. A turn's activity card lists every item that is not a message or a thought (the conversation shows those
-// itself); plans, turn diffs, auto reviews and notices are live-only rows, not items.
+// output it streamed. A turn's activity card lists every item that is not a message, a thought or a session handoff (the
+// conversation shows those itself); plans, turn diffs, auto reviews and notices are live-only rows, not items.
 import { activityItemStatus } from "./activity-details.js";
 import { dynamicToolLabel } from "./tool-activity.js";
 
-const MESSAGE_ITEM_TYPES=new Set(["userMessage","agentMessage","reasoning"]);
+const MESSAGE_ITEM_TYPES=new Set(["userMessage","agentMessage","reasoning","sessionHandoff"]);
 // What a restored (or sealed) row keeps: a command's output its last part, other text its first, a list its first entries.
 export const RESTORED_TEXT_LIMIT=16_384;
 export const RESTORED_LIST_LIMIT=200;

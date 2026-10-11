@@ -232,8 +232,10 @@ export function turnEndRows(messages=[],options={}){
 // steps; liveCardTurnId, the one the live card shows, has none here) and the end rows above. before/after: lists keyed by the id
 // of the row they precede or follow ("" opens the thread). A card reads where the live card does: after its turn's last user
 // message (a message steered in stays above it), else before the turn's first row (a goal continuing), else, for the turn an item
-// page cut (boundaryTurnId), at the top of the newest pages, else where the turn's end row would be. At one row the turns keep
-// their order (turnOrder, else where their rows start), and a turn's card comes before its end row.
+// page cut (boundaryTurnId), at the top of the newest pages, else where the turn's end row would be. A turn's session handoff row
+// (role "handoff") comes before its steps, so a card that would follow that message or precede that row follows the row instead,
+// as the live card does. At one row the turns keep their order (turnOrder, else where their rows start), and a turn's card comes
+// before its end row.
 export function turnTrailers(messages=[],options={}){
   const {list,ends,firstRow,lastUserRow,order,rowlessAt,gap}=turnEndPlacement(messages,options);
   const before=new Map(),after=new Map(),push=(map,key,entry)=>{const entries=map.get(key);if(entries)entries.push(entry);else map.set(key,[entry])};
@@ -242,10 +244,11 @@ export function turnTrailers(messages=[],options={}){
   const boundary=options.boundaryTurnId==null?"":String(options.boundaryTurnId);
   const newestStart=gap!=null&&list.some(message=>String(message?.id)===gap)?gap:list.length?String(list[0].id):"";
   const live=options.liveCardTurnId==null?"":String(options.liveCardTurnId);
+  const handoffAt=(index,turnId)=>list[index]?.role==="handoff"&&String(list[index].turnId)===turnId;
   for(const turnId of new Set((options.cardTurnIds||[]).map(String).filter(Boolean))){
     if(turnId===live)continue;
-    if(lastUserRow.has(turnId)){push(after,String(list[lastUserRow.get(turnId)].id),{kind:"card",turnId});continue}
-    if(firstRow.has(turnId)){push(before,String(list[firstRow.get(turnId)].id),{kind:"card",turnId});continue}
+    if(lastUserRow.has(turnId)){let at=lastUserRow.get(turnId);while(handoffAt(at+1,turnId))at++;push(after,String(list[at].id),{kind:"card",turnId});continue}
+    if(firstRow.has(turnId)){let at=firstRow.get(turnId);if(!handoffAt(at,turnId)){push(before,String(list[at].id),{kind:"card",turnId});continue}while(handoffAt(at+1,turnId))at++;push(after,String(list[at].id),{kind:"card",turnId});continue}
     if(turnId===boundary){if(newestStart)push(before,newestStart,{kind:"card",turnId});else push(after,"",{kind:"card",turnId});continue}
     const position=positions.get(turnId),at=position==null?null:rowlessAt(position);
     if(at!=null)push(after,at<0?"":String(list[at].id),{kind:"card",turnId});

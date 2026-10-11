@@ -24,7 +24,7 @@ import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigation
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
-import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId } from "./thread-history.js";
+import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId, sessionHandoffMessage, withSessionHandoff } from "./thread-history.js";
 import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain, turnTrailers } from "./turn-outcome.js";
 import { activityRow, isCardItem, mergeLiveRow, restoredRow, settledRow } from "./activity-item.js";
 import { cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeIncompleteTurnIds } from "./turn-activity.js";
@@ -411,9 +411,15 @@ function ThreadFindBar({state,covered=false,inputRef,barRef,onQuery,onPrevious,o
 function TurnOutcomePill({label,tone}){
   return <span className={"turn-outcome tone-"+(tone||"ok")} data-testid="turn-outcome">{tone==="err"?<X size={11} aria-hidden="true"/>:tone==="warn"?<CircleStop size={11} aria-hidden="true"/>:<Check size={11} aria-hidden="true"/>}{label}</span>;
 }
+// A turn whose harness had lost the conversation says, once, that it goes on in a new session, before the turn's steps and
+// reply: a quiet note in the reply column, not a failure (thread-history.js sessionHandoffMessage).
+function SessionHandoffRow({message}){
+  return <div className="session-handoff-row" data-testid="session-handoff" data-message-id={message.id} data-turn-id={message.turnId==null?undefined:String(message.turnId)}><History size={13} aria-hidden="true"/><p>{message.text}</p></div>;
+}
 const ConversationMessageRow=memo(function ConversationMessageRow({message,activeFind,allowRevert,projectPath,environmentId,threadId,onEditFromHere,heading="",outcomeLabel="",outcomeTone=""}){
-  const parsed=useMemo(()=>message.role==="user"?null:parseVisualizationMessage(message.text),[message.role,message.text]);
+  const parsed=useMemo(()=>message.role==="user"||message.role==="handoff"?null:parseVisualizationMessage(message.text),[message.role,message.text]);
   if(message.role==="reasoning")return <ReasoningRow id={message.id} messageId={message.id} text={message.text}/>;
+  if(message.role==="handoff")return <SessionHandoffRow message={message}/>;
   if(message.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="user-bubble"><p>{message.text}</p>{allowRevert&&message.turnId&&<button className="message-action" onClick={()=>onEditFromHere(message)}>Edit from here</button>}</div></div>;
   return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text chat-markdown" data-assistant-citation-source={message.id}><ChatMarkdown text={parsed.text}/></div>}{(parsed?.visualizations||[]).map((visualization,index)=>{
     const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
@@ -2746,7 +2752,7 @@ export default function App(){
     else if(message.method==="turn/plan/updated"&&isCurrent){const plan=(p.plan||[]).map((s,i)=>({id:"plan-"+i,kind:"plan",title:s.step||s.description||s.text||"Plan step",status:s.status==="completed"?"done":s.status==="inProgress"?"running":"pending",raw:s,turnId:p.turnId==null?null:String(p.turnId)}));setEvents(prev=>[...prev.filter(e=>e.kind!=="plan"),...plan])}
     else if(message.method==="item/started"&&p.item){
       const item=activityRow(p.item,{turnId:p.turnId});
-      const isActivityItem=!["userMessage","agentMessage"].includes(p.item.type);
+      const isActivityItem=!["userMessage","agentMessage","sessionHandoff"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,{currentActivity:{id:item.id,kind:item.kind,title:item.title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
       if(isCurrent&&isActivityItem)setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item]);
       if(isCurrent&&isCardItem(p.item))trackLiveRow(threadId,p.turnId,item,{phase:"started"});
@@ -2782,7 +2788,7 @@ export default function App(){
       }
       const item=activityRow({...p.item,status:completedItemStatus(p.item)},{turnId:p.turnId});
       const completedAtMs=p.completedAtMs||Date.now();
-      const isActivityItem=!["userMessage","agentMessage"].includes(p.item.type);
+      const isActivityItem=!["userMessage","agentMessage","sessionHandoff"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===item.id?null:current.currentActivity,lastActivity:{id:item.id,kind:item.kind,title:item.title,durationMs:p.item?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs}));
       if(isCurrent){
         if(p.item.type==="userMessage"&&String(p.item.clientId||"").startsWith("trebell-queue-")){
@@ -2791,6 +2797,8 @@ export default function App(){
           setMessages(prev=>prev.some(message=>message.id===id||(itemId&&String(message.id)===itemId))?prev:[...prev,{id,role:"user",text:draft.draftText||draft.text,turnId:p.turnId||null}]);
         }
         if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);resetAssistantStream()}
+        // A fresh session took over a conversation the harness lost: the turn says so in its own row (a reload reads it from the turn).
+        if(p.item.type==="sessionHandoff"){const handoff=sessionHandoffMessage(p.item,p.turnId);if(handoff)setMessages(prev=>withSessionHandoff(prev,handoff))}
         // A finished thought leaves the live activity for the conversation, where a reopened thread shows it too.
         if(p.item.type==="reasoning"){const thought=reasoningHistoryMessage(p.item,p.turnId,streamedCommandOutput);setEvents(prev=>prev.filter(e=>e.id!==item.id));if(thought)setMessages(prev=>prev.some(m=>m.id===thought.id)?prev:[...prev,thought])}
         else if(isActivityItem){
@@ -4490,7 +4498,7 @@ export default function App(){
     return result.proof;
   }
   async function renameThread(){if(!rpc||!activeThread)return;const name=await askText("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
-  async function shareThread(){const text=messages.filter(m=>m.role!=="reasoning").map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
+  async function shareThread(){const text=messages.filter(m=>m.role==="user"||m.role==="assistant").map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
   async function startReview(){
     if(!rpc||!activeThread?.id)throw new Error("Start or open a thread before reviewing.");
     // A review is a turn, and no turn starts while a thread opens (sends wait the same way).

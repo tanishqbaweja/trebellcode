@@ -344,3 +344,16 @@ test("the live card's turn has no past card, and its end row keeps the live orde
   // Once the live card shows nothing for the turn, the turn's own card is back, above the row.
   assert.deepEqual(trailers(messages,{turnInfo,cardTurnIds:["t1","t2"],cardTurnId:"t2"}),{before:{},after:{u1:["card:t1"],u2:["card:t2","end:t2"]}});
 });
+
+test("a turn's session handoff row comes before its steps: the card follows it, and a reply after it still opens its group",()=>{
+  const handoff=(id,turnId)=>({id,role:"handoff",text:"Cursor no longer had this conversation, so it continues in a new session.",turnId});
+  const messages=[user("u1","t1"),reply("a1","t1"),user("u2","t2"),handoff("h2","t2"),reply("a2","t2")];
+  assert.deepEqual(trailers(messages,{cardTurnIds:["t1","t2"],turnOrder:["t1","t2"]}),{before:{},after:{u1:["card:t1"],h2:["card:t2"]}});
+  // An item page that cut the turn after its message opens on the handoff row: the card still follows it.
+  assert.deepEqual(trailers([handoff("h2","t2"),reply("a2","t2")],{cardTurnIds:["t2"],boundaryTurnId:"t2",turnOrder:["t2"]}),{before:{},after:{h2:["card:t2"]}});
+  // The reply after the row names the harness and carries the pill; a turn that ended with no reply ends after the row.
+  const turnInfo={[turnInfoKey("th","t2")]:{status:"completed",durationMs:1500},[turnInfoKey("th","t3")]:{status:"failed",error:"Not signed in."}};
+  assert.deepEqual(assistantRowDecorations(messages,{harnessLabel:"Cursor",turnInfo,threadId:"th"}).get("a2"),{heading:"Cursor",outcomeLabel:"done · 1.5s",outcomeTone:"ok"});
+  const failed=[...messages,user("u3","t3"),handoff("h3","t3")];
+  assert.deepEqual(trailers(failed,{turnInfo,cardTurnIds:["t3"],turnOrder:["t1","t2","t3"]}),{before:{},after:{h3:["card:t3","end:t3"]}});
+});

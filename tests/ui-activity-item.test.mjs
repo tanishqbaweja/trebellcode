@@ -72,7 +72,7 @@ test("a command that exited non-zero reads failed whichever harness ran it",()=>
 });
 
 test("only steps make a card: messages and thoughts are the conversation's own rows",()=>{
-  for(const type of ["userMessage","agentMessage","reasoning"])assert.equal(isCardItem({id:"m",type}),false,type);
+  for(const type of ["userMessage","agentMessage","reasoning","sessionHandoff"])assert.equal(isCardItem({id:"m",type}),false,type);
   for(const type of ["commandExecution","fileChange","mcpToolCall","dynamicToolCall","webSearch","imageView","contextCompaction"])assert.equal(isCardItem({id:"s",type}),true,type);
   assert.equal(isCardItem(null),false);assert.equal(isCardItem(undefined),false);
 });

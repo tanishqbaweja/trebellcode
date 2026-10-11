@@ -266,6 +266,12 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .turn-outcome-message{margin:3px 0 0;font-size:12.5px;line-height:1.6;color:var(--err);white-space:pre-wrap;overflow-wrap:anywhere}
 .conversation-column .turn-outcome-message.tone-warn{color:var(--warn)}
 .conversation-column .turn-outcome-message.tone-ok{color:var(--tx2)}
+/* A turn whose harness had lost the conversation opens with a note that it goes on in a new session (SessionHandoffRow): in the
+   reply column where the turn's activity card starts, above its steps and reply, quiet and in no failure colour, wrapped however
+   long. */
+.conversation-column .session-handoff-row{display:flex;align-items:flex-start;gap:9px;margin:0 0 14px 39px;padding:8px 12px;border:1px solid var(--line);border-radius:var(--r-m);background:transparent}
+.conversation-column .session-handoff-row>svg{flex:none;width:13px;height:13px;margin-top:2px;color:var(--ac)}
+.conversation-column .session-handoff-row>p{min-width:0;margin:0;font-size:12.5px;line-height:1.5;color:var(--tx2);overflow-wrap:anywhere}
 .conversation-column .assistant-message-text::selection{background:color-mix(in srgb,var(--ac) 32%,transparent);color:var(--tx0)}
 /* Markdown in replies (ChatMarkdown): blocks keep the reply's rhythm, code reads as code, and wide tables and code scroll
    inside the reply instead of widening the conversation. */

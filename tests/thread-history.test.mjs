@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {countUnloadedTurns,detachHistoryTurn,historyFromItemEntries,historyFromTurns,historyGapBeforeId,historyGapLabel,historyGapPage,mergeHistoryGapMessages,mergeHistoryMessages,messageText,resumedActiveTurnId} from "../ui/src/thread-history.js";
+import {countUnloadedTurns,detachHistoryTurn,historyFromItemEntries,historyFromTurns,historyGapBeforeId,historyGapLabel,historyGapPage,mergeHistoryGapMessages,mergeHistoryMessages,messageText,resumedActiveTurnId,sessionHandoffMessage,withSessionHandoff} from "../ui/src/thread-history.js";
 
 test("paginated Codex turns become chronological visible conversation messages",()=>{
   const turns=[
@@ -120,4 +120,25 @@ test("unloaded turns are counted from metadata pages until a loaded turn",async(
   assert.equal(historyGapLabel({count:1,more:false}),"1 turn not loaded");
   assert.equal(historyGapLabel({count:1000,more:true}),"1,000+ turns not loaded");
   assert.equal(historyGapLabel(null),"Turns not loaded");
+});
+
+test("a turn's session handoff item is a row of its own in turn and item pages, and a live one joins its turn once",()=>{
+  const title="Cursor no longer had this conversation, so it continues in a new session with the earlier messages handed over.";
+  const item={type:"sessionHandoff",id:"session-handoff-t2",status:"completed",title,runtime:"cursor",harness:"Cursor",previousSessionId:"lost",sessionId:"fresh-1",reason:"Session not found",handedOver:{included:3,omitted:0}};
+  const row={id:"session-handoff-t2",role:"handoff",text:title,turnId:"t2"};
+  const turns=[{id:"t2",items:[{id:"u2",type:"userMessage",text:"What word?"},item,{id:"a2",type:"agentMessage",text:"PELICAN"}]}];
+  assert.deepEqual(historyFromTurns(turns).map(message=>message.role),["user","handoff","assistant"]);
+  assert.deepEqual(historyFromTurns(turns)[1],row);
+  assert.deepEqual(historyFromItemEntries(turns[0].items.map(entry=>({turnId:"t2",item:entry})))[1],row);
+  // A row without the relay's title still reads in Trebell's words.
+  assert.equal(sessionHandoffMessage({type:"sessionHandoff",id:"h",harness:"Grok Build"},"t3").text,"Grok Build no longer had this conversation, so it continues in a new session.");
+  assert.equal(sessionHandoffMessage({type:"agentMessage",id:"a"},"t3"),null);
+  // Live, it follows the turn's rows, before any later turn's, and a second copy (a replay, a history page) changes nothing.
+  const live=[{id:"u1",role:"user",text:"Earlier",turnId:"t1"},{id:"u2",role:"user",text:"What word?",turnId:"t2"}];
+  const placed=withSessionHandoff(live,row);
+  assert.deepEqual(placed.map(message=>message.id),["u1","u2","session-handoff-t2"]);
+  assert.equal(withSessionHandoff(placed,row),placed);
+  assert.deepEqual(mergeHistoryMessages(historyFromTurns(turns),placed).filter(message=>message.role==="handoff").length,1);
+  // A turn that has no row loaded yet gets it at the end.
+  assert.deepEqual(withSessionHandoff([{id:"u1",role:"user",text:"Earlier",turnId:"t1"}],row).map(message=>message.id),["u1","session-handoff-t2"]);
 });
