@@ -95,6 +95,8 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     await page.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true}).click();
     const pluginError=plugins.getByText("Deliberate plugin catalog refresh failure",{exact:false});
     await expect(pluginError).toBeVisible();
+    // Each error line names what failed before the reason Codex gave.
+    await expect(pluginError).toHaveText("Could not load the plugin catalog: Deliberate plugin catalog refresh failure");
     await expect(plugins).toContainText("Known Good Plugin");
     await expect(page.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true})).toBeEnabled();
     const metrics=await page.locator(".secondary-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
@@ -108,7 +110,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     const install=plugins.getByRole("button",{name:"Install",exact:true});
     await install.click();
     const installError=plugins.getByText("Deliberate plugin install failure",{exact:false});
-    await expect(installError).toBeVisible();
+    await expect(installError).toHaveText("Could not install Known Good Plugin: Deliberate plugin install failure");
     await expect(install).toBeEnabled();
     await expect(install).toHaveText("Install");
     await expect(plugins).toContainText("Known Good Plugin");
@@ -129,7 +131,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     const reload=mcp.getByRole("button",{name:"Reload MCP",exact:true});
     await reload.click();
     const mcpError=mcp.getByText("Deliberate MCP reload failure",{exact:false});
-    await expect(mcpError).toBeVisible();
+    await expect(mcpError).toHaveText("Could not reload MCP servers: Deliberate MCP reload failure");
     await expect(reload).toBeEnabled();
     await mcpError.scrollIntoViewIfNeeded();
     await expect(mcpError).toBeInViewport();
@@ -139,7 +141,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     const signIn=mcp.getByRole("button",{name:"Sign in",exact:true});
     await signIn.click();
     const signInError=mcp.getByText("Deliberate MCP sign-in failure",{exact:false});
-    await expect(signInError).toBeVisible();
+    await expect(signInError).toHaveText("Could not sign in to fixture-login: Deliberate MCP sign-in failure");
     await expect(signIn).toBeEnabled();
 
     failSkills=true;
@@ -148,7 +150,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     await expect(skills).toContainText("fixture-skill");
     await skillToggle.click();
     const skillsError=skills.getByText("Deliberate skills refresh failure",{exact:false});
-    await expect(skillsError).toBeVisible();
+    await expect(skillsError).toHaveText("Could not refresh skills: Deliberate skills refresh failure");
     await expect(skills).toContainText("fixture-skill");
     await expect(skills.getByRole("button",{name:"Off",exact:true})).toBeEnabled();
     await skillsError.scrollIntoViewIfNeeded();
@@ -161,7 +163,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     await source.fill("https://example.test/retry-marketplace.git");
     await marketplaces.getByRole("button",{name:"Add",exact:true}).click();
     const marketplaceError=marketplaces.getByText("Deliberate marketplace add failure",{exact:false});
-    await expect(marketplaceError).toBeVisible();
+    await expect(marketplaceError).toHaveText("Could not add the marketplace: Deliberate marketplace add failure");
     await expect(source).toHaveValue("https://example.test/retry-marketplace.git");
     await expect(marketplaces.getByRole("button",{name:"Add",exact:true})).toBeEnabled();
     await marketplaceError.scrollIntoViewIfNeeded();
@@ -278,7 +280,7 @@ test("Tools cards claim a runtime list is empty only once it has loaded empty",a
     fixture.control.mcp="fail";
     await refresh.click();
     const mcpError=card("MCP servers").locator(".capability-error");
-    await expect(mcpError).toContainText("Deliberate MCP server list failure");
+    await expect(mcpError).toHaveText("Could not load MCP servers: Deliberate MCP server list failure");
     await expectNoClaims([listClaims[1]]);
 
     // Refreshing after that failure: while the list is held again, the cleared error is not replaced by a claim that there are

@@ -56,6 +56,19 @@ test("Windows sandbox readiness and async setup use native Codex RPCs",async({pa
     await unelevated.click();await expect(card).toContainText(/setup started/i);await expect(card.getByRole("button",{name:"Setting up…"})).toBeDisabled();
     expect(calls.find(call=>call.method==="windowsSandbox/setupStart")?.params).toEqual({mode:"unelevated",cwd:process.cwd()});
     await page.screenshot({animations:"disabled",path:auditDir+"tools-windows-sandbox-setting-up-1600x980.png",fullPage:true});
+    // A setup that fails names the setup before Codex's reason, and the page refresh the completion starts does not wipe it.
+    const readinessReads=()=>calls.filter(call=>call.method==="windowsSandbox/readiness").length,readsBefore=readinessReads();
+    setupSocket.send(JSON.stringify({method:"windowsSandbox/setupCompleted",params:{mode:setupMode,success:false,error:"Deliberate sandbox setup failure"}}));
+    const setupError=card.locator(".capability-error").filter({hasText:"Deliberate sandbox setup failure"});
+    await expect(setupError).toHaveText("Windows sandbox setup failed: Deliberate sandbox setup failure");
+    await expect.poll(readinessReads).toBeGreaterThan(readsBefore);await expect(card).toContainText("Not configured");
+    await expect(setupError).toBeVisible();await expect(unelevated).toBeEnabled();await expect(card).not.toContainText(/setup started/i);
+    await setupError.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"tools-windows-sandbox-setup-failed-1600x980.png"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"tools-windows-sandbox-setup-failed-light-1600x980.png"});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // Starting again clears the failure while the new setup runs.
+    await unelevated.click();await expect(card).toContainText(/setup started/i);await expect(setupError).toHaveCount(0);
     readiness="ready";setupSocket.send(JSON.stringify({method:"windowsSandbox/setupCompleted",params:{mode:setupMode,success:true,error:null}}));
     await expect(card).toContainText("Ready",{timeout:5000});await expect(card.getByRole("button",{name:/Set up/})).toHaveCount(0);
     const socket=[...sockets][0];socket.send(JSON.stringify({method:"windows/worldWritableWarning",params:{samplePaths:["C:\\Temp\\Everyone"],extraCount:2,failedScan:false}}));

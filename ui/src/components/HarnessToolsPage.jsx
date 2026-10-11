@@ -1,9 +1,22 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { Blocks, Brain, CheckCircle2, ChevronRight, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { api } from "../api.js";
-import { agentName, countLabel, humanizeIdentifier, importFailures, importResultSummary, mcpAuthLabel } from "../display-labels.js";
+import { agentName, countLabel, failureText, humanizeIdentifier, importFailures, importResultSummary, mcpAuthLabel } from "../display-labels.js";
 import { formatBytes } from "../format-bytes.js";
 import { allowedWindowsSetupModes, windowsSandboxStatus, worldWritableWarningText } from "../windows-sandbox.js";
+
+// What each runtime read on this page loads, so its error line names what could not be loaded before the reason Codex gave.
+const LOAD_FAILURES={
+  "permissionProfile/list":"Could not load permission profiles","mcpServerStatus/list":"Could not load MCP servers","plugin/list":"Could not load the plugin catalog",
+  "app/list":"Could not load app connectors","app/installed":"Could not load installed apps","hooks/list":"Could not load hooks",
+  "experimentalFeature/list":"Could not load experimental features","plugin/share/list":"Could not load shared plugins","thread/loaded/list":"Could not list loaded sessions",
+  "modelProvider/capabilities/read":"Could not load provider capabilities","account/read":"Could not load the account","account/rateLimits/read":"Could not load rate limits",
+  "account/usage/read":"Could not load account usage","config/read":"Could not load the configuration","configRequirements/read":"Could not load configuration requirements",
+  "memory/status":"Could not load memory readiness","server/diagnostics":"Could not load process diagnostics","externalAgentConfig/import/readHistories":"Could not load the import history",
+  "windowsSandbox/readiness":"Could not check Windows sandbox readiness",
+};
+const loadFailure=(name,error)=>failureText(LOAD_FAILURES[name]||"Could not load "+name,error);
+const pluginLabel=plugin=>plugin?.interface?.displayName||plugin?.name||plugin?.id||"the plugin";
 
 // A header badge is a bare count, or a label that says what it counts when the card lists more than one kind of row.
 function Section({title,icon:Icon,count,badge,children}){
@@ -97,7 +110,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function request(name,params){return rpc.request(name,routedParams(params))}
   async function call(name,params){
     try{return await request(name,params)}
-    catch(error){setErrors(prev=>({...prev,[name]:error.message||String(error)}));return null}
+    catch(error){setErrors(prev=>({...prev,[name]:loadFailure(name,error)}));return null}
   }
   async function refresh(){
     if(!rpc||rpcStatus!=="connected"){setLoading(false);return}
@@ -105,7 +118,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     const run=++refreshRun.current,latest=()=>run===refreshRun.current;
     setLoading(true);setErrors({});
     const threadId=activeThread?.id||null;
-    const load=(name,params)=>request(name,params).catch(error=>{if(latest())setErrors(prev=>({...prev,[name]:error.message||String(error)}));return null});
+    const load=(name,params)=>request(name,params).catch(error=>{if(latest())setErrors(prev=>({...prev,[name]:loadFailure(name,error)}));return null});
     const [permissions,mcp,plugins,apps,installedApps,hooks,features,sharedPlugins,loadedThreads,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,importHistories,windowsSandbox]=await Promise.all([
       load("permissionProfile/list",{limit:100,cwd:projectPath||null}),
       load("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
@@ -231,7 +244,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         setMigrationMessage(importResultSummary(message.params?.itemTypeResults,"Import complete"));
         setMigrationFailures(importFailures(message.params?.itemTypeResults));
         setMigrationImportId(null);
-        Promise.all([loadMigrationHistory(),loadExternalConfig()]).catch(error=>setErrors(prev=>({...prev,"externalAgentConfig/import":error.message||String(error)})));
+        Promise.all([loadMigrationHistory(),loadExternalConfig()]).catch(error=>setErrors(prev=>({...prev,"externalAgentConfig/import":failureText("Could not reload the agent configuration after the import",error)})));
       }else if((message.method==="hook/started"||message.method==="hook/completed")&&message.params?.run){
         const params=message.params;
         if(activeThread?.id&&params.threadId!==activeThread.id)return;
@@ -246,9 +259,10 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   useEffect(()=>{
     const completed=event=>{
       const detail=event.detail||{};setSandboxPending("");
-      if(detail.success){setSandboxMessage(`${detail.mode==="elevated"?"Elevated":"Unelevated"} Windows sandbox setup completed.`);setErrors(prev=>({...prev,"windowsSandbox/setupStart":null}))}
-      else{const error=detail.error||"Windows sandbox setup failed.";setSandboxMessage("");setErrors(prev=>({...prev,"windowsSandbox/setupStart":error}))}
+      // The refresh clears every error line as it starts, so it starts first: a failure set after it stays on screen.
       refresh();
+      if(detail.success){setSandboxMessage(`${detail.mode==="elevated"?"Elevated":"Unelevated"} Windows sandbox setup completed.`);setErrors(prev=>({...prev,"windowsSandbox/setupStart":null}))}
+      else{setSandboxMessage("");setErrors(prev=>({...prev,"windowsSandbox/setupStart":failureText("Windows sandbox setup failed",detail.error)}))}
     };
     const warning=event=>setSandboxWarning(worldWritableWarningText(event.detail||{}));
     window.addEventListener("trebell:windows-sandbox-setup",completed);window.addEventListener("trebell:windows-sandbox-warning",warning);
@@ -262,13 +276,13 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function reloadMcp(){
     if(!rpc)return;setBusy("mcp");setErrors(prev=>({...prev,"config/mcpServer/reload":null}));
     try{await request("config/mcpServer/reload",undefined);await refresh()}
-    catch(error){setErrors(prev=>({...prev,"config/mcpServer/reload":error.message||String(error)}))}
+    catch(error){setErrors(prev=>({...prev,"config/mcpServer/reload":failureText("Could not reload MCP servers",error)}))}
     finally{setBusy("")}
   }
   async function loginMcp(name){
     if(!rpc)return;setBusy("mcp:"+name);setErrors(prev=>({...prev,"mcpServer/oauth/login":null}));
     try{await request("mcpServer/oauth/login",{name,threadId:activeThread?.id||null});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"mcpServer/oauth/login":error.message||String(error)}))}
+    catch(error){setErrors(prev=>({...prev,"mcpServer/oauth/login":failureText("Could not sign in to "+name,error)}))}
     finally{setBusy("")}
   }
   async function togglePlugin(plugin){
@@ -285,7 +299,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       setPluginSearchResults(current=>current.map(result=>result.plugin?.id===plugin.id?{...result,plugin:{...result.plugin,installed:nextInstalled}}:result));
       setPluginDetail(current=>current?.summary?.id===plugin.id?{...current,summary:{...current.summary,installed:nextInstalled}}:current);
       await refresh();
-    }catch(error){setErrors(prev=>({...prev,[action]:error.message||String(error)}))}
+    }catch(error){setErrors(prev=>({...prev,[action]:failureText((plugin.installed?"Could not uninstall ":"Could not install ")+pluginLabel(plugin),error)}))}
     finally{setBusy("")}
   }
   async function searchPlugins({append=false}={}){
@@ -295,7 +309,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       const result=await request("plugin/search",{searchTerm,scope:pluginSearchScope,cwds:projectPath?[projectPath]:null,cursor:append?pluginSearchCursor:null,limit:20});
       setPluginSearchResults(current=>append?[...current,...(result?.data||[])]:result?.data||[]);
       setPluginSearchCursor(result?.nextCursor||null);setPluginSearchRan(true);
-    }catch(error){setErrors(prev=>({...prev,"plugin/search":error.message||String(error)}))}
+    }catch(error){setErrors(prev=>({...prev,"plugin/search":failureText("Could not search plugins",error)}))}
     finally{setBusy("")}
   }
   async function readPlugin(plugin,marketplace={}){
@@ -303,7 +317,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     try{
       const result=await request("plugin/read",{marketplacePath:marketplace.path||null,remoteMarketplaceName:marketplace.path?null:(marketplace.name||null),pluginName:plugin.name});
       setPluginDetail(result?.plugin||null);
-    }catch(error){setErrors(prev=>({...prev,"plugin/read":error.message||String(error)}))}
+    }catch(error){setErrors(prev=>({...prev,"plugin/read":failureText("Could not load details for "+pluginLabel(plugin),error)}))}
     finally{setBusy("")}
   }
   async function readPluginSkill(skill){
@@ -311,42 +325,42 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!rpc||!remotePluginId||!remoteMarketplaceName||!skill?.name)return;
     setBusy("plugin:skill:"+skill.name);setErrors(prev=>({...prev,"plugin/skill/read":null}));
     try{const result=await request("plugin/skill/read",{remoteMarketplaceName,remotePluginId,skillName:skill.name});setPluginSkillDetail({name:skill.name,contents:result?.contents||""})}
-    catch(error){setErrors(prev=>({...prev,"plugin/skill/read":error.message||String(error)}))}finally{setBusy("")}
+    catch(error){setErrors(prev=>({...prev,"plugin/skill/read":failureText("Could not read the skill "+skill.name,error)}))}finally{setBusy("")}
   }
   async function refreshInstalledApps(){
     if(!rpc)return;setBusy("apps:installed");setErrors(prev=>({...prev,"app/installed":null}));
     try{
       const result=await request("app/installed",{threadId:activeThread?.id||null,forceRefresh:true});
       setData(current=>({...current,installedApps:result?.apps||[]}));
-    }catch(error){setErrors(prev=>({...prev,"app/installed":error.message||String(error)}))}
+    }catch(error){setErrors(prev=>({...prev,"app/installed":failureText("Could not refresh installed apps",error)}))}
     finally{setBusy("")}
   }
   async function reconcilePlugins(){
     if(!rpc)return;setBusy("plugin:reconcile");setPluginMessage("");setErrors(prev=>({...prev,"plugin/reconcile":null}));
     try{const result=await request("plugin/reconcile",{reason:"trebell-tools-refresh"});const changed=result?.changedPlugins?.length||0,failed=result?.failedRemotePluginIds?.length||0;setPluginMessage(`${changed} plugin change${changed===1?"":"s"} reconciled${failed?` · ${failed} failed`:""}.`);await refresh()}
-    catch(error){setErrors(prev=>({...prev,"plugin/reconcile":error.message||String(error)}))}finally{setBusy("")}
+    catch(error){setErrors(prev=>({...prev,"plugin/reconcile":failureText("Could not reconcile plugins",error)}))}finally{setBusy("")}
   }
   async function shareLocalPlugin(plugin){
     const pluginPath=plugin?.source?.type==="local"?plugin.source.path:null;if(!rpc||!pluginPath)return;
     setBusy("share:"+plugin.id);setErrors(prev=>({...prev,"plugin/share/save":null}));
     try{await request("plugin/share/save",{pluginPath,...(plugin.remotePluginId?{remotePluginId:plugin.remotePluginId}:{}),discoverability:plugin.shareContext?.discoverability||"PRIVATE",shareTargets:(plugin.shareContext?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}))});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"plugin/share/save":error.message||String(error)}))}finally{setBusy("")}
+    catch(error){setErrors(prev=>({...prev,"plugin/share/save":failureText("Could not share "+pluginLabel(plugin),error)}))}finally{setBusy("")}
   }
   async function checkoutSharedPlugin(item){
     const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("checkout:"+remotePluginId);
     try{await request("plugin/share/checkout",{remotePluginId});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"plugin/share/checkout":error.message||String(error)}))}finally{setBusy("")}
+    catch(error){setErrors(prev=>({...prev,"plugin/share/checkout":failureText("Could not check out "+pluginLabel(item.plugin),error)}))}finally{setBusy("")}
   }
   async function deleteSharedPlugin(item){
     const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("delete-share:"+remotePluginId);
     try{await request("plugin/share/delete",{remotePluginId});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"plugin/share/delete":error.message||String(error)}))}finally{setBusy("")}
+    catch(error){setErrors(prev=>({...prev,"plugin/share/delete":failureText("Could not delete the share of "+pluginLabel(item.plugin),error)}))}finally{setBusy("")}
   }
   async function updateShareDiscoverability(item,discoverability){
     const context=item?.plugin?.shareContext;const remotePluginId=item?.plugin?.remotePluginId||context?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("share-visibility:"+remotePluginId);
     const shareTargets=(context?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}));
     try{await request("plugin/share/updateTargets",{remotePluginId,discoverability,shareTargets});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"plugin/share/updateTargets":error.message||String(error)}))}finally{setBusy("")}
+    catch(error){setErrors(prev=>({...prev,"plugin/share/updateTargets":failureText("Could not change who can find "+pluginLabel(item.plugin),error)}))}finally{setBusy("")}
   }
   async function toggleFeature(feature){
     if(!rpc)return;setBusy("feature:"+feature.name);setErrors(prev=>({...prev,"experimentalFeature/enablement/set":null}));
@@ -357,25 +371,25 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         return;
       }
       await refresh();
-    }catch(error){setErrors(prev=>({...prev,"experimentalFeature/enablement/set":error.message||String(error)}))}
+    }catch(error){setErrors(prev=>({...prev,"experimentalFeature/enablement/set":failureText((feature.enabled?"Could not turn off ":"Could not turn on ")+(feature.displayName||feature.name),error)}))}
     finally{setBusy("")}
   }
   async function addMarketplace(){
     const source=marketplaceSource.trim();if(!source||!rpc)return;setBusy("marketplace:add");setErrors(prev=>({...prev,"marketplace/add":null}));
     try{await request("marketplace/add",{source});setMarketplaceSource("");await refresh()}
-    catch(error){setErrors(prev=>({...prev,"marketplace/add":error.message||String(error)}))}
+    catch(error){setErrors(prev=>({...prev,"marketplace/add":failureText("Could not add the marketplace",error)}))}
     finally{setBusy("")}
   }
   async function removeMarketplace(name){
     if(!rpc||!name)return;setBusy("marketplace:"+name);setErrors(prev=>({...prev,"marketplace/remove":null}));
     try{await request("marketplace/remove",{marketplaceName:name});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"marketplace/remove":error.message||String(error)}))}
+    catch(error){setErrors(prev=>({...prev,"marketplace/remove":failureText("Could not remove "+name,error)}))}
     finally{setBusy("")}
   }
   async function upgradeMarketplace(name=null){
     if(!rpc)return;setBusy("marketplace:"+(name||"all"));setErrors(prev=>({...prev,"marketplace/upgrade":null}));
     try{await request("marketplace/upgrade",{marketplaceName:name});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"marketplace/upgrade":error.message||String(error)}))}
+    catch(error){setErrors(prev=>({...prev,"marketplace/upgrade":failureText(name?"Could not upgrade "+name:"Could not upgrade the marketplaces",error)}))}
     finally{setBusy("")}
   }
   async function loadExternalConfig(){
@@ -389,7 +403,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function detectExternalConfig(){
     if(!rpc)return;setBusy("migration:detect");setMigrationMessage("");setMigrationFailures([]);setErrors(prev=>({...prev,"externalAgentConfig/detect":null}));
     try{await Promise.all([loadExternalConfig(),loadMigrationHistory()])}
-    catch(error){setErrors(prev=>({...prev,"externalAgentConfig/detect":error.message||String(error)}))}finally{setBusy("")}
+    catch(error){setErrors(prev=>({...prev,"externalAgentConfig/detect":failureText("Could not scan for agent configuration",error)}))}finally{setBusy("")}
   }
   async function importExternalConfig(){
     if(!rpc||!migrations?.items?.length)return;setBusy("migration:import");setMigrationMessage("");setMigrationFailures([]);setErrors(prev=>({...prev,"externalAgentConfig/import":null}));
@@ -398,20 +412,23 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       const importId=started?.importId;if(!importId)throw new Error("Codex did not return an import id.");
       setMigrationImportId(importId);
       setMigrationMessage("Import started. Waiting for Codex to finish…");
-    }catch(error){setMigrationImportId(null);setErrors(prev=>({...prev,"externalAgentConfig/import":error.message||String(error)}))}
+    }catch(error){setMigrationImportId(null);setErrors(prev=>({...prev,"externalAgentConfig/import":failureText("Could not import the agent configuration",error)}))}
     finally{setBusy("")}
   }
   async function scanHistory(){
     setBusy("history:scan");setHistoryMessage("");
     try{setHistoryImport(await api("/api/history-import"))}
-    catch(error){setHistoryMessage(error.message||String(error))}
+    catch(error){setHistoryMessage(failureText("Could not scan conversation history",error))}
     finally{setBusy("")}
   }
   async function importHistory(sessionIds){
     const ids=(sessionIds||[]).filter(Boolean);if(!ids.length)return;
     setBusy("history:import");setHistoryMessage("");
+    let result;
+    try{result=await api("/api/history-import",{method:"POST",body:{sessionIds:ids.slice(0,50)}})}
+    catch(error){setHistoryMessage(failureText("Could not import conversations",error));setBusy("");return}
+    // A failure after the import itself (refreshing the thread list) is worded by the app, which says the import succeeded.
     try{
-      const result=await api("/api/history-import",{method:"POST",body:{sessionIds:ids.slice(0,50)}});
       const imported=(result.results||[]).filter(item=>item.status==="imported").length;
       const skipped=(result.results||[]).filter(item=>item.status==="skipped").length;
       const failed=(result.results||[]).filter(item=>item.status==="error").length;
@@ -423,21 +440,21 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function readResource(server,resource){
     if(!rpc)return;setBusy("resource:"+resource.uri);
     try{const result=await request("mcpServer/resource/read",{threadId:activeThread?.id||null,server:server.name,uri:resource.uri});setMcpResult({title:`${server.name} · ${resource.name||resource.uri}`,value:result})}
-    catch(error){setMcpResult({title:"MCP resource error",value:{error:error.message}})}finally{setBusy("")}
+    catch(error){setMcpResult({title:`Could not read ${resource.name||resource.uri} from ${server.name}`,value:{error:error.message}})}finally{setBusy("")}
   }
   async function runMcpTool(server,toolName){
     if(!rpc||!activeThread?.id)return;
     let args={};const raw=toolArgs[server.name+":"+toolName]?.trim();if(raw){try{args=JSON.parse(raw)}catch{setMcpResult({title:"Invalid tool arguments",value:{error:"Arguments must be valid JSON."}});return}}
     setBusy("tool:"+server.name+":"+toolName);
     try{const result=await request("mcpServer/tool/call",{threadId:activeThread.id,server:server.name,tool:toolName,arguments:args});setMcpResult({title:`${server.name} · ${toolName}`,value:result})}
-    catch(error){setMcpResult({title:"MCP tool error",value:{error:error.message}})}finally{setBusy("")}
+    catch(error){setMcpResult({title:`Could not run ${toolName} on ${server.name}`,value:{error:error.message}})}finally{setBusy("")}
   }
   async function readApp(app){
     if(!rpc||!app?.id)return;setBusy("app:"+app.id);setErrors(prev=>({...prev,"app/read":null}));
     try{
       const result=await request("app/read",{appIds:[app.id],threadId:activeThread?.id||null,includeTools:true});
       const detail=result?.apps?.[0];if(!detail)throw new Error(result?.missingAppIds?.includes(app.id)?"Connector metadata is unavailable":"Codex did not return connector metadata");setAppDetail({...app,...detail});
-    }catch(error){setErrors(prev=>({...prev,"app/read":error.message||String(error)}))}finally{setBusy("")}
+    }catch(error){setErrors(prev=>({...prev,"app/read":failureText("Could not load details for "+(app.name||app.id),error)}))}finally{setBusy("")}
   }
   async function setThreadMemoryMode(mode){
     if(!rpc||!activeThread?.id)return;
@@ -445,7 +462,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     try{
       await request("thread/memoryMode/set",{threadId:activeThread.id,mode});
       setMemoryMessage(`Memory ${mode} for this thread.`);
-    }catch(error){setErrors(prev=>({...prev,"thread/memoryMode/set":error.message||String(error)}))}
+    }catch(error){setErrors(prev=>({...prev,"thread/memoryMode/set":failureText((mode==="enabled"?"Could not enable":"Could not disable")+" memory for this thread",error)}))}
     finally{setBusy("")}
   }
   async function resetMemory(){
@@ -453,7 +470,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!memoryResetArmed){setMemoryResetArmed(true);setMemoryMessage("Click Confirm reset to clear the current Codex memory store.");return}
     setBusy("memory:reset");setErrors(prev=>({...prev,"memory/reset":null}));setMemoryMessage("");
     try{await request("memory/reset",undefined);setMemoryMessage("Codex memory was reset.");setMemoryResetArmed(false);await refresh()}
-    catch(error){setErrors(prev=>({...prev,"memory/reset":error.message||String(error)}))}
+    catch(error){setErrors(prev=>({...prev,"memory/reset":failureText("Could not reset memory",error)}))}
     finally{setBusy("")}
   }
   async function setupWindowsSandbox(mode){
@@ -461,9 +478,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     setBusy("windows-sandbox:"+mode);setSandboxMessage("");setErrors(prev=>({...prev,"windowsSandbox/setupStart":null}));
     try{
       const result=await request("windowsSandbox/setupStart",{mode,cwd:projectPath||null});
-      if(result?.started!==true)throw new Error("Codex did not start Windows sandbox setup.");
+      if(result?.started!==true)throw new Error("Codex did not report that it started.");
       setSandboxPending(mode);setSandboxMessage(`${mode==="elevated"?"Elevated":"Unelevated"} setup started. Windows may ask for permission; Trebell will wait for Codex to report completion.`);
-    }catch(error){setErrors(prev=>({...prev,"windowsSandbox/setupStart":error.message||String(error)}))}
+    }catch(error){setErrors(prev=>({...prev,"windowsSandbox/setupStart":failureText(`Could not start ${mode==="elevated"?"elevated":"unelevated"} Windows sandbox setup`,error)}))}
     finally{setBusy("")}
   }
   async function toggleSkill(skill){
@@ -473,8 +490,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       const result=await request("skills/config/write",{path:skill.path,name:null,enabled:next});
       const effectiveEnabled=result?.effectiveEnabled!==false;
       setSkillMessage(`${skill.name||"Skill"} is now ${effectiveEnabled?"enabled":"disabled"}. This setting is saved in Codex config.`);
-      try{await onSkillsRefresh?.({path:skill.path,enabled:effectiveEnabled})}catch(error){setErrors(prev=>({...prev,"skills/list":error.message||String(error)}))}
-    }catch(error){setErrors(prev=>({...prev,"skills/config/write":error.message||String(error)}))}
+      try{await onSkillsRefresh?.({path:skill.path,enabled:effectiveEnabled})}catch(error){setErrors(prev=>({...prev,"skills/list":failureText("Could not refresh skills",error)}))}
+    }catch(error){setErrors(prev=>({...prev,"skills/config/write":failureText((next?"Could not turn on ":"Could not turn off ")+(skill.interface?.displayName||skill.name||"the skill"),error)}))}
     finally{setBusy("")}
   }
   async function applySkillRoots(){
@@ -484,8 +501,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     try{
       await request("skills/extraRoots/set",{extraRoots});
       setSkillMessage(extraRoots.length?`${extraRoots.length} runtime skill root${extraRoots.length===1?"":"s"} applied. They reset when this Codex app-server restarts.`:"Runtime-only extra skill roots cleared.");
-      try{await onSkillsRefresh?.()}catch(error){setErrors(prev=>({...prev,"skills/list":error.message||String(error)}))}
-    }catch(error){setErrors(prev=>({...prev,"skills/extraRoots/set":error.message||String(error)}))}
+      try{await onSkillsRefresh?.()}catch(error){setErrors(prev=>({...prev,"skills/list":failureText("Could not refresh skills",error)}))}
+    }catch(error){setErrors(prev=>({...prev,"skills/extraRoots/set":failureText("Could not apply the runtime skill roots",error)}))}
     finally{setBusy("")}
   }
 
