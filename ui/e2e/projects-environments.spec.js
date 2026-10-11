@@ -39,6 +39,9 @@ async function open(page,request,{mode="dark",width=1280,height=800}={}){
 }
 const listedProjects=async request=>(await (await request.get("/api/projects")).json()).projects||[];
 const listedEnvironments=async request=>(await (await request.get("/api/environments")).json()).profiles||[];
+// The project Trebell opens on its next start: the server's active project.
+const nextStartProject=async request=>{const {settings}=await (await request.get("/api/state")).json();return (await listedProjects(request)).find(project=>project.id===settings.activeProjectId)?.name||null};
+const projectCard=(page,name)=>page.locator(".project-card").filter({has:page.locator(".project-open strong",{hasText:new RegExp("^"+name+"$")})});
 // What a person saved on a project: the record apart from its id and times, which a restore cannot keep.
 const savedSetup=project=>{const {id,createdAt,lastOpenedAt,...rest}=project||{};return rest};
 const flipMode=(page,mode)=>page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
@@ -161,6 +164,52 @@ test.describe("Removing a project",()=>{
     await expect(page.getByTestId("app-action-error")).toContainText("Undo failed: Deliberate restore failure");
     expect((await listedProjects(request)).some(project=>project.path===path)).toBe(false);
     await page.screenshot({animations:"disabled",path:shots+"project-undo-failed-elsewhere-dark-1280.png"});
+  });
+
+  // The person removes the project they are in. Undo at once makes it the open project again; Undo given after they opened
+  // another project only puts it back in the list, and leaves them in the one they opened, now and at the next start.
+  test("Undo of the open project's removal opens it again only if no other project was opened meanwhile",async({page,request})=>{
+    const boot=await open(page,request);
+    const path=join(boot.cwd,"ui");
+    await request.post("/api/projects",{data:{path,name:"Project A",activate:true,scripts:[{id:"a-tests",name:"A tests",command:"npm test"}]}});
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const header=page.locator("header.workspace-header").first(),toast=page.getByTestId("thread-undo-toast");
+    await expect(header.getByRole("button",{name:"A tests",exact:true})).toBeVisible();
+    await nav(page,"Projects").click();
+    const removeA=()=>projectCard(page,"Project A").getByRole("button",{name:"Remove Project A",exact:true}).click();
+    await removeA();
+    await toast.getByRole("button",{name:"Undo",exact:true}).click();
+    await expect(projectCard(page,"Project A")).toHaveClass(/active/);
+    await expect.poll(()=>nextStartProject(request)).toBe("Project A");
+    // Removed again, then the person opens the main project before changing their mind.
+    await removeA();
+    await expect(toast).toContainText("Project “Project A” removed");
+    await projectCard(page,MAIN).locator(".project-open").click();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await expect(header).toContainText(MAIN);
+    await expect.poll(()=>nextStartProject(request)).toBe(MAIN);
+    await toast.getByRole("button",{name:"Undo",exact:true}).click();
+    await expect(toast).toHaveCount(0);
+    await expect.poll(async()=>(await listedProjects(request)).some(project=>project.path===path)).toBe(true);
+    await page.waitForTimeout(300);
+    await expect(header,"the header names the project the person is in").toContainText(MAIN);
+    await expect(header.getByRole("button",{name:"A tests",exact:true}),"Project A's action in the main project's header").toHaveCount(0);
+    expect(await nextStartProject(request),"the project the next start opens").toBe(MAIN);
+    await page.screenshot({animations:"disabled",path:shots+"project-undo-after-opening-another-dark-1280.png"});
+    await flipMode(page,"light");
+    await page.screenshot({animations:"disabled",path:shots+"project-undo-after-opening-another-light-1280.png"});
+    await flipMode(page,"dark");
+    await nav(page,"Settings").click();
+    await page.getByRole("navigation",{name:"Settings categories"}).getByRole("button",{name:/^Shortcuts/}).click();
+    await expect(page.getByRole("heading",{name:"Keyboard shortcuts"})).toBeVisible();
+    await expect(page.locator(".keybinding-row strong").filter({hasText:/^Run A tests$/}),"Project A's action listed while the main project is open").toHaveCount(0);
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await expect(header).toContainText(MAIN);
+    await nav(page,"Projects").click();
+    await expect(page.locator(".project-card.active .project-open strong")).toHaveText(MAIN);
+    await expect(projectCard(page,"Project A")).toBeVisible();
   });
 });
 

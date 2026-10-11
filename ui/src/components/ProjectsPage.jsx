@@ -45,7 +45,7 @@ function ProjectIcon({project}){
   return <span className="project-icon project-icon-monogram" style={{background:icon?.color||autoColor(project.name)}}>{text}</span>;
 }
 
-export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOpen,onGeneralChat,onRunScript,onOpenPreview,onProjectUpdated,onOfferUndo,models=[]}){
+export default function ProjectsPage({currentPath,currentEnvironmentId=null,isProjectOpen=null,onOpen,onGeneralChat,onRunScript,onOpenPreview,onProjectUpdated,onOfferUndo,models=[]}){
   const [projects,setProjects]=useState([]);
   const [cloneUrl,setCloneUrl]=useState("");
   const hasDesktopPicker=Boolean(window.trebellDesktop?.pickDirectory);
@@ -287,18 +287,19 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     const removed=latestProject(project),blocker=projectRestoreBlocker(removed),undoable=Boolean(onOfferUndo)&&!blocker;
     if(!undoable&&!confirm(projectRemovalQuestion(removed,blocker)))return;
     const index=projectsRef.current.findIndex(item=>item.id===removed.id);
-    const activate=removed.path===currentPath&&(removed.environmentId||null)===(currentEnvironmentId||null);
     setBusy(true);setError("");
     try{
       await api("/api/projects?id="+encodeURIComponent(removed.id),{method:"DELETE"});
-      if(undoable)onOfferUndo(`Project “${removed.name}” removed`,()=>restoreProject(removed,{index,activate}));
+      if(undoable)onOfferUndo(`Project “${removed.name}” removed`,()=>restoreProject(removed,{index}));
       await refreshAfterSuccess("Project was removed");
     }catch(err){setError("Could not remove project: "+(err.message||String(err)))}
     finally{setBusy(false)}
   }
-  // Undo of a removal: the listed record goes back (the server gives it a new id), the current project is the active one
-  // again, and the page on screen shows the card where it was.
-  async function restoreProject(removed,{index,activate}){
+  // Undo of a removal: the listed record goes back (the server gives it a new id), and the page on screen shows the card where
+  // it was. A project still open when Undo runs is the active one again; one the person left meanwhile (they opened another
+  // project) stays in the list only, so Undo does not take them out of where they are.
+  async function restoreProject(removed,{index}){
+    const activate=Boolean(isProjectOpen?.(removed));
     let restored;
     try{restored=(await api("/api/projects",{method:"POST",body:{...projectRestoreBody(removed),...(activate?{activate:true}:{})}}))?.project||null}
     catch(err){const page=projectsOnScreen?.current;if(!page)throw err;page.showError("Could not restore project: "+(err.message||String(err)));return}
