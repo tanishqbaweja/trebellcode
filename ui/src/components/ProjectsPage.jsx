@@ -61,6 +61,12 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   const [iconDraft,setIconDraft]=useState({});
   const [projectQuery,setProjectQuery]=useState("");
   const [projectLimit,setProjectLimit]=useState(PROJECT_PAGE_SIZE);
+  // Until the list first answers there is nothing to call empty: the page says it is loading, and a failed first read says it
+  // failed, with Retry, instead of "No projects yet." and "0 / 0". A later failed refresh keeps the list it has.
+  const [listState,setListState]=useState("loading");
+  const [loadError,setLoadError]=useState("");
+  const [retrying,setRetrying]=useState(false);
+  const loadedRef=useRef(false);
   const projectsRef=useRef([]);
   const refreshInFlightRef=useRef(null);
   const refreshPendingRef=useRef(false);
@@ -83,10 +89,12 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     let d;
     try{d=await api("/api/projects")}
     catch(err){
-      setError("Could not refresh projects: "+(err.message||String(err)));
+      if(loadedRef.current)setError("Could not refresh projects: "+(err.message||String(err)));
+      else{setLoadError("Could not load projects: "+(err.message||String(err)));setListState("failed")}
       await environmentPromise;
       return false;
     }
+    loadedRef.current=true;setListState("ready");setLoadError("");
     const refreshErrors=[];
     const previousById=new Map(projectsRef.current.map(project=>[project.id,project]));
     const base=keepCardOrder(d.projects||[],projectsRef.current).map(project=>baseProjectRecord(project,previousById.get(project.id)||null));
@@ -147,6 +155,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     return refreshed;
   }
   useEffect(()=>{refresh({reportErrors:true})},[]);
+  async function retryLoad(){setRetrying(true);try{await refresh({reportErrors:true})}finally{setRetrying(false)}}
   useEffect(()=>{
     if(hasDesktopPicker||cloneEnvironmentId||!environmentData.profiles?.length)return;
     const first=environmentData.profiles[0];setCloneEnvironmentId(first.id);setCloneParent(first.cwd||"");
@@ -410,7 +419,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   },[projectView.visible,groupTotals,environmentData.profiles]);
 
   return <div className="projects-page">
-    <div className="page-actions project-page-actions"><div className="project-search-field"><Search size={14}/><input className="project-search" aria-label="Search projects" value={projectQuery} onChange={event=>setProjectQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"&&projectQuery){event.preventDefault();event.stopPropagation();setProjectQuery("")}}} placeholder="Search projects"/></div><span className="project-window-count">{projectView.shown} / {projectView.total}</span>{hasDesktopPicker&&<button className="project-add-local" onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button className="project-refresh" aria-label="Refresh projects" title="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
+    <div className="page-actions project-page-actions"><div className="project-search-field"><Search size={14}/><input className="project-search" aria-label="Search projects" value={projectQuery} onChange={event=>setProjectQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"&&projectQuery){event.preventDefault();event.stopPropagation();setProjectQuery("")}}} placeholder="Search projects"/></div><span className="project-window-count">{listState==="ready"?projectView.shown+" / "+projectView.total:""}</span>{hasDesktopPicker&&<button className="project-add-local" onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button className="project-refresh" aria-label="Refresh projects" title="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
+    {loadError&&<div className="provider-status-error project-load-error" role="alert"><span>{loadError}</span><button type="button" className="tb-btn tb-btn--sm" onClick={retryLoad} disabled={retrying}>{retrying?"Retrying…":"Retry"}</button></div>}
     {error&&<p className="provider-status-error" role="alert">{error}</p>}
     <button className="general-chat-card" onClick={startGeneralChat} disabled={busy}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>{busy?"Starting…":"Start chat"}</em></button>
     {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input aria-label="Clone parent directory" value={cloneParent} onChange={e=>setCloneParent(e.target.value)} placeholder="/srv/projects" title="Remote parent directory"/>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy?"Starting…":"Clone"}</button></div>}
@@ -471,7 +481,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
         </div>
       </div>)}</div>
     </section>)}</div>
-    {!projectView.total&&<div className="project-window-empty"><FolderCode size={22}/><span>{projectQuery?"No projects match this search.":"No projects yet."}</span><small>{projectQuery?"Try a name, path, branch or action.":hasDesktopPicker?"Add a local folder or clone a repository to get started.":(environmentData.profiles||[]).length?"Clone a repository above to get started.":"Projects you open appear here."}</small></div>}
+    {listState==="loading"&&<div className="project-window-empty project-window-loading" role="status"><span>Loading projects…</span></div>}
+    {listState==="ready"&&!projectView.total&&<div className="project-window-empty"><FolderCode size={22}/><span>{projectQuery?"No projects match this search.":"No projects yet."}</span><small>{projectQuery?"Try a name, path, branch or action.":hasDesktopPicker?"Add a local folder or clone a repository to get started.":(environmentData.profiles||[]).length?"Clone a repository above to get started.":"Projects you open appear here."}</small></div>}
     {projectView.hasMore&&<div className="project-window-footer"><button onClick={()=>setProjectLimit(limit=>limit+PROJECT_PAGE_SIZE)}>Show {Math.min(PROJECT_PAGE_SIZE,projectView.total-projectView.shown)} more</button><span>{projectView.shown} of {projectView.total} projects mounted</span></div>}
   </div>;
 }

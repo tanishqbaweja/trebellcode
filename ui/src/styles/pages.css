@@ -296,6 +296,11 @@
 :root:root .projects-page .project-window-empty>svg{margin-bottom:6px;opacity:.5}
 :root:root .projects-page .project-window-empty>span{font-size:13px;font-weight:550;color:var(--tx2)}
 :root:root .projects-page .project-window-empty>small{font-size:12px;line-height:1.5;color:var(--tx3)}
+/* Before the list first answers: a quiet loading line in the empty state's place, and a failed first read with its Retry. */
+:root:root .projects-page .project-window-loading>span{font-weight:500;color:var(--tx3)}
+:root:root .projects-page .project-load-error{display:flex;align-items:center;justify-content:space-between;gap:12px;white-space:normal}
+/* A legacy rule sets 9px on any button in an error banner. */
+:root:root .projects-page .project-load-error>button{flex:none;min-height:30px;font-size:12px!important}
 :root:root .projects-page .project-window-footer{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:12px;padding:4px 0 0!important}
 :root:root .projects-page .project-window-footer span{font-family:var(--mono);font-size:11px!important;color:var(--tx3)!important}
 

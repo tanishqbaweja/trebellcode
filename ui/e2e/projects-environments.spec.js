@@ -203,3 +203,43 @@ test.describe("Removing an environment",()=>{
     await page.screenshot({animations:"disabled",path:shots+"environment-undo-failed-dark-1280.png"});
   });
 });
+
+test.describe("A project list that failed or is still loading",()=>{
+  for(const mode of MODES)test(`a failed first read says so with Retry, and does not claim there are no projects (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    let fail=true;
+    await page.route(/\/api\/projects$/,route=>route.request().method()==="GET"&&fail?json(route,{error:"Deliberate projects failure"},500):route.fallback());
+    await nav(page,"Projects").click();
+    const alert=page.locator(".projects-page").getByRole("alert");
+    await expect(alert).toContainText("Deliberate projects failure");
+    // The open workspace is a project: a failed read is not an empty list.
+    await expect(page.getByText("No projects yet.")).toHaveCount(0);
+    await expect(page.locator(".project-window-count")).not.toHaveText(/0\s*\/\s*0/);
+    await expect(alert).toContainText("Could not load projects: Deliberate projects failure");
+    for(const width of [1280,900]){
+      await page.setViewportSize({width,height:800});
+      expect(await sideways(page)).toBeLessThanOrEqual(1);
+      await page.screenshot({animations:"disabled",path:shots+`projects-load-failed-${mode}-${width}.png`});
+    }
+    fail=false;
+    await alert.getByRole("button",{name:"Retry",exact:true}).click();
+    await expect(page.locator(".project-card").filter({hasText:MAIN})).toBeVisible();
+    await expect(page.locator(".projects-page").getByRole("alert")).toHaveCount(0);
+    await expect(page.locator(".project-window-count")).toHaveText(/1\s*\/\s*1/);
+  });
+
+  for(const mode of MODES)test(`while the first read is slow the page says it is loading, not that there are none (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    let release;const held=new Promise(resolve=>{release=resolve});
+    await page.route(/\/api\/projects$/,async route=>{if(route.request().method()==="GET")await held;return route.fallback()});
+    await nav(page,"Projects").click();
+    const loading=page.locator(".projects-page").getByText("Loading projects…");
+    await expect(loading).toBeVisible();
+    await expect(page.getByText("No projects yet.")).toHaveCount(0);
+    await expect(page.locator(".project-window-count")).not.toHaveText(/0\s*\/\s*0/);
+    await page.screenshot({animations:"disabled",path:shots+`projects-loading-${mode}-1280.png`});
+    release();
+    await expect(page.locator(".project-card").filter({hasText:MAIN})).toBeVisible();
+    await expect(loading).toHaveCount(0);
+  });
+});
