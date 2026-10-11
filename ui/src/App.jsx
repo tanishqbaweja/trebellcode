@@ -20,6 +20,7 @@ import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx"
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
 import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, shadowedKeybindings, shortcutHint } from "./keybindings.js";
+import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
@@ -149,6 +150,10 @@ function focusShownView(){
   };
   attempt();
 }
+
+// In a browser tab the app's pages are entries of the tab's history too (see the navigation history in App). The desktop window
+// (window.trebellDesktop) has no browser Back or Forward and keeps that history in memory only.
+const BROWSER_NAVIGATION=typeof window!=="undefined"&&!window.trebellDesktop&&typeof window.history?.pushState==="function";
 
 function DeferredSurface({children,label="Loading…",compact=false}){
   return <Suspense fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</Suspense>;
@@ -930,7 +935,7 @@ export default function App(){
   // openRunRef: the last open asked for ({done} settles with it). resumedOnRef: the thread last resumed and the transport it was
   // resumed on. A reconnect waits for the one and does not resume again a thread the other says is resumed on it already.
   // heldNotificationsRef: the notifications of the thread an open has resumed, kept until it shows (see holdThreadNotifications).
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0); const openRunRef=useRef(null); const resumedOnRef=useRef(null); const heldNotificationsRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const paletteSeedRef=useRef(null); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0); const openRunRef=useRef(null); const resumedOnRef=useRef(null); const heldNotificationsRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef(null); if(!navigationHistoryRef.current)navigationHistoryRef.current=createNavigationHistory(); const paletteSeedRef=useRef(null); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
@@ -975,39 +980,75 @@ export default function App(){
     });
   }
   useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose();diffEventBufferRef.current?.dispose();for(const waiter of compactionWaitersRef.current.values()){clearTimeout(waiter.timer);waiter.reject?.(new Error("Trebell closed while context compaction was pending"))}compactionWaitersRef.current.clear()},[]);
-  const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
+  // Navigate back/forward (Ctrl+[ / Ctrl+]) and, in a browser tab, the browser's own Back and Forward move through one history
+  // (navigation-history.js): each location shown adds an entry to it and to the tab's history (same URL), and Back or Forward from
+  // either is shown when the browser reaches the entry (popstate), so nothing is shown twice. A reload opens the app as usual on the
+  // entry it reloaded; the entries around it stay, kept for the tab in sessionStorage. The desktop window has no Back or Forward of
+  // its own and keeps the history in memory only.
+  const [navigationRevision,setNavigationRevision]=useState(0);
+  const writeNavigationEntry=(mode,entry)=>{
+    if(!BROWSER_NAVIGATION||!entry)return;
+    try{if(mode==="push")window.history.pushState(browserState(entry),"");else window.history.replaceState(browserState(entry,window.history.state),"")}catch{}
+    try{sessionStorage.setItem(NAVIGATION_STORE_KEY,JSON.stringify(storedNavigation(navigationHistoryRef.current)))}catch{}
+  };
   useEffect(()=>{
     if(!initialLoaded)return;
-    const history=navigationHistoryRef.current;
+    const nav=navigationHistoryRef.current;
     const location={section,threadId:activeThread?.id||null,rightPanelOpen:Boolean(rightPanelOpen),rightPanelTab:rightPanelTab||"files"};
-    const key=navigationKey(location);
-    if(history.expectedKey){
-      if(key===history.expectedKey)history.expectedKey=null;
+    // A Back or Forward still opening its thread: the views passed on the way are not entries.
+    if(nav.applying)return;
+    if(nav.index<0){
+      let stored=null;
+      if(BROWSER_NAVIGATION)try{stored=JSON.parse(sessionStorage.getItem(NAVIGATION_STORE_KEY)||"null")}catch{}
+      writeNavigationEntry("replace",startNavigationHistory(nav,location,{browserEntryId:BROWSER_NAVIGATION?window.history.state?.trebellNav?.id:null,stored}));
       return;
     }
-    if(history.entries[history.index]&&navigationKey(history.entries[history.index])===key)return;
-    history.entries=history.entries.slice(0,history.index+1);
-    history.entries.push(location);
-    if(history.entries.length>80)history.entries.shift();
-    history.index=history.entries.length-1;
-  },[initialLoaded,section,activeThread?.id,rightPanelOpen,rightPanelTab]);
-  async function navigateHistory(delta){
-    const history=navigationHistoryRef.current;
-    const nextIndex=history.index+delta;
-    if(nextIndex<0||nextIndex>=history.entries.length)return;
-    const target=history.entries[nextIndex];
-    history.index=nextIndex;history.expectedKey=navigationKey(target);
-    if(target.threadId&&activeThreadRef.current?.id!==target.threadId){
-      const thread=threads.find(item=>item.id===target.threadId);
-      if(thread)await openThread(thread);
-    }else if(!target.threadId&&activeThreadRef.current?.id&&target.section==="chat"){
-      await newChat();
+    if(nav.landed){nav.landed=false;const settled=settleLocation(nav,location);if(settled.action==="replace")writeNavigationEntry("replace",settled.entry);return}
+    const recorded=recordLocation(nav,location);
+    if(recorded.action==="push")writeNavigationEntry("push",recorded.entry);
+  },[initialLoaded,section,activeThread?.id,rightPanelOpen,rightPanelTab,navigationRevision]);
+  // Shows an entry of the history: the last one asked for wins over one still opening its thread.
+  async function showNavigationEntry(index){
+    const nav=navigationHistoryRef.current,target=nav.entries[index];
+    if(!target)return;
+    const token={};nav.index=index;nav.applying=token;
+    if(BROWSER_NAVIGATION)try{sessionStorage.setItem(NAVIGATION_STORE_KEY,JSON.stringify(storedNavigation(nav)))}catch{}
+    try{
+      if(target.threadId&&activeThreadRef.current?.id!==target.threadId){
+        const thread=threads.find(item=>item.id===target.threadId);
+        if(thread)await openThread(thread);
+      }else if(!target.threadId&&activeThreadRef.current?.id&&target.section==="chat"){
+        await newChat();
+      }
+      if(nav.applying!==token)return;
+      setRightPanelTab(target.rightPanelTab||"files");
+      setRightPanelOpen(Boolean(target.rightPanelOpen));
+      if(!target.rightPanelOpen)setRightPanelMaximized(false);
+      setSection(target.section||"chat");
+    }finally{
+      if(nav.applying===token){nav.applying=null;nav.landed=true;setNavigationRevision(value=>value+1)}
     }
-    setRightPanelTab(target.rightPanelTab||"files");
-    setRightPanelOpen(Boolean(target.rightPanelOpen));
-    if(!target.rightPanelOpen)setRightPanelMaximized(false);
-    setSection(target.section||"chat");
   }
+  async function navigateHistory(delta){
+    const nav=navigationHistoryRef.current,next=stepTarget(nav,delta);
+    if(next<0)return;
+    // In a browser tab the browser takes the step, so its Back and Forward stay where the app is; popstate shows the entry.
+    if(BROWSER_NAVIGATION){nav.pending=next;window.history.go(delta);return}
+    await showNavigationEntry(next);
+  }
+  const browserNavigated=useLatestCallback(event=>{
+    const nav=navigationHistoryRef.current;
+    if(nav.index<0)return;
+    const from=nav.index,index=browserEntryIndex(nav,event.state);
+    if(index<0)return;
+    if(nav.pending===index)nav.pending=null;
+    runUserAction(()=>showNavigationEntry(index),index<from?"Could not navigate back":"Could not navigate forward");
+  });
+  useEffect(()=>{
+    if(!BROWSER_NAVIGATION)return;
+    window.addEventListener("popstate",browserNavigated);
+    return()=>window.removeEventListener("popstate",browserNavigated);
+  },[browserNavigated]);
   useEffect(()=>{try{localStorage.setItem("trebell-layout-v1",JSON.stringify(layoutPrefs))}catch{}},[layoutPrefs]);
   const [viewportWidth,setViewportWidth]=useState(()=>typeof window!=="undefined"?window.innerWidth:1600);
   useEffect(()=>{

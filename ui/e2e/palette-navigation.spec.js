@@ -2,7 +2,8 @@ import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// The command palette from the keyboard: keys typed straight after Ctrl+K, and where focus goes after a command.
+// The command palette from the keyboard (keys typed straight after Ctrl+K, where focus goes after a command) and moving between pages
+// with the browser's Back and Forward beside the app's own Navigate back/forward shortcuts.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/palette-navigation/",import.meta.url));mkdirSync(shots,{recursive:true});
 const BASE={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai",keybindingRules:[]};
 const nav=(page,label)=>page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:label,exact:true});
@@ -31,6 +32,8 @@ const activeInfo=page=>page.evaluate(()=>{
   const el=document.activeElement;if(!el||el===document.body)return {tag:"body",text:"",inPage:false};
   return {tag:el.tagName.toLowerCase(),text:(el.getAttribute("aria-label")||el.textContent||"").trim().slice(0,40),inPage:Boolean(el.closest(".secondary-page")),testid:el.getAttribute("data-testid")||""};
 });
+// The app's shortcuts act only while no text field has focus, as for a person who clicked away from the composer.
+const pressShortcut=async(page,keys)=>{await page.evaluate(()=>document.activeElement?.blur?.());await page.keyboard.press(keys)};
 
 test.describe("Command palette keys",()=>{
   test("keys typed straight after Ctrl+K in the composer land in the search, first open and later, and leave the draft alone",async({page,request})=>{
@@ -179,5 +182,108 @@ test.describe("Focus after a palette command",()=>{
     await page.keyboard.press("Enter");
     await expect(palette).toBeHidden();
     await expect(composer).toBeFocused();
+  });
+});
+
+test.describe("Back and forward",()=>{
+  const start=async page=>({url:page.url(),length:await page.evaluate(()=>history.length)});
+
+  test("browser Back and Forward move through the pages visited",async({page,request})=>{
+    await open(page,request);
+    const before=await start(page);
+    await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+    await nav(page,"Usage").click();await expect(usageHeading(page)).toBeVisible();
+    await page.goBack();
+    await expect(projectsHeading(page)).toBeVisible();
+    await page.goBack();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.goForward();
+    await expect(projectsHeading(page)).toBeVisible();
+    await page.goForward();
+    await expect(usageHeading(page)).toBeVisible();
+    await page.screenshot({animations:"disabled",path:shots+"history-forward-usage-dark-1280.png"});
+    expect(page.url()).toBe(before.url);
+    expect(await page.evaluate(()=>history.length)).toBe(before.length+2);
+  });
+
+  test("the browser's buttons and the app's shortcuts move through one history, a step at a time",async({page,request})=>{
+    await open(page,request);
+    await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+    await nav(page,"Usage").click();await expect(usageHeading(page)).toBeVisible();
+    await nav(page,"Settings").click();await expect(settingsHeading(page)).toBeVisible();
+    const length=await page.evaluate(()=>history.length);
+    await pressShortcut(page,"Control+BracketLeft");
+    await expect(usageHeading(page)).toBeVisible();
+    await page.goBack();
+    await expect(projectsHeading(page)).toBeVisible();
+    await pressShortcut(page,"Control+BracketLeft");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    // At the first page the shortcut stays in the app; the browser's own Back would leave it.
+    await pressShortcut(page,"Control+BracketLeft");
+    await page.waitForTimeout(400);
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.goForward();
+    await expect(projectsHeading(page)).toBeVisible();
+    await pressShortcut(page,"Control+BracketRight");
+    await expect(usageHeading(page)).toBeVisible();
+    await page.goForward();
+    await expect(settingsHeading(page)).toBeVisible();
+    await pressShortcut(page,"Control+BracketRight");
+    await page.waitForTimeout(400);
+    await expect(settingsHeading(page)).toBeVisible();
+    // Moving back and forward added no entries, and the browser is where the app is: one more Back is Usage.
+    expect(await page.evaluate(()=>history.length)).toBe(length);
+    await page.goBack();
+    await expect(usageHeading(page)).toBeVisible();
+  });
+
+  test("a page opened after going back drops the pages ahead in both",async({page,request})=>{
+    await open(page,request);
+    await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+    await nav(page,"Usage").click();await expect(usageHeading(page)).toBeVisible();
+    await page.goBack();await expect(projectsHeading(page)).toBeVisible();
+    await nav(page,"Settings").click();await expect(settingsHeading(page)).toBeVisible();
+    await pressShortcut(page,"Control+BracketRight");
+    await page.waitForTimeout(400);
+    await expect(settingsHeading(page)).toBeVisible();
+    await page.goForward().catch(()=>{});
+    await page.waitForTimeout(400);
+    await expect(settingsHeading(page)).toBeVisible();
+    await page.goBack();await expect(projectsHeading(page)).toBeVisible();
+    await page.goBack();await expect(page.getByTestId("composer")).toBeVisible();
+  });
+
+  test("a reload opens the app as usual, and Back and the shortcuts still move through the pages before it",async({page,request})=>{
+    await open(page,request,{mode:"light"});
+    const url=page.url();
+    await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+    await nav(page,"Usage").click();await expect(usageHeading(page)).toBeVisible();
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await expect(page.locator(".secondary-page")).toHaveCount(0);
+    expect(page.url()).toBe(url);
+    await page.goBack();
+    await expect(projectsHeading(page)).toBeVisible();
+    await pressShortcut(page,"Control+BracketRight");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await pressShortcut(page,"Control+BracketLeft");
+    await expect(projectsHeading(page)).toBeVisible();
+    await page.goBack();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.screenshot({animations:"disabled",path:shots+"history-after-reload-back-light-1280.png"});
+  });
+
+  test("the desktop window keeps its history to itself and its shortcuts still work",async({page,request})=>{
+    await page.addInitScript(()=>{Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{}})});
+    await open(page,request);
+    const length=await page.evaluate(()=>history.length);
+    await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+    await nav(page,"Usage").click();await expect(usageHeading(page)).toBeVisible();
+    expect(await page.evaluate(()=>history.length)).toBe(length);
+    await pressShortcut(page,"Control+BracketLeft");
+    await expect(projectsHeading(page)).toBeVisible();
+    await pressShortcut(page,"Control+BracketRight");
+    await expect(usageHeading(page)).toBeVisible();
+    expect(await page.evaluate(()=>history.length)).toBe(length);
   });
 });
