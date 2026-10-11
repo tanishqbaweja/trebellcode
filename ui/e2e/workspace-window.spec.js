@@ -111,8 +111,10 @@ test("the Diff and Git lists name an untracked folder and label untracked paths 
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"Workspace status labels"}});
-  // git status --short: an untracked folder is reported as "name/", and "UU" is an unmerged (conflicted) path.
-  const status=[["??","capture-output/"],["??","notes/todo.txt"],[" M","src/app.js"],["UU","src/merge.js"],["A ","src/new.js"],[" D","src/gone.js"]];
+  // git status --short: an untracked folder is reported as "name/", and "UU" is an unmerged (conflicted) path. A path with a space or
+  // a non-ASCII letter is C-quoted, with the letter's UTF-8 bytes in octal, and each side of a rename is quoted on its own.
+  const quoted=[["??",'"New folder/"'],["??",'"docs/my notes.txt"'],[" M",'"src/caf\\303\\251 menu.js"'],["R ",'"old name.txt" -> "new name.txt"']];
+  const status=[["??","capture-output/"],["??","notes/todo.txt"],[" M","src/app.js"],["UU","src/merge.js"],["A ","src/new.js"],[" D","src/gone.js"],...quoted];
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   await page.route("**/api/workspace/diff?**",route=>json(route,{cwd:boot.cwd,isGit:true,status:status.map(([code,path])=>code+" "+path).join("\n"),diff:"diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+new\n",stderr:""}));
   await page.route("**/api/git/info?**",route=>json(route,{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:null,status:status.map(([code,path])=>({code,path})),worktrees:[{path:boot.cwd,branch:"main"}],remotes:[]}));
@@ -137,9 +139,18 @@ test("the Diff and Git lists name an untracked folder and label untracked paths 
   const nameStyle=locator=>locator.evaluate(node=>{const style=getComputedStyle(node);return style.fontSize+" "+style.color});
   expect(await nameStyle(folder.locator(".changed-file-name"))).toBe(await nameStyle(right.locator(".changed-file-row").filter({hasText:"app.js"}).locator(".changed-file-name")));
   await expect(right.locator(".changed-file-row").filter({hasText:"todo.txt"}).locator(".changed-file-name")).toHaveText("todo.txt");
+  // Quoted paths read as their names: no quote marks, and the folder, file and rename split like any other path.
+  const row=path=>right.locator(".changed-file-row").filter({has:page.getByRole("button",{name:path,exact:true})});
+  for(const [path,name,dir] of [["New folder/","New folder/",null],["docs/my notes.txt","my notes.txt","docs"],["src/café menu.js","café menu.js","src"],["old name.txt -> new name.txt","old name.txt -> new name.txt",null]]){
+    await expect(row(path).locator(".changed-file-name")).toHaveText(name);
+    if(dir)await expect(row(path).locator(".changed-file-dir")).toHaveText(dir);else await expect(row(path).locator(".changed-file-dir")).toHaveCount(0);
+  }
+  expect(await nameStyle(row("New folder/").locator(".changed-file-name"))).toBe(await nameStyle(row("src/app.js").locator(".changed-file-name")));
+  await expect(right.locator(".changed-files")).not.toContainText('"');
 
   // One label per status in both lists: untracked is "N", never git's "??" nor the "U" of an unmerged path.
-  const expected={"capture-output/":["N","added",/^Untracked/],"notes/todo.txt":["N","added",/^Untracked/],"src/merge.js":["UU","conflict",/^Conflict/],"src/app.js":["M","modified",/^Modified/],"src/new.js":["A","added",/^Added/],"src/gone.js":["D","deleted",/^Deleted/]};
+  const expected={"capture-output/":["N","added",/^Untracked/],"notes/todo.txt":["N","added",/^Untracked/],"src/merge.js":["UU","conflict",/^Conflict/],"src/app.js":["M","modified",/^Modified/],"src/new.js":["A","added",/^Added/],"src/gone.js":["D","deleted",/^Deleted/],
+    "New folder/":["N","added",/^Untracked/],"docs/my notes.txt":["N","added",/^Untracked/],"src/café menu.js":["M","modified",/^Modified/],"old name.txt -> new name.txt":["R","renamed",/^Renamed/]};
   for(const [path,[label,kind,title]] of Object.entries(expected)){
     const badge=right.locator(".changed-file-row").filter({has:page.getByRole("button",{name:path,exact:true})}).locator(".changed-file-code");
     await expect(badge).toHaveText(label);await expect(badge).toHaveAttribute("data-kind",kind);await expect(badge).toHaveAttribute("title",title);
@@ -152,6 +163,7 @@ test("the Diff and Git lists name an untracked folder and label untracked paths 
     const badge=right.locator(".status-list > div").filter({has:page.getByText(path,{exact:true})}).locator("code");
     await expect(badge).toHaveText(label);await expect(badge).toHaveAttribute("data-state",kind);await expect(badge).toHaveAttribute("title",title);
   }
+  await expect(right.locator(".status-list")).not.toContainText('"');
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-status-labels-light-1280x800.png",fullPage:true});
 });

@@ -21,6 +21,40 @@ export function gitStatusBadge(code=""){
   return {label:compact,kind,title:name+" (git status "+compact+")"};
 }
 
+// git status --short (and --porcelain) C-quotes a path that holds a space, a quote, a backslash, a control character or, by
+// default, a non-ASCII letter, whose UTF-8 bytes it writes in octal: New folder/ arrives as "New folder/" and café.txt as
+// "caf\303\251.txt". Each side of a rename ("old" -> "new") is quoted on its own. This reads the path text after the status code
+// back to the names, keeping the " -> " of a rename; an unquoted path is returned as it is.
+const C_ESCAPES={a:7,b:8,t:9,n:10,v:11,f:12,r:13,'"':34,"\\":92};
+export function gitStatusPath(text=""){
+  const value=String(text??""),parts=[],encoder=new TextEncoder();
+  let index=0;
+  for(;;){
+    if(value[index]==='"'){
+      const bytes=[];index++;
+      while(index<value.length&&value[index]!=='"'){
+        const octal=value[index]==="\\"?/^[0-7]{3}/.exec(value.slice(index+1,index+4)):null,escape=value[index]==="\\"?C_ESCAPES[value[index+1]]:undefined;
+        if(octal){bytes.push(parseInt(octal[0],8));index+=4}
+        else if(escape!==undefined){bytes.push(escape);index+=2}
+        else{const char=String.fromCodePoint(value.codePointAt(index));bytes.push(...encoder.encode(char));index+=char.length}
+      }
+      parts.push(new TextDecoder().decode(new Uint8Array(bytes)));index++;
+    }else{
+      const end=value.indexOf(" -> ",index);
+      parts.push(value.slice(index,end<0?value.length:end));index=end<0?value.length:end;
+    }
+    if(!value.startsWith(" -> ",index))break;
+    index+=4;
+  }
+  if(index<value.length)parts[parts.length-1]+=value.slice(index);
+  return parts.join(" -> ");
+}
+// One line of git status --short: its two-letter code and its path, unquoted.
+export function gitStatusEntry(line=""){
+  const text=String(line??"");
+  return {code:text.slice(0,2),path:gitStatusPath(text.slice(3))};
+}
+
 // Splits a path before its last `segments` segments, keeping the original separators so dir + sep + name is the path again.
 // A trailing separator (git's "folder/" for an untracked folder) stays on the name instead of leaving the name empty.
 export function splitPath(path="",segments=1){

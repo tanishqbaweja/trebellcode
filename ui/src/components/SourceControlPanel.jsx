@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, Eye, EyeOff, Pencil, ShieldCheck, Layers3 } from "lucide-react";
 import { api } from "../api.js";
-import { actionError, distinctPathParts, gitStatusBadge } from "../inspector-labels.js";
+import { actionError, distinctPathParts, gitStatusBadge, gitStatusPath } from "../inspector-labels.js";
 import { SOURCE_CONTROL_PAGE_SIZE, sourceControlWindow } from "../source-control-window.js";
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
 import { createGitTextRequests, sourceControlContext, sourceControlContextCurrent, sourceControlErrorAfterContextChange } from "../source-control-context.js";
@@ -339,7 +339,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     {error&&<div className="inline-error source-control-error" role="alert">{error}</div>}
     {branchPr&&<div className="branch-pr-badge"><GitPullRequest size={13}/><span><strong>Branch PR #{branchPr.number}</strong><small>{branchPr.title}</small></span><button onClick={()=>openPr(branchPr)}>Review</button>{threadId&&!branchPrLinked&&<button onClick={()=>runCallback("link-pr",()=>onLinkPr?.(branchPr))} disabled={!!busy}>Link this PR</button>}{threadId&&branchPrLinked&&<em>Linked</em>}</div>}
     <div className="sc-grid">
-      <section className="sc-card"><h3>Changes <span>{info?.status?.length||0}</span></h3><div className="status-list">{statusWindow.visible.map(s=>{const badge=gitStatusBadge(s.code);return <div key={s.path} title={s.path}><code data-state={badge.kind} title={badge.title}>{badge.label}</code><span>{s.path}</span></div>})}{!info?<p className="sc-loading">Loading changes…</p>:!info.status?.length&&<p className="sc-clean">Working tree clean.</p>}</div>
+      <section className="sc-card"><h3>Changes <span>{info?.status?.length||0}</span></h3><div className="status-list">{statusWindow.visible.map(s=>{const badge=gitStatusBadge(s.code),path=gitStatusPath(s.path);return <div key={s.path} title={path}><code data-state={badge.kind} title={badge.title}>{badge.label}</code><span>{path}</span></div>})}{!info?<p className="sc-loading">Loading changes…</p>:!info.status?.length&&<p className="sc-clean">Working tree clean.</p>}</div>
         {statusWindow.hasMore&&<div className="source-window-footer"><button onClick={()=>setStatusLimit(limit=>limit+SOURCE_CONTROL_PAGE_SIZE)}>Show {statusWindow.nextCount} more changes</button><span>{statusWindow.shown} of {statusWindow.total} shown</span></div>}
         <div className="commit-box"><textarea value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder="Commit message"/><button onClick={generate} disabled={busy==="generate"}><WandSparkles size={13}/> Generate with {textGeneratorLabel}</button><button className="primary" onClick={()=>action("commit",{message:commitMessage})} disabled={!commitMessage.trim()||!!busy}><GitCommit size={13}/> Commit</button></div>
       </section>

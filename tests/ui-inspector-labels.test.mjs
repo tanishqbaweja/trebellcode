@@ -1,6 +1,37 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionError, distinctPathParts, gitStatusBadge, splitPath } from "../ui/src/inspector-labels.js";
+import { actionError, distinctPathParts, gitStatusBadge, gitStatusEntry, gitStatusPath, splitPath } from "../ui/src/inspector-labels.js";
+
+test("git status paths are unquoted back to their names",()=>{
+  // What git status --short printed for these names (core.quotePath on, the default).
+  assert.equal(gitStatusPath('"New folder/"'),"New folder/");
+  assert.equal(gitStatusPath('"docs/my notes.txt"'),"docs/my notes.txt");
+  assert.equal(gitStatusPath('"caf\\303\\251.txt"'),"café.txt");
+  assert.equal(gitStatusPath('"\\346\\226\\207\\344\\273\\266/\\360\\237\\230\\200.md"'),"文件/😀.md");
+  assert.equal(gitStatusPath('"say \\"hi\\" \\\\ tab\\there.txt"'),'say "hi" \\ tab\there.txt');
+  // With core.quotePath off, a non-ASCII name arrives as UTF-8 text, quoted only when it also holds a space.
+  assert.equal(gitStatusPath("café.txt"),"café.txt");
+  assert.equal(gitStatusPath('"café menu.txt"'),"café menu.txt");
+  // Plain paths, renames with either side quoted, and an untracked folder stay readable.
+  assert.equal(gitStatusPath("src/app.js"),"src/app.js");
+  assert.equal(gitStatusPath("capcut-network-capture/"),"capcut-network-capture/");
+  assert.equal(gitStatusPath("src/old.js -> src/new.js"),"src/old.js -> src/new.js");
+  assert.equal(gitStatusPath('"old name.txt" -> "new name.txt"'),"old name.txt -> new name.txt");
+  assert.equal(gitStatusPath('old.txt -> "new name.txt"'),"old.txt -> new name.txt");
+  assert.equal(gitStatusPath('"old name.txt" -> new.txt'),"old name.txt -> new.txt");
+  assert.equal(gitStatusPath(""),"");
+  // A quote git never closed loses only its opening mark.
+  assert.equal(gitStatusPath('"unfinished name'),"unfinished name");
+});
+
+test("a git status line splits into its code and unquoted path",()=>{
+  assert.deepEqual(gitStatusEntry('?? "New folder/"'),{code:"??",path:"New folder/"});
+  assert.deepEqual(gitStatusEntry(" M src/app.js"),{code:" M",path:"src/app.js"});
+  assert.deepEqual(gitStatusEntry('R  "old name.txt" -> "new name.txt"'),{code:"R ",path:"old name.txt -> new name.txt"});
+  // The name an untracked folder shows once unquoted: the folder, not a quote mark.
+  assert.deepEqual(splitPath(gitStatusEntry('?? "New folder/"').path),{dir:"",sep:"",name:"New folder/"});
+  assert.deepEqual(splitPath(gitStatusEntry('?? "docs/my notes.txt"').path),{dir:"docs",sep:"/",name:"my notes.txt"});
+});
 
 test("inspector errors name the failed action before the server's reason",()=>{
   assert.equal(actionError("Could not refresh the diff",new Error("EPERM: operation not permitted")),"Could not refresh the diff: EPERM: operation not permitted");

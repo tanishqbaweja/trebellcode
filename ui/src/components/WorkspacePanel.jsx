@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useState} from "react";
 import { Check, FileCode2, FileDiff, FileImage, FileText, Folder, Music2, Paperclip, RefreshCw, Save, Search, Video, WrapText, X } from "lucide-react";
 import Prism from "prismjs";
 import { api } from "../api.js";
-import { actionError, gitStatusBadge, splitPath } from "../inspector-labels.js";
+import { actionError, gitStatusBadge, gitStatusEntry, splitPath } from "../inspector-labels.js";
 import { WORKSPACE_CHANGED_PAGE_SIZE, WORKSPACE_DIFF_CHUNK_CHARS, WORKSPACE_TREE_PAGE_SIZE, workspaceListWindow, workspaceTextWindow } from "../workspace-view-window.js";
 import OpenInPicker from "./OpenInPicker.jsx";
 import { askText } from "./RightPanel.jsx";
@@ -222,8 +222,10 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const language=languageFor(file?.name);
   // null: no grammar, so the text is rendered as text (React escapes it) with no token colors.
   const highlighted=useMemo(()=>file?.content!=null&&language?Prism.highlight(file.content,Prism.languages[language],language):null,[file,language]);
-  const changedPaths=useMemo(()=>String(diff.status||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3)),[diff.status]);
-  const changedBadges=useMemo(()=>new Map(String(diff.status||"").split(/\r?\n/).filter(Boolean).map(line=>[line.slice(3),gitStatusBadge(line.slice(0,2))])),[diff.status]);
+  // Paths are unquoted here, so the list, review comments and reviewed state all name the file itself (New folder/, not git's "New folder/").
+  const changes=useMemo(()=>String(diff.status||"").split(/\r?\n/).filter(Boolean).map(gitStatusEntry),[diff.status]);
+  const changedPaths=useMemo(()=>changes.map(change=>change.path),[changes]);
+  const changedBadges=useMemo(()=>new Map(changes.map(change=>[change.path,gitStatusBadge(change.code)])),[changes]);
   const diffPanelError=[diffError&&actionError("Could not refresh the diff",diffError),reviewError].filter(Boolean).join(" · ");
   const source=query?searchResults:entries;
   const treeWindow=useMemo(()=>query?{visible:source,total:source.length,shown:source.length,hasMore:false,nextCount:0}:workspaceListWindow(source,{limit:treeLimit,pageSize:WORKSPACE_TREE_PAGE_SIZE}),[source,query,treeLimit]);
