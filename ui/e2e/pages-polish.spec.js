@@ -458,6 +458,32 @@ for(const [width,height] of [[1600,980],[1280,800],[900,800]])for(const mode of 
   });
 }
 
+// A tile colour the person picks for a project can be light (harness.spec.js picks #4f8cff, which the audit above then meets on
+// the workspace's own project): its initials turn black where white would read under 4.5:1, and stay white on a dark pick.
+for(const mode of MODES){
+  test(`a project tile in a colour the person picked keeps its initials at 4.5:1 (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    const boot=await (await request.get("/api/bootstrap")).json();
+    const tile=page.locator(".projects-page .project-open .project-icon").first();
+    const ratios={};
+    try{
+      for(const [value,color] of [["E2","#4f8cff"],["PY","#ffe680"],["DK","#1d2a6b"]]){
+        await request.post("/api/projects",{data:{path:boot.cwd,name:"Polish Workspace",icon:{kind:"monogram",value,color}}});
+        await page.goto("/");
+        await expect(page.getByTestId("composer")).toBeVisible();
+        await nav(page,"Projects").click();
+        await expect(tile).toHaveText(value);
+        ratios[color]={ratio:await tile.evaluate(lowContrastText),ink:await tile.evaluate(el=>getComputedStyle(el).color)};
+        await page.locator(".projects-page .project-card").first().screenshot({animations:"disabled",path:shots+`project-tile-${value}-${mode}.png`});
+      }
+      await page.screenshot({animations:"disabled",path:shots+`project-tile-${mode}-1280.png`});
+    }finally{await request.post("/api/projects",{data:{path:boot.cwd,name:"Polish Workspace",icon:null}})}
+    console.log("PROJECT-TILES "+mode+" "+JSON.stringify(ratios));
+    for(const [color,{ratio}] of Object.entries(ratios))expect.soft(ratio,`initials on a ${color} tile`).toBeGreaterThanOrEqual(4.5);
+    expect(ratios["#1d2a6b"].ink,"a dark pick keeps white initials").toBe("rgb(255, 255, 255)");
+  });
+}
+
 // The same audit over the pages with content in them, which the walk above can meet empty: History rows, delegated agents
 // in every state, and recorded usage with the environment menu open.
 const DAY=86_400_000;

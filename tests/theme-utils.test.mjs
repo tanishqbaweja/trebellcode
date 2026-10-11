@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { contrastRatio, luminance, normalizeCustomTheme, themeCssVariables } from "../ui/src/theme-utils.js";
+import { contrastRatio, inkOn, luminance, normalizeCustomTheme, themeCssVariables } from "../ui/src/theme-utils.js";
 
 const fills=variables=>[variables["--bg"],variables["--panel"],variables["--panel2"]];
 const minContrast=(variables,name)=>Math.min(...fills(variables).map(fill=>contrastRatio(variables[name],fill)));
@@ -65,4 +65,17 @@ test("every canvas, accent and foreground combination keeps readable text in bot
     const order=["--theme-foreground","--muted","--muted2"].map(name=>luminance(variables[name]));
     assert.ok(mode==="dark"?order[0]>=order[1]&&order[1]>=order[2]:order[0]<=order[1]&&order[1]<=order[2],`${label}: text tiers out of order`);
   }
+});
+
+test("text on a fill a person picked stays white unless white reads under 4.5:1 there, where it turns black",()=>{
+  assert.equal(inkOn("#1d2a6b"),"#ffffff");
+  assert.equal(inkOn("#000"),"#ffffff");
+  assert.equal(inkOn("#4f8cff"),"#000000");
+  assert.equal(inkOn("#FFE680"),"#000000");
+  assert.equal(inkOn("#fff"),"#000000");
+  for(const fill of ["#1d2a6b","#4f8cff","#ffe680","#777777","#808080","#6a4df0","#2f6fe0","#1b7a57","#a8641f","#b04a69","#5b6b7f"]){
+    assert.ok(contrastRatio(inkOn(fill),fill)>=4.5,`${inkOn(fill)} on ${fill} is ${contrastRatio(inkOn(fill),fill).toFixed(2)}:1`);
+  }
+  for(const fill of ["#6a4df0","#2f6fe0","#1b7a57","#a8641f","#b04a69","#5b6b7f"])assert.equal(inkOn(fill),"#ffffff",`the automatic tile colour ${fill} keeps white initials`);
+  for(const fill of ["rebeccapurple","4f8cff","rgb(0,0,0)","",null,undefined])assert.equal(inkOn(fill),null);
 });

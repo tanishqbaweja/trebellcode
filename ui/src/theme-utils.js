@@ -10,6 +10,9 @@ function hex([r,g,b]){return "#"+[r,g,b].map(value=>Math.max(0,Math.min(255,Math
 export function mixHex(a,b,weight=.5){const left=rgb(a),right=rgb(b);if(!left||!right)return expandHex(a)||expandHex(b)||"#000000";const t=Math.max(0,Math.min(1,Number(weight)||0));return hex(left.map((value,index)=>value*(1-t)+right[index]*t))}
 export function luminance(value){const color=rgb(value);if(!color)return 0;const linear=color.map(channel=>{const c=channel/255;return c<=.03928?c/12.92:Math.pow((c+.055)/1.055,2.4)});return .2126*linear[0]+.7152*linear[1]+.0722*linear[2]}
 export function contrastRatio(a,b){const first=luminance(a)+.05,second=luminance(b)+.05;return first>second?first/second:second/first}
+// The text color for a fill a person picked (a project tile's): white, or black where white reads under 4.5:1 on it. null when the
+// fill is not a hex color.
+export function inkOn(fill){return expandHex(fill)?contrastRatio("#ffffff",fill)>=4.5?"#ffffff":"#000000":null}
 
 // The smallest mix of a color toward a target that passes the check (the target itself must pass), so a theme's own color
 // is kept wherever it already works and is only moved as far as it has to be.

@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { baseProjectRecord, enrichProjectRecords, projectCardDetail, projectEnvironmentLabel, summarizeProjectRefreshErrors } from "../project-enrichment.js";
 import { PROJECT_PAGE_SIZE, projectGroupCounts, projectGroupKey, projectWindow } from "../project-window.js";
 import { projectRemovalQuestion, projectRestoreBlocker, projectRestoreBody } from "../project-restore.js";
+import { inkOn } from "../theme-utils.js";
 import { startVisibilityPoll } from "../visibility-poll.js";
 
 // The Projects page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves on,
@@ -40,9 +41,11 @@ function autoColor(name="Project"){
 function ProjectIcon({project}){
   const icon=project.icon;
   if(icon?.kind==="image")return <span className="project-icon project-icon-image"><img src={icon.value} alt=""/></span>;
-  if(icon?.kind==="emoji")return <span className="project-icon project-icon-emoji" style={{background:icon.color||autoColor(project.name)}}>{icon.value}</span>;
+  // A colour a person picks can be light: the initials turn black where white would read under 4.5:1 on it.
+  const color=icon?.color||autoColor(project.name),style={background:color,"--project-icon-ink":inkOn(color)||undefined};
+  if(icon?.kind==="emoji")return <span className="project-icon project-icon-emoji" style={style}>{icon.value}</span>;
   const text=icon?.kind==="monogram"?icon.value:autoMonogram(project.name);
-  return <span className="project-icon project-icon-monogram" style={{background:icon?.color||autoColor(project.name)}}>{text}</span>;
+  return <span className="project-icon project-icon-monogram" style={style}>{text}</span>;
 }
 
 export default function ProjectsPage({currentPath,currentEnvironmentId=null,isProjectOpen=null,onOpen,onGeneralChat,onRunScript,onOpenPreview,onProjectUpdated,onOfferUndo,models=[]}){
