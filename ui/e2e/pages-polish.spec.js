@@ -457,3 +457,66 @@ for(const [width,height] of [[1600,980],[1280,800],[900,800]])for(const mode of 
     for(const [name,issues] of Object.entries(found))expect.soft(issues,`${mode} ${width} ${name}: text under 4.5:1`).toEqual([]);
   });
 }
+
+// The same audit over the pages with content in them, which the walk above can meet empty: History rows, delegated agents
+// in every state, and recorded usage with the environment menu open.
+const DAY=86_400_000;
+function usageAnswer(records){
+  const total={totalTokens:0,inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0,costUsd:0,costKnown:0};
+  const models={},runtimes={},daily={},environments={};
+  for(const record of records){
+    for(const key of Object.keys(record.usage))total[key]+=record.usage[key];
+    if(record.cost){total.costUsd+=record.cost.amount;total.costKnown++}
+    for(const [bucket,key] of [[models,record.model],[runtimes,record.runtime],[daily,new Date(record.at).toISOString().slice(0,10)],[environments,record.environmentId||"local"]]){bucket[key]||={tokens:0,costUsd:0,turns:0};bucket[key].tokens+=record.usage.totalTokens;bucket[key].turns++;bucket[key].costUsd+=record.cost?.amount||0}
+  }
+  return {days:30,total,models,runtimes,daily,environments,environmentIds:null,records};
+}
+const usageRecord=(i,runtime,model,environmentId,cost)=>({id:"polish-usage-"+i,runtime,provider:"openai",model,environmentId,threadId:"polish-thread-"+i,turnId:"turn-"+i,at:Date.now()-i*DAY/3,usage:{totalTokens:42_000+i*1000,inputTokens:30_000,cachedInputTokens:12_000,cacheWriteInputTokens:2_000,outputTokens:12_000+i*1000,reasoningOutputTokens:3_000},cost:cost==null?null:{amount:cost,currency:"USD"}});
+
+for(const mode of MODES){
+  test(`recorded usage reads at 4.5:1, the environment menu included (${mode})`,async({page,request})=>{
+    const records=[usageRecord(0,"native","gpt-5.1",null,0.42),usageRecord(1,"codex","gpt-5.1-codex","polish-ssh",null),usageRecord(2,"claude","claude-sonnet-4.5",null,1.08),usageRecord(3,"native","gpt-5.1-mini","polish-ssh",0.07)];
+    await page.route(/\/api\/usage(?:\?.*)?$/,route=>route.request().method()==="GET"?json(route,usageAnswer(records)):route.continue());
+    await page.route(/\/api\/environments$/,route=>route.request().method()==="GET"?json(route,{profiles:[{id:"polish-ssh",name:"Build box",type:"ssh"}],activeEnvironmentId:null,activeEnvironment:null}):route.continue());
+    await open(page,request,{mode});
+    await nav(page,"Usage").click();
+    await expect(page.locator(".usage-recent .usage-table")).toContainText("claude-sonnet-4.5");
+    await page.locator(".usage-environment-filter>summary").click();
+    await expect(page.locator(".usage-environment-filter>div")).toContainText("Build box");
+    await settle(page);
+    await page.screenshot({animations:"disabled",path:shots+`contrast-usage-records-${mode}-1280.png`});
+    const issues=await page.evaluate(lowContrastText,".usage-page");
+    console.log("USAGE-CONTRAST "+mode+" "+JSON.stringify(issues,null,1));
+    expect(issues).toEqual([]);
+    // A model row's token count and cost take the page's sizes, not the 9px the old shell stylesheet left them at.
+    const model=page.locator(".usage-models>div").filter({hasText:"claude-sonnet-4.5"});
+    await expect(model.locator("em")).toHaveText("$1.08");
+    expect(await model.locator("b").evaluate(el=>getComputedStyle(el).fontSize)).toBe("12.5px");
+    expect(await model.locator("em").evaluate(el=>getComputedStyle(el).fontSize)).toBe("11.5px");
+  });
+
+  test(`History rows read at 4.5:1 (${mode})`,async({page})=>{
+    const threads=historyThreads(4,{long:true});
+    const fixture=await startCodex(threads);
+    try{
+      await openCodexHistory(page,fixture,threads,{mode});
+      await settle(page);
+      const issues=await page.evaluate(lowContrastText,".history-page");
+      console.log("HISTORY-CONTRAST "+mode+" "+JSON.stringify(issues,null,1));
+      expect(issues).toEqual([]);
+    }finally{await fixture.close()}
+  });
+
+  test(`delegated agents read at 4.5:1 in every state (${mode})`,async({page})=>{
+    const fixture=await startFleet([child("c1","Map the payment retries","active"),child("c2","Write the migration","idle","worker"),child("c3","Review the docs","notLoaded","reviewer"),child("c4","Rebuild the search index","systemError","worker")]);
+    try{
+      const agents=await openAgents(page,fixture,{mode});
+      await expect(agents).toContainText("Rebuild the search index",{timeout:10_000});
+      await settle(page);
+      await page.screenshot({animations:"disabled",path:shots+`contrast-agents-fleet-${mode}-1280.png`});
+      const issues=await page.evaluate(lowContrastText,".agents-page");
+      console.log("FLEET-CONTRAST "+mode+" "+JSON.stringify(issues,null,1));
+      expect(issues).toEqual([]);
+    }finally{await fixture.close()}
+  });
+}
