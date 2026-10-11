@@ -11,6 +11,9 @@ import { WebSocketServer } from "ws";
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
 const frames=(page,count)=>page.evaluate(total=>new Promise(resolve=>{let left=total;const tick=()=>--left>0?requestAnimationFrame(tick):resolve();requestAnimationFrame(tick)}),count);
+// A scroll position once the view stops moving: for a few frames after a scroll, rows coming into view take their real height
+// (content-visibility estimates) and the browser moves the position to keep the rows being read in place.
+const settledScrollTop=scroller=>scroller.evaluate(node=>new Promise(resolve=>{let last="",still=0,left=240;const tick=()=>{const now=node.scrollTop+":"+node.scrollHeight;still=now===last?still+1:0;last=now;if(still>=12||--left<=0)resolve(node.scrollTop);else requestAnimationFrame(tick)};requestAnimationFrame(tick)}));
 const HARNESSES=[["opencode","OpenCode","sdk","opencode/fixture-fast"],["cursor","Cursor","acp","cursor-fixture"]];
 const CATALOGS=Object.fromEntries(HARNESSES.map(([id,name,,model])=>[id,{agentRuntime:id,ready:true,models:[model],defaultModel:model,metadata:{models:[{id:model,name:name+" Fixture",agent:id}]},error:null}]));
 const FAILURE="OpenCode could not start this session: the harness exited before it answered (code 1).";
@@ -35,11 +38,14 @@ function savedThread(id,name,{runtime="opencode",turns=1,minutesAgo=10,projectle
 // holdList() holds the next thread/list the same way (a harness starting again lists late), and drop() closes the sockets, as a
 // server restart does. The GUI server around it is faked with routes: the app starts in PROJECT_NAME (the repository folder), and
 // holdSelect(), when set, holds the answer of a harness switch (the runtime changes at once); server.selectFail fails one.
-// server.projectDelay slows the answer of a project opening, and server.git makes the project a Git repository.
-async function startHarness(page,{runtime="opencode",saved=[]}={}){
-  const server={runtime,requests:[],holds:new Map(),fail:{},selects:0,selectHold:null,selectFail:null,listHold:null,turns:0,projectDelay:0,git:false};
+// server.projectDelay slows the answer of a project opening, server.onProjectPost runs while one is asked for, and server.git makes
+// the project a Git repository; extraProjects are more projects the GUI server knows. holdWorktree() holds the next worktree check
+// (server.worktreeHeld says when one is held), emit() sends a notification and serverRequest() asks the app something, as the
+// harness does; server.modes are the collaboration modes it lists.
+async function startHarness(page,{runtime="opencode",saved=[],extraProjects=[]}={}){
+  const server={runtime,requests:[],holds:new Map(),fail:{},selects:0,selectHold:null,selectFail:null,listHold:null,turns:0,projectDelay:0,onProjectPost:null,worktreeHold:null,worktreeHeld:false,modes:[],nextRequestId:9000,git:false};
   const threads=saved.map(item=>item.thread),threadMeta=Object.fromEntries(saved.map(item=>[item.thread.id,item.meta]));
-  const project={id:"opening-project",name:PROJECT_NAME,path:process.cwd(),environmentId:null,effectiveSettings:{}};
+  const project={id:"opening-project",name:PROJECT_NAME,path:process.cwd(),environmentId:null,effectiveSettings:{}},projects=[project,...extraProjects];
   const http=createServer(),wss=new WebSocketServer({noServer:true});
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>ws.on("message",async raw=>{
@@ -66,7 +72,8 @@ async function startHarness(page,{runtime="opencode",saved=[]}={}){
     if(message.method==="initialize")result={userAgent:"thread-opening-fixture"};
     else if(message.method==="thread/list")result={data:threads.filter(item=>item.runtime===active).map(item=>({...item,turns:[]})),nextCursor:null};
     else if(["thread/turns/list","thread/queue/list","thread/attachment/list","thread/timeline/list","thread/items/list","thread/searchOccurrences"].includes(message.method))result={data:[],nextCursor:null};
-    else if(["threadSection/list","skills/list","collaborationMode/list"].includes(message.method))result={data:[]};
+    else if(message.method==="collaborationMode/list")result={data:server.modes};
+    else if(["threadSection/list","skills/list"].includes(message.method))result={data:[]};
     else if(message.method==="thread/goal/get")result={goal:null};
     else if(message.method==="thread/continuity/get")result={continuity:null};
     else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
@@ -82,7 +89,7 @@ async function startHarness(page,{runtime="opencode",saved=[]}={}){
     return {selectedRuntime:server.runtime,selectedInstanceId:server.runtime+"-default",definitions:HARNESSES.map(([id,name,protocol])=>({id,name,protocol,multipleInstances:false})),instances:statuses.map(({id,kind,name})=>({id,kind,displayName:name,enabled:true})),statuses};
   };
   await page.route(/\/api\/bootstrap$/,route=>json(route,bootstrap()));
-  await page.route(/\/api\/state$/,route=>json(route,{settings:settings(),projects:[project],threadMeta}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:settings(),projects,threadMeta}));
   await page.route(/\/api\/settings$/,route=>json(route,settings()));
   await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,CATALOGS[server.runtime]));
   await page.route(/\/api\/agent-runtimes(?:\?.*)?$/,async route=>{
@@ -96,11 +103,17 @@ async function startHarness(page,{runtime="opencode",saved=[]}={}){
   });
   await page.route(/\/api\/providers$/,route=>json(route,{selected:"openai",providers:[{id:"openai",name:"OpenAI API",official:true,hasKey:true}],status:{id:"openai",hasKey:true},ready:true}));
   await page.route(/\/api\/projects$/,async route=>{
-    if(route.request().method()==="GET")return json(route,{projects:[project]});
+    if(route.request().method()==="GET")return json(route,{projects});
+    if(server.onProjectPost)await server.onProjectPost();
     if(server.projectDelay)await new Promise(resolve=>setTimeout(resolve,server.projectDelay));
-    return json(route,{project});
+    const asked=String(route.request().postDataJSON()?.path||"");
+    return json(route,{project:projects.find(item=>item.path===asked)||project});
   });
-  await page.route(/\/api\/worktree\/ensure$/,route=>json(route,{ok:true,path:process.cwd()}));
+  await page.route(/\/api\/worktree\/ensure$/,async route=>{
+    const held=server.worktreeHold;
+    if(held){server.worktreeHold=null;server.worktreeHeld=true;await held}
+    return json(route,{ok:true,path:process.cwd()});
+  });
   await page.route(/\/api\/git\/info\?/,route=>json(route,server.git?{isGit:true,root:process.cwd(),branch:"main",branches:["main"],upstream:null,status:[],remotes:[],worktrees:[{path:process.cwd(),branch:"main"}]}:{isGit:false,root:process.cwd(),branch:null,status:[],remotes:[],worktrees:[]}));
   await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>{
     if(route.request().method()!=="POST")return json(route,threadMeta[new URL(route.request().url()).searchParams.get("threadId")]||{});
@@ -116,6 +129,9 @@ async function startHarness(page,{runtime="opencode",saved=[]}={}){
     hold(threadId){let release=()=>{};server.holds.set(threadId,new Promise(resolve=>{release=resolve}));return release},
     holdSelect(){let release=()=>{};server.selectHold=new Promise(resolve=>{release=resolve});return ()=>{server.selectHold=null;release()}},
     holdList(){let release=()=>{};server.listHold=new Promise(resolve=>{release=resolve});return release},
+    holdWorktree(){let release=()=>{};server.worktreeHeld=false;server.worktreeHold=new Promise(resolve=>{release=resolve});return release},
+    emit(message){for(const client of wss.clients)if(client.readyState===1)client.send(JSON.stringify(message))},
+    serverRequest(method,params){const id=++server.nextRequestId;for(const client of wss.clients)if(client.readyState===1)client.send(JSON.stringify({id,method,params}))},
     drop(){for(const client of wss.clients)try{client.terminate()}catch{}},
     resumes:threadId=>server.requests.filter(item=>item.method==="thread/resume"&&item.params.threadId===threadId&&item.params.excludeTurns!==false).length,
     sent:method=>server.requests.filter(item=>item.method===method).map(item=>item.params.threadId),
@@ -273,8 +289,8 @@ test("a thread that fails to open puts back exactly the view it replaced, the ne
     // From a thread scrolled to its middle: the same row, title, messages and scroll position.
     await openRow(page,ALPHA);
     const scroller=page.locator(".conversation-scroll");
-    await scroller.evaluate(node=>{node.scrollTop=Math.round((node.scrollHeight-node.clientHeight)/2)});await frames(page,3);
-    const before=await scroller.evaluate(node=>node.scrollTop);expect(before).toBeGreaterThan(200);
+    await scroller.evaluate(node=>{node.scrollTop=Math.round((node.scrollHeight-node.clientHeight)/2)});
+    const before=await settledScrollTop(scroller);expect(before).toBeGreaterThan(200);
     release=harness.hold(GAMMA.thread.id);
     await row(page,GAMMA).locator(".thread-main").click();
     await expect(opening(page)).toBeVisible();await expect(headerTitle(page)).toHaveText("Flaky import");await expect(row(page,ALPHA)).not.toHaveClass(/active/);
@@ -574,7 +590,7 @@ test("while a thread opens, the find bar, goal and review of the thread being le
     harness.server.fail[GAMMA.thread.id]=FAILURE;let release=harness.hold(GAMMA.thread.id);
     await row(page,GAMMA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
     // Under the opening state the find bar hides and the goal panel waits for the thread; a failed open brings both back as they were.
-    await expect(findBar).toBeHidden();await expect(objective).toHaveCount(0);await expect(panel).toContainText("Opening thread…");
+    await expect(findBar).toBeHidden();await expect(objective).toBeHidden();await expect(panel).toContainText("Opening thread…");
     await page.screenshot({animations:"disabled",path:auditDir+"thread-opening-goal-panel-dark-1600x980.png"});
     release();
     await expect(page.locator(".sidebar-action-error")).toContainText(FAILURE);
@@ -630,5 +646,192 @@ test("a thread of the harness that runs, clicked while another harness's thread 
     await expect(composer).toBeEnabled();await composer.fill("Follow-up on OpenCode.");await page.getByTestId("send").click();
     await expect(page.getByText("Fixture reply in "+BETA.thread.id,{exact:true})).toBeVisible({timeout:15_000});
     expect(harness.server.requests.filter(item=>item.method==="turn/start").map(item=>[item.runtime,item.params.threadId])).toEqual([["opencode",BETA.thread.id]]);
+  }finally{await harness.close()}
+});
+
+test("a turn that ends or starts while its thread opens shows as it is once the thread shows, and the next message starts a turn",async({page})=>{
+  test.setTimeout(60_000);
+  const RUNNING=savedThread("running-thread","Long migration",{minutesAgo:2});RUNNING.thread.status={type:"active",turnId:"running-thread-live"};
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,RUNNING]});
+  const composer=page.getByTestId("composer"),stop=page.locator(".workspace-header .stop-control");
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    await expect(row(page,RUNNING).locator(".thread-running-dot")).toBeVisible();
+    // The person opens the running thread. Its harness answers the resume with the turn still running, and the turn ends while the
+    // app opens the thread's project (one quick request to the GUI server).
+    harness.server.onProjectPost=async()=>{
+      harness.server.onProjectPost=null;RUNNING.thread.status={type:"idle"};
+      harness.emit({method:"turn/completed",params:{threadId:RUNNING.thread.id,turn:{id:"running-thread-live",status:"completed",completedAt:Date.now()/1000}}});
+      await new Promise(resolve=>setTimeout(resolve,300));
+    };
+    await row(page,RUNNING).locator(".thread-main").click();
+    await expect(answer(page,RUNNING)).toBeVisible({timeout:15_000});await expect(composer).toBeEnabled();
+    // The turn is over: no Stop and no running dot, and the next message starts a turn instead of waiting behind one that ended.
+    await expect(stop).toHaveCount(0);await expect(row(page,RUNNING).locator(".thread-running-dot")).toHaveCount(0);
+    await composer.fill("Follow-up once the migration is done.");await page.getByTestId("send").click();
+    await expect(page.getByText("Fixture reply in "+RUNNING.thread.id,{exact:true})).toBeVisible({timeout:15_000});
+    expect(harness.sent("turn/start")).toEqual([RUNNING.thread.id]);
+    // The other way round: a turn that starts, with its first command, while an idle thread opens shows running once the thread does.
+    harness.server.onProjectPost=async()=>{
+      harness.server.onProjectPost=null;
+      harness.emit({method:"turn/started",params:{threadId:BETA.thread.id,turn:{id:"beta-live",status:"inProgress",startedAt:Date.now()/1000}}});
+      harness.emit({method:"item/started",params:{threadId:BETA.thread.id,turnId:"beta-live",item:{id:"beta-command",type:"commandExecution",command:["npm","test"],status:"inProgress"}}});
+      await new Promise(resolve=>setTimeout(resolve,300));
+    };
+    await row(page,BETA).locator(".thread-main").click();
+    await expect(answer(page,BETA)).toBeVisible({timeout:15_000});await expect(composer).toBeEnabled();
+    await expect(stop).toBeVisible();await expect(row(page,BETA).locator(".thread-running-dot")).toBeVisible();
+    await expect(page.locator(".tool-event").filter({hasText:"npm test"})).toBeVisible();
+  }finally{await harness.close()}
+});
+
+test("a thread clicked while a restarted harness reopens the thread shown opens, and if it fails the thread shown still resumes on the new connection",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});harness.server.fail[GAMMA.thread.id]=FAILURE;
+  const composer=page.getByTestId("composer"),stop=page.locator(".workspace-header .stop-control");
+  try{
+    await start(page,harness);await openRow(page,BETA);
+    expect(harness.resumes(BETA.thread.id)).toBe(1);
+    // A server restart: the app connects again, lists the threads and reopens Payment retries, whose worktree check answers a moment
+    // late. Meanwhile the person clicks a thread that turns out not to open.
+    const releaseWorktree=harness.holdWorktree();harness.drop();
+    await expect.poll(()=>harness.server.worktreeHeld,{timeout:15_000}).toBe(true);
+    let releaseOpen=harness.hold(GAMMA.thread.id);
+    await row(page,GAMMA).locator(".thread-main").click();await expect.poll(()=>harness.resumes(GAMMA.thread.id)).toBe(1);
+    releaseWorktree();await page.waitForTimeout(300);
+    releaseOpen();
+    await expect(page.locator(".sidebar-action-error")).toContainText(FAILURE);
+    await expect(headerTitle(page)).toHaveText("Payment retries");await expect(row(page,BETA)).toHaveClass(/active/);
+    // Payment retries is the thread shown after the restart, so it still resumes on the new connection.
+    await expect.poll(()=>harness.resumes(BETA.thread.id),{timeout:5_000}).toBe(2);await expect(composer).toBeEnabled();
+    // Again while Payment retries runs, and this time the click comes while the restarted harness answers its resume, late. The
+    // restart ended the turn, so the harness has the thread idle: shown again, the thread is as the harness has it.
+    harness.emit({method:"turn/started",params:{threadId:BETA.thread.id,turn:{id:"beta-live",status:"inProgress",startedAt:Date.now()/1000}}});
+    await expect(stop).toBeVisible();
+    const releaseReopen=harness.hold(BETA.thread.id);harness.drop();
+    await expect.poll(()=>harness.resumes(BETA.thread.id),{timeout:15_000}).toBe(3);
+    releaseOpen=harness.hold(GAMMA.thread.id);
+    await row(page,GAMMA).locator(".thread-main").click();await expect.poll(()=>harness.resumes(GAMMA.thread.id)).toBe(2);
+    releaseReopen();await page.waitForTimeout(300);
+    releaseOpen();
+    await expect.poll(()=>harness.resumes(BETA.thread.id),{timeout:5_000}).toBe(4);
+    await expect(headerTitle(page)).toHaveText("Payment retries");await expect(row(page,BETA)).toHaveClass(/active/);await expect(composer).toBeEnabled();
+    await expect(stop).toHaveCount(0);
+    await composer.fill("Follow-up after the restart.");await page.getByTestId("send").click();
+    await expect(page.getByText("Fixture reply in "+BETA.thread.id,{exact:true})).toBeVisible({timeout:15_000});
+    expect(harness.sent("turn/start")).toEqual([BETA.thread.id]);
+  }finally{await harness.close()}
+});
+
+test("while a thread opens, an approval from the thread being left says whose it is",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
+  const panel=page.getByTestId("right-panel"),label=panel.locator(".approval-card").getByTestId("approval-thread");
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    await page.getByTestId("right-panel-toggle").click();await panel.getByRole("button",{name:"Runtime",exact:true}).click();
+    await expect(panel.locator(".runtime-summary")).toBeVisible();
+    const release=harness.hold(BETA.thread.id);
+    await row(page,BETA).locator(".thread-main").click();await expect(headerTitle(page)).toHaveText("Payment retries");
+    // Release checklist's agent asks to run a command while Payment retries opens, under a header that names Payment retries: the
+    // card says whose command it is, in the conversation before the opening state covers it and in the Runtime panel.
+    harness.serverRequest("item/commandExecution/requestApproval",{threadId:ALPHA.thread.id,turnId:"alpha-live",itemId:"alpha-command",command:["rm","-rf","build"],reason:"Clean the build folder"});
+    await expect(label).toHaveText("Waiting in Release checklist");
+    await expect(page.locator(".inline-approval").getByTestId("approval-thread")).toHaveText("Waiting in Release checklist");
+    await expect(opening(page)).toBeVisible();await expect(label).toHaveText("Waiting in Release checklist");
+    release();
+    await expect(answer(page,BETA)).toBeVisible();await expect(label).toHaveText("Waiting in Release checklist");
+  }finally{await harness.close()}
+});
+
+test("a goal being drafted in the thread being left comes back when the open fails, and a thread that opens starts its own",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});harness.server.fail[GAMMA.thread.id]=FAILURE;
+  const objective=page.locator('textarea[aria-label="Objective"]'),panel=page.getByTestId("right-panel");
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    await page.locator(".workspace-header .goal-control").click();await objective.fill("Ship the release checklist by Friday");
+    let release=harness.hold(GAMMA.thread.id);
+    await row(page,GAMMA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
+    // The goal panel waits for the thread being opened; the draft of the thread being left only hides.
+    await expect(objective).toBeHidden();await expect(panel).toContainText("Opening thread…");
+    release();
+    await expect(page.locator(".sidebar-action-error")).toContainText(FAILURE);await expect(headerTitle(page)).toHaveText("Release checklist");
+    await expect(objective).toBeVisible();await expect(objective).toHaveValue("Ship the release checklist by Friday");
+    // A thread that opens has its own goal panel, without the draft of the thread it replaced.
+    release=harness.hold(BETA.thread.id);
+    await row(page,BETA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();await expect(objective).toBeHidden();
+    release();
+    await expect(answer(page,BETA)).toBeVisible();await expect(objective).toBeVisible();await expect(objective).toHaveValue("");
+  }finally{await harness.close()}
+});
+
+test("a thread clicked again while it opens shows when that open answers instead of opening again",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    // Every resume of Payment retries takes as long (a slow harness). The person clicks it, and clicks it again while it opens.
+    const first=harness.hold(BETA.thread.id);
+    await row(page,BETA).locator(".thread-main").click();await expect.poll(()=>harness.resumes(BETA.thread.id)).toBe(1);
+    const second=harness.hold(BETA.thread.id);
+    await row(page,BETA).locator(".thread-main").click();await page.waitForTimeout(300);
+    try{
+      expect(harness.resumes(BETA.thread.id)).toBe(1);
+      await expect(opening(page)).toBeVisible();await expect(headerTitle(page)).toHaveText("Payment retries");
+      // The first answer comes: the thread shows then.
+      first();
+      await expect(answer(page,BETA)).toBeVisible({timeout:5_000});await expect(page.getByTestId("composer")).toBeEnabled();
+      await expect(opening(page)).toHaveCount(0);expect(harness.resumes(BETA.thread.id)).toBe(1);
+    }finally{first();second()}
+  }finally{await harness.close()}
+});
+
+test("while a thread opens, the composer's mode picker waits for it instead of changing the thread being left",async({page})=>{
+  test.setTimeout(60_000);
+  const LEFT=savedThread("left-thread","Cursor refactor",{runtime:"cursor",minutesAgo:4,projectless:true});
+  const NEXT=savedThread("next-thread","Cursor tests",{runtime:"cursor",minutesAgo:8,projectless:true});
+  const harness=await startHarness(page,{runtime:"cursor",saved:[LEFT,NEXT]});
+  harness.server.modes=[{name:"Plan",mode:"plan",model:null,reasoning_effort:"medium"},{name:"Default",mode:"default",model:null,reasoning_effort:null}];
+  const picker=page.getByTestId("collaboration-mode-picker"),updates=()=>harness.server.requests.filter(item=>item.method==="thread/settings/update").map(item=>item.params.threadId);
+  try{
+    await page.goto("/");await expect(row(page,LEFT)).toBeVisible({timeout:15_000});await expect(page.getByTestId("composer")).toBeEnabled({timeout:15_000});
+    await openRow(page,LEFT);await expect(picker).toHaveValue("default");await expect(picker).toBeEnabled();
+    const release=harness.hold(NEXT.thread.id);
+    await row(page,NEXT).locator(".thread-main").click();await expect(headerTitle(page)).toHaveText("Cursor tests");
+    // The header names the thread being opened: the picker, whose mode is the open thread's, waits for it.
+    await expect(picker).toBeDisabled();await expect(opening(page)).toBeVisible();await expect(picker).toBeDisabled();
+    release();
+    await expect(answer(page,NEXT)).toBeVisible();await expect(picker).toBeEnabled();
+    // Opened, the thread takes the mode picked for it; the thread left never had its mode changed.
+    await picker.selectOption("plan");await expect.poll(updates).toEqual([NEXT.thread.id]);
+  }finally{await harness.close()}
+});
+
+test("a thread of another project is named by that project in the crumb from the click, never by its folder",async({page})=>{
+  test.setTimeout(60_000);
+  // A project whose name is not its folder's: Website, in the folder ui.
+  const SITE_PATH=process.cwd().replace(/[\\/]+$/,"")+(process.platform==="win32"?"\\":"/")+"ui";
+  const SITE=savedThread("site-thread","Landing page copy",{minutesAgo:20});SITE.thread.cwd=SITE_PATH;
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,SITE],extraProjects:[{id:"site-project",name:"Website",path:SITE_PATH,environmentId:null,effectiveSettings:{}}]});
+  const sampleCrumbs=()=>page.evaluate(()=>{
+    const run=window.__crumbRun=(window.__crumbRun||0)+1;window.__crumbs=[];
+    const sample=()=>{const text=document.querySelector(".workspace-header .project-crumb:not(.sidebar-reopen) span")?.textContent||"";if(window.__crumbs.at(-1)!==text)window.__crumbs.push(text);if(window.__crumbRun===run)requestAnimationFrame(sample)};
+    requestAnimationFrame(sample);
+  });
+  const sampledCrumbs=()=>page.evaluate(()=>{window.__crumbRun++;return window.__crumbs});
+  try{
+    await start(page,harness);await openRow(page,ALPHA);await expect(projectCrumb(page)).toHaveText(PROJECT_NAME);
+    // A quick open: frame by frame the crumb names the project before the click, then the thread's.
+    await sampleCrumbs();
+    await openRow(page,SITE);await expect(projectCrumb(page)).toHaveText("Website");await frames(page,4);
+    expect(await sampledCrumbs()).toEqual([PROJECT_NAME,"Website"]);
+    // A slow one names it from the click.
+    await openRow(page,ALPHA);await expect(projectCrumb(page)).toHaveText(PROJECT_NAME);
+    const release=harness.hold(SITE.thread.id);
+    await row(page,SITE).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
+    await expect(headerTitle(page)).toHaveText("Landing page copy");await expect(projectCrumb(page)).toHaveText("Website");
+    release();
+    await expect(answer(page,SITE)).toBeVisible();await expect(projectCrumb(page)).toHaveText("Website");
   }finally{await harness.close()}
 });

@@ -571,7 +571,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,starting=false,providerReady,transportReady=true,transportStatus="",onRetryTransport,runtimeSwitchLabel="",modelsLoading=false,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onReasoningEffort,onServiceTier,onModelOption,onModelPickerOpenChange,codexThread=null}){
+const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,starting=false,providerReady,transportReady=true,transportStatus="",onRetryTransport,runtimeSwitchLabel="",modelsLoading=false,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,threadSettingsWait=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onReasoningEffort,onServiceTier,onModelOption,onModelPickerOpenChange,codexThread=null}){
   const [modelOpen,setModelOpen]=useState(false);
   const [modelQuery,setModelQuery]=useState("");
   const [listening,setListening]=useState(false);
@@ -797,7 +797,8 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   const providerKeyStep=setupRequired&&modelProviderRuntime&&modelError===MISSING_PROVIDER_KEY;
   // While a turn runs the same Send button queues or steers; its label and tooltip name which (the icon stays the send icon).
   const sendLabel=running&&!steerFollowUps?"Queue follow-up":running?"Steer agent":"Send message";
-  // starting: Trebell's first load has not yet said which harness runs, so the composer names none.
+  // starting: Trebell's first load has not yet said which harness runs, so the composer names none. threadSettingsWait: another
+  // thread opens under a header that names it, so the pickers that change the open thread's own mode and agent wait for it.
   const composerPlaceholder=openingThread?"Opening thread…":submitting?"Sending…":starting?"Starting Trebell Code…"
     :providerReady?(runtimeSwitchLabel||(!transportReady?transportMessage:running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"))
     :modelProviderRuntime?`Configure ${providerLabel} in Settings…`
@@ -815,11 +816,11 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
       {reasoningEffortOptions.length>0&&<select data-testid="reasoning-effort-picker" className="permission-picker reasoning-effort-picker" value={reasoningEffort} disabled={running} onChange={e=>onReasoningEffort?.(e.target.value)} title="Model reasoning / thinking effort (Default: the provider's own level)"><option value="">Thinking · Default</option>{effortChoices.map(effort=><option key={effort} value={effort}>Thinking · {effortLabel(effort)}</option>)}</select>}
       {serviceTierOptions.length>0&&<select data-testid="service-tier-picker" className="permission-picker service-tier-picker" value={serviceTier} disabled={running} onChange={e=>onServiceTier?.(e.target.value)} title={serviceTierPickerTitle(agentRuntime)}><option value={agentRuntime==="codex"?CODEX_STANDARD_SERVICE_TIER:""}>Speed · Standard</option>{serviceTierOptions.map(tier=><option key={tier} value={tier}>Speed · {modelServiceTierLabel(agentRuntime,tier,modelMeta?.[model]||{})}</option>)}</select>}
       {modelOptionDescriptors.map(option=>{const value=modelOptionPicks[option.id]??option.defaultValue??"";return <select key={option.id} data-testid="model-option-picker" data-option-id={option.id} className="permission-picker model-option-picker" value={value} disabled={running} onChange={e=>onModelOption?.(option.id,e.target.value)} title={`${agentRuntimeLabel} model setting: ${option.label}`}>{!option.choices.some(choice=>choice.value===value)&&<option value="">{option.label} · {agentRuntimeLabel}'s setting</option>}{option.choices.map(choice=><option key={choice.value} value={choice.value}>{option.label} · {choice.label}</option>)}</select>})}
-      {runtimeCapabilities.collaborationModes&&collaborationModes.length>0&&<select data-testid="collaboration-mode-picker" className="permission-picker collaboration-mode-picker" value={collaborationMode} disabled={running||collaborationModeBusy} onChange={e=>onCollaborationMode?.(e.target.value)} title="Collaboration mode">{collaborationModes.map(item=><option key={item.mode} value={item.mode}>{item.name} mode</option>)}</select>}
+      {runtimeCapabilities.collaborationModes&&collaborationModes.length>0&&<select data-testid="collaboration-mode-picker" className="permission-picker collaboration-mode-picker" value={collaborationMode} disabled={running||collaborationModeBusy||threadSettingsWait} onChange={e=>onCollaborationMode?.(e.target.value)} title="Collaboration mode">{collaborationModes.map(item=><option key={item.mode} value={item.mode}>{item.name} mode</option>)}</select>}
       {!threadOpen&&!projectless&&<select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>}
     </div><div className="composer-right">
       {setupRequired?<button className="login-btn" onClick={onConfigureProvider}>{configureLabel}</button>:<>
-        {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
+        {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} disabled={threadSettingsWait} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
         <div className="model-picker-wrap"><button ref={modelButtonRef} data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} onKeyDown={modelPickerKeyDown} aria-haspopup="true" aria-expanded={modelOpen&&models.length>0?"true":"false"} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError?"Models unavailable":"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu" ref={modelMenuRef} onKeyDown={modelMenuKeyDown}>{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>{event.stopPropagation();if(event.key==="ArrowDown"){event.preventDefault();focusModelOption("first")}}} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
@@ -920,6 +921,9 @@ export default function App(){
     catch{return {...DEFAULT_LAYOUT}}
   });
   const [permissionMode,setPermissionMode]=useState("supervised"); const [workspaceMode,setWorkspaceMode]=useState("current");
+  // projectRecords: the projects this window knows (the list at startup, then each project as it opens or changes), so a thread still
+  // opening is named by its project's record before that project opens.
+  const [projectRecords,setProjectRecords]=useState([]);
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [cloneRefreshError,setCloneRefreshError]=useState(""); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
   const [guardianDenials,setGuardianDenials]=useState([]); const [guardianBusy,setGuardianBusy]=useState("");
@@ -936,7 +940,8 @@ export default function App(){
   const sectionRef=useRef(section);sectionRef.current=section;
   // openRunRef: the last open asked for ({done} settles with it). resumedOnRef: the thread last resumed and the transport it was
   // resumed on. A reconnect waits for the one and does not resume again a thread the other says is resumed on it already.
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0); const openRunRef=useRef(null); const resumedOnRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
+  // heldNotificationsRef: the notifications of the thread an open has resumed, kept until it shows (see holdThreadNotifications).
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0); const openRunRef=useRef(null); const resumedOnRef=useRef(null); const heldNotificationsRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
@@ -1236,6 +1241,8 @@ export default function App(){
     return promise;
   }
   function notificationIsActive(threadId){return !threadId||threadId===activeThreadRef.current?.id}
+  // Another thread is opening: the sidebar and the header name it already, so the open thread's own settings are not changed.
+  function leavingThread(){return Boolean(openingThreadRef.current)&&openingThreadRef.current!==String(activeThreadRef.current?.id||"")}
 
   useEffect(()=>{
     if(!window.trebellDesktop?.zoom)return;
@@ -1495,6 +1502,7 @@ export default function App(){
     const response=await api("/api/projects",{method:"POST",body:{path,environmentId:resolvedEnvironmentId,activate}});
     const project=response?.project||null;
     if(!project)throw new Error("Project activation did not return a project.");
+    setProjectRecords(previous=>[project,...previous.filter(item=>item.id!==project.id)]);
     if(owns&&!owns())return project;
     if(String(previousProjectPath||"")!==String(path||"")||String(previousEnvironmentId||"")!==String(resolvedEnvironmentId||""))setGitInfo(null);
     setProjectlessMode(false);setGeneralEnvironmentId(null);setProjectPath(path);
@@ -1602,7 +1610,7 @@ export default function App(){
         // The startup catalog belongs to the runtime these settings resolve to: record its scope so the scope effect keeps it instead of loading it twice.
         setSettings(prev=>{const next={...prev,...(state.settings||{})};if(startup.keepLandedRuntime){next.agentRuntime=prev.agentRuntime;next.agentRuntimeInstanceId=prev.agentRuntimeInstanceId}const runtime=next.agentRuntime||boot.agentRuntime||"codex";if(startup.applyCatalog)modelCatalogScopeRef.current=modelCatalogScope(runtime,next.modelProvider||boot.provider||DEFAULT_MODEL_PROVIDER);return next}); setRuntimeKnown(true); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
         setEnvironmentThemeCatalog(themeCatalog);
-        setCurrentProject(initialProject);
+        setProjectRecords(projectData.projects||state.projects||[]);setCurrentProject(initialProject);
         setProjectPath(initialPath);
         setPermissionMode(initialScoped.defaultPermissionMode||state.settings?.defaultPermissionMode||"supervised");
         setWorkspaceMode(initialScoped.defaultWorkspaceMode||state.settings?.defaultWorkspaceMode||"current");
@@ -1797,10 +1805,11 @@ export default function App(){
     const next=codexThreadSettings(threadId,resumed||{});setCodexThreadState(next);
     if(next&&modelsRef.current.includes(next.model)){setModel(next.model);setSelectedModels([next.model])}
   }
-  // A pick for the model the open, idle Codex thread runs changes the thread's own setting too (thread/settings/update).
+  // A pick for the model the open, idle Codex thread runs changes the thread's own setting too (thread/settings/update), but not while
+  // another thread opens under a header that names it (see leavingThread).
   async function updateCodexThreadSetting(patch){
     const threadId=activeThreadRef.current?.id;
-    if(agentRuntime!=="codex"||!threadId||!rpc||rpcStatus!=="connected"||running||codexThreadState?.threadId!==threadId||codexThreadState.model!==model)return;
+    if(agentRuntime!=="codex"||!threadId||!rpc||rpcStatus!=="connected"||running||leavingThread()||codexThreadState?.threadId!==threadId||codexThreadState.model!==model)return;
     const params={threadId};
     if(Object.prototype.hasOwnProperty.call(patch,"effort")){
       if(patch.effort)params.effort=patch.effort;
@@ -2051,12 +2060,17 @@ export default function App(){
         }else{
           // A thread the person opens meanwhile resumes on this transport and replaces the open one: rather than reopen the thread it
           // leaves (whose answer would then undo that open), the transport waits for it, and reopens the thread shown after it unless
-          // an open has resumed that thread here already (one that failed leaves the thread from before, which still needs it).
-          for(let waited=null;openingThreadRef.current&&openingThreadRef.current!==String(activeThreadRef.current?.id||"")&&openRunRef.current!==waited;){waited=openRunRef.current;await waited.done;if(disposed)return}
-          const activeId=activeThreadRef.current?.id,cataloged=activeId?threads.find(thread=>thread.id===activeId)||activeThreadRef.current:null;
-          const reopen=activeId?((listed||[]).find(thread=>thread.id===activeId)||cataloged):null;
-          const resumedHere=resumedOnRef.current?.client===current&&resumedOnRef.current.threadId===activeId;
-          if(reopen&&!resumedHere&&threadCatalogRuntime(reopen,threadMeta[reopen.id]||{},agentRuntime)===agentRuntime)await openThread(reopen,{client:current,preserveSection:true});
+          // an open has resumed that thread here already (one that failed leaves the thread from before, which still needs it). An
+          // open asked for while that reopen runs replaces it the same way, so the transport waits for that one too and looks again.
+          for(let waited=null;;){
+            if(openingThreadRef.current&&openRunRef.current!==waited){waited=openRunRef.current;await waited.done;if(disposed)return;continue}
+            const activeId=activeThreadRef.current?.id,cataloged=activeId?threads.find(thread=>thread.id===activeId)||activeThreadRef.current:null;
+            const reopen=activeId?((listed||[]).find(thread=>thread.id===activeId)||cataloged):null;
+            const resumedHere=resumedOnRef.current?.client===current&&resumedOnRef.current.threadId===activeId;
+            if(!reopen||resumedHere||threadCatalogRuntime(reopen,threadMeta[reopen.id]||{},agentRuntime)!==agentRuntime)break;
+            const asked=openSeqRef.current+1;await openThread(reopen,{client:current,preserveSection:true});if(disposed)return;
+            if(openSeqRef.current===asked)break;
+          }
         }
         await Promise.all([loadSkills(current,projectPath),loadCollaborationModes(current)]);
         if(disposed)return;ready=established=true;
@@ -2499,6 +2513,7 @@ export default function App(){
   function handleNotification(message,client=null){
     const p=message.params||{};
     const threadId=p.threadId||null;
+    if(threadId&&heldNotificationsRef.current?.threadId===String(threadId)){heldNotificationsRef.current.messages.push([message,client]);return}
     const isCurrent=notificationIsActive(threadId);
     if(message.method==="serverRequest/resolved"){
       // Request ids restart on every socket: only the request of this id from the socket that resolved it goes.
@@ -3070,17 +3085,31 @@ export default function App(){
   // thread already open changes none of that. A thread the person asks for also replaces one a harness switch was still to reopen
   // for an earlier open (the transport's own reopens pass their client and keep it). from is the section it was asked for in: it
   // lands in the chat from there, but a page the person has gone to since stays, with the thread open behind it.
+  // A thread other than the one shown, asked for again the same way while it opens (a second click), waits for that open rather than
+  // start it over, which would make the person wait for another resume.
   async function openThread(thread,options={}){
-    const threadId=String(thread?.id||""),token=++openSeqRef.current,pending=pendingRuntimeThreadRef.current,from=options.from??sectionRef.current;
+    const threadId=String(thread?.id||""),client=options.client||rpc,from=options.from??sectionRef.current,toChat=!options.preserveSection,inFlight=openRunRef.current;
+    if(threadId&&inFlight&&!inFlight.settled&&inFlight.threadId===threadId&&openingThreadRef.current===threadId&&String(activeThreadRef.current?.id||"")!==threadId&&inFlight.client===client&&inFlight.toChat===toChat&&inFlight.from===from)return inFlight.done;
+    const token=++openSeqRef.current,pending=pendingRuntimeThreadRef.current;
     if(!options.client&&pending&&String(pending.thread?.id||"")!==threadId)pendingRuntimeThreadRef.current=null;
-    if(threadId){openingThreadRef.current=threadId;setOpening({thread,token,reopen:String(activeThreadRef.current?.id||"")===threadId,toChat:!options.preserveSection,from,landed:false})}
-    const run=openThreadInternal(thread,{...options,from,token});openRunRef.current={done:run.then(()=>{},()=>{})};
+    if(threadId){openingThreadRef.current=threadId;setOpening({thread,token,reopen:String(activeThreadRef.current?.id||"")===threadId,toChat,from,landed:false})}
+    const run=openThreadInternal(thread,{...options,from,token}),record={threadId,client,toChat,from,settled:false,done:run.then(()=>{},()=>{})};
+    record.done.then(()=>{record.settled=true});openRunRef.current=record;
     try{return await run}
     catch(error){if(openSeqRef.current!==token)return thread;throw error}
     finally{
+      releaseThreadNotifications(token);
       const pendingId=String(pendingRuntimeThreadRef.current?.thread?.id||"");
       if(openSeqRef.current===token&&!(threadId&&pendingId===threadId)){openingThreadRef.current=null;setOpening(null)}
     }
+  }
+  // From the answer of its resume until it shows, a thread being opened keeps its notifications back: they are newer than that
+  // answer, so they are handled once the thread shows, as the open thread's, instead of being undone by it (a turn that ended
+  // meanwhile stayed running). An open that ends without showing hands them on as it ends, and a later open's hold ends an earlier one.
+  function holdThreadNotifications(token,threadId){releaseThreadNotifications(heldNotificationsRef.current?.token);heldNotificationsRef.current={token,threadId:String(threadId),messages:[]}}
+  function releaseThreadNotifications(token){
+    const held=heldNotificationsRef.current;if(!held||held.token!==token)return;
+    heldNotificationsRef.current=null;for(const [message,client] of held.messages)notificationHandlerRef.current?.(message,client);
   }
   async function openThreadInternal(thread,{client=rpc,preserveSection=false,from=sectionRef.current,token=openSeqRef.current}={}){
     if(await switchRuntimeForThread(thread,{preserveSection,from}))return thread;
@@ -3124,6 +3153,7 @@ export default function App(){
         throw error;
       }
       if(!resumed?.thread)throw new Error("The agent runtime did not return the requested thread.");
+      if(openSeqRef.current===token)holdThreadNotifications(token,thread.id);
       const [checkpointResult,goalResult,continuityResult,attachmentResult]=await Promise.all([checkpointPromise,goalPromise,continuityPromise,attachmentPromise]);
       cp=checkpointResult.value;goalData=goalResult.value;continuityData=continuityResult.value;attachmentData=attachmentResult.value;
       if(checkpointResult.error)persistentReadErrors.push("checkpoints: "+(checkpointResult.error.message||String(checkpointResult.error)));
@@ -3170,6 +3200,8 @@ export default function App(){
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex")applyProviderInventory(harnessInventory(runtimeInventoryRef.current,resumed.thread.providerMeta))
     }
     // The thread shows now (its history lands in this same frame), so its opening state ends; sends still wait for the reads below.
+    // What it was sent since its answer is handled now, as the open thread's.
+    releaseThreadNotifications(token);
     setOpening(current=>current?.token===token?{...current,landed:true}:current);
     if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
       let listed={projects:[]};
@@ -4391,7 +4423,7 @@ export default function App(){
   async function changeComposerModel(nextModel){
     const previous=model;
     setModel(nextModel);
-    if(agentRuntime!=="codex"||!running||!activeThread?.id||!activeTurnId||!rpc||rpcStatus!=="connected"||nextModel===previous)return;
+    if(agentRuntime!=="codex"||!running||!activeThread?.id||!activeTurnId||!rpc||rpcStatus!=="connected"||nextModel===previous||leavingThread())return;
     try{
       const features=await rpc.request("experimentalFeature/list",{limit:200,threadId:activeThread.id});
       const liveSwitch=(features?.data||[]).find(feature=>feature.name==="step_model_switching");
@@ -4476,19 +4508,22 @@ export default function App(){
   const openingOverPage=openingShown&&opening.toChat&&section!=="chat"&&section!=="new"&&section===opening.from,viewSection=openingOverPage?"chat":section;
   const headerThread=openingView||activeThread;
   const activeTitle=titleOf(openThreadTitleSource(headerThread,threads));
-  // The open thread's approval comes first; one from another thread says which task is asking.
-  const shownApproval=approvalToShow(approvals,activeThread?.id);
-  const shownApprovalThreadId=approvalForeignThreadId(shownApproval,activeThread?.id);
+  // The approval of the thread the header names comes first; one from another thread says which task is asking, the thread being
+  // left included while another opens.
+  const shownApproval=approvalToShow(approvals,headerThread?.id);
+  const shownApprovalThreadId=approvalForeignThreadId(shownApproval,headerThread?.id);
   const shownApprovalOwner=shownApprovalThreadId?threads.find(thread=>String(thread.id)===shownApprovalThreadId)||null:null;
   const shownApprovalThreadLabel=shownApprovalThreadId?(shownApprovalOwner?titleOf(shownApprovalOwner):"another thread"):"";
   // The crumb names the project as the sidebar and Projects page do (its record's name); a folder without a record, or one the
   // record does not describe yet, shows the folder name. A thread still opening is named with its own: General chat, the open
-  // project when the thread is in it, else its folder.
+  // project when the thread is in it, else its project's record as this window knows it (see projectRecords), else its folder.
   const openingMeta=openingView?threadMeta[openingView.id]||{}:null;
   const crumbProjectless=openingView?(Object.prototype.hasOwnProperty.call(openingMeta,"projectless")?Boolean(openingMeta.projectless):Boolean(openingView.providerMeta?.projectless)):projectlessMode;
   const crumbPath=openingView&&!crumbProjectless&&openingView.cwd?openingView.cwd:projectPath;
   const projectFolderName=String(crumbPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
-  const projectRecordName=currentProject&&sameWorkspacePath(currentProject.path,crumbPath)?String(currentProject.name||"").trim():"";
+  const openingEnvironmentId=openingView?openingMeta.environmentId??openingView.providerMeta?.environmentId??null:null;
+  const crumbRecord=currentProject&&sameWorkspacePath(currentProject.path,crumbPath)?currentProject:openingView?projectRecords.find(project=>sameWorkspacePath(project.path,crumbPath)&&(project.environmentId||null)===(openingEnvironmentId||null)):null;
+  const projectRecordName=String(crumbRecord?.name||"").trim();
   const projectLabel=crumbProjectless?"No project":projectRecordName||projectFolderName;
   // The header's branch, Open in and script belong to the project before the click: a thread of another workspace takes them away
   // while its opening state covers the conversation, as it does the open thread's own controls.
@@ -4635,11 +4670,11 @@ export default function App(){
     // Everything the goal panel holds (drafts, busy state and its last error) belongs to one thread: another thread, or a harness
     // switch, starts it afresh instead of showing the previous thread's error. A save that answers after another thread opened
     // updates nothing on screen (that thread loads its own goal), like every other goal and continuity update here. While another
-    // thread's opening state is up, the panel waits for that thread instead of offering the goal of the one being left.
-    if(rightPanelTab==="goal"&&openingShown)return <div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>;
+    // thread's opening state is up, the panel waits for that thread instead of offering the goal of the one being left, which only
+    // hides: a failed open brings it back with what was being written in it.
     if(rightPanelTab==="goal"){
       const goalThreadId=activeThread?.id||null,forGoalThread=apply=>next=>{if(goalThreadId&&activeThreadRef.current?.id===goalThreadId)apply(next)};
-      return <GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/>;
+      return <>{openingShown&&<div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>}<GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} covered={openingShown} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/></>;
     }
     return <div className="runtime-surface">
       <section className="runtime-summary">
@@ -4773,7 +4808,7 @@ export default function App(){
           {openingShown&&<div className="thread-opening" role="status" aria-live="polite" data-testid="thread-opening"><div className="thread-opening-body"><strong>{activeTitle}</strong><span><i className="thread-opening-spinner" aria-hidden="true"/>Opening thread…</span></div></div>}
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
-  <Composer starting={!runtimeKnown} prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(opening)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={configureProviderKey} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={openingView?null:tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(headerThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(!openingView&&activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={openingView?null:threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelOption={composerModelOption} onModelPickerOpenChange={setModelPickerOpen} codexThread={agentRuntime==="codex"&&!openingView&&activeThread?.id&&codexThreadState?.threadId===activeThread.id?codexThreadState:null}/>
+  <Composer starting={!runtimeKnown} prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(opening)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={configureProviderKey} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} threadSettingsWait={Boolean(openingView)} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={openingView?null:tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(headerThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(!openingView&&activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={openingView?null:threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelOption={composerModelOption} onModelPickerOpenChange={setModelPickerOpen} codexThread={agentRuntime==="codex"&&!openingView&&activeThread?.id&&codexThreadState?.threadId===activeThread.id?codexThreadState:null}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" {...layoutSeparatorProps("terminal")} onPointerDown={event=>beginLayoutResize("terminal",event)}/>
@@ -4794,7 +4829,7 @@ export default function App(){
             <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
           </div>
         </header>})()}
-        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
+        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.id)setProjectRecords(previous=>previous.map(item=>item.id===project.id?project:item));if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
         {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} skillsLoad={skillsLoad} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} onSkillsReload={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}

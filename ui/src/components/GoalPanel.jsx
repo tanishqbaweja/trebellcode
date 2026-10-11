@@ -31,7 +31,9 @@ function moneyLabel(value){
   return "$"+Math.max(0,Number(value)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4});
 }
 
-export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,onContinuity}){
+// covered: another thread's opening state is up. The panel belongs to the thread being left, so it hides without unmounting: a
+// failed open brings it back with the drafts in it.
+export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,onContinuity,covered=false}){
   const [objective,setObjective]=useState("");
   const [tokenBudget,setTokenBudget]=useState("");
   const [timeBudget,setTimeBudget]=useState("");
@@ -155,7 +157,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   // The cell is narrow, so a folder shows by its own name (a root by its path); the full path is in the tooltip.
   const workspaceCwd=String(continuity?.workspace?.cwd||"");
   const workspaceCellLabel=workspaceLabel(continuity?.workspace);
-  return <div className="goal-panel" data-testid="goal-panel">
+  return <div className={"goal-panel"+(covered?" opening-covered":"")} data-testid="goal-panel">
     <div className="goal-panel-head"><Target size={19}/><div><strong>Thread goal</strong><span>Durable objective stored with this thread, independent of the chat transcript.</span></div><em className={"goal-status status-"+String(status).replace(/[^a-z]/gi,"").toLowerCase()}>{status}</em></div>
     {error&&<div className="inline-error">{error}</div>}
     {blocked&&<div className="goal-budget-alert" role="alert" data-testid="goal-budget-alert"><AlertTriangle size={16}/><div><strong>Goal budget exhausted</strong><span>New turns are blocked. Increase the exhausted budget, or pause, complete, or clear this goal.</span></div></div>}

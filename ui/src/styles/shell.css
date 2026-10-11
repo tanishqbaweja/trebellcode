@@ -226,8 +226,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .main-frame.terminal-open .chat-workspace .conversation-scroll{bottom:calc(var(--terminal-height,330px) + 128px)}
 /* A thread that takes more than a moment to open (App: OPENING_COVER_DELAY_MS) names itself in the conversation area with a quiet
    spinner. What it covers only hides, so a failed open puts that view back with its layout and scroll position as they were; a
-   page it was opened from (History, Projects…) hides the same way under the chat view, and so does the left thread's find bar. */
+   page it was opened from (History, Projects…) hides the same way under the chat view, and so does the left thread's find bar. The
+   left thread's goal panel gives its place to the opening state's own, without unmounting. */
 .chat-workspace :is(.conversation-scroll,.thread-find-bar).opening-covered,.main-frame.opening-over-page>:is(.page-topbar,.secondary-page){visibility:hidden}
+:root:root .context-panel .goal-panel.opening-covered{display:none}
 .chat-workspace .thread-opening{position:absolute;left:0;right:0;top:var(--top);bottom:132px;display:flex;align-items:center;justify-content:center;padding:34px 28px 72px;pointer-events:none;animation:tb-fade .24s ease-out}
 .main-frame.terminal-open .chat-workspace .thread-opening{bottom:calc(var(--terminal-height,330px) + 128px)}
 .thread-opening-body{min-width:0;max-width:min(100%,764px);display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center}
