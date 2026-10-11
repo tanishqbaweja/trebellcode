@@ -3,7 +3,12 @@ import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers
 import { api } from "../api.js";
 import { baseProjectRecord, enrichProjectRecords, projectCardDetail, projectEnvironmentLabel, summarizeProjectRefreshErrors } from "../project-enrichment.js";
 import { PROJECT_PAGE_SIZE, projectGroupCounts, projectGroupKey, projectWindow } from "../project-window.js";
+import { projectRemovalQuestion, projectRestoreBlocker, projectRestoreBody } from "../project-restore.js";
 import { startVisibilityPoll } from "../visibility-poll.js";
+
+// The Projects page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves on,
+// or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.
+let projectsOnScreen=null;
 
 function blankScript(){
   return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
@@ -40,7 +45,7 @@ function ProjectIcon({project}){
   return <span className="project-icon project-icon-monogram" style={{background:icon?.color||autoColor(project.name)}}>{text}</span>;
 }
 
-export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOpen,onGeneralChat,onRunScript,onOpenPreview,onProjectUpdated,models=[]}){
+export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOpen,onGeneralChat,onRunScript,onOpenPreview,onProjectUpdated,onOfferUndo,models=[]}){
   const [projects,setProjects]=useState([]);
   const [cloneUrl,setCloneUrl]=useState("");
   const hasDesktopPicker=Boolean(window.trebellDesktop?.pickDirectory);
@@ -246,14 +251,49 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     try{await api("/api/clone-jobs",{method:"POST",body:{action,id:project.cloneJob?.id}});await refreshAfterSuccess("Clone "+action+" was accepted")}
     catch(err){setError(err.message||String(err))}
   }
+  // A removal is undone from the app's toast when the listed record can put the project back as it was; when it cannot
+  // (projectRestoreBlocker), the page asks first and says what goes with it.
   async function removeProject(project){
+    const removed=latestProject(project),blocker=projectRestoreBlocker(removed),undoable=Boolean(onOfferUndo)&&!blocker;
+    if(!undoable&&!confirm(projectRemovalQuestion(removed,blocker)))return;
+    const index=projectsRef.current.findIndex(item=>item.id===removed.id);
+    const activate=removed.path===currentPath&&(removed.environmentId||null)===(currentEnvironmentId||null);
     setBusy(true);setError("");
     try{
-      await api("/api/projects?id="+encodeURIComponent(project.id),{method:"DELETE"});
+      await api("/api/projects?id="+encodeURIComponent(removed.id),{method:"DELETE"});
+      if(undoable)onOfferUndo(`Project “${removed.name}” removed`,()=>restoreProject(removed,{index,activate}));
       await refreshAfterSuccess("Project was removed");
     }catch(err){setError("Could not remove project: "+(err.message||String(err)))}
     finally{setBusy(false)}
   }
+  // Undo of a removal: the listed record goes back (the server gives it a new id), the current project is the active one
+  // again, and the page on screen shows the card where it was.
+  async function restoreProject(removed,{index,activate}){
+    let restored;
+    try{restored=(await api("/api/projects",{method:"POST",body:{...projectRestoreBody(removed),...(activate?{activate:true}:{})}}))?.project||null}
+    catch(err){const page=projectsOnScreen?.current;if(!page)throw err;page.showError("Could not restore project: "+(err.message||String(err)));return}
+    const page=projectsOnScreen?.current;
+    try{(page?.onProjectUpdated||onProjectUpdated)?.(restored)}catch{}
+    await page?.placeRestored(restored,removed,index);
+  }
+  // The restored card takes the removed one's place (with its new id it would lead the list as a new project) and keeps
+  // the removed card's Git state until the refresh reads it again. It is placed again once a refresh that began before the
+  // restore lands, since that refresh's list has no such card.
+  async function placeRestored(restored,removed,index){
+    const place=()=>{
+      if(!restored?.id)return;
+      const list=projectsRef.current.filter(item=>item.id!==restored.id&&item.id!==removed.id);
+      list.splice(Math.max(0,Math.min(index,list.length)),0,baseProjectRecord(restored,removed));
+      commitProjects(withPendingCleanup(list));
+    };
+    place();
+    const earlier=refreshInFlightRef.current;
+    if(earlier){await earlier.catch(()=>false);place()}
+    await refreshAfterSuccess("Project was restored");
+  }
+  const screenRef=useRef(null);
+  screenRef.current={showError:setError,placeRestored,onProjectUpdated};
+  useEffect(()=>{const page=screenRef;projectsOnScreen=page;return()=>{if(projectsOnScreen===page)projectsOnScreen=null}},[]);
 
   function editScript(project,script=null){
     const value=script||blankScript();
