@@ -340,6 +340,61 @@ test("a thread that fails to open puts back exactly the view it replaced, the ne
   }finally{await harness.close()}
 });
 
+// A draft written before a click on a thread that does not open stays in the composer, which says beside it that the open failed
+// and where a message sent now goes, so the draft never starts a new task or reaches another thread unseen. The thread shown that
+// cannot open again after a restart says so too, and stays shown as it was instead of reconnecting over and over.
+test("a thread that fails to open says so beside the draft, with where a send now goes, and a reopen that fails stops there",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});harness.server.fail[GAMMA.thread.id]=FAILURE;
+  const composer=page.getByTestId("composer"),note=page.getByTestId("composer-alert");
+  try{
+    await start(page,harness);
+    await composer.fill("Ship the release notes.");
+    let release=harness.hold(GAMMA.thread.id);
+    await row(page,GAMMA).locator(".thread-main").click();
+    await expect(opening(page)).toBeVisible();await expect(composer).toBeDisabled();await expect(page.getByTestId("send")).toBeDisabled();
+    release();
+    await expect(page.locator(".sidebar-action-error")).toContainText(FAILURE);
+    await expect(note).toHaveText(`Could not open “Flaky import”: ${FAILURE} Sending now starts a new task instead.`);
+    await expect(note).toHaveAttribute("role","status");await expect(page.locator(".composer-status")).toHaveClass(/error/);
+    await expect(hero(page)).toBeVisible();await expect(composer).toBeEnabled();await expect(composer).toHaveValue("Ship the release notes.");
+    expect([harness.sent("thread/start"),harness.sent("turn/start")]).toEqual([[],[]]);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      for(const [width,height] of [[1280,800],[900,800]]){
+        await page.setViewportSize({width,height});await frames(page,3);
+        const fit=await note.evaluate(node=>{const status=node.closest(".composer-status"),wrap=node.closest(".composer-wrap").getBoundingClientRect(),rect=node.getBoundingClientRect(),shell=document.querySelector(".workspace-shell");return {inside:rect.left>=wrap.left-1&&rect.right<=wrap.right+1,clipped:status.scrollWidth>status.clientWidth+1,sideways:shell.scrollWidth>shell.clientWidth+1}});
+        expect(fit,`${mode} ${width}x${height}`).toEqual({inside:true,clipped:false,sideways:false});
+        await page.screenshot({animations:"disabled",path:`${auditDir}thread-open-failed-note-${mode}-${width}x${height}.png`});
+      }
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1600,height:980});
+    // Editing the draft keeps the note, which is about where the draft goes; a thread that opens ends it.
+    await composer.press("End");await composer.pressSequentially(" Today.");await expect(note).toBeVisible();
+    await openRow(page,BETA);await expect(note).toHaveCount(0);await expect(composer).toHaveValue("Ship the release notes. Today.");
+    // From a thread, the note names the thread shown, which is where the draft goes; sending it there ends the note.
+    release=harness.hold(GAMMA.thread.id);
+    await row(page,GAMMA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
+    release();
+    await expect(note).toHaveText(`Could not open “Flaky import”: ${FAILURE} Sending now goes to “Payment retries”.`);
+    await expect(headerTitle(page)).toHaveText("Payment retries");
+    await page.getByTestId("send").click();
+    await expect(page.getByText("Fixture reply in "+BETA.thread.id,{exact:true})).toBeVisible({timeout:15_000});
+    await expect(note).toHaveCount(0);expect(harness.sent("turn/start")).toEqual([BETA.thread.id]);
+    // A restart, after which the thread shown cannot open again: the app says so once and keeps it shown, on a transport that stays up.
+    harness.server.fail[BETA.thread.id]=FAILURE;
+    const before=harness.resumes(BETA.thread.id);harness.drop();
+    await expect(page.getByTestId("app-action-error")).toContainText("Could not reopen thread",{timeout:15_000});
+    await expect(note).toHaveText(`Could not reopen “Payment retries”: ${FAILURE}`);
+    await expect(headerTitle(page)).toHaveText("Payment retries");await expect(row(page,BETA)).toHaveClass(/active/);await expect(answer(page,BETA)).toBeVisible();
+    await expect(composer).toBeEnabled();
+    expect(harness.resumes(BETA.thread.id)).toBe(before+1);
+    const lists=harness.sent("thread/list").length;await page.waitForTimeout(2_500);
+    expect([harness.resumes(BETA.thread.id),harness.sent("thread/list").length]).toEqual([before+1,lists]);
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-reopen-failed-note-dark-1600x980.png"});
+  }finally{await harness.close()}
+});
+
 test("of two threads opening at once the last one asked for wins, whichever answers first, and a new task replaces both",async({page})=>{
   test.setTimeout(60_000);
   const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
