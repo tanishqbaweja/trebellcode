@@ -37,8 +37,8 @@ async function startNativeRelay(){
 }
 
 // The GUI server's side for Trebell Native on one provider. Without a key the catalog has no models (a fixed-model provider
-// still lists its model) with "API key required", as ProviderManager.models answers; refuseKey makes a typed key fail its
-// check the way the GUI server's checkKey reports it.
+// still lists its model) and its error asks for a key, or says why the last key typed was refused, as ProviderManager.models
+// answers; refuseKey makes a typed key fail its check the way the GUI server's checkKey reports it.
 const STATIC_MODELS={justworker:["claude-opus-4-8"],hcnsec:["glm-5.3"]};
 async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false}){
   const server={provider,hasKey,keyCheck:null,posts:[]};
@@ -48,7 +48,7 @@ async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models
   const keyless=()=>STATIC_MODELS[server.provider]||[];
   const catalog=()=>server.hasKey
     ?{provider:server.provider,agentRuntime:"native",ready:true,models,defaultModel,metadata:{provider:server.provider,source:"live",models:models.map(id=>({id,provider:server.provider}))},error:null}
-    :{provider:server.provider,agentRuntime:"native",ready:false,models:keyless(),defaultModel:keyless()[0]||null,metadata:{provider:server.provider,source:keyless().length?"static":"none",models:keyless().map(id=>({id,provider:server.provider}))},error:"API key required"};
+    :{provider:server.provider,agentRuntime:"native",ready:false,models:keyless(),defaultModel:keyless()[0]||null,metadata:{provider:server.provider,source:keyless().length?"static":"none",models:keyless().map(id=>({id,provider:server.provider}))},error:server.keyCheck?"API key check failed: "+server.keyCheck.message:"API key required"};
   const row=id=>({id,name:PROVIDER_NAMES[id],official:["openai","anthropic","gemini"].includes(id),requiresKey:true,hasKey:id===server.provider&&server.hasKey,keyCheck:id===server.provider?server.keyCheck:null});
   const providers=()=>({selected:server.provider,providers:Object.keys(PROVIDER_NAMES).map(row),status:{...row(server.provider),ready:server.hasKey},ready:server.hasKey});
   const runtimes=()=>({selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[{id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true,version:"Built into Trebell Code"}]});
@@ -162,9 +162,14 @@ for(const mode of MODES)test(`a refused key reads as the provider's reason under
     expect(server.posts).toEqual([{provider:"vyceai",apiKey:true}]);
     await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-key-refused-${mode}.png`});
 
-    // Leave Settings, then come back the way the composer sends people: the reason is still there.
+    // Leave Settings: the composer no longer reads as a neutral next step but as the failed check, with its reason and
+    // Configure. Then come back the way the composer sends people: the reason is still there.
     await page.getByRole("button",{name:"Threads",exact:true}).click();
     await expect(configure).toBeVisible();
+    const composerStatus=composerWrap(page).locator(".composer-status");
+    await expect(composerStatus.getByTestId("composer-model-status")).toHaveText("API key check failed: "+REFUSAL);
+    await expect(composerStatus).toHaveClass(/(?:^|\s)error(?:\s|$)/);
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-key-refused-composer-${mode}.png`});
     await configure.click();
     await expect(providerStatus).toHaveText("VyceAi · key check failed · "+REFUSAL);
     await expect(keyField).toBeFocused();

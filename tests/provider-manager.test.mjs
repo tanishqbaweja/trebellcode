@@ -407,6 +407,26 @@ test("a refused key check never shows a masked key or raw JSON, and says so when
   });
 });
 
+test("a provider whose key check was refused says why in its catalog until a key is saved or removed",async()=>{
+  // Live, VyceAi refused a typed key with HTTP 402; afterwards the composer still read only "API key required".
+  const root=mkdtempSync(join(tmpdir(),"trebell-key-check-catalog-"));
+  const refusal=JSON.stringify({error:{message:"Insufficient balance. Please top up your account.",type:"insufficient_quota",code:"insufficient_balance"}});
+  let answer=()=>new Response(refusal,{status:402});
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>answer()});
+  try{
+    assert.deepEqual(await manager.models("vyceai"),{models:[],defaultModel:null,source:"none",error:"API key required"});
+    await assert.rejects(manager.checkKey("vyceai","vy-refused-key-fixture-1234"),/HTTP 402/);
+    assert.deepEqual(await manager.models("vyceai"),{models:[],defaultModel:null,source:"none",error:"API key check failed: HTTP 402: Insufficient balance. Please top up your account. The key was not saved."});
+    assert.equal((await manager.models("openai")).error,"API key required","a refusal belongs to its provider");
+    manager.setKey("vyceai","");
+    assert.equal((await manager.models("vyceai")).error,"API key required","removing the key clears the refusal");
+    await assert.rejects(manager.checkKey("vyceai","vy-refused-key-fixture-1234"),/HTTP 402/);
+    answer=()=>Response.json({data:[{id:"vyce-fixture-model"}]});
+    assert.deepEqual((await manager.checkKey("vyceai","vy-accepted-key-fixture-5678")).models,["vyce-fixture-model"]);
+    assert.equal((await manager.models("vyceai")).error,undefined,"a key that passes clears the refusal");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI catalog judges fine-tunes by their base model and filtered words as whole id tokens",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-fine-tunes-"));
   try{

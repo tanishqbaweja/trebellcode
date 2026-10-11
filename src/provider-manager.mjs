@@ -687,6 +687,9 @@ export class ProviderManager {
     }
   }
 
+  // Without a key the catalog asks for one, or says why the last key typed for the provider was refused (checkKey).
+  #missingKeyError(providerId){const check=this.keyChecks.get(providerId);return check?"API key check failed: "+check.message:"API key required"}
+
   async models(providerId) {
     const provider = this.get(providerId);
     if (provider.staticModels) {
@@ -695,11 +698,11 @@ export class ProviderManager {
         defaultModel: provider.staticModels[0] || null,
         source: "static",
         metadata: provider.staticModels.map((id) => ({ id, provider: provider.id, protocolCompatibility: [...(provider.protocolCompatibility || [])] })),
-        ...(!this.hasKey(provider.id) ? { error: "API key required" } : {}),
+        ...(!this.hasKey(provider.id) ? { error: this.#missingKeyError(provider.id) } : {}),
       };
     }
     if (!this.hasKey(provider.id)) {
-      return { models: [], defaultModel: null, source: "none", error: "API key required" };
+      return { models: [], defaultModel: null, source: "none", error: this.#missingKeyError(provider.id) };
     }
 
     const key = this.key(provider.id);

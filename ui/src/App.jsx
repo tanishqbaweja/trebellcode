@@ -68,7 +68,7 @@ import { activityItemStatus, commandFacts, commandLine, fileChangeRows, finished
 import { observeHeaderFit } from "./header-fit.js";
 import { sidebarAutoCollapses } from "./sidebar-layout.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
-import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "./provider-labels.js";
+import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, modelProviderLabel } from "./provider-labels.js";
 import { specializedToolNamespaceNames, specializedToolSelection } from "./lazy-tool-exposure.js";
 import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
 import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
@@ -787,8 +787,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   // model provider without a key is set up first, also one whose catalog lists its fixed model anyway (JustWorker, HCNSec).
   const configureLabel="Configure "+(modelProviderRuntime?providerLabel:agentRuntimeLabel),setupRequired=!starting&&!providerReady&&(!models.length||modelProviderRuntime);
   const modelBlocker=runtimeSwitchLabel||(modelReady&&!setupRequired)||running?"":modelsLoading?"Loading models…":modelError||"No models available — check Settings";
-  // A model provider with no key yet is a next step (Configure), so its status line is not shown as an error.
-  const providerKeyStep=setupRequired&&modelProviderRuntime;
+  // A model provider with no key yet is a next step (Configure), so its status line is not shown as an error until a key
+  // check fails, when the catalog says why instead.
+  const providerKeyStep=setupRequired&&modelProviderRuntime&&modelError===MISSING_PROVIDER_KEY;
   // While a turn runs the same Send button queues or steers; its label and tooltip name which (the icon stays the send icon).
   const sendLabel=running&&!steerFollowUps?"Queue follow-up":running?"Steer agent":"Send message";
   // starting: Trebell's first load has not yet said which harness runs, so the composer names none.

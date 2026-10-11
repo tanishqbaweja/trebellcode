@@ -10,7 +10,7 @@ import { sharedRuntimeCapabilities } from "../../../src/runtime-capabilities.mjs
 import { runtimeStatusForKind } from "../runtime-status.js";
 import { harnessCheck, harnessStateText, harnessStateTitle } from "../harness-check.js";
 import { agentName } from "../display-labels.js";
-import { DEFAULT_MODEL_PROVIDER, MODEL_PROVIDER_LABELS, modelProviderLabel } from "../provider-labels.js";
+import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, MODEL_PROVIDER_LABELS, modelProviderLabel } from "../provider-labels.js";
 import ScopedSettingsCard from "./ScopedSettingsCard.jsx";
 
 const PROVIDER_NOTES={
@@ -22,8 +22,6 @@ const PROVIDER_NOTES={
   justworker:"Available model: claude-opus-4-8.",
   hcnsec:"Available model: glm-5.3.",
 };
-// The model catalog's error for a provider without a key (ProviderManager.models): a next step, not a failure.
-const MISSING_PROVIDER_KEY="API key required";
 let appliedSettingsEntryNonce=null;
 // The last harness snapshot this window saw: Agents & models renders it at once on later visits while a fresh probe runs.
 let lastAgentRuntimeInfo=null;
@@ -409,8 +407,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       await onProviderUpdated?.({provider:result.selected||selected,agentRuntime:result.agentRuntime||selectedAgent,catalog:result,refreshBootstrap:false});
     }catch(error){
       // A refused key check comes back with the provider's status, which says why; other failures show their own message.
+      // The app's catalog then says why too, so the composer shows the failed check instead of a first step.
       const refused=(await loadProviders())?.providers?.find(item=>item.id===selected)?.keyCheck;
       showProviderMessage(refused?"":error.message,!refused);
+      if(refused)await onProviderUpdated?.({provider:selected,agentRuntime:selectedAgent,refreshBootstrap:false});
     }
   }
   async function clearProviderKey(){
@@ -580,10 +580,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
 
   const selectedStatus=providerInfo?.providers?.find(p=>p.id===selected)||providerInfo?.status;
   // A provider without a key shows that next step in the neutral status; it turns red once a key check or the provider itself
-  // fails. The server keeps a refused key check (keyCheck), so its reason is still here after leaving Settings.
+  // fails. The server keeps a refused key check (keyCheck), so its reason is still here after leaving Settings; the catalog
+  // error that repeats it is not shown twice.
   const keyCheck=providerSwitching?null:selectedStatus?.keyCheck||null;
   const providerStatusText=providerSwitching?"switching provider…":keyCheck?"key check failed":selectedStatus?.hasKey?(modelError?"provider error":(providerInfo?.ready?"ready":"configured")):MISSING_PROVIDER_KEY;
-  const providerModelError=modelError&&modelError!==MISSING_PROVIDER_KEY&&modelError!==providerStatusText?modelError:"";
+  const providerModelError=modelError&&modelError!==MISSING_PROVIDER_KEY&&modelError!==providerStatusText&&!(keyCheck&&modelError.endsWith(keyCheck.message))?modelError:"";
   const selectedAgentStatus=runtimeStatusForKind(agentInfo,selectedAgent,{preferSelected:true});
   // Diagnostics chips stay neutral until their answer arrives (the runtime poll, then the diagnostics read): an unknown
   // state is not a warning. They used to show amber "not ready" for a provider that was ready but not yet read. A failed
