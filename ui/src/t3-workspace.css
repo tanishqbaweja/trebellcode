@@ -14,7 +14,7 @@
   --t3-accent:#a58af4;
 }
 
-body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
+body{min-width:360px;background:var(--t3-bg);color:var(--t3-text)}
 .app-shell{height:100vh;display:grid;grid-template-columns:var(--sidebar-width,258px) minmax(0,1fr);gap:0;padding:0;background:var(--t3-bg);overflow:hidden;transition:grid-template-columns var(--panel-animation-ms) ease;position:relative}
 .app-shell.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}
 .workspace-shell{min-width:0;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);background:var(--t3-bg);transition:grid-template-columns var(--panel-animation-ms) ease;position:relative}
@@ -470,7 +470,7 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .thread-menu-popover but
 html[data-mode="light"]:not([data-custom-theme="true"]) .model-picker-menu>button,
 html[data-mode="light"]:not([data-custom-theme="true"]) .model-runtime-profiles>button,
 html[data-mode="light"]:not([data-custom-theme="true"]) .mini-popover button{color:#424b57!important}
-html[data-mode="light"]:not([data-custom-theme="true"]) .thread-menu-popover button:hover,
+html[data-mode="light"]:not([data-custom-theme="true"]) .thread-menu-popover button:hover:not(:disabled),
 html[data-mode="light"]:not([data-custom-theme="true"]) .model-picker-menu>button:hover,
 html[data-mode="light"]:not([data-custom-theme="true"]) .model-runtime-profiles>button:hover,
 html[data-mode="light"]:not([data-custom-theme="true"]) .mini-popover button:hover{background:#eef1f4!important;color:#20262e!important}

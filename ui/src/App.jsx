@@ -63,6 +63,9 @@ import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verif
 import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openThreadTitleSource, sameCatalogSnapshot, threadCatalogRuntime, threadOwnerElsewhere, threadsFromCatalogMeta, threadTitle, threadKeptBySwitch } from "./thread-catalog.js";
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "./activity-window.js";
+import { commandFacts, commandLine, diffLines, fileChangeRows, finishedActivitySteps } from "./activity-details.js";
+import { observeHeaderFit } from "./header-fit.js";
+import { sidebarAutoCollapses } from "./sidebar-layout.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "./provider-labels.js";
 import { specializedToolNamespaceNames, specializedToolSelection } from "./lazy-tool-exposure.js";
@@ -304,7 +307,7 @@ function EventIcon({event}){
   if(event.kind==="mcpToolCall")return <Zap size={13}/>;
   return <Sparkles size={13}/>;
 }
-const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initialAssistantText="",initialCommandOutputs,initialMcpProgress,onOpenPanel},ref){
+const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initialAssistantText="",initialCommandOutputs,initialMcpProgress,onOpenPanel,canInspectChanges=true},ref){
   const [assistantText,setAssistantText]=useState(initialAssistantText);
   const [commandOutputs,setCommandOutputs]=useState(()=>new Map(initialCommandOutputs||[]));
   const [mcpProgress,setMcpProgress]=useState(()=>new Map(initialMcpProgress||[]));
@@ -338,19 +341,40 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initial
       if(event.kind==="reasoning")return <ReasoningRow key={event.id} id={id} text={streamedOutput||reasoningItemText(event.raw)} active={event.status==="running"}/>;
       let rowEvent=!event.output&&streamedOutput?{...event,output:streamedOutput}:event;
       if(progress)rowEvent={...rowEvent,title:progress.title||rowEvent.title,raw:{...(rowEvent.raw||{}),progress:progress.raw||progress}};
-      return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={openWorkspace}/>;
+      return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={canInspectChanges?openWorkspace:null}/>;
     })}
   </div></>}{assistantText&&<div className="assistant-answer chat-markdown"><ChatMarkdown text={assistantText}/></div>}</div>;
 }));
 
-// An expanded row shows what the step did: its command, output or changes. The raw event is shown only for a step that has
-// none of those (an MCP call, for example), not as a third copy of the command under its output.
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
   const [expanded,setExpanded]=useState(false);
   return <details className={"tool-event status-"+(toolEventFailed(event)?"error":event.status)+" kind-"+(event.kind||"event")} onToggle={toggle=>setExpanded(toggle.currentTarget.open)}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
-    {expanded&&<div className="tool-event-body">{event.raw?.command&&<pre>{Array.isArray(event.raw.command)?event.raw.command.join(" "):event.raw.command}</pre>}{event.output&&<pre>{event.output}</pre>}{event.raw?.changes&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}{!(event.raw?.command||event.output||event.raw?.changes)&&<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre>}</div>}
+    {expanded&&<ActivityEventBody event={event} onInspectChanges={onInspectChanges}/>}
   </details>;
 });
+function DiffBlock({lines}){
+  return <pre className="tool-event-diff">{lines.map((line,index)=><span key={index} className={"diff-"+line.tone}>{line.text||" "}</span>)}</pre>;
+}
+// An expanded row shows what the step did, once each: a command's line (the one it ran, when the harness titled it with a
+// description) with its exit code, folder and duration, then its output; a change's files with what happened to each and its
+// diff, which a General chat or a folder without Git has no other place to show. The raw event is shown only for a step that
+// has none of those (an MCP call, for example), not as a third copy of the command under its output.
+function ActivityEventBody({event,onInspectChanges}){
+  const raw=event.raw&&typeof event.raw==="object"?event.raw:null;
+  const command=raw?.command?commandLine(raw):"",facts=command?commandFacts(raw):[];
+  const changes=Array.isArray(raw?.changes)?fileChangeRows(raw.changes):null;
+  // A turn's diff update carries the diff itself.
+  const turnDiff=event.kind==="fileChange"&&typeof event.raw==="string"?diffLines(event.raw):[];
+  return <div className="tool-event-body">
+    {command&&<pre>{command}</pre>}
+    {facts.length>0&&<div className="tool-event-facts" data-testid="tool-event-facts">{facts.map(fact=><span key={fact.key} className={"fact-"+fact.key+(fact.tone?" tone-"+fact.tone:"")} title={fact.title}>{fact.label}</span>)}</div>}
+    {event.output&&<pre>{event.output}</pre>}
+    {changes?.length>0&&<div className="tool-event-changes" data-testid="tool-event-changes">{changes.map((change,index)=><div className="tool-event-change" key={change.path+":"+index}><div className="tool-event-change-head"><FileDiff size={12} aria-hidden="true"/><code title={change.path}>{change.path||"Unnamed file"}</code>{change.kind&&<em className={"change-kind kind-"+change.kind}>{change.kind}{change.movePath&&<> to <code title={change.movePath}>{change.movePath}</code></>}</em>}</div>{change.lines.length>0&&<DiffBlock lines={change.lines}/>}</div>)}</div>}
+    {turnDiff.length>0&&<DiffBlock lines={turnDiff}/>}
+    {changes&&onInspectChanges&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}
+    {!(command||event.output||changes?.length||turnDiff.length)&&<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre>}
+  </div>;
+}
 function ThreadFindBar({state,inputRef,barRef,onQuery,onPrevious,onNext,onClose}){
   if(!state.open)return null;
   const current=state.index>=0?state.results[state.index]:null;
@@ -812,7 +836,7 @@ export default function App(){
   const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
   const [settings,setSettings]=useState(()=>({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:DEFAULT_MODEL_PROVIDER,...cachedAppearanceSettings()}));
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
-  const [sidebarOpen,setSidebarOpen]=useState(true);
+  const [sidebarOpen,setSidebarOpen]=useState(()=>!sidebarAutoCollapses(typeof window!=="undefined"?window.innerWidth:1600));
   const [layoutPrefs,setLayoutPrefs]=useState(()=>{
     try{return normalizeLayoutPreferences(JSON.parse(localStorage.getItem("trebell-layout-v1")||"{}"))}
     catch{return {...DEFAULT_LAYOUT}}
@@ -882,6 +906,13 @@ export default function App(){
     let frame=0;const resize=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>setViewportWidth(window.innerWidth))};
     window.addEventListener("resize",resize);return()=>{cancelAnimationFrame(frame);window.removeEventListener("resize",resize)};
   },[]);
+  // A browser window too narrow for the sidebar beside a usable main column collapses the sidebar, as Ctrl+B does (the desktop
+  // window is never that narrow). It comes back when the window widens past the breakpoint, unless the person had collapsed it.
+  const narrowWindow=sidebarAutoCollapses(viewportWidth),sidebarAutoCollapsedRef=useRef(narrowWindow);
+  useEffect(()=>{
+    if(narrowWindow){if(sidebarOpen){sidebarAutoCollapsedRef.current=true;setSidebarOpen(false)}}
+    else if(sidebarAutoCollapsedRef.current){sidebarAutoCollapsedRef.current=false;setSidebarOpen(true)}
+  },[narrowWindow]);
   // The docked inspector (wider than 900px) never pushes the main column under 400px or past the window edge: it takes the stored
   // width when the window has room and shrinks toward its 340px minimum when it does not. The stored preference stays for wider
   // windows. The sidebar column follows the shell's own breakpoints (t3-workspace.css: 224px up to 1120px wide).
@@ -2738,7 +2769,7 @@ export default function App(){
       return;
     }
   }
-  async function moveThreadOrder(thread,direction){const group=threadOrderGroup(threads,thread);const index=group.findIndex(t=>t.id===thread.id);const targetIndex=index+direction;if(targetIndex<0||targetIndex>=group.length)return;const before=direction<0?group[targetIndex].id:(group[targetIndex+1]?.id||null);await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:before});await loadThreads(rpc,{strict:true})}
+  async function moveThreadOrder(thread,direction){const group=threadOrderGroup(threads,thread,threadMeta);const index=group.findIndex(t=>t.id===thread.id);const targetIndex=index+direction;if(targetIndex<0||targetIndex>=group.length)return;const before=direction<0?group[targetIndex].id:(group[targetIndex+1]?.id||null);await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:before});await loadThreads(rpc,{strict:true})}
   async function bulkAction(action){
     const selected=[...selectedThreadIds].map(id=>threads.find(thread=>thread.id===id)).filter(Boolean);if(!selected.length)return;
     if(action==="snooze"){setSnoozeRequest({threads:selected,bulk:true});return}
@@ -4249,13 +4280,22 @@ export default function App(){
   },[settings.keybindingRules,settings.keyboardShortcuts]);
   const sidebarThreadAction=useLatestCallback(threadAction);
   const sidebarMoveThread=useLatestCallback(moveThreadOrder);
-  const threadMoves=useMemo(()=>threadMoveAvailability(threads),[threads]);
+  const threadMoves=useMemo(()=>threadMoveAvailability(threads,threadMeta),[threads,threadMeta]);
+  // The sidebar runtime card's dot follows the harness connection as the composer and the Runtime panel report it: green only
+  // while connected and set up, amber while starting or (re)connecting, red after a failed connection. One object per tone and
+  // label, so the memoized sidebar does not re-render on every App render (each composer keystroke).
+  const [sidebarConnectionTone,sidebarConnectionLabel]=bootstrap.mock?["ok","Ready"]:!runtimeKnown?["warn","Starting"]
+    :rpcStatus==="connected"?(providerReady?["ok","Connected"]:["off","Setup required"])
+    :rpcStatus==="error"?["err","Connection failed"]
+    :["warn",transportConnectedRef.current?"Reconnecting…":"Connecting…"];
+  const sidebarConnection=useMemo(()=>({tone:sidebarConnectionTone,label:sidebarConnectionLabel}),[sidebarConnectionTone,sidebarConnectionLabel]);
+  const workspaceHeaderRef=useCallback(node=>observeHeaderFit(node),[]);
   const sidebarBulkAction=useLatestCallback(bulkAction);
   const sidebarCollapse=useLatestCallback(()=>setSidebarOpen(false));
   // Retry's outcome (the list, or the error again) shows in the sidebar itself.
   const sidebarRetryThreads=useLatestCallback(()=>loadThreads(rpcRef.current).then(()=>undefined));
   const runningSidebarIds=useMemo(()=>runningThreadIds(displayThreads,{activeThreadId:activeThread?.id,activeRunning:running,turnStates:threadTurnStates}),[displayThreads,activeThread?.id,running,threadTurnStates]);
-  const completedEvents=events.filter(event=>event.status==="done").length;
+  const completedEvents=finishedActivitySteps(events);
   const paletteActions=paletteOpen?[
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:"Ctrl+N",onRun:newChat},
     {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
@@ -4361,12 +4401,6 @@ export default function App(){
     </div>
   </div>;
 
-  // The sidebar runtime card's dot follows the harness connection as the composer and the Runtime panel report it: green only
-  // while connected and set up, amber while starting or (re)connecting, red after a failed connection.
-  const sidebarConnection=bootstrap.mock?{tone:"ok",label:"Ready"}:!runtimeKnown?{tone:"warn",label:"Starting"}
-    :rpcStatus==="connected"?(providerReady?{tone:"ok",label:"Connected"}:{tone:"off",label:"Setup required"})
-    :rpcStatus==="error"?{tone:"err",label:"Connection failed"}
-    :{tone:"warn",label:transportConnectedRef.current?"Reconnecting…":"Connecting…"};
   const layoutStyle={
     "--sidebar-width":layoutPrefs.sidebarWidth+"px",
     "--right-panel-width":rightPanelWidth+"px",
@@ -4383,7 +4417,7 @@ export default function App(){
         </div>
 
         {(section==="chat"||section==="new")&&<div className="chat-workspace">
-          <header className="workspace-header">
+          <header className="workspace-header" ref={workspaceHeaderRef}>
             <div className="workspace-breadcrumb">
               {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title="Open sidebar · Ctrl+B"><PanelLeftOpen size={14}/></button>}
               <button className={"project-crumb"+(projectlessMode?" projectless":"")} onClick={projectlessMode||!window.trebellDesktop?.pickDirectory?()=>setSection("projects"):()=>runUserAction(pickWorkspace,"Could not open workspace")} title={projectlessMode?"No project · choose a project":window.trebellDesktop?.pickDirectory?(projectPath||"Open folder"):"Projects and workspaces"}>{projectlessMode?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Projects and General chat"><ChevronDown size={12}/></button>
@@ -4402,7 +4436,7 @@ export default function App(){
               {activeThread?.id&&<button className={"header-control icon-only "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
               <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
               <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance")} aria-label={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"} title={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
-              <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
+              <button className="header-control icon-only palette-control" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
             </div>
           </header>
 
@@ -4412,7 +4446,7 @@ export default function App(){
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
               <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId}/>
-              <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel}/>
+              <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {shownApproval&&<div className="inline-approval"><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?`Queued in ${agentRuntimeLabel}`:item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button disabled={running&&!runtimeCapabilities.steering} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>runUserAction(()=>editQueued(item),"Could not edit queued follow-up")} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}

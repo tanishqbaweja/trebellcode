@@ -307,6 +307,26 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .timeline .tool-event-body pre{margin:0 0 6px;max-height:200px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg0);color:var(--tx2);font:11px/1.55 var(--mono)}
 .conversation-column .timeline .tool-event-body button{height:28px;padding:0 10px;gap:6px;border:1px solid var(--line2);border-radius:var(--r-s);background:var(--bg3);color:var(--tx1);font-size:11.5px}
 .conversation-column .timeline .tool-event-body button:hover{background:var(--bg4);color:var(--tx0)}
+/* A command's exit code, folder and duration as one quiet line under its command; a non-zero exit reads as a failure. */
+.conversation-column .timeline .tool-event-facts{display:flex;flex-wrap:wrap;align-items:center;gap:2px 0;min-width:0;margin:-1px 0 7px;padding:0 2px;color:var(--tx3);font:500 10.5px/1.5 var(--mono)}
+.conversation-column .timeline .tool-event-facts>span{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conversation-column .timeline .tool-event-facts>span+span::before{content:"·";margin:0 7px;color:var(--tx3)}
+.conversation-column .timeline .tool-event-facts>.tone-ok{color:var(--ok)}
+.conversation-column .timeline .tool-event-facts>.tone-err{color:var(--err)}
+/* A change step's files: each path with what happened to it, then its diff. */
+.conversation-column .timeline .tool-event-change-head{display:flex;align-items:center;gap:7px;min-width:0;margin:1px 0 5px;color:var(--tx2)}
+.conversation-column .timeline .tool-event-change-head>svg{flex:none;color:var(--tx3)}
+.conversation-column .timeline .tool-event-change-head code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tx0);font:500 11.5px/1.4 var(--mono)}
+.conversation-column .timeline .tool-event-change-head .change-kind{display:inline-flex;align-items:center;gap:4px;flex:0 1 auto;min-width:0;padding:1px 7px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2);font:500 10px/1.4 var(--mono);font-style:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.conversation-column .timeline .tool-event-change-head .change-kind code{color:inherit;font:inherit}
+.conversation-column .timeline .tool-event-change-head .change-kind.kind-added{border-color:var(--okb);background:var(--okt);color:var(--ok)}
+.conversation-column .timeline .tool-event-change-head .change-kind.kind-deleted{border-color:var(--errb);background:var(--errt);color:var(--err)}
+.conversation-column .timeline .tool-event-body pre.tool-event-diff{overflow:auto}
+.conversation-column .timeline .tool-event-diff>span{display:block;min-width:max-content;margin:0 -10px;padding:0 10px}
+.conversation-column .timeline .tool-event-diff>.diff-add{background:color-mix(in srgb,var(--ok) 9%,transparent);color:var(--dadd)}
+.conversation-column .timeline .tool-event-diff>.diff-del{background:color-mix(in srgb,var(--err) 9%,transparent);color:var(--ddel)}
+.conversation-column .timeline .tool-event-diff>.diff-hunk{color:var(--ac)}
+.conversation-column .timeline .tool-event-diff>.diff-meta{color:var(--tx3)}
 .conversation-column .timeline-window-controls{margin:0 0 6px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg1);color:var(--tx3);font:10.5px var(--mono)}
 .conversation-column .timeline-window-controls button{height:24px;padding:0 8px;border:1px solid var(--line2);border-radius:7px;background:var(--bg3);color:var(--tx1);font-size:11px}
 .conversation-column .agent-block .assistant-answer{margin:12px 0 0;padding:0;font-size:13.5px;line-height:1.7;color:var(--tx1)}
@@ -505,7 +525,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .sidebar .sidebar-utility.active{background:var(--bg3)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .sidebar .thread-menu-popover{background:var(--panel)!important;border-color:var(--line2)!important;color:var(--tx1)!important;box-shadow:var(--shbig)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .sidebar .thread-menu-popover button{background:transparent!important;color:var(--tx1)!important}
-:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .sidebar .thread-menu-popover button:hover{background:var(--bg3)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .sidebar .thread-menu-popover button:hover:not(:disabled){background:var(--bg3)!important;color:var(--tx0)!important}
+/* A move that can do nothing reads and hovers as unavailable in every theme, as it does in built-in dark. */
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .sidebar .thread-menu-popover button:disabled{background:transparent!important;color:var(--tx3)!important;cursor:default}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .sidebar .thread-menu-popover button.danger{color:var(--err)!important}
 
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .workspace-breadcrumb{color:var(--tx3)!important}
@@ -588,29 +610,23 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header .workspace-breadcrumb>span.thread-title-button.is-static{flex:0 1 auto;min-width:0;display:inline-flex;align-items:center;padding:0 9px;color:var(--tx1);font-size:12.5px;cursor:default}
 .workspace-header .thread-title-button.is-static:hover{background:transparent;color:var(--tx1)}
 
-/* Topbar with the inspector open in mid-size windows: the project crumb keeps a readable minimum, the thread title shrinks
-   with an ellipsis, and the branch chip goes icon-only before either of them is cut to a letter. */
-.chat-workspace .workspace-header{container:tbheader/inline-size}
+/* Topbar in narrow main columns (a mid-size window with the inspector open): the thread title is the last thing to give way.
+   The project crumb shrinks first, to a few letters (its large flex-shrink takes the whole squeeze before the title takes any);
+   then header-fit.js measures the title and, while it shows less than a readable width, sets data-fit: 1 drops the labels of the
+   labelled actions, 2 also the project name, 3 also hides the theme and palette buttons (the palette, Settings and the
+   sidebar's search reach both). Each labelled control keeps its icon, tooltip and accessible name. */
 .workspace-header .workspace-breadcrumb{flex:1 1 auto}
-.workspace-header .project-crumb:not(.sidebar-reopen){flex:none}
+.workspace-header .project-crumb:not(.sidebar-reopen){flex:0 1000 auto;min-width:calc(39px + 4ch)}
 .workspace-header .thread-title-button{flex:0 1 auto;min-width:0}
 .workspace-header .thread-title-button strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@container tbheader (max-width:760px){
-  .workspace-header .project-crumb span{max-width:14ch}
-}
-@container tbheader (max-width:440px){
-  .workspace-header .project-crumb span{max-width:9ch}
-}
-/* Labelled actions give up their labels before the thread title is squeezed out: branch, Review and the project action at
-   560px, Stop at 460px. Each keeps its icon, tooltip and accessible name. */
-@container tbheader (max-width:560px){
-  .workspace-header .header-control:is(.branch-control,.review-control,.script-control){width:30px;padding:0;justify-content:center}
-  .workspace-header .header-control:is(.branch-control,.review-control,.script-control) span{display:none}
-}
-@container tbheader (max-width:460px){
-  .workspace-header .header-control.stop-control{width:30px;padding:0;justify-content:center}
-  .workspace-header .header-control.stop-control span{display:none}
-}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control){width:30px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control)>span{display:none}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .open-in-picker>button{width:28px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .open-in-picker>button>span{display:none}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .open-in-picker>select{width:24px;min-width:0;padding:0;color:transparent}
+.workspace-header:is([data-fit="2"],[data-fit="3"]) .project-crumb:not(.sidebar-reopen){width:30px;min-width:30px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="2"],[data-fit="3"]) .project-crumb:not(.sidebar-reopen)>span{display:none}
+.workspace-header[data-fit="3"] .workspace-header-actions>:is(.theme-toggle,.palette-control){display:none}
 
 /* Composer footer: "Context" with a meter that is always drawn (dashed while the window size is unknown) and the token
    value beside it; the hints keep their own end of the row with the Enter key as a key cap. */
