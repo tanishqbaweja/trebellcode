@@ -485,4 +485,28 @@ test.describe("Back and forward to a thread",()=>{
       }finally{await fixture.close()}
     });
   }
+
+  for(const mode of ["dark","light"])test(`Back to a thread right after a reload, before the thread list has come, opens that thread and keeps its entry (${mode})`,async({page})=>{
+    const threads=fixtureThreads(["Alpha thread","Beta thread"]),delays={},fixture=await startCodex(threads,delays);
+    try{
+      await openCodex(page,fixture,threads,{mode});
+      await threadRow(page,threads[0]).click();await expect(headerTitle(page)).toHaveText("Alpha thread");
+      await expect.poll(()=>shownEntry(page)).toBe("chat:"+threads[0].id);
+      await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+      await expect.poll(()=>shownEntry(page)).toBe("projects:"+threads[0].id);
+      delays.list=2500;
+      await page.reload();
+      await expect(page.getByTestId("composer")).toBeVisible();
+      await page.goBack();
+      await expect(headerTitle(page),"Back before the thread list came did not open the thread it went back to").toHaveText("Alpha thread",{timeout:10000});
+      await expect.poll(()=>shownEntry(page)).toBe("chat:"+threads[0].id);
+      await page.screenshot({animations:"disabled",path:shots+`history-reload-back-thread-${mode}-1280.png`});
+      // The entry still names the thread, so Back from the page after it reaches it again.
+      await page.goForward();
+      await expect.poll(()=>shownEntry(page)).toBe("chat:");
+      await page.goBack();
+      await expect(headerTitle(page)).toHaveText("Alpha thread");
+      await expect.poll(()=>shownEntry(page)).toBe("chat:"+threads[0].id);
+    }finally{await fixture.close()}
+  });
 });

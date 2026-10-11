@@ -996,6 +996,12 @@ export default function App(){
   // entry it reloaded; the entries around it stay, kept for the tab in sessionStorage. The desktop window has no Back or Forward of
   // its own and keeps the history in memory only.
   const [navigationRevision,setNavigationRevision]=useState(0);
+  // The threads a Back or Forward finds its entry's thread among: right after a reload the harness may not have listed them yet, and a
+  // step to a thread waits for that list (navigationEntryThread). loaded: the harness has listed them; known: loaded, or no list is
+  // coming (it failed, or there is no harness transport to list them).
+  const threadListKnown=threadListLoaded||Boolean(threadListError)||Boolean(bootstrap.mock)||!bootstrap.wsUrl||rpcStatus==="error";
+  const navigationThreadsRef=useRef(null);navigationThreadsRef.current={threads,loaded:threadListLoaded,known:threadListKnown};
+  useEffect(()=>{navigationHistoryRef.current.applying?.wake?.()},[threads,threadListKnown]);
   const writeNavigationEntry=(mode,entry)=>{
     if(!BROWSER_NAVIGATION||!entry)return;
     try{if(mode==="push")window.history.pushState(browserState(entry),"");else window.history.replaceState(browserState(entry,window.history.state),"")}catch{}
@@ -1007,7 +1013,7 @@ export default function App(){
     const location={section,threadId:activeThread?.id||null,rightPanelOpen:Boolean(rightPanelOpen),rightPanelTab:rightPanelTab||"files"};
     // A Back or Forward still opening its thread: the views passed on the way are not entries. A page, panel or thread the person
     // picks meanwhile is theirs, and the step leaves it as it is (see showNavigationEntry).
-    if(nav.applying){const step=nav.applying;if(!step.moved&&movedDuringStep(step,location))step.moved=true;return}
+    if(nav.applying){const step=nav.applying;if(!step.moved&&movedDuringStep(step,location)){step.moved=true;step.wake?.()}return}
     if(nav.index<0){
       let stored=null;
       if(BROWSER_NAVIGATION)try{stored=JSON.parse(sessionStorage.getItem(NAVIGATION_STORE_KEY)||"null")}catch{}
@@ -1018,7 +1024,9 @@ export default function App(){
       else writeNavigationEntry("replace",entry);
       return;
     }
-    if(nav.landed){nav.landed=false;const settled=settleLocation(nav,location);if(settled.action==="replace")writeNavigationEntry("replace",settled.entry);return}
+    // A step that has shown its entry: the entry now names what it showed, unless its thread is only missing because no thread list
+    // came ("kept"), so a later Back or Forward still tries for it.
+    if(nav.landed){const kept=nav.landed==="kept";nav.landed=false;if(kept)return;const settled=settleLocation(nav,location);if(settled.action==="replace")writeNavigationEntry("replace",settled.entry);return}
     const recorded=recordLocation(nav,location);
     if(recorded.action==="push")writeNavigationEntry("push",recorded.entry);
   },[initialLoaded,section,activeThread?.id,rightPanelOpen,rightPanelTab,navigationRevision]);
@@ -1028,18 +1036,18 @@ export default function App(){
   async function showNavigationEntry(index){
     const nav=navigationHistoryRef.current,target=nav.entries[index];
     if(!target)return;
-    const token={from:{section:sectionRef.current,threadId:activeThreadRef.current?.id||null,rightPanelOpen:Boolean(rightPanelOpen),rightPanelTab:rightPanelTab||"files"},threadId:target.threadId,moved:false};
-    nav.index=index;nav.applying=token;
+    const token={from:{section:sectionRef.current,threadId:activeThreadRef.current?.id||null,rightPanelOpen:Boolean(rightPanelOpen),rightPanelTab:rightPanelTab||"files"},threadId:target.threadId,moved:false,kept:false,wake:null};
+    const replaced=nav.applying;nav.index=index;nav.applying=token;replaced?.wake?.();
     if(BROWSER_NAVIGATION)try{sessionStorage.setItem(NAVIGATION_STORE_KEY,JSON.stringify(storedNavigation(nav)))}catch{}
     try{
       if(target.threadId&&activeThreadRef.current?.id!==target.threadId){
-        const thread=threads.find(item=>item.id===target.threadId);
-        if(thread){
+        const thread=await navigationEntryThread(token,target.threadId);
+        if(thread&&nav.applying===token&&!token.moved){
           const opening=openThread(thread),openNumber=openSeqRef.current;
           await opening;
           // Another thread or a new task asked for while this one opened has replaced it.
           if(openSeqRef.current!==openNumber)token.moved=true;
-        }
+        }else if(!thread&&!navigationThreadsRef.current.loaded)token.kept=true;
       }else if(!target.threadId&&activeThreadRef.current?.id&&target.section==="chat"){
         await newChat();
       }
@@ -1049,7 +1057,16 @@ export default function App(){
       if(!target.rightPanelOpen)setRightPanelMaximized(false);
       setSection(target.section||"chat");
     }finally{
-      if(nav.applying===token){nav.applying=null;nav.landed=!token.moved;setNavigationRevision(value=>value+1)}
+      if(nav.applying===token){nav.applying=null;nav.landed=token.moved?false:token.kept?"kept":true;setNavigationRevision(value=>value+1)}
+    }
+  }
+  // The thread of the entry a step goes to. Right after a reload the harness may not have listed its threads yet: the step waits for
+  // that list, until a later step or a move of the person's own takes over. null: not listed, or no list is coming.
+  async function navigationEntryThread(token,threadId){
+    for(;;){
+      const {threads:listed,known}=navigationThreadsRef.current,thread=listed.find(item=>item.id===threadId);
+      if(thread||known||navigationHistoryRef.current.applying!==token||token.moved)return thread||null;
+      await new Promise(resolve=>{token.wake=resolve});
     }
   }
   async function navigateHistory(delta){
