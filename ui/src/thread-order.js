@@ -53,6 +53,17 @@ export function threadPlacement(threads,thread,threadMeta={}){
   return {beforeThreadId:index>=0?group[index+1]?.id||null:null,anchorThreadId:placed?threadPlacementAnchor(threads,thread,threadMeta):null,placed};
 }
 
+// The places a move gives the threads of its group before the runtime answers, so the sidebar shows the move at once (thread id ->
+// {sectionRank, sectionPlaced}): the thread goes before beforeThreadId (null: the end), and the group's threads take the places the group
+// held, in their new order. The moved thread then holds its place; with placeAll every thread there does (a Codex section's first move
+// writes them all in this order).
+export function movedSectionRanks(threads,thread,beforeThreadId=null,threadMeta={},{placeAll=false}={}){
+  const group=threadOrderGroup(threads,thread,threadMeta),moved=group.find(item=>item.id===thread?.id);if(!moved)return new Map();
+  const ranks=group.map(item=>item.sectionRank).sort((a,b)=>a-b),order=group.filter(item=>item!==moved);
+  const at=beforeThreadId==null?-1:order.findIndex(item=>item.id===beforeThreadId);order.splice(at<0?order.length:at,0,moved);
+  return new Map(order.map((item,index)=>[item.id,{sectionRank:ranks[index],sectionPlaced:placeAll||item===moved||Boolean(item.sectionPlaced)}]));
+}
+
 // The order an undo of several threads puts them back in (items: {threadId, anchorThreadId, beforeThreadId}, as the action moved them):
 // each one after the thread it goes back before when that thread is put back too, so that thread is in the section again by then (a
 // thread to go before that is not there is dropped, and the thread would go to the end). The others go back last moved first.

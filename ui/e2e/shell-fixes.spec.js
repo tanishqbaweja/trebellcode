@@ -772,12 +772,16 @@ test("while a search filters the sidebar, Move up and Move down follow the threa
     expect(await moves("Gamma zero")).toEqual([false,true]);
     expect(await moves("Alpha one")).toEqual([true,true]);
     expect(await moves("Alpha three")).toEqual([true,false]);
-    // Alpha one moves down past Alpha three, the next result: it goes right after it in the list (the end), past the hidden Beta two.
+    // Alpha one moves down past Alpha three, the next result: it goes right after it in the list (the end), past the hidden Beta two. The
+    // move shows at once; this harness keeps its own order whatever it is told, so the sidebar then reads that order back.
+    const unmoved=[["Active",["Gamma zero","Alpha one","Alpha three"]]];
     await (await menu("Alpha one")).getByRole("button",{name:"Move down",exact:true}).click();
     await expect.poll(moveRequests).toEqual([{threadId:"alpha-one",sectionId:null,beforeThreadId:null}]);
+    await expect.poll(shown).toEqual(unmoved);
     // Alpha three moves up past Alpha one, the result above it, not past the hidden Beta two next to it in the list.
     await (await menu("Alpha three")).getByRole("button",{name:"Move up",exact:true}).click();
     await expect.poll(()=>moveRequests().at(-1)).toEqual({threadId:"alpha-three",sectionId:null,beforeThreadId:"alpha-one"});
+    await expect.poll(shown).toEqual(unmoved);
     // Gamma zero moves down past Alpha one: right before the hidden Beta two, which keeps its place.
     await (await menu("Gamma zero")).getByRole("button",{name:"Move down",exact:true}).click();
     await expect.poll(()=>moveRequests().at(-1)).toEqual({threadId:"gamma-zero",sectionId:null,beforeThreadId:"beta-two"});
@@ -1244,6 +1248,99 @@ test("on a relay harness Archive and then Undo puts a thread nobody moved back i
     expect(relay.threadStore.getMetadata(ids[2]).updatedAt).toBe(base-2*3600);
     await page.screenshot({path:join(shotsDir,"sidebar-relay-archive-undo-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
   }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
+});
+
+test("on Codex a move shows at once, and one made while an earlier move is still being written or read back starts from it",async({page})=>{
+  test.setTimeout(60_000);
+  const threads=orderThreads(),meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  let slow=false;
+  const harness=await startCodexHarness(threads,orderSections,{listDelay:()=>slow?2500:0}),menu=rowMenu(page),moves=sectionMoves(harness);
+  const pinned=async()=>(await sidebarGroups(page)).find(group=>group[0]==="Pinned")?.[1];
+  const move=async(name,label)=>(await menu(name)).getByRole("button",{name:label,exact:true}).click();
+  try{
+    await openApp(page,{harness,threads,meta});
+    await expect.poll(pinned).toEqual(["Pinned gamma","Pinned beta","Pinned alpha"]);
+    // The list is slow to read back: each move shows before it is, and the next move starts from the order on screen.
+    slow=true;
+    await move("Pinned alpha","Move up");
+    await expect.poll(pinned,{timeout:1500}).toEqual(["Pinned gamma","Pinned alpha","Pinned beta"]);
+    await move("Pinned gamma","Move down");
+    await expect.poll(pinned,{timeout:1500}).toEqual(["Pinned alpha","Pinned gamma","Pinned beta"]);
+    await expect.poll(()=>harness.order.get("0198-pinned"),{timeout:10_000}).toEqual(["pinned-alpha","pinned-gamma","pinned-beta"]);
+    expect(moves()).toEqual([{threadId:"pinned-alpha",sectionId:"0198-pinned",beforeThreadId:null},{threadId:"pinned-beta",sectionId:"0198-pinned",beforeThreadId:null},{threadId:"pinned-gamma",sectionId:"0198-pinned",beforeThreadId:"pinned-beta"}]);
+    // Two Move up clicks on one thread take it up two places.
+    await move("Pinned beta","Move up");
+    await expect.poll(pinned,{timeout:1500}).toEqual(["Pinned alpha","Pinned beta","Pinned gamma"]);
+    await move("Pinned beta","Move up");
+    await expect.poll(pinned,{timeout:1500}).toEqual(["Pinned beta","Pinned alpha","Pinned gamma"]);
+    await expect.poll(()=>harness.order.get("0198-pinned"),{timeout:10_000}).toEqual(["pinned-beta","pinned-alpha","pinned-gamma"]);
+    expect(moves().slice(3)).toEqual([{threadId:"pinned-beta",sectionId:"0198-pinned",beforeThreadId:"pinned-gamma"},{threadId:"pinned-beta",sectionId:"0198-pinned",beforeThreadId:"pinned-alpha"}]);
+    // Once every read is back, the sidebar shows what Codex keeps.
+    slow=false;
+    await page.waitForTimeout(3000);
+    expect(await pinned()).toEqual(["Pinned beta","Pinned alpha","Pinned gamma"]);
+    await page.screenshot({path:join(shotsDir,"sidebar-codex-moves-while-reading-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+    await page.reload();await expect.poll(pinned).toEqual(["Pinned beta","Pinned alpha","Pinned gamma"]);
+  }finally{await harness.close()}
+});
+
+test("on Codex a move made while a section's first ordering is still being written waits for it, and both hold",async({page})=>{
+  test.setTimeout(60_000);
+  const sections=orderSections.slice(0,3),base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-90000,turns:[]};
+  // 40 pinned threads, newest first in the sidebar; Codex keeps them in the opposite order, so the first move writes 39 of them.
+  const threads=Array.from({length:40},(_,index)=>({...base,id:"w-"+index,name:"W "+String(index).padStart(2,"0"),updatedAt:now()-600-index*60,section:sections[0]}));
+  const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  const harness=await startCodexHarness(threads,sections,{moveDelay:()=>40}),menu=rowMenu(page),moves=sectionMoves(harness);
+  harness.order.set("0198-pinned",threads.map(thread=>thread.id).reverse());
+  const head=async()=>(await sidebarGroups(page))[0]?.[1].slice(0,5);
+  try{
+    await openApp(page,{harness,threads,meta});
+    await expect.poll(head).toEqual(["W 00","W 01","W 02","W 03","W 04"]);
+    await (await menu("W 03")).getByRole("button",{name:"Move up",exact:true}).click();
+    await expect.poll(head,{timeout:1500}).toEqual(["W 00","W 01","W 03","W 02","W 04"]);
+    await expect.poll(()=>moves().length).toBeGreaterThan(5);
+    expect(moves().length).toBeLessThan(39);
+    await (await menu("W 00")).getByRole("button",{name:"Move down",exact:true}).click();
+    await expect.poll(head,{timeout:1500}).toEqual(["W 01","W 00","W 03","W 02","W 04"]);
+    await expect.poll(()=>moves().length,{timeout:20_000}).toBe(40);
+    await expect.poll(()=>harness.order.get("0198-pinned").map(id=>id.slice(2)).join(",")).toBe(["1","0","3","2",...Array.from({length:36},(_,index)=>String(index+4))].join(","));
+    expect(moves().at(-1)).toEqual({threadId:"w-0",sectionId:"0198-pinned",beforeThreadId:"w-3"});
+    await page.waitForTimeout(500);expect(await head()).toEqual(["W 01","W 00","W 03","W 02","W 04"]);
+    await page.screenshot({path:join(shotsDir,"sidebar-codex-move-during-first-ordering-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+  }finally{await harness.close()}
+});
+
+test("on Codex a first move that cannot read or save a section's order says which thread and which section it could not move",async({page})=>{
+  test.setTimeout(45_000);
+  const threads=orderThreads(),meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  let failure="";
+  const harness=await startCodexHarness(threads,orderSections,{failOrder:["0199-research"]}),menu=rowMenu(page),moves=sectionMoves(harness);
+  const byActivity=[["Pinned",["Pinned gamma","Pinned beta","Pinned alpha"]],["Active",["Codex active one","Codex active two"]],["Research",["Research two","Research one"]]];
+  const alert=page.locator(".sidebar-action-error");
+  try{
+    await openApp(page,{harness,threads,meta,settingsFailure:()=>failure});
+    await expect.poll(()=>sidebarGroups(page)).toEqual(byActivity);
+    // Research's order cannot be read: nothing moves, and the alert names the move and the section.
+    await (await menu("Research two")).getByRole("button",{name:"Move down",exact:true}).click();
+    await expect(alert).toHaveText("Could not move “Research two”: the order of Research could not be read (section order unavailable).");
+    await page.screenshot({path:join(shotsDir,"sidebar-codex-first-move-unreadable-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+    expect(moves()).toEqual([]);await expect.poll(()=>sidebarGroups(page)).toEqual(byActivity);
+    // Trebell cannot save that Pinned is ordered: the alert says so, and Pinned still shows by recent activity.
+    failure="disk full";
+    await (await menu("Pinned alpha")).getByRole("button",{name:"Move up",exact:true}).click();
+    await expect(alert).toHaveText("Could not move “Pinned alpha”: the new order of Pinned could not be saved (disk full).");
+    await expect.poll(()=>sidebarGroups(page)).toEqual(byActivity);
+    for(const mode of ["light","dark"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value;document.documentElement.style.colorScheme=value},mode);await settle(page);
+      await page.screenshot({path:join(shotsDir,`sidebar-codex-first-move-unsaved-${mode}-1600x980.png`),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+    }
+    // Tried again, it holds.
+    failure="";
+    await (await menu("Pinned alpha")).getByRole("button",{name:"Move up",exact:true}).click();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned gamma","Pinned alpha","Pinned beta"]],...byActivity.slice(1)]);
+    await expect(alert).toHaveCount(0);
+    expect(harness.order.get("0198-pinned")).toEqual(["pinned-gamma","pinned-alpha","pinned-beta"]);
+  }finally{await harness.close()}
 });
 
 test("a narrow browser window collapses the sidebar instead of scrolling sideways, and gets it back when it widens",async({page,request})=>{

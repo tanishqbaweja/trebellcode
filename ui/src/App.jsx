@@ -50,7 +50,7 @@ import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
-import { orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadsInListOrder, undoOrder } from "./thread-order.js";
+import { movedSectionRanks, orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadsInListOrder, undoOrder } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { userVerificationAvailability } from "./mcp-elicitation.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
@@ -1603,17 +1603,26 @@ export default function App(){
   // The Codex sections a person has ordered in Trebell (settings.orderedThreadSections), shown in Codex's own order; a ref, so a list
   // load an older render started reads the newest.
   const orderedSectionsRef=useRef([]);orderedSectionsRef.current=Array.isArray(settings.orderedThreadSections)?settings.orderedThreadSections.map(String):[];
+  // The moves a person made that are queued or being written (moveThreadOrder): pending, made in all, and the epoch a failed move ends.
+  const threadMovesRef=useRef({tail:Promise.resolve(),pending:0,made:0,epoch:0});
   async function loadThreads(client,{strict=false}={}){
+    const moves=threadMovesRef.current,madeBefore=moves.made;
     try{
       if(!client)throw new Error("Agent harness is not connected");
       const listed=await client.request("thread/list",threadListParams(100));
       // Each thread's place in its section (thread-list-query.js); a place from an earlier listing is dropped, so only this listing's
       // places are compared. A section whose order could not be read still lists its threads (the list did load): its threads say why
       // they cannot move.
-      const {threads:incoming}=await rankThreadSections(client,listed.data||[],{orderedSections:orderedSectionsRef.current});rememberThreadCatalog(incoming);
-      setThreads(previous=>mergeThreadCatalog(previous.map(thread=>thread?.sectionRank==null&&!thread?.sectionOrderError?thread:{...thread,sectionRank:null,sectionOrderError:null}),incoming,{runtime:agentRuntime,provider,threadMeta}));
-      setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
-      return mergeThreadCatalog([],incoming,{runtime:agentRuntime,provider});
+      const {threads:ranked}=await rankThreadSections(client,listed.data||[],{orderedSections:orderedSectionsRef.current});rememberThreadCatalog(ranked);
+      // A listing read while moves were queued, or before one was made, may not have them yet: its threads keep the places on screen.
+      const keep=moves.pending>0||moves.made!==madeBefore;
+      setThreads(previous=>{
+        const shown=keep?new Map(previous.filter(thread=>Number.isFinite(thread?.sectionRank)).map(thread=>[String(thread.id),thread])):null;
+        const incoming=shown?ranked.map(thread=>{const local=shown.get(String(thread.id));return local&&(local.section?.id||null)===(thread.section?.id||null)?{...thread,sectionRank:local.sectionRank,sectionPlaced:local.sectionPlaced,sectionOrderError:null}:thread}):ranked;
+        return mergeThreadCatalog(previous.map(thread=>thread?.sectionRank==null&&!thread?.sectionOrderError?thread:{...thread,sectionRank:null,sectionOrderError:null}),incoming,{runtime:agentRuntime,provider,threadMeta});
+      });
+      setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,ranked));
+      return mergeThreadCatalog([],ranked,{runtime:agentRuntime,provider});
     }catch(error){
       setThreadListError(error?.message||String(error)||"Unknown error");
       if(strict)throw error;
@@ -2833,24 +2842,50 @@ export default function App(){
       return;
     }
   }
+  // Moves are written to the runtime one at a time, in the order a person makes them, and each shows at once: the sidebar takes the new
+  // order before the runtime answers, so a move made while an earlier one is still being written or read back starts from the order on
+  // screen. A move that fails drops the moves queued after it (they started from its order) and the list is read again. A listing read
+  // while moves are queued keeps the places on screen (loadThreads); the last move's own listing brings the runtime's.
   // The move steps past the neighbour the sidebar shows (a search's results while one filters it), as the menu's enabled state says.
   async function moveThreadOrder(thread,direction){
     const move=threadMoveTarget(threads,thread,direction,threadMeta,displayThreads);if(!move)return;
-    const sectionId=thread.section?.id||null;
-    if(agentRuntime==="codex"&&sectionId&&!thread.sectionPlaced)await orderCodexSection(thread,sectionId,move.beforeThreadId);
-    else await rpc.request("thread/section/move",{threadId:thread.id,sectionId,beforeThreadId:move.beforeThreadId});
-    await loadThreads(rpc,{strict:true});
+    const sectionId=thread.section?.id||null,ordering=agentRuntime==="codex"&&Boolean(sectionId)&&!thread.sectionPlaced;
+    const shown=threadOrderGroup(threads,thread,threadMeta).map(item=>item.id);
+    const places=movedSectionRanks(threads,thread,move.beforeThreadId,threadMeta,{placeAll:ordering});
+    const place=list=>list&&list.map(item=>places.has(item?.id)?{...item,...places.get(item.id)}:item);
+    setThreads(place);setSearchResults(place);
+    const queue=threadMovesRef.current,epoch=queue.epoch;queue.pending++;queue.made++;
+    const write=queue.tail.then(async()=>{
+      if(queue.epoch!==epoch)return;
+      if(ordering)await orderCodexSection(thread,sectionId,move.beforeThreadId,shown);
+      else await rpc.request("thread/section/move",{threadId:thread.id,sectionId,beforeThreadId:move.beforeThreadId});
+    });
+    queue.tail=write.catch(()=>{});
+    let failure=null;try{await write}catch(error){failure=error;queue.epoch++}
+    queue.pending--;
+    if(failure){
+      await loadThreads(rpc);
+      throw new Error("Could not move “"+titleOf(thread)+"”: "+String(failure?.message||failure||"Unknown error").replace(/[.\s]+$/,"")+".");
+    }
+    if(!queue.pending)await loadThreads(rpc,{strict:true});
   }
   // The first move in a Codex section shown by recent activity: Codex's order for it is the order threads entered it, so the section is
-  // first written in the order the sidebar shows, with the move made, and is shown in Codex's order from then on. Only then is it saved
-  // as ordered: a write that fails part way leaves it shown by recent activity, and the next move writes it again.
-  async function orderCodexSection(thread,sectionId,beforeThreadId){
-    const listed=await loadThreadListPages(rpc,{params:threadSectionOrderParams(sectionId),maxPages:100});
-    if(listed.truncated)throw new Error("This section holds too many threads to order");
+  // first written in the order the sidebar showed (shown: ids, top first), with the move made, and is shown in Codex's order from then on.
+  // Only then is it saved as ordered: a write that fails part way leaves it shown by recent activity, and the next move writes it again.
+  // A failure names what could not be done to the section.
+  async function orderCodexSection(thread,sectionId,beforeThreadId,shown){
+    const name=thread.section?.name||sectionId,detail=error=>String(error?.message||error||"Unknown error").replace(/[.\s]+$/,"");
+    let listed;
+    try{listed=await loadThreadListPages(rpc,{params:threadSectionOrderParams(sectionId),maxPages:100})}
+    catch(error){throw new Error("the order of "+name+" could not be read ("+detail(error)+")")}
+    if(listed.truncated)throw new Error(name+" holds too many threads to order");
     const members=listed.data.filter(item=>(item.section?.id||null)===sectionId);
-    const desired=orderedSectionWithMove(threadOrderGroup(threads,thread,threadMeta).map(item=>item.id),members,thread.id,beforeThreadId);
+    const desired=orderedSectionWithMove(shown,members,thread.id,beforeThreadId);
     for(const id of sectionOrderWrites(members.map(item=>item.id),desired))await rpc.request("thread/section/move",{threadId:id,sectionId,beforeThreadId:null});
-    const ordered=[...new Set([...orderedSectionsRef.current,String(sectionId)])];await saveAppSettings({orderedThreadSections:ordered});orderedSectionsRef.current=ordered;
+    const ordered=[...new Set([...orderedSectionsRef.current,String(sectionId)])];
+    try{await saveAppSettings({orderedThreadSections:ordered})}
+    catch(error){throw new Error("the new order of "+name+" could not be saved ("+detail(error)+")")}
+    orderedSectionsRef.current=ordered;
   }
   async function bulkAction(action){
     const selected=[...selectedThreadIds].map(id=>threads.find(thread=>thread.id===id)).filter(Boolean);if(!selected.length)return;

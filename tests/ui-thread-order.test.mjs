@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadPlacementAnchor, threadsInListOrder, undoOrder } from "../ui/src/thread-order.js";
+import { movedSectionRanks, orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadPlacementAnchor, threadsInListOrder, undoOrder } from "../ui/src/thread-order.js";
 
 const pinned={name:"Pinned",id:"pinned"};
 // Each thread's place in its section in list order, as the agent relay lists them (sectionRank).
@@ -146,6 +146,23 @@ test("a Codex section's first ordering writes the order the sidebar shows, with 
   // A thread that left the section since, or a thread to go before that did, is not guessed at.
   assert.throws(()=>orderedSectionWithMove(["gamma"],members,"gone",null),/no longer in this section/);
   assert.throws(()=>orderedSectionWithMove(["gamma"],members,"beta","gone"),/thread to go before is no longer in this section/);
+});
+
+test("a move shows at once: the threads of its group take the places the group held, in the new order",()=>{
+  // The relay ranks the whole unsectioned list, so a General chat (projectless) holds a place between the Active threads.
+  const threads=ranked([{id:"a"},{id:"g"},{id:"b"},{id:"c"},{id:"p",section:pinned}]),meta={g:{projectless:true}};
+  const apply=places=>threads.map(thread=>places.has(thread.id)?{...thread,...places.get(thread.id)}:thread);
+  const up=movedSectionRanks(threads,threads[3],"a",meta);
+  assert.deepEqual([...up.entries()],[["c",{sectionRank:0,sectionPlaced:true}],["a",{sectionRank:2,sectionPlaced:false}],["b",{sectionRank:3,sectionPlaced:false}]]);
+  assert.deepEqual(threadOrderGroup(apply(up),threads[0],meta).map(thread=>thread.id),["c","a","b"]);
+  assert.equal(apply(up).find(thread=>thread.id==="g").sectionRank,1);
+  // To the end, and every thread placed (a Codex section's first move writes them all).
+  const down=movedSectionRanks(threads,threads[0],null,meta,{placeAll:true});
+  assert.deepEqual(threadOrderGroup(apply(down),threads[0],meta).map(thread=>thread.id),["b","c","a"]);
+  assert.ok([...down.values()].every(place=>place.sectionPlaced));
+  // A thread the list does not hold, or one with no place, shows no move.
+  assert.equal(movedSectionRanks(threads,{id:"elsewhere"},null,meta).size,0);
+  assert.equal(movedSectionRanks([{id:"x",sectionRank:null}],{id:"x",sectionRank:null},null).size,0);
 });
 
 test("an undo of several threads puts each back after the thread it goes before, whatever order they were picked in",()=>{
