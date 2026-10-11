@@ -376,6 +376,37 @@ test("official OpenAI catalog drops models past their shutdown date and the live
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("a refused key check never shows a masked key or raw JSON, and says so when the provider could not be reached",async()=>{
+  const typed="sk-typedkeyfixture1234567890abcdef";
+  const answers={
+    // new-api style relays mask a token with three asterisks (sk-abc***xyz); others shorten it with an ellipsis.
+    masked:()=>new Response(JSON.stringify({error:{message:"Invalid token sk-typ***cdef",type:"new_api_error"}}),{status:401}),
+    ellipsis:()=>new Response(JSON.stringify({error:{message:"Invalid API key sk-…f...cdef, check it and retry...",type:"auth"}}),{status:401}),
+    // A relay that passes its upstream's error body on as the message string.
+    nested:()=>new Response(JSON.stringify({error:{message:JSON.stringify({error:{message:"bad key",code:401}}),type:"upstream_error"}}),{status:401}),
+    fastapi:()=>new Response(JSON.stringify({detail:[{loc:["header","authorization"],msg:"Invalid key",type:"value_error"}]}),{status:401}),
+    network:()=>{throw new TypeError("fetch failed",{cause:Object.assign(new Error("getaddrinfo ENOTFOUND vyceai.com"),{code:"ENOTFOUND"})})},
+    timeout:()=>{throw new DOMException("The operation was aborted due to timeout","TimeoutError")},
+  };
+  const messages={};
+  for(const [name,answer] of Object.entries(answers)){
+    const root=mkdtempSync(join(tmpdir(),"trebell-key-check-shapes-"));
+    try{
+      const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>answer()});
+      await assert.rejects(manager.checkKey("vyceai",typed),error=>{messages[name]=error.message;return true});
+      assert.equal(manager.status("vyceai").keyCheck.message,messages[name],name);
+    }finally{rmSync(root,{recursive:true,force:true})}
+  }
+  assert.deepEqual(messages,{
+    masked:"HTTP 401: Invalid token [redacted]. The key was not saved.",
+    ellipsis:"HTTP 401: Invalid API key [redacted] check it and retry... The key was not saved.",
+    nested:"HTTP 401: bad key. The key was not saved.",
+    fastapi:"HTTP 401: Invalid key. The key was not saved.",
+    network:"Could not reach VyceAi: getaddrinfo ENOTFOUND vyceai.com. The key was not saved.",
+    timeout:"VyceAi did not answer within 12 seconds. The key was not saved.",
+  });
+});
+
 test("official OpenAI catalog judges fine-tunes by their base model and filtered words as whole id tokens",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-fine-tunes-"));
   try{

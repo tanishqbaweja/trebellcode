@@ -144,20 +144,34 @@ function providerErrorExcerpt(value,{environment={},secret="",maxChars=1200}={})
   return redactSecretText(scan,{environment:{...environment,TREBELL_PROVIDER_ERROR_SECRET:String(secret||"")}}).slice(0,max);
 }
 // A provider's error body as people read it: the message of its JSON error (OpenAI's {"error":{"message"}}, Anthropic's
-// {"type":"error","error":{...}}, Gemini's [{"error":{...}}], a bare message or detail), else the body's text; never raw
-// JSON or an HTML page. Secrets are redacted, and so is a masked key the provider echoes back (sk-proj-****abcd).
+// {"type":"error","error":{...}}, Gemini's [{"error":{...}}], a bare message, detail or FastAPI's [{"msg"}], and an upstream
+// body a relay passes on as its message), else the body's text; never raw JSON or an HTML page. Secrets are redacted, and so
+// is a masked key the provider echoes back (sk-proj-****abcd, sk-abc***xyz, sk-abc...wxyz).
+const MASKED_KEY=/\S*(?:\*{3,}|[\w-](?:\.{3}|…)\w)\S*/g;
 function providerErrorMessage(raw,{environment={},secret="",maxChars=300}={}){
   const text=String(raw??"").trim();let parsed;
   try{parsed=JSON.parse(text)}catch{parsed=undefined}
   const find=(value,depth=0)=>{
-    if(typeof value==="string")return value;
+    if(typeof value==="string"){
+      const inner=value.trim();
+      if(/^[{[]/.test(inner)&&depth<=4)try{return find(JSON.parse(inner),depth+1)}catch{}
+      return /^\{\s*"/.test(inner)?"":value;
+    }
     if(!value||typeof value!=="object"||depth>4)return "";
     if(Array.isArray(value))return find(value[0],depth+1);
-    for(const key of ["message","error","detail","error_description"]){const found=find(value[key],depth+1);if(found)return found}
+    for(const key of ["message","error","detail","error_description","msg"]){const found=find(value[key],depth+1);if(found)return found}
     return "";
   };
-  const message=parsed===undefined?(text.startsWith("<")?"":text):find(parsed);
-  return providerErrorExcerpt(message.replace(/\s+/g," ").trim(),{environment,secret,maxChars}).replace(/\S*\*{4,}\S*/g,"[redacted]");
+  const message=parsed===undefined?(/^(?:<|\{\s*")/.test(text)?"":text):find(parsed);
+  return providerErrorExcerpt(message.replace(/\s+/g," ").trim().replace(MASKED_KEY,"[redacted]"),{environment,secret,maxChars});
+}
+// fetch rejects with a TypeError ("fetch failed") whose cause is the network error when a provider cannot be reached, and
+// with a TimeoutError when it does not answer in time.
+function providerUnreachable(provider,error,timeoutMs){
+  if(error?.name==="TimeoutError")return new Error(`${provider.name} did not answer within ${Math.round(timeoutMs/1000)} seconds`,{cause:error});
+  if(!(error instanceof TypeError)||error.message!=="fetch failed")return error;
+  const cause=String(error.cause?.message||"").replace(/\s+/g," ").trim();
+  return new Error(`Could not reach ${provider.name}${cause?": "+cause:""}`,{cause:error});
 }
 const sentence=text=>/[.!?]$/.test(text)?text:text+".";
 function agentRouterClientVersion(environment={}){
@@ -689,21 +703,26 @@ export class ProviderManager {
     }
 
     const key = this.key(provider.id);
-    const response = await this.fetchFn(provider.baseUrl + "/models", {
-      headers: provider.id === "agentrouter"
-        ? agentRouterHeaders(key,{environment:this.env})
-        : provider.authStyle === "anthropic"
-          ? {
-              "x-api-key": key,
-              "anthropic-version": "2023-06-01",
-              Accept: "application/json",
-            }
-          : {
-              Authorization: `Bearer ${key}`,
-              Accept: "application/json",
-            },
-      signal: AbortSignal.timeout(12_000),
-    });
+    let response;
+    try {
+      response = await this.fetchFn(provider.baseUrl + "/models", {
+        headers: provider.id === "agentrouter"
+          ? agentRouterHeaders(key,{environment:this.env})
+          : provider.authStyle === "anthropic"
+            ? {
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                Accept: "application/json",
+              }
+            : {
+                Authorization: `Bearer ${key}`,
+                Accept: "application/json",
+              },
+        signal: AbortSignal.timeout(12_000),
+      });
+    } catch (error) {
+      throw providerUnreachable(provider, error, 12_000);
+    }
     const raw = await response.text();
     if (!response.ok) {
       const message=providerErrorMessage(raw,{environment:this.env,secret:key});
