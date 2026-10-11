@@ -6557,6 +6557,14 @@ test("failed linked-thread unarchive keeps the PR and archived state intact",asy
     const alert=panel.getByRole("alert");
     await expect(alert).toContainText("Could not restore archived thread: Deliberate linked thread unarchive failure");
     await expect(alert).toBeInViewport();
+    // The error sticks to the top of the scrolled panel, over the cards scrolled under it: it is drawn on top of them and is
+    // opaque, so none of them shows through it.
+    const stickyErrorCover=banner=>banner.evaluate(node=>{
+      const box=node.getBoundingClientRect(),hit=document.elementsFromPoint(box.left+box.width/2,box.top+box.height/2)[0];
+      const overContent=[...node.parentElement.children].some(item=>{const rect=item.getBoundingClientRect();return item!==node&&rect.bottom>box.top+1&&rect.top<box.bottom-1});
+      return {onTop:node.contains(hit),overContent,opaque:/^rgb\(/.test(getComputedStyle(node).backgroundColor)};
+    });
+    expect(await stickyErrorCover(alert)).toEqual({onTop:true,overContent:true,opaque:true});
     await expect(linked).toContainText("archived");
     await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Source parent fixture");
     await page.setViewportSize({width:1280,height:800});
@@ -6614,6 +6622,13 @@ test("linked-thread read failures report the runtime error instead of claiming t
     await expect(alert).toContainText("Could not load linked thread: Deliberate linked thread read failure");
     await expect(alert).not.toContainText("Linked thread was not found");
     await expect(alert).toBeInViewport();
+    // As in the unarchive failure: the sticky error covers the cards scrolled under it, opaquely.
+    const stickyErrorCover=banner=>banner.evaluate(node=>{
+      const box=node.getBoundingClientRect(),hit=document.elementsFromPoint(box.left+box.width/2,box.top+box.height/2)[0];
+      const overContent=[...node.parentElement.children].some(item=>{const rect=item.getBoundingClientRect();return item!==node&&rect.bottom>box.top+1&&rect.top<box.bottom-1});
+      return {onTop:node.contains(hit),overContent,opaque:/^rgb\(/.test(getComputedStyle(node).backgroundColor)};
+    });
+    expect(await stickyErrorCover(alert)).toEqual({onTop:true,overContent:true,opaque:true});
     await expect(linked).toBeVisible();
     await expect(parentRow).toHaveClass(/active/);
     await page.setViewportSize({width:1280,height:800});

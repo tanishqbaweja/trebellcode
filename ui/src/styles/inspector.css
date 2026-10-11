@@ -82,7 +82,9 @@
 :root:root .context-panel .empty-state span{max-width:340px;margin:0;font-size:12px;line-height:1.55;color:var(--tx3)!important;overflow-wrap:anywhere}
 :root:root .context-panel .empty-state button{margin-top:10px}
 :root:root .context-panel .inline-error{border:1px solid var(--errb)!important;border-radius:9px;background:var(--errt)!important;color:var(--err)!important;padding:9px 12px;font-size:12px;line-height:1.45;overflow-wrap:anywhere}
-:root:root .context-panel .source-control-error{box-shadow:var(--sh1)}
+/* The Git error sticks to the top of the scrolled panel (styles.css), so its tint is laid over the panel fill instead of letting
+   the commit form show through it, and a ring of that fill covers what scrolls past its rounded corners. */
+:root:root .context-panel .source-control-error{background:linear-gradient(var(--errt),var(--errt)),var(--bg1)!important;box-shadow:0 0 0 6px var(--bg1),var(--sh1)}
 
 /* Shared inspector controls ------------------------------------------------------------------ */
 /* Standard small button (tb-btn--sm). */
