@@ -231,7 +231,7 @@ for(const mode of MODES)test(`a Thinking level the model does not offer reads an
     await expect(page.getByTestId("model-picker")).toContainText(/gpt-5/i);
     const picker=page.getByTestId("reasoning-effort-picker");
     await expect(picker).toHaveValue("");
-    await expect(picker.locator("option")).toHaveText(["Thinking · provider default","Thinking · Low","Thinking · Medium","Thinking · High"]);
+    await expect(picker.locator("option")).toHaveText(["Thinking · Default","Thinking · Low","Thinking · Medium","Thinking · High"]);
     await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-thinking-level-not-offered-${mode}.png`});
     const composer=page.getByTestId("composer"),send=page.getByTestId("send");
     await composer.fill("hello");await send.click();
