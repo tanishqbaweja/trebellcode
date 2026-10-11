@@ -71,7 +71,8 @@ test("completed turns automatically plan verification while failed turns do not"
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
     const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Turn verification fixture"]')});
-    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    // The row is selected at the click; the thread is open once the composer no longer says it is opening.
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"turn-verified",status:"completed",completedAt:Date.now()/1000}}});
     await expect.poll(()=>requests.length).toBe(1);
     expect(requests[0]).toEqual({threadId:thread.id,turnId:"turn-verified"});
@@ -105,7 +106,8 @@ test("a turn whose checks already ran shows their outcome: failed checks start a
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");
     const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Turn outcome fixture"]')});
-    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    // The row is selected at the click; the thread is open once the composer no longer says it is opening.
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"turn-broke",status:"completed",completedAt:Date.now()/1000}}});
     const failed=page.locator(".tool-event",{hasText:"Verification failed · low risk · 1 of 3 required checks failed"});
     // A failed row shares the error styling and keeps its own status text.

@@ -172,6 +172,9 @@ const HISTORY_ITEM_SCAN_PAGES=4;
 const HISTORY_TURN_PAGE_LIMIT=40;
 // Turns per page of outcomes (turns without items) for an item-paged history: more than one item page can show.
 const HISTORY_TURN_OUTCOME_LIMIT=200;
+// How long a thread may take to open before its opening state covers the conversation. A quicker open (a warm harness answers in
+// well under it) goes straight from the view before the click to the thread, so nothing flashes in between.
+const OPENING_COVER_DELAY_MS=200;
 
 function visibleHistoryEntry(entry){
   const item=entry?.item;
@@ -884,7 +887,10 @@ export default function App(){
   const [threadHistory,setThreadHistory]=useState({runtime:null,runtimeSource:null,runtimeExhausted:false,items:[],nextCursor:null,loading:false,error:""});
   const [threadCatalogCursor,setThreadCatalogCursor]=useState(null);
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
-  const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [openingThreadId,setOpeningThreadId]=useState(null); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
+  // opening: the thread an open is fetching, from the click until the open is done (sends wait meanwhile): {thread, token (the
+  // open's number), reopen (it was the open thread already), toChat (it lands in the chat), landed (its history shows)}. Until it
+  // lands the sidebar and the header name it; openingCover turns on once it has taken longer than OPENING_COVER_DELAY_MS.
+  const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [opening,setOpening]=useState(null); const [openingCover,setOpeningCover]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   const localQueueStartRef=useRef(null);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
@@ -925,7 +931,7 @@ export default function App(){
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const sectionRef=useRef(section);sectionRef.current=section;
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0);const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
@@ -1168,6 +1174,13 @@ export default function App(){
     apply();media?.addEventListener?.("change",apply);return()=>media?.removeEventListener?.("change",apply);
   },[settings.panelAnimationMs]);
   useEffect(()=>{activeThreadRef.current=activeThread},[activeThread]);
+  // An open the person waits on: the cover starts once it has taken longer than a moment, and stays while a later open replaces it.
+  const openingPending=Boolean(opening&&!opening.reopen&&!opening.landed);
+  useEffect(()=>{
+    if(!openingPending){setOpeningCover(false);return}
+    const timer=setTimeout(()=>setOpeningCover(true),OPENING_COVER_DELAY_MS);
+    return()=>clearTimeout(timer);
+  },[openingPending]);
   useEffect(()=>{
     if(!paletteOpen)return;
     let cancelled=false;setPaletteDataError("");
@@ -1462,7 +1475,8 @@ export default function App(){
     if(!initialLoaded||section!=="chat"||!providerReady||models.length||runtimeSwitchRef.current||modelsLoadingRef.current)return;
     refreshProviderModels().catch(()=>{});
   },[initialLoaded,section,providerReady,provider,agentRuntime,models.length]);
-  async function touchProject(path,environmentId=undefined,{activate=true}={}){
+  // owns: for a thread's open, whether it still owns the view when the project answers (a later open's project wins).
+  async function touchProject(path,environmentId=undefined,{activate=true,owns=null}={}){
     if(!path)return null;
     const previousProjectPath=projectPath;
     const previousEnvironmentId=currentProject?.environmentId??settings.activeEnvironmentId??null;
@@ -1472,6 +1486,7 @@ export default function App(){
     const response=await api("/api/projects",{method:"POST",body:{path,environmentId:resolvedEnvironmentId,activate}});
     const project=response?.project||null;
     if(!project)throw new Error("Project activation did not return a project.");
+    if(owns&&!owns())return project;
     if(String(previousProjectPath||"")!==String(path||"")||String(previousEnvironmentId||"")!==String(resolvedEnvironmentId||""))setGitInfo(null);
     setProjectlessMode(false);setGeneralEnvironmentId(null);setProjectPath(path);
     setCurrentProject(project);
@@ -2237,10 +2252,12 @@ export default function App(){
       else if(command==="navigationForward")runUserAction(()=>navigateHistory(1),"Could not navigate forward");
       else if(command==="sidebarToggle")setSidebarOpen(value=>!value);
       else if(command==="threadStop")runUserAction(stop,"Could not stop turn");
-      else if(command==="threadSettle"&&activeThread?.id)runUserAction(()=>reversibleThreadAction(activeThread,activeThread.section?.name==="Settled"?"active":"settle"),"Could not update thread");
-      else if(command==="threadPin"&&activeThread?.id)runUserAction(()=>reversibleThreadAction(activeThread,activeThread.section?.name==="Pinned"?"active":"pin"),"Could not update thread");
+      // While another thread opens, the sidebar and header already name it: pin and settle wait for it rather than act on the thread
+      // the view is leaving, and previous/next step from it.
+      else if(command==="threadSettle"&&activeThread?.id&&!openingPending)runUserAction(()=>reversibleThreadAction(activeThread,activeThread.section?.name==="Settled"?"active":"settle"),"Could not update thread");
+      else if(command==="threadPin"&&activeThread?.id&&!openingPending)runUserAction(()=>reversibleThreadAction(activeThread,activeThread.section?.name==="Pinned"?"active":"pin"),"Could not update thread");
       else if(command==="threadPrevious"||command==="threadNext"){
-        const index=displayThreads.findIndex(thread=>thread.id===activeThread?.id);
+        const selectedId=(openingPending?opening.thread:activeThread)?.id;const index=displayThreads.findIndex(thread=>thread.id===selectedId);
         const delta=command==="threadPrevious"?-1:1;const next=displayThreads[index>=0?index+delta:-1];
         if(next)runUserAction(()=>openThread(next),"Could not open thread");
       }
@@ -2293,7 +2310,7 @@ export default function App(){
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,projectlessMode,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject,agentRuntime]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,projectlessMode,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject,agentRuntime,opening]);
   useEffect(()=>{
     if(runtimeCapabilities.nativeQueue&&(queueMode==="native"||queued[0]?.native))return;
     if(running||!queued.length)return;
@@ -3009,7 +3026,8 @@ export default function App(){
       pendingRuntimeThreadRef.current=null;throw error;
     }
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
+  // A new task is asked for after any thread still opening, so it replaces that open (and a harness switch's reopen of it).
+  async function newChat(){openSeqRef.current++;openingThreadRef.current=null;pendingRuntimeThreadRef.current=null;setOpening(null);rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -3018,16 +3036,23 @@ export default function App(){
     if(["files","diff","source"].includes(rightPanelTab)){setRightPanelTab("runtime");setRightPanelOpen(false);setRightPanelMaximized(false)}
     return scratch;
   }
+  // Each open takes the next number, and only the last one asked for replaces the view: an open that a later one or a new task has
+  // replaced stops where it is, so a late answer never brings its thread back (nor a late failure its error). Until the open lands,
+  // the sidebar and the header name its thread and, once it takes long, its opening state covers the conversation (see opening); the
+  // thread already open changes none of that. A thread the person asks for also replaces one a harness switch was still to reopen
+  // for an earlier open (the transport's own reopens pass their client and keep it).
   async function openThread(thread,options={}){
-    const threadId=String(thread?.id||"");
-    if(threadId){openingThreadRef.current=threadId;setOpeningThreadId(threadId)}
-    try{return await openThreadInternal(thread,options)}
+    const threadId=String(thread?.id||""),token=++openSeqRef.current,pending=pendingRuntimeThreadRef.current;
+    if(!options.client&&pending&&String(pending.thread?.id||"")!==threadId)pendingRuntimeThreadRef.current=null;
+    if(threadId){openingThreadRef.current=threadId;setOpening({thread,token,reopen:String(activeThreadRef.current?.id||"")===threadId,toChat:!options.preserveSection,landed:false})}
+    try{return await openThreadInternal(thread,{...options,token})}
+    catch(error){if(openSeqRef.current!==token)return thread;throw error}
     finally{
       const pendingId=String(pendingRuntimeThreadRef.current?.thread?.id||"");
-      if(threadId&&pendingId!==threadId&&openingThreadRef.current===threadId){openingThreadRef.current=null;setOpeningThreadId(current=>current===threadId?null:current)}
+      if(openSeqRef.current===token&&!(threadId&&pendingId===threadId)){openingThreadRef.current=null;setOpening(null)}
     }
   }
-  async function openThreadInternal(thread,{client=rpc,preserveSection=false}={}){
+  async function openThreadInternal(thread,{client=rpc,preserveSection=false,token=openSeqRef.current}={}){
     if(await switchRuntimeForThread(thread,{preserveSection}))return thread;
     const previousThreadId=activeThreadRef.current?.id;
     const reopeningCurrentThread=previousThreadId===thread.id;
@@ -3050,6 +3075,8 @@ export default function App(){
     const connectedClient=Boolean(client&&!(client===rpc&&rpcStatus!=="connected"));
     let resumed=null,cp=null,goalData=null,continuityData=null,attachmentData=null;
     const persistentReadErrors=[];if(metaReadError)persistentReadErrors.push("thread metadata: "+(metaReadError.message||String(metaReadError)));
+    // An open or a new task asked for since this one began owns the view: this one does not resume a thread nobody waits for.
+    if(openSeqRef.current!==token)return thread;
     if(connectedClient){
       // A harness thread resumes on its own model (T3 keeps each thread's model selection); the composer then shows that model.
       const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,...(agentRuntime==="native"?{model:model||null,modelProvider:provider}:{}),cwd:thread.cwd||null});
@@ -3074,14 +3101,22 @@ export default function App(){
       if(continuityResult.error)persistentReadErrors.push("continuity: "+(continuityResult.error.message||String(continuityResult.error)));
       if(attachmentResult.error)persistentReadErrors.push("linked attachments: "+(attachmentResult.error.message||String(attachmentResult.error)));
     }
-    const openedThread=resumed?.thread||thread;
+    const openedThread=resumed?.thread||thread,owns=()=>openSeqRef.current===token;
+    // The same check after the answers came: a later open or a new task keeps the view, and this late answer never replaces it.
+    if(!owns())return thread;
+    // A project thread's project opens before the thread replaces the view, so both land in one frame: between them the view was
+    // the empty new-task screen. One replaced while its project opened leaves the project of the view that replaced it; a project
+    // that cannot open still fails the open where it always did, once the thread is selected.
+    let projectError=null;
+    if(!projectless&&openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId,{owns}).catch(error=>{projectError=error});
+    if(!owns())return thread;
     rememberConversationPosition();
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
     const resumedRunning=openedThread.status?.type==="active",resumedTurnId=resumedActiveTurnId(resumed);
     activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
-    else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
+    else if(projectError)throw projectError;else if(!openedThread.cwd)setProjectPath(projectPath);
     if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
     if(!connectedClient){setReviewedFiles(savedMeta.reviewedFiles||[]);if(persistentReadErrors.length)showActionError(new Error(persistentReadErrors.join(" · ")),"Opened thread, but some saved state could not be loaded");return}
     const map=cp?Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x])):(reopeningCurrentThread?checkpointByTurn:{});
@@ -3104,6 +3139,8 @@ export default function App(){
       }else{turnOutcomePagesRef.current=null;setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder((resumed.thread.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean),prev.threadId===resumed.thread.id?prev.ids:[])}));setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex")applyProviderInventory(harnessInventory(runtimeInventoryRef.current,resumed.thread.providerMeta))
     }
+    // The thread shows now (its history lands in this same frame), so its opening state ends; sends still wait for the reads below.
+    setOpening(current=>current?.token===token?{...current,landed:true}:current);
     if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
       let listed={projects:[]};
       try{listed=await api("/api/projects")}
@@ -3116,7 +3153,7 @@ export default function App(){
         let updated=null;
         try{updated=await client.request("thread/metadata/update",{threadId:resumed.thread.id,projectId:nativeProject.id})}
         catch(error){showActionError(error,"Could not sync runtime project identity")}
-        if(updated?.thread){
+        if(updated?.thread&&activeThreadRef.current?.id===updated.thread.id){
           activeThreadRef.current=updated.thread;setActiveThread(updated.thread);
           setThreads(prev=>prev.map(item=>item.id===updated.thread.id?updated.thread:item));
         }
@@ -3144,6 +3181,8 @@ export default function App(){
         });
     }
     if(useNativeQueue)await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
+    // A thread opened or a new task started while these reads ran has the view: this thread's saved state does not go into it.
+    if(activeThreadRef.current?.id!==openedThread.id)return thread;
     const meta=savedMeta;setReviewedFiles(meta.reviewedFiles||[]);
     if(goalData)setGoal(goalData?.goal||null);
     if(continuityData)setContinuity(continuityData?.continuity||null);
@@ -4397,17 +4436,31 @@ export default function App(){
   async function cycleTheme(){const themes=["dark","midnight","black",...(settings.customThemes||[]).map(theme=>theme.id)];const next=themes[(themes.indexOf(settings.appearance||"dark")+1)%themes.length];await saveAppSettings({appearance:next})}
   async function cycleAppearance(){const modes=["system","light","dark"];const next=modes[(modes.indexOf(settings.appearanceMode||"system")+1)%modes.length];await saveAppSettings({appearanceMode:next})}
 
-  const activeTitle=titleOf(openThreadTitleSource(activeThread,threads));
+  // While a thread other than the open one opens, the sidebar row and the header name it at once (the composer, which waits, drops the
+  // open thread's own controls) and, once it takes long, its opening state covers the conversation. Opened from a page such as History,
+  // it shows in the chat view while that page waits hidden (the conversation it replaces is not mounted). What is underneath stays the
+  // view before the click, so a failed open only ends this.
+  const openingView=openingPending?opening.thread:null,openingShown=Boolean(openingView&&openingCover);
+  const openingOverPage=openingShown&&opening.toChat&&section!=="chat"&&section!=="new",viewSection=openingOverPage?"chat":section;
+  const headerThread=openingView||activeThread;
+  const activeTitle=titleOf(openThreadTitleSource(headerThread,threads));
   // The open thread's approval comes first; one from another thread says which task is asking.
   const shownApproval=approvalToShow(approvals,activeThread?.id);
   const shownApprovalThreadId=approvalForeignThreadId(shownApproval,activeThread?.id);
   const shownApprovalOwner=shownApprovalThreadId?threads.find(thread=>String(thread.id)===shownApprovalThreadId)||null:null;
   const shownApprovalThreadLabel=shownApprovalThreadId?(shownApprovalOwner?titleOf(shownApprovalOwner):"another thread"):"";
   // The crumb names the project as the sidebar and Projects page do (its record's name); a folder without a record, or one the
-  // record does not describe yet, shows the folder name.
-  const projectFolderName=String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
-  const projectRecordName=currentProject&&sameWorkspacePath(currentProject.path,projectPath)?String(currentProject.name||"").trim():"";
-  const projectLabel=projectlessMode?"No project":projectRecordName||projectFolderName;
+  // record does not describe yet, shows the folder name. A thread still opening is named with its own: General chat, the open
+  // project when the thread is in it, else its folder.
+  const openingMeta=openingView?threadMeta[openingView.id]||{}:null;
+  const crumbProjectless=openingView?(Object.prototype.hasOwnProperty.call(openingMeta,"projectless")?Boolean(openingMeta.projectless):Boolean(openingView.providerMeta?.projectless)):projectlessMode;
+  const crumbPath=openingView&&!crumbProjectless&&openingView.cwd?openingView.cwd:projectPath;
+  const projectFolderName=String(crumbPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
+  const projectRecordName=currentProject&&sameWorkspacePath(currentProject.path,crumbPath)?String(currentProject.name||"").trim():"";
+  const projectLabel=crumbProjectless?"No project":projectRecordName||projectFolderName;
+  // The header's branch, Open in and script belong to the project before the click: a thread of another workspace takes them away
+  // while its opening state covers the conversation, as it does the open thread's own controls.
+  const projectControlsShown=!(openingShown&&(crumbProjectless!==projectlessMode||!sameWorkspacePath(crumbPath,projectPath)));
   const providerLabel=modelProviderLabel(provider);
   const agentRuntimeLabel=AGENT_RUNTIME_LABELS[agentRuntime]||agentRuntime;
   // Git text is written by the runtime the server runs (bootstrap), so the Source Control label names that harness.
@@ -4493,7 +4546,7 @@ export default function App(){
   // One Open-in state for the row's picker and the menu's copy, so both open the editor last chosen in either, and an Open from
   // either replaces the failure the row's picker shows. The menu closes as Open runs, so a failure there is reported like the
   // menu's other actions, not beside a picker that has gone.
-  const headerOpenIn=useOpenInEditors(projectPath,section==="chat"||section==="new");
+  const headerOpenIn=useOpenInEditors(projectPath,viewSection==="chat"||viewSection==="new");
   const headerOpenInShown=!projectlessMode&&!workspaceRemote&&Boolean(projectPath)&&headerOpenIn.editors.length>0;
   const openProjectFromMenu=()=>runUserAction(()=>headerOpenIn.open(),headerOpenIn.active?"Could not open in "+headerOpenIn.active.label:"Could not open externally");
   const sidebarBulkAction=useLatestCallback(bulkAction);
@@ -4613,48 +4666,50 @@ export default function App(){
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
-    <ThreadSidebar runtimeStarting={!runtimeKnown} connection={sidebarConnection} threadMoves={threadMoves} section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab} onOpenPalette={sidebarOpenPalette} shortcuts={sidebarShortcuts} listError={threadListError} onRetryList={sidebarRetryThreads} runningIds={runningSidebarIds} listLoaded={Boolean(bootstrap.mock)||threadListLoaded}/>
+    <ThreadSidebar runtimeStarting={!runtimeKnown} connection={sidebarConnection} threadMoves={threadMoves} section={viewSection} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={headerThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab} onOpenPalette={sidebarOpenPalette} shortcuts={sidebarShortcuts} listError={threadListError} onRetryList={sidebarRetryThreads} runningIds={runningSidebarIds} listLoaded={Boolean(bootstrap.mock)||threadListLoaded}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" {...layoutSeparatorProps("sidebar")} onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>
-      <main className={"main-frame"+(panel==="terminal"?" terminal-open":"")}>
+      <main className={"main-frame"+(panel==="terminal"?" terminal-open":"")+(openingOverPage?" opening-over-page":"")}>
         <div className="window-bar">
           <span className="window-drag-space"/>
         </div>
 
-        {(section==="chat"||section==="new")&&<div className="chat-workspace">
+        {(viewSection==="chat"||viewSection==="new")&&<div className="chat-workspace">
           <header className="workspace-header" ref={workspaceHeaderRef}>
             <div className="workspace-breadcrumb">
               {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title="Open sidebar · Ctrl+B"><PanelLeftOpen size={14}/></button>}
-              <button className={"project-crumb"+(projectlessMode?" projectless":"")} onClick={projectlessMode||!window.trebellDesktop?.pickDirectory?()=>setSection("projects"):()=>runUserAction(pickWorkspace,"Could not open workspace")} title={projectlessMode?"No project · choose a project":window.trebellDesktop?.pickDirectory?(projectPath||"Open folder"):"Projects and workspaces"}>{projectlessMode?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Projects and General chat"><ChevronDown size={12}/></button>
+              <button className={"project-crumb"+(crumbProjectless?" projectless":"")} onClick={crumbProjectless||!window.trebellDesktop?.pickDirectory?()=>setSection("projects"):()=>runUserAction(pickWorkspace,"Could not open workspace")} title={crumbProjectless?"No project · choose a project":window.trebellDesktop?.pickDirectory?(crumbPath||"Open folder"):"Projects and workspaces"}>{crumbProjectless?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Projects and General chat"><ChevronDown size={12}/></button>
               <span>/</span>
-              {/* Renaming needs a thread: before the first message the title is plain text, not a button that does nothing. */}
-              {activeThread?.id?<button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} title="Rename thread"><strong>{activeTitle}</strong><ChevronDown size={13}/></button>:<span className="thread-title-button is-static"><strong>{activeTitle}</strong></span>}
+              {/* Renaming needs a thread: before the first message the title is plain text, not a button that does nothing. A thread
+                  still opening keeps the button, disabled, so a quick open does not flash it away and back. The pull requests, Review,
+                  Stop and the goal belong to the thread before the click: they go once its opening state covers it. */}
+              {headerThread?.id?<button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} disabled={Boolean(openingView)} title={openingView?undefined:"Rename thread"}><strong>{activeTitle}</strong><ChevronDown size={13}/></button>:<span className="thread-title-button is-static"><strong>{activeTitle}</strong></span>}
               {/* In a narrow header the first chip stands for every linked pull request ("#482 +1", then the icon and a count); its
                   tooltip names the others. */}
-              {activeThread?.id&&linkedPullRequests.map((pr,index,all)=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")} aria-label={"Pull request #"+pr.number} title={"Open pull request #"+pr.number+(index===0&&all.length>1?" · also linked: "+all.slice(1).map(other=>"#"+other.number).join(", "):"")}><GitBranch size={11} aria-hidden="true"/><span className="header-pr-number">#{pr.number}</span>{index===0&&all.length>1&&<><span className="header-pr-more" aria-hidden="true">+{all.length-1}</span><span className="header-pr-count" aria-hidden="true">{all.length}</span></>}</button>)}
+              {activeThread?.id&&!openingShown&&linkedPullRequests.map((pr,index,all)=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")} aria-label={"Pull request #"+pr.number} title={"Open pull request #"+pr.number+(index===0&&all.length>1?" · also linked: "+all.slice(1).map(other=>"#"+other.number).join(", "):"")}><GitBranch size={11} aria-hidden="true"/><span className="header-pr-number">#{pr.number}</span>{index===0&&all.length>1&&<><span className="header-pr-more" aria-hidden="true">+{all.length-1}</span><span className="header-pr-count" aria-hidden="true">{all.length}</span></>}</button>)}
             </div>
             <div className="workspace-header-actions">
               {/* data-fold names the actions header-fit.js folds into the More actions menu when the title needs their room. */}
-              {gitInfo?.isGit&&<button className="header-control branch-control" data-fold="source" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
-              {headerOpenInShown&&<OpenInControl openIn={headerOpenIn} fold="open-in"/>}
-              {headerScript&&<button className="header-control script-control" data-fold="script" onClick={runHeaderScript} aria-label={headerScript.name} title={headerScript.command}><Play size={13}/><span>{headerScript.name}</span></button>}
-              {activeThread?.id&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} aria-label="Review" title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
-              {running&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label="Stop" title="Stop the running turn"><CircleStop size={14}/><span>Stop</span></button>}
+              {gitInfo?.isGit&&projectControlsShown&&<button className="header-control branch-control" data-fold="source" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
+              {headerOpenInShown&&projectControlsShown&&<OpenInControl openIn={headerOpenIn} fold="open-in"/>}
+              {headerScript&&projectControlsShown&&<button className="header-control script-control" data-fold="script" onClick={runHeaderScript} aria-label={headerScript.name} title={headerScript.command}><Play size={13}/><span>{headerScript.name}</span></button>}
+              {activeThread?.id&&!openingShown&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} aria-label="Review" title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
+              {running&&!openingShown&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label="Stop" title="Stop the running turn"><CircleStop size={14}/><span>Stop</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} data-fold="terminal" onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
-              {activeThread?.id&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} data-fold="goal" onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
+              {activeThread?.id&&!openingShown&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} data-fold="goal" onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
               <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
               <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={toggleAppearanceMode} aria-label={appearanceToggleLabel} title={appearanceToggleLabel}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
               <button className="header-control icon-only palette-control" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
               {/* Shown once actions fold: the folded ones in the row's order, then the theme and palette buttons, which the row has
                   set aside by then. */}
               <HeaderOverflowMenu items={[
-                gitInfo?.isGit&&{id:"source",fold:"source",Icon:GitBranch,label:"Source control",detail:gitInfo.branch||"detached",onSelect:()=>openRightPanel("source")},
-                headerOpenInShown&&{id:"open-in",fold:"open-in",render:close=><OpenInControl openIn={headerOpenIn} onOpen={()=>{close();openProjectFromMenu()}}/>},
-                headerScript&&{id:"script",fold:"script",Icon:Play,label:headerScript.name,title:headerScript.command,onSelect:runHeaderScript},
-                activeThread?.id&&gitInfo?.isGit&&{id:"review",fold:"review",Icon:ShieldCheck,label:"Review",title:"Review uncommitted changes",onSelect:reviewFromHeader},
+                gitInfo?.isGit&&projectControlsShown&&{id:"source",fold:"source",Icon:GitBranch,label:"Source control",detail:gitInfo.branch||"detached",onSelect:()=>openRightPanel("source")},
+                headerOpenInShown&&projectControlsShown&&{id:"open-in",fold:"open-in",render:close=><OpenInControl openIn={headerOpenIn} onOpen={()=>{close();openProjectFromMenu()}}/>},
+                headerScript&&projectControlsShown&&{id:"script",fold:"script",Icon:Play,label:headerScript.name,title:headerScript.command,onSelect:runHeaderScript},
+                activeThread?.id&&!openingShown&&gitInfo?.isGit&&{id:"review",fold:"review",Icon:ShieldCheck,label:"Review",title:"Review uncommitted changes",onSelect:reviewFromHeader},
                 {id:"terminal",fold:"terminal",Icon:PanelBottom,label:"Terminal",pressed:panel==="terminal",onSelect:toggleTerminalPanel},
-                activeThread?.id&&{id:"goal",fold:"goal",Icon:Target,label:"Thread goal",title:goal?.objective||"Set thread goal",pressed:rightPanelOpen&&rightPanelTab==="goal",onSelect:()=>openRightPanel("goal")},
+                activeThread?.id&&!openingShown&&{id:"goal",fold:"goal",Icon:Target,label:"Thread goal",title:goal?.objective||"Set thread goal",pressed:rightPanelOpen&&rightPanelTab==="goal",onSelect:()=>openRightPanel("goal")},
                 {id:"appearance",Icon:resolvedMode==="dark"?Sun:Moon,label:appearanceToggleLabel,onSelect:toggleAppearanceMode},
                 {id:"palette",Icon:Command,label:"Command palette",hint:"Ctrl+K",onSelect:()=>setPaletteOpen(true)},
               ]}/>
@@ -4663,7 +4718,7 @@ export default function App(){
 
           <ThreadFindBar state={threadFind} inputRef={threadFindInputRef} barRef={threadFindBarRef} onQuery={query=>setThreadFind(current=>({...current,query,error:""}))} onPrevious={()=>stepThreadFind(-1)} onNext={()=>stepThreadFind(1)} onClose={closeThreadFind}/>
 
-          <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
+          {!openingOverPage&&<div className={"conversation-scroll"+(openingShown?" opening-covered":"")} ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
               <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={turnOrder.threadId===activeThread?.id?turnOrder.ids:null}/>
@@ -4678,10 +4733,11 @@ export default function App(){
                 <div className="suggestions">{projectlessMode?<><button onClick={()=>setPrompt("Help me plan the architecture for this idea before I choose a repository.")}>Plan an idea</button><button onClick={()=>setPrompt("Research this technical question and give me a practical recommendation: ")}>Research a topic</button><button onClick={()=>setPrompt("Turn this rough idea into a clear technical specification: ")}>Draft a spec</button></>:<><button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></>}</div>
               </div>}
             </div>
-          </div>
+          </div>}
+          {openingShown&&<div className="thread-opening" role="status" aria-live="polite" data-testid="thread-opening"><div className="thread-opening-body"><strong>{activeTitle}</strong><span><i className="thread-opening-spinner" aria-hidden="true"/>Opening thread…</span></div></div>}
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
-  <Composer starting={!runtimeKnown} prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(openingThreadId)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={configureProviderKey} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelOption={composerModelOption} onModelPickerOpenChange={setModelPickerOpen} codexThread={agentRuntime==="codex"&&activeThread?.id&&codexThreadState?.threadId===activeThread.id?codexThreadState:null}/>
+  <Composer starting={!runtimeKnown} prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(opening)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={configureProviderKey} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={openingView?null:tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(headerThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(!openingView&&activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={openingView?null:threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelOption={composerModelOption} onModelPickerOpenChange={setModelPickerOpen} codexThread={agentRuntime==="codex"&&!openingView&&activeThread?.id&&codexThreadState?.threadId===activeThread.id?codexThreadState:null}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" {...layoutSeparatorProps("terminal")} onPointerDown={event=>beginLayoutResize("terminal",event)}/>
@@ -4718,7 +4774,7 @@ export default function App(){
       {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" {...layoutSeparatorProps("right")} onPointerDown={event=>beginLayoutResize("right",event)}/>}
       {rightPanelOpen&&narrowDrawer&&!rightPanelMaximized&&<div className="inspector-scrim" data-testid="inspector-scrim" aria-hidden="true" onClick={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}/>}
       {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","context","source"]:[]} hiddenTabs={runtimeCapabilities.delegation?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact>{rightPanelContent()}</DeferredSurface></RightPanel>}
-      {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")+(section!=="chat"?" secondary-surface-error":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
+      {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")+(viewSection!=="chat"?" secondary-surface-error":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     </div>
 
     {window.trebellDesktop?.minimize&&window.trebellDesktop?.maximize&&window.trebellDesktop?.close&&<div className="window-controls window-controls-pinned"><button onClick={()=>window.trebellDesktop.minimize()} title="Minimize">—</button><button onClick={()=>window.trebellDesktop.maximize()} title="Maximize">□</button><button className="window-close" onClick={()=>window.trebellDesktop.close()} title="Close">×</button></div>}

@@ -15,6 +15,9 @@ import { TrebellStateStore } from "../../src/trebell-state.mjs";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 mkdirSync(auditDir,{recursive:true});
+// The sidebar selects a thread at the click; the thread is open (its history in, its events its own) once the composer no longer
+// says it is opening.
+const threadOpened=page=>expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
 
 async function prepare(page,request){
   // The mock server keeps settings between tests: an environment theme another spec selected outranks "appearance", so clear it too.
@@ -250,7 +253,7 @@ test("failed turn verification automatically starts one same-thread repair",asyn
     await page.route(/\/api\/verification\/plan-turn$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:true,changedPaths:["src/parser.js"],record:{id:"verification-auto-1",threadId:thread.id,turnId:"failed-turn",risk:"medium",plan:{risk:"medium",steps:[{id:"tests",kind:"tests",required:true}]},evidence:[{stepId:"tests",status:"failed",exitCode:1}],assessment:{status:"failed",risk:"medium",summary:{required:1,passed:0,failed:1,blocked:0,missing:0}}},nextAction:{action:"repair",failedSteps:["tests"]}})}));
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
-    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto verification repair fixture"]')});await expect(row).toBeVisible();await row.click();await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).toBeVisible();
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto verification repair fixture"]')});await expect(row).toBeVisible();await row.click();await expect(row).toHaveClass(/active/);await threadOpened(page);await expect(page.getByTestId("composer")).toBeVisible();
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"failed-turn",status:"completed",completedAt:Date.now()/1000,durationMs:100}}});
     await page.waitForTimeout(500);expect(requestMethods).toContain("thread/continuity/get");expect(requestMethods).toContain("thread/verification/repair");
     await expect.poll(()=>repairRequests.length).toBe(1);expect(repairRequests[0]).toMatchObject({threadId:thread.id,recordId:"verification-auto-1",auto:true});
@@ -277,7 +280,7 @@ test("missing test verification automatically starts one same-thread check",asyn
     await routeProjectlessCodexRequestFixture(page,harness,thread,"auto-verification-continue-fixture");
     await page.route(/\/api\/verification\/plan-turn$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:true,changedPaths:["src/parser.js"],record:{id:"verification-continue-1",threadId:thread.id,turnId:"completed-turn",risk:"medium",plan:{risk:"medium",steps:[{id:"project_tests",kind:"tests",required:true,command:"npm test"}]},evidence:[],assessment:{status:"incomplete",risk:"medium",summary:{required:1,passed:0,failed:0,blocked:0,missing:1}}},nextAction:{action:"verify",nextStep:{id:"project_tests",kind:"tests",required:true,command:"npm test"},remainingSteps:["project_tests"]}})}));
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
-    await page.goto("/");const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto verification continuation fixture"]')});await expect(row).toBeVisible();await row.click();await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).toBeVisible();
+    await page.goto("/");const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto verification continuation fixture"]')});await expect(row).toBeVisible();await row.click();await expect(row).toHaveClass(/active/);await threadOpened(page);await expect(page.getByTestId("composer")).toBeVisible();
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"completed-turn",status:"completed",completedAt:Date.now()/1000,durationMs:100}}});
     await expect.poll(()=>continuationRequests.length).toBe(1);expect(continuationRequests[0]).toMatchObject({threadId:thread.id,recordId:"verification-continue-1",auto:true});
     await expect(page.getByText(/Automatic same-thread check turn · project_tests/)).toBeVisible();
@@ -1622,7 +1625,7 @@ test("automatic context compaction completes before the next turn starts",async(
     await page.goto("/");
     const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto compact fixture"]')});
     await row.locator(".thread-main").click();
-    await expect(row).toHaveClass(/active/);
+    await expect(row).toHaveClass(/active/);await threadOpened(page);
     harness.emit({method:"thread/tokenUsage/updated",params:{threadId:thread.id,tokenUsage:{modelContextWindow:100000,last:{inputTokens:86000},total:{totalTokens:110000}}}});
     await expect(page.getByText(/Context 86%/)).toBeVisible();
     const composer=page.getByTestId("composer");
@@ -1659,7 +1662,7 @@ test("live assistant streaming survives page navigation without root-owned strea
     await routeProjectlessCodexRequestFixture(page,harness,thread,"stream-isolation-fixture");
     await page.goto("/");
     await page.getByRole("button",{name:/Stream isolation fixture/}).click();
-    await expect(page.locator(".thread-row.active")).toContainText("Stream isolation fixture");
+    await expect(page.locator(".thread-row.active")).toContainText("Stream isolation fixture");await threadOpened(page);
     harness.emit({method:"turn/started",params:{threadId:thread.id,turn:{id:"stream-turn",status:"inProgress"}}});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
     harness.emit({method:"item/agentMessage/delta",params:{threadId:thread.id,turnId:"stream-turn",delta:"Hello "}});
@@ -1687,7 +1690,7 @@ test("live command output survives page navigation without root-owned event chur
     await routeProjectlessCodexRequestFixture(page,harness,thread,"command-stream-isolation-fixture");
     await page.goto("/");
     await page.getByRole("button",{name:/Command stream isolation fixture/}).click();
-    await expect(page.locator(".thread-row.active")).toContainText("Command stream isolation fixture");
+    await expect(page.locator(".thread-row.active")).toContainText("Command stream isolation fixture");await threadOpened(page);
     harness.emit({method:"turn/started",params:{threadId:thread.id,turn:{id:"command-stream-turn",status:"inProgress"}}});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
     harness.emit({method:"item/started",params:{threadId:thread.id,turnId:"command-stream-turn",item:{id:"command-stream-item",type:"commandExecution",command:["npm","test"],status:"inProgress"}}});
@@ -1723,7 +1726,7 @@ test("MCP progress updates one live activity row and survives page navigation",a
     await routeProjectlessCodexRequestFixture(page,harness,thread,"mcp-progress-isolation-fixture");
     await page.goto("/");
     await page.getByRole("button",{name:/MCP progress isolation fixture/}).click();
-    await expect(page.locator(".thread-row.active")).toContainText("MCP progress isolation fixture");
+    await expect(page.locator(".thread-row.active")).toContainText("MCP progress isolation fixture");await threadOpened(page);
     harness.emit({method:"turn/started",params:{threadId:thread.id,turn:{id:"mcp-progress-turn",status:"inProgress"}}});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
     harness.emit({method:"item/started",params:{threadId:thread.id,turnId:"mcp-progress-turn",item:{id:"mcp-progress-item",type:"mcpToolCall",server:"browser",tool:"navigate",status:"inProgress"}}});
@@ -1758,7 +1761,7 @@ test("repeated turn diff updates replace one activity row instead of growing the
     await routeProjectlessCodexRequestFixture(page,harness,thread,"diff-update-isolation-fixture");
     await page.goto("/");
     await page.getByRole("button",{name:/Diff update isolation fixture/}).click();
-    await expect(page.locator(".thread-row.active")).toContainText("Diff update isolation fixture");
+    await expect(page.locator(".thread-row.active")).toContainText("Diff update isolation fixture");await threadOpened(page);
     harness.emit({method:"turn/started",params:{threadId:thread.id,turn:{id:"diff-update-turn",status:"inProgress"}}});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
     for(let index=1;index<=64;index++)harness.emit({method:"turn/diff/updated",params:{threadId:thread.id,turnId:"diff-update-turn",diff:`diff update ${index}/64`}});
@@ -1793,11 +1796,11 @@ test("token telemetry stays thread-local and catches up after hidden-page update
     await routeProjectlessCodexRequestFixture(page,harness,first,"token-telemetry-isolation-fixture",{threadMeta:{[second.id]:{projectless:true,environmentId:null}}});
     await page.goto("/");
     await page.getByRole("button",{name:/Token usage first fixture/}).click();
-    await expect(page.locator(".thread-row.active")).toContainText("Token usage first fixture");
+    await expect(page.locator(".thread-row.active")).toContainText("Token usage first fixture");await threadOpened(page);
     harness.emit({method:"thread/tokenUsage/updated",params:{threadId:first.id,tokenUsage:usage(50)}});
     await expect(page.locator(".composer-status")).toContainText("Context 50%");
     await page.getByRole("button",{name:/Token usage second fixture/}).click();
-    await expect(page.locator(".thread-row.active")).toContainText("Token usage second fixture");
+    await expect(page.locator(".thread-row.active")).toContainText("Token usage second fixture");await threadOpened(page);
     await expect(page.locator(".composer-status")).not.toContainText("Context 50%");
     harness.emit({method:"thread/tokenUsage/updated",params:{threadId:second.id,tokenUsage:usage(20)}});
     await expect(page.locator(".composer-status")).toContainText("Context 20%");
@@ -2521,7 +2524,7 @@ test("Codex repository tools query Trebell context intelligence end to end",asyn
     await page.goto("/");
     // The sidebar's thread row: the header crumb names the project, which shares this name.
     await page.locator(".sidebar").getByRole("button",{name:/Repository tools fixture/}).click();
-    await expect(page.locator(".thread-row.active")).toContainText("Repository tools fixture");
+    await expect(page.locator(".thread-row.active")).toContainText("Repository tools fixture");await threadOpened(page);
 
     const symbolsResponse=await harness.request("item/tool/call",{threadId:thread.id,namespace:"trebell_repo",tool:"search_symbols",arguments:{query:"ContextEngine",limit:10}});
     expect(symbolsResponse.result?.success).toBe(true);
@@ -2617,7 +2620,7 @@ test("model delegation tool starts a bounded child and surfaces it in Agents",as
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
     const parentRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Delegation parent"]')});
-    await parentRow.locator(".thread-main").click();await expect(parentRow).toHaveClass(/active/);
+    await parentRow.locator(".thread-main").click();await expect(parentRow).toHaveClass(/active/);await threadOpened(page);
 
     const response=await harness.request("item/tool/call",{threadId:parent.id,namespace:"trebell_delegate",tool:"delegate",arguments:{task:"Audit the parser edge cases",permissions:"read-only",isolation:"inherit",ownership:["src/parser.js","tests/parser.test.js"],budget:{turnBudget:2,toolCallBudget:8}}});
     expect(response.result?.success).toBe(true);
@@ -5562,7 +5565,7 @@ test("sidebar thread action failures stay visible and keep the thread in place",
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark";document.documentElement.dataset.customTheme="false"});
     await row.locator("details").evaluate(node=>{node.open=false});
     await row.locator(".thread-main").click();
-    await expect(row).toHaveClass(/active/);
+    await expect(row).toHaveClass(/active/);await threadOpened(page);
     await page.keyboard.press("Control+Alt+P");
     const globalError=page.getByTestId("app-action-error");
     await expect(globalError).toContainText("Could not update thread: Deliberate thread pin failure");
@@ -5617,7 +5620,7 @@ test("delegated agent open failures stay visible in the Agents panel",async({pag
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
     await page.locator('.thread-main[title="Agent parent fixture"]').click();
-    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Agent parent fixture");
+    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Agent parent fixture");await threadOpened(page);
     for(const ws of sockets)ws.send(JSON.stringify({method:"item/started",params:{threadId:child.id,turnId:"child-turn",item:{id:"child-command",type:"commandExecution",command:["npm","test"],status:"inProgress"}}}));
     await page.waitForTimeout(100);
     await page.locator('.sidebar .sidebar-utility[aria-label="Agents"]').click();

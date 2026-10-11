@@ -45,6 +45,8 @@ test("changing models during a running Codex turn updates the live turn",async({
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
     await page.goto("/");await page.getByRole("button",{name:/Live model fixture/}).click();
     await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Live model fixture");
+    // The row is selected at the click; the thread is open once the composer no longer says it is opening.
+    await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
     await expect(page.getByTestId("model-picker")).toContainText("Model A");
     notificationSocket.send(JSON.stringify({method:"turn/started",params:{threadId:thread.id,turn:{id:"turn-live",status:"inProgress",startedAt:Date.now()/1000}}}));
     await expect(page.getByTestId("composer")).toHaveAttribute("placeholder","Steer the running agent…");

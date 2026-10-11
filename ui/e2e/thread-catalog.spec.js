@@ -82,7 +82,8 @@ test("saved threads stay visible across runtimes and foreign rows hand off befor
 
     await claudeRow.locator(".thread-main").click();
     await expect.poll(()=>runtimeSwitches).toBe(1);await expect.poll(()=>runtime).toBe("claude");
-    await expect(claudeRow).toHaveClass(/active/);
+    // The row is selected at the click and the thread opens after the switch: the composer stops saying it is opening.
+    await expect(claudeRow).toHaveClass(/active/);await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
     await expect(codexRow).toBeVisible();
     await expect(codexRow.locator(".thread-runtime-chip")).toHaveText("Codex");
     await expect(page.locator(".sidebar-provider strong")).toContainText("Claude");
@@ -93,7 +94,7 @@ test("saved threads stay visible across runtimes and foreign rows hand off befor
 
     await codexRow.locator(".thread-main").click();
     await expect.poll(()=>runtimeSwitches).toBe(2);await expect.poll(()=>runtime).toBe("codex");
-    await expect(codexRow).toHaveClass(/active/);
+    await expect(codexRow).toHaveClass(/active/);await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
     await expect(page.locator(".sidebar-provider strong")).toContainText("Codex");
     expect(harness.requests.some(entry=>entry.runtime==="codex"&&entry.message.method==="thread/resume"&&entry.message.params?.threadId===codex.id)).toBe(true);
     await expect(page.getByTestId("app-action-error")).toHaveCount(0);
