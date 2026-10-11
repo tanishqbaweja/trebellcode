@@ -365,6 +365,15 @@ export function formatByteSize(bytes){
   while(size>=1024&&unit<units.length-1){size/=1024;unit++}
   return (unit===0?String(Math.round(size)):size>=100?size.toFixed(0):size>=10?size.toFixed(1):size.toFixed(2))+" "+units[unit];
 }
+// Whether local Codex history can be imported now, and if not, why: the harness or environment choice, or no local Codex
+// app-server to fork the sessions into (the mock server runs none; one bound to a remote environment is not local).
+export function codexHistoryImportStatus({runtime,activeEnvironmentId=null,appServer=null}={}){
+  const choice="Codex imports need the Codex harness on Local machine.";
+  if(runtime!=="codex")return {available:false,reason:"harness",message:choice};
+  if(activeEnvironmentId)return {available:false,reason:"environment",message:choice};
+  if(!appServer?.targetUrl||appServer.environment)return {available:false,reason:"app-server",message:"Codex imports need a local Codex app-server, and none is reachable."};
+  return {available:true,reason:null,message:null};
+}
 function statsSnapshot(){
   const load=cpus().length ? Math.min(100,Math.round((requireLoad()/cpus().length)*100)) : 0;
   const usedMem=Math.max(0,totalmem()-freemem());
@@ -2072,9 +2081,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(req.method==="GET"){
         try{
           const {publicCandidates}=await localAgentHistory();
+          const codexImport=codexHistoryImportStatus({runtime:selectedAgentRuntime,activeEnvironmentId:state.settings().activeEnvironmentId,appServer});
           return json(res,200,{
             sessions:publicCandidates,
-            codexImportAvailable:selectedAgentRuntime==="codex"&&!state.settings().activeEnvironmentId&&Boolean(appServer?.targetUrl&&!appServer?.environment),
+            codexImportAvailable:codexImport.available,
+            codexImportUnavailable:codexImport.available?null:{reason:codexImport.reason,message:codexImport.message},
           });
         }catch(error){return json(res,400,{error:error.message})}
       }

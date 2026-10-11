@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
-import { createGuiServer, offlineE2eFetch, requestAbortController } from "../src/gui-server.mjs";
+import { codexHistoryImportStatus, createGuiServer, offlineE2eFetch, requestAbortController } from "../src/gui-server.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { ProviderManager } from "../src/provider-manager.mjs";
 import { git } from "../src/git-service.mjs";
@@ -22,6 +22,19 @@ test("request cancellation follows client disconnects but ignores a completed re
   const completedRequest=new EventEmitter(),completedResponse=new EventEmitter();completedResponse.writableEnded=true;
   const completed=requestAbortController(completedRequest,completedResponse);completedResponse.emit("close");
   assert.equal(completed.signal.aborted,false);completed.dispose();
+});
+
+test("Codex history import availability names the harness, environment or missing local app-server that blocks it",()=>{
+  const local={targetUrl:"ws://127.0.0.1:4500",environment:null};
+  assert.deepEqual(codexHistoryImportStatus({runtime:"codex",activeEnvironmentId:null,appServer:local}),{available:true,reason:null,message:null});
+  const harness=codexHistoryImportStatus({runtime:"native",appServer:local}),environment=codexHistoryImportStatus({runtime:"codex",activeEnvironmentId:"ssh-test",appServer:local});
+  assert.equal(harness.available,false);assert.equal(harness.reason,"harness");assert.equal(environment.available,false);assert.equal(environment.reason,"environment");
+  for(const status of [harness,environment])assert.equal(status.message,"Codex imports need the Codex harness on Local machine.");
+  // Codex on Local machine is already chosen here, so the message names the missing app-server instead of that choice.
+  for(const appServer of [{targetUrl:null,environment:null},{targetUrl:"ws://127.0.0.1:4500",environment:{id:"ssh-test",type:"ssh"}},null]){
+    const status=codexHistoryImportStatus({runtime:"codex",activeEnvironmentId:null,appServer});
+    assert.equal(status.available,false);assert.equal(status.reason,"app-server");assert.match(status.message,/local Codex app-server/);assert.doesNotMatch(status.message,/harness|Local machine/);
+  }
 });
 
 test("offline browser E2E fetch allows loopback only",async()=>{
@@ -531,6 +544,8 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const historyImport=await fetch(gui.url+"/api/history-import").then(r=>r.json());
     const codexHistory=historyImport.sessions.find(item=>item.providerSessionId===externalSessionId);
     assert.equal(codexHistory.source,"codex");assert.equal(codexHistory.title,"Imported GUI history fixture");assert.equal(codexHistory.alreadyImported,false);assert.equal(Object.prototype.hasOwnProperty.call(codexHistory,"sourcePath"),false);
+    // The mock server runs Codex on Local machine without an app-server, and says that is why Codex history cannot be imported.
+    assert.equal(historyImport.codexImportAvailable,false);assert.equal(historyImport.codexImportUnavailable.reason,"app-server");assert.match(historyImport.codexImportUnavailable.message,/local Codex app-server/);
     const projectPath=process.cwd();
     const projectSaved=await fetch(gui.url+"/api/projects",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
       path:projectPath,
