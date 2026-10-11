@@ -59,6 +59,20 @@ test("the Native Thinking picker offers only effort levels the OpenAI Responses 
   assert.deepEqual(supportedReasoningEfforts("native","openai","o3",{}),["low","medium","high"]);
 });
 
+test("a Native Thinking level the model's own list leaves out gives way to the provider default",()=>{
+  // Saved per model while the picker still offered them, before the per-model lists; the Responses API refuses each with
+  // HTTP 400 ("Unsupported value: 'xhigh' is not supported with the 'gpt-5' model"), so every turn failed.
+  const saved={"gpt-5":"xhigh","gpt-5.1":"xhigh","o3":"xhigh","gpt-5-pro":"medium","gpt-5.2-pro":"low"};
+  const settings={modelReasoningEfforts:Object.fromEntries(Object.entries(saved).map(([model,effort])=>[modelReasoningEffortKey("native","openai",model),effort]))};
+  const used=Object.fromEntries(Object.keys(saved).map(model=>[model,configuredReasoningEffort(settings,"native","openai",model)]));
+  assert.deepEqual(used,{"gpt-5":null,"gpt-5.1":null,"o3":null,"gpt-5-pro":null,"gpt-5.2-pro":null});
+  assert.equal(configuredReasoningEffort({modelReasoningEfforts:{[modelReasoningEffortKey("native","openai","gpt-5")]:"high"}},"native","openai","gpt-5"),"high");
+  // A level the provider's catalog lists for the model counts as offered, as the picker shows it.
+  const key=modelReasoningEffortKey("native","vyceai","vyce-thinker");
+  assert.equal(configuredReasoningEffort({modelReasoningEfforts:{[key]:"high"}},"native","vyceai","vyce-thinker",{reasoningEfforts:["low","high"]}),"high");
+  assert.equal(configuredReasoningEffort({modelReasoningEfforts:{[key]:"high"}},"native","vyceai","vyce-thinker"),null,"a model with no levels offered takes none");
+});
+
 test("Codex effort levels are the ones its model list advertises, Ultra included, as T3 Code keeps them",()=>{
   assert.deepEqual(supportedReasoningEfforts("codex","ignored","custom",{supportedReasoningEfforts:["low","MAX","ultra","x-high_2","has spaces","","low"]}),["low","max","ultra","x-high_2"]);
   assert.deepEqual(supportedReasoningEfforts("codex","ignored","custom",{supportedReasoningEfforts:[{reasoningEffort:"xhigh"},{effort:"ultra"}]}),["xhigh","ultra"]);

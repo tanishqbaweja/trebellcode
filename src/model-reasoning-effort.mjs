@@ -61,7 +61,11 @@ export function defaultReasoningEffort(runtime,provider,model){
   return null;
 }
 
-export function configuredReasoningEffort(settings,runtime,provider,model){
+// metadata is the model's catalog row, which may list its own levels. Native sends a saved level to the provider as is, and
+// OpenAI refuses one outside the model's list with HTTP 400, failing the turn: a level saved before that list narrowed
+// (Extra High on gpt-5) gives way to the provider default.
+export function configuredReasoningEffort(settings,runtime,provider,model,metadata={}){
   const configured=normalizeRuntimeReasoningEffort(runtime,settings?.modelReasoningEfforts?.[modelReasoningEffortKey(runtime,provider,model)]);
+  if(configured&&runtime==="native"&&!supportedReasoningEfforts(runtime,provider,model,metadata).includes(configured))return defaultReasoningEffort(runtime,provider,model);
   return configured||defaultReasoningEffort(runtime,provider,model);
 }

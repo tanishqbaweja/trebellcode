@@ -745,7 +745,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   // Codex shows the open thread's own effort and tier while it runs this model, and its Standard tier is "default", as
   // T3 Code's Codex selects do.
   const codexChoices=agentRuntime==="codex"?codexModelChoices({settings,provider,model,metadata:modelMeta?.[model]||{},custom:(settings.customModels||[]).find(item=>item.id===model&&item.runtime==="codex")||null,thread:codexThread}):null;
-  const reasoningEffort=codexChoices?codexChoices.effort||"":configuredReasoningEffort(settings,agentRuntime,provider,model)||"";
+  const reasoningEffort=codexChoices?codexChoices.effort||"":configuredReasoningEffort(settings,agentRuntime,provider,model,modelMeta?.[model]||{})||"";
   const serviceTier=codexChoices?codexChoices.serviceTierPicker:configuredModelServiceTier(settings,agentRuntime,provider,model)||"";
   const effortChoices=reasoningEffort&&!reasoningEffortOptions.includes(reasoningEffort)?[...reasoningEffortOptions,reasoningEffort]:reasoningEffortOptions;
   // Every harness's effort ids read the same way (xhigh is Extra High); a harness's own names (OpenCode variants) stay as given.
@@ -3606,7 +3606,7 @@ export default function App(){
       }
       const p=presetFor(permissionModeOverride||permissionMode);
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
-      const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,modelId);
+      const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{});
       const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
       const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
@@ -3638,7 +3638,7 @@ export default function App(){
       }
       const p=presetFor(permissionMode);
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
-      const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,modelId);
+      const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{});
       const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
       turnRequestStarted=true;
       const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});

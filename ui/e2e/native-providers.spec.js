@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 
 // Trebell Native on each model provider, as the live provider sweep met them: a provider without a key, a key the provider
-// refuses, and OpenAI's long model list. The GUI server is mocked at its HTTP API, as runtime-switch.spec.js does.
+// refuses, OpenAI's long model list and a saved Thinking level the model does not offer. The GUI server is mocked at its
+// HTTP API, as runtime-switch.spec.js does.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
 const PROVIDER_NAMES={openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Google Gemini API",justworker:"JustWorker.icu",hcnsec:"HCNSec.cn",vyceai:"VyceAi"};
@@ -14,36 +15,50 @@ const REFUSAL="HTTP 402: Insufficient balance. Please top up your account. The k
 
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
-// The Native relay answers what a new chat asks for; no turn runs in these tests.
+// The Native relay answers what a new chat asks for. A turn completes at once with a fixed reply, and turnStarts keeps what
+// each turn/start asked the provider for.
 async function startNativeRelay(){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),open=new Set(),requests=[];
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),open=new Set(),requests=[],turnStarts=[];
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
     open.add(ws);ws.on("close",()=>open.delete(ws));
+    const send=value=>{try{ws.send(JSON.stringify(value))}catch{}};
     ws.on("message",raw=>{
       const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
       requests.push(message.method);
+      const params=message.params||{};
+      if(message.method==="turn/start"){
+        turnStarts.push(params);
+        const threadId=params.threadId,turnId="native-turn-"+turnStarts.length;
+        send({id:message.id,result:{turn:{id:turnId,status:"inProgress",items:[]}}});
+        send({method:"turn/started",params:{threadId,turn:{id:turnId,status:"inProgress",startedAt:Date.now()/1000}}});
+        send({method:"item/completed",params:{threadId,turnId,item:{id:"reply-"+turnId,type:"agentMessage",text:"Fixture reply"}}});
+        send({method:"turn/completed",params:{threadId,turn:{id:turnId,status:"completed",completedAt:Date.now()/1000}}});
+        return;
+      }
       let result={};
       if(message.method==="initialize")result={userAgent:"native-providers-fixture"};
+      else if(message.method==="thread/start")result={thread:{id:"native-thread-"+requests.length,name:"Native",preview:"",cwd:params.cwd||process.cwd(),createdAt:Date.now()/1000,updatedAt:Date.now()/1000,status:{type:"idle"},turns:[]}};
       else if(["thread/list","thread/turns/list","thread/queue/list","thread/attachment/list","thread/timeline/list"].includes(message.method))result={data:[],nextCursor:null};
       else if(["threadSection/list","skills/list","collaborationMode/list"].includes(message.method))result={data:[]};
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
-      ws.send(JSON.stringify({id:message.id,result}));
+      send({id:message.id,result});
     });
   });
   const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
-  return {wsUrl:"ws://127.0.0.1:"+port+"/api/agent/ws",requests,async close(){for(const ws of open)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
+  return {wsUrl:"ws://127.0.0.1:"+port+"/api/agent/ws",requests,turnStarts,async close(){for(const ws of open)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
 
 // The GUI server's side for Trebell Native on one provider. Without a key the catalog has no models (a fixed-model provider
 // still lists its model) and its error asks for a key, or says why the last key typed was refused, as ProviderManager.models
-// answers; refuseKey makes a typed key fail its check the way the GUI server's checkKey reports it.
+// answers; refuseKey makes a typed key fail its check the way the GUI server's checkKey reports it. reasoningEfforts are the
+// saved Thinking levels, and a level picked in the composer is saved into them.
 const STATIC_MODELS={justworker:["claude-opus-4-8"],hcnsec:["glm-5.3"]};
-async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false}){
-  const server={provider,hasKey,keyCheck:null,posts:[]};
+async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false,reasoningEfforts={}}){
+  const server={provider,hasKey,keyCheck:null,posts:[],reasoningEfforts:{...reasoningEfforts}};
   const relay=await startNativeRelay();
-  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:server.provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:server.provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",modelReasoningEfforts:server.reasoningEfforts});
   const bootstrap=()=>({mock:false,provider:server.provider,providerReady:server.hasKey,agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeReady:true,appServerReady:true,wsUrl:relay.wsUrl,cwd:process.cwd(),platform:process.platform,version:"native-providers-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const keyless=()=>STATIC_MODELS[server.provider]||[];
   const catalog=()=>server.hasKey
@@ -54,7 +69,11 @@ async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models
   const runtimes=()=>({selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[{id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true,version:"Built into Trebell Code"}]});
   await page.route(/\/api\/bootstrap$/,route=>json(route,bootstrap()));
   await page.route(/\/api\/state$/,route=>json(route,{settings:settings(),projects:[],threadMeta:{}}));
-  await page.route(/\/api\/settings$/,route=>json(route,settings()));
+  await page.route(/\/api\/settings$/,route=>{
+    const patch=route.request().method()==="POST"?route.request().postDataJSON()||{}:{};
+    if(patch.modelReasoningEfforts)server.reasoningEfforts={...patch.modelReasoningEfforts};
+    return json(route,settings());
+  });
   await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,catalog()));
   await page.route(/\/api\/agent-runtimes(?:\?.*)?$/,route=>route.request().method()==="GET"?json(route,runtimes()):json(route,{error:"No harness change is expected in this fixture"},400));
   await page.route(/\/api\/providers$/,route=>{
@@ -199,5 +218,34 @@ for(const mode of MODES)test(`the model menu opens on the checked model far down
     expect(placement).toEqual({belowSearch:true,insideMenu:true,scrolled:true,searchGap:expect.any(Number)});
     expect(placement.searchGap,"rows show above the search field").toBeLessThanOrEqual(0);
     await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-model-menu-checked-${mode}.png`});
+  }finally{await close()}
+});
+
+for(const mode of MODES)test(`a Thinking level the model does not offer reads and runs as the provider default, and a level it offers is sent (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  // Saved while the picker still offered Extra High for gpt-5. The picker went on showing it and every turn sent it, which the
+  // Responses API answers with HTTP 400 "Unsupported value: 'xhigh' is not supported with the 'gpt-5' model".
+  const {server,relay,close}=await startNativeHarness(page,{provider:"openai",mode,hasKey:true,models:["gpt-5","gpt-6.1-sol"],defaultModel:"gpt-5",reasoningEfforts:{"native:openai:gpt-5":"xhigh"}});
+  try{
+    await openGeneralChat(page,relay);
+    await expect(page.getByTestId("model-picker")).toContainText(/gpt-5/i);
+    const picker=page.getByTestId("reasoning-effort-picker");
+    await expect(picker).toHaveValue("");
+    await expect(picker.locator("option")).toHaveText(["Thinking · provider default","Thinking · Low","Thinking · Medium","Thinking · High"]);
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-thinking-level-not-offered-${mode}.png`});
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send");
+    await composer.fill("hello");await send.click();
+    await expect.poll(()=>relay.turnStarts.length,{timeout:15_000}).toBe(1);
+    expect(relay.turnStarts[0].model).toBe("gpt-5");
+    expect(relay.turnStarts[0]).not.toHaveProperty("reasoningEffort");
+
+    await picker.selectOption({label:"Thinking · High"});
+    await expect(picker).toHaveValue("high");
+    expect(server.reasoningEfforts).toEqual({"native:openai:gpt-5":"high"});
+    await composer.fill("again");await send.click();
+    await expect.poll(()=>relay.turnStarts.length,{timeout:15_000}).toBe(2);
+    expect(relay.turnStarts[1]).toMatchObject({model:"gpt-5",reasoningEffort:"high"});
+    await expect(picker).toBeEnabled();await expect(picker).toHaveValue("high");
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-thinking-level-picked-${mode}.png`});
   }finally{await close()}
 });
