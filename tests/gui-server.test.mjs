@@ -172,6 +172,38 @@ test("saving a Native provider key does not refetch the live model catalog durin
   }
 });
 
+test("a refused provider key reads as the provider's message and stays readable from the provider status",async()=>{
+  // Live: VyceAi answered a typed key with HTTP 402 and Settings showed the raw JSON body; leaving Settings lost the reason.
+  const home=await mkdtemp(join(tmpdir(),"trebell-provider-key-check-"));
+  const env={...process.env,TREBELL_HOME:home,VYCEAI_API_KEY:"",VYCE_API_KEY:""};
+  const state=new TrebellStateStore(env);
+  state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"vyceai",onboardingComplete:true});
+  state.close?.();
+  const refusal=JSON.stringify({error:{message:"Insufficient balance. Please top up your account.",type:"insufficient_quota",param:null,code:"insufficient_balance"},request_id:"req_fixture_402"});
+  const fetchFn=async input=>{
+    const url=String(input instanceof URL?input.href:input?.url||input);
+    if(url.endsWith("/models"))return new Response(refusal,{status:402,headers:{"content-type":"application/json"}});
+    throw new Error("Unexpected external request: "+url);
+  };
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const gui=await createGuiServer({port,appPort,mock:false,env,fetchFn});
+  try{
+    const typed="vy-typed-key-fixture-1234567890";
+    const response=await fetch(gui.url+"/api/providers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:"vyceai",apiKey:typed})});
+    assert.equal(response.status,400);
+    assert.equal((await response.json()).error,"VyceAi API key check failed: HTTP 402: Insufficient balance. Please top up your account. The key was not saved.");
+    const providers=await fetch(gui.url+"/api/providers").then(r=>r.json());
+    assert.equal(providers.status.hasKey,false);
+    assert.equal(providers.status.keyCheck?.status,402);
+    assert.equal(providers.status.keyCheck?.message,"HTTP 402: Insufficient balance. Please top up your account. The key was not saved.");
+    assert.deepEqual(providers.providers.find(item=>item.id==="vyceai").keyCheck,providers.status.keyCheck);
+    assert.doesNotMatch(JSON.stringify(providers),/vy-typed-key|request_id|insufficient_quota|\{"error/);
+  }finally{
+    await gui.close();
+    await rm(home,{recursive:true,force:true});
+  }
+});
+
 test("direct chat never sends another harness's prompt to the Native provider",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-direct-chat-harness-"));
   await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",onboardingComplete:true}}));

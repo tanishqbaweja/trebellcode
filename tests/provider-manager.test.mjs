@@ -173,6 +173,60 @@ test("Vyce AI models are loaded live from /v1/models", async () => {
   assert.equal(result.source,"live");
 });
 
+test("a refused key check keeps the previous key and reads as the provider's own message, never raw JSON or the key",async()=>{
+  // Live, VyceAi answered a typed key with HTTP 402 and Settings showed its raw JSON body under "API key required".
+  const root=mkdtempSync(join(tmpdir(),"trebell-key-check-"));
+  const typed="vy-typed-key-fixture-1234567890",saved="vy-saved-key-fixture-0987654321";
+  const refusal=JSON.stringify({error:{message:"Insufficient balance. Please top up your account.",type:"insufficient_quota",param:null,code:"insufficient_balance"},request_id:"req_fixture_402"});
+  let answer=()=>new Response(refusal,{status:402,headers:{"content-type":"application/json"}});
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>answer()});
+  const detail="HTTP 402: Insufficient balance. Please top up your account. The key was not saved.";
+  try{
+    await assert.rejects(manager.checkKey("vyceai",typed),error=>error.message===detail&&error.keyCheck?.status===402);
+    assert.equal(manager.hasKey("vyceai"),false,"the refused key is not saved");
+    const check=manager.status("vyceai").keyCheck;
+    assert.equal(check.status,402);assert.equal(check.message,detail);
+    assert.deepEqual(manager.definitions().find(item=>item.id==="vyceai").keyCheck,check);
+    assert.equal(manager.status("openai").keyCheck,null,"a refusal belongs to its provider");
+    assert.doesNotMatch(JSON.stringify({status:manager.status("vyceai"),definitions:manager.definitions()}),/vy-typed-key|request_id|insufficient_quota|\{"error/);
+
+    answer=()=>new Response(JSON.stringify({data:[{id:"vyce-fixture-model"}]}),{status:200});
+    assert.deepEqual((await manager.checkKey("vyceai",saved)).models,["vyce-fixture-model"]);
+    assert.equal(manager.status("vyceai").keyCheck,null,"a key that passes clears the refusal");
+    answer=()=>new Response(refusal,{status:402});
+    await assert.rejects(manager.checkKey("vyceai",typed),/HTTP 402/);
+    assert.equal(manager.key("vyceai"),saved,"a refused key leaves the saved key in place");
+    assert.equal(manager.status("vyceai").keyCheck.status,402);
+    manager.setKey("vyceai","");
+    assert.equal(manager.status("vyceai").keyCheck,null,"removing the key clears the refusal");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a failed model list reads as the provider's message in every error shape, with keys and masked keys redacted",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-model-list-error-"));
+  const key="sk-proj-modellisterrorfixture1234567890abcd";
+  const bodies={
+    openai:[401,JSON.stringify({error:{message:"Incorrect API key provided: sk-proj-************************abcd. You can find your API key at https://platform.openai.com/account/api-keys.",type:"invalid_request_error",param:null,code:"invalid_api_key"}})],
+    anthropic:[401,JSON.stringify({type:"error",error:{type:"authentication_error",message:"invalid x-api-key"},request_id:"req_fixture"})],
+    gemini:[400,JSON.stringify([{error:{code:400,message:"API key not valid. Please pass a valid API key.",status:"INVALID_ARGUMENT"}}])],
+    vyceai:[502,"<!DOCTYPE html><html><body><h1>502 Bad Gateway</h1></body></html>"],
+  };
+  let provider="openai";
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>new Response(bodies[provider][1],{status:bodies[provider][0]})});
+  const expected={
+    openai:"OpenAI API model list failed with HTTP 401: Incorrect API key provided: [redacted] You can find your API key at https://platform.openai.com/account/api-keys.",
+    anthropic:"Anthropic API model list failed with HTTP 401: invalid x-api-key",
+    gemini:"Google Gemini API model list failed with HTTP 400: API key not valid. Please pass a valid API key.",
+    vyceai:"VyceAi model list failed with HTTP 502",
+  };
+  try{
+    for(provider of Object.keys(bodies)){
+      manager.setKey(provider,key);
+      await assert.rejects(manager.models(provider),error=>{assert.equal(error.message,expected[provider],provider);return true});
+    }
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("Vyce accepts VYCE_API_KEY as an environment alias", () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   const manager=new ProviderManager({env:{TREBELL_HOME:root,VYCE_API_KEY:"sk-vyce-alias"},fetchFn:async()=>new Response("{}")});

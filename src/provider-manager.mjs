@@ -140,6 +140,23 @@ function providerErrorExcerpt(value,{environment={},secret="",maxChars=1200}={})
   const max=Math.max(120,Math.min(4000,Math.trunc(Number(maxChars)||1200))),scan=String(value??"").slice(0,Math.max(max*4,max+4096));
   return redactSecretText(scan,{environment:{...environment,TREBELL_PROVIDER_ERROR_SECRET:String(secret||"")}}).slice(0,max);
 }
+// A provider's error body as people read it: the message of its JSON error (OpenAI's {"error":{"message"}}, Anthropic's
+// {"type":"error","error":{...}}, Gemini's [{"error":{...}}], a bare message or detail), else the body's text; never raw
+// JSON or an HTML page. Secrets are redacted, and so is a masked key the provider echoes back (sk-proj-****abcd).
+function providerErrorMessage(raw,{environment={},secret="",maxChars=300}={}){
+  const text=String(raw??"").trim();let parsed;
+  try{parsed=JSON.parse(text)}catch{parsed=undefined}
+  const find=(value,depth=0)=>{
+    if(typeof value==="string")return value;
+    if(!value||typeof value!=="object"||depth>4)return "";
+    if(Array.isArray(value))return find(value[0],depth+1);
+    for(const key of ["message","error","detail","error_description"]){const found=find(value[key],depth+1);if(found)return found}
+    return "";
+  };
+  const message=parsed===undefined?(text.startsWith("<")?"":text):find(parsed);
+  return providerErrorExcerpt(message.replace(/\s+/g," ").trim(),{environment,secret,maxChars}).replace(/\S*\*{4,}\S*/g,"[redacted]");
+}
+const sentence=text=>/[.!?]$/.test(text)?text:text+".";
 function agentRouterClientVersion(environment={}){
   const requested=String(environment.AGENTROUTER_CLIENT_VERSION||environment.TREBELL_AGENTROUTER_CLIENT_VERSION||DEFAULT_AGENTROUTER_CLIENT_VERSION).trim();
   return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(requested)?requested:DEFAULT_AGENTROUTER_CLIENT_VERSION;
@@ -426,6 +443,8 @@ export class ProviderManager {
     this.path = providerSecretsPath(env);
     mkdirSync(dirname(this.path), { recursive: true });
     this.secrets = this.#load();
+    // The last refused key check per provider, for this server run (checkKey); any key change clears it.
+    this.keyChecks=new Map();
     this.openAiResponseContinuations=new OpenAiResponseContinuationTracker();
     this.openAiWebSocketResponseOrigins=new Map();
     this.openAiResponsesWebSocketFactory=typeof openAiResponsesWebSocketFactory==="function"?openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket(options);
@@ -567,6 +586,7 @@ export class ProviderManager {
       requiresKey: provider.requiresKey,
       official: Boolean(provider.official),
       hasKey: this.hasKey(provider.id),
+      keyCheck: this.keyChecks.get(provider.id)||null,
       capabilities:providerCapabilities(provider.id),
     }));
   }
@@ -591,6 +611,7 @@ export class ProviderManager {
     const previousKey=this.key(provider.id),key = normalizeProviderKey(value);
     if (key) this.secrets[provider.id] = key;
     else delete this.secrets[provider.id];
+    this.keyChecks.delete(provider.id);
     this.#save();
     if(provider.id==="openai"&&previousKey!==key){try{this.openAiResponsesWebSocket?.close?.()}catch{}this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;this.openAiResponsesWebSocketTransientFailures=0;this.openAiResponseContinuations.clear();this.openAiWebSocketResponseOrigins.clear()}
     return { provider: provider.id, hasKey: Boolean(key) };
@@ -628,8 +649,25 @@ export class ProviderManager {
       official: Boolean(provider.official),
       hasKey: this.hasKey(provider.id),
       ready: this.hasKey(provider.id),
+      keyCheck: this.keyChecks.get(provider.id)||null,
       capabilities:providerCapabilities(provider.id),
     };
+  }
+
+  // A typed key is kept only once the provider's model list answers to it, and the catalog is returned. A refused key leaves
+  // the stored key as it was, and the refusal is kept (status().keyCheck) so Settings can still say why after it is left.
+  async checkKey(providerId,value){
+    const provider=this.get(providerId),hadStoredKey=Object.hasOwn(this.secrets,provider.id),storedKey=this.secrets[provider.id];
+    this.setKey(provider.id,value);
+    try{return await this.models(provider.id)}
+    catch(error){
+      this.setKey(provider.id,hadStoredKey?storedKey:"");
+      const status=Number(error?.status)||null;
+      const reason=status?`HTTP ${status}${error.providerMessage?": "+error.providerMessage:""}`:providerErrorExcerpt(error?.message||String(error),{environment:this.env,secret:normalizeProviderKey(value),maxChars:300});
+      const keyCheck={status,message:sentence(reason)+" The key was not saved.",at:new Date(this.nowFn()).toISOString()};
+      this.keyChecks.set(provider.id,keyCheck);
+      throw Object.assign(new Error(keyCheck.message),{keyCheck});
+    }
   }
 
   async models(providerId) {
@@ -665,7 +703,8 @@ export class ProviderManager {
     });
     const raw = await response.text();
     if (!response.ok) {
-      throw new Error(`${provider.name} model list failed with HTTP ${response.status}: ${providerErrorExcerpt(raw,{environment:this.env,secret:key,maxChars:500})}`);
+      const message=providerErrorMessage(raw,{environment:this.env,secret:key});
+      throw Object.assign(new Error(`${provider.name} model list failed with HTTP ${response.status}${message?": "+message:""}`),{status:response.status,providerMessage:message});
     }
     let parsed;
     try {

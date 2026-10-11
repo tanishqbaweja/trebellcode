@@ -1873,19 +1873,17 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         try{
           const body=await readJsonBody(req);
           const provider=normalizeProviderId(body.provider||selectedProvider);
-          let previousKey=null,validatedCatalog=null;
+          let validatedCatalog=null;
           if("apiKey" in body&&!knownModelProvider(body.provider||selectedProvider))throw new Error("Unknown model provider. Choose a listed provider before saving an API key.");
           if("apiKey" in body){
-            previousKey=providers.key(provider);
-            providers.setKey(provider,body.apiKey);
+            // A key for a provider with a live model list is saved only once that list answers to it (checkKey).
             if(String(body.apiKey||"").trim() && ["openai","anthropic","gemini","agentrouter","vyceai"].includes(provider)){
               try{
-                validatedCatalog=await providers.models(provider);
+                validatedCatalog=await providers.checkKey(provider,body.apiKey);
               }catch(error){
-                providers.setKey(provider,previousKey);
-                throw new Error(`${apiKeyLabel(providers.get(provider).name)} validation failed: ${error instanceof Error?error.message:String(error)}`);
+                throw new Error(`${apiKeyLabel(providers.get(provider).name)} check failed: ${error instanceof Error?error.message:String(error)}`);
               }
-            }
+            }else providers.setKey(provider,body.apiKey);
           }
           const changed=provider!==selectedProvider;
           if(changed){
