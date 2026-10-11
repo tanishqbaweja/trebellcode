@@ -1,8 +1,12 @@
-import React,{useEffect,useState} from "react";
+import React,{useEffect,useRef,useState} from "react";
 import { Laptop2, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { api } from "../api.js";
 
-export default function EnvironmentsPage(){
+// The Environments page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves
+// on, or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.
+let environmentsOnScreen=null;
+
+export default function EnvironmentsPage({onOfferUndo}={}){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
   const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
   const [busy,setBusy]=useState("");
@@ -34,15 +38,27 @@ export default function EnvironmentsPage(){
       await refresh();
     }catch(e){setError(e.message)}finally{setBusy("")}
   }
-  async function remove(id){
-    setBusy("remove:"+id);setMessage("");
+  // The listed profile is the whole saved environment, and POST /api/environments keeps its id, so Undo puts back the same
+  // environment: projects that use it find it again.
+  async function remove(profile){
+    setBusy("remove:"+profile.id);setMessage("");
     try{
-      await api("/api/environments?id="+encodeURIComponent(id),{method:"DELETE"});
+      const result=await api("/api/environments?id="+encodeURIComponent(profile.id),{method:"DELETE"});
+      setData(current=>({...current,profiles:(current.profiles||[]).filter(item=>item.id!==profile.id)}));
+      if(onOfferUndo&&result?.ok!==false)onOfferUndo(`Environment “${profile.name}” removed`,()=>restoreEnvironment(profile));
+      else setMessage("Environment removed.");
       await refresh();
-      setMessage("Environment removed.");
     }catch(e){setError("Could not remove environment: "+(e.message||String(e)))}
     finally{setBusy("")}
   }
+  async function restoreEnvironment(profile){
+    try{await api("/api/environments",{method:"POST",body:profile})}
+    catch(e){const page=environmentsOnScreen?.current;if(!page)throw e;page.showError("Could not restore environment: "+(e.message||String(e)));return}
+    await environmentsOnScreen?.current?.refresh({reportErrors:true});
+  }
+  const screenRef=useRef(null);
+  screenRef.current={showError:setError,refresh};
+  useEffect(()=>{const page=screenRef;environmentsOnScreen=page;return()=>{if(environmentsOnScreen===page)environmentsOnScreen=null}},[]);
   async function setEnabled(id,enabled){
     setBusy("enabled:"+id);setMessage("");
     try{
@@ -78,7 +94,7 @@ export default function EnvironmentsPage(){
         <div className="capability-card-head"><span><Laptop2 size={15}/><strong>Configured environments</strong></span><em title={"Local machine and "+data.profiles.length+" saved"}>{data.profiles.length+1}</em></div>
         <div className="environment-list">
           <div><div><strong>Local machine</strong><span>{localPlatformLabel?localPlatformLabel.toUpperCase()+" · ":""}{window.trebellDesktop?"Trebell desktop host":"Trebell host"}</span></div><div>{!data.activeEnvironmentId?<em className="ok">Active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
-          {data.profiles.map(profile=>{const enabled=profile.enabled!==false;return <div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}{enabled?"":" · switched off"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">Agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy||!enabled}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy||!enabled}>Test</button><button onClick={()=>setEnabled(profile.id,!enabled)} disabled={!!busy}>{enabled?"Switch off":"Switch on"}</button><button className="danger" aria-label={"Remove "+profile.name} onClick={()=>remove(profile.id)} disabled={!!busy||data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>})}</div>
+          {data.profiles.map(profile=>{const enabled=profile.enabled!==false;return <div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}{enabled?"":" · switched off"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">Agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy||!enabled}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy||!enabled}>Test</button><button onClick={()=>setEnabled(profile.id,!enabled)} disabled={!!busy}>{enabled?"Switch off":"Switch on"}</button><button className="danger" aria-label={"Remove "+profile.name} onClick={()=>remove(profile)} disabled={!!busy||data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>})}</div>
         {!data.profiles.length&&<p>No saved remote environments. The local {localPlatformLabel?localPlatformLabel+" ":""}agent is active by default.</p>}
       </section>
       <section className="capability-card environment-create">

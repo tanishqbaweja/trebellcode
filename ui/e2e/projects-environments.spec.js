@@ -154,3 +154,52 @@ test.describe("Removing a project",()=>{
     await page.screenshot({animations:"disabled",path:shots+"project-undo-failed-elsewhere-dark-1280.png"});
   });
 });
+
+test.describe("Removing an environment",()=>{
+  for(const mode of MODES)test(`Undo brings the removed environment back with the same id and fields (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    const created=await request.post("/api/environments",{data:{id:"polish-build-box",type:"ssh",name:"Removable build box",host:"build.example.com",user:"dev",port:2222,identityFile:"C:\\Users\\me\\.ssh\\id_ed25519",cwd:"/srv/app",themeDirectory:"/srv/themes",enabled:false}});
+    expect(created.ok()).toBe(true);
+    const before=(await listedEnvironments(request)).find(profile=>profile.id==="polish-build-box");
+    let dialogs=0;page.on("dialog",dialog=>{dialogs++;dialog.dismiss().catch(()=>{})});
+    await nav(page,"Environments").click();
+    const row=page.locator(".environment-list>div").filter({hasText:"Removable build box"});
+    await expect(row).toBeVisible();
+    await row.getByRole("button",{name:"Remove Removable build box",exact:true}).click();
+    const toast=page.getByTestId("thread-undo-toast");
+    await expect(toast).toContainText("Environment “Removable build box” removed");
+    await expect(row).toHaveCount(0);
+    expect(dialogs).toBe(0);
+    await page.screenshot({animations:"disabled",path:shots+`environment-removed-undo-${mode}-1280.png`});
+    await toast.getByRole("button",{name:"Undo",exact:true}).click();
+    await expect(toast).toHaveCount(0);
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("switched off");
+    const after=(await listedEnvironments(request)).find(profile=>profile.id==="polish-build-box");
+    expect({...after,updatedAt:0}).toEqual({...before,updatedAt:0});
+    await expect(page.locator(".environments-page").getByRole("alert")).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:shots+`environment-restored-${mode}-1280.png`});
+  });
+
+  test("Undo still works once Environments is left, and a failed Undo on the page says so there",async({page,request})=>{
+    await open(page,request);
+    await request.post("/api/environments",{data:{id:"polish-later-box",type:"ssh",name:"Later box",host:"later.example.com",user:"dev",port:22,cwd:"/srv/later"}});
+    const before=(await listedEnvironments(request)).find(profile=>profile.id==="polish-later-box");
+    await nav(page,"Environments").click();
+    const row=page.locator(".environment-list>div").filter({hasText:"Later box"}),toast=page.getByTestId("thread-undo-toast");
+    await row.getByRole("button",{name:"Remove Later box",exact:true}).click();
+    await expect(toast).toContainText("Environment “Later box” removed");
+    await nav(page,"History").click();
+    await toast.getByRole("button",{name:"Undo",exact:true}).click();
+    await expect.poll(async()=>(await listedEnvironments(request)).find(profile=>profile.id==="polish-later-box")?.createdAt).toBe(before.createdAt);
+    await nav(page,"Environments").click();
+    await expect(row).toBeVisible();
+    await row.getByRole("button",{name:"Remove Later box",exact:true}).click();
+    await expect(row).toHaveCount(0);
+    await page.route(/\/api\/environments$/,route=>route.request().method()==="POST"?json(route,{error:"Deliberate restore failure"},500):route.fallback());
+    await toast.getByRole("button",{name:"Undo",exact:true}).click();
+    await expect(page.locator(".environments-page").getByRole("alert")).toContainText("Could not restore environment: Deliberate restore failure");
+    await expect(page.getByTestId("app-action-error")).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:shots+"environment-undo-failed-dark-1280.png"});
+  });
+});
