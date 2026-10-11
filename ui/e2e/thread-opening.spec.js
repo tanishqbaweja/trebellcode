@@ -160,6 +160,10 @@ const projectCrumb=page=>page.locator(".workspace-header .project-crumb:not(.sid
 const opening=page=>page.getByTestId("thread-opening");
 const hero=page=>page.getByRole("heading",{name:"What do you want to build?"});
 const answer=(page,saved,index=1)=>page.getByText(`${saved.thread.name} answer ${index}.`,{exact:false});
+// A turn's items as the harness stores and sends them, and the activity steps on screen that name a command.
+const userItem=(id,text)=>({id,type:"userMessage",content:[{type:"text",text}]});
+const commandItem=(id,command,{status="completed"}={})=>({id,type:"commandExecution",command,cwd:process.cwd(),status,aggregatedOutput:status==="completed"?"ok\n":"",exitCode:status==="completed"?0:null});
+const steps=(page,text)=>page.locator(".conversation-column .tool-event").filter({hasText:text});
 async function start(page,harness){
   await page.goto("/");
   await expect(row(page,ALPHA)).toBeVisible({timeout:15_000});
@@ -213,6 +217,15 @@ async function auditOpening(page,name,title){
     }
   }
   await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1600,height:980});
+}
+// The conversation an open shows, in both modes with target in the middle of the view. Saves one screenshot each.
+async function shootConversation(page,name,target){
+  for(const mode of ["dark","light"]){
+    await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await frames(page,3);
+    await target.first().evaluate(node=>node.scrollIntoView({block:"center"}));await frames(page,4);
+    await page.screenshot({animations:"disabled",path:`${auditDir}${name}-${mode}-1600x980.png`});
+  }
+  await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
 }
 
 test("a thread that takes a while to open is the selected one at once and shows that it is opening, not the new-task screen",async({page})=>{
@@ -756,22 +769,31 @@ test("a thread whose open a later one or a new task replaces shows its turn in i
   }finally{releaseProject();await harness.close()}
 });
 
-test("a turn that ends while the first page of an opened thread's history is read shows ended once the thread shows",async({page})=>{
+test("a turn that ends while the first page of an opened thread's history is read shows ended once the thread shows, each step once on its card",async({page})=>{
   test.setTimeout(60_000);
   const PAGED=savedThread("paged-thread","Long migration",{minutesAgo:2});PAGED.thread.status={type:"active",turnId:"paged-thread-live"};
+  const e2e=commandItem("paged-e2e","npm run e2e",{status:"inProgress"}),live={id:"paged-thread-live",status:"inProgress",items:[userItem("paged-live-ask","Run the suites."),commandItem("paged-build","npm run build"),e2e]};PAGED.thread.turns.push(live);
   const harness=await startHarness(page,{saved:[ALPHA,PAGED]});harness.server.turnsCursor[PAGED.thread.id]=true;
   const composer=page.getByTestId("composer"),stop=page.locator(".workspace-header .stop-control");
   try{
     await start(page,harness);await openRow(page,ALPHA);
-    // Its harness pages history: the resume answers with the turn running, and the turn ends while the app reads the first page.
+    // Its harness pages history: the resume answers with the turn running, and while the app reads the first page the turn's last
+    // step and the turn end.
     harness.server.onTurnsList=async()=>{
       harness.server.onTurnsList=null;PAGED.thread.status={type:"idle"};
-      harness.emit({method:"turn/completed",params:{threadId:PAGED.thread.id,turn:{id:"paged-thread-live",status:"completed",completedAt:Date.now()/1000}}});
+      Object.assign(e2e,{status:"completed",aggregatedOutput:"ok\n",exitCode:0});harness.emit({method:"item/completed",params:{threadId:PAGED.thread.id,turnId:live.id,item:{...e2e}}});
+      const reply={id:"paged-live-answer",type:"agentMessage",text:"Both suites pass."};live.items.push(reply);harness.emit({method:"item/completed",params:{threadId:PAGED.thread.id,turnId:live.id,item:reply}});
+      live.status="completed";harness.emit({method:"turn/completed",params:{threadId:PAGED.thread.id,turn:{id:live.id,status:"completed",completedAt:Date.now()/1000}}});
       await new Promise(resolve=>setTimeout(resolve,150));
     };
     await row(page,PAGED).locator(".thread-main").click();
-    await expect(answer(page,PAGED)).toBeVisible({timeout:15_000});await expect(composer).toBeEnabled();
+    await expect(page.locator('[data-message-id="paged-live-answer"]')).toBeVisible({timeout:15_000});await expect(composer).toBeEnabled();
     await expect(stop).toHaveCount(0);await expect(row(page,PAGED).locator(".thread-running-dot")).toHaveCount(0);
+    // Each step shows once, done, on the turn's own card, as if the turn had ended before the open.
+    for(const text of ["npm run build","npm run e2e"])await expect(steps(page,text),text).toHaveCount(1);
+    await expect(page.locator(".conversation-column .tool-event.status-running")).toHaveCount(0);
+    await expect(page.locator('[data-testid=activity-card][data-turn-id="paged-thread-live"]')).toHaveCount(1);
+    await shootConversation(page,"opened-turn-ended",steps(page,"npm run e2e"));
     await composer.fill("Follow-up once the migration is done.");await page.getByTestId("send").click();
     await expect(page.getByText("Fixture reply in "+PAGED.thread.id,{exact:true})).toBeVisible({timeout:15_000});
     expect(harness.sent("turn/start")).toEqual([PAGED.thread.id]);
@@ -942,18 +964,21 @@ test("a thread of another project is named by that project in the crumb from the
 
 // A thread's notifications are held from the answer of its first resume, before its history is read. What the harness sends
 // while that history is read is already in it, so the held notifications are handled on top of it without doubling anything,
-// and a turn they start and end is timed from when they came.
+// and a turn they start and end is timed from when they came. The turn runs one command, which shows once, on the turn's own card.
 async function runAndEndTurn(harness,saved,turnId){
-  const threadId=saved.thread.id;
+  const threadId=saved.thread.id,lint=commandItem(turnId+"-lint","npm run lint",{status:"inProgress"});
   harness.emit({method:"turn/started",params:{threadId,turn:{id:turnId,status:"inProgress",startedAt:Date.now()/1000}}});
+  harness.emit({method:"item/started",params:{threadId,turnId,item:lint}});
   await new Promise(resolve=>setTimeout(resolve,1200));
-  saved.thread.turns.push({id:turnId,status:"completed",items:[{id:turnId+"-ask",type:"userMessage",content:[{type:"text",text:"Live question."}]},{id:turnId+"-answer",type:"agentMessage",text:"Live answer."}]});
+  const linted=commandItem(lint.id,lint.command);
+  saved.thread.turns.push({id:turnId,status:"completed",items:[userItem(turnId+"-ask","Live question."),linted,{id:turnId+"-answer",type:"agentMessage",text:"Live answer."}]});
+  harness.emit({method:"item/completed",params:{threadId,turnId,item:linted}});
   harness.emit({method:"item/completed",params:{threadId,turnId,item:{id:turnId+"-answer",type:"agentMessage",text:"Live answer."}}});
   harness.emit({method:"turn/completed",params:{threadId,turn:{id:turnId,status:"completed",completedAt:Date.now()/1000}}});
   await new Promise(resolve=>setTimeout(resolve,50));
 }
 
-test("a turn that runs and ends while an opened thread's whole history is read keeps its measured done pill",async({page})=>{
+test("a turn that runs and ends while an opened thread's whole history is read keeps its measured done pill and its step once",async({page})=>{
   test.setTimeout(60_000);
   const QUIET=savedThread("quiet-thread","Quiet refactor",{minutesAgo:3});
   const harness=await startHarness(page,{saved:[ALPHA,QUIET]});
@@ -966,10 +991,12 @@ test("a turn that runs and ends while an opened thread's whole history is read k
     await expect(reply).toHaveCount(1);
     // The turn ran about 1.2 s, and its reply says so, as it does when the same turn ends while another thread is open.
     await expect(reply.getByTestId("turn-outcome")).toHaveText(/^done · 1\.\ds$/);
+    await expect(steps(page,"npm run lint")).toHaveCount(1);await expect(page.locator('[data-testid=activity-card][data-turn-id="quiet-live"]')).toHaveCount(1);
+    await expect(page.locator(".conversation-column .tool-event.status-running")).toHaveCount(0);
   }finally{await harness.close()}
 });
 
-test("a turn that runs and ends while an opened thread's first history page is read keeps its measured done pill",async({page})=>{
+test("a turn that runs and ends while an opened thread's first history page is read keeps its measured done pill and its step once",async({page})=>{
   test.setTimeout(60_000);
   const PAGED=savedThread("paged-quiet","Paged refactor",{minutesAgo:3});
   const harness=await startHarness(page,{saved:[ALPHA,PAGED]});harness.server.turnsCursor[PAGED.thread.id]=true;
@@ -981,6 +1008,9 @@ test("a turn that runs and ends while an opened thread's first history page is r
     await expect(reply).toBeVisible({timeout:15_000});await expect(page.getByTestId("composer")).toBeEnabled();await page.waitForTimeout(300);
     await expect(reply).toHaveCount(1);
     await expect(reply.getByTestId("turn-outcome")).toHaveText(/^done · 1\.\ds$/);
+    await expect(steps(page,"npm run lint")).toHaveCount(1);await expect(page.locator('[data-testid=activity-card][data-turn-id="paged-live"]')).toHaveCount(1);
+    await expect(page.locator(".conversation-column .tool-event.status-running")).toHaveCount(0);
+    await shootConversation(page,"opened-turn-ran",steps(page,"npm run lint"));
   }finally{await harness.close()}
 });
 

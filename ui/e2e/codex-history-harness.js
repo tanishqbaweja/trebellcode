@@ -11,8 +11,9 @@ const json=(route,value)=>route.fulfill({status:200,contentType:"application/jso
 // newest first. thread/items/list with a turnId reads that turn alone, in the order asked for; failTurnItems makes that call
 // fail. messageOnlyPages leaves every item but messages and thoughts out of the item pages, as Codex builds without tool items do;
 // timeline then serves every item on thread/timeline/list, in one page. calls logs every request. A step can start a turn of
-// the harness's own, with no user message, as a goal continuing does.
-export async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinity,pageItems=null,outcomeTurns=Infinity,failTurnItems=false,messageOnlyPages=false,timeline=false}={}){
+// the harness's own, with no user message, as a goal continuing does. onItemsPage runs once with the newest turn's tools when the
+// first item page of a thread is asked for, before it is answered: what Codex does while the app opens the thread.
+export async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinity,pageItems=null,outcomeTurns=Infinity,failTurnItems=false,messageOnlyPages=false,timeline=false,onItemsPage=null}={}){
   const turns=[...seed],calls=[];let socket=null,interrupt=null,userSteps=0;
   const paged=items=>messageOnlyPages?items.filter(item=>["userMessage","agentMessage","reasoning"].includes(item.type)):items;
   const emit=message=>socket?.send(JSON.stringify(message));
@@ -37,6 +38,7 @@ export async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinit
     socket=ws;ws.on("message",raw=>{
       const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
       const params=message.params||{};let result={},after=null;calls.push({method:message.method,params});
+      if(message.method==="thread/items/list"&&!params.turnId&&onItemsPage){const hook=onItemsPage;onItemsPage=null;hook(toolsFor(turns.at(-1)))}
       if(message.method==="initialize")result={userAgent:"turn-failure-codex-fixture"};
       else if(message.method==="thread/list")result={data:[{...thread,turns:[]}],nextCursor:null};
       else if(message.method==="thread/resume")result=params.excludeTurns===false?{thread:{...thread,turns}}:{thread:{...thread,turns:[],historyMode:"paginated"},itemsBackwardsCursor:turns.length?"items@0":null,turnsBackwardsCursor:turns.length?"turns@0":null};

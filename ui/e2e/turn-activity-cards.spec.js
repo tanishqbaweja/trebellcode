@@ -650,6 +650,31 @@ test("a Codex thread opened while its turn runs shows the running step running o
   }finally{await harness.close()}
 });
 
+test("a Codex turn running when its thread opens that fails while the thread opens shows each step and the failure once, nothing running",async({page})=>{
+  test.setTimeout(60_000);
+  const thread={...codexThread("codex-open-failing","Codex open failing"),status:{type:"active",activeFlags:[]}};
+  const running={...codexTurn(2,{user:"Run the suites"}),status:"inProgress",completedAt:null,durationMs:null},e2e={id:"cmd-2-2",type:"commandExecution",command:"npm run e2e",cwd:process.cwd(),status:"inProgress",aggregatedOutput:"",exitCode:null};
+  running.items.push({id:"cmd-2-1",type:"commandExecution",command:"npm run build",cwd:process.cwd(),status:"completed",aggregatedOutput:"ok\n",exitCode:0},e2e);
+  // The resume answers with the turn running; as the first item page is asked for, its last step fails and the turn ends with an
+  // error, so the page already holds the end the app is sent while the thread opens.
+  const onItemsPage=({emit,threadId,finish})=>{
+    Object.assign(e2e,{status:"failed",aggregatedOutput:"1 failing\n",exitCode:1});emit({method:"item/completed",params:{threadId,turnId:running.id,item:{...e2e}}});
+    thread.status={type:"idle"};finish("failed",{error:{message:"The model stream broke."}});
+  };
+  const harness=await startCodexHarness(thread,[],{seed:[codexTurn(1,{user:"Set the project up",commands:["npm install"],reply:"Set up."}),running],onItemsPage});
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Codex open failing");
+    await expect(page.locator(".conversation-column").getByText("The model stream broke.")).toHaveCount(1,{timeout:10_000});await frames(page,4);
+    for(const text of ["npm run build","npm run e2e"])await expect(page.locator("[data-testid=activity-card] .tool-event").filter({hasText:text}),text).toHaveCount(1);
+    await expect(page.locator("[data-testid=activity-card] .tool-event.status-running")).toHaveCount(0);await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
+    // One card, the turn's own: its two steps, the one that failed counted.
+    await expect(page.locator(`[data-testid=activity-card][data-turn-id="${running.id}"]`)).toHaveCount(1);
+    await expect(cardOf(page,running.id).locator(".activity-card-failed")).toHaveText("1 failed");
+    await auditCards(page,"opened-turn-failed",cardOf(page,running.id));
+  }finally{await harness.close()}
+});
+
 test("a person who closed a finished turn's card sends again: the new live card is open in every frame and never takes that turn's id",async({page})=>{
   test.setTimeout(120_000);
   const harness=await startRelayHarness({replies:[

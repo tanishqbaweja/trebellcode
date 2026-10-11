@@ -777,8 +777,10 @@ export default function App(){
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   // The turn the live activity card shows: the running turn, and once it ends the last one (the card stays until the next send,
   // which leaves it to no turn until its own starts). Layout effects, so the rows are ordered for the new turn before it paints.
+  // A thread that shows with no turn running has no turn on the live card: one that ran or ended while it opened (its notifications
+  // are handled as it shows) keeps its steps on its own card only, as one that ended before the open does.
   const [cardTurnId,setCardTurnId]=useState(null);
-  useLayoutEffect(()=>{setCardTurnId(activeTurnId||null)},[activeThread?.id]);
+  useLayoutEffect(()=>{setCardTurnId(activeTurnId||null);if(!running)setEvents(current=>{const kept=current.filter(event=>!event.turnId);return kept.length===current.length?current:kept})},[activeThread?.id]);
   useLayoutEffect(()=>{if(activeTurnId)setCardTurnId(activeTurnId)},[activeTurnId]);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]);
   // The anchor row of an older page landing now: its virtual chunk mounts with the page, so the anchor is placed exactly.
