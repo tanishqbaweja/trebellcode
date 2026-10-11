@@ -127,6 +127,36 @@ test("Diagnostics stays neutral while its first answers load, then shows the rea
   }finally{releaseDiagnostics();releaseRuntime()}
 });
 
+test("a failed first Diagnostics read leaves the provider chip neutral and names the failure instead of checking forever",async({page,request})=>{
+  test.setTimeout(40_000);
+  const native={id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true};
+  const fulfill=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
+  await page.route(/\/api\/agent-runtimes$/,route=>fulfill(route,{selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[native]}));
+  await page.route(/\/api\/diagnostics(?:\?.*)?$/,route=>fulfill(route,{error:"Deliberate first diagnostics failure"},500));
+  await page.route(/\/api\/runtime(?:\?.*)?$/,route=>fulfill(route,{agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeStatus:native,provider:"openai",providerReady:true,appServerReady:true,logs:[]}));
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Diagnostics Failed Workspace",activate:true}});
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Diagnostics/}).click();
+  const badges=page.locator(".diag-badges"),chips=badges.locator("span"),log=page.locator(".diagnostics-log");
+  await expect(log).toContainText("Runtime log unavailable");
+  await expect(log).toContainText("Deliberate first diagnostics failure");
+  await expect(chips).toHaveCount(2);
+  await expect(chips.nth(0)).toHaveClass(/\bok\b/);
+  // The read failed, so nothing is being checked any more: the provider chip is not busy, not amber, not green, and says why.
+  await expect(badges).toHaveAttribute("aria-busy","false");
+  const provider=chips.nth(1);
+  await expect(provider).not.toHaveClass(/\b(pending|warn|ok)\b/);
+  await expect(provider).toHaveAttribute("title","Could not check the provider: Deliberate first diagnostics failure");
+  const colors=await provider.evaluate(node=>{const probe=document.createElement("span");node.parentElement.appendChild(probe);probe.style.color="var(--warn)";const warn=getComputedStyle(probe).color;probe.style.color="var(--ok)";const ok=getComputedStyle(probe).color;probe.remove();return {chip:getComputedStyle(node).color,warn,ok}});
+  expect(colors.chip).not.toBe(colors.warn);expect(colors.chip).not.toBe(colors.ok);
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-read-failed-1280x800.png"});
+});
+
 test("storage cleanup retention treats zero, negative and too-large days like the worktree field instead of one day",async({page,request})=>{
   await openSettings(page,request,"Storage Retention Workspace",{storageCleanup:{attachmentsAfterDays:7,terminalHistoryAfterDays:null}});
   await page.getByRole("button",{name:/Workspace/}).click();
