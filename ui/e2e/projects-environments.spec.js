@@ -379,3 +379,48 @@ test.describe("Renaming a project",()=>{
     await expect(note).toHaveCount(0);
   });
 });
+
+test.describe("A long project name",()=>{
+  for(const mode of MODES)test(`wraps on its card, shows in full on hover, and leaves the card header aligned (${mode})`,async({page,request})=>{
+    const boot=await open(page,request,{mode});
+    await request.post("/api/projects",{data:{path:boot.cwd,name:LONG_NAME,activate:true}});
+    await request.post("/api/projects",{data:{path:join(boot.cwd,"docs"),name:"Short Neighbour"}});
+    await openProjects(page);
+    const card=page.locator(".project-card.active"),title=card.locator(".project-open strong");
+    await expect(title).toHaveText(LONG_NAME);
+    await expect(title).toHaveAttribute("title",LONG_NAME);
+    for(const width of [1280,900]){
+      await page.setViewportSize({width,height:800});
+      await card.scrollIntoViewIfNeeded();
+      const metrics=await card.evaluate(node=>{
+        // One line of a title, from the neighbour's short name.
+        const oneLine=()=>[...document.querySelectorAll(".project-open strong")].find(item=>item.textContent==="Short Neighbour").getBoundingClientRect().height;
+        const name=node.querySelector(".project-open strong"),open=node.querySelector(".project-open"),identity=node.querySelector(".project-identity-toggle button"),remove=node.querySelector(".project-remove");
+        const pill=getComputedStyle(node,"::after"),cardBox=node.getBoundingClientRect(),nameBox=name.getBoundingClientRect(),lineHeight=oneLine();
+        return {cut:name.scrollHeight>name.clientHeight+1||name.scrollWidth>name.clientWidth+1,lines:Math.round(nameBox.height/lineHeight),nameRight:nameBox.right,
+          pillLeft:cardBox.right-parseFloat(pill.right)-parseFloat(pill.width),identityTop:identity.getBoundingClientRect().top,removeTop:remove.getBoundingClientRect().top,
+          openBottom:open.getBoundingClientRect().bottom,removeBottom:remove.getBoundingClientRect().bottom};
+      });
+      expect(metrics.cut,`the name is cut at ${width}`).toBe(false);
+      expect(metrics.lines,`the name wraps to at most two lines at ${width}`).toBeLessThanOrEqual(2);
+      expect(metrics.nameRight,`the name stays clear of the Current pill at ${width}`).toBeLessThanOrEqual(metrics.pillLeft);
+      expect(Math.abs(metrics.identityTop-metrics.removeTop),`header buttons on one line at ${width}`).toBeLessThan(1);
+      expect(metrics.openBottom,`the header holds its buttons at ${width}`).toBeGreaterThanOrEqual(metrics.removeBottom);
+      expect(await sideways(page)).toBeLessThanOrEqual(1);
+      await page.screenshot({animations:"disabled",path:shots+`project-long-name-${mode}-${width}.png`});
+    }
+    // A name too long for two lines stops at two with an ellipsis, and the tooltip still has all of it.
+    const longer=LONG_NAME+", plus the migration scripts, the design system, the release tooling and a few experiments nobody remembers starting";
+    await request.post("/api/projects",{data:{path:boot.cwd,name:longer}});
+    await page.getByRole("button",{name:"Refresh projects",exact:true}).click();
+    await expect(title).toHaveAttribute("title",longer);
+    await page.setViewportSize({width:900,height:800});
+    const clamp=await title.evaluate(name=>{
+      const oneLine=[...document.querySelectorAll(".project-open strong")].find(item=>item.textContent==="Short Neighbour").getBoundingClientRect().height;
+      return {lines:Math.round(name.getBoundingClientRect().height/oneLine)};
+    });
+    expect(clamp.lines).toBe(2);
+    await card.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+`project-longer-name-${mode}-900.png`});
+  });
+});
