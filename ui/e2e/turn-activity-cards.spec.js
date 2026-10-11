@@ -201,9 +201,10 @@ test("stored relay turns open on their cards: the newest open, older ones closed
     // The older card is closed and says how many of its steps failed.
     await expect(cardOf(page,older.id)).toHaveAttribute("data-state","closed");
     await expect(cardOf(page,older.id).locator(".activity-card-summary")).toHaveText("2 steps");await expect(cardOf(page,older.id).locator(".activity-card-failed")).toHaveText("1 failed");
-    // Each reply has its done pill: these turns finished within a second, so no time is shown.
-    await expect(reply(page,"Both pass now").getByTestId("turn-outcome")).toHaveText("done");
-    await expect(reply(page,"The parser test still fails").getByTestId("turn-outcome")).toHaveText("done");
+    // Each reply has its done pill. These turns ran for milliseconds, but the relay stores whole seconds, so one seeded across a
+    // second boundary reads 1.0s; no longer time is ever shown.
+    await expect(reply(page,"Both pass now").getByTestId("turn-outcome")).toHaveText(/^done(?: · 1\.0s)?$/);
+    await expect(reply(page,"The parser test still fails").getByTestId("turn-outcome")).toHaveText(/^done(?: · 1\.0s)?$/);
     await auditCards(page,"past-cards",cardOf(page,older.id),{once900:true});
     // Opened, the older card lists the failed step as failed.
     await cardOf(page,older.id).locator(".activity-card-head").click();
