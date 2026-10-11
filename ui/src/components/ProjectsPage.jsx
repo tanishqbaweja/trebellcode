@@ -70,7 +70,9 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   // Until the list first answers there is nothing to call empty: the page says it is loading, and a failed first read says it
   // failed, with Retry, instead of "No projects yet." and "0 / 0". A later failed refresh keeps the list it has.
   const [listState,setListState]=useState("loading");
+  // A read that fails again says it still could not, and is a new message (loadFailures keys it), so it is seen and said again.
   const [loadError,setLoadError]=useState("");
+  const [loadFailures,setLoadFailures]=useState(0);
   const [retrying,setRetrying]=useState(false);
   const loadedRef=useRef(false);
   const projectsRef=useRef([]);
@@ -96,7 +98,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     try{d=await api("/api/projects")}
     catch(err){
       if(loadedRef.current)setError("Could not refresh projects: "+(err.message||String(err)));
-      else{setLoadError("Could not load projects: "+(err.message||String(err)));setListState("failed")}
+      else{const detail=err.message||String(err);setLoadError(current=>(current?"Still could not":"Could not")+" load projects: "+detail);setLoadFailures(count=>count+1);setListState("failed")}
       await environmentPromise;
       return false;
     }
@@ -164,7 +166,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   // An environment Undo can land while this page shows (its toast outlives Environments): the cards stop calling the
   // environment unavailable, and removing one of its projects offers the Undo again.
   useEffect(()=>{const changed=()=>{void refresh()};window.addEventListener("trebell:environments-changed",changed);return()=>window.removeEventListener("trebell:environments-changed",changed)},[]);
-  async function retryLoad(){setRetrying(true);try{await refresh({reportErrors:true})}finally{setRetrying(false)}}
+  // Retry stays focusable while it reads (aria-disabled, not disabled), so the keyboard is still on it when the read fails again.
+  async function retryLoad(){if(retrying)return;setRetrying(true);try{await refresh({reportErrors:true})}finally{setRetrying(false)}}
   useEffect(()=>{
     if(hasDesktopPicker||cloneEnvironmentId||!environmentData.profiles?.length)return;
     const first=environmentData.profiles[0];setCloneEnvironmentId(first.id);setCloneParent(first.cwd||"");
@@ -447,7 +450,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
 
   return <div className="projects-page">
     <div className="page-actions project-page-actions"><div className="project-search-field"><Search size={14}/><input className="project-search" aria-label="Search projects" value={projectQuery} onChange={event=>setProjectQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"&&projectQuery){event.preventDefault();event.stopPropagation();setProjectQuery("")}}} placeholder="Search projects"/></div><span className="project-window-count">{listState==="ready"?projectView.shown+" / "+projectView.total:""}</span>{hasDesktopPicker&&<button className="project-add-local" onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button className="project-refresh" aria-label="Refresh projects" title="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
-    {loadError&&<div className="provider-status-error project-load-error" role="alert"><span>{loadError}</span><button type="button" className="tb-btn tb-btn--sm" onClick={retryLoad} disabled={retrying}>{retrying?"Retrying…":"Retry"}</button></div>}
+    {loadError&&<div className="provider-status-error project-load-error" role="alert"><span key={loadFailures}>{loadError}</span><button type="button" className="tb-btn tb-btn--sm" onClick={retryLoad} aria-disabled={retrying?"true":undefined}>{retrying?"Retrying…":"Retry"}</button></div>}
     {error&&<p className="provider-status-error" role="alert">{error}</p>}
     <button className="general-chat-card" onClick={startGeneralChat} disabled={busy}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>{busy?"Starting…":"Start chat"}</em></button>
     {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"");setCloneParentError("")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input ref={cloneParentRef} aria-label="Clone parent directory" aria-invalid={cloneParentError?"true":undefined} aria-describedby={cloneParentError?"clone-parent-error":undefined} value={cloneParent} onChange={e=>{setCloneParent(e.target.value);setCloneParentError("")}} placeholder="Parent directory" title="Remote parent directory"/>}{cloneParentError&&<p id="clone-parent-error" className="clone-field-error" role="alert">{cloneParentError}</p>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy?"Starting…":"Clone"}</button></div>}

@@ -133,7 +133,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   // The storage card's numbers are the last read that worked. A read that fails says so (storageError), in place of the numbers when
   // none came yet and under them when a later refresh fails; a cleanup says what it removed, or what failed (storageMessage).
   const [storageInfo,setStorageInfo]=useState(null);
+  // A read that fails again says it still could not, and is a new alert (storageFailures keys it), so it is seen and said again.
   const [storageError,setStorageError]=useState("");
+  const [storageFailures,setStorageFailures]=useState(0);
   const [storageMessage,setStorageMessage]=useState({text:"",error:false});
   const [storageBusy,setStorageBusy]=useState(false);
   const [themeDraft,setThemeDraft]=useState(null);
@@ -537,7 +539,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       const info=await api("/api/storage-cleanup");
       setStorageInfo(info);setStorageError("");return info;
     }catch(error){
-      setStorageError((storageInfo?"Could not refresh storage use: ":"Could not read storage use: ")+(error?.message||String(error)));
+      const detail=error?.message||String(error),action=storageInfo?"refresh":"read";
+      setStorageError(current=>(current?"Still could not ":"Could not ")+action+" storage use: "+detail);setStorageFailures(count=>count+1);
       if(strict)throw error;
       return storageInfo;
     }
@@ -875,7 +878,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           </label>
         </div>
         {storageInfo?<p className="provider-note">{`${storageInfo.attachments?.count??0} cached attachment${storageInfo.attachments?.count===1?"":"s"} · ${formatBytes(storageInfo.attachments?.bytes||0)} · ${storageInfo.terminalHistory?.count??0} stopped terminal histor${storageInfo.terminalHistory?.count===1?"y":"ies"} · ${storageInfo.worktrees?.managed??0} live managed worktree${storageInfo.worktrees?.managed===1?"":"s"}`}</p>:!storageError&&<p className="provider-note">Reading storage use…</p>}
-        {storageError&&<p className="provider-status-error" role="alert">{storageError}</p>}
+        {storageError&&<p key={storageFailures} className="provider-status-error" role="alert">{storageError}</p>}
         <div className="provider-key-actions"><button className="setting-action" onClick={runStorageCleanup} disabled={storageBusy}>{storageBusy?"Cleaning…":"Clean up storage now"}</button><button onClick={()=>loadStorageInfo()} disabled={storageBusy}><RefreshCw size={12}/> Refresh storage</button></div>
         {storageMessage.text&&<p className={storageMessage.error?"provider-status-error":"provider-note"} role={storageMessage.error?"alert":"status"}>{storageMessage.text}</p>}
       </div>}

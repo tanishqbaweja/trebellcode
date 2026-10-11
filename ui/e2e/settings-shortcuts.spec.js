@@ -38,6 +38,7 @@ const whenField=(page,label)=>row(page,label).locator("input").nth(1);
 async function retype(field,text){await field.click();await field.press("ControlOrMeta+A");await field.pressSequentially(text,{delay:15})}
 const sidebarCollapsed=async page=>/sidebar-collapsed/.test(await page.locator(".app-shell").getAttribute("class"));
 const sideways=page=>page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);
+const flipMode=(page,mode)=>page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
 // Every keybinding save the page sends, in order.
 function keybindingSaves(page){
   const saves=[];
@@ -406,6 +407,43 @@ for(const mode of MODES)test(`storage requests that fail say what failed and are
   await expect(card.getByRole("alert").filter({hasText:"refresh"})).toHaveText("Could not refresh storage use: Deliberate storage read failure");
   await expect(card.locator(".provider-note").filter({hasText:"cached attachment"})).toBeVisible();
   await page.screenshot({animations:"disabled",path:shots+`storage-refresh-failed-${mode}-1280.png`});
+});
+
+// A read that fails again reads differently and is a new alert, so it is seen and said again, before numbers came and after.
+test("a storage read that fails again says it still could not read it",async({page,request})=>{
+  let readFails=true;
+  await page.route(/\/api\/storage-cleanup$/,route=>route.request().method()==="GET"&&readFails?json(route,{error:"Deliberate storage read failure"},500):route.fallback());
+  await open(page,request);
+  await nav(page,"Settings").click();
+  await section(page,"Workspace").click();
+  const card=page.locator(".storage-settings"),alert=card.getByRole("alert"),refresh=card.getByRole("button",{name:"Refresh storage"});
+  await expect(alert).toHaveText("Could not read storage use: Deliberate storage read failure");
+  let shown=await alert.elementHandle();
+  await refresh.click();
+  await expect(alert).toHaveText("Still could not read storage use: Deliberate storage read failure");
+  expect(await shown.evaluate(node=>node.isConnected),"the failure is a new alert, so it is said again").toBe(false);
+  await refresh.scrollIntoViewIfNeeded();
+  await page.screenshot({animations:"disabled",path:shots+"storage-read-failed-again-dark-1280.png"});
+  await flipMode(page,"light");
+  await page.screenshot({animations:"disabled",path:shots+"storage-read-failed-again-light-1280.png"});
+  await flipMode(page,"dark");
+  shown=await alert.elementHandle();
+  await refresh.click();
+  await expect.poll(()=>shown.evaluate(node=>node.isConnected)).toBe(false);
+  await expect(alert).toHaveText("Still could not read storage use: Deliberate storage read failure");
+  // Once numbers came, a refresh that fails twice says so the same way, and the numbers stay.
+  readFails=false;
+  await refresh.click();
+  await expect(card.locator(".provider-note").filter({hasText:"cached attachment"})).toBeVisible();
+  await expect(alert).toHaveCount(0);
+  readFails=true;
+  await refresh.click();
+  await expect(alert).toHaveText("Could not refresh storage use: Deliberate storage read failure");
+  shown=await alert.elementHandle();
+  await refresh.click();
+  await expect(alert).toHaveText("Still could not refresh storage use: Deliberate storage read failure");
+  expect(await shown.evaluate(node=>node.isConnected)).toBe(false);
+  await expect(card.locator(".provider-note").filter({hasText:"cached attachment"})).toBeVisible();
 });
 
 for(const mode of MODES)test(`storage use reads as loading until it comes, not as zeros (${mode})`,async({page,request})=>{

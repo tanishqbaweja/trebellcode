@@ -315,6 +315,34 @@ test.describe("A project list that failed or is still loading",()=>{
     await expect(page.locator(".project-window-count")).toHaveText(/1\s*\/\s*1/);
   });
 
+  // A second failure reads differently and is a new message, so it is seen and said again; the keyboard stays on Retry.
+  test("a Retry that fails again says it still could not load the projects",async({page,request})=>{
+    await open(page,request);
+    let reads=0;
+    await page.route(/\/api\/projects$/,route=>{if(route.request().method()!=="GET")return route.fallback();reads++;return json(route,{error:"Deliberate projects failure"},500)});
+    await nav(page,"Projects").click();
+    const alert=page.locator(".projects-page").getByRole("alert"),retry=alert.getByRole("button",{name:"Retry",exact:true});
+    await expect(alert).toHaveText(/^Could not load projects: Deliberate projects failure/);
+    const message=await alert.locator("span").first().elementHandle();
+    const before=reads;
+    await retry.focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>reads).toBeGreaterThan(before);
+    await expect(alert).toHaveText(/^Still could not load projects: Deliberate projects failure/);
+    expect(await message.evaluate(node=>node.isConnected),"the message is a new one, so it is said again").toBe(false);
+    await expect(retry).toBeEnabled();
+    await expect(retry).toBeFocused();
+    await page.screenshot({animations:"disabled",path:shots+"projects-load-failed-again-dark-1280.png"});
+    await flipMode(page,"light");
+    await page.screenshot({animations:"disabled",path:shots+"projects-load-failed-again-light-1280.png"});
+    await flipMode(page,"dark");
+    // Each later failure is a new message too.
+    const second=await alert.locator("span").first().elementHandle();
+    await page.keyboard.press("Enter");
+    await expect.poll(async()=>second.evaluate(node=>node.isConnected)).toBe(false);
+    await expect(alert).toHaveText(/^Still could not load projects: Deliberate projects failure/);
+  });
+
   for(const mode of MODES)test(`while the first read is slow the page says it is loading, not that there are none (${mode})`,async({page,request})=>{
     await open(page,request,{mode});
     let release;const held=new Promise(resolve=>{release=resolve});
