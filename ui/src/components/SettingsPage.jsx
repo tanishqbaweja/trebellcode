@@ -22,6 +22,8 @@ const PROVIDER_NOTES={
   justworker:"Available model: claude-opus-4-8.",
   hcnsec:"Available model: glm-5.3.",
 };
+// The model catalog's error for a provider without a key (ProviderManager.models): a next step, not a failure.
+const MISSING_PROVIDER_KEY="API key required";
 let appliedSettingsEntryNonce=null;
 // The last harness snapshot this window saw: Agents & models renders it at once on later visits while a fresh probe runs.
 let lastAgentRuntimeInfo=null;
@@ -405,7 +407,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       setProviderInfo(result);
       showProviderMessage(result.ready?"API key saved. Harness ready.":"API key saved.");
       await onProviderUpdated?.({provider:result.selected||selected,agentRuntime:result.agentRuntime||selectedAgent,catalog:result,refreshBootstrap:false});
-    }catch(error){showProviderMessage(error.message,true)}
+    }catch(error){
+      // A refused key check comes back with the provider's status, which says why; other failures show their own message.
+      const refused=(await loadProviders())?.providers?.find(item=>item.id===selected)?.keyCheck;
+      showProviderMessage(refused?"":error.message,!refused);
+    }
   }
   async function clearProviderKey(){
     showProviderMessage("Removing…");
@@ -544,7 +550,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     appliedSettingsEntryNonce=settingsEntry.nonce;
     if(settingsEntry.section)setSettingsSection(settingsEntry.section);
     setSettingsSearch("");
-    if(settingsEntry.target)revealSettingTarget(settingsEntry.target);
+    if(settingsEntry.target)revealSettingTarget(settingsEntry.target,"",{focus:settingsEntry.focus});
   },[settingsEntry?.nonce]);
   useEffect(()=>{
     setInstanceDraft(null);
@@ -573,7 +579,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const updateStatusLabel={idle:"Ready to check",checking:"Checking…",available:"Update available",downloading:"Downloading…",downloaded:"Ready to install",installing:"Restarting…",current:"Up to date",error:"Update failed",development:"Development build"}[desktopUpdate?.status]||desktopUpdate?.status||"idle";
 
   const selectedStatus=providerInfo?.providers?.find(p=>p.id===selected)||providerInfo?.status;
-  const providerStatusText=providerSwitching?"switching provider…":selectedStatus?.hasKey?(modelError?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required";
+  // A provider without a key shows that next step in the neutral status; it turns red once a key check or the provider itself
+  // fails. The server keeps a refused key check (keyCheck), so its reason is still here after leaving Settings.
+  const keyCheck=providerSwitching?null:selectedStatus?.keyCheck||null;
+  const providerStatusText=providerSwitching?"switching provider…":keyCheck?"key check failed":selectedStatus?.hasKey?(modelError?"provider error":(providerInfo?.ready?"ready":"configured")):MISSING_PROVIDER_KEY;
+  const providerModelError=modelError&&modelError!==MISSING_PROVIDER_KEY&&modelError!==providerStatusText?modelError:"";
   const selectedAgentStatus=runtimeStatusForKind(agentInfo,selectedAgent,{preferSelected:true});
   // Diagnostics chips stay neutral until their answer arrives (the runtime poll, then the diagnostics read): an unknown
   // state is not a warning. They used to show amber "not ready" for a provider that was ready but not yet read. A failed
@@ -616,7 +626,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const workspaceEnvironment=workspaceScope.environmentId==="local"?null:(workspaceScopeCatalog.environmentData.profiles||[]).find(profile=>profile.id===workspaceScope.environmentId);
   const workspaceProject=workspaceProjects.find(project=>project.id===workspaceScope.projectId)||null;
   function targetProps(id){return {"data-setting-target":id}}
-  function revealSettingTarget(id,title=""){
+  // focus names a field inside the target (its data-testid) that takes the keyboard once the target shows.
+  function revealSettingTarget(id,title="",{focus=""}={}){
     requestAnimationFrame(()=>requestAnimationFrame(()=>{
       const exact=document.querySelector(`[data-setting-target="${id}"]`);
       const candidates=[...document.querySelectorAll(".settings-card,.settings-section-slot,.diagnostics-log,.keybinding-row")];
@@ -627,6 +638,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       });
       const target=exact||fallback||document.querySelector(".settings-section-head");
       target?.scrollIntoView({block:"center",behavior:"smooth"});
+      if(focus)exact?.querySelector(`[data-testid="${focus}"]`)?.focus({preventScroll:true});
       // A repeat search for the same setting restarts its highlight instead of losing it to the earlier timer.
       if(target){clearTimeout(target.__settingsHitTimer);target.classList.add("settings-search-hit");target.__settingsHitTimer=setTimeout(()=>target.classList.remove("settings-search-hit"),1600)}
     }));
@@ -723,7 +735,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           {selectedStatus?.hasKey&&<button onClick={clearProviderKey}>Remove key</button>}
         </div>
         <p className="provider-note">{PROVIDER_NOTES[selected]||"Models are loaded from the selected provider when its API supports discovery."}</p>
-        <p data-testid="provider-status" className={modelError||providerMessageError?"provider-status-error":""}><strong>{MODEL_PROVIDER_LABELS[selected]||selectedStatus?.name||selected}</strong> · {providerStatusText}{providerMessage?" · "+providerMessage:""}{modelError&&modelError!==providerStatusText?" · "+modelError:""}</p>
+        <p data-testid="provider-status" className={keyCheck||providerModelError||providerMessageError?"provider-status-error":""}><strong>{MODEL_PROVIDER_LABELS[selected]||selectedStatus?.name||selected}</strong> · {providerStatusText}{keyCheck?" · "+keyCheck.message:""}{providerMessage?" · "+providerMessage:""}{providerModelError?" · "+providerModelError:""}</p>
       </div>}
       {settingsSection==="agents"&&["codex","claude","opencode","cursor","grok","antigravity"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-models")}>
         <h3><Boxes size={14} aria-hidden="true"/> Custom models</h3>

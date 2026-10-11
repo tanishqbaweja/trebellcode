@@ -496,7 +496,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .model-picker-menu>p{margin:6px 8px 4px;color:var(--tx3);font-size:11px;line-height:1.45}
 .composer-wrap .model-runtime-profiles{border-bottom-color:var(--line)}
 .composer-wrap .model-runtime-profiles>p{color:var(--tx3);font-size:10.5px}
-.composer-wrap .model-picker-search{background:var(--panel);border-bottom-color:var(--line)}
+/* The search field sticks flush with the menu's 6px padding, so no scrolled row shows above it. */
+.composer-wrap .model-picker-search{top:-6px;margin-top:-6px;background:var(--panel);border-bottom-color:var(--line)}
 .composer-wrap .model-picker-search input{color:var(--tx0);font-size:12px}
 
 /* ============ Narrow widths ============ */
