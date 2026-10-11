@@ -4290,6 +4290,8 @@ test("workspace file refresh and save failures stay visible without lying about 
   await packageFile.click();
   await expect(panel.locator(".file-head strong")).toContainText("package.json");
   await expect(panel.locator(".syntax-view")).toBeVisible();
+  // A type with a grammar keeps its syntax colours (a .txt file shows none: see the file open failure test).
+  await expect(panel.locator(".syntax-view .token").first()).toBeVisible();
 
   let failTree=false;
   await page.route(/\/api\/workspace\/tree\?/,route=>{
@@ -4298,7 +4300,7 @@ test("workspace file refresh and save failures stay visible without lying about 
   });
   failTree=true;
   await panel.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
-  await expect(panel.locator(".workspace-tree-error")).toContainText("Deliberate workspace tree refresh failure");
+  await expect(panel.locator(".workspace-tree-error")).toHaveText("Could not refresh workspace files: Deliberate workspace tree refresh failure");
   await expect(packageFile).toBeVisible();
 
   await panel.getByRole("button",{name:"Edit",exact:true}).click();
@@ -4311,7 +4313,7 @@ test("workspace file refresh and save failures stay visible without lying about 
     return route.continue();
   });
   await panel.getByRole("button",{name:"Save",exact:true}).click();
-  await expect(panel.locator(".workspace-file-error")).toContainText("Deliberate workspace save failure");
+  await expect(panel.locator(".workspace-file-error")).toHaveText("Could not save package.json: Deliberate workspace save failure");
   await expect(editor).toBeVisible();
   await expect(editor).toHaveValue(original+"\n");
   await page.setViewportSize({width:1280,height:800});
@@ -4339,7 +4341,7 @@ test("workspace diff refresh failures preserve the last valid diff",async({page,
   failDiff=true;
   await panel.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
   const alert=panel.locator(".workspace-diff-error");
-  await expect(alert).toContainText("Deliberate workspace diff refresh failure");
+  await expect(alert).toHaveText("Could not refresh the diff: Deliberate workspace diff refresh failure");
   await expect(alert).toBeInViewport();
   await expect(panel.locator(".changed-file-row")).toContainText("ui/src/App.jsx");
   await expect(panel.locator(".git-diff")).toContainText("+new");
@@ -4389,6 +4391,8 @@ test("workspace diff lines wrap by default, can scroll instead, and the choice i
 
 test("workspace file open failures preserve the current valid file",async({page,request})=>{
   test.setTimeout(30_000);
+  // Prose with words a JavaScript grammar colours and text that looks like markup.
+  const goodText="keep this valid file visible\nif (this) return <b>x & y</b>;";
   await page.route(/\/api\/workspace\/tree\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
     entries:[
       {name:"good.txt",path:"good.txt",relativePath:"good.txt",isFile:true,isDirectory:false,depth:0},
@@ -4398,7 +4402,7 @@ test("workspace file open failures preserve the current valid file",async({page,
   await page.route(/\/api\/workspace\/file\?/,route=>{
     const url=new URL(route.request().url());
     if(url.searchParams.get("path")==="bad.txt")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate workspace file open failure"})});
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({name:"good.txt",path:"good.txt",content:"keep this valid file visible"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({name:"good.txt",path:"good.txt",content:goodText})});
   });
   await prepare(page,request);
   await page.getByTestId("right-panel-toggle").click();
@@ -4408,10 +4412,18 @@ test("workspace file open failures preserve the current valid file",async({page,
   await good.click();
   await expect(panel.locator(".file-head strong")).toHaveText("good.txt");
   await expect(panel.locator(".syntax-view")).toContainText("keep this valid file visible");
+  // A .txt file has no grammar: it reads as plain text, with no syntax colours, and its markup-like text is shown, not parsed.
+  const plainText=async()=>{
+    expect(await panel.locator(".syntax-view code").evaluate(node=>node.textContent)).toBe(goodText);
+    await expect(panel.locator(".syntax-view .token")).toHaveCount(0);
+    await expect(panel.locator(".syntax-view b")).toHaveCount(0);
+  };
+  await plainText();
   await bad.click();
-  await expect(panel.locator(".workspace-file-error")).toContainText("Deliberate workspace file open failure");
+  await expect(panel.locator(".workspace-file-error")).toHaveText("Could not open bad.txt: Deliberate workspace file open failure");
   await expect(panel.locator(".file-head strong")).toHaveText("good.txt");
   await expect(panel.locator(".syntax-view")).toContainText("keep this valid file visible");
+  await plainText();
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
@@ -6344,7 +6356,7 @@ test("source control keeps the PR visible when loading full details fails",async
     page.waitForResponse(response=>response.url().includes("/api/source-control/pr-detail?")),
   ]);
   expect(detailResponse.status()).toBe(500);
-  await expect(panel.getByRole("alert")).toContainText("Deliberate PR detail failure");
+  await expect(panel.getByRole("alert")).toHaveText("Could not load pull request details: Deliberate PR detail failure");
   await expect(panel.getByRole("heading",{name:"#142 PR detail failure fixture",exact:true})).toBeVisible();
   await expect(prButton).toHaveClass(/active/);
   await page.setViewportSize({width:1280,height:800});
@@ -6353,7 +6365,7 @@ test("source control keeps the PR visible when loading full details fails",async
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-pr-detail-error-1280x800.png",fullPage:true});
   failPrRefresh=true;
   await panel.getByRole("button",{name:"Refresh pull requests",exact:true}).click();
-  await expect(panel.getByRole("alert")).toContainText("Deliberate PR list refresh failure");
+  await expect(panel.getByRole("alert")).toHaveText("Could not refresh pull requests: Deliberate PR list refresh failure");
   await expect(prButton).toBeVisible();
   await expect(prButton).toHaveClass(/active/);
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-refresh-error-1280x800.png",fullPage:true});
@@ -6441,7 +6453,7 @@ test("source control preserves viewed files when the same PR refresh fails",asyn
   failViewed=true;
   await page.setViewportSize({width:1280,height:800});
   await prButton.click();
-  await expect(panel.getByRole("alert")).toContainText("Deliberate viewed-state refresh failure");
+  await expect(panel.getByRole("alert")).toHaveText("Could not load viewed files: Deliberate viewed-state refresh failure");
   await expect(panel.locator(".pr-files-head")).toContainText("1 / 1 viewed in Trebell Code");
   await expect(panel.getByRole("button",{name:"Mark unviewed ui/src/App.jsx",exact:true})).toBeVisible();
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
@@ -6666,7 +6678,8 @@ test("failed worktree open stays in the current project and reports the error",a
   await expect(row).toBeVisible();
   await row.getByRole("button",{name:"Open",exact:true}).click();
   const alert=panel.getByRole("alert");
-  await expect(alert).toContainText("Deliberate worktree activation failure");
+  // The banner names the action that failed before the server's reason.
+  await expect(alert).toHaveText("Could not open the worktree: Deliberate worktree activation failure");
   await expect(alert).toBeInViewport();
   await expect(crumb).toHaveText(beforeText);
   await page.setViewportSize({width:1280,height:800});
@@ -6704,7 +6717,7 @@ test("Add worktree reports native folder picker failures",async({page,request})=
   page.once("dialog",dialog=>dialog.accept("picker-failure"));
   await addWorktree.click();
   const alert=panel.getByRole("alert");
-  await expect(alert).toContainText("Deliberate worktree folder picker failure");
+  await expect(alert).toHaveText("Could not choose a worktree folder: Deliberate worktree folder picker failure");
   await expect(alert).toBeInViewport();
   await expect(crumb).toHaveText(beforeText);
   await expect(addWorktree).toBeEnabled();
@@ -6740,7 +6753,7 @@ test("failed PR attachment stays in source control with visible feedback",async(
   await panel.getByRole("button",{name:/#88 Attachment failure fixture/}).click();
   await panel.getByRole("button",{name:"Attach",exact:true}).click();
   const alert=panel.getByRole("alert");
-  await expect(alert).toContainText("Deliberate PR attachment failure");
+  await expect(alert).toHaveText("Could not attach the pull request: Deliberate PR attachment failure");
   await expect(alert).toBeInViewport();
   await expect(panel.getByRole("heading",{name:/#88 Attachment failure fixture/})).toBeVisible();
   await page.setViewportSize({width:1280,height:800});

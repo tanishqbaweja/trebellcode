@@ -84,16 +84,25 @@ test("large source control collections mount bounded windows",async({page,reques
   await expect(right.getByRole("button",{name:"Show 60 more changes"})).toBeVisible();
   await expect(right.getByRole("button",{name:"Show 60 more PRs"})).toBeVisible();
 
+  // Footers count what is shown ("mounted" was a React word for it).
+  const footer=label=>right.locator(".source-window-footer").filter({has:right.getByRole("button",{name:label})}).locator("span");
+  await expect(footer("Show 60 more changes")).toHaveText("60 of 200 shown");
+  await expect(footer("Show 60 more PRs")).toHaveText("60 of 150 shown");
   await right.getByRole("button",{name:"Show 60 more changes"}).click();
   await expect(right.locator(".status-list > div")).toHaveCount(120);
+  await expect(footer("Show 60 more changes")).toHaveText("120 of 200 shown");
   await right.getByRole("button",{name:"Show 60 more PRs"}).click();
   await expect(right.locator(".pr-list > button")).toHaveCount(120);
+  await expect(footer("Show 30 more PRs")).toHaveText("120 of 150 shown");
 
   await right.getByRole("button",{name:/#1 Stress PR 001/}).click();
   await expect(right.locator(".pr-file")).toHaveCount(60);
   await expect(right.getByRole("button",{name:"Show 60 more files"})).toBeVisible();
+  await expect(footer("Show 60 more files")).toHaveText("60 of 180 shown");
   await right.getByRole("button",{name:"Show 60 more files"}).click();
   await expect(right.locator(".pr-file")).toHaveCount(120);
+  await expect(right.locator(".pr-detail .source-window-footer span")).toHaveText("120 of 180 shown");
+  await expect(right.getByText(/\bmounted\b/)).toHaveCount(0);
 
   await page.setViewportSize({width:1280,height:800});
   await right.scrollIntoViewIfNeeded();
@@ -165,7 +174,7 @@ test("linked thread refresh failures retain last-known-good data for the same pu
   const project=page.locator(".project-card").filter({hasText:"Source control reliability"});await expect(project).toBeVisible();await project.locator(".project-open").click();await expect(page.getByRole("heading",{name:"What do you want to build?"})).toBeVisible();
   await page.getByTestId("right-panel-toggle").click();const right=page.getByTestId("right-panel");await right.getByRole("button",{name:"Git",exact:true}).click();
   const prButton=right.getByRole("button",{name:/#7 Reliability PR/});await expect(prButton).toBeVisible();await prButton.click();await expect(right.getByText("Stable review thread")).toBeVisible();
-  await prButton.click();await expect(right.getByText("Stable review thread")).toBeVisible();await expect(right.getByText(/Deliberate reverse-link refresh failure/)).toBeVisible();expect(reverseReads).toBe(2);
+  await prButton.click();await expect(right.getByText("Stable review thread")).toBeVisible();await expect(right.getByRole("alert")).toHaveText("Could not load linked threads: Deliberate reverse-link refresh failure");expect(reverseReads).toBe(2);
   await page.setViewportSize({width:1280,height:800});await right.scrollIntoViewIfNeeded();const metrics=await right.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"source-control-linked-thread-refresh-failure-1280x800.png",fullPage:true});
 });
 

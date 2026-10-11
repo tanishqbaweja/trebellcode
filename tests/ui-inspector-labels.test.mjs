@@ -1,6 +1,35 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distinctPathParts, splitPath } from "../ui/src/inspector-labels.js";
+import { actionError, distinctPathParts, gitStatusBadge, splitPath } from "../ui/src/inspector-labels.js";
+
+test("inspector errors name the failed action before the server's reason",()=>{
+  assert.equal(actionError("Could not refresh the diff",new Error("EPERM: operation not permitted")),"Could not refresh the diff: EPERM: operation not permitted");
+  assert.equal(actionError("Could not open notes.txt","File is too large to preview (600 KB)"),"Could not open notes.txt: File is too large to preview (600 KB)");
+  // No reason at all still reads as a sentence instead of "…: " or "…: Error".
+  assert.equal(actionError("Could not open the worktree",new Error("")),"Could not open the worktree.");
+  assert.equal(actionError("Could not push",null),"Could not push.");
+});
+
+test("untracked paths get one badge that does not collide with git's unmerged U",()=>{
+  for(const code of ["??","?? "])assert.deepEqual(gitStatusBadge(code),{label:"N",kind:"added",title:"Untracked: new, not added to Git yet (git status ??)"});
+  for(const code of ["UU","AA","DD","AU","UA","DU","UD"]){
+    const badge=gitStatusBadge(code);
+    assert.equal(badge.kind,"conflict",code);assert.equal(badge.label,code);assert.match(badge.title,/^Conflict/);
+  }
+  assert.notEqual(gitStatusBadge("??").label,"U");
+});
+
+test("git status badges drop the column padding and name the status",()=>{
+  assert.deepEqual(gitStatusBadge(" M"),{label:"M",kind:"modified",title:"Modified (git status M)"});
+  assert.deepEqual(gitStatusBadge("M "),{label:"M",kind:"modified",title:"Modified (git status M)"});
+  assert.deepEqual(gitStatusBadge("MM"),{label:"MM",kind:"modified",title:"Modified (git status MM)"});
+  assert.deepEqual(gitStatusBadge("A "),{label:"A",kind:"added",title:"Added (git status A)"});
+  assert.deepEqual(gitStatusBadge(" D"),{label:"D",kind:"deleted",title:"Deleted (git status D)"});
+  assert.deepEqual(gitStatusBadge("R "),{label:"R",kind:"renamed",title:"Renamed (git status R)"});
+  assert.deepEqual(gitStatusBadge("C "),{label:"C",kind:"renamed",title:"Copied (git status C)"});
+  assert.deepEqual(gitStatusBadge(" T"),{label:"T",kind:"modified",title:"Type changed (git status T)"});
+  assert.equal(gitStatusBadge("").label,"M");
+});
 
 test("a path splits into its folder and name, and an untracked folder keeps its name",()=>{
   assert.deepEqual(splitPath("ui/src/App.jsx"),{dir:"ui/src",sep:"/",name:"App.jsx"});

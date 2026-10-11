@@ -49,6 +49,8 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   await expect(right.getByRole("button",{name:"Show 120 more files"})).toBeVisible();
   await right.getByRole("button",{name:"Show 120 more files"}).click();
   await expect(right.locator("[data-workspace-entry]")).toHaveCount(240);
+  // The footer counts what is shown, in the words the diff footer uses ("characters shown").
+  await expect(right.locator(".tree-list .workspace-window-footer span")).toHaveText("240 of 500 shown");
   await right.locator(".tree-list").evaluate(node=>{node.scrollTop=node.scrollHeight});
   await expect(right.getByRole("button",{name:"Show 120 more files"})).toBeVisible();
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-tree-windowing-dark-1280x800.png",fullPage:true});
@@ -56,6 +58,7 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   await right.getByRole("button",{name:"Diff",exact:true}).click();
   await expect(right.locator(".changed-file-row")).toHaveCount(80);
   await expect(right.getByRole("button",{name:"Show 80 more changed files"})).toBeVisible();
+  await expect(right.locator(".changed-files .workspace-window-footer span")).toHaveText("80 of 220 shown");
   const diffPreview=right.getByTestId("workspace-diff-preview");
   await expect(diffPreview).toBeVisible();
   const firstLength=await diffPreview.evaluate(node=>node.textContent.length);
@@ -68,6 +71,7 @@ test("large workspace trees and diffs render bounded progressive windows",async(
 
   await right.getByRole("button",{name:"Show 80 more changed files"}).click();
   await expect(right.locator(".changed-file-row")).toHaveCount(160);
+  await expect(right.locator(".changed-files .workspace-window-footer span")).toHaveText("160 of 220 shown");
   await right.getByRole("button",{name:"Show more diff"}).click();
   await expect.poll(()=>diffPreview.evaluate(node=>node.textContent.length)).toBeGreaterThan(120_000);
   await expect(right.locator(".workspace-diff-preview .workspace-window-footer span")).toHaveText("240k of 491k characters shown");
@@ -97,4 +101,54 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   await expect(lightMore).toBeVisible();
   expect(await lightMore.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-tree-windowing-light-1280x800.png",fullPage:true});
+});
+
+test("the Diff and Git lists name an untracked folder and label untracked paths apart from conflicts",async({page,request})=>{
+  test.setTimeout(35_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Workspace status labels"}});
+  // git status --short: an untracked folder is reported as "name/", and "UU" is an unmerged (conflicted) path.
+  const status=[["??","capture-output/"],["??","notes/todo.txt"],[" M","src/app.js"],["UU","src/merge.js"],["A ","src/new.js"],[" D","src/gone.js"]];
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route("**/api/workspace/diff?**",route=>json(route,{cwd:boot.cwd,isGit:true,status:status.map(([code,path])=>code+" "+path).join("\n"),diff:"diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+new\n",stderr:""}));
+  await page.route("**/api/git/info?**",route=>json(route,{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:null,status:status.map(([code,path])=>({code,path})),worktrees:[{path:boot.cwd,branch:"main"}],remotes:[]}));
+  await page.route("**/api/source-control/diagnostics?**",route=>json(route,{selectedProvider:"",detectedProvider:"unknown",git:{version:"git version fixture"},providers:{},capabilities:{}}));
+  await page.route("**/api/source-control/prs?**",route=>json(route,{items:[],capabilities:{}}));
+
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const project=page.locator(".project-card").filter({hasText:"Workspace status labels"});
+  await expect(project).toBeVisible();
+  await project.locator(".project-open").click();
+  await page.getByTestId("right-panel-toggle").click();
+  const right=page.getByTestId("right-panel");
+  await page.setViewportSize({width:1280,height:800});
+  await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Diff",exact:true}).click();
+  await expect(right.locator(".changed-file-row")).toHaveCount(status.length);
+
+  // The untracked folder shows its name in the name style, like its siblings, not as a muted folder hint with no name.
+  const folder=right.locator(".changed-file-row").filter({hasText:"capture-output"});
+  await expect(folder.locator(".changed-file-name")).toHaveText("capture-output/");
+  await expect(folder.locator(".changed-file-dir")).toHaveCount(0);
+  const nameStyle=locator=>locator.evaluate(node=>{const style=getComputedStyle(node);return style.fontSize+" "+style.color});
+  expect(await nameStyle(folder.locator(".changed-file-name"))).toBe(await nameStyle(right.locator(".changed-file-row").filter({hasText:"app.js"}).locator(".changed-file-name")));
+  await expect(right.locator(".changed-file-row").filter({hasText:"todo.txt"}).locator(".changed-file-name")).toHaveText("todo.txt");
+
+  // One label per status in both lists: untracked is "N", never git's "??" nor the "U" of an unmerged path.
+  const expected={"capture-output/":["N","added",/^Untracked/],"notes/todo.txt":["N","added",/^Untracked/],"src/merge.js":["UU","conflict",/^Conflict/],"src/app.js":["M","modified",/^Modified/],"src/new.js":["A","added",/^Added/],"src/gone.js":["D","deleted",/^Deleted/]};
+  for(const [path,[label,kind,title]] of Object.entries(expected)){
+    const badge=right.locator(".changed-file-row").filter({has:page.getByRole("button",{name:path,exact:true})}).locator(".changed-file-code");
+    await expect(badge).toHaveText(label);await expect(badge).toHaveAttribute("data-kind",kind);await expect(badge).toHaveAttribute("title",title);
+  }
+  await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-status-labels-1280x800.png",fullPage:true});
+
+  await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  await expect(right.locator(".status-list > div")).toHaveCount(status.length);
+  for(const [path,[label,kind,title]] of Object.entries(expected)){
+    const badge=right.locator(".status-list > div").filter({has:page.getByText(path,{exact:true})}).locator("code");
+    await expect(badge).toHaveText(label);await expect(badge).toHaveAttribute("data-state",kind);await expect(badge).toHaveAttribute("title",title);
+  }
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.screenshot({animations:"disabled",path:auditDir+"source-control-status-labels-light-1280x800.png",fullPage:true});
 });
