@@ -270,6 +270,49 @@ test("Usage failures name the action before the reason, and only once",async({pa
   }finally{await fixture.close()}
 });
 
+test("Usage takes cleared turns off the page even when the reload after the clear fails",async({page})=>{
+  test.setTimeout(40_000);
+  const control={rateLimits:"quota"};const fixture=await startUsageFixture(control);
+  const record={id:"usage-cleared-record",at:new Date().toISOString(),environmentId:null,runtime:"codex",provider:"openai",model:"test/coding-fast",usage:{inputTokens:1200,outputTokens:300,totalTokens:1500},cost:{currency:"USD",amount:0.0123}};
+  let deletes=0;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openUsage(page,fixture.wsUrl,route=>{
+      if(route.request().method()==="DELETE"){deletes++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})})}
+      // The clear succeeds, and reading the usage back after it fails.
+      if(deletes)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate usage reload failure"})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({records:[record],total:{inputTokens:1200,outputTokens:300,totalTokens:1500},models:{},runtimes:{},daily:{}})});
+    });
+    const usagePage=page.locator(".usage-page"),summary=page.locator(".usage-summary"),recent=page.locator(".usage-recent");
+    const rows=recent.locator(".usage-table>div:not(.usage-table-head)"),clear=page.getByRole("button",{name:"Clear local history",exact:true});
+    await expect(rows).toHaveCount(1);await expect(rows).toContainText("test/coding-fast");
+    await expect(summary).toContainText("1 recorded turn");
+    page.once("dialog",dialog=>dialog.accept());
+    await clear.click();
+    await expect(page.locator(".usage-page>.inline-error")).toHaveText("Could not load usage: Deliberate usage reload failure");
+    expect(deletes).toBe(1);
+    // The turn was deleted, so it is not shown beside the failed reload's alert: no row, model, daily bar or total speaks for it,
+    // and as that reload failed, nothing claims the period is empty either.
+    await expect(rows).toHaveCount(0);
+    await expect(page.locator(".usage-models>div")).toHaveCount(0);await expect(page.locator(".usage-bars>div")).toHaveCount(0);
+    await expect(usagePage).not.toContainText("test/coding-fast");
+    await expect(summary.locator("strong")).toHaveText(["—","—","—","—"]);
+    for(const claim of ["No recorded usage in this period.","No model usage recorded yet.","No turns recorded in this period."])await expect(usagePage.getByText(claim,{exact:true}),claim).toHaveCount(0);
+    await expect(recent.locator(".capability-card-head em")).toHaveCount(0);
+    await expect(clear).toBeDisabled();await expect(clear).toHaveText("Clear local history");
+    // The page scrolls inside its own column: one shot shows the alert and the totals, the next the cards and the table below.
+    const shoot=async name=>{
+      await page.screenshot({animations:"disabled",path:auditDir+name+"-1280x800.png",fullPage:false});
+      await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+      await page.screenshot({animations:"disabled",path:auditDir+name+"-light-1280x800.png",fullPage:false});
+      await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    };
+    await shoot("usage-cleared-reload-failed");
+    await recent.scrollIntoViewIfNeeded();
+    await shoot("usage-cleared-reload-failed-cards");
+  }finally{await fixture.close()}
+});
+
 test("Subscription limits say they are loading, name a failed read, and claim nothing beside it",async({page})=>{
   test.setTimeout(40_000);
   const fixture=await startUsageFixture({rateLimits:"none"});

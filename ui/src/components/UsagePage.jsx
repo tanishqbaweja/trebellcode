@@ -148,8 +148,13 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   async function clear(){
     if(!confirm("Clear Trebell's locally recorded usage history? Provider account usage is not affected."))return;
     setClearing(true);setError("");
-    try{await api("/api/usage",{method:"DELETE"});await refresh()}
-    catch(err){setError(failureText("Could not clear local usage history",err))}
+    try{
+      await api("/api/usage",{method:"DELETE"});
+      // The history is gone once the delete succeeds, so its rows leave the page now: a reload that then fails shows its alert beside
+      // no rows (and, as no answer is current, no empty-period claim) rather than beside the turns just deleted.
+      setData({records:[],total:{},models:{},runtimes:{},daily:{}});setShownQuery(null);
+      await refresh();
+    }catch(err){setError(failureText("Could not clear local usage history",err))}
     finally{setClearing(false)}
   }
   async function resetCodexLimit(creditId=null){
