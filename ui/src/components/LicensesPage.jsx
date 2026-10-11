@@ -23,10 +23,13 @@ export default function LicensesPage(){
   },[]);
   useEffect(()=>{loadList()},[loadList]);
   // Retry goes away while the list loads, so focus then lands on the first package (the search field when none shows), or on
-  // Retry again when it failed again, instead of falling to the page.
+  // Retry again when it failed again, instead of falling to the page. Focus the person has put somewhere meanwhile (the search,
+  // as they type) stays there.
   useEffect(()=>{
     if(!retried.current||list.status==="loading")return;
     retried.current=false;
+    const focused=document.activeElement;
+    if(focused&&focused!==document.body&&focused.isConnected)return;
     (list.status==="failed"?retryRef.current:listRef.current?.querySelector(":scope>button")||searchRef.current)?.focus();
   },[list.status]);
   function retry(){retried.current=true;loadList()}

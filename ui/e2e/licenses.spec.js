@@ -105,6 +105,28 @@ for(const mode of MODES){
     await page.screenshot({animations:"disabled",path:shots+`failed-then-retried-${mode}-1280.png`});
   });
 
+  test(`typing in the search while Retry reloads the list keeps focus and every key typed (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    let reads=0,release;const held=new Promise(resolve=>{release=resolve});
+    await page.route(/\/api\/licenses$/,async route=>{reads++;if(reads===1)return json(route,{error:"Deliberate licenses failure"},500);await held;return json(route,LIST)});
+    await openLicenses(page);
+    const list=page.locator(".licenses-list");
+    await list.getByRole("button",{name:"Retry"}).click();
+    await expect(list.getByRole("status")).toHaveText("Loading licenses…");
+    // The person clicks into the search and starts typing while the list is still on its way.
+    const search=page.getByPlaceholder("Search package, version or license");
+    await search.click();
+    await page.keyboard.type("rea",{delay:40});
+    release();
+    await expect(rows(page).first()).toBeVisible();
+    await page.keyboard.type("ct",{delay:40});
+    await expect(search,"the list arriving pulled focus from the search to the first package").toBeFocused();
+    await expect(search).toHaveValue("react");
+    await expect(rows(page)).toHaveCount(1);
+    await expect(count(page)).toHaveText(`1 of ${PACKAGES.length}`);
+    await page.screenshot({animations:"disabled",path:shots+`retry-typing-${mode}-1280.png`});
+  });
+
   test(`an empty list and a search with no match each say what happened (${mode})`,async({page,request})=>{
     await open(page,request,{mode});
     let items=[];
