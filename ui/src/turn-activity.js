@@ -1,7 +1,8 @@
-// The activity card of every turn of the open thread, kept per turn: the rows of its steps (oldest first) and whether all of them
-// are loaded. Rows come from the history pages the window already reads (item pages, turn pages, a find hit's turn) and from the
-// live card once its turn ends; a turn with no stored tool items has no card, nothing is guessed. Only the newest turn of an
-// opened thread may be read once more, when the first item page cut it (see App's openThreadInternal).
+// The activity card of every turn of the open thread, kept per turn: the rows of its steps (oldest first), whether all of them
+// are loaded and how many of them are the turn's first steps (head, once find has read them). Rows come from the history pages
+// the window already reads (item pages, turn pages, a find hit's turn) and from the live card once its turn ends; a turn with no
+// stored tool items has no card, nothing is guessed. Only the newest turn of an opened thread may be read once more, when the
+// first item page cut it (see App's openThreadInternal).
 import { activityRow, isCardItem, restoredRow, settledRow } from "./activity-item.js";
 import { toolEventFailed } from "./tool-event-status.js";
 
@@ -71,9 +72,10 @@ function sameRows(left,right){
   return left===right||(left.length===right.length&&left.every((row,index)=>sameRow(row,right[index])));
 }
 
-// Older rows of a turn: a known step is updated where it stands, the others (in their order) go before the rows held, since every
-// source that adds to a turn this way only reads further back (an older page, the turn's own newest-first page, a find scan).
-function olderRows(rows,incoming){
+// A turn holds at most its first steps (head of them, read by find from the turn's start) and its last ones (every other read goes
+// back from the turn's end: the open page, older pages, the turn's own newest-first page), so the steps a read adds lie between
+// the two: a known step is updated where it stands, the others (in their order) go after the first steps.
+function placedRows(rows,incoming,head){
   if(!incoming?.length)return rows;
   const index=new Map(rows.map((row,at)=>[String(row.id),at])),added=[],addedIds=new Set();let updated=null;
   for(const row of incoming){
@@ -83,22 +85,30 @@ function olderRows(rows,incoming){
     if(!updated)updated=rows.slice();updated[at]=row;
   }
   if(!added.length&&!updated)return rows;
-  return [...added,...(updated||rows)];
+  const kept=updated||rows;
+  return added.length?[...kept.slice(0,head),...added,...kept.slice(head)]:kept;
 }
 
-// Adds rows by turn to the store. mode "older" puts unknown rows before a turn's rows; "replace" makes the incoming rows the turn's
-// (a whole turn read at once, a live card sealed). complete is a flag per turn or one for all: a turn once whole stays whole,
-// except under "replace", which sets it. The same store when nothing changed; untouched turns keep their arrays.
+// Adds rows by turn to the store. mode "older" adds steps read back from a turn's end, "first" its first steps (find reads them
+// oldest first), and "replace" makes the incoming rows the turn's (a whole turn read at once, a live card sealed). complete is a
+// flag per turn or one for all: a turn once whole stays whole, except under "replace", which sets it, and a read that reaches the
+// steps held from the other end leaves nothing between them. The same store when nothing changed; untouched turns keep their arrays.
 export function mergeTurnActivity(store,rowsByTurn={},{mode="older",complete=false}={}){
   const turns=store?.turns||{};let next=null;
   for(const [turnId,incoming] of Object.entries(rowsByTurn||{})){
-    const known=turns[turnId],held=known?.rows||NO_ROWS,list=Array.isArray(incoming)?incoming:NO_ROWS;
+    const known=turns[turnId],held=known?.rows||NO_ROWS,list=Array.isArray(incoming)?incoming:NO_ROWS,head=Math.min(known?.head||0,held.length);
     const flag=complete&&typeof complete==="object"?Boolean(complete[turnId]):Boolean(complete);
-    const rows=mode==="replace"?(sameRows(held,list)?held:list):olderRows(held,list);
-    const whole=mode==="replace"?flag:Boolean(known?.complete)||flag;
-    if(known&&rows===known.rows&&whole===known.complete)continue;
+    const rows=mode==="replace"?(sameRows(held,list)?held:list):placedRows(held,list,head);
+    let nextHead=Math.min(head,rows.length),met=false;
+    if(mode!=="replace"&&list.length){
+      const heldAt=new Map(held.map((row,at)=>[String(row.id),at]));
+      met=list.some(row=>{const at=heldAt.get(String(row.id));return at!=null&&(mode==="first"?at>=head:at<head)});
+      if(mode==="first"){const at=new Map(rows.map((row,index)=>[String(row.id),index]));for(const row of list)nextHead=Math.max(nextHead,(at.get(String(row.id))??-1)+1)}
+    }
+    const whole=mode==="replace"?flag:Boolean(known?.complete)||flag||met;
+    if(known&&rows===known.rows&&whole===known.complete&&nextHead===(known.head||0))continue;
     if(!next)next={...turns};
-    next[turnId]={rows,complete:whole};
+    next[turnId]=nextHead?{rows,complete:whole,head:nextHead}:{rows,complete:whole};
   }
   return next?{...store,turns:next}:store;
 }

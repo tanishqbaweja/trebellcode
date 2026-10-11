@@ -58,11 +58,12 @@ function cardFit(page){
     return problems;
   });
 }
-// Checks the fit at every size in both modes with target in the middle of the view, and saves the state's screenshots.
-async function auditCards(page,state,target,{once900=false}={}){
+// Checks the fit at every size (or the sizes given) in both modes with target in the middle of the view, and saves the state's
+// screenshots.
+async function auditCards(page,state,target,{once900=false,sizes=FIT_SIZES}={}){
   for(const mode of ["dark","light"]){
     await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
-    for(const [width,height] of FIT_SIZES){
+    for(const [width,height] of sizes){
       await page.setViewportSize({width,height});await frames(page,3);
       await target.evaluate(node=>node.scrollIntoView({block:"center"}));await frames(page,4);
       expect(await cardFit(page),`${state} ${mode} ${width}x${height}`).toEqual([]);
@@ -317,6 +318,70 @@ test("an older turn cut by the open page reads as not fully loaded until earlier
     await expect(cardOf(page,"codex-turn-2").locator(".activity-card-summary")).toHaveText("3 steps · some steps not loaded");
     const after=await scroll.evaluate((node,id)=>node.querySelector(`[data-message-id="${id}"]`)?.getBoundingClientRect().top??null,before.id);
     expect(Math.abs(after-before.top)).toBeLessThanOrEqual(1);
+  }finally{await harness.close()}
+});
+
+test("a long turn find read from its start keeps its steps in order as earlier messages bring the steps between",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await startRelayHarness(),needle="zebra-needle-77";
+  harness.seedThread("Relay find order",[
+    {user:"Set the project up",items:[replyItem("order-answer-1","Set up.")]},
+    {user:`Please remember ${needle} while running every check`,items:[...Array.from({length:300},(_,index)=>commandItem("order-check-"+(index+1),"check "+(index+1))),replyItem("order-answer-2","All 300 checks passed.")]},
+    {user:"Latest request",items:[commandItem("order-latest-1","latest check"),replyItem("order-answer-3","Latest done.")]},
+  ]);
+  try{
+    await routeRelayApp(page,harness);
+    await page.goto("/");await openThreadRow(page,"Relay find order");
+    await expect(reply(page,"Latest done.")).toBeVisible({timeout:10_000});
+    // The open page holds the long turn's last 96 steps; find reads its first 99, oldest first, up to the needle.
+    const [,long]=harness.turns(harness.threads[0]),card=cardOf(page,long.id),summary=card.locator(".activity-card-summary");
+    await expect(summary).toHaveText("96 steps · some steps not loaded");
+    await page.keyboard.press("Control+f");await page.getByTestId("thread-find-input").fill(needle);
+    await expect(page.getByTestId("thread-find-bar").locator(".thread-find-count")).toHaveText("1 / 1",{timeout:10_000});
+    await expect(summary).toHaveText("195 steps · some steps not loaded");
+    await page.keyboard.press("Escape");
+    // The earlier messages bring the steps between, which read after the first ones and before the last ones.
+    await page.locator(".conversation-scroll").evaluate(node=>{node.scrollTop=0});await frames(page,4);
+    await page.getByRole("button",{name:"Load earlier messages"}).click();
+    await expect(userRow(page,"Set the project up")).toBeAttached({timeout:10_000});
+    await expect(summary).toHaveText("300 steps");
+    await expect(card).toHaveAttribute("data-state","closed");await card.locator(".activity-card-head").click();
+    await expect(card.locator(".timeline-window-controls span")).toHaveText("181–300 of 300");
+    expect(await card.locator(".tool-event summary strong").allTextContents()).toEqual(Array.from({length:120},(_,index)=>"check "+(index+181)));
+    // Not at 900 wide: a window narrowed below the column once rows were drawn wider scrolls sideways, cards or not (the rows keep
+    // the width they last had while off screen), a fault apart from the cards.
+    await auditCards(page,"find-order",card.locator(".activity-card-head"),{sizes:FIT_SIZES.filter(([width])=>width>900)});
+  }finally{await harness.close()}
+});
+
+test("a found turn joined through the history gap keeps its steps in order and reads whole once all are held",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await startRelayHarness(),needle="okapi-needle-31";
+  harness.seedThread("Relay gap order",[
+    {user:`Please remember ${needle} and run the checks`,items:[...Array.from({length:150},(_,index)=>commandItem("gap-check-"+(index+1),"check "+(index+1))),replyItem("gap-answer-0","All 150 checks passed.")]},
+    {user:"Middle one",items:[replyItem("gap-answer-1","Middle one done.")]},
+    {user:"Middle two",items:[replyItem("gap-answer-2","Middle two done.")]},
+    {user:"Middle three",items:[replyItem("gap-answer-3","Middle three done.")]},
+    {user:"Newest request",items:[...Array.from({length:120},(_,index)=>commandItem("gap-new-"+(index+1),"newest "+(index+1))),replyItem("gap-answer-4","Newest done.")]},
+  ]);
+  try{
+    await routeRelayApp(page,harness);
+    await page.goto("/");await openThreadRow(page,"Relay gap order");
+    await expect(reply(page,"Newest done.")).toBeVisible({timeout:10_000});
+    // The hit's turn leads the list apart from the newest pages, its card holding the first 99 steps find read.
+    const [first]=harness.turns(harness.threads[0]),card=cardOf(page,first.id),summary=card.locator(".activity-card-summary");
+    await page.keyboard.press("Control+f");await page.getByTestId("thread-find-input").fill(needle);
+    await expect(page.getByTestId("thread-find-bar").locator(".thread-find-count")).toHaveText("1 / 1",{timeout:10_000});
+    const gap=page.getByTestId("history-gap");await expect(gap).toBeVisible({timeout:10_000});
+    await expect(summary).toHaveText("99 steps · some steps not loaded");
+    await page.keyboard.press("Escape");
+    // The page that joins the gap brings the turn's last steps after its first ones: every step is held and none is left to load.
+    await gap.getByRole("button").click();await expect(gap).toHaveCount(0,{timeout:10_000});
+    await expect(reply(page,"All 150 checks passed.")).toBeAttached();await expect(page.getByRole("button",{name:"Load earlier messages"})).toHaveCount(0);
+    await expect(summary).toHaveText("150 steps");
+    await expect(card).toHaveAttribute("data-state","closed");await card.locator(".activity-card-head").click();
+    await expect(card.locator(".timeline-window-controls span")).toHaveText("31–150 of 150");
+    expect(await card.locator(".tool-event summary strong").allTextContents()).toEqual(Array.from({length:120},(_,index)=>"check "+(index+31)));
   }finally{await harness.close()}
 });
 

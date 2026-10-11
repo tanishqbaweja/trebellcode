@@ -3374,7 +3374,8 @@ export default function App(){
       const holdPaging=historyPage.threadId===threadId&&!historyPage.loading;
       if(holdPaging)setHistoryPage(current=>current.threadId===threadId&&!current.loading?{...current,loading:"find"}:current);
       try{
-        // The hit's turn's card: the steps its scan read (all of them when it reached the turn's end), or the whole turn from its page.
+        // The hit's turn's card: the steps its scan read, the turn's first ones (all of them when it reached the turn's end), or the whole
+        // turn from its page.
         let found=[],scanned=[],scanEnded=false,foundTurns=null;
         if(historyPage.itemPaging){
           try{
@@ -3393,7 +3394,7 @@ export default function App(){
           setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
         }
         if(stale())return;
-        if(scanned.length&&occurrence.turnId)setTurnActivity(prev=>prev.threadId===threadId?mergeTurnActivity(prev,cardRowsFromItemEntries(scanned,{activeTurnId,turnId:occurrence.turnId}),{mode:"older",complete:scanEnded}):prev);
+        if(scanned.length&&occurrence.turnId)setTurnActivity(prev=>prev.threadId===threadId?mergeTurnActivity(prev,cardRowsFromItemEntries(scanned,{activeTurnId,turnId:occurrence.turnId}),{mode:"first",complete:scanEnded}):prev);
         if(foundTurns?.length)setTurnActivity(prev=>prev.threadId===threadId?mergeTurnActivity(prev,cardRowsFromTurns(foundTurns,{activeTurnId}),{mode:"replace",complete:true}):prev);
         if(found.length)await placeFoundHistory(threadId,occurrence,found,stale);
       }finally{

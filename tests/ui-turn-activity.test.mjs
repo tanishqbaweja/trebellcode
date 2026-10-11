@@ -72,6 +72,30 @@ test("older rows go before the rows held, known ones update where they stand, an
   assert.equal(mergeTurnActivity(merged,older,{complete:{t1:false}}),merged);
 });
 
+test("a turn find read from its start keeps its steps in order as pages read back from its end bring the steps between",()=>{
+  const steps=(from,to)=>Array.from({length:to-from+1},(_,index)=>entry("t1",command("c"+(from+index),"check "+(from+index))));
+  const range=(from,to)=>Array.from({length:to-from+1},(_,index)=>"c"+(from+index));
+  // The open page holds the turn's last steps; find reads its first ones, oldest first, up to the hit.
+  const opened=mergeTurnActivity(emptyTurnActivity("th"),cardRowsFromItemEntries(steps(205,300)),{complete:{t1:false}});
+  const found=mergeTurnActivity(opened,cardRowsFromItemEntries(steps(1,99),{turnId:"t1"}),{mode:"first",complete:false});
+  assert.deepEqual(ids(found.turns.t1.rows),[...range(1,99),...range(205,300)]);assert.equal(found.turns.t1.complete,false);
+  assert.equal(mergeTurnActivity(found,cardRowsFromItemEntries(steps(1,99),{turnId:"t1"}),{mode:"first",complete:false}),found,"the same read again changes nothing");
+  // An older page brings steps between them: after the first steps, before the last ones.
+  const middle=mergeTurnActivity(found,cardRowsFromItemEntries(steps(105,204)),{complete:{t1:false}});
+  assert.deepEqual(ids(middle.turns.t1.rows),[...range(1,99),...range(105,300)]);assert.equal(middle.turns.t1.complete,false);
+  // The next one reaches the steps find read: nothing is left between them, so the turn is whole whatever the page says of it.
+  const whole=mergeTurnActivity(middle,cardRowsFromItemEntries(steps(80,104)),{complete:{t1:false}});
+  assert.deepEqual(ids(whole.turns.t1.rows),range(1,300));assert.equal(whole.turns.t1.complete,true);
+  // A found turn holding no other steps: the page that reaches it brings its last steps, after its first ones.
+  const detached=mergeTurnActivity(emptyTurnActivity("th"),cardRowsFromItemEntries(steps(1,99),{turnId:"t1"}),{mode:"first",complete:false});
+  const joined=mergeTurnActivity(detached,cardRowsFromItemEntries(steps(80,150)),{complete:{t1:false}});
+  assert.deepEqual(ids(joined.turns.t1.rows),range(1,150));assert.equal(joined.turns.t1.complete,true);
+  // A find read that reaches the steps read back from the end leaves nothing between them either.
+  const tail=mergeTurnActivity(emptyTurnActivity("th"),cardRowsFromItemEntries(steps(50,300)),{complete:{t1:false}});
+  const reached=mergeTurnActivity(tail,cardRowsFromItemEntries(steps(1,99),{turnId:"t1"}),{mode:"first",complete:false});
+  assert.deepEqual(ids(reached.turns.t1.rows),range(1,300));assert.equal(reached.turns.t1.complete,true);
+});
+
 test("replace makes the incoming rows the turn's and sets its completeness",()=>{
   const first=mergeTurnActivity(emptyTurnActivity("th"),{t1:cardRowsFromTurns([{id:"t1",items:[command("c1","a"),command("c2","b")]}]).t1},{complete:true});
   const sealed=cardRowsFromTurns([{id:"t1",items:[command("c2","b"),command("c5","e")]}]);
