@@ -208,14 +208,17 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   function cleanupValue(project){return project.worktreeCleanup||null}
   // The Name field saves on Enter and when it is left. An emptied field gets the saved name back and says why; a name already
   // on its way is not sent twice, and once that save ends (or fails) the field can send again. Until then the name on its way
-  // is the saved one, so an emptied field (or Escape) does not bring back the name before it for leaving the field to send.
-  function savedProjectName(project,input){return input.dataset.sending||latestProject(project).name}
+  // is the saved one, so an emptied field (or Escape) does not bring back the name before it for leaving the field to send. It is
+  // kept per project, not on the field: a card that moves into its repository's group once Git answers is drawn again, field
+  // and all, and the new field starts from it.
+  const sendingNamesRef=useRef(new Map());
+  function savedProjectName(project){return sendingNamesRef.current.get(project.id)||latestProject(project).name}
   function commitProjectName(project,input){
-    const saved=savedProjectName(project,input),value=input.value.trim();
+    const saved=savedProjectName(project),value=input.value.trim();
     if(!value){input.value=saved;setNameNote(current=>({...current,[project.id]:true}));return}
     if(value===saved)return;
-    input.dataset.sending=value;
-    void saveProject(project,{name:value}).finally(()=>{if(input.dataset.sending===value)delete input.dataset.sending});
+    const sending=sendingNamesRef.current;sending.set(project.id,value);
+    void saveProject(project,{name:value}).finally(()=>{if(sending.get(project.id)===value)sending.delete(project.id)});
   }
   // Each edit starts from the newest cleanup value (including edits still saving) and shows at once, so two quick
   // clicks on a slow server both stick instead of the second save overwriting the first with stale rules.
@@ -467,12 +470,12 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
           <label>Submodules<select value={p.worktreeSubmodules||""} onChange={e=>saveProject(p,{worktreeSubmodules:e.target.value||null})}><option value="">Inherit</option><option value="recursive">Recursive</option><option value="top-level">Top level only</option><option value="none">Skip</option></select></label>
         </div>
         <div className="project-identity-toggle"><button onClick={()=>{setIdentityOpen(current=>({...current,[p.id]:!current[p.id]}));setNameNote(current=>({...current,[p.id]:false}))}} title="Project identity · name and icon" aria-expanded={Boolean(identityOpen[p.id])}><Settings2 size={13}/><span>Project identity</span></button></div>
-        {identityOpen[p.id]&&<div className="project-identity-editor"><label>Name<input defaultValue={p.name} aria-describedby={nameNote[p.id]?"project-name-note-"+p.id:undefined}
+        {identityOpen[p.id]&&<div className="project-identity-editor"><label>Name<input defaultValue={savedProjectName(p)} aria-describedby={nameNote[p.id]?"project-name-note-"+p.id:undefined}
           onChange={()=>{if(nameNote[p.id])setNameNote(current=>({...current,[p.id]:false}))}}
           onKeyDown={e=>{
             // Enter saves as leaving the field does, and Escape gives up the edit; either way the field keeps focus.
             if(e.key==="Enter"&&!e.nativeEvent.isComposing){e.preventDefault();commitProjectName(p,e.currentTarget)}
-            else if(e.key==="Escape"){e.preventDefault();e.currentTarget.value=savedProjectName(p,e.currentTarget)}
+            else if(e.key==="Escape"){e.preventDefault();e.currentTarget.value=savedProjectName(p)}
           }}
           onBlur={e=>commitProjectName(p,e.currentTarget)}/></label>{nameNote[p.id]&&<p id={"project-name-note-"+p.id} className="project-name-note" role="status">A project needs a name, so the saved one is back.</p>}<div className="project-icon-actions"><button onClick={()=>saveProject(p,{icon:null})}>Automatic</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"emoji",value:p.icon?.kind==="emoji"?p.icon.value:"🚀",color:p.icon?.color||autoColor(p.name)}}))}>Emoji</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"monogram",value:p.icon?.kind==="monogram"?p.icon.value:autoMonogram(p.name),color:p.icon?.color||autoColor(p.name)}}))}>Monogram</button><label className="project-image-button"><ImagePlus size={12}/> Image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={e=>importProjectImage(p,e.target.files?.[0])}/></label></div>{iconDraft[p.id]&&<div className="project-icon-draft"><input maxLength={iconDraft[p.id].kind==="monogram"?2:16} value={iconDraft[p.id].value} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],value:e.target.value}}))}/><input type="color" value={iconDraft[p.id].color||autoColor(p.name)} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],color:e.target.value}}))}/><button onClick={async()=>{const saved=await saveProject(p,{icon:iconDraft[p.id]});if(saved)setIconDraft(current=>({...current,[p.id]:null}))}}>Save icon</button></div>}</div>}
         <div className="project-cleanup"><label>Automatic worktree cleanup<select value={p.worktreeCleanup?.mode||"inherit"} onChange={e=>setCleanupMode(p,e.target.value)}><option value="inherit">Inherit</option><option value="off">Off</option><option value="custom">Custom</option></select></label>{p.worktreeCleanup?.mode==="custom"&&<div className="project-cleanup-rules"><label>After inactive days<input type="number" min="1" max="3650" defaultValue={p.worktreeCleanup.rules?.worktreeAfterDays??""} placeholder="Never" onBlur={e=>{const days=cleanupDays(e.target.value);e.target.value=days==null?"":String(days);setCleanupRule(p,"worktreeAfterDays",days)}}/></label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnMerge)} onChange={e=>setCleanupRule(p,"worktreeOnMerge",e.target.checked)}/> After merge</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnDelete)} onChange={e=>setCleanupRule(p,"worktreeOnDelete",e.target.checked)}/> After last thread deletion</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeUnchanged)} onChange={e=>setCleanupRule(p,"worktreeUnchanged",e.target.checked)}/> If unchanged from base</label></div>}</div>

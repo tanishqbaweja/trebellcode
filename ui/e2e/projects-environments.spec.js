@@ -509,6 +509,45 @@ test.describe("Renaming a project",()=>{
     expect(await savedName()).toBe("Second Name");
   });
 
+  // A card is drawn again, Name field and all, when Git answers and it moves into its repository's group. A name on its way when
+  // that happens is still the field's name, so Escape and leaving the field keep it.
+  test("a name on its way stays in the Name field when the card moves into its repository's group",async({page,request})=>{
+    const boot=await open(page,request);
+    const saves=[];
+    await page.route(/\/api\/projects$/,async route=>{
+      if(route.request().method()!=="POST")return route.fallback();
+      saves.push(route.request().postDataJSON()?.name);
+      await new Promise(resolve=>setTimeout(resolve,800));
+      return route.fallback();
+    });
+    let release;const held=new Promise(resolve=>{release=resolve});
+    await page.route(/\/api\/git\/info/,async route=>{await held;return json(route,{isGit:true,branch:"main",remotes:[{name:"origin",kind:"fetch",url:"https://example.com/polish/workspace.git"}]})});
+    await nav(page,"Projects").click();
+    const card=page.locator(".project-card.active"),title=card.locator(".project-open strong");
+    await expect(title).toHaveText(MAIN);
+    await card.getByRole("button",{name:/Project identity/}).click();
+    const name=card.getByRole("textbox",{name:"Name"});
+    await name.fill("Renamed While Moving");
+    await name.press("Enter");
+    const field=await name.elementHandle();
+    release();
+    await expect(page.locator(".project-group-head").filter({hasText:"https://example.com/polish/workspace.git"})).toBeVisible();
+    expect(await field.evaluate(node=>node.isConnected),"the card was drawn again").toBe(false);
+    await expect(name,"the new field while the name is on its way").toHaveValue("Renamed While Moving");
+    await card.locator(".project-identity-editor").scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+"project-name-on-its-way-redrawn-dark-1280.png"});
+    await flipMode(page,"light");
+    await page.screenshot({animations:"disabled",path:shots+"project-name-on-its-way-redrawn-light-1280.png"});
+    await flipMode(page,"dark");
+    await name.press("Escape");
+    await expect(name).toHaveValue("Renamed While Moving");
+    await expect(title).toHaveText("Renamed While Moving");
+    await name.press("Tab");
+    await page.waitForTimeout(1200);
+    expect(saves).toEqual(["Renamed While Moving"]);
+    expect((await listedProjects(request)).find(project=>project.path===boot.cwd&&!project.environmentId)?.name).toBe("Renamed While Moving");
+  });
+
   for(const mode of MODES)test(`clearing the name puts the saved name back and says why (${mode})`,async({page,request})=>{
     const boot=await open(page,request,{mode});
     await openProjects(page);
