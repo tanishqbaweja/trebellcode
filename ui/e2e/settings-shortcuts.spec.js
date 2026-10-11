@@ -217,3 +217,22 @@ test.describe("Two commands on one key",()=>{
     await expect(page.locator(".keybindings-settings").getByRole("status")).toHaveCount(3);
   });
 });
+
+test("every shortcut field says which command it is for",async({page,request})=>{
+  await open(page,request,{scripts:[{id:"dev-server",name:"Dev server",command:"npm run dev"}]});
+  await openShortcuts(page);
+  const rows=page.locator(".keybinding-row");
+  await expect(rows.last().locator("strong")).toHaveText("Run Dev server");
+  const count=await rows.count();
+  // The names a screen reader reads for each field, from the accessibility tree.
+  const tree=await page.locator(".keybindings-settings").ariaSnapshot();
+  const names=[...tree.matchAll(/^\s*- textbox "([^"]*)"/gm)].map(match=>match[1]);
+  expect(names.length).toBe(count*2);
+  const unique=new Set(names);
+  expect(unique.size,`${names.length} shortcut fields share ${unique.size} names: ${[...unique].slice(0,6).join(", ")}`).toBe(names.length);
+  await expect(page.getByRole("textbox",{name:"New thread shortcut",exact:true})).toHaveValue("Ctrl+N");
+  await expect(page.getByRole("textbox",{name:"New thread when",exact:true})).toHaveValue("!modalOpen");
+  await expect(page.getByRole("textbox",{name:"Open thread 3 shortcut",exact:true})).toHaveValue("Ctrl+3");
+  await expect(page.getByRole("textbox",{name:"Run Dev server shortcut",exact:true})).toHaveValue("");
+  await expect(page.getByRole("textbox",{name:"Run Dev server when",exact:true})).toHaveValue("projectOpen && !modalOpen");
+});

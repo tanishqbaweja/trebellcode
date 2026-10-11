@@ -63,7 +63,8 @@ function useDraftField({saved,shown=saved,check,save}){
 }
 // One command in Settings > Shortcuts. The shortcut reads as the app writes it elsewhere (Ctrl+Shift+P, or ⌘ on macOS) and in its
 // stored form (mod+shift+p) while it is edited. A problem with either field is said under the row, with what stays in use meanwhile,
-// and so is a key this command shares with another one (note).
+// and so is a key this command shares with another one (note). Each field is named for its command ("New thread shortcut",
+// "New thread when"), since the column captions alone would give every row's fields the same two names.
 function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
   const savedKey=rule?.key||"",savedWhen=rule?.when||defaultWhen;
   const key=useDraftField({saved:savedKey,shown:shortcutHint(savedKey)||savedKey,check:value=>shortcutProblem(value),save:value=>onUpdate({key:value})});
@@ -74,8 +75,8 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
   const describedBy=(problem,problemId)=>[problem&&problemId,note&&base+"-note"].filter(Boolean).join(" ")||undefined;
   return <div className="keybinding-row">
     <strong>{label}</strong>
-    <label>Shortcut<input {...key.props} placeholder="Not set" title={savedKey?(shortcutHint(savedKey)||savedKey)+" · stored as "+savedKey:undefined} aria-describedby={describedBy(keyProblem,base+"-key-problem")}/></label>
-    <label>When<input {...when.props} placeholder={defaultWhen||"Always"} title={savedWhen||undefined} aria-describedby={describedBy(whenText,base+"-when-problem")}/></label>
+    <label>Shortcut<input {...key.props} aria-label={label+" shortcut"} placeholder="Not set" title={savedKey?(shortcutHint(savedKey)||savedKey)+" · stored as "+savedKey:undefined} aria-describedby={describedBy(keyProblem,base+"-key-problem")}/></label>
+    <label>When<input {...when.props} aria-label={label+" when"} placeholder={defaultWhen||"Always"} title={savedWhen||undefined} aria-describedby={describedBy(whenText,base+"-when-problem")}/></label>
     {keyProblem&&<p className="keybinding-note" id={base+"-key-problem"} role="alert">{keyProblem}</p>}
     {whenText&&<p className="keybinding-note" id={base+"-when-problem"} role="alert">{whenText}</p>}
     {note&&<p className={"keybinding-note "+note.kind} id={base+"-note"} role="status">{note.text}</p>}
