@@ -515,7 +515,9 @@
 :root:root .context-panel .worktree-row>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 11.5px/1.2 var(--mono);color:var(--ac)!important}
 :root:root .context-panel .worktree-row code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:400 11px/1.2 var(--mono);color:var(--tx3)!important}
 /* Worktrees often sit side by side under one long parent folder, so a path leads with the part that tells it apart (its folder)
-   and the parent follows, muted, ending in an ellipsis where the row runs out. The text stays "parent/folder" in document order.
+   and the parent follows, muted, ending in an ellipsis where the row runs out. The folder is drawn before its parent and the
+   separator is hidden, so the page copies the path from its text ("parent/folder", in document order) instead of from what is
+   drawn (copyAsWritten in SourceControlPanel.jsx).
    The parent asks for only 4.5em (or its own width if less) to share the line and then grows up to its full width: line breaking
    uses that request, so a parent with no room for a few characters wraps onto the hidden second line instead of leaving a stray
    letter, and a long parent that does get room is cut there instead of wrapping away whole. */
@@ -523,6 +525,17 @@
 :root:root .context-panel .worktree-row .worktree-name{order:-1;flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;color:var(--tx1)}
 :root:root .context-panel .worktree-row .worktree-dir{flex:1 1 4.5em;min-width:0;max-width:max-content;overflow:hidden;text-overflow:ellipsis}
 :root:root .context-panel .worktree-row .worktree-sep{display:none}
+/* A folder or branch name that starts like a sibling's ("trebell-feature-inspector-review-panels" beside "…-polish") comes in two
+   parts (distinctTextParts): a name too long for its room is cut at its end as usual while that leaves the part where it differs in
+   view (--keep characters of the tail), and past that the start it shares is cut instead, so a narrow row reads
+   "trebell-feat…panels" and never like its sibling. The cut start keeps two characters: an ellipsis never replaces the first one. */
+:root:root .context-panel .worktree-row :is(.worktree-branch,.worktree-name){display:flex;min-width:0}
+:root:root .context-panel .worktree-row :is(.worktree-lead,.worktree-tail){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:root:root .context-panel .worktree-row .worktree-lead{flex:none;min-width:2ch;max-width:calc(100% - var(--keep,0)*1ch)}
+:root:root .context-panel .worktree-row .worktree-tail{flex:0 1 auto;min-width:0}
+/* A path or branch is selected whole: a drag across a path drawn folder first would otherwise select the end of the parent, and a
+   triple-click only the part of a name it lands on. Copying it gives the text as written. */
+:root:root .context-panel .worktree-row :is(.worktree-branch,code){user-select:all}
 :root:root .context-panel .worktree-row>button{height:26px;min-height:26px}
 :root:root .context-panel .sc-card>h4+.worktree-row{border-top:0!important}
 :root:root .context-panel .sc-card>button{margin-top:10px}

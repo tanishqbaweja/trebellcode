@@ -87,7 +87,8 @@ function treeLabel(entry,searching){
   return depth===(entry.depth||0)?entry.name:relative;
 }
 // A changed file shows its name first and its folder after it, muted, so a narrow list cuts the folder rather than the name
-// ("src/new-fe…" before). The text stays "dir/name" in document order (the separator is only hidden) for search and copy.
+// ("src/new-fe…" before). The separator is only hidden, so the row's text is still the path ("dir/name"), and its button names the
+// whole path for screen readers.
 // An untracked folder ("name/") is named like a file instead of showing as a folder hint with no name.
 function ChangedFilePath({path}){
   const {dir,sep,name}=splitPath(path);

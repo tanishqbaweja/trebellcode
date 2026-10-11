@@ -186,7 +186,9 @@ test("the Git panel lines its loading and clean text up with its rows, ends a lo
   await request.post("/api/projects",{data:{path:boot.cwd,name:"Source control layout"}});
 
   const branch="feature/inspector-review/keep-the-current-branch-readable-when-it-is-long",parent="C:/Users/developer/AppData/Local/Trebell/devspace/worktrees/";
-  const worktrees=[{path:boot.cwd,branch},{path:parent+"Trebell-0c178972",branch:"trebell/thread-0c178972"},{path:parent+"Trebell-0d63a1b4",branch:"trebell/thread-0d63a1b4-review-the-inspector-panels"},{path:parent+"docs",branch:"docs"}];
+  // The last two follow the common <repo>-<branch> layout: folder and branch names that differ only at their end.
+  const worktrees=[{path:boot.cwd,branch},{path:parent+"Trebell-0c178972",branch:"trebell/thread-0c178972"},{path:parent+"Trebell-0d63a1b4",branch:"trebell/thread-0d63a1b4-review-the-inspector-panels"},{path:parent+"docs",branch:"docs"},
+    {path:parent+"trebell-feature-inspector-review-panels",branch:"feature/inspector-review-panels"},{path:parent+"trebell-feature-inspector-review-polish",branch:"feature/inspector-review-polish"}];
   let status=[],releaseInfo;const infoHeld=new Promise(resolve=>{releaseInfo=resolve});
   const info=()=>({isGit:true,root:boot.cwd,branch,branches:["main",branch],upstream:"origin/"+branch,status,worktrees,remotes:[{name:"origin",url:"https://example.test/repo.git"}]});
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
@@ -237,28 +239,92 @@ test("the Git panel lines its loading and clean text up with its rows, ends a lo
   expect(fit.text).toBeGreaterThan(fit.room);
   expect(fit.textOverflow).toBe("ellipsis");
 
-  // Worktrees share one long parent folder: each row leads with its own folder, whole, and its tooltip is the full path. The
-  // parent follows on the same line only where it fits or has room for a few characters before its ellipsis.
+  // Worktrees share one long parent folder: each row leads with its own folder and its tooltip is the full path. The parent follows
+  // on the same line only where it fits or has room for a few characters before its ellipsis.
   const rows=right.locator(".worktree-row");
   await expect(rows).toHaveCount(worktrees.length);
   for(const [index,worktree] of worktrees.entries())await expect(rows.nth(index)).toHaveAttribute("title",worktree.path);
-  await expect(rows.locator(".worktree-name")).toHaveText([/./,"Trebell-0c178972","Trebell-0d63a1b4","docs"]);
+  await expect(rows.locator(".worktree-name")).toHaveText([/./,"Trebell-0c178972","Trebell-0d63a1b4","docs","trebell-feature-inspector-review-panels","trebell-feature-inspector-review-polish"]);
+  // The text a reader sees in an element: the characters drawn inside every clipping box, with "…" where an ellipsis cuts a part.
+  const drawn=locator=>locator.evaluate(element=>{
+    const canvas=document.createElement("canvas").getContext("2d"),row=element.closest(".worktree-row");let text="";
+    const walker=document.createTreeWalker(element,NodeFilter.SHOW_TEXT);
+    for(let node=walker.nextNode();node;node=walker.nextNode()){
+      const parent=node.parentElement,style=getComputedStyle(parent);if(style.display==="none")continue;
+      let clip=parent.getBoundingClientRect();
+      for(let box=parent.parentElement;box&&box!==row.parentElement;box=box.parentElement)if(getComputedStyle(box).overflowX!=="visible"){const rect=box.getBoundingClientRect();clip={left:Math.max(clip.left,rect.left),right:Math.min(clip.right,rect.right)}}
+      const cut=parent.scrollWidth>parent.clientWidth;canvas.font=style.font;
+      const end=cut?parent.getBoundingClientRect().right-canvas.measureText("…").width:clip.right;let shown="";
+      for(let index=0;index<node.length;index++){const range=document.createRange();range.setStart(node,index);range.setEnd(node,index+1);const rect=range.getBoundingClientRect();if(rect.left>=clip.left-0.5&&rect.right<=Math.min(clip.right,end)+0.5)shown+=node.data[index]}
+      // An ellipsis never replaces the first character of a line: a box with no room for both shows that character, clipped.
+      text+=cut&&!shown?node.data.slice(0,1):shown+(cut?"…":"");
+    }
+    return text;
+  });
+  // The text a drawn one can stand for: its pieces in order, with at least one character left out where an ellipsis stands.
+  const readAs=shown=>new RegExp("^"+shown.split("…").map(piece=>piece.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join(".+")+"$");
   const placement=()=>rows.locator("code").evaluateAll(nodes=>nodes.map(node=>{
     const name=node.querySelector(".worktree-name"),dir=node.querySelector(".worktree-dir"),box=node.getBoundingClientRect(),own=name.getBoundingClientRect(),rest=dir.getBoundingClientRect();
     const shown=rest.width>0&&rest.top<box.bottom-1,room=parseFloat(getComputedStyle(dir).fontSize)*4.5;
-    return {whole:name.scrollWidth<=name.clientWidth&&own.right<=box.right+1,first:own.left<=rest.left,parent:!shown?"hidden":dir.scrollWidth>dir.clientWidth?"cut":"whole",
+    return {inside:own.right<=box.right+1,first:own.left<=rest.left,parent:!shown?"hidden":dir.scrollWidth>dir.clientWidth?"cut":"whole",
       fits:!shown||(rest.right<=box.right+1&&rest.width>=Math.min(room,dir.scrollWidth)-1)};
   }));
   const checkPlacement=async()=>{
     const placed=await placement();
-    expect(placed.map(({whole,first,fits})=>({whole,first,fits}))).toEqual(worktrees.map(()=>({whole:true,first:true,fits:true})));
+    expect(placed.map(({inside,first,fits})=>({inside,first,fits}))).toEqual(worktrees.map(()=>({inside:true,first:true,fits:true})));
     expect(placed[3].parent).toBe("cut");
+    // Short folders show whole. Folder and branch names too long for the row keep the end where they differ from their sibling in
+    // view, after an ellipsis that stands for the start they share, so the two rows never read alike.
+    for(const index of [1,2,3])expect(await drawn(rows.nth(index).locator(".worktree-name"))).toBe(worktrees[index].path.split("/").pop());
+    const names=[await drawn(rows.nth(4).locator(".worktree-name")),await drawn(rows.nth(5).locator(".worktree-name"))];
+    expect(names[0]).toMatch(/^trebell-.+…panels$/);expect(names[1]).toMatch(/^trebell-.+…polish$/);
+    const branches=[await drawn(rows.nth(4).locator(":scope > span")),await drawn(rows.nth(5).locator(":scope > span"))];
+    expect(branches[0]).toMatch(/^feature\/.+…panels$/);expect(branches[1]).toMatch(/^feature\/.+…polish$/);
+    // Every folder and branch reads as itself, from its own start: a cut start shows its ellipsis and never runs into the end it
+    // keeps ("f" + "review/…" would read "freview/…"). A start with room beside the part that differs is not cut at all.
+    for(const [index,worktree] of worktrees.entries()){
+      expect(worktree.path.split(/[\\/]/).pop()).toMatch(readAs(await drawn(rows.nth(index).locator(".worktree-name"))));
+      expect(worktree.branch).toMatch(readAs(await drawn(rows.nth(index).locator(":scope > span"))));
+    }
+    expect(await drawn(rows.nth(2).locator(":scope > span"))).toMatch(/^trebell\/thread-0d63a1b4.*…$/);
   };
   await checkPlacement();
+  // A cut branch names itself in full in its tooltip, as the row does with its path.
+  await expect(rows.nth(4).locator(":scope > span")).toHaveAttribute("title","feature/inspector-review-panels");
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-layout-dark-1280x800.png",fullPage:true});
+  const worktreeShot=async path=>{const first=await rows.first().boundingBox(),last=await rows.last().boundingBox();await page.screenshot({animations:"disabled",path,clip:{x:first.x-8,y:first.y-8,width:first.width+16,height:last.y+last.height-first.y+16}})};
+  await rows.last().scrollIntoViewIfNeeded();
+  await worktreeShot(auditDir+"source-control-worktrees-dark-1280x800.png");
+
+  // Copying a path or a branch from its row gives it as written, on one line, separators included, although the folder is drawn
+  // before its parent and a cut name is in two parts.
+  await page.context().grantPermissions(["clipboard-read","clipboard-write"]);
+  const copied=async locator=>{
+    await locator.evaluate(node=>{const selection=getSelection();selection.removeAllRanges();selection.selectAllChildren(node)});
+    await page.keyboard.press("Control+C");
+    return page.evaluate(()=>navigator.clipboard.readText());
+  };
+  expect(await copied(rows.nth(1).locator("code"))).toBe(worktrees[1].path);
+  expect(await copied(rows.nth(5).locator("code"))).toBe(worktrees[5].path);
+  expect(await copied(rows.nth(4).locator(":scope > span"))).toBe("feature/inspector-review-panels");
+  // The same by hand: a drag across the drawn path (folder first, so its end is the parent's), a triple-click on a cut folder name
+  // and a double-click on a cut branch each select the whole path or branch and copy it as written.
+  const copy=async()=>{await page.keyboard.press("Control+C");return page.evaluate(()=>navigator.clipboard.readText())};
+  for(const [index,backwards] of [[1,false],[2,true]]){
+    const box=await rows.nth(index).locator("code").boundingBox(),y=box.y+box.height/2,[from,to]=backwards?[box.x+box.width-1,box.x+1]:[box.x+1,box.x+box.width-1];
+    await page.mouse.move(from,y);await page.mouse.down();await page.mouse.move(to,y,{steps:6});await page.mouse.up();
+    expect(await copy()).toBe(worktrees[index].path);
+  }
+  await rows.nth(4).locator(".worktree-name").click({clickCount:3});
+  expect(await copy()).toBe(worktrees[4].path);
+  await rows.nth(5).locator(":scope > span").click({clickCount:2});
+  expect(await copy()).toBe(worktrees[5].branch);
+  await page.evaluate(()=>getSelection().removeAllRanges());
+
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   await checkPlacement();
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-layout-light-1280x800.png",fullPage:true});
+  await worktreeShot(auditDir+"source-control-worktrees-light-1280x800.png");
 });
 
 test("Generate failures name the text that could not be written, unless the writer already did",async({page,request})=>{

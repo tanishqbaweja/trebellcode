@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, Eye, EyeOff, Pencil, ShieldCheck, Layers3 } from "lucide-react";
 import { api } from "../api.js";
-import { actionError, actionErrorUnlessNamed, distinctPathParts, gitStatusBadge, gitStatusPath } from "../inspector-labels.js";
+import { actionError, actionErrorUnlessNamed, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusPath } from "../inspector-labels.js";
 import { SOURCE_CONTROL_PAGE_SIZE, sourceControlWindow } from "../source-control-window.js";
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
 import { createGitTextRequests, sourceControlContext, sourceControlContextCurrent, sourceControlErrorAfterContextChange } from "../source-control-context.js";
@@ -12,6 +12,25 @@ import { askText } from "./RightPanel.jsx";
 // with "Could not restore archived thread: …", "Could not load linked thread: …" or "Linked thread was not found."; anything else
 // gets the action first.
 const NAMES_GIT_TEXT=/\bGit text\b/i,NAMES_LINKED_THREAD=/\b(?:linked|archived) thread\b/i;
+// A worktree folder or branch that starts like a sibling's, in two parts: the shared start gives way to an ellipsis before the part
+// that tells it apart does (`keep` characters of it; see distinctTextParts and inspector.css).
+function DistinctText({lead,tail,keep}){return <>{lead&&<span className="worktree-lead" style={{"--keep":String(keep)}}>{lead}</span>}<span className="worktree-tail">{tail}</span></>}
+// A worktree's path and branch are drawn in parts (the folder even before its parent), which the browser would copy onto separate
+// lines without the hidden separator. Each is selected whole (inspector.css), and a selection of nothing but a row's branch and/or
+// path copies them as written. The browser may start that selection at the end of the text before the path, so the row listens.
+// A selection holding more (the Open button, other rows) is left to the browser.
+function copyAsWritten(event){
+  const selection=window.getSelection(),range=selection?.rangeCount?selection.getRangeAt(0):null;
+  if(!range||range.collapsed)return;
+  const parts=[...event.currentTarget.querySelectorAll(".worktree-branch,code")].map(part=>{
+    const inside=document.createRange();inside.selectNodeContents(part);
+    if(range.compareBoundaryPoints(Range.START_TO_START,inside)>0)inside.setStart(range.startContainer,range.startOffset);
+    if(range.compareBoundaryPoints(Range.END_TO_END,inside)<0)inside.setEnd(range.endContainer,range.endOffset);
+    return inside.toString();
+  }).filter(Boolean);
+  if(!parts.length||parts.join("")!==range.toString())return;
+  event.clipboardData.setData("text/plain",parts.join(" "));event.preventDefault();
+}
 
 export default function SourceControlPanel({projectPath,environmentId=null,remote=false,environmentName="Local machine",model,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="native",agentRuntimeInstanceId=null,agentRuntimeLabel="",threadId=null,sourceControlSettings={},onProjectChange,onAttachPr,onLinkPr,onLinkPrUrl,onOpenLinkedThread,onSelectedPrChange,onLinkedPullRequestsChanged,linkedPullRequests=[]}){
   const [info,setInfo]=useState(null);
@@ -328,8 +347,13 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const statusWindow=useMemo(()=>sourceControlWindow(info?.status||[],{limit:statusLimit,keyOf:item=>item?.path}),[info?.status,statusLimit]);
   const prWindow=useMemo(()=>sourceControlWindow(prs,{limit:prLimit,activeKey:selectedPr?.number,keyOf:item=>item?.number}),[prs,prLimit,selectedPr?.number]);
   const fileWindow=useMemo(()=>sourceControlWindow(selectedPr?.files||[],{limit:fileLimit,keyOf:item=>item?.path}),[selectedPr?.files,fileLimit]);
-  // Worktrees often share one long parent folder, so each row leads with the part of its path that tells it apart.
-  const worktreePaths=useMemo(()=>distinctPathParts((info?.worktrees||[]).map(w=>w.path)),[info?.worktrees]);
+  // Worktrees often share one long parent folder, so each row leads with the part of its path that tells it apart, and folder and
+  // branch names that start alike ("<repo>-<branch>" folders) keep the end where they differ in view.
+  const worktreeRows=useMemo(()=>{
+    const worktrees=info?.worktrees||[],paths=distinctPathParts(worktrees.map(w=>w.path));
+    const names=distinctTextParts(paths.map(path=>path.name)),branches=distinctTextParts(worktrees.map(w=>w.branch||"detached"));
+    return worktrees.map((worktree,index)=>({worktree,path:paths[index],name:names[index],branch:branches[index]}));
+  },[info?.worktrees]);
   // Commit and PR text comes from the active harness; only Trebell Native calls the model provider directly.
   const textGeneratorLabel=agentRuntime&&agentRuntime!=="native"?(agentRuntimeLabel||agentRuntime):modelProviderLabel(provider);
 
@@ -350,7 +374,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       </section>
       <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?info.root||"—":"—"}</code></p><p>Upstream: <code>{info?info.upstream||"none":"—"}</code></p><p>Git: {diagnostics?.git?.version||(diagnosticsLoading?"checking…":"not found")}</p><label className="source-provider-field"><span>Code host</span><select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});refresh(e.target.value,{reportErrors:true})}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?diagnostics?.providers?.[sourceProvider]?.label||sourceProvider:"Detected: "+(diagnostics?.detectedProvider||"unknown")} · {sourceProvider?(diagnostics?.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics?.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):"choose a provider if auto-detection is ambiguous"}</p>
         {!info?.remotes?.some(remote=>remote.name==="origin")&&sourceProvider&&diagnostics?.capabilities?.[sourceProvider]?.publish&&<button onClick={publishRepository} disabled={!!busy||!diagnostics?.providers?.[sourceProvider]?.authenticated}><Upload size={13}/> Publish repository</button>}
-        {info&&<h4>Worktrees</h4>}{(info?.worktrees||[]).map((w,index)=><div className="worktree-row" key={w.path} title={w.path}><span>{w.branch||"detached"}</span><code><bdi className="worktree-dir">{worktreePaths[index]?.dir}</bdi><span className="worktree-sep">{worktreePaths[index]?.sep}</span><bdi className="worktree-name">{worktreePaths[index]?.name}</bdi></code>{w.path!==info?.root&&<button onClick={()=>openProjectPath(w.path)} disabled={busy==="open-project"}>Open</button>}</div>)}
+        {info&&<h4>Worktrees</h4>}{worktreeRows.map(({worktree:w,path,name,branch})=><div className="worktree-row" key={w.path} title={w.path} onCopy={copyAsWritten}><span className="worktree-branch" title={w.branch||undefined}><DistinctText {...branch}/></span><code><bdi className="worktree-dir">{path.dir}</bdi><span className="worktree-sep">{path.sep}</span><bdi className="worktree-name"><DistinctText {...name}/></bdi></code>{w.path!==info?.root&&<button onClick={()=>openProjectPath(w.path)} disabled={busy==="open-project"}>Open</button>}</div>)}
         {(remote||window.trebellDesktop?.pickDirectory)&&<button onClick={addWorktree} disabled={!!busy}><Plus size={13}/> Add worktree</button>}
       </section>
     </div>

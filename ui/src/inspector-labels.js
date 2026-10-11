@@ -85,3 +85,30 @@ export function distinctPathParts(paths=[]){
     return splitPath(path,count);
   });
 }
+
+// Where each text parts from the others that start like it: "trebell-feature-inspector-review-panels" and "…-polish" part at
+// "panels" and "polish". `lead` is the start it shares and `tail` the rest. The tail begins at the start of the word where the texts
+// part when that is close by (8 characters), so it reads "panels" rather than "anels"; a text that starts another one ("repo" beside
+// "repo-2") keeps its last word, and a text that shares no start (or is the same as another) is all tail.
+// `keep` is how many characters of room the tail needs for the difference to show: through the character that differs and 6 more,
+// with one for the ellipsis after them, or the whole tail when that is as short. A narrow row cuts the lead before the tail gets less.
+const WORD_CHARACTER=/[\p{L}\p{N}\p{M}]/u;
+export function distinctTextParts(texts=[]){
+  const list=(Array.isArray(texts)?texts:[]).map(text=>String(text??""));
+  return list.map(text=>{
+    let shared=0;
+    for(const other of list){
+      if(other===text)continue;
+      let length=0;while(length<text.length&&text[length]===other[length])length++;
+      shared=Math.max(shared,length);
+    }
+    let start=Math.min(shared,Math.max(0,text.length-1)),word=start;
+    while(word>0&&WORD_CHARACTER.test(text[word-1]))word--;
+    if(start-word<=8)start=word;
+    // Never between the two halves of a surrogate pair, and never a lead of one character, which a cut could only clip.
+    if(start>0&&/[\uDC00-\uDFFF]/.test(text[start]))start--;
+    if(start<2)start=0;
+    const tail=text.slice(start);
+    return {lead:text.slice(0,start),tail,keep:Math.min(tail.length,Math.max(0,shared-start)+8)};
+  });
+}

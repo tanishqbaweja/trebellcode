@@ -1,6 +1,32 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionError, actionErrorUnlessNamed, distinctPathParts, gitStatusBadge, gitStatusEntry, gitStatusPath, splitPath } from "../ui/src/inspector-labels.js";
+import { actionError, actionErrorUnlessNamed, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusEntry, gitStatusPath, splitPath } from "../ui/src/inspector-labels.js";
+
+test("sibling names keep the part where they differ apart from the start they share",()=>{
+  // Folders named <repo>-<branch>, and their branches, differ only at the end. A short end is kept whole.
+  assert.deepEqual(distinctTextParts(["trebell-feature-inspector-review-panels","trebell-feature-inspector-review-polish","Trebell"]),
+    [{lead:"trebell-feature-inspector-review-",tail:"panels",keep:6},{lead:"trebell-feature-inspector-review-",tail:"polish",keep:6},{lead:"",tail:"Trebell",keep:7}]);
+  assert.deepEqual(distinctTextParts(["feature/inspector-review-panels","feature/inspector-review-polish","main","detached","detached"]).map(part=>part.tail),["panels","polish","main","detached","detached"]);
+  assert.deepEqual(distinctTextParts(["Trebell-0c178972","Trebell-0d6387c0"]),[{lead:"Trebell-",tail:"0c178972",keep:8},{lead:"Trebell-",tail:"0d6387c0",keep:8}]);
+  // A long end keeps room for the character that differs, 6 after it and the ellipsis: a hash ("0d63a1b4…"), or "review/keep-t…"
+  // where the branch goes on with "/" instead of its sibling's "-".
+  assert.deepEqual(distinctTextParts(["trebell/thread-0c178972","trebell/thread-0d63a1b4-review-the-inspector-panels"])[1],{lead:"trebell/thread-",tail:"0d63a1b4-review-the-inspector-panels",keep:9});
+  assert.deepEqual(distinctTextParts(["feature/inspector-review/keep-the-current-branch","feature/inspector-review-panels"])[0],{lead:"feature/inspector-",tail:"review/keep-the-current-branch",keep:14});
+  // A long word where they part is split at the letter that differs, so the tail starts with the difference.
+  assert.deepEqual(distinctTextParts(["build-artifactsnapshot20261011a","build-artifactsnapshot20261011b"]).map(part=>part.tail),["a","b"]);
+  // A name that starts another keeps its last word; one that shares nothing, or only one character, is all tail.
+  assert.deepEqual(distinctTextParts(["feature-review","feature-review-polish"]),[{lead:"feature-",tail:"review",keep:6},{lead:"feature-",tail:"review-polish",keep:13}]);
+  assert.deepEqual(distinctTextParts(["alpha","beta"]),[{lead:"",tail:"alpha",keep:5},{lead:"",tail:"beta",keep:4}]);
+  assert.deepEqual(distinctTextParts(["-x","-y"]).map(part=>part.lead),["",""]);
+  // Letters outside ASCII are word characters, and a surrogate pair is never split.
+  assert.deepEqual(distinctTextParts(["projet-équipe-café","projet-équipe-thé"]).map(part=>part.tail),["café","thé"]);
+  for(const part of distinctTextParts(["notes-😀a","notes-😁a"]))assert.doesNotMatch(part.tail,/^[\uDC00-\uDFFF]/);
+  // Nothing is lost: lead and tail are the text again, and the tail is never asked for more room than it takes.
+  for(const texts of [["a/b/c","a/b/d"],["",""],["x"],["same","same"],["repo","repo-2"]])for(const [index,part] of distinctTextParts(texts).entries()){
+    assert.equal(part.lead+part.tail,texts[index]);assert.ok(part.keep<=part.tail.length);
+  }
+  assert.deepEqual(distinctTextParts(),[]);
+});
 
 test("a reason that already names what failed is not prefixed a second time",()=>{
   const gitText=/\bGit text\b/i;
