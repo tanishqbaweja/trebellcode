@@ -610,17 +610,30 @@
 :root:root .licenses-page .licenses-toolbar>span{font-family:var(--mono);font-size:11px!important;color:var(--tx3)!important;white-space:nowrap;font-variant-numeric:tabular-nums}
 :root:root .licenses-page .licenses-layout{display:grid;grid-template-columns:minmax(280px,38%) minmax(0,1fr);gap:14px;height:min(680px,calc(100vh - 250px));min-height:380px}
 :root:root .licenses-page :is(.licenses-list,.license-detail){min-width:0;min-height:0;border:1px solid var(--line)!important;border-radius:var(--r-l)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important;color:var(--tx1)!important}
-:root:root .licenses-page .licenses-list{overflow:auto;padding:6px}
-:root:root .licenses-page .licenses-list>button{width:100%;min-height:52px;display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;text-align:left;padding:8px 10px!important;border:0!important;border-radius:var(--r-s)!important;background:transparent!important;color:var(--tx1)!important;cursor:pointer;transition:background-color .12s}
+:root:root .licenses-page .licenses-list{overflow:auto;padding:6px;container:licenses-list/inline-size}
+/* A package row: its icon, then the full name (wrapping when long) over the version · license line, with the dependency tag
+   at the end of that line, or under it when the line is full. Nothing is cut, even with the Browser panel open. A list wide
+   enough for a name and the tag side by side (the one-column layout) puts the tag at the row's right, as in the design. */
+:root:root .licenses-page .licenses-list>button{width:100%;min-height:52px;display:grid;grid-template-columns:28px minmax(0,1fr);column-gap:10px;align-items:center;text-align:left;padding:8px 10px!important;border:0!important;border-radius:var(--r-s)!important;background:transparent!important;color:var(--tx1)!important;cursor:pointer;transition:background-color .12s}
 :root:root .licenses-page .licenses-list>button+button{margin-top:2px}
+:root:root .licenses-page .licenses-list>button:focus-visible{outline-offset:-2px}
 :root:root .licenses-page .licenses-list>button:hover{background:var(--bg2)!important}
 :root:root .licenses-page .licenses-list>button.active{background:var(--acsoft)!important;color:var(--tx0)!important;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ac) 30%,transparent)}
 :root:root .licenses-page .licenses-list>button>svg{box-sizing:content-box;width:13px;height:13px;padding:7px;border-radius:8px;background:var(--bg3);color:var(--tx2)}
 :root:root .licenses-page .licenses-list>button.active>svg{background:color-mix(in srgb,var(--ac) 18%,transparent);color:var(--ac)}
-:root:root .licenses-page .licenses-list>button>span{min-width:0}
-:root:root .licenses-page .licenses-list strong{display:block;font-size:12.5px!important;font-weight:600;color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-:root:root .licenses-page .licenses-list small{display:block;margin-top:2px;font-family:var(--mono);font-size:11px!important;color:var(--tx3)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-:root:root .licenses-page .licenses-list em{color:var(--tx3)!important;font-size:10.5px!important;font-style:normal;white-space:nowrap}
+:root:root .licenses-page .licenses-list .license-row-text{display:block;min-width:0}
+:root:root .licenses-page .licenses-list strong{display:block;font-size:12.5px!important;font-weight:600;line-height:1.4;color:var(--tx0)!important;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+:root:root .licenses-page .licenses-list .license-row-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:1px 10px;margin-top:2px}
+:root:root .licenses-page .licenses-list small{display:block;min-width:0;font-family:var(--mono);font-size:11px!important;line-height:1.45;color:var(--tx3)!important;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+:root:root .licenses-page .licenses-list em{margin-left:auto;color:var(--tx3)!important;font-size:10.5px!important;font-style:normal;white-space:nowrap}
+@container licenses-list (min-width:520px){
+  :root:root .licenses-page .licenses-list>button{grid-template-columns:28px minmax(0,1fr) auto;grid-template-areas:"icon name tag" "icon meta tag";row-gap:2px}
+  :root:root .licenses-page .licenses-list>button>svg{grid-area:icon}
+  :root:root .licenses-page .licenses-list :is(.license-row-text,.license-row-meta){display:contents}
+  :root:root .licenses-page .licenses-list>button strong{grid-area:name;align-self:end}
+  :root:root .licenses-page .licenses-list>button small{grid-area:meta;align-self:start}
+  :root:root .licenses-page .licenses-list>button em{grid-area:tag;margin-left:0}
+}
 :root:root .licenses-page .license-list-empty{display:grid;justify-items:center;gap:6px;padding:40px 16px;text-align:center;color:var(--tx3)}
 :root:root .licenses-page .license-list-empty>svg{margin-bottom:4px;opacity:.55}
 :root:root .licenses-page .license-list-empty strong{white-space:normal;font-size:13px!important}

@@ -181,4 +181,65 @@ for(const mode of MODES){
     await expect(pane).not.toContainText("Select a package");
     await page.screenshot({animations:"disabled",path:shots+`notice-failed-${mode}-1280.png`});
   });
+
+  test(`package names read in full however narrow the list is (${mode})`,async({page,request})=>{
+    test.setTimeout(60_000);
+    await open(page,request,{mode});
+    await openLicenses(page);
+    await expect(rows(page).nth(20)).toBeVisible();
+    const total=await rows(page).count();
+    // Every row of the real list: name, version line and tag each shown whole, inside the row, and not on top of each other.
+    const audit=()=>page.locator(".licenses-list").evaluate(list=>{
+      const out=[];
+      if(list.scrollWidth>list.clientWidth+1)out.push(`the list scrolls sideways (${list.scrollWidth} > ${list.clientWidth})`);
+      const box=el=>el.getBoundingClientRect();
+      const overlap=(a,b)=>{const x=box(a),y=box(b);return x.left<y.right-.5&&y.left<x.right-.5&&x.top<y.bottom-.5&&y.top<x.bottom-.5};
+      let tallest=0;
+      for(const row of list.querySelectorAll(":scope>button")){
+        const r=box(row);tallest=Math.max(tallest,r.height);
+        const parts=[row.querySelector("strong"),row.querySelector("small"),row.querySelector("em")];
+        for(const el of parts){
+          if(el.clientWidth&&el.scrollWidth>el.clientWidth+1)out.push(`cut "${el.textContent}" (${el.scrollWidth}px in ${el.clientWidth}px)`);
+          const b=box(el);
+          if(b.left<r.left-.5||b.right>r.right+.5||b.top<r.top-.5||b.bottom>r.bottom+.5)out.push(`"${el.textContent}" runs outside its row`);
+        }
+        if(overlap(parts[0],parts[2])||overlap(parts[1],parts[2])||overlap(parts[0],parts[1]))out.push(`"${parts[0].textContent}" overlaps its own tag or version line`);
+      }
+      if(tallest>120)out.push(`a row is ${Math.round(tallest)}px tall`);
+      return [...new Set(out)].slice(0,12);
+    });
+    const listWidth=()=>page.locator(".licenses-list").evaluate(node=>Math.round(node.getBoundingClientRect().width));
+    const found={};
+    found["1280"]=await audit();
+    console.log(`LICENSE-ROWS ${mode} 1280 list=${await listWidth()}px rows=${total}`);
+    await page.screenshot({animations:"disabled",path:shots+`names-${mode}-1280.png`});
+    // Keyboard focus on a row is a whole ring, also just above the open (highlighted) row.
+    await rows(page).nth(2).click();
+    await page.keyboard.press("Shift+Tab");
+    await expect(rows(page).nth(1)).toBeFocused();
+    await page.locator(".licenses-list").screenshot({animations:"disabled",path:shots+`names-row-focus-${mode}-1280.png`});
+    await page.setViewportSize({width:900,height:800});
+    found["900"]=await audit();
+    expect.soft(await sideways(page),"page scrolls sideways at 900").toBe(false);
+    console.log(`LICENSE-ROWS ${mode} 900 list=${await listWidth()}px`);
+    await page.screenshot({animations:"disabled",path:shots+`names-${mode}-900.png`});
+    // With the Browser panel open the list is narrowest (1600) or stacked over the pane (1280).
+    await page.setViewportSize({width:1600,height:980});
+    await nav(page,"Browser").click();
+    await expect(page.getByTestId("right-panel")).toBeVisible();
+    await openLicenses(page);
+    await expect(page.getByTestId("right-panel")).toBeVisible();
+    await expect(rows(page).nth(20)).toBeVisible();
+    found["1600-panel"]=await audit();
+    console.log(`LICENSE-ROWS ${mode} 1600+panel list=${await listWidth()}px`);
+    await page.screenshot({animations:"disabled",path:shots+`names-${mode}-1600-browser-panel.png`});
+    await page.setViewportSize({width:1280,height:800});
+    found["1280-panel"]=await audit();
+    console.log(`LICENSE-ROWS ${mode} 1280+panel list=${await listWidth()}px`);
+    expect.soft(await sideways(page),"page scrolls sideways at 1280 with the panel").toBe(false);
+    await page.screenshot({animations:"disabled",path:shots+`names-${mode}-1280-browser-panel.png`});
+    const close=page.getByRole("button",{name:"Close right panel"});
+    if(await close.count())await close.click();
+    for(const [size,issues] of Object.entries(found))expect.soft(issues,`${mode} ${size}`).toEqual([]);
+  });
 }
