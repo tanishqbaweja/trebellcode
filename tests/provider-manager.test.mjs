@@ -387,6 +387,8 @@ test("a refused key check never shows a masked key or raw JSON, and says so when
     fastapi:()=>new Response(JSON.stringify({detail:[{loc:["header","authorization"],msg:"Invalid key",type:"value_error"}]}),{status:401}),
     network:()=>{throw new TypeError("fetch failed",{cause:Object.assign(new Error("getaddrinfo ENOTFOUND vyceai.com"),{code:"ENOTFOUND"})})},
     timeout:()=>{throw new DOMException("The operation was aborted due to timeout","TimeoutError")},
+    // A provider that sends its headers in time and then stalls the list: fetch's time limit fires while the body is read.
+    stalled:()=>new Response(new ReadableStream({pull:controller=>controller.error(new DOMException("The operation was aborted due to timeout","TimeoutError"))})),
   };
   const messages={};
   for(const [name,answer] of Object.entries(answers)){
@@ -404,6 +406,7 @@ test("a refused key check never shows a masked key or raw JSON, and says so when
     fastapi:"HTTP 401: Invalid key. The key was not saved.",
     network:"Could not reach VyceAi: getaddrinfo ENOTFOUND vyceai.com. The key was not saved.",
     timeout:"VyceAi did not answer within 12 seconds. The key was not saved.",
+    stalled:"VyceAi did not answer within 12 seconds. The key was not saved.",
   });
 });
 

@@ -706,7 +706,7 @@ export class ProviderManager {
     }
 
     const key = this.key(provider.id);
-    let response;
+    let response, raw;
     try {
       response = await this.fetchFn(provider.baseUrl + "/models", {
         headers: provider.id === "agentrouter"
@@ -723,10 +723,11 @@ export class ProviderManager {
               },
         signal: AbortSignal.timeout(12_000),
       });
+      // The time limit covers the list too: a provider that sends its headers and then stalls the body has not answered.
+      raw = await response.text();
     } catch (error) {
       throw providerUnreachable(provider, error, 12_000);
     }
-    const raw = await response.text();
     if (!response.ok) {
       const message=providerErrorMessage(raw,{environment:this.env,secret:key});
       throw Object.assign(new Error(`${provider.name} model list failed with HTTP ${response.status}${message?": "+message:""}`),{status:response.status,providerMessage:message});
