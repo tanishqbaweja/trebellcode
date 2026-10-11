@@ -505,3 +505,33 @@ test("a turn Codex starts on its own leaves the previous turn's failure and diff
     await auditCards(page,"own-turn-rows",live.locator(".activity-card-head"));
   }finally{await harness.close()}
 });
+
+test("a new task's first turn keeps its own card once the person sends a follow-up",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await startRelayHarness({replies:[
+    {toolCalls:[writeFileCall("task-write-1","notes.txt","first\n")]},
+    {text:"First turn answer."},
+    {toolCalls:[runCall("task-run-2","console.log('second-check')")]},
+    {text:"Second turn answer."},
+  ]});
+  try{
+    await routeRelayApp(page,harness);
+    await page.goto("/");
+    // No thread is open: the first send creates the task's thread.
+    const composer=page.getByTestId("composer");await expect(composer).toBeVisible({timeout:10_000});
+    await composer.fill("First request: write the notes");await page.getByTestId("send").click();
+    await expect(reply(page,"First turn answer.")).toBeVisible({timeout:20_000});
+    await expect(liveCard(page).locator(".tool-event").filter({hasText:"notes.txt"})).toHaveCount(1);
+    const first=await liveCard(page).getAttribute("data-turn-id");expect(first).toBeTruthy();
+    await composer.fill("Second request: check");await page.getByTestId("send").click();
+    await expect(reply(page,"Second turn answer.")).toBeVisible({timeout:20_000});
+    // Turn 1's step is its own closed card between its message and its reply, as in a thread opened from the sidebar, and the
+    // live block lists turn 2 alone.
+    const past=cardOf(page,first);
+    await expect(past).toHaveAttribute("data-state","closed");await expect(past.locator(".activity-card-summary")).toHaveText("1 step");
+    await expect(page.locator(`[data-testid=activity-card][data-turn-id="${first}"]`)).toHaveCount(1);
+    expect(await inDocumentOrder(page,userRow(page,"First request"),past,reply(page,"First turn answer."))).toBe(true);
+    await expect(page.locator(".agent-block .tool-event").filter({hasText:"notes.txt"})).toHaveCount(0);
+    await auditCards(page,"new-task-card",past);
+  }finally{await harness.close()}
+});
