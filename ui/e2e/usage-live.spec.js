@@ -121,11 +121,13 @@ async function startUsageFixture(control){
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   return {wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",async close(){relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}};
 }
-// Opens the Usage page on Codex, answering /api/usage with `usage(route)`.
-async function openUsage(page,wsUrl,usage){
+// Opens the Usage page on Codex (or on `runtime`), answering /api/usage with `usage(route)` and, when given, the subscription
+// limits read with `runtimeUsage(route)`.
+async function openUsage(page,wsUrl,usage,{runtime="codex",runtimeUsage=null}={}){
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
-  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd:process.cwd(),platform:"win32",version:"usage-fixture",activeEnvironmentId:null,activeEnvironment:null}));
-  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{}}));
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:runtime,agentRuntimeReady:true,appServerReady:true,wsUrl,cwd:process.cwd(),platform:"win32",version:"usage-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{}}));
+  if(runtimeUsage)await page.route(/\/api\/agent-runtime-usage(?:\?.*)?$/,runtimeUsage);
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
   await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
@@ -194,6 +196,21 @@ test("Usage says a period or account limit is empty only once that answer has lo
     await expect(codexCard).toContainText("This inference route did not return Codex account limits.");
     await expect(page.locator(".usage-page>.inline-error")).toHaveCount(0);
     await page.screenshot({animations:"disabled",path:auditDir+"usage-loaded-empty-1280x800.png",fullPage:false});
+
+    // A refresh of that empty period then fails: its claims and zero totals spoke for the answer that is no longer the latest, so
+    // none stays beside the alert. The Codex card's limits read fails too, and it drops its no-limits claim the same way.
+    usageMode="fail";control.rateLimits="fail";
+    await page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true}).click();
+    await expect(page.locator(".usage-page>.inline-error")).toHaveText("Could not load usage: Deliberate usage load failure");
+    await expect(page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true})).toBeEnabled();
+    await expectNoClaims();
+    await expect(usagePage.getByText(/^Loading /)).toHaveCount(0);
+    await expect(codexCard).not.toContainText("did not return Codex account limits");
+    await expect(codexCard.getByText("Unavailable Codex account data",{exact:true})).toBeVisible();
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-refresh-failed-after-empty-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-refresh-failed-after-empty-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
   }finally{for(const route of held.splice(0))await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(emptyUsage)}).catch(()=>{});await fixture.close()}
 });
 
@@ -251,4 +268,64 @@ test("Usage failures name the action before the reason, and only once",async({pa
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
     await page.screenshot({animations:"disabled",path:auditDir+"usage-action-failures-light-1280x800.png",fullPage:false});
   }finally{await fixture.close()}
+});
+
+test("Subscription limits say they are loading, name a failed read, and claim nothing beside it",async({page})=>{
+  test.setTimeout(40_000);
+  const fixture=await startUsageFixture({rateLimits:"none"});
+  let limits="hold";const held=[];
+  const answers={
+    empty:{runtime:"claude",account:{email:"claude@example.com"},windows:[]},
+    unsupported:{runtime:"claude",windows:[],unavailable:{reason:"unsupported"}},
+    windows:{runtime:"claude",account:{email:"claude@example.com"},windows:[{id:"five-hour",label:"5-hour window",kind:"session",usedPercent:42,resetsAt:new Date(Date.now()+3_600_000).toISOString()}]},
+  };
+  const reply=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openUsage(page,fixture.wsUrl,route=>reply(route,emptyUsage),{runtime:"claude",runtimeUsage:route=>{
+      if(limits==="hold")return held.push(route);
+      if(limits==="fail")return reply(route,{error:"Deliberate subscription limits failure"},400);
+      return reply(route,answers[limits]);
+    }});
+    const card=page.getByTestId("runtime-account-usage"),warning=card.locator(".usage-warning"),refresh=page.locator(".usage-toolbar .usage-refresh");
+    const claims=["Nothing is metered for this account in the current period yet.","This runtime/account does not expose subscription limits to Trebell."];
+    const expectNoClaims=async()=>{for(const claim of claims)await expect(card.getByText(claim,{exact:true}),claim).toHaveCount(0)};
+    const refreshAndWait=async()=>{await refresh.click();await expect(refresh).toHaveText("Refresh")};
+    const failure="Could not load subscription limits: Deliberate subscription limits failure";
+    // The first read is in flight: the card says it is loading and claims nothing.
+    await expect.poll(()=>held.length).toBe(1);
+    await expect(card).toContainText("Claude Code subscription limits");
+    await expect(card.getByText("Loading live subscription limits…",{exact:true})).toBeVisible();
+    await expectNoClaims();await expect(warning).toHaveCount(0);
+    // It fails: the warning names the read before the reason, with no claim or loading line beside it.
+    limits="fail";for(const route of held.splice(0))await reply(route,{error:"Deliberate subscription limits failure"},400);
+    await expect(warning).toHaveText(failure);
+    await expect(card.getByText(/^Loading /)).toHaveCount(0);
+    await expectNoClaims();
+    // A refresh that reads an account with nothing metered yet says so, and the warning goes.
+    limits="empty";await refreshAndWait();
+    await expect(card.getByText(claims[0],{exact:true})).toBeVisible();await expect(warning).toHaveCount(0);
+    await expect(card).toContainText("claude@example.com");
+    // A refresh after that answer fails: the warning shows, and the claim made for the earlier answer does not stay beside it.
+    limits="fail";await refreshAndWait();
+    await expect(warning).toHaveText(failure);
+    await expectNoClaims();
+    await card.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-subscription-limits-failed-after-loaded-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-subscription-limits-failed-after-loaded-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // A runtime that does not expose limits says so once it answers, and not beside a later failure either.
+    limits="unsupported";await refreshAndWait();
+    await expect(card.getByText(claims[1],{exact:true})).toBeVisible();await expect(warning).toHaveCount(0);
+    limits="fail";await refreshAndWait();
+    await expect(warning).toHaveText(failure);await expectNoClaims();
+    // Metered windows are the last answer, not a claim of absence: they stay on screen beside a later failure.
+    limits="windows";await refreshAndWait();
+    await expect(card.locator(".codex-limit-card")).toContainText("5-hour window");await expect(card).toContainText("42% used");await expect(warning).toHaveCount(0);
+    limits="fail";await refreshAndWait();
+    await expect(warning).toHaveText(failure);
+    await expect(card.locator(".codex-limit-card")).toContainText("42% used");
+    await expectNoClaims();
+  }finally{for(const route of held.splice(0))await reply(route,answers.empty).catch(()=>{});await fixture.close()}
 });

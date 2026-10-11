@@ -18,7 +18,8 @@ const SUBSCRIPTION_RUNTIMES=["claude","opencode","cursor","grok"];
 
 export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected",activeThread=null,agentRuntime="codex"}){
   // Each read starts out loading, as it runs when the page opens: nothing claims a period or an account is empty before it answers.
-  // `shownQuery` is the period and environments of the usage on screen (null until one loads).
+  // `shownQuery` is the period and environments the latest usage read answered: null until one loads, and again once a read
+  // fails, so a failed refresh leaves no empty-period claim or zero total beside its alert (rows it kept still show).
   const [days,setDays]=useState(30);const [data,setData]=useState({records:[],total:{},models:{},runtimes:{},daily:{}});const [loading,setLoading]=useState(true);const [error,setError]=useState("");
   const [shownQuery,setShownQuery]=useState(null);const usageRequest=useRef(0);
   const [clearing,setClearing]=useState(false);
@@ -69,7 +70,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       for(const id of selectedEnvironments)params.append("environmentId",id);
       const next=await api("/api/usage?"+params.toString());
       if(request===usageRequest.current){setData(next);setShownQuery(query)}
-    }catch(err){if(request===usageRequest.current)setError(failureText("Could not load usage",err))}
+    }catch(err){if(request===usageRequest.current){setError(failureText("Could not load usage",err));setShownQuery(null)}}
     finally{if(request===usageRequest.current)setLoading(false)}
   }
   async function refreshRuntimeUsage(){
@@ -201,10 +202,11 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     </section>}
     {showLiveRuntime&&<section className="capability-card codex-account-usage" data-testid="runtime-account-usage">
       <div className="capability-card-head"><span><Sparkles size={15}/><strong>{runtimeLabel(agentRuntime)} subscription limits</strong></span><em>{activeEnvironmentName} · {runtimeUsage.data?.account?.email?runtimeUsage.data.account.email+" · ":""}live</em></div>
+      {/* Windows already read stay beside a failed refresh; a claim that there are none, or none exposed, does not. */}
       {runtimeUsage.data?.windows?.length>0?<div className="codex-limit-grid">{runtimeUsage.data.windows.map(window=>{
         const used=Math.max(0,Math.min(100,Number(window.usedPercent)||0));const remaining=Math.max(0,100-used);
         return <div className="codex-limit-card" key={window.id}><div><strong>{window.label}</strong><span>{window.kind}</span></div><div className={"limit-window"+meterTone(remaining)}><span>Usage</span><i><b style={{width:`${Math.max(2,used)}%`}}/></i><strong>{used.toFixed(used%1?1:0)}% used</strong><small>{remaining.toFixed(remaining%1?1:0)}% left{window.resetsAt?` · resets ${new Date(window.resetsAt).toLocaleString()}`:""}</small></div></div>;
-      })}</div>:runtimeUsage.loading?<p aria-busy="true">Loading live subscription limits…</p>:runtimeUsage.data&&<p>{runtimeUsage.data.unavailable?.message||(!runtimeUsage.data.unavailable&&!runtimeUsage.data.error?"Nothing is metered for this account in the current period yet.":"This runtime/account does not expose subscription limits to Trebell.")}</p>}
+      })}</div>:runtimeUsage.loading?<p aria-busy="true">Loading live subscription limits…</p>:runtimeUsage.data&&!runtimeUsage.error&&<p>{runtimeUsage.data.unavailable?.message||(!runtimeUsage.data.unavailable&&!runtimeUsage.data.error?"Nothing is metered for this account in the current period yet.":"This runtime/account does not expose subscription limits to Trebell.")}</p>}
       {runtimeUsage.error&&<div className="usage-warning"><CircleAlert size={14}/><span>{runtimeUsage.error}</span></div>}
     </section>}
     <div className="usage-summary">
