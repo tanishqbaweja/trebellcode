@@ -23,9 +23,12 @@ function rememberCardOpen(key,open){
 // and returns what settles the scroll once the card has its new size.
 const TurnActivityCard=memo(function TurnActivityCard({threadId,turnId,rows,live=false,defaultOpen=false,complete=true,onToggleLayout=null,onInspectChanges=null,commandOutputs=null,mcpProgress=null}){
   const key=turnInfoKey(threadId,turnId),bodyId="activity-steps-"+useId().replace(/[^A-Za-z0-9_-]/g,"");
+  // choice: the person's last click here; one made while the card had no turn (a send waiting for its turn to start) becomes that
+  // turn's once it starts.
   const [choice,setChoice]=useState(null),[windowEnd,setWindowEnd]=useState(null),headRef=useRef(null),settleRef=useRef(null);
-  const steps=Array.isArray(rows)?rows:[],open=key&&openCards.has(key)?openCards.get(key):choice?.key===key?choice.open:Boolean(defaultOpen);
+  const steps=Array.isArray(rows)?rows:[],open=key&&openCards.has(key)?openCards.get(key):choice&&(choice.key===key||!choice.key)?choice.open:Boolean(defaultOpen);
   const summary=useMemo(()=>activitySummary(steps,{complete:live||complete}),[steps,live,complete]);
+  useEffect(()=>{if(key&&choice&&!choice.key){rememberCardOpen(key,choice.open);setChoice({key,open:choice.open})}},[key,choice]);
   useEffect(()=>{
     if(windowEnd==null)return;
     if(!steps.length){setWindowEnd(null);return}

@@ -775,8 +775,8 @@ export default function App(){
   // threadTurnStates: the turn starts and ends this window saw per thread (the sidebar's running dot).
   const [threadListError,setThreadListError]=useState(""); const [threadListLoaded,setThreadListLoaded]=useState(false); const [threadTurnStates,setThreadTurnStates]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
-  // The turn the live activity card shows: the running turn, and once it ends the last one (the card stays until the next turn).
-  // Layout effects, so the rows are ordered for the new turn before it paints.
+  // The turn the live activity card shows: the running turn, and once it ends the last one (the card stays until the next send,
+  // which leaves it to no turn until its own starts). Layout effects, so the rows are ordered for the new turn before it paints.
   const [cardTurnId,setCardTurnId]=useState(null);
   useLayoutEffect(()=>{setCardTurnId(activeTurnId||null)},[activeThread?.id]);
   useLayoutEffect(()=>{if(activeTurnId)setCardTurnId(activeTurnId)},[activeTurnId]);
@@ -3716,7 +3716,8 @@ export default function App(){
     const autoCompaction=thread?await maybeAutoCompactBeforeTurn(thread):{attempted:false,compacted:false,decision:null,error:null};
     // A thread the send creates keeps its turns' cards from its first turn on, as an opened thread does.
     if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});activeThreadRef.current=thread;setActiveThread(thread);setTurnActivity(emptyTurnActivity(thread.id));setThreads(prev=>prependThread(prev,thread));setProjectPath(cwd)}
-    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,{id:clientId,role:"user",text}])}setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
+    // The live card leaves the last turn here: until the new turn starts it lists only this send's notices, under no turn's name.
+    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,{id:clientId,role:"user",text}])}setCardTurnId(null);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
     try{
       let checkpoint=null;
       if(!projectlessMode){

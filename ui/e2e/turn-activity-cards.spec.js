@@ -90,6 +90,29 @@ function codexReply(turn,{emit,threadId},text){const answer={id:"agent-"+turn.id
 const long=label=>Array.from({length:16},(_,index)=>`${label} note ${index+1}: the change is in place and its check passed.`).join("\n\n");
 // A Native step that runs for ms before it prints "slow-done", with room to spare under its time limit.
 const slowRunCall=(id,ms)=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:process.execPath,args:["-e",`setTimeout(()=>console.log('slow-done'),${ms})`],cwd:".",timeout_ms:30_000})});
+// Holds the page's turn/start requests back by window.__holdTurnStartMs, as a harness slow to start a turn does.
+async function holdTurnStart(page){
+  await page.addInitScript(()=>{
+    const send=WebSocket.prototype.send;window.__holdTurnStartMs=0;
+    WebSocket.prototype.send=function(data){
+      const hold=window.__holdTurnStartMs;
+      if(hold&&typeof data==="string"&&data.includes('"method":"turn/start"')){setTimeout(()=>send.call(this,data),hold);return}
+      return send.call(this,data);
+    };
+  });
+}
+// Records in every frame, once a user row with text shows, which turn the live card names and whether it is open.
+const watchLiveCard=(page,text)=>page.evaluate(sent=>{
+  window.__liveFrames=[];window.__watching=true;
+  const tick=()=>{
+    if(!window.__watching)return;
+    const card=document.querySelector(".agent-block [data-testid=activity-card]");
+    if(card&&[...document.querySelectorAll(".user-row")].some(node=>node.textContent.includes(sent)))window.__liveFrames.push({turn:card.dataset.turnId||"",state:card.dataset.state});
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+},text);
+const liveCardFrames=page=>page.evaluate(()=>{window.__watching=false;return window.__liveFrames});
 
 test("a relay turn's steps move to a closed card of their own when the next turn starts, toggle in place and return after a reload",async({page})=>{
   test.setTimeout(150_000);
@@ -624,5 +647,69 @@ test("a Codex thread opened while its turn runs shows the running step running o
     await expect(page.locator("[data-testid=activity-card] .tool-event").filter({hasText:"npm run build"})).toHaveCount(1);
     await expect(cardOf(page,"codex-turn-2")).toHaveCount(0);await expect(cardOf(page,"codex-turn-1")).toHaveAttribute("data-state","closed");
     await auditCards(page,"reopened-running",live);
+  }finally{await harness.close()}
+});
+
+test("a person who closed a finished turn's card sends again: the new live card is open in every frame and never takes that turn's id",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await startRelayHarness({replies:[
+    {toolCalls:[writeFileCall("closed-write-1","notes.txt","first\n")]},
+    {text:"First turn answer."},
+    {toolCalls:[runCall("closed-run-2","console.log('second-check')")]},
+    {text:"Second turn answer."},
+  ]});
+  const thread=harness.seedThread("Relay closed card");
+  try{
+    await holdTurnStart(page);await routeRelayApp(page,harness);
+    await page.goto("/");await openThreadRow(page,"Relay closed card");
+    const composer=page.getByTestId("composer");
+    await composer.fill("First request");await page.getByTestId("send").click();
+    await expect(reply(page,"First turn answer.")).toBeVisible({timeout:20_000});
+    const [first]=harness.turns(thread);
+    // The person closes the finished turn's card and sends again; the next turn takes a moment to start.
+    await liveCard(page).locator(".activity-card-head").click();await expect(liveCard(page)).toHaveAttribute("data-state","closed");
+    await page.evaluate(()=>{window.__holdTurnStartMs=2500});
+    await watchLiveCard(page,"Second request");
+    await composer.fill("Second request");await page.getByTestId("send").click();
+    // Until its turn starts, the send's live card lists the send's notice under no turn's name, open.
+    await expect(liveCard(page)).toHaveAttribute("data-state","open");await expect(liveCard(page)).not.toHaveAttribute("data-turn-id",/./);
+    await auditCards(page,"send-waiting",liveCard(page),{sizes:[[1280,800]]});
+    await expect(reply(page,"Second turn answer.")).toBeVisible({timeout:20_000});await frames(page,3);
+    const seen=await liveCardFrames(page);
+    // The person never closed this card: it is open in every frame from the send on, and never named for turn 1, whose own card
+    // is on the page by then.
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.filter(frame=>frame.state!=="open")).toEqual([]);
+    expect(seen.filter(frame=>frame.turn===first.id)).toEqual([]);
+    await expect(page.locator(`[data-testid=activity-card][data-turn-id="${first.id}"]`)).toHaveCount(1);
+  }finally{await harness.close()}
+});
+
+test("a person who closes the live card while its turn is still starting keeps it closed once the turn starts",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await startRelayHarness({replies:[
+    {toolCalls:[writeFileCall("early-write-1","notes.txt","first\n")]},
+    {text:"First turn answer."},
+    {toolCalls:[runCall("early-run-2","console.log('second-check')")]},
+    {text:"Second turn answer."},
+  ]});
+  const thread=harness.seedThread("Relay early close");
+  try{
+    await holdTurnStart(page);await routeRelayApp(page,harness);
+    await page.goto("/");await openThreadRow(page,"Relay early close");
+    const composer=page.getByTestId("composer");
+    await composer.fill("First request");await page.getByTestId("send").click();
+    await expect(reply(page,"First turn answer.")).toBeVisible({timeout:20_000});
+    await page.evaluate(()=>{window.__holdTurnStartMs=1500});
+    await composer.fill("Second request");await page.getByTestId("send").click();
+    // The send's live card shows before its turn has started; the person closes it.
+    await expect(liveCard(page)).toHaveAttribute("data-state","open");await expect(liveCard(page)).not.toHaveAttribute("data-turn-id",/./);
+    await liveCard(page).locator(".activity-card-head").click();await expect(liveCard(page)).toHaveAttribute("data-state","closed");
+    // The choice is the new turn's: the card stays closed once the turn starts and ends, and turn 1's card keeps its own.
+    await expect(reply(page,"Second turn answer.")).toBeVisible({timeout:20_000});await frames(page,4);
+    const [first,second]=harness.turns(thread);
+    await expect(liveCard(page)).toHaveAttribute("data-turn-id",second.id);await expect(liveCard(page)).toHaveAttribute("data-state","closed");
+    await expect(cardOf(page,first.id)).toHaveAttribute("data-state","closed");await expect(cardOf(page,first.id).locator(".activity-card-summary")).toHaveText("1 step");
+    await auditCards(page,"live-card-closed",liveCard(page));
   }finally{await harness.close()}
 });
