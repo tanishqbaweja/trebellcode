@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
 import { NATIVE_REPLY_STREAM } from "../src/native-agent-session.mjs";
 import { ProviderManager } from "../src/provider-manager.mjs";
@@ -30,17 +31,21 @@ const DRAFTS_WIRING={
   turnOptions:request=>nativeStreamOptions("openai",request[NATIVE_REPLY_STREAM]),
 };
 
+// Only the scenario's own async work is counted and sees the held clock, so other tests sharing the process (test:fast runs every
+// file in one) add nothing to the record.
+const scenario=new AsyncLocalStorage(),inScenario=()=>scenario.getStore()===true;
+
 async function observe(name,{drafts=false}={}){
   const wiring=drafts?DRAFTS_WIRING:{},timers=[],webSocketShutSeconds=[],events=[],updates=[],held=performance.now(),turn=ProviderManager.prototype.turn;
-  const realSetTimeout=globalThis.setTimeout,realSetInterval=globalThis.setInterval,realSignalTimeout=AbortSignal.timeout;
-  const note=(api,ms)=>{const last=timers.at(-1);if(last&&last[0]===api&&last[1]===ms)last[2]++;else timers.push([api,ms,1])};
+  const realSetTimeout=globalThis.setTimeout,realSetInterval=globalThis.setInterval,realSignalTimeout=AbortSignal.timeout,realNow=performance.now;
+  const note=(api,ms)=>{if(!inScenario())return;const last=timers.at(-1);if(last&&last[0]===api&&last[1]===ms)last[2]++;else timers.push([api,ms,1])};
   globalThis.setTimeout=function(callback,ms,...rest){note("setTimeout",ms);return realSetTimeout.call(this,callback,ms,...rest)};
   globalThis.setInterval=function(callback,ms,...rest){note("setInterval",ms);return realSetInterval.call(this,callback,ms,...rest)};
   AbortSignal.timeout=function(ms){note("AbortSignal.timeout",ms);return realSignalTimeout.call(this,ms)};
-  Object.defineProperty(performance,"now",{configurable:true,writable:true,value:()=>held});
-  ProviderManager.prototype.turn=function(...args){return turn.apply(this,args).catch(error=>{webSocketShutSeconds.push(Math.ceil(Math.max(0,Number(this.openAiResponsesWebSocketDisabledUntil||0)-this.nowFn())/1000));throw error})};
+  Object.defineProperty(performance,"now",{configurable:true,writable:true,value:()=>inScenario()?held:realNow.call(performance)});
+  ProviderManager.prototype.turn=function(...args){const result=turn.apply(this,args);return inScenario()?result.catch(error=>{webSocketShutSeconds.push(Math.ceil(Math.max(0,Number(this.openAiResponsesWebSocketDisabledUntil||0)-this.nowFn())/1000));throw error}):result};
   let record;
-  try{record=await runBenchmarkPathScenario(name,{...wiring,sessionOptions:{...wiring.sessionOptions,onEvent:event=>events.push(JSON.parse(JSON.stringify(event))),onUpdate:update=>updates.push(JSON.parse(JSON.stringify(update)))}})}
+  try{record=await scenario.run(true,()=>runBenchmarkPathScenario(name,{...wiring,sessionOptions:{...wiring.sessionOptions,onEvent:event=>events.push(JSON.parse(JSON.stringify(event))),onUpdate:update=>updates.push(JSON.parse(JSON.stringify(update)))}}))}
   finally{globalThis.setTimeout=realSetTimeout;globalThis.setInterval=realSetInterval;AbortSignal.timeout=realSignalTimeout;delete performance.now;ProviderManager.prototype.turn=turn}
   // The raw events and updates replaced the harness's own recorders; its record is rebuilt from them the way it records them.
   record.events=events.map(stripTiming);record.updates=updates.map(stripTiming);
@@ -81,10 +86,17 @@ for(const name of Object.keys(BENCHMARK_PATH_SCENARIOS)){
   });
 }
 
+// Timer work another test left running in the same process is not counted.
+test("the timing pin counts only the scenario's own timers",async()=>{
+  const noise=setInterval(()=>{setTimeout(()=>{},1).unref()},1);
+  try{const observed=await observe("websocket_server_error_then_https");assert.deepEqual(observed.timers,EXPECTED.websocket_server_error_then_https.timers)}
+  finally{clearInterval(noise)}
+});
+
 // The case the golden record missed: a provider whose request timeout is halved for every turn.
 test("the timing pin notices a halved provider request timeout on the runner's path",async()=>{
   const turn=ProviderManager.prototype.turn;
-  ProviderManager.prototype.turn=function(...args){this.requestTimeoutMs=150_000;return turn.apply(this,args)};
+  ProviderManager.prototype.turn=function(...args){if(inScenario())this.requestTimeoutMs=150_000;return turn.apply(this,args)};
   try{
     for(const name of ["websocket_tool_then_answer","sse_tool_then_answer"]){
       const observed=await observe(name);
