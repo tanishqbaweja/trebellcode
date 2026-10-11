@@ -25,6 +25,9 @@ const PROVIDER_NOTES={
 let appliedSettingsEntryNonce=null;
 // The last harness snapshot this window saw: Agents & models renders it at once on later visits while a fresh probe runs.
 let lastAgentRuntimeInfo=null;
+// The section open when Settings was last left: coming back (from the sidebar, Ctrl+, or Back to Settings) opens it again.
+// It lives as long as the window, so a fresh start opens General.
+let lastSettingsSection="general";
 // A shortcut or condition being typed is a draft. It is saved when the field is left or Enter is pressed, and only once it can work,
 // so a half-typed "Ctrl+" or "threadOpen &&" never replaces the one in use. A draft that cannot work stays in the field, marked
 // invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited.
@@ -85,7 +88,8 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
 const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity"];
 
 export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
-  const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||"general");
+  const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||lastSettingsSection);
+  useEffect(()=>{lastSettingsSection=settingsSection},[settingsSection]);
   const [settingsSearch,setSettingsSearch]=useState("");
   const [workspaceScope,setWorkspaceScope]=useState({environmentId:settings.activeEnvironmentId||"local",projectId:""});
   const [workspaceScopeCatalog,setWorkspaceScopeCatalog]=useState({environmentData:{profiles:[]},projects:[]});

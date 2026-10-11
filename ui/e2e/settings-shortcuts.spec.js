@@ -236,3 +236,37 @@ test("every shortcut field says which command it is for",async({page,request})=>
   await expect(page.getByRole("textbox",{name:"Run Dev server shortcut",exact:true})).toHaveValue("");
   await expect(page.getByRole("textbox",{name:"Run Dev server when",exact:true})).toHaveValue("projectOpen && !modalOpen");
 });
+
+for(const mode of MODES)test(`coming back to Settings opens the section that was open (${mode})`,async({page,request})=>{
+  await open(page,request,{mode});
+  await nav(page,"Settings").click();
+  await expect(page.getByRole("heading",{name:"General",level:2})).toBeVisible();
+  await section(page,"Workspace").click();
+  await expect(page.getByRole("heading",{name:"Workspace",level:2})).toBeVisible();
+  await nav(page,"Usage").click();
+  await expect(page.getByRole("heading",{name:"Usage"})).toBeVisible();
+  await nav(page,"Settings").click();
+  await expect(page.getByRole("heading",{name:"Workspace",level:2}),"Settings reopened on another section").toBeVisible();
+  await expect(section(page,"Workspace")).toHaveAttribute("aria-current","page");
+  await expect(page.locator(".page-crumb em")).toHaveText("Workspace");
+  await page.screenshot({animations:"disabled",path:shots+`settings-reopened-workspace-${mode}-1280.png`});
+  // The Settings shortcut comes back to it too.
+  await section(page,"Shortcuts").click();
+  await expect(page.getByRole("heading",{name:"Keyboard shortcuts"})).toBeVisible();
+  await nav(page,"Projects").click();
+  await expect(page.getByRole("heading",{name:"Projects"}).first()).toBeVisible();
+  await page.keyboard.press("Control+Comma");
+  await expect(page.getByRole("heading",{name:"Shortcuts",level:2})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Keyboard shortcuts"})).toBeVisible();
+  // Licenses opens from General, and Back to Settings returns there.
+  await section(page,"General").click();
+  await page.getByRole("button",{name:"View licenses"}).click();
+  await page.getByRole("link",{name:"Back to Settings"}).click();
+  await expect(page.getByRole("heading",{name:"General",level:2})).toBeVisible();
+  // A fresh start opens General.
+  await section(page,"Appearance").click();
+  await page.reload();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await nav(page,"Settings").click();
+  await expect(page.getByRole("heading",{name:"General",level:2})).toBeVisible();
+});
