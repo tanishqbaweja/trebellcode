@@ -270,3 +270,59 @@ for(const mode of MODES)test(`coming back to Settings opens the section that was
   await nav(page,"Settings").click();
   await expect(page.getByRole("heading",{name:"General",level:2})).toBeVisible();
 });
+
+test.describe("Appearance choices",()=>{
+  for(const mode of MODES)test(`the Mode and Theme buttons say which one is chosen (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    await nav(page,"Settings").click();
+    await section(page,"Appearance").click();
+    const modes=page.getByRole("group",{name:"Mode"}),themes=page.getByRole("group",{name:"Theme"});
+    await expect(modes.getByRole("button",{pressed:true})).toHaveText([mode]);
+    await expect(modes.getByRole("button",{pressed:false})).toHaveCount(2);
+    await expect(themes.getByRole("button",{pressed:true})).toHaveText(["Trebell"]);
+    await expect(themes.getByRole("button",{pressed:false})).toHaveCount(2);
+    const other=mode==="dark"?"light":"dark";
+    await modes.getByRole("button",{name:other,exact:true}).click();
+    await themes.getByRole("button",{name:"Midnight",exact:true}).click();
+    await expect(modes.getByRole("button",{pressed:true})).toHaveText([other]);
+    await expect(themes.getByRole("button",{pressed:true})).toHaveText(["Midnight"]);
+    await expect.poll(async()=>(await saved(request)).appearance).toBe("midnight");
+    // A custom theme is one of the choices once it is saved and applied.
+    await page.getByRole("button",{name:"Create theme"}).click();
+    await page.locator(".theme-editor").getByRole("textbox",{name:"Name"}).fill("Harbor");
+    await page.getByRole("button",{name:"Save & apply"}).click();
+    await expect(themes.getByRole("button",{pressed:true})).toHaveText(["Harbor"]);
+    await expect(themes.getByRole("button",{name:"Midnight",exact:true})).toHaveAttribute("aria-pressed","false");
+    await page.getByRole("button",{name:"Close editor"}).click();
+    await modes.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+`appearance-chosen-${other}-1280.png`});
+    // The choice is still shown after a reload.
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await nav(page,"Settings").click();
+    await section(page,"Appearance").click();
+    await expect(modes.getByRole("button",{pressed:true})).toHaveText([other]);
+    await expect(themes.getByRole("button",{pressed:true})).toHaveText(["Harbor"]);
+  });
+
+  for(const mode of MODES)test(`following a published theme marks it chosen and the built-in themes as not in use (${mode})`,async({page,request})=>{
+    const catalog={environmentKey:"local",environmentName:"Local machine",directory:"themes",themes:[{id:"fixture-published",name:"Fixture published theme",appearance:"dark",canvas:"#11131a",accent:"#8f6bd8"}]};
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,catalog));
+    await open(page,request,{mode});
+    await nav(page,"Settings").click();
+    await section(page,"Appearance").click();
+    const themes=page.getByRole("group",{name:"Theme"});
+    const published=page.getByRole("button",{name:"Fixture published theme",exact:true});
+    await expect(published).toHaveAttribute("aria-pressed","false");
+    await published.click();
+    await expect(published).toHaveAttribute("aria-pressed","true");
+    await expect(themes.getByRole("button",{pressed:true})).toHaveCount(0);
+    await expect(themes.locator("button.active")).toHaveCount(0);
+    // The user's own theme stays outlined, as the one "Use my normal theme" goes back to.
+    await expect(themes.getByRole("button",{name:"Trebell",exact:true})).toHaveClass(/underneath/);
+    await page.screenshot({animations:"disabled",path:shots+`appearance-published-theme-${mode}-1280.png`});
+    await page.getByRole("button",{name:"Use my normal theme"}).click();
+    await expect(published).toHaveAttribute("aria-pressed","false");
+    await expect(themes.getByRole("button",{pressed:true})).toHaveText(["Trebell"]);
+  });
+});

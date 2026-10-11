@@ -225,8 +225,8 @@
 :root:root .settings-page.redesigned-settings .settings-card .appearance-options button:hover:not(:disabled){background:transparent!important;color:var(--tx0)!important}
 :root:root .settings-page.redesigned-settings .settings-card .appearance-options button.active{background:var(--bg4)!important;color:var(--tx0)!important;box-shadow:var(--shseg),inset 0 0 0 1px var(--line2)}
 :root:root[data-mode="light"] .settings-page.redesigned-settings .settings-card .appearance-options button.active{background:var(--bg1)!important}
-/* Following a published environment theme: the built-in choices are shown as not in effect (legacy behavior). */
-:root:root[data-environment-theme="true"] .settings-page.redesigned-settings .theme-settings>.settings-field[aria-label="Theme"] .appearance-options button.active{background:transparent!important;box-shadow:inset 0 0 0 1px var(--line2);color:var(--tx2)!important}
+/* Following a published environment theme: the user's own theme is not in effect, so it is only outlined, as the one they go back to. */
+:root:root .settings-page.redesigned-settings .theme-settings>.settings-field[aria-label="Theme"] .appearance-options button.underneath{background:transparent!important;box-shadow:inset 0 0 0 1px var(--line2);color:var(--tx2)!important}
 :root:root .settings-page.redesigned-settings .environment-theme-settings .appearance-options button.active{color:var(--ac)!important}
 
 /* Panel animation slider: "Panel animations   N ms" over the track */
