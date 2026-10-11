@@ -695,7 +695,8 @@ const sessionId="fixture-session";
 function send(message){process.stdout.write(JSON.stringify(message)+"\n")}
 function handle(m){
   if(!m.method||m.id==null)return;
-  // Like Grok Build, the fixture resumes a conversation with session/resume (a restart resumes it, never a silent new session).
+  // Like Grok Build, the fixture resumes a conversation with session/resume: a restart resumes it, and one the harness lost
+  // goes on in a fresh session the turn shows, never a silent one.
   if(m.method==="initialize")return send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"fixture",version:"1"},agentCapabilities:{loadSession:false,sessionCapabilities:{resume:{}}}}});
   if(m.method==="session/new")return send({jsonrpc:"2.0",id:m.id,result:{sessionId,models:{currentModelId:"fixture-model",availableModels:[{modelId:"fixture-model",name:"Fixture"}]}}});
   if(m.method==="session/prompt"){
@@ -936,7 +937,7 @@ test("a reopened ACP harness thread shows its transcript without starting the ha
     assert.deepEqual(launches,["supervised"],"the next turn starts the harness, once");
     const sent=(await methods()).filter(item=>item.method.startsWith("session/"));
     assert.deepEqual(sent[0],{method:"session/resume",sessionId:"fixture-session"},"the turn first resumes the saved conversation");
-    assert.equal(sent.some(item=>item.method==="session/new"),false,"never a new session");
+    assert.equal(sent.some(item=>item.method==="session/new"),false,"a conversation the harness still has opens no new session");
     assert.deepEqual(sent.filter(item=>item.method==="session/prompt").map(item=>item.sessionId),["fixture-session"]);
     const thread=threadStore.get(saved.id);
     assert.equal(thread.providerSessionId,"fixture-session");
@@ -1002,12 +1003,12 @@ test("restart recovery continues an ACP harness turn inside the fenced envelope"
 });
 
 // A turn that cannot go on after a restart fails with one error: the open window is told what the turn stores and shows
-// after a reload, not a shorter message.
+// after a reload, not a shorter message. A harness that asks to sign in (ACP auth_required) cannot run, so no fresh session is tried.
 test("restart recovery that cannot resume the harness tells the open window the error the turn stores",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-recovery-failed-")),fixture=join(root,"fake-acp.mjs"),recorded=join(root,"prompts.jsonl");
   const fallthrough=`  return send({jsonrpc:"2.0",id:m.id,result:{}});`;
   assert.ok(FAKE_ACP_AGENT.includes(fallthrough));
-  await writeFile(fixture,FAKE_ACP_AGENT.replace(fallthrough,`  if(m.method==="session/resume")return send({jsonrpc:"2.0",id:m.id,error:{code:-32000,message:"session expired"}});\n${fallthrough}`),"utf8");
+  await writeFile(fixture,FAKE_ACP_AGENT.replace(fallthrough,`  if(m.method==="session/resume")return send({jsonrpc:"2.0",id:m.id,error:{code:-32000,message:"Authentication required"}});\n${fallthrough}`),"utf8");
   const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
   const thread=threadStore.create({runtime:"grok",cwd:root,providerSessionId:"fixture-session",providerMeta:{runtimeInstanceId:FAKE_GROK_INSTANCE.id,permissionProfile:"supervised"}});
   threadStore.update(thread.id,{runtimeInstanceId:FAKE_GROK_INSTANCE.id});
@@ -1023,7 +1024,7 @@ test("restart recovery that cannot resume the harness tells the open window the 
     const settled=await completed;
     assert.equal(settled.turn.id,interrupted.id);assert.equal(settled.turn.status,"failed");
     const stored=settled.turn.error?.message;
-    assert.match(stored,/^Could not continue after restart: Grok Build could not resume this conversation: .*session expired/);
+    assert.match(stored,/^Could not continue after restart: Grok Build could not resume this conversation: .*Authentication required/);
     assert.deepEqual(errors.map(error=>[error.turnId,error.message]),[[interrupted.id,stored]]);
     assert.equal(threadStore.get(thread.id).turns.find(turn=>turn.id===interrupted.id).error.message,stored);
   }finally{

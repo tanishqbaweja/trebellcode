@@ -5,6 +5,8 @@ import { WebSocketServer } from "ws";
 import { AcpAgentSession } from "./acp-agent-session.mjs";
 import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { fileUri } from "./file-uri.mjs";
+import { isHarnessSessionLost } from "./harness-session-lost.mjs";
+import { threadHistoryHandoff } from "./thread-history-handoff.mjs";
 import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
@@ -652,6 +654,15 @@ export function claudeRewindProviderMeta(thread,index,rewind,now=Date.now()){
   return meta;
 }
 
+// Whether Claude Code recorded turns of the thread's current conversation (ClaudeAgentSession persistedTurns). After a fresh
+// session took over a lost one, the turns before the one that handed the earlier messages over were in the lost transcript.
+export function claudePersistedTurns(thread){
+  const turns=Array.isArray(thread?.turns)?thread.turns:[],handoff=thread?.providerMeta?.historyHandoff;
+  let from=0;
+  if(handoff?.sessionId&&handoff.sessionId===thread.providerSessionId){const index=handoff.turnId?turns.findIndex(turn=>turn?.id===handoff.turnId):-1;from=index<0?turns.length:index}
+  return turns.slice(from).some(turn=>turn?.providerMessageId||turn?.providerUserMessageId);
+}
+
 function formQuestions(params){
   const schema=params?.requestedSchema||params?.schema||params?.form||{};
   const properties=schema.properties||{};
@@ -662,7 +673,8 @@ function formQuestions(params){
   }));
 }
 
-export function attachAgentRelay(server,{runtimeManager,threadStore,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null}={}){
+// claudeSdk: the Claude Agent SDK the relay's Claude Code sessions drive, when not the installed one (tests pass a scripted one).
+export function attachAgentRelay(server,{runtimeManager,threadStore,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null,claudeSdk=null}={}){
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
   const socketContexts=new Set();
@@ -796,7 +808,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     return Boolean(runtimeManager.remoteIo?.(runtimeManager.runtimeCwd?.(thread.cwd,environmentId)??thread.cwd,environmentId));
   }
 
-  async function ensureSession(thread,context,{permissionMode=null,model=null}={}){
+  // freshIfLost: a turn is about to run, so a conversation the harness lost continues in a fresh session (see below); opening,
+  // forking, compacting and rewinding a thread keep the lost-session error.
+  async function ensureSession(thread,context,{permissionMode=null,model=null,freshIfLost=false}={}){
     if(thread?.runtime==="native"){
       const storedNamespaces=Array.isArray(thread.providerMeta?.dynamicToolNamespaces)?thread.providerMeta.dynamicToolNamespaces:[],activeNamespaces=expandableNativeToolNamespaces(storedNamespaces);
       if(activeNamespaces.length!==storedNamespaces.length){
@@ -961,25 +975,88 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const repoIo=remoteIo?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
       claudeMcpServers.trebell_repository=createClaudeRepositoryMcp({contextEngine,root:runtimeCwd,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,version});
     }
-    const runtime=instance.kind==="claude"
-      ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,capabilityScope:environmentId||"",autoCompactWindow:instance.autoCompactWindow||null,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,persistedTurns:((threadStore.get(thread.id)||thread).turns||[]).some(turn=>turn?.providerMessageId||turn?.providerUserMessageId),onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),mcpServers:claudeMcpServers})
+    const create=()=>instance.kind==="claude"
+      ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,capabilityScope:environmentId||"",autoCompactWindow:instance.autoCompactWindow||null,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,persistedTurns:claudePersistedTurns(threadStore.get(thread.id)||thread),onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),mcpServers:claudeMcpServers,...(claudeSdk?{sdk:claudeSdk}:{})})
       :instance.kind==="opencode"
       ?(remoteIo
         ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers})
         :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp}))
       :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),argsForPermission:mode=>runtimeManager.acpArgs(instance,mode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,runTempRoot:instance.kind==="antigravity"&&!remoteIo?acpRuntimeTempRoot(runtimeManager.childEnv(instance),"antigravity"):null,attachmentsDir:instance.kind==="antigravity"&&!remoteIo?join(trebellHome(runtimeManager.env||process.env),"attachments"):null,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
+    let runtime=create(),started,lost=null;
     // A Cursor thread runs in the Plan mode it last ran in until a turn names another (also after a restart).
-    if(runtime instanceof AcpAgentSession&&instance.kind==="cursor")runtime.setCollaborationMode((threadMetadata(thread.id)||thread)?.settings?.collaborationMode?.mode||"default");
-    let started;
+    const prepare=()=>{if(runtime instanceof AcpAgentSession&&instance.kind==="cursor")runtime.setCollaborationMode((threadMetadata(thread.id)||thread)?.settings?.collaborationMode?.mode||"default")};
+    prepare();
     // Antigravity's model list is the one its sessions report (T3), also when the thread's model turns out not to be offered.
     const reportModels=()=>{if(runtime instanceof AcpAgentSession&&instance.kind==="antigravity"&&runtime.sessionSetup)runtimeManager.rememberAcpSessionModels?.(instance,runtime.sessionSetup,{environmentId})};
-    try{started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null})}
-    catch(error){reportModels();await runtime.close().catch(()=>{});throw error}
+    const savedSessionId=thread.providerSessionId||null,requestedModel=model||thread.model||null;
+    try{started=await runtime.start({providerSessionId:savedSessionId,model:requestedModel})}
+    catch(error){
+      reportModels();await runtime.close().catch(()=>{});
+      // A harness that no longer has the thread's conversation continues it in one fresh session, whose first prompt hands the
+      // earlier messages over (T3's provider resume fallback). A harness that cannot run at all fails as it is, and so does the
+      // fresh session's start: a lost conversation never loops.
+      if(!freshIfLost||!savedSessionId||!isHarnessSessionLost(error))throw error;
+      lost={previousSessionId:String(savedSessionId),reason:error.message};
+      runtime=create();prepare();
+      try{started=await runtime.start({providerSessionId:null,model:requestedModel})}
+      catch(freshError){reportModels();await runtime.close().catch(()=>{});recordResumeFallback(thread,{...lost,sessionId:null,error:freshError});throw freshError}
+    }
     reportModels();sessionModelReports.set(runtime,reportModels);
     const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
     // A resumed session keeps the thread's id; an ACP session reports the model it actually runs (an alias resolves to the real id).
-    threadStore.update(thread.id,{providerSessionId:started.session.sessionId||thread.providerSessionId||"",providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:(runtime instanceof AcpAgentSession?runtime.model:null)||model||started.session.models?.currentModelId||thread.model||null});
+    threadStore.update(thread.id,{providerSessionId:started.session.sessionId||(lost?"":thread.providerSessionId)||"",providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:(runtime instanceof AcpAgentSession?runtime.model:null)||model||started.session.models?.currentModelId||thread.model||null});
+    if(lost)beginHistoryHandoff(thread,{...lost,sessionId:started.session.sessionId||""});
     sessions.set(thread.id,runtime);return runtime;
+  }
+
+  function diagnosticText(value){return redactSecretText(String(value||""),{environment:runtimeManager.env||process.env}).slice(0,500)}
+  function recordResumeFallback(thread,{previousSessionId,sessionId,reason,error=null}){
+    journal?.record?.({runtime:thread.runtime,provider:agentProviderIdentity(thread),environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,category:"turn",name:"agent.session.resume_fallback",status:error?"error":"completed",data:{lostSessionId:previousSessionId||null,sessionId:sessionId||null,reason:diagnosticText(reason),...(error?{error:diagnosticText(error?.message||error)}:{})}});
+  }
+  // A fresh session took over a conversation its harness lost. The thread's earlier messages wait on the thread (a restart keeps
+  // them waiting) for the first prompt that reaches the new session; a turn that fails before then leaves them waiting.
+  function beginHistoryHandoff(thread,{previousSessionId,sessionId,reason}){
+    const meta=threadMetadata(thread.id)?.providerMeta||{};
+    threadStore.update(thread.id,{providerMeta:{...meta,historyHandoff:{status:"pending",runtime:thread.runtime,previousSessionId,sessionId,reason:diagnosticText(reason),at:Date.now()}}});
+    recordResumeFallback(thread,{previousSessionId,sessionId,reason});
+  }
+  // The waiting handoff as the prompt's trebell.thread_history entry: the thread's earlier conversation, without the turn's own
+  // message (excludeTurnId), or null when nothing waits.
+  function pendingHistoryHandoff(threadId,{excludeTurnId=null}={}){
+    const meta=threadMetadata(threadId);if(!meta||meta.runtime==="native"||meta.providerMeta?.historyHandoff?.status!=="pending")return null;
+    const thread=threadStore.get(threadId);if(!thread)return null;
+    const history=threadHistoryHandoff(thread.turns,{harness:runtimeHarnessLabel(thread.runtime),excludeTurnId});
+    return {history,context:history?{"trebell.thread_history":{kind:"application",value:history.text}}:{}};
+  }
+  // The prompt options that tell when the prompt carrying a waiting handoff reached the harness.
+  function handoffDelivery(threadId,turnId,pending){return pending?{onDelivered:()=>deliverHistoryHandoff(threadId,turnId,pending.history)}:{}}
+  // The row a turn keeps when its prompt handed a thread's earlier messages to a fresh session, live and after a reload: what
+  // happened, in Trebell's words. It is not a failure.
+  function sessionHandoffItem(turnId,handoff,history){
+    const harness=runtimeHarnessLabel(handoff.runtime),included=history?.included||0,omitted=history?.omitted||0;
+    const title=`${harness} no longer had this conversation, so it continues in a new session`+(included?` with the earlier messages handed over${omitted?`, except ${omitted} that did not fit`:""}.`:omitted?"; the earlier messages were too long to hand over.":".");
+    return {type:"sessionHandoff",id:`session-handoff-${turnId}`,status:"completed",title,runtime:handoff.runtime,harness,previousSessionId:handoff.previousSessionId||null,sessionId:handoff.sessionId||null,reason:handoff.reason||null,handedOver:{included,omitted}};
+  }
+  function deliverHistoryHandoff(threadId,turnId,history){
+    const meta=threadMetadata(threadId)?.providerMeta||{},handoff=meta.historyHandoff;if(handoff?.status!=="pending")return;
+    threadStore.update(threadId,{providerMeta:{...meta,historyHandoff:{...handoff,status:"delivered",turnId,deliveredAt:Date.now(),included:history?.included||0,omitted:history?.omitted||0}}});
+    const item=sessionHandoffItem(turnId,handoff,history);
+    if(threadStore.addItem(threadId,turnId,item))emit("item/completed",{threadId,turnId,item,completedAtMs:Date.now()});
+  }
+  // Claude Code says it has no conversation under the thread's id only when the turn's query opens, before any output: the same
+  // session starts a fresh conversation and the turn goes there once more, with the earlier messages handed over. The thread
+  // keeps one user message, and the second send never sends again.
+  function claudeLostSessionResend({thread,turn,session,input,durable,promptOptions,excludeTurnId=null}){
+    if(!(session instanceof ClaudeAgentSession))return null;
+    return async error=>{
+      const previousSessionId=error?.sessionId||session.sessionId||thread.providerSessionId||"",started=await session.startFresh(),sessionId=started.session.sessionId;
+      const meta=threadMetadata(thread.id)?.providerMeta||{};
+      threadStore.update(thread.id,{providerSessionId:sessionId,providerMeta:{...meta,setup:started.session}});
+      beginHistoryHandoff(thread,{previousSessionId,sessionId,reason:error?.message});
+      const pending=pendingHistoryHandoff(thread.id,{excludeTurnId});
+      const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context},promptContextOptions(thread,session));
+      return session.prompt(prompt,{...promptOptions,messageId:randomUUID(),...handoffDelivery(thread.id,turn.id,pending)});
+    };
   }
 
   function emit(method,params){
@@ -1007,7 +1084,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }finally{nativeQueueStarting.delete(id)}
   }
 
-  function settlePrompt({thread,turn,session,promptPromise,model=null,context=null}){
+  // resend: what sends the turn once more when the harness turned out not to have the conversation (claudeLostSessionResend);
+  // that second send settles without one.
+  function settlePrompt({thread,turn,session,promptPromise,model=null,context=null,resend=null}){
     const persistUsage=result=>{
       const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadMetadata(thread.id)||thread;
       state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),model:current.model||model||null,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
@@ -1027,6 +1106,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadMetadata(thread.id)?.status||{type:"idle"}});
       if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
     }).catch(error=>{
+      if(resend&&isHarnessSessionLost(error))return settlePrompt({thread,turn,session,promptPromise:resend(error),model,context});
       endNativeDraft(session,thread.id,turn.id);
       endReasoning(thread.id,turn.id);
       if(error?.code==="CLAUDE_REWIND_REJECTED"){
@@ -1077,13 +1157,17 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const recovery=thread.recovery;if(!recovery?.pending||!thread.providerSessionId||recoveryInFlight.has(thread.id))continue;
       recoveryInFlight.add(thread.id);
       try{
-        const goal=assertGoalBudget(thread.id),session=await ensureSession(thread,context,{model:thread.model||null});const turn=threadStore.restartTurn(thread.id,recovery.turnId);
+        const goal=assertGoalBudget(thread.id),session=await ensureSession(thread,context,{model:thread.model||null,freshIfLost:true});const turn=threadStore.restartTurn(thread.id,recovery.turnId);
         if(!turn)throw new Error("Interrupted turn was not found");
         if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;
         session.__assistant="";session.__usage=null;emit("turn/started",{threadId:thread.id,turn});emit("thread/status/changed",{threadId:thread.id,status:{type:"active",activeFlags:[]}});
-        const continueText="Continue where you left off.";
-        const prompt=await contextualAgentPrompt([{type:"text",text:continueText}],await withDurableContext(thread.id,{},continueText),promptContextOptions(thread,session));
-        settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:thread.agent||null,...(thread.runtime==="native"?nativeGoalPromptOptions(goal):{})}),model:thread.model||null,context});
+        // A conversation the harness lost goes on in a fresh session that is handed the interrupted turn's message too, since
+        // the prompt only says to continue.
+        const continueText="Continue where you left off.",input=[{type:"text",text:continueText}];
+        const durable=await withDurableContext(thread.id,{},continueText),pending=pendingHistoryHandoff(thread.id);
+        const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context},promptContextOptions(thread,session));
+        const promptOptions={messageId:randomUUID(),agent:thread.agent||null,...(thread.runtime==="native"?nativeGoalPromptOptions(goal):{}),...handoffDelivery(thread.id,turn.id,pending)};
+        settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:thread.model||null,context,resend:claudeLostSessionResend({thread,turn,session,input,durable,promptOptions})});
       }catch(error){
         // The open window says what the turn stores, so the error reads the same live and after a reload.
         const message=`Could not continue after restart: ${error.message}`;
@@ -1307,8 +1391,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       // An ACP harness's conversation opens with the thread's next turn, as T3 Code opens a provider session lazily ("a later
       // user command ... opens a session"): the reopened thread shows its saved transcript at once, where Cursor's start and
-      // session/load kept it blank for half a minute in the live tour, and browsing threads starts no harness process.
-      if(!LAZY_SESSION_RUNTIMES.has(thread.runtime))await ensureSession(thread,context,{model:params.model||thread.model});
+      // session/load kept it blank for half a minute in the live tour, and browsing threads starts no harness process. A harness
+      // that no longer has the thread's conversation does not fail the open either: the saved transcript shows, and the next
+      // turn continues the thread in a fresh session, as it does for the lazy harnesses.
+      if(!LAZY_SESSION_RUNTIMES.has(thread.runtime))await ensureSession(thread,context,{model:params.model||thread.model}).catch(error=>{if(!isHarnessSessionLost(error))throw error});
       const resumed=agentThreadResumePayload(threadStore.get(thread.id),params),collaborationMode=thread.runtime==="claude"||thread.runtime==="cursor"?resumed?.thread?.settings?.collaborationMode:null;
       // The composer shows the collaboration mode the thread last ran in (Claude Code's and Cursor's Plan mode).
       return collaborationMode?.mode?{...resumed,collaborationMode}:resumed;
@@ -1607,7 +1693,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const providerPatch=requestedProvider?{modelProvider:requestedProvider}:{};
       if(Object.keys(permissionPatch).length||Object.keys(providerPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch,...providerPatch}});
       if(thread.runtime==="native"&&Array.isArray(params.dynamicToolNamespaces)&&params.dynamicToolNamespaces.length)thread=(await ensureNativeToolNamespaces(thread,params.dynamicToolNamespaces)).thread;
-      const session=await ensureSession(thread,context,{model:params.model||thread.model});
+      const session=await ensureSession(thread,context,{model:params.model||thread.model,freshIfLost:true});
       if(requestedProvider&&typeof session.setProvider==="function")session.setProvider(requestedProvider);
       if(runtime==="native"&&typeof session.setReasoningEffort==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setReasoningEffort(Object.prototype.hasOwnProperty.call(params,"reasoningEffort")?params.reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",providerId,nextModel))}
       if(runtime==="native"&&typeof session.setServiceTier==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setServiceTier(Object.prototype.hasOwnProperty.call(params,"serviceTier")?params.serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",providerId,nextModel))}
@@ -1649,13 +1735,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(!thread.name&&!thread.preview){const stored=turn?.items?.find(item=>item?.type==="userMessage")?.content?.[0]?.text||"",preview=agentThreadTitleSeed(params.input||[],stored);if(preview)threadStore.update(thread.id,{preview})}
       session.__usage=null;
       emit("turn/started",{threadId:thread.id,turn});
-      const prompt=await contextualAgentPrompt(params.input||[],await withDurableContext(thread.id,params.additionalContext||{},textOfInput(params.input||[])),promptContextOptions(thread,session));
+      // A fresh session that took over a lost conversation is handed the thread's earlier messages (the turn's own goes as the request).
+      const input=params.input||[],durable=await withDurableContext(thread.id,params.additionalContext||{},textOfInput(input)),pending=pendingHistoryHandoff(thread.id,{excludeTurnId:turn.id});
+      const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context},promptContextOptions(thread,session));
       const selectedAgent=Object.prototype.hasOwnProperty.call(params,"agent")?(params.agent||null):(thread.agent||null);
       if(selectedAgent!==thread.agent)threadStore.update(thread.id,{agent:selectedAgent});
-      const promptOptions={messageId:randomUUID(),agent:selectedAgent};
+      const promptOptions={messageId:randomUUID(),agent:selectedAgent,...handoffDelivery(thread.id,turn.id,pending)};
       if(session instanceof NativeAgentSession&&Array.isArray(params.toolAllowlist)&&params.toolAllowlist.length)promptOptions.toolAllowlist=params.toolAllowlist.map(item=>String(item||"").trim()).filter(Boolean).slice(0,100);
       if(session instanceof NativeAgentSession)Object.assign(promptOptions,nativeGoalPromptOptions(turnGoal));
-      settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null,context});
+      settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null,context,resend:claudeLostSessionResend({thread,turn,session,input,durable,promptOptions,excludeTurnId:turn.id})});
       return {turn};
     }
     if(method==="turn/interrupt"){
