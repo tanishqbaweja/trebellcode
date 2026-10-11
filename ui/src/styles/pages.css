@@ -625,6 +625,13 @@
 :root:root .licenses-page .license-list-empty>svg{margin-bottom:4px;opacity:.55}
 :root:root .licenses-page .license-list-empty strong{white-space:normal;font-size:13px!important}
 :root:root .licenses-page .license-list-empty span{font-size:12px;line-height:1.5;color:var(--tx3)}
+/* The list still loading, or a read that failed (its reason and Retry), in place of the rows. */
+:root:root .licenses-page .license-list-loading>svg{opacity:1;color:var(--tx3);animation:tb-spin 1.1s linear infinite}
+:root:root .licenses-page .license-list-loading strong{font-weight:550;color:var(--tx2)!important}
+:root:root .licenses-page .license-list-failed>svg{opacity:1;color:var(--err)}
+:root:root .licenses-page .license-list-failed span{max-width:min(300px,100%);color:var(--tx2);overflow-wrap:anywhere}
+:root:root .licenses-page .license-list-failed button{height:30px;display:inline-flex;align-items:center;margin-top:8px;padding:0 12px!important;border:1px solid var(--line2)!important;border-radius:var(--r-s)!important;background:var(--bg3)!important;color:var(--tx1)!important;font-size:12px!important;font-weight:550;cursor:pointer;transition:background-color .15s,color .15s}
+:root:root .licenses-page .license-list-failed button:hover{background:var(--bg4)!important;color:var(--tx0)!important}
 :root:root .licenses-page .license-detail{display:flex;flex-direction:column;overflow:hidden}
 :root:root .licenses-page .license-detail-head{min-height:0!important;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px!important;border-bottom:1px solid var(--line)!important}
 :root:root .licenses-page .license-detail-head>div{min-width:0}
