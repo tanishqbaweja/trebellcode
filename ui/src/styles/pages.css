@@ -141,17 +141,19 @@
 :root:root .projects-page .general-chat-card em{font-style:normal;padding:8px 14px!important;border:1px solid color-mix(in srgb,var(--ac) 40%,var(--line))!important;border-radius:9px!important;background:transparent!important;color:var(--ac)!important;font-size:12.5px!important;font-weight:550;white-space:nowrap;transition:background-color .15s}
 :root:root .projects-page .general-chat-card:hover:not(:disabled) em{background:var(--acsoft)!important}
 
-:root:root .projects-page .clone-card{display:grid;grid-template-columns:40px minmax(130px,190px) minmax(140px,200px) minmax(0,1fr) auto;gap:12px 14px;align-items:center}
+/* One row gives the URL most of the width: the title and environment columns stop at what their text needs, and the
+   remote parent directory (a short path) takes the smaller share, so a repository URL of about 50 characters shows whole. */
+:root:root .projects-page .clone-card{display:grid;grid-template-columns:40px minmax(120px,150px) minmax(140px,180px) minmax(0,1fr) auto;gap:12px 14px;align-items:center}
 :root:root .projects-page .clone-card>div:not(.clone-inputs){min-width:0}
 :root:root .projects-page .clone-inputs{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;min-width:0}
-:root:root .projects-page .clone-inputs.remote{grid-template-columns:minmax(0,1.3fr) minmax(120px,.7fr)}
+:root:root .projects-page .clone-inputs.remote{grid-template-columns:minmax(0,1.6fr) minmax(120px,.6fr)}
 :root:root .projects-page .clone-card :is(input,select){height:36px!important}
 /* URL and remote path read as code (the shared field rule above sets Inter with a more specific :is() list). */
 :root:root .projects-page .clone-card .clone-inputs input{font-family:var(--mono)!important;font-size:12px!important}
 :root:root .projects-page .clone-card>button{height:36px!important;min-height:36px!important}
-/* Between 880 and 1000px one row leaves the URL field about 195px, too short for a repository URL. Two rows instead:
+/* Below 1040px one row leaves the URL field under about 360px, too short for a repository URL. Two rows instead:
    title and environment on top, the URL and destination fields at full width with Clone underneath. */
-@container pg (max-width:1000px){
+@container pg (max-width:1040px){
   :root:root .projects-page .clone-card{grid-template-columns:40px minmax(0,1fr) minmax(170px,230px) auto}
   :root:root .projects-page .clone-card>select{grid-column:3/5}
   :root:root .projects-page .clone-card>.clone-inputs{grid-column:2/4}

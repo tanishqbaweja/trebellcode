@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, MessageSquareText, Pencil, Play, Plus, RefreshCw, Search, Settings2, SquareTerminal, Trash2, Workflow, X } from "lucide-react";
 import { api } from "../api.js";
-import { baseProjectRecord, enrichProjectRecords, projectGitLabel, summarizeProjectRefreshErrors } from "../project-enrichment.js";
+import { baseProjectRecord, enrichProjectRecords, projectCardDetail, projectEnvironmentLabel, summarizeProjectRefreshErrors } from "../project-enrichment.js";
 import { PROJECT_PAGE_SIZE, projectGroupCounts, projectGroupKey, projectWindow } from "../project-window.js";
 import { startVisibilityPoll } from "../visibility-poll.js";
 
@@ -72,11 +72,14 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     return list.map(project=>pending.has(project.id)?{...project,worktreeCleanup:pending.get(project.id).value}:project);
   }
   async function performRefresh({reportErrors=false}={}){
-    const environmentPromise=api("/api/environments").then(value=>({value,error:null}),error=>({value:null,error}));
+    // Environments apply the moment they answer (the Clone card and environment names need nothing else), instead of
+    // waiting for every project's Git probe, which kept the Clone card out for seconds on long lists.
+    const environmentPromise=api("/api/environments").then(value=>{if(value)setEnvironmentData(value);return {value,error:null}},error=>({value:null,error}));
     let d;
     try{d=await api("/api/projects")}
     catch(err){
       setError("Could not refresh projects: "+(err.message||String(err)));
+      await environmentPromise;
       return false;
     }
     const refreshErrors=[];
@@ -94,8 +97,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
       },
     });
     const [enriched,environmentResult]=await Promise.all([enrichmentPromise,environmentPromise]);
-    if(environmentResult.value)setEnvironmentData(environmentResult.value);
-    else if(reportErrors)refreshErrors.push("Environments: "+(environmentResult.error?.message||String(environmentResult.error)));
+    if(environmentResult.error&&reportErrors)refreshErrors.push("Environments: "+(environmentResult.error?.message||String(environmentResult.error)));
     commitProjects(withPendingCleanup(enriched));
     if(reportErrors){
       const summary=summarizeProjectRefreshErrors(refreshErrors);
@@ -359,13 +361,13 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   const groups=useMemo(()=>{
     const map=new Map();
     for(const project of projectView.visible){
-      const environmentLabel=project.environment?.name||"Local machine";
+      const environmentLabel=projectEnvironmentLabel(project,environmentData.profiles);
       const key=projectGroupKey(project);
       if(!map.has(key)) map.set(key,{key,label:project.remote||project.name,environmentLabel,projects:[],totalCount:groupTotals.get(key)||0});
       map.get(key).projects.push(project);
     }
     return [...map.values()];
-  },[projectView.visible,groupTotals]);
+  },[projectView.visible,groupTotals,environmentData.profiles]);
 
   return <div className="projects-page">
     <div className="page-actions project-page-actions"><div className="project-search-field"><Search size={14}/><input className="project-search" aria-label="Search projects" value={projectQuery} onChange={event=>setProjectQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"&&projectQuery){event.preventDefault();event.stopPropagation();setProjectQuery("")}}} placeholder="Search projects"/></div><span className="project-window-count">{projectView.shown} / {projectView.total}</span>{hasDesktopPicker&&<button className="project-add-local" onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button className="project-refresh" aria-label="Refresh projects" title="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
@@ -375,7 +377,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.totalCount} checkout{group.totalCount===1?"":"s"}</span></div></div>
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id}>
-        <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.environment?.name||"Local machine"} · {p.path}</span><small>{p.environment?.type!=="local"?"remote workspace · "+new Date(p.lastOpenedAt).toLocaleString():p.managedWorktree?.cleanedAt?"managed worktree cleaned · click to restore":[projectGitLabel(p.git),new Date(p.lastOpenedAt).toLocaleString()].filter(Boolean).join(" · ")}</small></div></button>
+        <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{projectEnvironmentLabel(p,environmentData.profiles)} · {p.path}</span><small>{projectCardDetail(p)}</small></div></button>
         <button className="project-remove" aria-label={"Remove "+p.name} onClick={()=>removeProject(p)} disabled={busy}><Trash2 size={13}/></button>
         {p.cloneJob&&p.cloneJob.status!=="completed"&&<div className={"project-clone-status "+p.cloneJob.status}><div><strong>{p.cloneJob.phase||"Cloning repository"}</strong><span>{p.cloneJob.status==="failed"?(p.cloneJob.error||"Clone failed"):p.cloneJob.status==="cancelled"?"Clone cancelled":Math.round(p.cloneJob.progress||0)+"%"}</span></div>{["running","cancelling"].includes(p.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(p.cloneJob.progress)||0)+"%"}}/></i>}<div>{p.cloneJob.status==="running"&&<button onClick={()=>cloneAction(p,"cancel")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(p.cloneJob.status)&&<button onClick={()=>cloneAction(p,"retry")}><RefreshCw size={11}/> Retry</button>}</div></div>}
         <div className="project-overrides">

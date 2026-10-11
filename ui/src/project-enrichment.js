@@ -12,10 +12,38 @@ export function projectGitLabel(git){
   return git.branch||"detached HEAD";
 }
 
+// The one rule for where a project lives, used by its card, its group and enrichment alike: an environment of another
+// type than "local" is remote, and a project sent without environment details is remote only if it names one.
+export function projectIsRemote(project){
+  const type=String(project?.environment?.type||"").trim();
+  return type?type!=="local":Boolean(project?.environmentId);
+}
+
+// The environment a project card and its group name: the server's name, else the profile /api/environments listed.
+export function projectEnvironmentLabel(project,profiles=[]){
+  const name=String(project?.environment?.name||"").trim();if(name)return name;
+  if(!projectIsRemote(project))return "Local machine";
+  return String((Array.isArray(profiles)?profiles:[]).find(profile=>profile?.id===project?.environmentId)?.name||"").trim()||"Remote environment";
+}
+
+// When a project was last opened, or nothing for a missing or unreadable time (instead of "Invalid Date").
+export function projectOpenedLabel(value){
+  if(value==null||value===""||typeof value==="boolean")return "";
+  const date=new Date(value);
+  return Number.isNaN(date.getTime())?"":date.toLocaleString();
+}
+
+// A project card's detail line: remote or local by projectIsRemote, then the Git state (nothing while it loads) and time.
+export function projectCardDetail(project){
+  const opened=projectOpenedLabel(project?.lastOpenedAt);
+  if(projectIsRemote(project))return ["remote workspace",opened].filter(Boolean).join(" · ");
+  if(project?.managedWorktree?.cleanedAt)return "managed worktree cleaned · click to restore";
+  return [projectGitLabel(project?.git),opened].filter(Boolean).join(" · ");
+}
+
 export function baseProjectRecord(project,previous=null){
   const scripts=Array.isArray(project?.scripts)?project.scripts:[];
-  const remoteEnvironment=Boolean(project?.environment?.type&&project.environment.type!=="local");
-  if(remoteEnvironment)return {...project,scripts,git:null,remote:null,suggested:defaultSuggested()};
+  if(projectIsRemote(project))return {...project,scripts,git:null,remote:null,suggested:defaultSuggested()};
   return {
     ...project,
     scripts,
@@ -47,7 +75,7 @@ export async function enrichProjectRecords(projects=[],{
 }={}){
   if(typeof fetchGit!=="function"||typeof fetchSuggestions!=="function")throw new Error("Project enrichment requires Git and action-suggestion loaders.");
   return mapWithConcurrency(projects,concurrency,async project=>{
-    if(project?.environment?.type&&project.environment.type!=="local")return project;
+    if(projectIsRemote(project))return project;
     const [gitResult,suggestedResult]=await Promise.allSettled([fetchGit(project),fetchSuggestions(project)]);
     if(gitResult.status==="rejected")onError(project,"git",gitResult.reason);
     if(suggestedResult.status==="rejected")onError(project,"suggestions",suggestedResult.reason);

@@ -1,4 +1,121 @@
 import { test,expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+const BUILD_BOX={id:"build-box",name:"Build box",type:"ssh",host:"build.example.test",cwd:"/srv/projects",enabled:true};
+
+// The app shell around a Projects page whose project list, environments and Git answers each test supplies.
+async function routeProjectsShell(page,{projects:items,environments={profiles:[]},git,mode="dark"}){
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,cwd:"C:/empty",platform:"win32",version:"project-card-fixture"}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"},projects:[],threadMeta:{}}));
+  await page.route(/\/api\/models$/,route=>json(route,{provider:"openai",agentRuntime:"codex",ready:true,models:["test/coding-fast"],metadata:{provider:"openai",agentRuntime:"codex",models:[{id:"test/coding-fast",name:"Coding Fast",agent:"Codex"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:items}));
+  await page.route(/\/api\/environments$/,route=>json(route,environments));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/git\/info\?/,async route=>{
+    const path=new URL(route.request().url()).searchParams.get("path");
+    return json(route,String(path||"").startsWith("C:/repos/")?await git(path):{isGit:false,root:path,branch:null,remotes:[]});
+  });
+  await page.route(/\/api\/project-actions\/suggestions\?/,route=>json(route,{scripts:[],t3:{present:false},packageManager:null}));
+}
+
+test("project cards use one local-or-remote rule and leave out a missing time",async({page})=>{
+  test.setTimeout(30_000);
+  const opened=Date.UTC(2026,8,23,10,0,0),probed=[];
+  await routeProjectsShell(page,{
+    projects:[
+      // What the periodic-refresh fixture sends: no environment details and no last-opened time.
+      {id:"bare-local",name:"Bare Local Project",path:"C:/repos/bare-local",environmentId:null,scripts:[]},
+      {id:"named-remote",name:"Named Remote Project",path:"/srv/named",environmentId:"build-box",environment:{id:"build-box",name:"Build box",type:"ssh"},scripts:[],lastOpenedAt:opened},
+      {id:"id-only-remote",name:"Id Only Remote Project",path:"/srv/id-only",environmentId:"build-box",scripts:[],lastOpenedAt:"not a time"},
+    ],
+    environments:{profiles:[BUILD_BOX]},
+    git:async path=>{probed.push(path);return {isGit:true,root:path,branch:"main",remotes:[]}},
+  });
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const card=name=>page.locator(".project-card").filter({hasText:name});
+  const openedText=await page.evaluate(value=>new Date(value).toLocaleString(),opened);
+  await expect(card("Bare Local Project").locator(".project-open>div>span")).toHaveText("Local machine · C:/repos/bare-local");
+  await expect(card("Bare Local Project").locator(".project-open small")).toHaveText("main");
+  await expect(card("Named Remote Project").locator(".project-open>div>span")).toHaveText("Build box · /srv/named");
+  await expect(card("Named Remote Project").locator(".project-open small")).toHaveText("remote workspace · "+openedText);
+  // A project that names an environment without its details is remote too, named from the environments list.
+  await expect(card("Id Only Remote Project").locator(".project-open>div>span")).toHaveText("Build box · /srv/id-only");
+  await expect(card("Id Only Remote Project").locator(".project-open small")).toHaveText("remote workspace");
+  await expect(page.locator(".projects-page")).not.toContainText("Invalid Date");
+  // Only the local checkout is probed for Git; a remote path is never looked up on this machine.
+  expect([...new Set(probed)]).toEqual(["C:/repos/bare-local"]);
+  await page.screenshot({animations:"disabled",path:auditDir+"projects-card-rule-1280x800.png"});
+});
+
+test("the Clone card shows when environments answer, and a card says nothing about Git until Git answers",async({page})=>{
+  test.setTimeout(30_000);
+  let releaseGit=()=>{};const gitAnswered=new Promise(resolve=>{releaseGit=resolve});
+  const opened=Date.UTC(2026,8,23,10,0,0);
+  await routeProjectsShell(page,{
+    projects:[{id:"pending-git",name:"Pending Git Project",path:"C:/repos/pending-git",environmentId:null,environment:{id:null,name:"Local machine",type:"local"},scripts:[],lastOpenedAt:opened}],
+    environments:{profiles:[BUILD_BOX]},
+    git:async path=>{await gitAnswered;return {isGit:true,root:path,branch:"main",remotes:[{name:"origin",kind:"fetch",url:"https://example.test/pending-git.git"}]}},
+  });
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await page.getByRole("button",{name:"Projects",exact:true}).click();
+    const card=page.locator(".project-card").filter({hasText:"Pending Git Project"}),detail=card.locator(".project-open small");
+    const openedText=await page.evaluate(value=>new Date(value).toLocaleString(),opened);
+    await expect(card).toBeVisible();
+    // Git is still loading: environments have answered, so the Clone card is already there with their names.
+    const clone=page.locator(".clone-card");
+    await expect(clone).toBeVisible();
+    await expect(clone.getByLabel("Clone environment")).toContainText("Build box");
+    // The card says nothing about Git yet: not "not a Git checkout" and not a branch.
+    await expect(detail).toHaveText(openedText);
+    await page.screenshot({animations:"disabled",path:auditDir+"projects-git-pending-1280x800.png"});
+    releaseGit();
+    await expect(detail).toHaveText("main · "+openedText);
+    await expect(page.locator(".project-group-head").first()).toContainText("https://example.test/pending-git.git");
+    await page.screenshot({animations:"disabled",path:auditDir+"projects-git-answered-1280x800.png"});
+  }finally{releaseGit()}
+});
+
+test("the Clone repository form gives a repository URL room at desktop widths and wraps cleanly when narrow",async({page})=>{
+  test.setTimeout(40_000);
+  await routeProjectsShell(page,{
+    projects:[{id:"clone-layout",name:"Clone Layout Project",path:"C:/repos/clone-layout",environmentId:null,environment:{id:null,name:"Local machine",type:"local"},scripts:[],lastOpenedAt:Date.now()}],
+    environments:{profiles:[BUILD_BOX]},
+    git:async path=>({isGit:true,root:path,branch:"main",remotes:[]}),
+  });
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const clone=page.locator(".clone-card"),url=clone.getByLabel("Clone URL"),parent=clone.getByLabel("Clone parent directory");
+  await expect(parent).toBeVisible();
+  await url.fill("https://github.com/example/visual-audit.git");
+  await parent.fill("/srv/projects");
+  const layout=()=>clone.evaluate(node=>{
+    const box=element=>element.getBoundingClientRect(),card=box(node);
+    const fields=[...node.querySelectorAll("input,select,button")].map(element=>({label:element.getAttribute("aria-label")||element.textContent.trim(),box:box(element)}));
+    const field=node.querySelector('[aria-label="Clone URL"]');
+    return {card:{left:card.left,right:card.right,scroll:node.scrollWidth,client:node.clientWidth},url:{scroll:field.scrollWidth,client:field.clientWidth},fields:fields.map(item=>({label:item.label,left:item.box.left,right:item.box.right,top:item.box.top,bottom:item.box.bottom}))};
+  });
+  const overlaps=fields=>fields.flatMap((a,i)=>fields.slice(i+1).filter(b=>a.left<b.right-1&&b.left<a.right-1&&a.top<b.bottom-1&&b.top<a.bottom-1).map(b=>a.label+" / "+b.label));
+  for(const [width,height,mode] of [[1600,980,"dark"],[1280,800,"dark"],[1600,980,"light"],[1280,800,"light"],[1024,768,"dark"],[900,800,"dark"]]){
+    await page.setViewportSize({width,height});
+    await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+    const metrics=await layout(),field=label=>metrics.fields.find(item=>item.label===label);
+    // The whole URL fits in its field at desktop widths; narrower windows stack the fields without overlap or overflow.
+    if(width>=1280)expect(metrics.url.scroll,`URL field at ${width}px`).toBeLessThanOrEqual(metrics.url.client+1);
+    // At 1600 the form keeps its single row (the columns are rebalanced rather than the form being split in two).
+    if(width===1600)expect(Math.abs(field("Clone URL").top-field("Clone environment").top),"one row at 1600px").toBeLessThan(2);
+    expect(metrics.card.scroll,`clone card at ${width}px`).toBeLessThanOrEqual(metrics.card.client+1);
+    expect(overlaps(metrics.fields),`overlapping fields at ${width}px`).toEqual([]);
+    for(const field of metrics.fields)expect(field.right,`${field.label} at ${width}px`).toBeLessThanOrEqual(metrics.card.right+1);
+    await page.screenshot({animations:"disabled",path:auditDir+`projects-clone-form-${mode}-${width}x${height}.png`});
+  }
+});
 
 function projects(count){
   return Array.from({length:count},(_,index)=>({
