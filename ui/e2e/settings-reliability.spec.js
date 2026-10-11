@@ -91,11 +91,12 @@ test("Codex runtime diagnostics show unavailable state instead of assuming readi
 
 test("Diagnostics stays neutral while its first answers load, then shows the real state",async({page,request})=>{
   test.setTimeout(40_000);
-  let releaseDiagnostics=()=>{},releaseRuntime=()=>{};
-  const diagnosticsAnswered=new Promise(resolve=>{releaseDiagnostics=resolve}),runtimeAnswered=new Promise(resolve=>{releaseRuntime=resolve});
+  let releaseDiagnostics=()=>{},releaseRuntime=()=>{},releaseHarnesses=()=>{};
+  const diagnosticsAnswered=new Promise(resolve=>{releaseDiagnostics=resolve}),runtimeAnswered=new Promise(resolve=>{releaseRuntime=resolve}),harnessesAnswered=new Promise(resolve=>{releaseHarnesses=resolve});
   const native={id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true};
   const fulfill=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
-  await page.route(/\/api\/agent-runtimes$/,route=>fulfill(route,{selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[native]}));
+  // The harness chip takes the runtime poll's answer or the harness list's (the same probe), so both are held at first.
+  await page.route(/\/api\/agent-runtimes$/,async route=>{await harnessesAnswered;return fulfill(route,{selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[native]})});
   await page.route(/\/api\/diagnostics(?:\?.*)?$/,async route=>{await diagnosticsAnswered;return fulfill(route,{version:"fixture",runtime:{provider:"openai",providerReady:true},logs:[]})});
   await page.route(/\/api\/runtime(?:\?.*)?$/,async route=>{await runtimeAnswered;return fulfill(route,{agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeStatus:native,provider:"openai",providerReady:true,appServerReady:true,logs:[]})});
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
@@ -115,16 +116,99 @@ test("Diagnostics stays neutral while its first answers load, then shows the rea
     await expect(log).toContainText("Loading runtime log");
     await expect(log).not.toContainText("No runtime activity yet");
     for(const color of await chipColors()){expect(color).not.toBe(palette.warn);expect(color).not.toBe(palette.ok)}
+    // Before the harness list names the harness, the chip names it as people know it, not by its id ("native").
+    await expect(chips.nth(0)).toHaveText("Trebell Native");
     await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-pending-1280x800.png"});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
     for(const color of await chipColors()){expect(color).not.toBe(palette.warn)}
     await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-pending-light-1280x800.png"});
+    // The harness list answers first: the harness chip shows its ready state while the runtime poll and the provider read are still out.
+    releaseHarnesses();
+    await expect(chips.nth(0)).toHaveClass(/\bok\b/);
+    await expect(chips.nth(1)).toHaveClass(/\bpending\b/);await expect(page.locator(".diag-badges")).toHaveAttribute("aria-busy","true");
     releaseDiagnostics();releaseRuntime();
     // The answers arrive: both report ready, and an empty log now says there is no activity.
     await expect(log).toContainText("No runtime activity yet");
     await expect(chips.nth(0)).toHaveClass(/\bok\b/);await expect(chips.nth(1)).toHaveClass(/\bok\b/);
+    await expect(page.locator(".diag-badges")).toHaveAttribute("aria-busy","false");
     await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-loaded-light-1280x800.png"});
-  }finally{releaseDiagnostics();releaseRuntime()}
+  }finally{releaseDiagnostics();releaseRuntime();releaseHarnesses()}
+});
+
+// The harness list as the server sends it for a ready Trebell Native, or a failure, and a runtime poll that fails on every round.
+const NATIVE_STATUS={id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true};
+const NATIVE_RUNTIMES={selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[NATIVE_STATUS]};
+const fulfillJson=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
+async function openNativeSettings(page,request,name){
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name,activate:true}});
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+}
+
+test("a failing runtime poll does not leave the Diagnostics harness chip checking for good",async({page,request})=>{
+  test.setTimeout(60_000);
+  let runtimeCalls=0,harnessListFails=false;
+  await page.route(/\/api\/runtime(?:\?.*)?$/,route=>{runtimeCalls++;return fulfillJson(route,{error:"Deliberate runtime poll failure"},500)});
+  await page.route(/\/api\/agent-runtimes$/,route=>harnessListFails?fulfillJson(route,{error:"Deliberate harness list failure"},500):fulfillJson(route,NATIVE_RUNTIMES));
+  await openNativeSettings(page,request,"Runtime Poll Failure Workspace");
+  await page.getByRole("button",{name:/Diagnostics/}).click();
+  const badges=page.locator(".diag-badges"),chips=badges.locator("span");
+  await expect(chips).toHaveCount(2);
+  // Every runtime poll fails, but the harness list this section loads is the same probe: the chip shows its answer and nothing stays busy.
+  await expect.poll(()=>runtimeCalls,{timeout:15_000}).toBeGreaterThanOrEqual(2);
+  await expect(chips.nth(0)).toHaveClass(/\bok\b/);
+  await expect(badges).toHaveAttribute("aria-busy","false");
+  await page.screenshot({animations:"disabled",path:auditDir+"settings-diagnostics-runtime-poll-failed-1280x800.png"});
+  // With the harness list failing as well, nothing says whether the harness is ready: the chip is unknown (neutral, not busy) and says why.
+  harnessListFails=true;
+  await page.reload();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Diagnostics/}).click();
+  const harness=chips.nth(0);
+  await expect(harness).toHaveAttribute("title","Could not check the harness: Deliberate harness list failure");
+  await expect(harness).not.toHaveClass(/\b(pending|warn|ok)\b/);
+  await expect(harness).toHaveText("Trebell Native");
+  await expect(badges).toHaveAttribute("aria-busy","false");
+  for(const mode of ["dark","light"]){
+    await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+    const colors=await harness.evaluate(node=>{const probe=document.createElement("span");node.parentElement.appendChild(probe);probe.style.color="var(--warn)";const warn=getComputedStyle(probe).color;probe.style.color="var(--ok)";const ok=getComputedStyle(probe).color;probe.remove();return {chip:getComputedStyle(node).color,warn,ok}});
+    expect(colors.chip,mode).not.toBe(colors.warn);expect(colors.chip,mode).not.toBe(colors.ok);
+    await page.screenshot({animations:"disabled",path:auditDir+`settings-diagnostics-harness-unknown-${mode}-1280x800.png`});
+  }
+  // The Agents & models runtime card says the same: unknown, not "not ready".
+  await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  const runtimeCard=page.locator('[data-setting-target="agents-runtime"]');
+  await expect(runtimeCard).toContainText("Agent runtime: unknown");
+  await expect(runtimeCard).not.toContainText("not ready");
+});
+
+test("the Agents & models runtime card says checking until the harness answers instead of not ready",async({page,request})=>{
+  test.setTimeout(40_000);
+  let releaseRuntime=()=>{},releaseHarnesses=()=>{};
+  const runtimeAnswered=new Promise(resolve=>{releaseRuntime=resolve}),harnessesAnswered=new Promise(resolve=>{releaseHarnesses=resolve});
+  await page.route(/\/api\/runtime(?:\?.*)?$/,async route=>{await runtimeAnswered;return fulfillJson(route,{agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeStatus:NATIVE_STATUS,provider:"openai",providerReady:true,appServerReady:true,logs:[]})});
+  await page.route(/\/api\/agent-runtimes$/,async route=>{await harnessesAnswered;return fulfillJson(route,NATIVE_RUNTIMES)});
+  try{
+    await openNativeSettings(page,request,"Runtime Card Pending Workspace");
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    const runtimeCard=page.locator('[data-setting-target="agents-runtime"]');
+    await expect(runtimeCard).toBeVisible();
+    // Nothing has answered yet: the harness is being checked, which is not the same as not ready.
+    await expect(runtimeCard).toContainText("Agent runtime: checking…");
+    await expect(runtimeCard).not.toContainText("not ready");
+    await expect(runtimeCard).toContainText("Agent: Trebell Native");
+    await runtimeCard.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:auditDir+"settings-agents-runtime-card-checking-1280x800.png"});
+    releaseHarnesses();releaseRuntime();
+    await expect(runtimeCard).toContainText("Agent runtime: ready");
+    await page.screenshot({animations:"disabled",path:auditDir+"settings-agents-runtime-card-ready-1280x800.png"});
+  }finally{releaseRuntime();releaseHarnesses()}
 });
 
 test("a failed first Diagnostics read leaves the provider chip neutral and names the failure instead of checking forever",async({page,request})=>{
