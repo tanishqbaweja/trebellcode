@@ -219,6 +219,8 @@
 :root:root .projects-page .project-identity-toggle button{background:transparent!important;border-color:var(--line)!important;color:var(--tx2)!important}
 :root:root .projects-page .project-identity-toggle button:hover{background:var(--bg3)!important;color:var(--tx0)!important}
 :root:root .projects-page .project-identity-editor{display:grid;grid-template-columns:minmax(0,560px);gap:12px}
+/* Under Name, after an emptied name was given back its saved one. */
+:root:root .projects-page .project-identity-editor>.project-name-note{margin:-6px 0 0!important;font-size:11.5px!important;line-height:1.45;color:var(--tx2)!important}
 :root:root .projects-page .project-icon-actions{display:flex;flex-wrap:wrap;gap:6px}
 :root:root .projects-page .project-image-button{position:relative}
 :root:root .projects-page .project-icon-draft{display:grid;grid-template-columns:minmax(0,1fr) 46px auto;gap:8px;align-items:center}

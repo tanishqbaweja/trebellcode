@@ -43,6 +43,15 @@ const listedEnvironments=async request=>(await (await request.get("/api/environm
 const savedSetup=project=>{const {id,createdAt,lastOpenedAt,...rest}=project||{};return rest};
 const flipMode=(page,mode)=>page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
 const sideways=page=>page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);
+// A card is drawn before its Git details arrive. One with a remote then moves into its repository's group, which draws the
+// card and its open fields again, so the tests that type into a card wait for that first.
+async function openProjects(page){
+  const git=page.waitForResponse(response=>response.url().includes("/api/git/info"));
+  await nav(page,"Projects").click();
+  const info=await (await git).json().catch(()=>null);
+  const remote=info?.remotes?.find(item=>item.kind==="fetch")?.url;
+  if(remote)await expect(page.locator(".project-group-head").filter({hasText:remote}).first()).toBeVisible();
+}
 
 // Each test leaves only the main project, under its own name, and no saved environments.
 test.afterEach(async({request})=>{
@@ -295,5 +304,78 @@ test.describe("Clone",()=>{
     await clone.getByRole("button",{name:"Clone",exact:true}).click();
     await expect(page.getByRole("alert").filter({hasText:"Deliberate clone refusal"})).toBeVisible();
     expect(posts).toBe(1);
+  });
+});
+
+test.describe("Renaming a project",()=>{
+  test("Enter in the Name field saves the name, and Escape puts back the saved one",async({page,request})=>{
+    const boot=await open(page,request);
+    await openProjects(page);
+    const card=page.locator(".project-card.active");
+    await card.getByRole("button",{name:/Project identity/}).click();
+    const name=card.getByRole("textbox",{name:"Name"});
+    const saves=[];page.on("request",sent=>{if(sent.method()==="POST"&&/\/api\/projects$/.test(sent.url()))saves.push(sent.postDataJSON()?.name)});
+    await name.fill("Renamed With Enter");
+    await name.press("Enter");
+    await expect(card.locator(".project-open strong")).toHaveText("Renamed With Enter");
+    await expect.poll(async()=>(await listedProjects(request)).find(project=>project.path===boot.cwd)?.name).toBe("Renamed With Enter");
+    // The field keeps focus, so the keyboard stays where it was, and leaving it afterwards does not send the name again.
+    await expect(name).toBeFocused();
+    await name.press("Tab");
+    await page.waitForTimeout(300);
+    expect(saves).toEqual(["Renamed With Enter"]);
+    await name.focus();
+    await name.fill("Typed and given up");
+    await name.press("Escape");
+    await expect(name).toHaveValue("Renamed With Enter");
+    await expect(name).toBeFocused();
+    await name.press("Tab");
+    await page.waitForTimeout(400);
+    await expect(card.locator(".project-open strong")).toHaveText("Renamed With Enter");
+    expect((await listedProjects(request)).find(project=>project.path===boot.cwd)?.name).toBe("Renamed With Enter");
+    expect(saves).toEqual(["Renamed With Enter"]);
+    // Escape in the field does not leave the page.
+    await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  });
+
+  test("Enter and then leaving the field while the save is still on its way sends the name once",async({page,request})=>{
+    const boot=await open(page,request);
+    const saves=[];
+    await page.route(/\/api\/projects$/,async route=>{
+      if(route.request().method()!=="POST")return route.fallback();
+      saves.push(route.request().postDataJSON()?.name);
+      await new Promise(resolve=>setTimeout(resolve,600));
+      return route.fallback();
+    });
+    await openProjects(page);
+    const card=page.locator(".project-card.active");
+    await card.getByRole("button",{name:/Project identity/}).click();
+    const name=card.getByRole("textbox",{name:"Name"});
+    await name.fill("Sent Once");
+    await name.press("Enter");
+    await name.press("Tab");
+    await expect(card.locator(".project-open strong")).toHaveText("Sent Once");
+    await expect.poll(async()=>(await listedProjects(request)).find(project=>project.path===boot.cwd)?.name).toBe("Sent Once");
+    expect(saves).toEqual(["Sent Once"]);
+  });
+
+  for(const mode of MODES)test(`clearing the name puts the saved name back and says why (${mode})`,async({page,request})=>{
+    const boot=await open(page,request,{mode});
+    await openProjects(page);
+    const card=page.locator(".project-card.active");
+    await card.getByRole("button",{name:/Project identity/}).click();
+    const name=card.getByRole("textbox",{name:"Name"});
+    await name.fill("   ");
+    await name.press("Tab");
+    await expect(name).toHaveValue(MAIN);
+    const note=card.getByText("A project needs a name, so the saved one is back.");
+    await expect(note).toBeVisible();
+    await expect(card.locator(".project-open strong")).toHaveText(MAIN);
+    expect((await listedProjects(request)).find(project=>project.path===boot.cwd)?.name).toBe(MAIN);
+    await card.locator(".project-identity-editor").scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+`project-name-cleared-${mode}-1280.png`});
+    // The note goes once the name is edited again.
+    await name.fill(MAIN+" 2");
+    await expect(note).toHaveCount(0);
   });
 });
