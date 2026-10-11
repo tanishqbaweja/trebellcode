@@ -41,7 +41,7 @@ import { normalizeProviderId } from "./provider-manager.mjs";
 import { isRetiredModelProvider, isRetiredProviderModel, migrateLegacyNativeThread } from "./legacy-provider-migration.mjs";
 import { NativeToolOutputStore } from "./native-tool-output-store.mjs";
 import { threadTitleFromText } from "./agent-thread-store.mjs";
-import { compareSectionOrder, sectionMovePlacement, sectionRanks, threadSectionId } from "./thread-section-order.mjs";
+import { compareSectionOrder, sectionMovePlacement, sectionRanks, threadSectionId, withSectionPlace } from "./thread-section-order.mjs";
 import { trebellHome } from "./paths.mjs";
 import { dirname, join } from "node:path";
 
@@ -397,8 +397,8 @@ export function paginateAgentThreads(threads=[],params={}){
     start=data.findIndex(thread=>String(thread.id)===String(anchor.id));if(start<0)throw Object.assign(new Error("Thread list cursor no longer exists"),{code:-32602});
   }
   const pageSize=Math.max(1,Math.min(200,Number(params.limit)||100)),next=data[start+pageSize]||null;let selected=data.slice(start,start+pageSize);
-  // Every listed thread says where it sits in its section (Codex's listing does not; the sidebar asks Codex for each section's order).
-  if(!archived){const ranks=sectionRanks(threads);selected=selected.map(thread=>({...thread,sectionRank:ranks.get(String(thread.id))??null}))}
+  // Every listed thread says where it sits in its section and whether a person put it there (Codex's listing says neither).
+  if(!archived){const ranks=sectionRanks(threads);selected=selected.map(thread=>withSectionPlace(thread,ranks))}
   return {data:selected,nextCursor:next?threadListCursor(next,signature):null,backwardsCursor:selected.length?threadListCursor(selected[0],signature):null};
 }
 
@@ -425,7 +425,9 @@ function parseThreadSearchPageCursor(cursor){
   try{return JSON.parse(Buffer.from(raw.slice("agent-thread-search-v1:".length),"base64url").toString("utf8"))}catch{return null}
 }
 
-export function searchAgentThreads(threads=[],params={}){
+// ranks: every listed thread's place in its section (sectionRanks over all the runtime's threads), which a found thread carries as
+// thread/list gives it, so a thread found beyond the sidebar's first page can still be moved.
+export function searchAgentThreads(threads=[],params={},{ranks=null}={}){
   const term=String(params.searchTerm||"").trim();if(!term)throw Object.assign(new Error("thread/search requires a non-empty searchTerm"),{code:-32602});
   const archived=params.archived===true,sortKey=String(params.sortKey||"created_at"),direction=String(params.sortDirection||"desc").toLowerCase()==="asc"?1:-1;
   const matches=(threads||[]).filter(thread=>Boolean(thread?.archived)===archived).map(thread=>({thread,snippet:searchThreadSnippet(thread,term)})).filter(item=>item.snippet);
@@ -439,7 +441,7 @@ export function searchAgentThreads(threads=[],params={}){
   }
   const pageSize=Math.max(1,Math.min(200,Number(params.limit)||50)),selected=matches.slice(start,start+pageSize),next=matches[start+pageSize]||null;
   return {
-    data:selected.map(item=>({thread:{...item.thread,turns:[],historyMode:"paginated"},snippet:item.snippet})),
+    data:selected.map(item=>({thread:{...(ranks&&!archived?withSectionPlace(item.thread,ranks):item.thread),turns:[],historyMode:"paginated"},snippet:item.snippet})),
     nextCursor:next?threadSearchPageCursor(next.thread,signature):null,
     backwardsCursor:selected.length?threadSearchPageCursor(selected[0].thread,signature):null,
   };
@@ -1185,7 +1187,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // thread metadata) can never be valid for the replacement provider: drop it instead of sending it on.
     if(runtime==="native"&&(method==="thread/start"||method==="turn/start")&&params?.model&&(isRetiredModelProvider(params.modelProvider)||isRetiredProviderModel(params.model)))params={...params,model:null};
     if(method==="thread/list")return paginateAgentThreads(threadStore.list(runtime),params);
-    if(method==="thread/search")return searchAgentThreads(typeof threadStore.searchCandidates==="function"?threadStore.searchCandidates(runtime,params.searchTerm,{archived:params.archived===true}):threadStore.list(runtime),params);
+    if(method==="thread/search")return searchAgentThreads(typeof threadStore.searchCandidates==="function"?threadStore.searchCandidates(runtime,params.searchTerm,{archived:params.archived===true}):threadStore.list(runtime),params,{ranks:params.archived===true?null:sectionRanks(threadStore.list(runtime))});
     if(method==="thread/read"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       return {thread:params.includeTurns===false?{...thread,turns:[]}:thread};

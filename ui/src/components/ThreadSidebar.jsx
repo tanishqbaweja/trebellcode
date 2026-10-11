@@ -12,6 +12,7 @@ import { shouldVirtualizeSidebarGroup, sidebarChunkIndexForThread, sidebarVirtua
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
 import { fullDateTime, relativeTime } from "../time-format.js";
 import { shortcutHint as formatShortcutHint } from "../keybindings.js";
+import "./ThreadSidebar.css";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
 
@@ -53,9 +54,9 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
     if(!copied)throw new Error("Could not copy to clipboard.");
   };
   const runMenuAction=callback=>{if(menuRef.current)menuRef.current.open=false;return runAction(callback)};
-  // A thread its runtime keeps no place for (Codex orders the threads outside a section by recent activity) cannot be moved. A section
-  // whose order could not be read has no place either, but the list's error names it instead.
-  const orderHint=Number.isFinite(thread.sectionRank)||thread.section?.id||thread.section?.name?undefined:"This list is kept in order of recent activity";
+  // Why a thread cannot be moved: Codex orders the threads outside a section by recent activity only, and a thread of a section whose
+  // order could not be read has no place to move from (the reason is named).
+  const orderHint=thread.sectionOrderError||(agentRuntime==="codex"&&!thread.section?.id&&!thread.section?.name?"This list is kept in order of recent activity":undefined);
   return <div className={active?"thread-row active":"thread-row"} data-thread-id={thread.id}>
     {bulk&&<input className="thread-select" type="checkbox" checked={selected} disabled={foreignRuntime} title={foreignRuntime?"Open this thread before applying bulk actions":undefined} onChange={()=>onSelect(thread.id)}/>}
     <button className="thread-main" onClick={()=>runAction(()=>onOpen(thread))} title={titleOf(thread)}>
@@ -241,7 +242,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
     <div className="thread-sections" ref={sectionsRef}>
       {listFailure}
       {groups.map(({key,name,threads:items})=>{const virtualized=shouldVirtualizeSidebarGroup(items),chunks=virtualized?sidebarVirtualChunks(items):[],activeChunk=virtualized?sidebarChunkIndexForThread(chunks,activeThreadId):-1;return items.length>0&&<section key={key}>
-        <h4>{name}<span>{items.length}</span></h4>
+        <h4><span className="thread-group-name" title={name}>{name}</span><span className="thread-group-count">{items.length}</span></h4>
         {virtualized?chunks.map((chunk,index)=><SidebarVirtualChunk key={chunk.key} chunk={chunk} rootRef={sectionsRef} forceMount={index===activeChunk} initialMount={key===firstGroupKey&&index===0} activeThreadId={activeThreadId} renderRow={renderRow}/>):items.map(renderRow)}
       </section>})}
       {!threads.length&&!listFailure&&<div className="sidebar-empty" role={query||listLoaded?undefined:"status"}>{emptyText}</div>}

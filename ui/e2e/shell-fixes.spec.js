@@ -46,7 +46,8 @@ async function openApp(page,{harness,threads,meta,project=null,runtime="codex",s
   const appSettings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...(project?{activeProjectId:project.id}:{}),...settings};
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd,platform:process.platform,version:"shell-fixes-fixture",activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/state$/,route=>json(route,{settings:appSettings,projects:project?[project]:[],threadMeta:meta}));
-  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,{...appSettings,...(route.request().postDataJSON()||{})}):route.fallback());
+  // A saved setting is kept, as the server keeps it, so a reload reads it back.
+  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,Object.assign(appSettings,route.request().postDataJSON()||{})):route.fallback());
   await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,{models:["fixture-model"],metadata:{provider:runtime,models:[{id:"fixture-model",name:"Fixture Model",provider:runtime,agent:"Fixture"}]}}));
   await page.route(/\/api\/thread-meta(?:\?|$)/,route=>{const id=new URL(route.request().url()).searchParams.get("threadId")||route.request().postDataJSON?.()?.threadId;return json(route,meta[id]||{projectless:!project,environmentId:null})});
   await page.route(/\/api\/checkpoints(?:\?|$)/,route=>json(route,route.request().method()==="GET"?{checkpoints:[]}:{supported:false}));
@@ -72,11 +73,12 @@ async function startRelay(home,runtime="native"){
 // A Codex app-server's sections as the bundled one (0.155.1) keeps them, checked live in an isolated CODEX_HOME: each section has its
 // own order (thread/section/move puts a thread before a thread in that section or at its end, and thread/list sorts a section by
 // section_position, top first, only with a section filter); a move changes no thread's updatedAt; the threads outside a section have no
-// order (a thread to go before is refused there); and a fresh home already has a Pinned section.
+// order (a thread to go before is refused there); and a fresh home already has a Pinned section. thread/list gives one page of the
+// newest threads, and thread/search finds threads by name, newest first, with no place in their section.
 async function startCodexHarness(threads,sections,{failOrder=[]}={}){
   const order=new Map(sections.map(section=>[section.id,threads.filter(thread=>thread.section?.id===section.id).map(thread=>thread.id)]));
   const fail=message=>({rpcError:{code:-32600,message}});
-  return startHarness(threads,{respond:message=>{
+  return Object.assign(await startHarness(threads,{respond:message=>{
     const params=message.params||{};
     if(message.method==="threadSection/list")return {data:sections,nextCursor:null};
     if(message.method==="thread/list"){
@@ -85,7 +87,11 @@ async function startCodexHarness(threads,sections,{failOrder=[]}={}){
         if(failOrder.includes(params.sectionId))return fail("section order unavailable");
         return {data:(order.get(params.sectionId)||[]).map(id=>({...threads.find(thread=>thread.id===id),turns:[]})),nextCursor:null};
       }
-      return {data:[...threads].sort((a,b)=>b.updatedAt-a.updatedAt).map(thread=>({...thread,turns:[]})),nextCursor:null};
+      return {data:[...threads].sort((a,b)=>b.updatedAt-a.updatedAt).slice(0,Number(params.limit)||100).map(thread=>({...thread,turns:[]})),nextCursor:null};
+    }
+    if(message.method==="thread/search"){
+      const term=String(params.searchTerm||"").toLowerCase();
+      return {data:threads.filter(thread=>!thread.archived&&String(thread.name||"").toLowerCase().includes(term)).sort((a,b)=>b.updatedAt-a.updatedAt).map(thread=>({thread:{...thread,turns:[]},snippet:thread.name})),nextCursor:null};
     }
     if(message.method==="thread/section/move"){
       const thread=threads.find(item=>item.id===params.threadId),sectionId=params.sectionId??null,before=params.beforeThreadId??null;
@@ -98,7 +104,7 @@ async function startCodexHarness(threads,sections,{failOrder=[]}={}){
       return {};
     }
     return undefined;
-  }});
+  }}),{order});
 }
 const sidebarGroups=page=>page.locator(".thread-sections section").evaluateAll(sections=>sections.map(section=>[section.querySelector("h4").firstChild.textContent,[...section.querySelectorAll(".thread-main")].map(node=>node.title)]));
 const threadRow=(page,name)=>page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
@@ -530,7 +536,8 @@ test("Move up and Move down reorder a relay harness's threads, and the order sur
     expect(relay.threadStore.list("native").map(thread=>[thread.name,thread.updatedAt])).toEqual(names.map((name,index)=>[name,base-index*60]));
     await page.reload();
     await expect.poll(()=>sidebarGroups(page)).toEqual(moved);
-    // Pinned threads keep their own order: a pinned thread goes first, and moves within Pinned stay there.
+    // A pinned thread takes its place in Pinned by recent activity (Relay order one is the newer, and its place in Active does not come
+    // along), and a move within Pinned stays there.
     await (await menu("Relay order three")).getByRole("button",{name:"Pin",exact:true}).click();
     await (await menu("Relay order one")).getByRole("button",{name:"Pin",exact:true}).click();
     await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Relay order one","Relay order three"]],["Active",["Relay order two","Relay order four"]]]);
@@ -545,11 +552,12 @@ test("Move up and Move down reorder a relay harness's threads, and the order sur
   }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
 });
 
-test("on Codex the sidebar shows each section in Codex's own order, moves within it, keeps a thread of any section, and moves nothing Codex cannot order",async({page})=>{
+test("on Codex a section shows by recent activity until a person orders it, then in Codex's own order, and moves nothing Codex cannot order",async({page})=>{
   test.setTimeout(60_000);
   const sections=[{id:"0198-pinned",name:"Pinned",appearance:null},{id:"0198-snoozed",name:"Snoozed",appearance:null},{id:"0198-settled",name:"Settled",appearance:null},{id:"0199-research",name:"Research",appearance:null}];
   const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-900,turns:[]},section=id=>sections.find(item=>item.id===id);
-  // Codex's Pinned order is alpha, beta, gamma: the order they were pinned, not their last updates (gamma is the newest).
+  // Codex's Pinned order is alpha, beta, gamma: the order they were pinned (Codex adds a thread with no thread to go before at the end of
+  // a section), not their last updates (gamma is the newest). The sidebar has always shown Pinned by recent activity.
   const threads=[
     {...base,id:"pinned-alpha",name:"Pinned alpha",updatedAt:now()-300,section:section("0198-pinned")},
     {...base,id:"pinned-beta",name:"Pinned beta",updatedAt:now()-200,section:section("0198-pinned")},
@@ -564,10 +572,13 @@ test("on Codex the sidebar shows each section in Codex's own order, moves within
   const close=async row=>{await row.locator(".thread-menu summary").click();await expect(row.locator(".thread-menu")).not.toHaveAttribute("open","")};
   const move=async(name,label)=>(await menu(name)).getByRole("button",{name:label,exact:true}).click();
   const moves=()=>harness.requests.filter(request=>request.method==="thread/section/move").map(request=>request.params);
+  const order=id=>harness.order.get(id);
   try{
     await openApp(page,{harness,threads,meta});
-    // The thread in the Research section (made in another Codex client) has a group of its own instead of vanishing.
-    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned alpha","Pinned beta","Pinned gamma"]],["Active",["Codex active one","Codex active two"]],["Research",["Research notes"]]]);
+    // Nobody has ordered Pinned in Trebell, so it shows by recent activity as it always has (not Codex's order of entry). The thread in
+    // the Research section (made in another Codex client) has a group of its own instead of vanishing.
+    const unordered=[["Pinned",["Pinned gamma","Pinned beta","Pinned alpha"]],["Active",["Codex active one","Codex active two"]],["Research",["Research notes"]]];
+    await expect.poll(()=>sidebarGroups(page)).toEqual(unordered);
     for(const mode of ["dark","light"]){
       await page.evaluate(value=>{document.documentElement.dataset.mode=value;document.documentElement.style.colorScheme=value},mode);
       await page.screenshot({path:join(shotsDir,`sidebar-codex-sections-${mode}-1600x980.png`),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
@@ -581,33 +592,84 @@ test("on Codex the sidebar shows each section in Codex's own order, moves within
     await expect(research.getByRole("button",{name:"Move up",exact:true})).toBeDisabled();await expect(research.getByRole("button",{name:"Move down",exact:true})).toBeDisabled();
     await expect(research.getByRole("button",{name:"Move up",exact:true})).not.toHaveAttribute("title",/./);
     await close(research);
-    // Within Pinned, a move is Codex's own: before the thread above, or before the thread after the next one.
-    await move("Pinned gamma","Move up");
-    await expect.poll(moves).toEqual([{threadId:"pinned-gamma",sectionId:"0198-pinned",beforeThreadId:"pinned-beta"}]);
-    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned alpha","Pinned gamma","Pinned beta"]],["Active",["Codex active one","Codex active two"]],["Research",["Research notes"]]]);
-    await move("Pinned alpha","Move down");
-    await expect.poll(()=>moves().at(-1)).toEqual({threadId:"pinned-alpha",sectionId:"0198-pinned",beforeThreadId:"pinned-beta"});
-    const reordered=[["Pinned",["Pinned gamma","Pinned alpha","Pinned beta"]],["Active",["Codex active one","Codex active two"]],["Research",["Research notes"]]];
+    // The first move in Pinned writes the order the sidebar shows into Codex, with the move made (here alpha only has to go to the end),
+    // and saves Pinned as ordered.
+    await move("Pinned beta","Move up");
+    await expect.poll(moves).toEqual([{threadId:"pinned-alpha",sectionId:"0198-pinned",beforeThreadId:null}]);
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned beta","Pinned gamma","Pinned alpha"]],["Active",["Codex active one","Codex active two"]],["Research",["Research notes"]]]);
+    expect(order("0198-pinned")).toEqual(["pinned-beta","pinned-gamma","pinned-alpha"]);
+    // From then on a move is Codex's own: before the thread after the next one.
+    await move("Pinned beta","Move down");
+    await expect.poll(()=>moves().at(-1)).toEqual({threadId:"pinned-beta",sectionId:"0198-pinned",beforeThreadId:"pinned-alpha"});
+    const reordered=[["Pinned",["Pinned gamma","Pinned beta","Pinned alpha"]],["Active",["Codex active one","Codex active two"]],["Research",["Research notes"]]];
     await expect.poll(()=>sidebarGroups(page)).toEqual(reordered);
+    expect(order("0198-pinned")).toEqual(["pinned-gamma","pinned-beta","pinned-alpha"]);
+    // Ordered by hand, Pinned keeps that order through a reload, and through activity in a thread lower down.
+    threads.find(thread=>thread.id==="pinned-alpha").updatedAt=now();
     await page.reload();
-    await expect.poll(()=>sidebarGroups(page)).toEqual(reordered);
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned gamma","Pinned beta","Pinned alpha"]],["Active",["Codex active one","Codex active two"]],["Research",["Research notes"]]]);
     await page.screenshot({path:join(shotsDir,"sidebar-codex-pinned-moves-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
-    // A pinned thread goes first in Pinned; its undo sends it back without a thread to go before (Codex refuses one outside a section).
+    // In a section ordered by hand a pinned thread goes first; its undo sends it back without a thread to go before (Codex refuses one
+    // outside a section).
     await move("Codex active two","Pin");
     await expect.poll(()=>moves().at(-1)).toEqual({threadId:"active-two",sectionId:"0198-pinned",beforeThreadId:"pinned-gamma"});
-    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Codex active two","Pinned gamma","Pinned alpha","Pinned beta"]],["Active",["Codex active one"]],["Research",["Research notes"]]]);
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Codex active two","Pinned gamma","Pinned beta","Pinned alpha"]],["Active",["Codex active one"]],["Research",["Research notes"]]]);
     await page.getByTestId("thread-undo-toast").getByRole("button",{name:"Undo",exact:true}).click();
     await expect.poll(()=>moves().at(-1)).toEqual({threadId:"active-two",sectionId:null,beforeThreadId:null});
+    await expect.poll(()=>sidebarGroups(page)).toEqual(reordered);
+    // Unpinned and pinned again, a thread of Pinned goes back to its place there: before the thread that followed it.
+    await move("Pinned beta","Unpin");
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned gamma","Pinned alpha"]],["Active",["Codex active one","Codex active two","Pinned beta"]],["Research",["Research notes"]]]);
+    await page.getByTestId("thread-undo-toast").getByRole("button",{name:"Undo",exact:true}).click();
+    await expect.poll(()=>moves().at(-1)).toEqual({threadId:"pinned-beta",sectionId:"0198-pinned",beforeThreadId:"pinned-alpha"});
     await expect.poll(()=>sidebarGroups(page)).toEqual(reordered);
     await expect(page.getByText(/Undo failed/)).toHaveCount(0);
   }finally{await harness.close()}
 });
 
-test("on Codex a section whose order cannot be read still shows its threads, and the sidebar names it",async({page})=>{
+test("on Codex a section nobody ordered keeps its order by recent activity, and a newly pinned thread lands where its activity puts it",async({page})=>{
+  test.setTimeout(45_000);
+  const sections=[{id:"0198-pinned",name:"Pinned",appearance:null},{id:"0198-snoozed",name:"Snoozed",appearance:null},{id:"0198-settled",name:"Settled",appearance:null}];
+  const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-9000,turns:[]},pinned=sections[0];
+  // Pinned in this order (Codex keeps it: each was added at the end): the first long ago, the last recently; the last is in daily use.
+  const threads=[
+    {...base,id:"first-pinned",name:"First pinned (stale)",updatedAt:now()-7200,section:pinned},
+    {...base,id:"second-pinned",name:"Second pinned",updatedAt:now()-3600,section:pinned},
+    {...base,id:"third-pinned",name:"Last pinned (in daily use)",updatedAt:now()-60,section:pinned},
+    {...base,id:"to-pin",name:"Thread pinned now",updatedAt:now()-30,section:null},
+    {...base,id:"older-active",name:"An older active thread",updatedAt:now()-5000,section:null},
+  ];
+  const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  const harness=await startCodexHarness(threads,sections);
+  const menu=async name=>{const row=threadRow(page,name);await row.hover();await row.locator(".thread-menu summary").click();return row};
+  const moves=()=>harness.requests.filter(request=>request.method==="thread/section/move").map(request=>request.params);
+  try{
+    await openApp(page,{harness,threads,meta});
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Last pinned (in daily use)","Second pinned","First pinned (stale)"]],["Active",["Thread pinned now","An older active thread"]]]);
+    // A new pin is added as Codex adds one (at the end of its order) and shows where its activity puts it; so does an older one.
+    await (await menu("Thread pinned now")).getByRole("button",{name:"Pin",exact:true}).click();
+    await expect.poll(moves).toEqual([{threadId:"to-pin",sectionId:"0198-pinned",beforeThreadId:null}]);
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Thread pinned now","Last pinned (in daily use)","Second pinned","First pinned (stale)"]],["Active",["An older active thread"]]]);
+    await (await menu("An older active thread")).getByRole("button",{name:"Pin",exact:true}).click();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Thread pinned now","Last pinned (in daily use)","Second pinned","An older active thread","First pinned (stale)"]]]);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value;document.documentElement.style.colorScheme=value},mode);
+      await page.screenshot({path:join(shotsDir,`sidebar-codex-unordered-pins-${mode}-1600x980.png`),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+    }
+    // Activity still lifts a pinned thread nobody moved.
+    threads.find(thread=>thread.id==="first-pinned").updatedAt=now();
+    await page.reload();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["First pinned (stale)","Thread pinned now","Last pinned (in daily use)","Second pinned","An older active thread"]]]);
+    expect(harness.requests.some(request=>request.method==="thread/list"&&request.params?.sortKey==="section_position")).toBe(false);
+  }finally{await harness.close()}
+});
+
+test("on Codex a section whose order cannot be read still shows its threads, and only its Move items say so: the list did load",async({page})=>{
   test.setTimeout(45_000);
   const sections=[{id:"0198-pinned",name:"Pinned",appearance:null},{id:"0198-snoozed",name:"Snoozed",appearance:null},{id:"0198-settled",name:"Settled",appearance:null},{id:"0199-research",name:"Research",appearance:null}];
   const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-900,turns:[]},section=id=>sections.find(item=>item.id===id);
-  // Codex's Pinned order is alpha, then beta (beta is the newer one); Research's order cannot be read.
+  // Pinned and Research were ordered by hand. Codex's Pinned order is alpha, then beta (beta is the newer one); Research's order cannot
+  // be read.
   const threads=[
     {...base,id:"pinned-alpha",name:"Pinned alpha",updatedAt:now()-300,section:section("0198-pinned")},
     {...base,id:"pinned-beta",name:"Pinned beta",updatedAt:now()-200,section:section("0198-pinned")},
@@ -618,16 +680,160 @@ test("on Codex a section whose order cannot be read still shows its threads, and
   const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
   const harness=await startCodexHarness(threads,sections,{failOrder:["0199-research"]});
   try{
-    await openApp(page,{harness,threads,meta});
-    // Research's threads stay listed (newest first, as listed), Pinned keeps Codex's order, and the error says which order is missing.
+    await openApp(page,{harness,threads,meta,settings:{orderedThreadSections:["0198-pinned","0199-research"]}});
+    // Research's threads stay listed (newest first, as listed) and Pinned keeps Codex's order. The list loaded, so nothing says it failed.
     await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned alpha","Pinned beta"]],["Active",["Codex active one"]],["Research",["Research two","Research one"]]]);
-    const alert=page.locator(".sidebar-list-error");
-    await expect(alert).toContainText("Could not refresh threads");await expect(alert).toContainText(/Could not read the order of Research \(.*section order unavailable.*\)/);
-    await page.screenshot({path:join(shotsDir,"sidebar-codex-section-order-failed-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
-    // With no order, Research's threads cannot move, and the menu does not claim the list follows recent activity.
+    await expect(page.locator(".sidebar-list-error")).toHaveCount(0);await expect(page.getByText(/Could not refresh threads/)).toHaveCount(0);
+    // With no order, Research's threads cannot move, and their Move items name the order that could not be read.
     const row=threadRow(page,"Research two");await row.hover();await row.locator(".thread-menu summary").click();
-    for(const label of ["Move up","Move down"]){const item=row.getByRole("button",{name:label,exact:true});await expect(item).toBeDisabled();await expect(item).not.toHaveAttribute("title",/./)}
+    for(const label of ["Move up","Move down"]){const item=row.getByRole("button",{name:label,exact:true});await expect(item).toBeDisabled();await expect(item).toHaveAttribute("title","Could not read the order of Research: section order unavailable")}
+    await page.screenshot({path:join(shotsDir,"sidebar-codex-section-order-failed-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
     await row.locator(".thread-menu summary").click();await expect(row.locator(".thread-menu")).not.toHaveAttribute("open","");
+    // A turn that completes reloads the list; the unreadable order is not reported as a failed refresh either.
+    await openThread(page,"Codex active one");
+    harness.push("turn/started",{threadId:"active-one",turn:{id:"turn-x",status:"inProgress",items:[]}});
+    harness.push("turn/completed",{threadId:"active-one",turn:{id:"turn-x",status:"completed",items:[],durationMs:1200}});
+    await expect.poll(()=>harness.requests.filter(request=>request.method==="thread/list"&&request.params?.sectionId==="0199-research").length).toBeGreaterThan(1);
+    await settle(page);
+    await expect(page.getByText(/could not refresh/i)).toHaveCount(0);await expect(page.locator(".sidebar-list-error")).toHaveCount(0);
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned alpha","Pinned beta"]],["Active",["Codex active one"]],["Research",["Research two","Research one"]]]);
+  }finally{await harness.close()}
+});
+
+test("on a relay harness a thread pinned or settled and then un-done still rises with its activity, as every thread nobody moved does",async({page})=>{
+  test.setTimeout(45_000);
+  const home=await mkdtemp(join(tmpdir(),"trebell-relay-undo-"));const relay=await startRelay(home);
+  const base=Math.floor(Date.now()/1000)-3600,names=["Relay one","Relay two","Relay three","Relay four"];
+  const ids=names.map((name,index)=>relay.threadStore.importHistory({runtime:"native",cwd:process.cwd(),providerSessionId:"relay-undo-"+index,model:"fixture-model",name,preview:name,createdAt:base-600,updatedAt:base-index*60}).id);
+  const meta=Object.fromEntries(ids.map(id=>[id,{projectless:false,environmentId:null,runtime:"native"}]));
+  const menu=async name=>{const row=threadRow(page,name);await row.hover();await row.locator(".thread-menu summary").click();return row};
+  const undo=()=>page.getByTestId("thread-undo-toast").getByRole("button",{name:"Undo",exact:true}).click();
+  try{
+    await openApp(page,{harness:relay,threads:[],meta,runtime:"native"});
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",names]]);
+    await (await menu("Relay two")).getByRole("button",{name:"Pin",exact:true}).click();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Relay two"]],["Active",["Relay one","Relay three","Relay four"]]]);
+    await undo();await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",names]]);
+    await (await menu("Relay three")).getByRole("button",{name:"Settle",exact:true}).click();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",["Relay one","Relay two","Relay four"]],["Settled",["Relay three"]]]);
+    await undo();await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",names]]);
+    // Nobody moved them, so the relay keeps no place for them.
+    expect(relay.threadStore.list("native").map(thread=>[thread.name,thread.sectionPosition??null])).toEqual(names.map(name=>[name,null]));
+    // New activity in Relay four, then in Relay two: each rises to the top.
+    relay.threadStore.update(ids[3],{updatedAt:base+100},{touch:false});await page.reload();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",["Relay four","Relay one","Relay two","Relay three"]]]);
+    relay.threadStore.update(ids[1],{updatedAt:base+200},{touch:false});await page.reload();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",["Relay two","Relay four","Relay one","Relay three"]]]);
+    await page.screenshot({path:join(shotsDir,"sidebar-relay-undo-then-activity-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+  }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
+});
+
+test("on a relay harness a search finds a thread beyond the sidebar's first page as it is, with its place, and moves it",async({page})=>{
+  test.setTimeout(45_000);
+  const home=await mkdtemp(join(tmpdir(),"trebell-relay-search-"));const relay=await startRelay(home);
+  // 104 threads, a minute apart: the sidebar lists the newest 100, and Trebell's saved data knows the rest only by id.
+  const base=Math.floor(Date.now()/1000)-3600,ids=[];
+  for(let index=0;index<104;index++)ids.push(relay.threadStore.importHistory({runtime:"native",cwd:process.cwd(),providerSessionId:"relay-many-"+index,model:"fixture-model",name:index===103?"Needle oldest thread":index===102?"Needle second oldest":"Bulk thread "+String(index).padStart(3,"0"),createdAt:base-9000,updatedAt:base-index*60}).id);
+  const meta=Object.fromEntries(ids.map(id=>[id,{projectless:false,environmentId:null,runtime:"native"}]));
+  try{
+    await openApp(page,{harness:relay,threads:[],meta,runtime:"native"});
+    await expect(threadRow(page,"Bulk thread 000")).toBeVisible();
+    await page.getByRole("textbox",{name:"Search threads"}).fill("Needle");
+    await expect.poll(()=>sidebarGroups(page),{timeout:10_000}).toEqual([["Active",["Needle second oldest","Needle oldest thread"]]]);
+    const row=threadRow(page,"Needle second oldest");
+    await expect(row.locator(".thread-main > div > span")).toHaveText(/^fixture-model · /);await expect(row.locator(".thread-main > div > span")).not.toHaveText(/now$/);
+    await row.hover();await row.locator(".thread-menu summary").click();
+    await expect(row.getByRole("button",{name:"Move up",exact:true})).toBeDisabled();
+    const down=row.getByRole("button",{name:"Move down",exact:true});await expect(down).toBeEnabled();await expect(down).not.toHaveAttribute("title",/./);
+    await page.screenshot({path:join(shotsDir,"sidebar-relay-search-beyond-first-page-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+    await down.click();
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Active",["Needle oldest thread","Needle second oldest"]]]);
+    expect(Number.isFinite(relay.threadStore.getMetadata(ids[102]).sectionPosition)).toBe(true);
+  }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
+});
+
+test("on Codex a search finds a thread of a section beyond the sidebar's first page as it is, with a place there, and moves it",async({page})=>{
+  test.setTimeout(45_000);
+  const sections=[{id:"0198-pinned",name:"Pinned",appearance:null},{id:"0198-snoozed",name:"Snoozed",appearance:null},{id:"0198-settled",name:"Settled",appearance:null}];
+  const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-90000,turns:[]},pinned=sections[0];
+  // 104 threads a minute apart: the sidebar lists the newest 100 (the two newest are pinned), and Trebell's saved data knows the rest
+  // only by id. The two oldest, beyond that page, are pinned too; Codex's Pinned order is the order they were pinned.
+  const threads=Array.from({length:104},(_,index)=>({...base,id:"codex-many-"+index,name:index===103?"Needle oldest thread":index===102?"Needle second oldest":index<2?"Pinned recent "+index:"Bulk thread "+String(index).padStart(3,"0"),updatedAt:now()-3600-index*60,section:index<2||index>=102?pinned:null}));
+  const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  const harness=await startCodexHarness(threads,sections);
+  const moves=()=>harness.requests.filter(request=>request.method==="thread/section/move").map(request=>request.params);
+  const menu=async name=>{const row=threadRow(page,name);await row.hover();await row.locator(".thread-menu summary").click();return row};
+  try{
+    await openApp(page,{harness,threads,meta});
+    await expect(threadRow(page,"Bulk thread 002")).toBeVisible();
+    await page.getByRole("textbox",{name:"Search threads"}).fill("Needle");
+    await expect.poll(()=>sidebarGroups(page),{timeout:10_000}).toEqual([["Pinned",["Needle second oldest","Needle oldest thread"]]]);
+    const row=threadRow(page,"Needle second oldest");
+    await expect(row.locator(".thread-main > div > span")).toHaveText(/^fixture-model · /);await expect(row.locator(".thread-main > div > span")).not.toHaveText(/now$/);
+    await row.hover();await row.locator(".thread-menu summary").click();
+    await expect(row.getByRole("button",{name:"Move up",exact:true})).toBeDisabled();
+    const down=row.getByRole("button",{name:"Move down",exact:true});await expect(down).toBeEnabled();await expect(down).not.toHaveAttribute("title",/./);
+    await page.screenshot({path:join(shotsDir,"sidebar-codex-search-beyond-first-page-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+    // The first move in Pinned writes the order the sidebar shows (newest first) with the move made: only the moved thread goes to the end.
+    await down.click();
+    await expect.poll(moves).toEqual([{threadId:"codex-many-102",sectionId:"0198-pinned",beforeThreadId:null}]);
+    expect(harness.order.get("0198-pinned")).toEqual(["codex-many-0","codex-many-1","codex-many-103","codex-many-102"]);
+    await expect.poll(()=>sidebarGroups(page),{timeout:10_000}).toEqual([["Pinned",["Needle oldest thread","Needle second oldest"]]]);
+    // From then on the search's threads hold Codex's order, and Move up is Codex's own move.
+    await (await menu("Needle second oldest")).getByRole("button",{name:"Move up",exact:true}).click();
+    await expect.poll(()=>moves().at(-1)).toEqual({threadId:"codex-many-102",sectionId:"0198-pinned",beforeThreadId:"codex-many-103"});
+    await expect.poll(()=>sidebarGroups(page),{timeout:10_000}).toEqual([["Pinned",["Needle second oldest","Needle oldest thread"]]]);
+    expect(harness.order.get("0198-pinned")).toEqual(["codex-many-0","codex-many-1","codex-many-102","codex-many-103"]);
+  }finally{await harness.close()}
+});
+
+// A group is named after any section a thread is in, so its header gets whatever name a Codex client gave that section.
+for(const [width,height] of [[1180,800],[1280,800],[1600,980]])test(`a group named after a long section stays inside the sidebar and keeps its count at ${width}x${height}`,async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width,height});
+  const sections=[
+    {id:"0198-pinned",name:"Pinned",appearance:null},{id:"0198-snoozed",name:"Snoozed",appearance:null},{id:"0198-settled",name:"Settled",appearance:null},
+    {id:"0199-spaced",name:"Customer escalations and follow-ups for the Q4 planning cycle",appearance:null},
+    {id:"0199-unbroken",name:"customer_escalations_followups_2026_q4_planning_review",appearance:null},
+    {id:"0198f3a2-5c1e-7b3d-9a4f-2c8e1d6b7a90",name:"0198f3a2-5c1e-7b3d-9a4f-2c8e1d6b7a90",appearance:null},
+  ];
+  const base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-900,turns:[]},section=id=>sections.find(item=>item.id===id);
+  const threads=[
+    {...base,id:"p1",name:"Pinned work",updatedAt:now()-30,section:section("0198-pinned")},
+    {...base,id:"a1",name:"An active thread with a fairly long title that needs truncation in the sidebar",updatedAt:now()-10,section:null},
+    {...base,id:"s1",name:"Escalation follow-up thread",updatedAt:now()-40,section:section("0199-spaced")},
+    {...base,id:"u1",name:"Unbroken section thread",updatedAt:now()-50,section:section("0199-unbroken")},
+    {...base,id:"u2",name:"Another unbroken section thread",updatedAt:now()-55,section:section("0199-unbroken")},
+    {...base,id:"i1",name:"Id-named section thread",updatedAt:now()-60,section:section("0198f3a2-5c1e-7b3d-9a4f-2c8e1d6b7a90")},
+  ];
+  const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  const harness=await startCodexHarness(threads,sections);
+  try{
+    await openApp(page,{harness,threads,meta});
+    await expect.poll(()=>sidebarGroups(page)).toEqual([["Pinned",["Pinned work"]],["Active",["An active thread with a fairly long title that needs truncation in the sidebar"]],...sections.slice(3).map(item=>[item.name,threads.filter(thread=>thread.section?.id===item.id).map(thread=>thread.name)])]);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value;document.documentElement.style.colorScheme=value},mode);await settle(page);
+      // Read as a person sees a header: its name (the first thing in it, whatever element holds it) and its count (the last).
+      const metrics=await page.evaluate(()=>{
+        const list=document.querySelector(".sidebar .thread-sections"),edge=document.querySelector(".sidebar").getBoundingClientRect().right;
+        const box=node=>{if(node.nodeType===1)return node.getBoundingClientRect();const range=document.createRange();range.selectNodeContents(node);return range.getBoundingClientRect()};
+        return {scroll:list.scrollWidth,client:list.clientWidth,edge,headers:[...list.querySelectorAll("section h4")].map(h4=>{const name=h4.firstChild,count=h4.lastElementChild,element=name.nodeType===1?name:null;return {name:name.textContent,title:element?.title??null,truncated:Boolean(element)&&element.scrollWidth>element.clientWidth,nameRight:box(name).right,countLeft:count.getBoundingClientRect().left,countRight:count.getBoundingClientRect().right,count:count.textContent,height:h4.getBoundingClientRect().height,weight:getComputedStyle(element||h4).fontWeight,headerWeight:getComputedStyle(h4).fontWeight}})};
+      });
+      // Nothing is wider than the list, so it cannot be scrolled sideways, and every header's count shows inside the sidebar, after its name.
+      expect(metrics.scroll).toBeLessThanOrEqual(metrics.client);
+      for(const header of metrics.headers){
+        expect(header.countRight).toBeLessThanOrEqual(metrics.edge);expect(header.nameRight).toBeLessThanOrEqual(header.countLeft);
+        expect(header.title).toBe(header.name);expect(header.weight).toBe(header.headerWeight);expect(header.height).toBeLessThan(30);
+      }
+      // A name too long for one line ends in an ellipsis; the short ones are whole.
+      expect(metrics.headers.map(header=>[header.name,header.truncated,header.count])).toEqual([["Pinned",false,"1"],["Active",false,"1"],[sections[3].name,true,"1"],[sections[4].name,true,"2"],[sections[5].name,true,"1"]]);
+      await page.screenshot({path:join(shotsDir,`sidebar-long-section-names-${mode}-${width}x${height}.png`),animations:"disabled",clip:{x:0,y:0,width:Math.min(width,520),height:Math.min(height,640)}});
+      // Scrolled to its end and sideways, as a trackpad does: the threads stay in view.
+      const scrolled=await page.evaluate(()=>{const list=document.querySelector(".sidebar .thread-sections");list.scrollTop=list.scrollHeight;list.scrollLeft=1000;return list.scrollLeft});
+      expect(scrolled).toBe(0);await settle(page);
+      await page.screenshot({path:join(shotsDir,`sidebar-long-section-names-scrolled-${mode}-${width}x${height}.png`),animations:"disabled",clip:{x:0,y:0,width:Math.min(width,520),height}});
+      await page.evaluate(()=>{document.querySelector(".sidebar .thread-sections").scrollTop=0});
+    }
   }finally{await harness.close()}
 });
 

@@ -1,0 +1,5 @@
+/* A sidebar group's header keeps to one line: a name longer than the sidebar is wide (a Codex section can be named anything in another
+   Codex client) ends in an ellipsis, with the whole name in its tooltip, and the count after it always shows. This sheet loads before the
+   app's sheets, so its selectors outrank their "h4 span" rules; the name keeps the header's own type, as the bare text it replaces did. */
+.thread-sections section h4 span.thread-group-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:inherit;font-weight:inherit;letter-spacing:inherit;color:inherit}
+.thread-sections section h4 span.thread-group-count{flex:none}

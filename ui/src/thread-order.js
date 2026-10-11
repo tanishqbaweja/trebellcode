@@ -28,8 +28,10 @@ export function threadOrderGroup(threads,thread,threadMeta={}){
 // shows where the thread went.
 export function threadsInListOrder(found,threads){
   const list=threads||[],order=new Map(list.map((thread,index)=>[thread?.id,index]));
-  // A thread the list holds is shown as the list has it (a message match's own copy has no place in its section).
-  return (found||[]).map((thread,index)=>({thread:order.has(thread?.id)?list[order.get(thread.id)]:thread,index,at:order.has(thread?.id)?order.get(thread.id):Infinity}))
+  // A thread the list holds is shown as the list has it (a message match's own copy may have no place in its section), unless the list
+  // holds only what Trebell saved of it (a thread beyond the listed page): the search's own copy is the thread as it is now.
+  const shown=thread=>{const listed=order.has(thread?.id)?list[order.get(thread.id)]:null;return listed&&!listed.__trebellCatalog?listed:thread};
+  return (found||[]).map((thread,index)=>({thread:shown(thread),index,at:order.has(thread?.id)?order.get(thread.id):Infinity}))
     .sort((a,b)=>a.at-b.at||a.index-b.index).map(item=>item.thread);
 }
 
@@ -38,6 +40,37 @@ export function threadsInListOrder(found,threads){
 export function threadPlacementAnchor(threads,thread,threadMeta={}){
   const group=threadOrderGroup(threads,thread,threadMeta),index=group.findIndex(item=>item.id===thread?.id);
   return index>=0?group[index+1]?.id||null:null;
+}
+
+// Where an undo puts a thread back. beforeThreadId: the thread after it in the group the sidebar shows, where the list puts it back
+// right away. placed: whether it held a place a person gave it (sectionPlaced: a relay thread someone moved, any thread of a Codex
+// section someone ordered); only then does the runtime get anchorThreadId, the thread after it in that order (null for the end). A
+// thread nobody placed goes back with no thread to go before, so it takes its place by recent activity again and its activity still
+// lifts it.
+export function threadPlacement(threads,thread,threadMeta={}){
+  const group=sidebarThreadGroups(threads||[],threadMeta||{}).find(item=>item.threads.some(other=>other?.id===thread?.id))?.threads||[];
+  const index=group.findIndex(item=>item?.id===thread?.id),placed=Boolean(thread?.sectionPlaced)&&Number.isFinite(thread?.sectionRank);
+  return {beforeThreadId:index>=0?group[index+1]?.id||null:null,anchorThreadId:placed?threadPlacementAnchor(threads,thread,threadMeta):null,placed};
+}
+
+// The order a Codex section shown by recent activity is written in when a person first moves a thread in it: the threads as the
+// sidebar shows them (shown: ids, top first), then the section's other threads (members: Codex's listing of the section, which goes
+// beyond the sidebar's page) newest first, with the thread moved before beforeThreadId (null: the end).
+export function orderedSectionWithMove(shown=[],members=[],threadId,beforeThreadId=null){
+  const ids=new Set(members.map(item=>String(item.id))),moved=String(threadId);
+  if(!ids.has(moved))throw new Error("The thread is no longer in this section");
+  const top=[...new Set(shown.map(String))].filter(id=>ids.has(id)),seen=new Set(top);
+  const rest=members.map((item,index)=>({id:String(item.id),at:Number(item.updatedAt)||0,index})).filter(item=>!seen.has(item.id)).sort((a,b)=>b.at-a.at||a.index-b.index).map(item=>item.id);
+  const order=[...top,...rest].filter(id=>id!==moved),at=beforeThreadId==null?order.length:order.indexOf(String(beforeThreadId));
+  if(at<0)throw new Error("The thread to go before is no longer in this section");
+  order.splice(at,0,moved);return order;
+}
+
+// The threads to move to the end of a section, in turn, so that its order (current: ids, top first) becomes desired (the same ids):
+// the longest start of desired that current already holds in that order stays, and the rest goes to the end one by one.
+export function sectionOrderWrites(current=[],desired=[]){
+  let kept=0;for(const id of current)if(kept<desired.length&&String(id)===String(desired[kept]))kept++;
+  return desired.slice(kept).map(String);
 }
 
 // The first thread of a section, in the order its runtime keeps it: a thread moved into the section goes before it, so it shows first,

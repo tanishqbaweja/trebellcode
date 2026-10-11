@@ -1,8 +1,8 @@
-// The order the agent relay keeps for each section of a runtime's threads, top first, as Codex keeps its own sections
-// (thread/section/move puts a thread before another one or at the end of the section, and thread/list sorts a section by
-// section_position). The relay also keeps an order for the threads outside a section, which Codex orders by recent activity only.
-// A thread a person moved has a position; a thread nobody moved sits by its last update, newest first, so a new thread still comes
-// first. Threads at the same place are told apart by the tiebreak a move gives them, then by id.
+// The order the agent relay keeps for each section of a runtime's threads, top first (thread/section/move puts a thread before another
+// one or at the end of its section, and thread/list sorts a section by section_position, as Codex does). The relay also keeps an order
+// for the threads outside a section, which Codex orders by recent activity only. A thread a person moved has a position; a thread nobody
+// moved sits by its last update, newest first, so a new thread still comes first and a thread with new activity rises. Threads at the
+// same place are told apart by the tiebreak a move gives them, then by id.
 
 export function threadSectionId(thread){
   const section=thread?.section;if(!section)return null;
@@ -21,6 +21,11 @@ export function compareSectionOrder(left,right){
   const a=String(left?.id??""),b=String(right?.id??"");return a<b?1:a>b?-1:0;
 }
 
+// Whether a person put the thread where it is (a move gave it a position), so that its activity does not move it.
+export function sectionPlaced(thread){
+  const position=thread?.sectionPosition;return typeof position==="number"&&Number.isFinite(position);
+}
+
 // Each listed (unarchived) thread's place in its section, 0 for the top.
 export function sectionRanks(threads=[]){
   const sections=new Map(),ranks=new Map();
@@ -32,10 +37,15 @@ export function sectionRanks(threads=[]){
   return ranks;
 }
 
+// A listed thread with where it sits in its section (sectionRank, from sectionRanks) and whether a person put it there (sectionPlaced).
+export function withSectionPlace(thread,ranks){
+  return {...thread,sectionRank:ranks.get(String(thread?.id))??null,sectionPlaced:sectionPlaced(thread)};
+}
+
 // The order fields thread/section/move {threadId, sectionId, beforeThreadId} gives: a map of thread id to {sectionPosition,
-// sectionTiebreak}, the moved thread first. The thread goes right before beforeThreadId, which must be in the destination section, or
-// to the end of the section without one. A thread that leaves a section for the threads outside one, with no thread to go before,
-// takes its place by recent activity again, as Codex puts it.
+// sectionTiebreak}, the moved thread first. The thread goes right before beforeThreadId, which must be in the destination section.
+// Without one, a thread moved within its section goes to the end of it (Move down past the last thread), and a thread that enters or
+// leaves a section (Pin, Snooze, Settle, Wake, Unpin, and their undo) takes its place there by recent activity: nobody put it anywhere.
 export function sectionMovePlacement(threads=[],{threadId,sectionId=null,beforeThreadId=null}={}){
   const listed=(threads||[]).filter(thread=>thread?.id&&!thread.archived),thread=listed.find(item=>String(item.id)===String(threadId));
   if(!thread)throw new Error("Thread not found");
@@ -43,7 +53,7 @@ export function sectionMovePlacement(threads=[],{threadId,sectionId=null,beforeT
   const members=listed.filter(item=>String(item.id)!==String(thread.id)&&threadSectionId(item)===target).sort(compareSectionOrder);
   const placement=new Map(),place=(position,tiebreak=null)=>placement.set(String(thread.id),{sectionPosition:position,sectionTiebreak:tiebreak});
   if(!before){
-    if(!members.length||(target==null&&threadSectionId(thread)!==null))place(null);
+    if(!members.length||threadSectionId(thread)!==target)place(null);
     else place(sectionOrderKey(members.at(-1))-1);
     return placement;
   }

@@ -414,6 +414,44 @@ test("the agent relay keeps thread/section/move's place for every thread, lists 
   }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
 });
 
+test("on the agent relay a Pin, Snooze or Archive a person undoes gives a thread no place, so its activity still lifts it; a search hit carries its place",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-section-undo-")),env={...process.env,TREBELL_HOME:home};
+  const base=Math.floor(Date.now()/1000)-3600,threadStore=new AgentThreadStore(env);
+  const ids=["one","two","three","four"].map((name,index)=>threadStore.importHistory({runtime:"native",cwd:home,providerSessionId:"undo-"+name,name:"Undo "+name,createdAt:base-600,updatedAt:base-index*60}).id);
+  const [one,two,three,four]=ids,runtimeManager={instances:()=>[],activeInstance:()=>({id:"native-default",kind:"native"}),activeRuntime:()=>"native",probe:async()=>({available:false})};
+  const state={settings:()=>({activeEnvironmentId:null}),threadMeta:()=>({}),updateThreadMeta:()=>({}),threadUsage:()=>({totalTokens:0})};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
+  const ws=await connect("ws://127.0.0.1:"+await listen(server)+"/api/agent/ws"),rpc=request(ws);
+  const active=async()=>(await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"})).data.filter(thread=>!thread.section).sort((a,b)=>a.sectionRank-b.sectionRank).map(thread=>thread.id);
+  try{
+    // Pin four, then two: each joins Pinned with no place of its own, so Pinned shows them by recent activity; then two's undo as the
+    // sidebar sends it (back with no thread to go before), and four's unpin.
+    await rpc("thread/section/move",{threadId:four,sectionId:"Pinned",beforeThreadId:null});
+    const pinned=await rpc("thread/section/move",{threadId:two,sectionId:"Pinned",beforeThreadId:null});assert.equal(pinned.thread.sectionPosition,null);
+    assert.deepEqual((await rpc("thread/list",{limit:100,sectionId:"Pinned",sortKey:"section_position",sortDirection:"asc"})).data.map(thread=>thread.id),[two,four]);
+    const undone=await rpc("thread/section/move",{threadId:two,sectionId:null,beforeThreadId:null});assert.equal(undone.thread.sectionPosition,null);
+    await rpc("thread/section/move",{threadId:four,sectionId:null,beforeThreadId:null});
+    assert.deepEqual(await active(),[one,two,three,four]);
+    const listed=(await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"})).data;assert.ok(listed.every(thread=>thread.sectionPlaced===false));
+    // New activity in four, then in two: each rises to the top, as a thread nobody moved always has.
+    threadStore.update(four,{preview:"four again"});assert.deepEqual(await active(),[four,one,two,three]);
+    await new Promise(resolve=>setTimeout(resolve,1100));threadStore.update(two,{preview:"two again"});assert.deepEqual(await active(),[two,four,one,three]);
+    // A thread someone moved says so, and its undo (before the thread that followed it) gives its place back.
+    await rpc("thread/section/move",{threadId:three,sectionId:null,beforeThreadId:one});assert.deepEqual(await active(),[two,four,three,one]);
+    await rpc("thread/section/move",{threadId:three,sectionId:"Snoozed",beforeThreadId:null});await rpc("thread/section/move",{threadId:three,sectionId:null,beforeThreadId:one});
+    assert.deepEqual(await active(),[two,four,three,one]);
+    assert.deepEqual((await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"})).data.filter(thread=>thread.sectionPlaced).map(thread=>thread.id),[three]);
+    // Archive and unarchive keep the thread's section and place.
+    await rpc("thread/section/move",{threadId:one,sectionId:"Pinned",beforeThreadId:null});await rpc("thread/archive",{threadId:one});await rpc("thread/unarchive",{threadId:one});
+    const back=(await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"})).data.find(thread=>thread.id===one);
+    assert.deepEqual(back.section,{id:"Pinned",name:"Pinned"});assert.equal(back.sectionPlaced,false);
+    // A search finds a thread with the place in its section that thread/list gives it, beyond any page the sidebar listed.
+    const found=(await rpc("thread/search",{searchTerm:"Undo",limit:50,sortKey:"recency_at",sortDirection:"desc",archived:false})).data.map(entry=>entry.thread);
+    const ranks=Object.fromEntries((await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"})).data.map(thread=>[thread.id,[thread.sectionRank,thread.sectionPlaced]]));
+    assert.equal(found.length,4);for(const thread of found)assert.deepEqual([thread.sectionRank,thread.sectionPlaced],ranks[thread.id]);
+  }finally{ws.close();await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(home,{recursive:true,force:true}).catch(()=>{})}
+});
+
 test("agent global thread search finds persisted visible conversation text beyond titles",()=>{
   const threads=[
     {id:"old",name:"Unrelated title",createdAt:1,updatedAt:10,archived:false,turns:[{id:"o1",items:[{id:"ou",type:"userMessage",text:"Needle in an older request"},{id:"ot",type:"commandExecution",aggregatedOutput:"needle tool secret"},{id:"oa",type:"agentMessage",text:"final response"}]}]},

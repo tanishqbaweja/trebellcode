@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sectionFirstThread, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacementAnchor, threadsInListOrder } from "../ui/src/thread-order.js";
+import { orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadPlacementAnchor, threadsInListOrder } from "../ui/src/thread-order.js";
 
 const pinned={name:"Pinned",id:"pinned"};
 // Each thread's place in its section in list order, as the agent relay lists them (sectionRank).
@@ -110,6 +110,42 @@ test("search results keep the list's order, with threads the list does not hold 
   // A message match is shown as the list holds it (with its place in its section), not as the search returned it.
   const listed={id:"a1",sectionRank:3},match={id:"a1",name:"From the search"};
   assert.equal(threadsInListOrder([match],[listed])[0],listed);
+  // Unless the list holds only what Trebell saved of it (a thread beyond the listed page): the search's copy is the thread as it is now,
+  // with the place its runtime gave it, and it keeps the stub's slot in the list's order.
+  const stub={id:"old",name:null,__trebellCatalog:true},hit={id:"old",name:"Needle oldest thread",sectionRank:103,sectionPlaced:false};
+  assert.deepEqual(threadsInListOrder([hit,{id:"a1"}],[listed,stub]),[listed,hit]);
+});
+
+test("an undo hands its runtime the thread after it only when it held a place a person gave it",()=>{
+  // The relay says which threads a person moved (sectionPlaced); Codex's threads of an ordered section all hold theirs.
+  const threads=[{id:"a",sectionRank:0,sectionPlaced:false},{id:"b",sectionRank:1,sectionPlaced:true},{id:"c",sectionRank:2,sectionPlaced:false},{id:"p",section:pinned,sectionRank:0,sectionPlaced:false}];
+  assert.deepEqual(threadPlacement(threads,threads[0]),{beforeThreadId:"b",anchorThreadId:null,placed:false});
+  assert.deepEqual(threadPlacement(threads,threads[1]),{beforeThreadId:"c",anchorThreadId:"c",placed:true});
+  assert.deepEqual(threadPlacement([...threads.slice(0,2)],threads[1]),{beforeThreadId:null,anchorThreadId:null,placed:true});
+  // Codex outside a section: no place, but the list still puts it back before the thread it showed above.
+  const codex=[{id:"x",sectionRank:null,sectionPlaced:false},{id:"y",sectionRank:null,sectionPlaced:false}];
+  assert.deepEqual(threadPlacement(codex,codex[0]),{beforeThreadId:"y",anchorThreadId:null,placed:false});
+});
+
+test("a Codex section's first ordering writes the order the sidebar shows, with the move, in as few moves to its end as it takes",()=>{
+  // Codex keeps Pinned in the order threads entered it (alpha first); the sidebar shows it newest first, and a third thread is beyond
+  // the sidebar's page. Beta moves up: beta, gamma, then alpha, then the unlisted one.
+  const members=[{id:"alpha",updatedAt:100},{id:"beta",updatedAt:200},{id:"unlisted",updatedAt:50},{id:"gamma",updatedAt:300}];
+  const desired=orderedSectionWithMove(["gamma","beta","alpha"],members,"beta","gamma");
+  assert.deepEqual(desired,["beta","gamma","alpha","unlisted"]);
+  const writes=sectionOrderWrites(members.map(item=>item.id),desired);
+  // Beta then gamma already come in that order in Codex's, so only alpha and the unlisted thread move to the end.
+  assert.deepEqual(writes,["alpha","unlisted"]);
+  // Moving each write to the end of Codex's order gives the order wanted.
+  const apply=(order,ids)=>ids.reduce((current,id)=>[...current.filter(item=>item!==id),id],order);
+  assert.deepEqual(apply(members.map(item=>item.id),writes),desired);
+  // To the end of the section (Move down past the last listed thread), and nothing to write when Codex already holds that order.
+  assert.deepEqual(orderedSectionWithMove(["gamma","beta","alpha"],members,"gamma",null),["beta","alpha","unlisted","gamma"]);
+  assert.deepEqual(sectionOrderWrites(["a","b","c"],["a","b","c"]),[]);assert.deepEqual(sectionOrderWrites(["a","b","c"],["c","b","a"]),["b","a"]);
+  for(const [current,wanted] of [[["a","b","c","d"],["d","c","b","a"]],[["a","b","c","d"],["b","a","d","c"]],[["d","a","c","b"],["a","b","c","d"]]])assert.deepEqual(apply(current,sectionOrderWrites(current,wanted)),wanted);
+  // A thread that left the section since, or a thread to go before that did, is not guessed at.
+  assert.throws(()=>orderedSectionWithMove(["gamma"],members,"gone",null),/no longer in this section/);
+  assert.throws(()=>orderedSectionWithMove(["gamma"],members,"beta","gone"),/thread to go before is no longer in this section/);
 });
 
 test("a thread that is not in the ordered list has no moves",()=>{
