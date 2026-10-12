@@ -125,10 +125,10 @@ test("B12b: hashed assets are served immutable and index.html revalidates to a 3
 
 // B18: before any thread opened, with Native active, the server already ran a Codex app-server for the Codex catalog and a terminal
 // worker, each with its console host (scripts/perf/run.mjs startup: 5 processes under the server, about 120 MB beside its own 126-130
-// MB; the fifth is the server's own console host, which Windows starts for it and this count leaves out). The worker now starts with
-// the first terminal. The server runs as shipped (not mock) on a fresh home with Codex signed out, and the count is every process it
-// started, 2 s after it listens.
-test("B18: a server with Native active runs at most 2 child processes before a thread opens",{timeout:90000},async()=>{
+// MB; the fifth is the server's own console host, which Windows starts for it and this count leaves out). The catalog now starts for
+// Codex and the worker with the first terminal. The server runs as shipped (not mock) on a fresh home with Codex signed out, and the
+// count is every process it started, 2 s after it listens.
+test("B18: a server with Native active runs no child process before a thread opens",{timeout:90000},async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-budget-b18-")),[port,appPort]=await Promise.all([freePort(),freePort()]);
   const env={...process.env,TREBELL_HOME:home,CODEX_HOME:join(home,"codex-home"),TREBELL_GUI_MOCK:"",HARBOR_TELEMETRY:"0"};
   await mkdir(env.CODEX_HOME,{recursive:true});
@@ -141,7 +141,7 @@ test("B18: a server with Native active runs at most 2 child processes before a t
     assert.ok(listening,"the server listens");
     await sleep(2000);
     const children=descendants(await processTable(),[server.pid]).filter(row=>row.pid!==server.pid&&!(row.depth===1&&/^conhost\.exe$/i.test(row.name)));
-    assert.ok(children.length<=2,"child processes: "+children.map(row=>row.name+" "+(row.workingSet/1048576).toFixed(0)+" MB").join(", "));
+    assert.equal(children.length,0,"child processes: "+children.map(row=>row.name+" "+(row.workingSet/1048576).toFixed(0)+" MB").join(", "));
   }finally{
     // Killing the server leaves its children running on Windows, so taskkill takes the tree.
     if(process.platform==="win32")await new Promise(resolve=>{const killer=spawn("taskkill",["/PID",String(server.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});killer.once("exit",resolve);killer.once("error",resolve)});

@@ -42,7 +42,7 @@ import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
 import { StorageCleanupService } from "./storage-cleanup-service.mjs";
 import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
-import { prepareCodexHome } from "./codex-home-layout.mjs";
+import { prepareCodexHome, resolveCodexHomeLayout } from "./codex-home-layout.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { createNativeSourceControlExecutor, sourceControlEnvironmentKeys } from "./native-source-control.mjs";
@@ -274,6 +274,11 @@ export function codexAppServerEnvironment({env=process.env,runtimeInstance=null,
   };
 }
 
+// The Codex homes a local app-server for a runtime profile runs on (codex-home-layout.mjs).
+function codexHomeConfig(runtimeInstance,env){
+  return {homePath:runtimeInstance?.homePath?.trim()||null,shadowHomePath:runtimeInstance?.shadowHomePath?.trim()||null,defaultHome:String(env.CODEX_HOME||"").trim()||join(homedir(),".codex")};
+}
+
 async function startAppServer({appPort,env=process.env,mock=false,environments=null,environmentId=null,runtimeInstance=null,runtimeEnvironmentNames=null,command:runtimeCommand=null}){
   if(mock) return { child:null, logs:[], targetUrl:null, readyUrl:null, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default" };
   if(environmentId&&environments){
@@ -307,7 +312,7 @@ async function startAppServer({appPort,env=process.env,mock=false,environments=n
   }
   // The same Codex the status probe checked (AgentRuntimeManager.executable): the profile binary, else the user's installed CLI.
   const command=runtimeCommand||runtimeInstance?.binaryPath?.trim()||codexBin(env);
-  const homeLayout=await prepareCodexHome({homePath:runtimeInstance?.homePath?.trim()||null,shadowHomePath:runtimeInstance?.shadowHomePath?.trim()||null,defaultHome:String(env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
+  const homeLayout=await prepareCodexHome(codexHomeConfig(runtimeInstance,env));
   const runtimeHome=homeLayout.effectiveHomePath||null;
   if(runtimeHome)await mkdir(runtimeHome,{recursive:true});
   const runtimeEnv=codexAppServerEnvironment({env,runtimeInstance,runtimeHome});
@@ -348,6 +353,8 @@ async function waitForAppServer(instance,appPort,timeoutMs=15000){
   const started=Date.now();
   while(Date.now()-started<timeoutMs){
     if(await appServerReady(instance,appPort))return true;
+    // A server whose process has exited never becomes ready, so a stop during its boot ends the wait too.
+    if(instance.child&&(instance.child.exitCode!==null||instance.child.signalCode!==null))return false;
     await new Promise(resolve=>setTimeout(resolve,180));
   }
   return false;
@@ -1057,12 +1064,44 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     codexThreadReleases.set(id,releasing);
     try{return await releasing}finally{if(codexThreadReleases.get(id)===releasing)codexThreadReleases.delete(id)}
   }
-  let appServer=await ensureCodexAppServer(agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null,{preferredPort:appPort,ownerKey:"catalog"});
+  // The catalog app-server answers the Codex transport's requests that name no thread (initialize, thread/list, model/list,
+  // account/read), the Codex model catalog and Codex history import. No other runtime uses it, and Git text starts its own. So it
+  // starts with Codex active or with the first request that needs it, and the server listens without waiting for its boot (a Codex
+  // app-server and its console host, 48-80 MB, about 0.9 s to answer). Until then appServer holds only the runtime log the other
+  // services write to. Mock mode's catalog is a stub with no process, so it is there from the start as before.
+  let appServer={logs:[],idle:true},appServerStart=null,closing=false;
+  const catalogInstanceId=()=>agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null;
+  function catalogAppServer(){
+    if(closing)return Promise.reject(new Error("Trebell is shutting down"));
+    if(appServerStart)return appServerStart;
+    // A start that throws (no Codex profile, a Codex home it cannot prepare) leaves a server that says why, as one that never became
+    // ready does. A restart replaces the start, and one it replaced does not overwrite what replaced it.
+    const start=appServerStart=ensureCodexAppServer(catalogInstanceId(),{preferredPort:appPort,ownerKey:"catalog"})
+      .catch(error=>({child:null,logs:[],targetUrl:null,readyUrl:null,environment:null,appPort,error:error instanceof Error?error.message:String(error)}))
+      .then(server=>{if(appServerStart===start){if(appServer.idle)server.logs.unshift(...appServer.logs.slice(-250));appServer=server}return server});
+    return start;
+  }
+  if(mock)await catalogAppServer();else if(agentRuntimes.activeRuntime()==="codex")catalogAppServer().catch(()=>{});
+  // What the catalog app-server reports, known before it starts: the remote environment it runs in, and the Codex homes it runs on
+  // (startAppServer), whose sessions the history scan leaves out because Codex lists them itself.
+  function catalogEnvironment(){
+    if(!appServer.idle)return appServer.environment||null;
+    const id=state.settings().activeEnvironmentId||null,profile=id?environments.get(id):null;
+    return profile&&profile.type!=="local"?{id:profile.id,name:profile.name,type:profile.type,cwd:profile.cwd||""}:null;
+  }
+  function catalogCodexHomes(){
+    if(!appServer.idle)return [appServer.runtimeHome,appServer.sharedRuntimeHome].filter(Boolean);
+    const instance=codexInstance(catalogInstanceId());if(!instance||catalogEnvironment())return [];
+    const layout=resolveCodexHomeLayout(codexHomeConfig(instance,env));
+    return [layout.effectiveHomePath,layout.sharedHomePath].filter(Boolean);
+  }
 
   function providerReady(providerId=selectedProvider){
     return mock || providers.hasKey(providerId);
   }
   async function bootstrapPayload(req,{agentSnapshot=null}={}){
+    // Codex is ready once its catalog is, so a Codex bootstrap waits for the boot the server no longer waits for.
+    if(selectedAgentRuntime==="codex")await catalogAppServer().catch(()=>{});
     const appReady=mock || await appServerReady(appServer,appPort);
     const activeAgentInstance=agentRuntimes.activeInstance();
     const activeAgentStatus=agentSnapshot?.statuses?.find(item=>item.id===activeAgentInstance?.id)
@@ -1086,7 +1125,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       cwd:process.cwd(),
       platform:process.platform,
       version:TREBELL_VERSION,
-      activeEnvironment:appServer?.environment||null,
+      activeEnvironment:catalogEnvironment(),
       appServerError:appServer?.error||null,
     };
   }
@@ -1460,8 +1499,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
 
   async function restartAppServer(){
-    await stopCodexAppServers({keepGitText:true});
-    appServer=await ensureCodexAppServer(agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null,{preferredPort:appPort,ownerKey:"catalog"});
+    // A catalog still starting is stopped too: the first stop takes it once it has spawned, and the second one a start that spawned after.
+    await stopCodexAppServers({keepGitText:true});await appServerStart;await stopCodexAppServers({keepGitText:true});
+    appServer={logs:[],idle:true};appServerStart=null;
+    if(mock||agentRuntimes.activeRuntime()==="codex")await catalogAppServer();
     return appServer;
   }
 
@@ -1479,7 +1520,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   async function localAgentHistory(){
     const candidates=await scanLocalAgentHistory({
       env,
-      excludeHomes:[appServer?.runtimeHome,appServer?.sharedRuntimeHome].filter(Boolean),
+      excludeHomes:catalogCodexHomes(),
       includeClaude:env.TREBELL_HISTORY_DISABLE_CLAUDE!=="1",
     });
     const imported=importedHistorySourceIds();
@@ -1508,6 +1549,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           if(candidate.source==="codex"){
             if(selectedAgentRuntime!=="codex")throw new Error("Switch the active coding harness to Codex before importing Codex history");
             if(state.settings().activeEnvironmentId)throw new Error("Codex history import is local-only. Switch the active environment to Local machine first");
+            await catalogAppServer().catch(()=>{});
             if(!appServer?.targetUrl||appServer?.environment)throw new Error("Local Codex app-server is not available");
             if(!await waitForAppServer(appServer,appPort,15_000))throw new Error("Local Codex app-server is not ready");
             if(!codexClient){codexClient=new CodexAppServerClient(appServer.targetUrl,{clientVersion:TREBELL_VERSION});await codexClient.connect()}
@@ -2101,6 +2143,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(req.method==="GET"){
         try{
           const {publicCandidates}=await localAgentHistory();
+          if(selectedAgentRuntime==="codex")await catalogAppServer().catch(()=>{});
           const codexImport=codexHistoryImportStatus({runtime:selectedAgentRuntime,activeEnvironmentId:state.settings().activeEnvironmentId,appServer});
           return json(res,200,{
             sessions:publicCandidates,
@@ -2562,7 +2605,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         providerReady:providerReady(),
         appServerReady:mock || await appServerReady(appServer,appPort),
         appServerExitCode:appServer?.child?.exitCode ?? null,
-        activeEnvironment:appServer?.environment||null,
+        activeEnvironment:catalogEnvironment(),
         appServerError:appServer?.error||null,
         logs:[...(appServer?.logs||[])].sort((a,b)=>a.at-b.at).slice(-80),
       });
@@ -3056,7 +3099,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         server=await ensureCodexAppServer(instance.id,{environmentId,ownerKey:`thread:${threadId}`});
         codexThreadServerKeys.set(threadId,server.poolKey);
       }
-    }else server=appServer;
+    }else server=await catalogAppServer();
     if(server?.error)throw new Error(server.error);
     if(threadId&&!meta.runtimeInstanceId&&["thread/resume","thread/read","turn/start","turn/interrupt","turn/steer","thread/compact/start","thread/revert","review/start"].includes(message?.method))state.updateThreadMeta(threadId,{runtime:"codex",runtimeInstanceId:instance.id,environmentId});
     return {key:server.poolKey,url:server.targetUrl};
@@ -3119,7 +3162,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(message.method==="turn/completed")void pauseCodexGoalOverBudget(threadId,params.turn?.id||params.turnId||null,requestUpstream);
       return message;
     },
-    enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
+    // A catalog not started yet starts with the transport's first request (codexRelayTarget).
+    enabled:()=>mock || appServer.idle || Boolean(appServer?.child && appServer.child.exitCode===null),
       log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:safeLogText(message)}),
     // The journal drops noisy methods (token deltas, listings, reads), so the trace looks up the thread's meta and the settings only
     // for a method it keeps. A reply streams one delta per token, and each lookup was a sqlite read of the whole meta.
@@ -3200,7 +3244,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     server.once("error",reject);
     server.listen(port,host,resolve);
   });
-  if(!mock) waitForAppServer(appServer,appPort,15000).catch(()=>false);
   let cleanupTimer=null;
   let pullRequestSyncTimer=null,pullRequestSyncRunning=false;
   let autoPullTimer=null,autoPullRunning=false;
@@ -3243,6 +3286,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     url:`http://${host==="0.0.0.0"?"127.0.0.1":host}:${port}`,
     server,
     close:async()=>{
+      closing=true;
       if(cleanupTimer)clearInterval(cleanupTimer);
       if(pullRequestSyncTimer)clearInterval(pullRequestSyncTimer);
       if(autoPullTimer)clearInterval(autoPullTimer);
@@ -3252,7 +3296,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       await Promise.allSettled([
         cloneJobs.shutdown(),
         terminals?.shutdown(),
-        stopCodexAppServers(),
+        // A catalog still booting is stopped too, as restartAppServer does, so that no Codex app-server outlives the server.
+        stopCodexAppServers().then(()=>appServerStart).then(()=>stopCodexAppServers()),
         eventJournal.close(),
       ]);
       state.close();agentThreads.close();
