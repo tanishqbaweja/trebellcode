@@ -1,0 +1,94 @@
+import { test,expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
+
+const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
+mkdirSync(auditDir,{recursive:true});
+
+// A local site whose pages name their path, so a test can read which page the preview frame shows.
+async function startSite(port=0){
+  const server=createServer((req,res)=>{const path=new URL(req.url,"http://site").pathname;res.writeHead(200,{"content-type":"text/html; charset=utf-8"});res.end(`<!doctype html><title>Page ${path}</title><h1>Page ${path}</h1>`)});
+  await new Promise((resolve,reject)=>server.listen(port,"127.0.0.1",resolve).once("error",reject));
+  const address=server.address();
+  return {url:"http://127.0.0.1:"+address.port,port:address.port,close:()=>new Promise(resolve=>server.close(resolve))};
+}
+
+// The desktop bridge as desktop/preload.cjs gives it, scripted: an agent browser with a history of its own that reports its state
+// after each move, as desktop/main.mjs does, and notes the calls the panel makes.
+function scriptedAgentBrowser(){
+  const pages=[],listeners=new Set();let at=-1;window.agentBrowserCalls=[];
+  const current=()=>({open:at>=0,url:pages[at]||"",title:"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,width:1280,height:800});
+  const call=(name,move=()=>{})=>async(...args)=>{window.agentBrowserCalls.push(name);move(...args);for(const listener of listeners)listener(current());return current()};
+  Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{
+    state:async()=>current(),
+    onState:listener=>{listeners.add(listener);return()=>listeners.delete(listener)},
+    navigate:call("navigate",url=>{pages.splice(at+1);pages.push(url);at=pages.length-1}),
+    back:call("back",()=>{if(at>0)at--}),
+    forward:call("forward",()=>{if(at<pages.length-1)at++}),
+    reload:call("reload"),
+    snapshot:async()=>({url:pages[at]||"",title:"",elements:[]}),
+  }}});
+}
+
+async function openBrowserPanel(page,request){
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{},panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Preview Workspace",activate:true}});
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByTestId("right-panel-toggle").first().click();
+  const panel=page.getByTestId("right-panel");
+  await panel.getByRole("button",{name:"Browser",exact:true}).click();
+  const address=panel.getByRole("textbox",{name:"Page address"});
+  await expect(address).toBeVisible();
+  return {panel,address,frame:page.frameLocator('iframe[title="Trebell preview"]')};
+}
+
+// Types an address over the one in the bar, as a person does.
+async function typeAddress(page,address,value){await address.click();await page.keyboard.press("Control+A");await page.keyboard.type(value,{delay:8})}
+
+// Dark and light screenshots at 1280x800 and 900 wide. The mode is switched with the header's appearance toggle at 1280: at 900 the
+// open right panel lies over the header, and closing the panel would drop the preview, so a person widens the window to reach it.
+async function shots(page,name){
+  for(const mode of ["dark","light"]){
+    await page.setViewportSize({width:1280,height:800});
+    if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+".png"})}
+  }
+  await page.setViewportSize({width:1280,height:800});
+  await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
+}
+
+test("Back and Forward step through the pages the preview showed, and leave the agent browser's history alone",async({page,request})=>{
+  const site=await startSite();
+  try{
+    await page.addInitScript(scriptedAgentBrowser);
+    const {panel,address,frame}=await openBrowserPanel(page,request);
+    const back=panel.getByTitle("Back"),forward=panel.getByTitle("Forward"),heading=frame.locator("h1");
+    await expect(back).toBeDisabled();
+    // The agent browser opens /a and then /b, and the preview shows each; then an address typed in the bar is previewed.
+    await typeAddress(page,address,site.url+"/a");await panel.getByRole("button",{name:"Open agent browser"}).click();
+    await expect(heading).toHaveText("Page /a");
+    await typeAddress(page,address,site.url+"/b");await panel.getByRole("button",{name:"Open agent browser"}).click();
+    await expect(heading).toHaveText("Page /b");
+    await typeAddress(page,address,site.url+"/c");await page.keyboard.press("Enter");
+    await expect(heading).toHaveText("Page /c");
+    await back.click();
+    await expect(heading,"Back shows the page the preview showed before the typed one").toHaveText("Page /b");
+    await expect(address).toHaveValue(site.url+"/b");
+    await shots(page,"preview-back-to-previous-page");
+    await back.click();
+    await expect(heading).toHaveText("Page /a");
+    await expect(back).toBeDisabled();
+    await forward.click();
+    await expect(heading).toHaveText("Page /b");
+    await forward.click();
+    await expect(heading).toHaveText("Page /c");
+    await expect(address).toHaveValue(site.url+"/c");
+    await expect(forward).toBeDisabled();
+    expect(await page.evaluate(()=>window.agentBrowserCalls),"the agent browser was only asked to open its two pages").toEqual(["navigate","navigate"]);
+  }finally{await site.close()}
+});

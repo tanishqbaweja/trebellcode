@@ -31,7 +31,9 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   const [serverError,setServerError]=useState("");
   const [browserError,setBrowserError]=useState("");
   const [urlError,setUrlError]=useState("");
-  const [browserState,setBrowserState]=useState({open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:1280,height:800});
+  // Back and Forward step through the addresses this preview has shown, as a browser's do; the agent browser keeps its own
+  // history. They used to step the agent browser and show its page, so Back after typing an address went to an older agent page.
+  const [shown,setShown]=useState({pages:[],at:-1});
   const [viewport,setViewport]=useState({width:1280,height:800});
   const [history,setHistory]=useState([]);
   const [recording,setRecording]=useState(false);
@@ -66,8 +68,8 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   useEffect(()=>{
     const browser=window.trebellDesktop?.browser;if(!browser)return;
     let disposed=false;
-    browser.state?.().then(state=>{if(!disposed&&state){setBrowserError("");setBrowserState(state);if(state.width&&state.height)setViewport({width:state.width,height:state.height});if(state.url)remember(state.url,state.title)}}).catch(error=>{if(!disposed)setBrowserError(error?.message||String(error)||"Could not read Agent Browser state.")});
-    const unsubscribe=browser.onState?.(state=>{if(disposed||!state)return;setBrowserState(state);if(state.width&&state.height)setViewport({width:state.width,height:state.height});if(state.url)remember(state.url,state.title)});
+    browser.state?.().then(state=>{if(!disposed&&state){setBrowserError("");if(state.width&&state.height)setViewport({width:state.width,height:state.height});if(state.url)remember(state.url,state.title)}}).catch(error=>{if(!disposed)setBrowserError(error?.message||String(error)||"Could not read Agent Browser state.")});
+    const unsubscribe=browser.onState?.(state=>{if(disposed||!state)return;if(state.width&&state.height)setViewport({width:state.width,height:state.height});if(state.url)remember(state.url,state.title)});
     return()=>{disposed=true;unsubscribe?.()};
   },[projectPath]);
   useEffect(()=>{
@@ -79,7 +81,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     const open=event=>{
       const next=String(event.detail||"").trim();
       if(!next)return;
-      setDraft(next);setUrl(next);setKey(k=>k+1);
+      setDraft(next);show(next);setKey(k=>k+1);
     };
     window.addEventListener("trebell:preview-open",open);
     return()=>window.removeEventListener("trebell:preview-open",open);
@@ -93,7 +95,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
       if(action==="resetZoom"){setPreviewZoom(1);return}
       if(action==="refresh"){
         setKey(value=>value+1);
-        window.trebellDesktop?.browser?.reload?.().then(state=>{setBrowserError("");if(state)setBrowserState(state)}).catch(error=>setBrowserError(error?.message||String(error)||"Could not reload Agent Browser."));
+        window.trebellDesktop?.browser?.reload?.().then(()=>setBrowserError("")).catch(error=>setBrowserError(error?.message||String(error)||"Could not reload Agent Browser."));
       }
     };
     window.addEventListener("trebell:preview-command",command);
@@ -102,10 +104,13 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
 
   // Only a bare address gets the http:// prefix; another scheme ("file:///...") is kept so the check above rejects it.
   function normalized(){let next=draft.trim();if(next&&!/^https?:\/\//i.test(next)&&!/^[a-z][a-z0-9+.-]*:\/\//i.test(next))next="http://"+next;return next}
-  function go(){const next=normalized();if(next&&!previewableUrl(next)){setUrlError(INVALID_PREVIEW_URL);return}setUrlError("");setUrl(next);if(next)remember(next)}
+  // A new address drops the pages after the one shown, as a browser's history does.
+  function show(next){setUrl(next);setShown(current=>current.pages[current.at]===next?current:{pages:[...current.pages.slice(0,current.at+1),next],at:current.at+1})}
+  function step(by){const at=shown.at+by,next=shown.pages[at];if(!next)return;setShown(current=>({...current,at}));setDraft(next);setUrlError("");setUrl(next)}
+  function go(){const next=normalized();if(next&&!previewableUrl(next)){setUrlError(INVALID_PREVIEW_URL);return}setUrlError("");if(!next){setUrl("");return}show(next);remember(next)}
   async function openAgentUrl(next){
     if(!next)return;setBusy("open");
-    try{const state=await window.trebellDesktop?.browser?.navigate?.(next);setBrowserError("");setUrl(next);remember(next,state?.title);setSnapshot(await window.trebellDesktop?.browser?.snapshot?.())}
+    try{const state=await window.trebellDesktop?.browser?.navigate?.(next);setBrowserError("");show(next);remember(next,state?.title);setSnapshot(await window.trebellDesktop?.browser?.snapshot?.())}
     catch(error){setBrowserError(error?.message||String(error)||"Could not open Agent Browser.")}
     finally{setBusy("")}
   }
@@ -139,15 +144,15 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     }catch(error){setCookieStatus("Profile import failed: "+String(error?.message||error))}
     finally{setBusy("")}
   }
-  async function navigateHistory(direction){
-    const browser=window.trebellDesktop?.browser;if(!browser)return;setBusy(direction);
-    try{const state=direction==="back"?await browser.back?.():direction==="forward"?await browser.forward?.():await browser.reload?.();setBrowserError("");if(state){setBrowserState(state);if(state.url){setDraft(state.url);setUrl(state.url);remember(state.url,state.title)}}}
-    catch(error){setBrowserError(error?.message||String(error)||"Agent Browser navigation failed.")}
+  async function reloadAgent(){
+    const browser=window.trebellDesktop?.browser;if(!browser)return;setBusy("reload");
+    try{const state=await browser.reload?.();setBrowserError("");if(state?.url){setDraft(state.url);show(state.url);remember(state.url,state.title)}}
+    catch(error){setBrowserError(error?.message||String(error)||"Could not reload Agent Browser.")}
     finally{setBusy("")}
   }
   async function applyViewport(width,height){
     const next={width:Math.max(320,Math.min(3840,Number(width)||1280)),height:Math.max(240,Math.min(2160,Number(height)||800))};setViewport(next);
-    try{const state=await window.trebellDesktop?.browser?.setViewport?.(next.width,next.height);setBrowserError("");if(state)setBrowserState(state)}
+    try{await window.trebellDesktop?.browser?.setViewport?.(next.width,next.height);setBrowserError("")}
     catch(error){setBrowserError(error?.message||String(error)||"Could not resize Agent Browser.")}
   }
   async function startRecording(){
@@ -202,7 +207,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   const selectedElement=(snapshot?.elements||[]).find(el=>el.ref===selectedRef)||null;
   const desktopBrowserAvailable=Boolean(window.trebellDesktop?.browser);
   return <div className="preview-page">
-    <div className="preview-bar"><Globe2 size={15}/>{desktopBrowserAvailable&&<><button title="Back" disabled={!browserState.canGoBack||!!busy} onClick={()=>navigateHistory("back")}><ArrowLeft size={13}/></button><button title="Forward" disabled={!browserState.canGoForward||!!busy} onClick={()=>navigateHistory("forward")}><ArrowRight size={13}/></button></>}<input ref={urlInputRef} value={draft} onChange={e=>{setDraft(e.target.value);if(urlError)setUrlError("")}} onKeyDown={e=>e.key==="Enter"&&go()} aria-label="Page address" aria-invalid={urlError?"true":undefined} placeholder="http://localhost:3000" title={"Preview zoom "+Math.round(previewZoom*100)+"%"}/><button onClick={go}>Preview</button>{desktopBrowserAvailable&&<button title="Reload agent browser" onClick={()=>navigateHistory("reload")} disabled={!!busy}><RefreshCw size={13}/></button>}{url&&<button aria-label="Open in browser" title="Open in browser" onClick={()=>window.open(url,"_blank")}><ExternalLink size={13}/></button>}</div>
+    <div className="preview-bar"><Globe2 size={15}/>{desktopBrowserAvailable&&<><button title="Back" disabled={shown.at<1||!!busy} onClick={()=>step(-1)}><ArrowLeft size={13}/></button><button title="Forward" disabled={shown.at>=shown.pages.length-1||!!busy} onClick={()=>step(1)}><ArrowRight size={13}/></button></>}<input ref={urlInputRef} value={draft} onChange={e=>{setDraft(e.target.value);if(urlError)setUrlError("")}} onKeyDown={e=>e.key==="Enter"&&go()} aria-label="Page address" aria-invalid={urlError?"true":undefined} placeholder="http://localhost:3000" title={"Preview zoom "+Math.round(previewZoom*100)+"%"}/><button onClick={go}>Preview</button>{desktopBrowserAvailable&&<button title="Reload agent browser" onClick={reloadAgent} disabled={!!busy}><RefreshCw size={13}/></button>}{url&&<button aria-label="Open in browser" title="Open in browser" onClick={()=>window.open(url,"_blank")}><ExternalLink size={13}/></button>}</div>
     {urlError&&<div className="inline-error preview-url-error" role="alert">{urlError}</div>}
 
     {desktopBrowserAvailable&&<div className="browser-device-toolbar"><MonitorSmartphone size={13}/><select aria-label="Viewport preset" value={VIEWPORTS.find(item=>item.width===viewport.width&&item.height===viewport.height)?.id||"custom"} onChange={e=>{const preset=VIEWPORTS.find(item=>item.id===e.target.value);if(preset)applyViewport(preset.width,preset.height)}}><option value="custom">Custom</option>{VIEWPORTS.map(item=><option key={item.id} value={item.id}>{item.label} · {item.width}×{item.height}</option>)}</select><input type="number" aria-label="Viewport width" min="320" max="3840" value={viewport.width} onChange={e=>setViewport(v=>({...v,width:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)}/><span>×</span><input type="number" aria-label="Viewport height" min="240" max="2160" value={viewport.height} onChange={e=>setViewport(v=>({...v,height:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)}/><button title="Rotate viewport" onClick={()=>applyViewport(viewport.height,viewport.width)}><RotateCw size={12}/></button><button className={recording?"recording active":"recording"} disabled={!!busy&&!recording} onClick={()=>recording?stopRecording().catch(error=>setCookieStatus(error.message)):startRecording().catch(error=>setCookieStatus(error.message))}>{recording?<Square size={11}/>:<Circle size={11}/>} {recording?`Stop ${recordingSeconds}s`:"Record"}</button></div>}
@@ -211,7 +216,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
 
     <div className="preview-discovery">
       <div className="preview-discovery-head"><span><Radar size={13}/> Local dev servers</span><button onClick={discover} disabled={busy==="servers"}><RefreshCw size={12}/> Detect</button></div>
-      {servers.length?<><div className="preview-server-list">{servers.map(server=><button key={server.port} onClick={()=>{setDraft(server.url);setUrl(server.url);setKey(k=>k+1)}}><strong>:{server.port}</strong><span>{server.contentType||"HTTP "+server.status}</span></button>)}</div>{serverError&&<div className="inline-error" role="alert">{serverError}</div>}</>:<p>{serverError||"No common local web server detected. Start your dev action, then scan again."}</p>}
+      {servers.length?<><div className="preview-server-list">{servers.map(server=><button key={server.port} onClick={()=>{setDraft(server.url);show(server.url);setKey(k=>k+1)}}><strong>:{server.port}</strong><span>{server.contentType||"HTTP "+server.status}</span></button>)}</div>{serverError&&<div className="inline-error" role="alert">{serverError}</div>}</>:<p>{serverError||"No common local web server detected. Start your dev action, then scan again."}</p>}
     </div>
 
     {desktopBrowserAvailable?<><div className="agent-browser-toolbar"><button onClick={agentOpen} disabled={!!busy}><Globe2 size={13}/> Open agent browser</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.show?.()).then(()=>setBrowserError("")).catch(error=>setBrowserError(error?.message||String(error)||"Could not show Agent Browser."))}><Eye size={13}/> Show browser</button><button onClick={inspect} disabled={!!busy}><MousePointer2 size={13}/> Inspect elements</button><button onClick={capture} disabled={!!busy}><Camera size={13}/> Attach screenshot</button><button onClick={openProfileImport} disabled={!!busy}>Import profile</button><button onClick={importCookies} disabled={!!busy}>Import cookie JSON</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.close?.()).then(()=>{setBrowserError("");setSnapshot(null);setSelectedRef(null);setAnnotation("");setLastAttached("");setCookieStatus("")}).catch(error=>setBrowserError(error?.message||String(error)||"Could not close Agent Browser."))}><X size={13}/> Close</button>{cookieStatus&&<span className="browser-cookie-status" data-testid="browser-cookie-status">{cookieStatus}</span>}</div>{browserError&&<div className="browser-action-error" role="alert">{browserError}</div>}</>:<div className="agent-browser-unavailable"><strong>Desktop Agent Browser is unavailable here</strong><span>The hosted UI still supports iframe previews, local dev-server detection, and recent-page history.</span></div>}
