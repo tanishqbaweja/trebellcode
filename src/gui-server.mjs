@@ -119,6 +119,21 @@ const MIME = {
   ".ico":"image/x-icon",
 };
 
+// Vite names every file under assets/ by its content hash, so the browser keeps it for good. The rest (index.html, which names those
+// files, and the icon) is checked on every load and answered 304 while its size and modification time are unchanged.
+async function sendUiFile(req,res,{dist,file,info}){
+  const headers={"content-type":MIME[extname(file)]||"application/octet-stream"};
+  if(file.startsWith(join(dist,"assets")+sep))headers["cache-control"]="public, max-age=31536000, immutable";
+  else{
+    headers["cache-control"]="no-cache";headers.etag=`W/"${info.size.toString(16)}-${Math.trunc(info.mtimeMs).toString(16)}"`;
+    const tag=headers.etag.slice(2);
+    if(String(req.headers?.["if-none-match"]||"").split(",").some(value=>{const item=value.trim();return item==="*"||item.replace(/^W\//,"")===tag})){res.writeHead(304,{"cache-control":headers["cache-control"],etag:headers.etag});return res.end()}
+  }
+  const body=await readFile(file);
+  res.writeHead(200,headers);
+  return res.end(body);
+}
+
 function loopbackHttpUrl(input){
   const value=input instanceof URL?input:new URL(typeof input==="string"?input:String(input?.url||""));
   const host=String(value.hostname||"").toLowerCase();
@@ -2978,16 +2993,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     let file=resolve(dist,`.${path}`);
     if(!file.startsWith(dist)) return json(res,403,{error:"forbidden"});
     try{
-      const info=await stat(file);
-      if(info.isDirectory()) file=join(file,"index.html");
-      const body=await readFile(file);
-      res.writeHead(200,{"content-type":MIME[extname(file)]||"application/octet-stream"});
-      return res.end(body);
+      let info=await stat(file);
+      if(info.isDirectory()){file=join(file,"index.html");info=await stat(file)}
+      return await sendUiFile(req,res,{dist,file,info});
     }catch{
       try{
-        const body=await readFile(join(dist,"index.html"));
-        res.writeHead(200,{"content-type":"text/html; charset=utf-8"});
-        return res.end(body);
+        const index=join(dist,"index.html");
+        return await sendUiFile(req,res,{dist,file:index,info:await stat(index)});
       }catch{
         return json(res,503,{error:"Trebell UI is not built. Run npm run ui:build first."});
       }
