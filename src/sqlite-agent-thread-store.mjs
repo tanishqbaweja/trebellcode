@@ -44,6 +44,9 @@ export class SqliteAgentThreadStore{
         "CREATE INDEX IF NOT EXISTS agent_threads_provider_session_idx ON agent_threads(runtime,provider_session_id);",
         "CREATE TABLE IF NOT EXISTS agent_turns (thread_id TEXT NOT NULL,id TEXT NOT NULL,status TEXT,started_at INTEGER,completed_at INTEGER,payload_json TEXT NOT NULL,PRIMARY KEY(thread_id,id),FOREIGN KEY(thread_id) REFERENCES agent_threads(id) ON DELETE CASCADE);",
         "CREATE INDEX IF NOT EXISTS agent_turns_thread_started_idx ON agent_turns(thread_id,started_at ASC);",
+        // Turns are read in COALESCE(started_at,0),rowid order. An index on that expression is walked in that order, so sqlite no longer
+        // sorts every payload in a temporary B-tree, which spills to a TEMP file once a thread passes about 2 MB of history.
+        "CREATE INDEX IF NOT EXISTS agent_turns_thread_order_idx ON agent_turns(thread_id,COALESCE(started_at,0));",
         "CREATE INDEX IF NOT EXISTS agent_turns_status_idx ON agent_turns(status,started_at DESC);",
       ].join("\n"));
       const columns=new Set(db.prepare("PRAGMA table_info(agent_threads)").all().map(row=>String(row.name)));
