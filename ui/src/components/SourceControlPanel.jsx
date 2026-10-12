@@ -405,7 +405,8 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const gitVersion=diagnostics?diagnostics.git?.version||"not found":diagnosticsLoading?"checking…":"unknown";
 
   if(!projectPath)return <div className="empty-state">Open a project to use source control.</div>;
-  if(info&&!info.isGit)return <div className="source-control"><div className="empty-state"><GitBranch size={28}/><strong>Not a Git repository</strong><span>{projectPath}</span><button onClick={()=>action("init")} disabled={!!busy}><Plus size={13}/> Initialize Git</button></div></div>;
+  // A folder that is not a repository yet still shows why Initialize Git failed.
+  if(info&&!info.isGit)return <div className="source-control">{error&&<div className="inline-error source-control-error" role="alert">{error}</div>}<div className="empty-state"><GitBranch size={28}/><strong>Not a Git repository</strong><span>{projectPath}</span><button onClick={()=>action("init")} disabled={!!busy}><Plus size={13}/> Initialize Git</button></div></div>;
 
   return <div className="source-control">
     <div className="sc-toolbar">

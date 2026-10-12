@@ -837,3 +837,20 @@ test("a commit that is made empties the message box, so the next message starts 
   await expect(message).toHaveValue("");
   expect(await git(["log","-2","--format=%s"])).toBe("Second commit\nFirst commit from the panel");
 });
+
+test("Initialize Git that fails says why in the not-a-repository view",async({page,request})=>{
+  test.setTimeout(60_000);
+  // A folder whose .git file points at a folder that is gone: git can neither read it nor initialize it.
+  const root=await mkdtemp(join(tmpdir(),"trebell-git-init-"));repositories.push(root);
+  await writeFile(join(root,".git"),"gitdir: "+join(root,"missing-git-dir").replace(/\\/g,"/")+"\n","utf8");await writeFile(join(root,"hello.txt"),"hello\n","utf8");
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await scriptCodeHost(page,{boot,info:false});
+  const {right}=await openGitPanel(page,request,"Source control init failure",root);
+  const view=right.locator(".source-control .empty-state");
+  await expect(view).toContainText("Not a Git repository");
+  await view.getByRole("button",{name:"Initialize Git"}).click();
+  const alert=right.getByRole("alert");
+  await expect(alert).toHaveText(/^Could not initialize the Git repository: fatal: not a git repository: .*missing-git-dir$/);
+  await expect(view.getByRole("button",{name:"Initialize Git"})).toBeEnabled();
+  await shootBothModes(page,"source-control-init-failed");
+});
