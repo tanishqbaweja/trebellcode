@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
+import { CheckpointService } from "../src/checkpoint-service.mjs";
 import { git, gitInfo } from "../src/git-service.mjs";
 
 // Process budgets for the child processes Trebell starts while it sits idle (goal.md section 6; perf plan budgets B6-B8). Each one
@@ -134,3 +135,69 @@ test("B6: gitInfo's kept repository part follows checkout, commit, new branches,
   }
 });
 
+// A checkpoint's tree as create() recorded it before it reused the repository's index: a fresh index read from HEAD, then add -A.
+async function treeFromHead(repo,exclusions=[]){
+  const env={...process.env,GIT_INDEX_FILE:repo+"-from-head-index"};
+  try{
+    const head=await git(repo,["rev-parse","--verify","-q","HEAD"],{allowFailure:true});
+    await git(repo,head.ok?["read-tree","HEAD"]:["read-tree","--empty"],{env});
+    await git(repo,["add","-A","--",".",...exclusions],{env});
+    return (await git(repo,["write-tree"],{env})).stdout.trim();
+  }finally{await rm(env.GIT_INDEX_FILE,{force:true})}
+}
+// Committed, staged, unstaged, deleted, untracked, ignored, force-added and intent-to-add files, as an agent's work leaves a repo.
+async function checkpointFixture(prefix){
+  const dir=await fixtureRepository(prefix),write=(path,text)=>writeFile(join(dir,path),text);
+  await mkdir(join(dir,"dir"));await mkdir(join(dir,"build"));
+  await write(".gitignore","*.log\nbuild/\n");await write("b.txt","b\n");await write("c.txt","c\n");await write("dir/d.txt","d\n");
+  await write("keep.log","committed although ignored\n");await write("dropped.log","committed, then untracked\n");
+  await git(dir,["add",".gitignore","b.txt","c.txt","dir/d.txt"]);await git(dir,["add","-f","keep.log","dropped.log"]);await git(dir,["commit","-qm","more"]);
+  await write("a.txt","staged\n");await git(dir,["add","a.txt"]);await write("a.txt","staged, then changed again\n");
+  await write("b.txt","unstaged\n");await rm(join(dir,"c.txt"));await git(dir,["rm","-q","--cached","dropped.log"]);
+  await write("dir/new.txt","untracked\n");await write("debug.log","ignored\n");await write("build/out.bin","ignored\n");
+  await write("forced.log","force-added\n");await git(dir,["add","-f","forced.log"]);await write("ita.txt","intent to add\n");await git(dir,["add","-N","ita.txt"]);
+  return dir;
+}
+const checkpointState=()=>({addCheckpoint:item=>({...item,createdAt:1}),checkpoints:()=>[],updateCheckpoint:()=>null});
+
+test("B8: a checkpoint of a project folder starts at most 14 git processes",{timeout:60_000},async()=>{
+  const dir=await checkpointFixture("trebell-checkpoint-budget-");
+  try{
+    const {calls,gitFn}=countingGit();
+    const service=new CheckpointService({state:checkpointState(),env:{...process.env,TREBELL_HOME:dir+"-home"},gitFn,gitInfoFn:(cwd,options)=>gitInfo(cwd,{...options,gitFn})});
+    const checkpoint=await service.create({cwd:dir});assert.equal(checkpoint.supported,true);
+    // gitInfo's 7 (only the root was used), rev-parse HEAD, read-tree, add, write-tree, commit-tree, update-ref.
+    assert.ok(calls.length<=14,calls.length+" git processes: "+calls.join(", "));
+  }finally{await rm(dir,{recursive:true,force:true});await rm(dir+"-home",{recursive:true,force:true})}
+});
+
+test("B8: a checkpoint's tree equals a fresh read of HEAD plus add -A, in every index state",{timeout:180_000},async()=>{
+  const dir=await checkpointFixture("trebell-checkpoint-tree-");
+  try{
+    const service=new CheckpointService({state:checkpointState(),env:{...process.env,TREBELL_HOME:dir+"-home"}});
+    const same=async(label,exclusions)=>{
+      const expected=await treeFromHead(dir,exclusions),checkpoint=await service.create({cwd:join(dir,"dir")});
+      assert.equal((await git(dir,["rev-parse",checkpoint.commit+"^{tree}"])).stdout.trim(),expected,label);
+    };
+    await same("staged, unstaged, deleted, untracked, ignored, force-added and intent-to-add files");
+    const nested=join(dir,"nested");await mkdir(nested);await git(nested,["init","-q","-b","main"]);
+    await git(nested,["-c","user.email=t@example.test","-c","user.name=T","commit","-q","--allow-empty","-m","nested"]);
+    await same("a nested repository with a commit");
+    const empty=join(dir,"empty-nested");await mkdir(empty);await git(empty,["init","-q"]);await writeFile(join(empty,"private.txt"),"not captured\n");
+    await same("a nested repository without a commit",[":(exclude,literal)empty-nested/"]);
+    await rm(empty,{recursive:true,force:true});
+    // Flags that keep add -A from reading a file: the checkpoint still records what is on disk.
+    await git(dir,["update-index","--assume-unchanged","b.txt"]);await writeFile(join(dir,"b.txt"),"changed under assume-unchanged\n");
+    await same("an assume-unchanged file changed on disk");
+    await git(dir,["update-index","--no-assume-unchanged","b.txt"]);await git(dir,["update-index","--skip-worktree","dir/d.txt"]);
+    await writeFile(join(dir,"dir","d.txt"),"changed under skip-worktree\n");
+    await same("a skip-worktree file changed on disk");
+    await git(dir,["update-index","--no-skip-worktree","dir/d.txt"]);
+    // A merge stopped on a conflict leaves unmerged entries in the index.
+    await git(dir,["add","-A"]);await git(dir,["commit","-qm","everything"]);await git(dir,["switch","-q","-c","other","HEAD~1"]);
+    await writeFile(join(dir,"a.txt"),"other side\n");await git(dir,["commit","-qam","other"]);await git(dir,["switch","-q","main"]);
+    await git(dir,["merge","other"],{allowFailure:true});
+    assert.match((await git(dir,["ls-files","-u"])).stdout,/a\.txt/);
+    await same("unmerged entries after a conflicted merge");
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(dir+"-home",{recursive:true,force:true})}
+});
