@@ -52,6 +52,8 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
 // What Cursor answers for a conversation it does not have.
 const LOST={code:-32603,message:"Internal error",data:{message:"Session \"cursor-lost\" not found"}};
 const HANDED_OVER="Cursor no longer had this conversation, so it continues in a new session with the earlier messages handed over.";
+// A harness error as long as they come: a stack of 40 frames.
+const LONG_STACK=["Error: ENOSPC: no space left on device, write '/home/user/.cursor/chats/9f3c/store.db-wal'"].concat(Array.from({length:40},(_,index)=>`    at WriteStream.write (node:internal/fs/streams:${400+index}:12) in /home/user/.cursor/agent/node_modules/@cursor/agent-core/dist/session-store-${index}.js:${1000+index*7}:${index+3}`)).join("\n");
 
 // The relay with the scripted Cursor and a saved thread as a restart leaves it: one finished turn (a command and a reply) in the
 // conversation Cursor keeps under providerSessionId.
@@ -128,6 +130,23 @@ function handoffFit(page){
   });
 }
 const FIT={secondaryText:true,failureColour:false,inColumn:true,replyColumn:true,clipped:false,sideways:false};
+// A note beside the composer, however long, leaves the composer usable: whole in the window and at most half its height, with the
+// draft and Send in view, the note at most four lines that scroll, and the reply above the composer still in view.
+function composerFit(page,replyText){
+  return page.evaluate(text=>{
+    const wrap=document.querySelector(".composer-wrap").getBoundingClientRect(),note=document.querySelector("[data-testid=composer-alert]");
+    const inView=node=>{const rect=node.getBoundingClientRect();return rect.height>0&&rect.top>=wrap.top-1&&rect.bottom<=Math.min(wrap.bottom,innerHeight)+1};
+    const answer=[...document.querySelectorAll(".history-assistant")].find(node=>node.textContent.includes(text))?.getBoundingClientRect();
+    return {
+      composerInWindow:wrap.top>=0&&wrap.bottom<=innerHeight+1,composerAtMostHalf:wrap.height<=innerHeight/2,
+      draftShown:inView(document.querySelector("[data-testid=composer]")),sendShown:inView(document.querySelector("[data-testid=send]")),
+      noteLines:Math.round(note.clientHeight/16),noteScrolls:note.scrollHeight>note.clientHeight+1,
+      replyInView:Boolean(answer)&&answer.top>=0&&answer.bottom<=wrap.top+1,
+      sideways:document.querySelector(".workspace-shell").scrollWidth>document.querySelector(".workspace-shell").clientWidth+1,
+    };
+  },replyText);
+}
+const BOUNDED={composerInWindow:true,composerAtMostHalf:true,draftShown:true,sendShown:true,noteLines:4,noteScrolls:true,replyInView:true,sideways:false};
 async function auditHandoff(page,name){
   for(const mode of ["dark","light"]){
     await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
@@ -253,12 +272,27 @@ test("a send whose new session cannot start says why beside the composer that ke
     }
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1280,height:800});
 
-    // A change to the draft ends the note; a send that fails again says so again, and the next send ends it.
+    // A change to the draft ends the note; a send that fails again says so again, and the next send ends it. A long harness error
+    // (a whole stack) scrolls inside the note: the composer keeps its size, so the draft, Send and the conversation stay in view.
+    await fx.configure({lostError:LOST,newError:{code:-32603,message:"Internal error",data:{message:LONG_STACK}}});
     await composer.press("End");await composer.pressSequentially(" Both");
     await expect(alert).toHaveCount(0);await expect(page.locator(".composer-status")).not.toHaveClass(/error/);
     await send.click();
-    await expect(alert).toHaveText("Not sent: No space left on device. Your draft is kept.",{timeout:15_000});
+    await expect(alert).toContainText("Not sent: Error: ENOSPC: no space left on device",{timeout:15_000});await expect(alert).toContainText("Your draft is kept.");
     await expect(composer).toHaveValue(draft+" Both");
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      for(const [width,height] of [[1280,800],[900,800]]){
+        await page.setViewportSize({width,height});await frames(page,3);
+        expect(await composerFit(page,"Noted: HERON."),`long error ${mode} ${width}x${height}`).toEqual(BOUNDED);
+        await page.screenshot({animations:"disabled",path:`${auditDir}send-failed-long-${mode}-${width}x${height}.png`});
+      }
+    }
+    // The whole error is there to read, to its last line.
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1280,height:800});await frames(page,3);
+    await alert.evaluate(node=>{node.scrollTop=node.scrollHeight});await frames(page,2);
+    expect(await alert.evaluate(node=>node.scrollTop>0&&node.scrollTop+node.clientHeight>=node.scrollHeight-1)).toBe(true);
+    await page.screenshot({animations:"disabled",path:auditDir+"send-failed-long-end-dark-1280x800.png"});
     // With room again, the send continues the conversation in a new session, which the turn says.
     await fx.configure({lostError:LOST,reply:"You asked me to remember PELICAN and HERON."});
     await send.click();

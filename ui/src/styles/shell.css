@@ -727,6 +727,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .context-meter.unknown i{display:none}
 .composer-wrap .composer-status .composer-hints{display:inline-flex;align-items:center;flex-wrap:wrap;justify-content:flex-end;gap:2px 7px;margin-left:auto;color:var(--tx3)}
 .composer-wrap .composer-status .composer-hints .tb-kbd{padding:0 5px;font-size:9.5px;line-height:15px;color:var(--tx2)}
+/* Why the last send or open did not go through (the composer's alert): a long harness error scrolls within four lines, so the
+   draft, Send and the conversation above stay in view. */
+.composer-wrap .composer-status .composer-alert{display:block;max-height:64px;overflow-y:auto;overscroll-behavior:contain}
 /* Each select fits its current value (Chromium/Electron), so the control row is not padded with empty pill space. */
 @supports (field-sizing:content){
   .composer-wrap .composer-left>select{field-sizing:content}
