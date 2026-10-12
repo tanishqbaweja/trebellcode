@@ -412,6 +412,44 @@ test("a send that waits more than a minute for a new session says whom it waits 
   }finally{await fx.close()}
 });
 
+// Past even the ten minutes such a send waits, the window stops waiting without calling the message unsent: the harness may still
+// start the turn, so the draft is kept and the note says to look at the conversation first. Closing the relay then stops the
+// session that is still starting.
+test("a send the harness has not answered after ten minutes keeps the draft and says the turn may still start",async({page})=>{
+  test.setTimeout(150_000);
+  const fx=await cursorFixture("Cursor silent new session",{providerSessionId:"cursor-lost",config:{lostError:LOST,newDelayMs:120_000}});
+  try{
+    await routeApp(page,fx);
+    let saved={};
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()!=="POST")return route.fallback();saved={...saved,...route.request().postDataJSON()};return json(route,saved)});
+    await page.clock.install();
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await openThreadRow(page,"Cursor silent new session");
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert"),question="What word did I ask you to remember?";
+    await expect(composer).toBeEnabled();
+    await composer.click();await page.keyboard.type(question,{delay:20});await page.keyboard.press("Enter");
+    await expect(userRow(page,question)).toBeVisible();
+    await page.clock.fastForward("10:01");
+    await expect(alert).toHaveText("Cursor has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.");
+    await expect(alert).toHaveAttribute("role","alert");await expect(page.locator(".composer-status")).toHaveClass(/error/);
+    await expect(composer).toHaveValue(question);await expect(composer).toBeEnabled();
+    await expect(userRow(page,question)).toHaveCount(0);
+    expect(fx.threadStore.get(fx.thread.id).turns.length).toBe(1);
+    expect((await fx.requests()).map(entry=>entry.method)).not.toContain("session/prompt");
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await frames(page,2);
+      if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+      for(const [width,height] of [[1280,800],[900,800]]){
+        await page.setViewportSize({width,height});await frames(page,3);
+        const fit=await alert.evaluate(node=>{const status=node.closest(".composer-status"),wrap=node.closest(".composer-wrap").getBoundingClientRect(),rect=node.getBoundingClientRect(),shell=document.querySelector(".workspace-shell");return {inside:rect.left>=wrap.left-1&&rect.right<=wrap.right+1,clipped:status.scrollWidth>status.clientWidth+1,sideways:shell.scrollWidth>shell.clientWidth+1}});
+        expect(fit,`${mode} ${width}x${height}`).toEqual({inside:true,clipped:false,sideways:false});
+        await page.screenshot({animations:"disabled",path:`${auditDir}send-unanswered-${mode}-${width}x${height}.png`});
+      }
+    }
+  }finally{await fx.close()}
+});
+
 // A follow-up the queue starts once the turn before it ends, and whose turn/start fails before any turn exists, has no turn to show
 // the failure on either: why shows beside the composer, under the queue that keeps the follow-up, never on the turn before it, whose
 // card and reply stay as they were. Send now is the next send, which ends the note.
