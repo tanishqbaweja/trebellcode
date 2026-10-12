@@ -146,6 +146,22 @@ test("B6: gitInfo's kept repository part follows checkout, commit, new branches,
   }
 });
 
+// git finds a repository in the folder asked about, or in a folder between it and the root, before the root's: a project folder
+// inside another repository that becomes one of its own (an agent's git init, a clone) is that repository at the next poll.
+test("B6: a folder below the root that becomes its own repository is answered as that repository at the next poll",{timeout:60_000},async()=>{
+  const dir=await fixtureRepository("trebell-git-nested-"),app=join(dir,"apps","web");
+  try{
+    await mkdir(app,{recursive:true});await writeFile(join(app,"main.js"),"x\n");
+    const same=async label=>{const {calls,gitFn}=countingGit();const polled=await gitInfo(app,{gitFn});assert.deepEqual(polled,await gitInfo(app,{fresh:true}),label);return calls.length};
+    await gitInfo(app);
+    assert.equal(await same("no change"),1,"a warm poll of a folder below the root still starts one git process");
+    await git(join(dir,"apps"),["init","-q","-b","apps"]);await same("git init in a folder between");
+    await git(app,["init","-q","-b","trunk"]);
+    assert.equal((await gitInfo(app)).branch,"trunk");assert.deepEqual((await gitInfo(app)).status,[{code:"??",path:"main.js"}]);
+    await same("git init in the project folder");
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
+});
+
 // A checkpoint's tree as create() recorded it before it reused the repository's index: a fresh index read from HEAD, then add -A.
 async function treeFromHead(repo,exclusions=[]){
   const env={...process.env,GIT_INDEX_FILE:repo+"-from-head-index"};

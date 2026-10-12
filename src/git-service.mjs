@@ -26,7 +26,14 @@ export async function git(cwd,args,opts={}){ return run("git",args,{cwd,...opts}
 const GIT_INFO_REUSE_MS=30_000;
 const STATUS_ARGS=["status","--porcelain=v1","-b"];
 const repositoryParts=new Map();
-function repositorySignature(gitDir,commonDir){
+// The folder asked about and each one above it below the root: git looks in each for a repository of its own (a .git, or a bare
+// repository's HEAD) before it reaches the root, so a git init, a clone or a new worktree there makes the next poll read everything.
+function foldersBelowRoot(base,root){
+  const folders=[],top=resolve(root),same=process.platform==="win32"?(a,b)=>a.toLowerCase()===b.toLowerCase():(a,b)=>a===b;
+  for(let folder=base;!same(folder,top);){folders.push(folder);const parent=dirname(folder);if(parent===folder)break;folder=parent}
+  return folders;
+}
+function repositorySignature(gitDir,commonDir,base,root){
   const parts=[];
   const add=(path,depth=0)=>{
     let info;try{info=statSync(path)}catch{parts.push("-");return}
@@ -35,6 +42,7 @@ function repositorySignature(gitDir,commonDir){
   };
   add(join(gitDir,"HEAD"));add(join(gitDir,"config.worktree"));add(join(commonDir,"config"));add(join(commonDir,"packed-refs"));
   add(join(commonDir,"refs","heads"),16);add(join(commonDir,"refs","remotes"),16);add(join(commonDir,"worktrees"),1);
+  for(const folder of foldersBelowRoot(base,root)){add(join(folder,".git"));add(join(folder,"HEAD"))}
   return parts.join("|");
 }
 // Status never takes git's optional index lock here, so a poll does not rewrite the index and wake file watchers.
@@ -54,7 +62,7 @@ function gitInfoResult(base,part,statusRes){
 // gitFn runs each git command (tests count them through it); fresh reads the repository part again.
 export async function gitInfo(cwd,{gitFn=git,fresh=false,...opts}={}){
   const base=resolve(cwd),cacheable=!opts.env,known=cacheable?repositoryParts.get(base):null;
-  if(known&&!fresh&&Date.now()-known.at<GIT_INFO_REUSE_MS&&repositorySignature(known.gitDir,known.commonDir)===known.signature){
+  if(known&&!fresh&&Date.now()-known.at<GIT_INFO_REUSE_MS&&repositorySignature(known.gitDir,known.commonDir,base,known.root)===known.signature){
     const statusRes=await gitFn(known.root,STATUS_ARGS,statusOptions(opts));
     if(statusRes.ok)return gitInfoResult(base,known,statusRes);
   }
@@ -62,7 +70,7 @@ export async function gitInfo(cwd,{gitFn=git,fresh=false,...opts}={}){
   if(!rootRes.ok){repositoryParts.delete(base);return {isGit:false,cwd:base,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]}}
   const [root,gitDir="",commonLine=""]=rootRes.stdout.split(/\r?\n/).map(line=>line.trim());
   // Read before the commands below, so a change while they run makes the next poll read everything again.
-  const commonDir=commonLine?resolve(base,commonLine):"",signature=cacheable&&isAbsolute(gitDir)&&commonDir?repositorySignature(gitDir,commonDir):null;
+  const commonDir=commonLine?resolve(base,commonLine):"",signature=cacheable&&isAbsolute(gitDir)&&commonDir?repositorySignature(gitDir,commonDir,base,root):null;
   const [branchRes,branchesRes,statusRes,remoteRes,worktreeRes,upstreamRes]=await Promise.all([
     gitFn(root,["branch","--show-current"],{...opts,allowFailure:true}),
     gitFn(root,["for-each-ref","--format=%(refname:short)","refs/heads"],{...opts,allowFailure:true}),
