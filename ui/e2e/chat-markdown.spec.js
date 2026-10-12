@@ -137,6 +137,53 @@ test("an assistant reply renders its Markdown: code, emphasis, lists, links, a t
   }finally{await harness.close()}
 });
 
+// A clipboard of the page's own: a write is refused, as a browser that blocks copying refuses it, until the test allows writes, which
+// it then records. Nothing reaches the machine's clipboard.
+async function pageClipboard(page){
+  await page.addInitScript(()=>{
+    window.__clipboard={allowed:false,writes:[]};
+    Object.defineProperty(navigator.clipboard,"writeText",{configurable:true,value:async text=>{if(!window.__clipboard.allowed)throw new DOMException("Write permission denied.","NotAllowedError");window.__clipboard.writes.push(String(text))}});
+    const execCommand=Document.prototype.execCommand;
+    Document.prototype.execCommand=function(command,...rest){return String(command).toLowerCase()==="copy"?false:execCommand.call(this,command,...rest)};
+  });
+}
+// The header's theme button, as a person switches between dark and light; the setting stays in the page.
+async function switchMode(page,mode){
+  const html=page.locator("html");if(await html.getAttribute("data-mode")===mode)return;
+  await page.getByTestId("appearance-toggle").first().click();await expect(html).toHaveAttribute("data-mode",mode);
+}
+
+test("Copy code says so when the clipboard refuses the copy, and copies once it is allowed",async({page})=>{
+  test.setTimeout(60_000);
+  await pageClipboard(page);
+  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().postDataJSON()||{})}):route.fallback());
+  const thread=fixtureThread("markdown-copy-refused","Markdown copy fixture"),harness=await startHarness(thread);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,thread});
+    const block=page.locator(".assistant-message-text").last().locator(".chat-markdown-code");
+    await block.scrollIntoViewIfNeeded();
+    await block.getByRole("button",{name:"Copy code"}).click();
+    await expect(block.getByRole("alert")).toHaveText("Could not copy to clipboard.");
+    await expect(block.getByRole("button",{name:"Copy code"})).toBeVisible();
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});await block.scrollIntoViewIfNeeded();
+        await expect(block.getByRole("alert")).toBeInViewport();
+        await page.screenshot({path:join(shotsDir,`chat-markdown-copy-refused-${mode}-${width}x800.png`),animations:"disabled"});
+      }
+      await page.setViewportSize({width:1280,height:800});
+    }
+    // Once writes are allowed the same button copies the code, and the message goes.
+    await page.evaluate(()=>{window.__clipboard.allowed=true});
+    await block.getByRole("button",{name:"Copy code"}).click();
+    await expect(block.getByRole("button",{name:"Copied"})).toBeVisible();
+    await expect(block.getByRole("alert")).toHaveCount(0);
+    expect(await page.evaluate(()=>window.__clipboard.writes)).toEqual([CODE]);
+  }finally{await harness.close()}
+});
+
 test("a streaming reply renders Markdown as it arrives and keeps it once the turn ends",async({page})=>{
   test.setTimeout(45_000);
   const thread=fixtureThread("markdown-stream","Markdown stream fixture"),harness=await startHarness(thread);

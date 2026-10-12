@@ -28,15 +28,17 @@ function codeText(children){
 
 function CodeBlock({children}){
   const code=React.Children.toArray(children)[0],language=/language-([\w+#.-]+)/.exec(code?.props?.className||"")?.[1]||"";
-  const [copied,setCopied]=useState(false),timer=useRef(null);
+  // A refused copy (a browser that blocks the clipboard) says so beside the button, as the row menu's Copy thread ID does, until
+  // the next copy.
+  const [copied,setCopied]=useState(false),[refused,setRefused]=useState(false),timer=useRef(null);
   useEffect(()=>()=>clearTimeout(timer.current),[]);
   async function copy(){
     const copiedText=await writeClipboardText(codeText(code?.props?.children).replace(/\n$/,"")).catch(()=>false);
-    clearTimeout(timer.current);setCopied(Boolean(copiedText));
+    clearTimeout(timer.current);setCopied(Boolean(copiedText));setRefused(!copiedText);
     if(copiedText)timer.current=setTimeout(()=>setCopied(false),1500);
   }
   return <div className="chat-markdown-code">
-    <div className="chat-markdown-code-head"><span>{language||"code"}</span><button type="button" onClick={copy} aria-label={copied?"Copied":"Copy code"} title={copied?"Copied":"Copy code"}>{copied?<Check size={12}/>:<Copy size={12}/>}</button></div>
+    <div className="chat-markdown-code-head"><span>{language||"code"}</span>{refused&&<span className="chat-markdown-copy-error" role="alert">Could not copy to clipboard.</span>}<button type="button" onClick={copy} aria-label={copied?"Copied":"Copy code"} title={copied?"Copied":"Copy code"}>{copied?<Check size={12}/>:<Copy size={12}/>}</button></div>
     <pre>{children}</pre>
   </div>;
 }
