@@ -172,7 +172,8 @@ test("a harness that asks to sign in cannot run: its resume failure fails the tu
   assert.equal(threadStore.get(saved.id).providerSessionId,"cursor-lost");assert.equal(fallbacks(journal).length,0);
 });
 
-// A stand-in for `opencode serve` that keeps sessions in memory and answers a session it does not have with 404.
+// A stand-in for `opencode serve` that keeps sessions in memory and answers a session it does not have with 404. It lists a
+// session's messages and forks one as OpenCode does, copying the messages whose IDs sort before the fork's messageID.
 async function fakeOpenCodeServe(){
   const calls=[],streams=new Set(),sessions=new Map();let created=0,clock=0n;
   const stamp=(after=0n)=>{const now=BigInt(Date.now())*0x1000n;clock=[now,clock+1n,after+1n].reduce((a,b)=>a>b?a:b);return openCodeMessageId(clock)};
@@ -188,6 +189,12 @@ async function fakeOpenCodeServe(){
     const [,id,rest=""]=/^\/session\/([^/]+)(\/[^/]+)?$/.exec(url.pathname)||[],entry=sessions.get(id);
     if(entry&&req.method==="GET"&&!rest)return json(200,{id,permission:entry.permission});
     if(entry&&req.method==="PATCH"&&!rest){entry.permission=[...entry.permission,...(body?.permission||[])];return json(200,{id,permission:entry.permission})}
+    if(entry&&req.method==="GET"&&rest==="/message")return json(200,entry.messages.map(message=>({info:{id:message.id,role:message.role,sessionID:id},parts:[]})));
+    if(entry&&req.method==="POST"&&rest==="/fork"){
+      const forked=`ses_${++created}`,boundary=body?.messageID||null;
+      sessions.set(forked,{permission:[],messages:entry.messages.filter(message=>!boundary||message.id<boundary).map(message=>({...message,id:stamp()}))});
+      return json(200,{id:forked,permission:[]});
+    }
     if(entry&&req.method==="POST"&&rest==="/message"){
       const reply={id:stamp(BigInt("0x"+body.messageID.slice(4,16))),parentID:body.messageID,role:"assistant",providerID:"anthropic",modelID:"claude-sonnet-4-5",tokens:{input:3,output:1}};
       entry.messages.push({id:body.messageID,role:"user"},reply);
@@ -196,7 +203,7 @@ async function fakeOpenCodeServe(){
     json(404,{name:"NotFoundError",data:{message:`Session not found: ${id||key}`}});
   });
   await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
-  return {url:`http://127.0.0.1:${server.address().port}`,calls,called:key=>calls.filter(call=>call.key===key),close:()=>{for(const res of streams)res.end();server.closeAllConnections?.();return new Promise(resolve=>server.close(resolve))}};
+  return {url:`http://127.0.0.1:${server.address().port}`,calls,sessions,called:key=>calls.filter(call=>call.key===key),close:()=>{for(const res of streams)res.end();server.closeAllConnections?.();return new Promise(resolve=>server.close(resolve))}};
 }
 
 test("an OpenCode thread whose session is gone opens with its history, and its next turn runs in a fresh session",async t=>{
@@ -230,6 +237,44 @@ test("an OpenCode thread whose session is gone opens with its history, and its n
   assert.equal(turn.items[1].title,"OpenCode no longer had this conversation, so it continues in a new session with the earlier messages handed over.");
   assert.match(turn.items[1].reason,/^OpenCode could not resume this conversation: Session not found: ses_gone/);
   assert.deepEqual(fallbacks(journal).map(entry=>[entry.data.lostSessionId,entry.data.sessionId]),[["ses_gone","ses_1"]]);
+});
+
+test("Edit from here on the OpenCode turn that handed the history over hands the kept turns over again to the fork",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-resume-fallback-opencode-revert-")),fixture=await fakeOpenCodeServe();
+  onCleanup(t,async()=>{await fixture.close();await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100})});
+  const instance={id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,serverUrl:fixture.url};
+  const runtimeManager={
+    instances:()=>[{...instance}],activeInstance:()=>({...instance}),activeRuntime:()=>"opencode",compatibleInstanceIds:()=>[instance.id],
+    probe:async()=>({id:instance.id,name:"OpenCode",available:true,authenticated:true,version:"1.18.32"}),
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),executable:()=>"opencode",
+  };
+  const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(root,"home")}),journal=memoryJournal(),model="anthropic/claude-sonnet-4-5";
+  const saved=savedThread(threadStore,{runtime:"opencode",instanceId:instance.id,providerSessionId:"ses_gone",model,cwd:root});
+  threadStore.updateTurn(saved.id,saved.turns[0].id,{providerMessageId:openCodeMessageId(1n)});
+  const relay=await startRelay({runtimeManager,threadStore,state:memoryState(),journal});onCleanup(t,relay.close);
+  // OpenCode lost ses_gone: ses_1 takes over, and the turn hands it turn 1.
+  let completed=relay.events.next(message=>message.method==="turn/completed");
+  const handoff=await relay.rpc("turn/start",{threadId:saved.id,model,input:[{type:"text",text:"What word did I ask you to remember?"}]});
+  assert.equal((await completed).params.turn.status,"completed");
+  assert.equal(threadStore.get(saved.id).providerMeta.historyHandoff.status,"delivered");
+  // Edit from here on that turn: OpenCode's copy of ses_1 before it is empty, so turn 1 waits to go over again.
+  await relay.rpc("thread/revert",{threadId:saved.id,beforeTurnId:handoff.turn.id});
+  const reverted=threadStore.get(saved.id),forkId=reverted.providerSessionId;
+  assert.notEqual(forkId,"ses_1");assert.equal(fixture.sessions.get(forkId).messages.length,0);
+  assert.deepEqual(reverted.turns.map(turn=>turn.id),[saved.turns[0].id]);
+  assert.deepEqual({status:reverted.providerMeta.historyHandoff.status,sessionId:reverted.providerMeta.historyHandoff.sessionId,turnId:reverted.providerMeta.historyHandoff.turnId},{status:"pending",sessionId:forkId,turnId:undefined});
+  completed=relay.events.next(message=>message.method==="turn/completed");
+  const edited=await relay.rpc("turn/start",{threadId:saved.id,model,input:[{type:"text",text:"Which word was it?"}]});
+  assert.equal((await completed).params.turn.status,"completed");
+  const [prompt]=fixture.called(`POST /session/${forkId}/message`).map(call=>call.body);
+  const texts=prompt.parts.filter(part=>part.type==="text").map(part=>part.text);
+  assert.ok(texts[0].includes(HISTORY_ENTRY+"OpenCode no longer had it."));assert.ok(texts[0].includes("[turn 1 · user]\nRemember the word PELICAN"));
+  assert.equal(texts[0].includes("What word did I ask you to remember?"),false,"the turn the edit dropped is not handed over");
+  assert.equal(texts.at(-1),"Which word was it?");
+  const thread=threadStore.get(saved.id);
+  assert.equal(thread.providerMeta.historyHandoff.status,"delivered");assert.equal(thread.providerMeta.historyHandoff.turnId,edited.turn.id);
+  assert.deepEqual(thread.turns.map(turn=>turn.items.filter(item=>item.type==="sessionHandoff").length),[0,1]);
+  assert.equal(fallbacks(journal).length,1,"the edit is no new fallback");
 });
 
 // The SDK's Query as the Claude session drives it (see claude-agent-session.test.mjs): `turn` runs for each user message.
@@ -373,6 +418,71 @@ test("a pending handoff waits through a failed turn and a restart, and the next 
   assert.deepEqual(thread.turns.map(turn=>turn.items.filter(item=>item.type==="sessionHandoff").length),[0,0,1]);
   assert.equal(thread.providerMeta.historyHandoff.status,"delivered");assert.equal(thread.providerMeta.historyHandoff.turnId,thread.turns[2].id);
   assert.equal(fallbacks(journal).length,1,"one fallback: the restart resumed the fresh conversation's id");
+});
+
+// Claude Code as it treats a rewind cursor: a fork or resume of a session it has no transcript for, or at a message that
+// transcript lacks, exits before the session starts; a fork copies the source transcript up to the cursor.
+function claudeTranscriptSdk(){
+  const calls=[],transcripts=new Map();
+  const query=({prompt,options})=>{
+    const out=new Channel(),call={options,inputs:[]};calls.push(call);
+    const source=options.resume||null,target=options.sessionId||options.resume;
+    const missingCursor=options.resumeSessionAt&&!(transcripts.get(source)||[]).includes(options.resumeSessionAt);
+    if(missingCursor||(source&&!transcripts.has(source))){
+      const reason=missingCursor?`No message found with message.uuid of: ${options.resumeSessionAt}`:`No conversation found with session ID: ${source}`;
+      setTimeout(()=>out.end(new Error(`Claude Code process exited with code 1. stderr: ${reason}`)),20);
+      void (async()=>{for await(const message of prompt)call.inputs.push(message)})();
+    }else void (async()=>{
+      if(options.forkSession){const kept=transcripts.get(source)||[],cut=options.resumeSessionAt?kept.indexOf(options.resumeSessionAt)+1:kept.length;transcripts.set(target,kept.slice(0,cut))}
+      if(!transcripts.has(target))transcripts.set(target,[]);
+      let index=0;
+      for await(const message of prompt){
+        call.inputs.push(message);
+        if(index===0)out.push({type:"system",subtype:"init",session_id:target,model:"claude-test",permissionMode:options.permissionMode,tools:[],mcp_servers:[],slash_commands:[],agents:[],capabilities:[]});
+        const uuid=`assistant-${calls.length}-${++index}`;transcripts.get(target).push(uuid);
+        out.push({type:"assistant",uuid,parent_tool_use_id:null,message:{id:`msg-${uuid}`,content:[{type:"text",text:"PELICAN"}]}});
+        out.push({type:"result",subtype:"success",is_error:false,result:"PELICAN",user_message_uuid:message.uuid,total_cost_usd:0,usage:{input_tokens:3,output_tokens:1}});
+      }
+      out.end();
+    })();
+    return {next:()=>out.next(),return:()=>{out.end();return Promise.resolve({value:undefined,done:true})},[Symbol.asyncIterator](){return this},async interrupt(){},close(){out.end()},async setPermissionMode(){},initializationResult:async()=>({commands:[],agents:[],models:[]})};
+  };
+  const sdk={query,getSessionInfo:async id=>transcripts.has(id)?{sessionId:id}:undefined,forkSession:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
+  return {sdk,calls,transcripts};
+}
+
+test("Edit from here on the Claude Code turn that handed the history over runs the edit in a fresh conversation handed the kept turns",async t=>{
+  const {root,env}=await claudeHome(t),threadStore=new AgentThreadStore(env),journal=memoryJournal(),claude=claudeTranscriptSdk();
+  const saved=savedThread(threadStore,{runtime:"claude",instanceId:CLAUDE_INSTANCE.id,providerSessionId:"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",model:"claude-test",cwd:root});
+  const relay=await startRelay({runtimeManager:claudeRuntimeManager,threadStore,state:memoryState(),journal,claudeSdk:claude.sdk});onCleanup(t,relay.close);
+  const run=async text=>{const completed=relay.events.next(message=>message.method==="turn/completed");const started=await relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text}]});const settled=(await completed).params.turn;assert.equal(settled.status,"completed");return started.turn.id};
+  // The transcript is gone: S2 takes over and the turn hands it turn 1, whose message is only in the lost transcript.
+  const handoffTurn=await run("What word did I ask you to remember?"),freshId=threadStore.get(saved.id).providerSessionId;
+  await relay.rpc("thread/revert",{threadId:saved.id,beforeTurnId:handoffTurn});
+  const reverted=threadStore.get(saved.id);
+  assert.notEqual(reverted.providerSessionId,freshId);assert.equal(reverted.providerMeta.claudeFork,undefined,"no fork at a message S2 never had");
+  assert.deepEqual([reverted.providerMeta.historyHandoff.status,reverted.providerMeta.historyHandoff.sessionId],["pending",reverted.providerSessionId]);
+  const edited=await run("Which word was it, exactly?");
+  const asked=claude.calls.at(-1);
+  assert.deepEqual([asked.options.resume??null,asked.options.resumeSessionAt??null,asked.options.sessionId],[null,null,reverted.providerSessionId],"a fresh conversation, created by the edited message");
+  const [context,request]=promptText(asked);
+  assert.ok(context.includes("[turn 1 · user]\nRemember the word PELICAN"));assert.equal(context.includes("What word did I ask"),false);
+  assert.equal(request,"Which word was it, exactly?");
+  let thread=threadStore.get(saved.id);
+  assert.deepEqual(thread.turns.map(turn=>turn.id),[saved.turns[0].id,edited]);
+  assert.deepEqual(thread.turns.map(turn=>turn.items.filter(item=>item.type==="sessionHandoff").length),[0,1]);
+  assert.equal(relay.events.seen.some(message=>message.method==="error"||message.method==="thread/reverted"&&message.params.recovered),false,"nothing was rejected or put back");
+  // Edit from here on a later turn forks the new conversation at the turn that handed the history over, which it keeps.
+  const later=await run("And the next one?");
+  await relay.rpc("thread/revert",{threadId:saved.id,beforeTurnId:later});
+  const cursor=thread.turns[1].providerMessageId;assert.ok(cursor);
+  await run("Spell it.");
+  const forked=claude.calls.at(-1);
+  assert.deepEqual([forked.options.resume,forked.options.forkSession,forked.options.resumeSessionAt],[thread.providerSessionId,true,cursor]);
+  assert.equal(promptText(forked).some(text=>text.includes("trebell.thread_history")),false,"the fork has the history already");
+  thread=threadStore.get(saved.id);
+  assert.equal(thread.providerMeta.historyHandoff.status,"delivered");assert.equal(thread.providerMeta.historyHandoff.turnId,edited);
+  assert.equal(fallbacks(journal).length,1);
 });
 
 test("restart recovery of a lost conversation hands the fresh session the interrupted turn's message too",async t=>{

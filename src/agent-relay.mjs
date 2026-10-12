@@ -636,12 +636,35 @@ export function restoreClaudeRejectedRewind(threadStore,threadId,error){
 
 // Edit from here keeps the turns before the target. Claude Code resumes at the newest kept turn that reached its transcript
 // (that turn's last assistant message, T3 Code's rollback cursor); with none, the thread starts a fresh Claude Code session
-// (T3 Code's rollback to the thread start).
+// (T3 Code's rollback to the thread start). A turn from before the conversation Claude Code holds now (heldConversationStart)
+// reached only a transcript it lost, so it is no cursor.
 export function claudeRewindCheckpoint(thread,beforeTurnId){
   const turns=Array.isArray(thread?.turns)?thread.turns:[],index=turns.findIndex(item=>item.id===beforeTurnId);
   if(index<0)throw new Error("Claude rewind target turn was not found.");
-  const kept=turns.slice(0,index).findLast(turn=>turn?.providerMessageId)||null;
+  const kept=turns.slice(heldConversationStart(thread),index).findLast(turn=>turn?.providerMessageId)||null;
   return {index,providerMessageId:kept?.providerMessageId||null};
+}
+
+// Where the conversation the harness holds now starts in the thread (an index into its turns): the first turn, or, after a fresh
+// session took over a conversation the harness had lost, the turn whose prompt handed the earlier messages over (no turn while
+// they wait to go over). The harness has the turns before it only as that handoff, and their messages only in the lost conversation.
+export function heldConversationStart(thread){
+  const turns=Array.isArray(thread?.turns)?thread.turns:[],handoff=thread?.providerMeta?.historyHandoff;
+  if(!handoff)return 0;
+  const index=handoff.status==="delivered"?turns.findIndex(turn=>turn?.id===handoff.turnId):-1;
+  return index<0?turns.length:index;
+}
+
+// The handoff after Edit from here keeps `retained`. The conversation the thread goes on in (sessionId) holds the earlier messages
+// only when it continues from the turn that handed them over or a later one (holdsHandoff; by default, that turn is kept). Else
+// (a fork from before that turn, or a fresh conversation) they wait again for the next prompt, which hands the kept turns over;
+// with no turn kept, nothing is left to hand over.
+export function revertedHistoryHandoff(providerMeta,retained,{sessionId=null,holdsHandoff=null}={}){
+  const meta={...(providerMeta||{})},handoff=meta.historyHandoff,kept=Array.isArray(retained)?retained:[];
+  if(!handoff||(handoff.status==="delivered"&&(holdsHandoff??kept.some(turn=>turn?.id===handoff.turnId))))return meta;
+  delete meta.historyHandoff;
+  if(kept.length){const {turnId,deliveredAt,included,omitted,...waiting}=handoff;meta.historyHandoff={...waiting,status:"pending",sessionId:sessionId||null}}
+  return meta;
 }
 
 // Provider metadata after a rewind: the fork the next prompt runs, and a backup of the thread's previous provider state and
@@ -657,10 +680,7 @@ export function claudeRewindProviderMeta(thread,index,rewind,now=Date.now()){
 // Whether Claude Code recorded turns of the thread's current conversation (ClaudeAgentSession persistedTurns). After a fresh
 // session took over a lost one, the turns before the one that handed the earlier messages over were in the lost transcript.
 export function claudePersistedTurns(thread){
-  const turns=Array.isArray(thread?.turns)?thread.turns:[],handoff=thread?.providerMeta?.historyHandoff;
-  let from=0;
-  if(handoff?.sessionId&&handoff.sessionId===thread.providerSessionId){const index=handoff.turnId?turns.findIndex(turn=>turn?.id===handoff.turnId):-1;from=index<0?turns.length:index}
-  return turns.slice(from).some(turn=>turn?.providerMessageId||turn?.providerUserMessageId);
+  return (Array.isArray(thread?.turns)?thread.turns:[]).slice(heldConversationStart(thread)).some(turn=>turn?.providerMessageId||turn?.providerUserMessageId);
 }
 
 function formQuestions(params){
@@ -1844,13 +1864,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(session instanceof OpenCodeAgentSession){
         const turn=thread.turns?.find(item=>item.id===params.beforeTurnId);const providerMessageId=turn?.providerMessageId||turn?.items?.find(item=>item.providerMessageId)?.providerMessageId;if(!providerMessageId)throw new Error("This OpenCode turn does not have a provider message checkpoint yet");
         // The thread continues in OpenCode's copy of the conversation before this turn; files stay as they are (T3 Code's rollbackThread).
-        const rewound=await session.rewind(providerMessageId);const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);
-        threadStore.update(thread.id,{providerSessionId:rewound.sessionId,turns:remapOpenCodeTurns(index>=0?thread.turns.slice(0,index):thread.turns,rewound)});emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
+        const rewound=await session.rewind(providerMessageId);const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId),retained=index>=0?thread.turns.slice(0,index):thread.turns;
+        const providerMeta=revertedHistoryHandoff(threadMetadata(thread.id)?.providerMeta||thread.providerMeta,retained,{sessionId:rewound.sessionId});
+        threadStore.update(thread.id,{providerSessionId:rewound.sessionId,turns:remapOpenCodeTurns(retained,rewound),providerMeta});emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }
       if(session instanceof ClaudeAgentSession){
-        const {index,providerMessageId}=claudeRewindCheckpoint(thread,params.beforeTurnId);
+        const current={...thread,providerMeta:threadMetadata(thread.id)?.providerMeta||thread.providerMeta},{index,providerMessageId}=claudeRewindCheckpoint(current,params.beforeTurnId);
         const forked=await session.rewindConversation(providerMessageId);
-        const providerMeta=claudeRewindProviderMeta({...thread,providerMeta:threadMetadata(thread.id)?.providerMeta||thread.providerMeta},index,forked);
+        // A cursor is a turn of the conversation Claude Code holds now, so the fork keeps whatever it was handed over.
+        const providerMeta=revertedHistoryHandoff(claudeRewindProviderMeta(current,index,forked),thread.turns.slice(0,index),{sessionId:forked.sessionId,holdsHandoff:Boolean(providerMessageId)});
         threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index),providerMeta});
         emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }
