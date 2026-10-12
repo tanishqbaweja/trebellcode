@@ -167,8 +167,8 @@ function focusShownView(){
 function focusTerminalDrawer(){
   const started=performance.now();
   const attempt=()=>{
-    const drawer=document.querySelector(".terminal-drawer");
-    const target=document.querySelector('[data-testid="command-palette"]')||!drawer?null:drawer.querySelector(".terminal-pane.active .terminal-command-line input:not(:disabled)")||drawer.querySelector(".terminal-empty button")||drawer.querySelector(".terminal-new");
+    const drawer=document.querySelector('[data-testid="command-palette"]')?null:document.querySelector(".terminal-drawer");
+    const target=drawer&&(drawer.querySelector(".terminal-pane.active .terminal-command-line input:not(:disabled)")||drawer.querySelector(".terminal-empty button")||drawer.querySelector(".terminal-new"));
     if(target){if(!drawer.contains(document.activeElement))target.focus({preventScroll:true});return}
     if(performance.now()-started<4000)requestAnimationFrame(attempt);
   };
