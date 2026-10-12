@@ -854,3 +854,27 @@ test("Initialize Git that fails says why in the not-a-repository view",async({pa
   await expect(view.getByRole("button",{name:"Initialize Git"})).toBeEnabled();
   await shootBothModes(page,"source-control-init-failed");
 });
+
+test("after Initialize Git the branch picker shows the new branch, before its first commit and after",async({page,request})=>{
+  test.setTimeout(60_000);
+  const root=await mkdtemp(join(tmpdir(),"trebell-git-unborn-"));repositories.push(root);await writeFile(join(root,"hello.txt"),"hello\n","utf8");
+  const git=async args=>(await execFileAsync("git",args,{cwd:root,windowsHide:true,encoding:"utf8"})).stdout.trim();
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await scriptCodeHost(page,{boot,info:false});
+  const {right,changes}=await openGitPanel(page,request,"Source control unborn branch",root);
+  await right.locator(".source-control .empty-state").getByRole("button",{name:"Initialize Git"}).click();
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  const branch=await git(["symbolic-ref","--short","HEAD"]);await git(["config","user.email","trebell-test@example.invalid"]);await git(["config","user.name","Trebell Test"]);
+  const picker=right.getByRole("combobox",{name:"Current branch"});
+  await expect(picker).toHaveValue(branch);
+  await expect(picker.locator("option")).toHaveText([branch]);
+  await expect(picker).toHaveAttribute("title",branch+" · no commits yet");
+  await shootBothModes(page,"source-control-unborn-branch");
+  // The first commit makes it a branch like any other.
+  await changes.getByPlaceholder("Commit message").click();await page.keyboard.type("First commit",{delay:15});
+  await changes.getByRole("button",{name:"Commit",exact:true}).click();
+  await expect(changes.locator(".sc-clean")).toHaveText("Working tree clean.");
+  await expect(picker).toHaveAttribute("title",branch+" · switch branch");
+  await expect(picker.locator("option")).toHaveText([branch]);
+  await expect(picker).toHaveValue(branch);
+});

@@ -401,7 +401,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   // A detached HEAD has no branch to select, so the branch list leads with it ("detached", as the header chip and the worktree rows
   // say) rather than showing the first branch as checked out; its title names the commit.
   const detachedAt=info&&!info.branch?(info.worktrees||[]).find(worktree=>worktree.path===info.root)?.head||"":"";
-  const branchTitle=info?.branch?info.branch+" · switch branch":info?"detached"+(detachedAt?" at "+detachedAt.slice(0,8):"")+" · switch branch":"Switch branch";
+  // A new repository's branch has no commit yet, so git lists no branch ref for it; the list leads with it all the same.
+  const unborn=Boolean(info?.branch)&&!(info.branches||[]).includes(info.branch);
+  const branchTitle=unborn?info.branch+" · no commits yet":info?.branch?info.branch+" · switch branch":info?"detached"+(detachedAt?" at "+detachedAt.slice(0,8):"")+" · switch branch":"Switch branch";
   const gitVersion=diagnostics?diagnostics.git?.version||"not found":diagnosticsLoading?"checking…":"unknown";
 
   if(!projectPath)return <div className="empty-state">Open a project to use source control.</div>;
@@ -410,7 +412,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
 
   return <div className="source-control">
     <div className="sc-toolbar">
-      <div className="sc-branch"><GitBranch size={16}/><select aria-label="Current branch" title={branchTitle} value={info?.branch||""} disabled={!info} aria-busy={infoLoading||undefined} onChange={e=>action("branch-switch",{name:e.target.value})}>{!info&&<option value="">{infoLoading?"Loading branches…":"Branches unavailable"}</option>}{info&&!info.branch&&<option value="" disabled>detached</option>}{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button aria-label="Create branch" title="Create branch" onClick={async()=>{const n=await askText("New branch name");if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
+      <div className="sc-branch"><GitBranch size={16}/><select aria-label="Current branch" title={branchTitle} value={info?.branch||""} disabled={!info} aria-busy={infoLoading||undefined} onChange={e=>action("branch-switch",{name:e.target.value})}>{!info&&<option value="">{infoLoading?"Loading branches…":"Branches unavailable"}</option>}{info&&!info.branch&&<option value="" disabled>detached</option>}{unborn&&<option value={info.branch}>{info.branch}</option>}{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button aria-label="Create branch" title="Create branch" onClick={async()=>{const n=await askText("New branch name");if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
       <div><button onClick={()=>action("fetch")} disabled={!!busy}><RefreshCw size={13}/> Fetch</button><button onClick={()=>action("pull")} disabled={!!busy}><Download size={13}/> Pull</button><button onClick={()=>action("push",{setUpstream:!info?.upstream})} disabled={!!busy}><Upload size={13}/> Push</button></div>
     </div>
     {error&&<div className="inline-error source-control-error" role="alert">{error}</div>}{notice&&<div className="source-control-notice" role="status">{notice}</div>}
