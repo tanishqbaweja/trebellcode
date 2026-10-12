@@ -60,7 +60,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const [statusLimit,setStatusLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [prLimit,setPrLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [fileLimit,setFileLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
-  const prDetailRef=useRef(null);
+  const prDetailRef=useRef(null),openPrRequestRef=useRef(0);
   // What the last refresh could not load: "info" (the repository itself) or "prs" (only the pull-request list, after the
   // repository view was refreshed), so a successful action reports the part that actually failed.
   const refreshFailureRef=useRef(null);
@@ -159,9 +159,11 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   function gitActionFailureLabel(action){
     return ({init:"Could not initialize the Git repository","branch-create":"Could not create the branch","branch-switch":"Could not switch the branch",commit:"Could not commit",fetch:"Could not fetch",pull:"Could not pull",push:"Could not push","worktree-create":"Could not create the worktree"}[action]||"Git action "+action+" failed");
   }
-  function prActionFailureLabel(action,extra={}){
-    if(action==="merge"&&extra.auto)return "Could not turn on auto-merge";
-    return ({edit:"Could not edit the pull request",checkout:"Could not check out the pull request","request-reviewer":"Could not request the reviewer","approve-workflows":"Could not approve the workflows",revert:"Could not revert the pull request",merge:"Could not merge the pull request",comment:"Could not add the comment",review:"Could not submit the review","edit-comment":"Could not edit the comment"}[action]||"Pull request action "+action+" failed");
+  // A failure names its pull request, since it can answer after the person opened another one.
+  function prActionFailureLabel(action,extra={},number){
+    const pr="pull request #"+number;
+    if(action==="merge"&&extra.auto)return "Could not turn on auto-merge for "+pr;
+    return ({edit:"Could not edit "+pr,checkout:"Could not check out "+pr,"request-reviewer":"Could not request the reviewer for "+pr,"approve-workflows":"Could not approve the workflows of "+pr,revert:"Could not revert "+pr,merge:"Could not merge "+pr,comment:"Could not add the comment to "+pr,review:"Could not submit the review of "+pr,"edit-comment":"Could not edit the comment on "+pr}[action]||"Pull request action "+action+" on #"+number+" failed");
   }
   // Another repository starts unread: what the last one answered does not describe it.
   useEffect(()=>{infoRef.current=null;setInfo(null);setDiagnostics(null);setPrs([]);setReads({info:null,diagnostics:null,prs:null});setSourceProvider("");setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});setLinkedThreads([]);setLinkedThreadsKey(null);refresh("")},[projectPath,environmentId]);
@@ -218,8 +220,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       partialSuccess("Pull request was created",issues,started);
     }catch(e){reportError(started,actionError("Could not create the pull request",e))}finally{if(ownsBusy)setBusy("")}
   }
+  // Only the pull request opened last is shown: a detail that answers after another one was opened is dropped.
   async function openPr(pr){
-    const started=contextRef.current;
+    const started=contextRef.current,request=++openPrRequestRef.current,current=()=>stillShown(started)&&request===openPrRequestRef.current;
     setError("");
     let d=null;
     // The banner names what could not load; a caller that reports the failure in its own sentence gets the bare reason.
@@ -227,17 +230,19 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     const failed=(label,error)=>{nextError=actionError(label,error);nextReason=String(error?.message??error??"").trim()||nextError};
     try{d=await api("/api/source-control/pr-detail?"+query({path:projectPath,number:String(pr.number),...(sourceProvider?{provider:sourceProvider}:{})}))}
     catch(error){failed("Could not load pull request details",error)}
-    if(!stillShown(started))return "";
+    if(!current())return "";
     const item=d?.item||pr;setSelectedPr(item);onSelectedPrChange?.(item);setTimeout(()=>prDetailRef.current?.scrollIntoView({block:"start",behavior:"auto"}),0);
     const viewedError=await loadViewed(item,d?.provider||sourceProvider||item.provider);if(viewedError)failed("Could not load viewed files",viewedError);
+    if(!current())return "";
     if(item?.identity){
       const params=new URLSearchParams({provider:item.identity.provider||"",host:item.identity.host||"",repository:item.identity.repository||"",number:String(item.identity.number||item.number)});
       const linkKey=params.toString();
-      try{const reverse=await api("/api/source-control/thread-link?"+params);if(stillShown(started)){setLinkedThreads(reverse.threads||[]);setLinkedThreadsKey(linkKey)}}
-      catch(error){if(stillShown(started)&&linkedThreadsKey!==linkKey){setLinkedThreads([]);setLinkedThreadsKey(linkKey)}failed("Could not load linked threads",error)}
+      try{const reverse=await api("/api/source-control/thread-link?"+params);if(current()){setLinkedThreads(reverse.threads||[]);setLinkedThreadsKey(linkKey)}}
+      catch(error){if(current()&&linkedThreadsKey!==linkKey){setLinkedThreads([]);setLinkedThreadsKey(linkKey)}failed("Could not load linked threads",error)}
     }else{setLinkedThreads([]);setLinkedThreadsKey(null)}
-    if(!stillShown(started))return "";
-    setError(nextError);return nextReason;
+    if(!current())return "";
+    // Opening cleared the last error; one that landed while the detail loaded (a late action's) stays unless this one has its own.
+    if(nextError)setError(nextError);return nextReason;
   }
   // Linked pull requests belong to the thread that was open when the sync started. Its links are always reported (the callback
   // of that render names that thread, and App shows them only while it is still open); its error only while it is still shown.
@@ -268,17 +273,18 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     try{const result=await api("/api/source-control/pr-viewed",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||selectedPr.provider||null,number:selectedPr.number,files:[{path:file.path,viewed:value}]})});if(stillShown(started))setViewed({prNumber:selectedPr.number,store:result.store||viewed.store,files:result.files||[],loading:false})}
     catch(error){reportError(started,actionError("Could not mark "+file.path+(value?" viewed":" unviewed"),error))}finally{setBusy("")}
   }
+  // An action belongs to the pull request it was started on: its detail is read again only while no other one was opened since.
   async function prAction(actionName,extra={},{done=""}={}){
-    const started=contextRef.current;
+    const started=contextRef.current,pr=selectedPr,opened=openPrRequestRef.current;
     setBusy(actionName);setError("");
     try{
-      const result=await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:selectedPr.number,action:actionName,...extra})});
+      const result=await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:pr.number,action:actionName,...extra})});
       if(!stillShown(started))return result;
-      const issues=[];const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".");
+      const issues=[];if(openPrRequestRef.current===opened){const detailError=await openPr(pr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
       const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
-      partialSuccess(done||"Pull request action "+actionName+" succeeded",issues,started,Boolean(done));
+      partialSuccess(done||"Pull request action "+actionName+" on #"+pr.number+" succeeded",issues,started,Boolean(done));
       return result;
-    }catch(e){reportError(started,actionError(prActionFailureLabel(actionName,extra),e));return null}finally{setBusy("")}
+    }catch(e){reportError(started,actionError(prActionFailureLabel(actionName,extra,pr.number),e));return null}finally{setBusy("")}
   }
   // Merging, or turning on auto-merge, asks first: the question names the pull request, where it goes, the merge method and the
   // checks that failed or are still pending, and its button is red while a check has failed.
@@ -334,7 +340,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       ?"Merge "+mergeScope.map(pr=>"#"+pr.number).join(" → ")+" using "+stackMergeMethod+" as one GitHub stack operation? GitHub will enforce branch rules and merge queues."
       :"Rebase stack "+label+"? This rewrites the remote stack branches bottom-to-top with force-with-lease and restarts checks. Your current checkout is not changed.";
     if(!confirm(promptText))return;
-    const started=contextRef.current;
+    const started=contextRef.current,opened=openPrRequestRef.current;
     setBusy(kind+"-stack");setError("");
     try{
       if(kind==="merge"){
@@ -344,7 +350,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       }
       if(!stillShown(started))return;
       const issues=[];const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
-      if(selectedPr){const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
+      if(selectedPr&&openPrRequestRef.current===opened){const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
       partialSuccess("Stack "+kind+" succeeded",issues,started);
     }catch(e){reportError(started,actionError(kind==="merge"?"Could not merge the stack":"Could not rebase the stack",e))}
     finally{setBusy("")}

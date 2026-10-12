@@ -575,7 +575,7 @@ async function asInDesktopApp(page){
 // A repository on a scripted code host: /api/git/info answers host.info (changed in place by a test; info:false leaves Git real), and
 // every /api/source-control/* read and action answers as a host would, its pull requests changing with the actions. host.calls lists
 // what the panel sent; host.fail[action] fails the next such action with that reason, and host.hold[action] holds it until that
-// promise settles.
+// promise settles (a read such as "thread-link" is held by its path).
 async function scriptCodeHost(page,{boot,prs=[],capabilities={},info={}}){
   const host={prs,calls:[],fail:{},hold:{},info:{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:"origin/main",status:[],worktrees:[{path:boot.cwd,branch:"main"}],remotes:[{name:"origin",url:"https://github.com/owner/repo.git",kind:"fetch"}],...info},
     capabilities:{create:true,edit:true,comment:true,editComments:true,review:true,merge:true,autoMerge:true,checkout:true,reviewers:true,publish:true,...capabilities}};
@@ -585,7 +585,7 @@ async function scriptCodeHost(page,{boot,prs=[],capabilities={},info={}}){
   await page.route(/\/api\/source-control\//,async route=>{
     const request=route.request(),url=new URL(request.url()),path=url.pathname.replace(/^.*\/api\/source-control\//,"");let body=null;try{body=request.postDataJSON()}catch{}
     host.calls.push({path,method:request.method(),query:Object.fromEntries(url.searchParams),body});
-    const action=body?.action;if(path==="pr-action"&&host.hold[action])await host.hold[action];
+    const action=body?.action,held=host.hold[path==="pr-action"?action:path];if(held)await held;
     if(path==="pr-action"&&host.fail[action]!=null){const reason=host.fail[action];delete host.fail[action];return json(route,{ok:false,error:reason},400)}
     if(path==="diagnostics")return json(route,{selectedProvider:url.searchParams.get("provider")||"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:host.capabilities}});
     if(path==="prs")return json(route,{ok:true,provider:"github",capabilities:host.capabilities,items:host.prs.map(pr=>({provider:"github",...pr,identity:identity(pr)}))});
@@ -943,4 +943,43 @@ test("each project selects its detected code host every time it is opened",async
     expect(prsAskedWith(),name).toBe("github");
   }
   await shootBothModes(page,"source-control-host-after-switches");
+});
+
+test("a pull request action that finishes after another one was opened keeps that one open and names its own pull request",async({page,request})=>{
+  test.setTimeout(60_000);
+  await asInDesktopApp(page);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,prs:[samplePr(11,{title:"Feature one"}),samplePr(13,{title:"Feature two"}),samplePr(15,{title:"Feature three"})]});
+  const {right,pulls}=await openGitPanel(page,request,"Source control late actions");
+  const dialog=page.locator("dialog.inspector-text-prompt"),detail=pulls.locator(".pr-detail"),heading=detail.locator("h3");
+  const openPr=async(number,title)=>{await pulls.locator(".pr-list").getByRole("button",{name:new RegExp("#"+number+" "+title)}).click();await expect(heading).toHaveText("#"+number+" "+title)};
+  const held=()=>{let release;const promise=new Promise(resolve=>{release=resolve});return {promise,release}};
+  const listReads=()=>host.calls.filter(call=>call.path==="prs").length;
+  // A reviewer is still being requested for #11 when the person opens #13: #13 stays open once it is done.
+  await openPr(11,"Feature one");
+  let hold=held();host.hold["request-reviewer"]=hold.promise;
+  await detail.getByRole("button",{name:"Request reviewer"}).click();await expect(dialog).toContainText("Reviewer username");
+  await page.keyboard.type("octocat",{delay:15});await page.keyboard.press("Enter");
+  await expect.poll(()=>host.actions().length).toBe(1);
+  await openPr(13,"Feature two");
+  let reads=listReads();hold.release();
+  await expect.poll(listReads).toBeGreaterThan(reads);
+  await expect(heading).toHaveText("#13 Feature two");
+  expect(host.calls.filter(call=>call.path==="pr-detail").map(call=>call.query.number)).toEqual(["11","13"]);
+  // A merge of #13 the host refuses after #15 was opened: #15 stays open, and the error names #13. It stays on screen when the
+  // rest of #15's detail (its linked threads) arrives after it.
+  hold=held();host.hold.merge=hold.promise;host.fail.merge="Pull request is not mergeable: the required check unit-tests has failed.";
+  await detail.getByRole("button",{name:"Merge",exact:true}).click();await dialog.getByRole("button",{name:"Merge",exact:true}).click();
+  await expect.poll(()=>host.actions().length).toBe(2);
+  const links=held();host.hold["thread-link"]=links.promise;
+  await openPr(15,"Feature three");
+  hold.release();
+  const alert=right.locator(".source-control-error"),refused="Could not merge pull request #13: Pull request is not mergeable: the required check unit-tests has failed.";
+  await expect(alert).toHaveText(refused);
+  delete host.hold["thread-link"];links.release();
+  await expect.poll(()=>host.calls.filter(call=>call.path==="thread-link"&&call.query.number==="15").length).toBe(1);
+  await expect(detail.getByRole("button",{name:"Merge",exact:true})).toBeEnabled();
+  await expect(alert).toHaveText(refused);
+  await expect(heading).toHaveText("#15 Feature three");
+  await shootBothModes(page,"source-control-late-merge-failure");
 });
