@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState} from "react";
+import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { Clock3, X } from "lucide-react";
 import { formatSnoozeUntil, localDateTimeValue, snoozeUntilFromDuration, timestampFromLocalDateTime } from "../thread-snooze.js";
 
@@ -31,7 +31,7 @@ function wakeLabel(until){
   return date.toLocaleString(undefined,{weekday:"short",year:"numeric",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
 }
 
-export default function SnoozeDialog({request,onSubmit,onCancel}){
+export default function SnoozeDialog({request,onSubmit,onCancel,focusFallback}){
   const [mode,setMode]=useState("duration");
   const [amount,setAmount]=useState(1);
   const [unit,setUnit]=useState("hours");
@@ -42,6 +42,20 @@ export default function SnoozeDialog({request,onSubmit,onCancel}){
   const dateRef=useRef(null);
   const formRef=useRef(null);
   useModalFocus(formRef,Boolean(request),false);
+  // Closing gives focus back to the control the dialog was opened from (a row's menu button, the bulk bar's Snooze), as the command
+  // palette does; when that control went with the snooze (the thread moved to Snoozed), focusFallback places it.
+  const openerRef=useRef(null),focusFallbackRef=useRef(focusFallback);focusFallbackRef.current=focusFallback;
+  useLayoutEffect(()=>{openerRef.current=document.activeElement},[]);
+  useEffect(()=>()=>{
+    const focused=document.activeElement,opener=openerRef.current;
+    if(focused&&focused!==document.body&&!formRef.current?.contains(focused))return;
+    if(opener instanceof HTMLElement&&opener!==document.body&&opener.isConnected){
+      // A row's menu button shows only while its row has focus, so the row's own button takes it first.
+      opener.closest(".thread-row")?.querySelector(".thread-main")?.focus({preventScroll:true});
+      opener.focus({preventScroll:true});
+    }
+    if(document.activeElement!==opener)focusFallbackRef.current?.();
+  },[]);
   const count=request?.threads?.length||0;
   const until=useMemo(()=>mode==="duration"?snoozeUntilFromDuration(amount,unit):timestampFromLocalDateTime(dateTime),[mode,amount,unit,dateTime]);
   useEffect(()=>{

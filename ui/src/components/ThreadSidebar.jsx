@@ -63,7 +63,9 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
     const copied=await writeClipboardText(value);
     if(!copied)throw new Error("Could not copy to clipboard.");
   };
-  const runMenuAction=callback=>{closeRowMenu(menuRef.current);return runAction(callback)};
+  // An item gives focus back to the menu's button as the menu closes (the item hides with it), so a dialog it opens, Snooze…,
+  // gives focus back there too.
+  const runMenuAction=callback=>{const menu=menuRef.current;menu?.querySelector("summary")?.focus();closeRowMenu(menu);return runAction(callback)};
   // Why a thread cannot be moved: Codex orders the threads outside a section by recent activity only, and a thread of a section whose
   // order could not be read has no place to move from (the reason is named).
   const orderHint=thread.sectionOrderError||(agentRuntime==="codex"&&!thread.section?.id&&!thread.section?.name?"This list is kept in order of recent activity":undefined);

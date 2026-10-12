@@ -168,3 +168,34 @@ test("a refused Snooze says why in the dialog, leaves the thread as it was and w
   }finally{await harness.close()}
 });
 
+test("closing the Snooze dialog with Cancel, Escape or its close button gives focus back to the control that opened it",async({page})=>{
+  test.setTimeout(90_000);
+  const {harness}=await openSidebarApp(page);
+  const dialog=snoozeDialog(page);
+  try{
+    for(const [close,mode] of [["Cancel","dark"],["Escape","dark"],["Escape","light"],["Close snooze dialog","light"]]){
+      await switchMode(page,mode);
+      const row=await rowMenu(page,"Bulk two"),button=row.locator(".thread-menu summary");
+      await row.getByRole("button",{name:"Snooze…",exact:true}).click();
+      await expect(dialog).toBeVisible();await expect(dialog.getByLabel("Snooze duration")).toBeFocused();
+      if(close==="Escape")await page.keyboard.press("Escape");else await dialog.getByRole("button",{name:close,exact:true}).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(button).toBeFocused();await expect(row.locator(".thread-menu")).not.toHaveAttribute("open","");
+      if(close==="Escape"){await shoot(page,"sidebar-snooze-closed-focus");await expect(button).toBeFocused()}
+    }
+    await switchMode(page,"dark");
+    // From the keyboard: Enter on the row's menu button, Tab to Snooze…, Enter, then Escape lands back on the button.
+    const row=threadRow(page,"Bulk three"),button=row.locator(".thread-menu summary");
+    await row.locator(".thread-main").focus();await page.keyboard.press("Tab");await expect(button).toBeFocused();
+    await page.keyboard.press("Enter");await expect(row.locator(".thread-menu")).toHaveAttribute("open","");
+    await page.keyboard.press("Tab");await page.keyboard.press("Tab");await expect(row.getByRole("button",{name:"Snooze…",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");await expect(dialog).toBeVisible();
+    await page.keyboard.press("Escape");await expect(dialog).toHaveCount(0);await expect(button).toBeFocused();
+    // The bulk bar's Snooze gets it back too.
+    await selectThreads(page,["Bulk one","Bulk four"]);
+    const bulkSnooze=bulkBar(page).getByRole("button",{name:"Snooze",exact:true});
+    await bulkSnooze.click();await expect(dialog).toBeVisible();
+    await dialog.getByRole("button",{name:"Cancel",exact:true}).click();await expect(dialog).toHaveCount(0);
+    await expect(bulkSnooze).toBeFocused();
+  }finally{await harness.close()}
+});
