@@ -18,7 +18,8 @@ async function listen(server){await new Promise((resolve,reject)=>server.listen(
 
 // Cursor over ACP, scripted by a JSON file it reads at every request (so a test can change it between turns): it logs each request,
 // answers session/load with config.lostError when set, numbers its new sessions (or fails them with config.newError), and answers
-// a prompt with one file read and config.reply, or refuses it outright with config.promptError (as a rate or plan limit does).
+// a prompt with one file read (config.delayMs long) and config.reply, or refuses it outright with config.promptError (as a rate or
+// plan limit does).
 const FAKE_CURSOR=String.raw`
 import readline from "node:readline";
 import { appendFileSync, readFileSync } from "node:fs";
@@ -41,7 +42,7 @@ async function handle(m){
     if(config.promptError)return fail(config.promptError);
     const sessionId=m.params.sessionId,call="read-"+Date.now(),update=value=>send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:value}});
     update({sessionUpdate:"tool_call",toolCallId:call,title:"Read notes.md",kind:"read",status:"in_progress",rawInput:{path:"notes.md"}});
-    await delay(400);
+    await delay(config.delayMs||400);
     update({sessionUpdate:"tool_call_update",toolCallId:call,status:"completed",content:[{type:"content",content:{type:"text",text:"PELICAN\nHERON\n"}}]});
     update({sessionUpdate:"agent_message_chunk",content:{type:"text",text:config.reply||"Done."}});
     return reply({stopReason:"end_turn"});
@@ -351,5 +352,63 @@ test("a send whose new session cannot start says why beside the composer that ke
     await expectReadingOrder(reply(page,"Noted: HERON."),userRow(page,draft+" Both"),handoff,page.locator(".agent-block [data-testid=activity-card]"),reply(page,"You asked me to remember PELICAN and HERON."));
     await expect(page.locator(".tool-event.kind-error")).toHaveCount(0);
     await page.screenshot({animations:"disabled",path:auditDir+"send-failed-then-handed-over-dark-1280x800.png"});
+  }finally{await fx.close()}
+});
+
+// A follow-up the queue starts once the turn before it ends, and whose turn/start fails before any turn exists, has no turn to show
+// the failure on either: why shows beside the composer, under the queue that keeps the follow-up, never on the turn before it, whose
+// card and reply stay as they were. Send now is the next send, which ends the note.
+test("a queued follow-up whose start fails says why beside the composer under the queue, never on the last turn's card",async({page})=>{
+  test.setTimeout(150_000);
+  const fx=await cursorFixture("Cursor queued follow-up",{providerSessionId:"cursor-live",config:{reply:"First answer.",delayMs:2500}});
+  try{
+    await routeApp(page,fx);await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await openThreadRow(page,"Cursor queued follow-up");
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert"),send=page.getByTestId("send"),queuedItem=page.locator(".queued-message");
+    await expect(composer).toBeEnabled();
+    await composer.fill("First question");await send.click();
+    await expect(send).toHaveAttribute("aria-label","Queue follow-up",{timeout:15_000});
+    await composer.fill("Queued follow-up");await send.click();
+    await expect(queuedItem).toContainText("Queued follow-up");
+    // Cursor starts again for the follow-up (another permission mode is another launch) without the conversation, and its new
+    // session cannot start.
+    await fx.configure({lostError:LOST,newError:{code:-32603,message:"Internal error",data:{message:"No space left on device"}}});
+    await page.locator(".permission-picker").first().selectOption("read-only");
+    await expect(reply(page,"First answer.")).toBeVisible({timeout:20_000});
+    await expect(alert).toHaveText("Queued follow-up not sent: No space left on device.",{timeout:15_000});
+    await expect(alert).toHaveAttribute("role","alert");await expect(page.locator(".composer-status")).toHaveClass(/error/);
+    await expect(queuedItem).toHaveCount(1);await expect(queuedItem).toContainText("Queued · retry needed");await expect(queuedItem).toContainText("Queued follow-up");
+    const thread=fx.threadStore.get(fx.thread.id),previous=thread.turns.at(-1).id;
+    expect([thread.turns.length,(await fx.requests()).filter(entry=>entry.method==="session/prompt").length]).toEqual([2,1]);
+    // The turn before keeps its card as it was, with its step and no error, and its reply below it; the follow-up is not in the
+    // conversation, and no live card holds the failure.
+    const card=page.locator(`.turn-card [data-testid=activity-card][data-turn-id="${previous}"]`);
+    await expect(card).toBeVisible();await expect(card).toContainText("Read notes.md");
+    await expect(page.locator(".agent-block")).toHaveCount(0);await expect(page.locator(".tool-event.kind-error")).toHaveCount(0);
+    await expect(page.getByTestId("turn-outcome-row")).toHaveCount(0);await expect(userRow(page,"Queued follow-up")).toHaveCount(0);
+    await expectReadingOrder(userRow(page,"First question"),card,reply(page,"First answer."),queuedItem,alert);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      for(const [width,height] of [[1280,800],[900,800]]){
+        await page.setViewportSize({width,height});await frames(page,3);
+        const fit=await alert.evaluate(node=>{const status=node.closest(".composer-status"),wrap=node.closest(".composer-wrap").getBoundingClientRect(),rect=node.getBoundingClientRect(),shell=document.querySelector(".workspace-shell");return {inside:rect.left>=wrap.left-1&&rect.right<=wrap.right+1,clipped:status.scrollWidth>status.clientWidth+1,sideways:shell.scrollWidth>shell.clientWidth+1}});
+        expect(fit,`${mode} ${width}x${height}`).toEqual({inside:true,clipped:false,sideways:false});
+        await page.screenshot({animations:"disabled",path:`${auditDir}queued-start-failed-${mode}-${width}x${height}.png`});
+      }
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1280,height:800});
+
+    // With room again, Send now starts it: the note ends, and the follow-up continues the conversation in a new session, which its
+    // turn says.
+    await fx.configure({lostError:LOST,reply:"Second answer."});
+    await queuedItem.getByRole("button",{name:"Send now"}).click();
+    await expect(alert).toHaveCount(0);
+    await expect(reply(page,"Second answer.")).toBeVisible({timeout:15_000});
+    await expect(queuedItem).toHaveCount(0);
+    const handoff=page.getByTestId("session-handoff");
+    await expect(handoff).toHaveCount(1);await expect(handoff).toHaveText(HANDED_OVER);
+    await expectReadingOrder(reply(page,"First answer."),userRow(page,"Queued follow-up"),handoff,page.locator(".agent-block [data-testid=activity-card]"),reply(page,"Second answer."));
+    await expect(page.locator(".tool-event.kind-error")).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"queued-start-failed-then-sent-dark-1280x800.png"});
   }finally{await fx.close()}
 });

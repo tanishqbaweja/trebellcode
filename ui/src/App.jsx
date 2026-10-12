@@ -913,9 +913,10 @@ export default function App(){
   const localQueueStartRef=useRef(null);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
-  // What the composer says about where its draft went, next to the draft: a send that failed before any turn existed ("send",
-  // kept until the next send or an edit of the draft), or a thread that did not open ("open", kept until the next send), so the
-  // draft never goes to a thread the person did not see coming. Another thread shown, or a new task, clears both.
+  // What the composer says about where its draft went, next to the draft: a send, or a queued follow-up the queue started, that
+  // failed before any turn existed ("send", kept until the next send, Send now included, or an edit of the draft), or a thread
+  // that did not open ("open", kept until the next send), so the draft never goes to a thread the person did not see coming.
+  // Another thread shown, or a new task, clears both.
   const [composerAlert,setComposerAlert]=useState(null);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false); const [modelsLoading,setModelsLoading]=useState(false);
   // runtimeSwitch is set from the moment a harness switch starts until the server answers it: nothing new is sent meanwhile, while the current transport stays open for running turns and approvals.
@@ -2493,7 +2494,9 @@ export default function App(){
       }catch(error){
         const failed=dispatching.map(item=>item.id===next.id?{...item,dispatchingAt:null,autoStartFailed:true}:item);
         try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}
-        setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:"Could not start queued follow-up: "+(error?.message||String(error)),status:"done"}]);
+        // As a send that fails: no turn exists to show it on, so why goes beside the composer, under the queue that keeps the
+        // follow-up, never onto the last turn's card (a worktree that could not be set up says why in its own card).
+        setEvents([]);if(!(error&&typeof error==="object"&&WORKTREE_CARD_ERRORS.has(error)))setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error?.message||String(error)||"the harness refused the turn")});
       }finally{localQueueStartRef.current=null}
     })();
   },[running,queued,queueMode,runtimeCapabilities.nativeQueue]);
@@ -4245,6 +4248,8 @@ export default function App(){
     });
   }
   async function sendQueuedNow(item){
+    // Send now is the next send, so the composer's note about the last one ends.
+    setComposerAlert(null);
     if(item?.native&&runtimeCapabilities.nativeQueue&&rpc&&activeThread?.id){
       const requiredToolNamespaces=Array.isArray(item.dynamicToolNamespaces)?item.dynamicToolNamespaces:[],needsToolExpansion=queuedSubmissionNeedsToolExpansion(item,activeThread.providerMeta?.dynamicToolNamespaces||[]);
       if(running&&activeTurnId&&runtimeCapabilities.steering&&!needsToolExpansion){

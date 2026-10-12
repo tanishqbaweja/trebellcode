@@ -1896,7 +1896,10 @@ test("failed automatic local queue starts keep the follow-up retryable",async({p
     await expect.poll(()=>turnStarts).toBe(2);
     await expect(queued).toBeVisible();
     await expect(queued.locator("span").first()).toContainText("Queued · retry needed");
-    await expect(page.getByText("Could not start queued follow-up: Deliberate local queued turn failure",{exact:false})).toBeVisible();
+    // No turn exists to show the failure on: it shows beside the composer, never as a step on the turn before.
+    const note=page.getByTestId("composer-alert");
+    await expect(note).toHaveText("Queued follow-up not sent: Deliberate local queued turn failure.");await expect(note).toHaveAttribute("role","alert");
+    await expect(page.locator(".tool-event.kind-error")).toHaveCount(0);
     await page.waitForTimeout(350);
     expect(turnStarts).toBe(2);
     await page.setViewportSize({width:1280,height:800});
@@ -1907,6 +1910,7 @@ test("failed automatic local queue starts keep the follow-up retryable",async({p
     await expect.poll(()=>turnStarts).toBe(3);
     await expect(page.locator(".queued-message").filter({hasText:"Keep this queued follow-up"})).toHaveCount(0);
     await expect(page.locator(".user-bubble").filter({hasText:"Keep this queued follow-up"})).toBeVisible();
+    await expect(note).toHaveCount(0);
   }finally{await harness.close()}
 });
 
