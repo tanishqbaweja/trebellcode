@@ -30,11 +30,13 @@ let lastAgentRuntimeInfo=null;
 let lastSettingsSection="general";
 // A shortcut or condition being typed is a draft. It is saved when the field is left or Enter is pressed, and only once it can work,
 // so a half-typed "Ctrl+" or "threadOpen &&" never replaces the one in use. A draft that cannot work stays in the field, marked
-// invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited.
+// invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited. A saved
+// value the check refuses (one saved before the check came in) is marked the same way while no draft replaces it, and left as saved.
 function useDraftField({saved,shown=saved,check,save}){
   const [draft,setDraft]=useState(null);
   const [focused,setFocused]=useState(false);
-  const [problem,setProblem]=useState("");
+  const [typedProblem,setProblem]=useState("");
+  const savedProblem=check(saved),problem=draft===null?typedProblem||savedProblem:typedProblem;
   const sending=useRef(null);
   const latest=useRef(null);latest.current={draft,saved,check,save};
   function commit(){
@@ -51,7 +53,7 @@ function useDraftField({saved,shown=saved,check,save}){
     const {draft,saved,check,save}=latest.current;if(draft===null)return;
     const next=draft.trim();if(next!==saved&&next!==sending.current&&!check(next))save(next);
   },[]);
-  return {problem,props:{
+  return {problem,savedWorks:!savedProblem,props:{
     value:draft??(focused?saved:shown),
     "aria-invalid":problem?"true":undefined,
     onFocus:()=>setFocused(true),
@@ -60,21 +62,22 @@ function useDraftField({saved,shown=saved,check,save}){
     onChange:event=>{const value=event.target.value;setDraft(value);if(problem)setProblem(check(value.trim()))},
     onKeyDown:event=>{
       if(event.key==="Enter"){event.preventDefault();commit()}
-      else if(event.key==="Escape"&&(draft!==null||problem)){event.preventDefault();event.stopPropagation();setDraft(null);setProblem("")}
+      else if(event.key==="Escape"&&(draft!==null||typedProblem)){event.preventDefault();event.stopPropagation();setDraft(null);setProblem("")}
     },
   }};
 }
 // One command in Settings > Shortcuts. The shortcut reads as the app writes it elsewhere (Ctrl+Shift+P, or ⌘ on macOS) and in its
-// stored form (mod+shift+p) while it is edited. A problem with either field is said under the row, with what stays in use meanwhile,
-// and so is a key this command shares with another one (note). Each field is named for its command ("New thread shortcut",
-// "New thread when"), since the column captions alone would give every row's fields the same two names.
+// stored form (mod+shift+p) while it is edited. A problem with either field is said under the row, with what stays in use meanwhile
+// or, when the saved one is refused as well, that it does not work; and so is a key this command shares with another one (note).
+// Each field is named for its command ("New thread shortcut", "New thread when"), since the column captions alone would give every
+// row's fields the same two names.
 function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
   const savedKey=rule?.key||"",savedWhen=rule?.when||defaultWhen;
   const key=useDraftField({saved:savedKey,shown:shortcutHint(savedKey)||savedKey,check:value=>shortcutProblem(value),save:value=>onUpdate({key:value})});
   const when=useDraftField({saved:savedWhen,check:whenProblem,save:value=>onUpdate({when:value})});
   const base="keybinding-"+id.replace(/[^a-z0-9-]/gi,"-");
-  const keyProblem=key.problem&&key.problem+(savedKey?` Until then the shortcut stays ${shortcutHint(savedKey)}.`:"");
-  const whenText=when.problem&&when.problem+" Until then the saved condition is used.";
+  const keyProblem=key.problem&&key.problem+(!key.savedWorks?" Until then the saved shortcut does not work.":savedKey?` Until then the shortcut stays ${shortcutHint(savedKey)}.`:"");
+  const whenText=when.problem&&when.problem+(when.savedWorks?" Until then the saved condition is used.":" Until then the saved condition does not work.");
   const describedBy=(problem,problemId)=>[problem&&problemId,note&&base+"-note"].filter(Boolean).join(" ")||undefined;
   return <div className="keybinding-row">
     <strong>{label}</strong>

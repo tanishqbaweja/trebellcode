@@ -265,6 +265,72 @@ test.describe("Typing a shortcut",()=>{
     await expect(message).toHaveCount(0);
     await expect.poll(()=>saves.length).toBe(1);
   });
+
+  // A shortcut or condition saved before these checks came in, which they would now refuse, never works. It is flagged where it is
+  // listed, as a typed one is, and stays saved as it is until the person changes it.
+  for(const mode of MODES)test(`a saved shortcut or condition the checks refuse is flagged where it is listed (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    const rules=[{command:"sidebarToggle",key:"Ctrl+Up",when:"!modalOpen"},{command:"terminal",key:"Ctrl+Shift+T",when:"Always"}];
+    await request.post("/api/settings",{data:{keybindingRules:rules}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const saves=keybindingSaves(page);
+    await openShortcuts(page);
+    const sidebarRow=row(page,"Toggle main sidebar"),key=keyField(page,"Toggle main sidebar"),keyMessage=sidebarRow.getByRole("alert");
+    const terminalRow=row(page,"Toggle terminal"),when=whenField(page,"Toggle terminal"),whenMessage=terminalRow.getByRole("alert");
+    const keyText="“Up” is not a key name. Use ArrowUp. Until then the saved shortcut does not work.";
+    const whenText="“Always” is not a context. Leave When empty to use the shortcut everywhere. Until then the saved condition does not work.";
+    await expect(keyMessage).toHaveText(keyText);
+    await expect(key).toHaveValue("Ctrl+Up");
+    await expect(key).toHaveAttribute("aria-invalid","true");
+    await expect(key).toHaveAccessibleDescription(keyText);
+    await expect(whenMessage).toHaveText(whenText);
+    await expect(when).toHaveValue("Always");
+    await expect(when).toHaveAttribute("aria-invalid","true");
+    await expect(when).toHaveAccessibleDescription(whenText);
+    await expect(whenField(page,"Toggle main sidebar")).not.toHaveAttribute("aria-invalid","true");
+    await expect(page.locator(".keybindings-settings").getByRole("alert"),"only the two that cannot work are flagged").toHaveCount(2);
+    await sidebarRow.scrollIntoViewIfNeeded();
+    for(const width of [1280,900]){
+      await page.setViewportSize({width,height:800});
+      await sidebarRow.scrollIntoViewIfNeeded();
+      expect(await sideways(page)).toBeLessThanOrEqual(0);
+      await page.screenshot({animations:"disabled",path:shots+`saved-shortcut-refused-${mode}-${width}.png`});
+      await terminalRow.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`saved-condition-refused-${mode}-${width}.png`});
+    }
+    await page.setViewportSize({width:1280,height:800});
+    // Reading the page changed nothing: the saved rules are as they were.
+    await key.click();await key.press("Tab");
+    await when.click();await when.press("Tab");
+    await expect(keyMessage).toHaveText(keyText);
+    await expect(whenMessage).toHaveText(whenText);
+    expect(saves,"listing a saved shortcut the checks refuse saves nothing").toEqual([]);
+    expect((await saved(request)).keybindingRules).toEqual(rules);
+    // Typing follows it as it does a refused one: the flag goes once the text can work, and Escape gives the saved one back, flagged.
+    await retype(when,"!modalOpen");
+    await expect(whenMessage).toHaveCount(0);
+    await when.press("Escape");
+    await expect(when).toHaveValue("Always");
+    await expect(whenMessage).toHaveText(whenText);
+    // A refused edit says the saved condition does not work either, rather than that it is used meanwhile.
+    await retype(when,"!modalOpen &&");
+    await when.press("Tab");
+    await expect(whenMessage).toHaveText("Add a context after “&&”. Until then the saved condition does not work.");
+    expect(saves).toEqual([]);
+    // The name that works is saved and works, and the row is no longer flagged.
+    await retype(key,"Ctrl+ArrowUp");
+    await expect(keyMessage).toHaveCount(0);
+    await key.press("Enter");
+    await expect.poll(async()=>(await savedRule(request,"sidebarToggle"))?.key).toBe("Ctrl+ArrowUp");
+    await expect(key).not.toHaveAttribute("aria-invalid","true");
+    await sidebarRow.locator("strong").click();
+    await page.keyboard.press("Control+ArrowUp");
+    await expect.poll(()=>sidebarCollapsed(page)).toBe(true);
+    await page.keyboard.press("Control+ArrowUp");
+    await expect.poll(()=>sidebarCollapsed(page)).toBe(false);
+    expect(saves.length).toBe(1);
+  });
 });
 
 test.describe("Two commands on one key",()=>{
@@ -273,6 +339,7 @@ test.describe("Two commands on one key",()=>{
     await openShortcuts(page);
     await expect(page.locator(".keybinding-row")).toHaveCount(61);
     await expect(page.locator(".keybindings-settings").getByRole("status")).toHaveCount(0);
+    await expect(page.locator(".keybindings-settings").getByRole("alert"),"a shipped shortcut or condition is flagged").toHaveCount(0);
     await expect(page.locator(".keybindings-settings")).not.toContainText("runs instead");
   });
 
