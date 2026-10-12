@@ -274,12 +274,11 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     const request=++openRequestRef.current,latest=()=>request===openRequestRef.current;openPathRef.current=path;
     setError("");setConflict(null);
     const name=String(path).split(/[\\/]/).pop()||path;
-    const kind=previewKind(name);
-    if(["image","video","audio","pdf"].includes(kind)){
-      setFile({path,name,kind,content:null});setDraft("");setEdit(false);return;
-    }
+    const kind=previewKind(name),media=["image","video","audio","pdf"].includes(kind);
     try{
-      const data=await api("/api/workspace/file?"+params({root:projectPath,path}));
+      // A picture, video, sound or PDF shows from its raw address: only its first byte is read there, so one that is gone says so as
+      // a text file does.
+      const data=media?await api("/api/workspace/raw?"+params({root:projectPath,path}),{headers:{range:"bytes=0-0"}}).then(()=>({path,name,content:null})):await api("/api/workspace/file?"+params({root:projectPath,path}));
       if(!latest())return;
       // Binary content is never text in the viewer, whatever the file's extension says it is.
       setFile({...data,kind:data.binary?"binary":kind});setDraft(data.content??"");setEdit(false);

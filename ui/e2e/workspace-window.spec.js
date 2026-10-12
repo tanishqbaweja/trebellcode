@@ -652,6 +652,28 @@ test("a file that fails to open takes the place of the one in view, and Refresh 
   await shootBothModes(page,"workspace-open-file-deleted-refresh");
 });
 
+test("an image deleted on disk says it could not be opened, from the tree and on Refresh",async({page,request})=>{
+  test.setTimeout(60_000);
+  const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==","base64");
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace deleted image",{"logo.png":png,"icon.png":png,"notes.txt":"notes\n"});
+  const head=right.locator(".file-head strong"),view=right.locator(".file-view");
+  // Deleted while the tree still lists it, then opened.
+  await rm(join(dir,"icon.png"));
+  await row("icon.png").click();
+  await expect(head).toHaveText("icon.png");
+  await expect(view.getByRole("alert")).toContainText("Could not open icon.png");
+  await expect(view.locator(".media-preview")).toHaveCount(0);
+  // Open, then deleted: Refresh says so in place of the picture.
+  await row("logo.png").click();
+  await expect(view.locator(".media-preview img")).toBeVisible();
+  await rm(join(dir,"logo.png"));
+  await right.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
+  await expect(row("logo.png")).toHaveCount(0);
+  await expect(head).toHaveText("logo.png");
+  await expect(view.getByRole("alert")).toContainText("Could not open logo.png");
+  await expect(view.locator(".media-preview")).toHaveCount(0);
+  await shootBothModes(page,"workspace-open-image-deleted-refresh");
+});
 
 test("Edit pressed while Refresh still reads the open file keeps the editor and what is typed",async({page,request})=>{
   test.setTimeout(45_000);
