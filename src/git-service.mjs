@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { readdirSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 
 const execFileAsync=promisify(execFile);
@@ -16,21 +17,60 @@ async function run(command,args,{cwd,env=process.env,timeout=120000,maxBuffer=8*
 }
 export async function git(cwd,args,opts={}){ return run("git",args,{cwd,...opts}); }
 
-// gitFn runs each git command (tests count them through it).
-export async function gitInfo(cwd,{gitFn=git,...opts}={}){
-  const base=resolve(cwd);
-  const rootRes=await gitFn(base,["rev-parse","--show-toplevel"],{...opts,allowFailure:true});
-  if(!rootRes.ok) return {isGit:false,cwd:base,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]};
-  const root=rootRes.stdout.trim();
+// The repository part of a folder's gitInfo (root, branch, branches, upstream, remotes, worktrees) is kept while the files git reads
+// it from are unchanged, for at most 30 s: HEAD from the git dir (so a linked worktree or a submodule reads its own), and config,
+// packed-refs, refs/heads, refs/remotes (the upstream needs its ref) and worktrees from the common dir. git replaces a ref or a
+// worktree's HEAD through a lock file in its own folder, which changes that folder's modification time, so every folder below the
+// refs (a commit on feature/x, a new branch in it) and each worktree's folder count too. A warm poll then runs only git status,
+// which is read every time. A caller's own env (a checkpoint's) can point git elsewhere, so only calls without one are kept.
+const GIT_INFO_REUSE_MS=30_000;
+const STATUS_ARGS=["status","--porcelain=v1","-b"];
+const repositoryParts=new Map();
+function repositorySignature(gitDir,commonDir){
+  const parts=[];
+  const add=(path,depth=0)=>{
+    let info;try{info=statSync(path)}catch{parts.push("-");return}
+    parts.push(info.mtimeMs+":"+info.size+":"+info.ino);
+    if(depth>0&&info.isDirectory()){let entries=[];try{entries=readdirSync(path,{withFileTypes:true})}catch{}for(const entry of entries)if(entry.isDirectory())add(join(path,entry.name),depth-1)}
+  };
+  add(join(gitDir,"HEAD"));add(join(gitDir,"config.worktree"));add(join(commonDir,"config"));add(join(commonDir,"packed-refs"));
+  add(join(commonDir,"refs","heads"),16);add(join(commonDir,"refs","remotes"),16);add(join(commonDir,"worktrees"),1);
+  return parts.join("|");
+}
+// Status never takes git's optional index lock here, so a poll does not rewrite the index and wake file watchers.
+const statusOptions=opts=>({...opts,env:{...(opts.env||process.env),GIT_OPTIONAL_LOCKS:"0"},allowFailure:true});
+function gitInfoResult(base,part,statusRes){
+  const statusLines=statusRes.stdout.split(/\r?\n/).filter(Boolean);
+  return {
+    isGit:true,cwd:base,root:part.root,branch:part.branch,
+    upstream:part.upstream,
+    branches:[...part.branches],
+    status:statusLines.slice(1).map(line=>({code:line.slice(0,2),path:line.slice(3)})),
+    statusHeader:statusLines[0]||"",
+    remotes:part.remotes.map(item=>({...item})),worktrees:part.worktrees.map(item=>({...item})),
+  };
+}
+
+// gitFn runs each git command (tests count them through it); fresh reads the repository part again.
+export async function gitInfo(cwd,{gitFn=git,fresh=false,...opts}={}){
+  const base=resolve(cwd),cacheable=!opts.env,known=cacheable?repositoryParts.get(base):null;
+  if(known&&!fresh&&Date.now()-known.at<GIT_INFO_REUSE_MS&&repositorySignature(known.gitDir,known.commonDir)===known.signature){
+    const statusRes=await gitFn(known.root,STATUS_ARGS,statusOptions(opts));
+    if(statusRes.ok)return gitInfoResult(base,known,statusRes);
+  }
+  const rootRes=await gitFn(base,["rev-parse","--show-toplevel","--absolute-git-dir","--git-common-dir"],{...opts,allowFailure:true});
+  if(!rootRes.ok){repositoryParts.delete(base);return {isGit:false,cwd:base,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]}}
+  const [root,gitDir="",commonLine=""]=rootRes.stdout.split(/\r?\n/).map(line=>line.trim());
+  // Read before the commands below, so a change while they run makes the next poll read everything again.
+  const commonDir=commonLine?resolve(base,commonLine):"",signature=cacheable&&isAbsolute(gitDir)&&commonDir?repositorySignature(gitDir,commonDir):null;
   const [branchRes,branchesRes,statusRes,remoteRes,worktreeRes,upstreamRes]=await Promise.all([
     gitFn(root,["branch","--show-current"],{...opts,allowFailure:true}),
     gitFn(root,["for-each-ref","--format=%(refname:short)","refs/heads"],{...opts,allowFailure:true}),
-    gitFn(root,["status","--porcelain=v1","-b"],{...opts,allowFailure:true}),
+    gitFn(root,STATUS_ARGS,statusOptions(opts)),
     gitFn(root,["remote","-v"],{...opts,allowFailure:true}),
     gitFn(root,["worktree","list","--porcelain"],{...opts,allowFailure:true}),
     gitFn(root,["rev-parse","--abbrev-ref","--symbolic-full-name","@{u}"],{...opts,allowFailure:true}),
   ]);
-  const statusLines=statusRes.stdout.split(/\r?\n/).filter(Boolean);
   const remotes=remoteRes.stdout.split(/\r?\n/).filter(Boolean).map(line=>{
     const m=line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
     return m?{name:m[1],url:m[2],kind:m[3]}:{raw:line};
@@ -44,43 +84,38 @@ export async function gitInfo(cwd,{gitFn=git,...opts}={}){
     else if(current&&line==="bare") current.bare=true;
   }
   if(current) worktrees.push(current);
-  return {
-    isGit:true,cwd:base,root,branch:branchRes.stdout.trim()||null,
-    upstream:upstreamRes.ok?upstreamRes.stdout.trim():null,
-    branches:branchesRes.stdout.split(/\r?\n/).filter(Boolean),
-    status:statusLines.slice(1).map(line=>({code:line.slice(0,2),path:line.slice(3)})),
-    statusHeader:statusLines[0]||"",
-    remotes,worktrees,
-  };
+  const part={root,branch:branchRes.stdout.trim()||null,upstream:upstreamRes.ok?upstreamRes.stdout.trim():null,branches:branchesRes.stdout.split(/\r?\n/).filter(Boolean),remotes,worktrees};
+  if(signature)repositoryParts.set(base,{...part,at:Date.now(),gitDir,commonDir,signature});else repositoryParts.delete(base);
+  return gitInfoResult(base,part,statusRes);
 }
 
 export async function cloneRepository(url,destination){
   const dest=resolve(destination);
   await mkdir(dirname(dest),{recursive:true});
   await run("git",["clone",url,dest],{cwd:dirname(dest),timeout:10*60_000,maxBuffer:16*1024*1024});
-  return gitInfo(dest);
+  return gitInfo(dest,{fresh:true});
 }
 export async function initializeRepository(cwd){
   const target=resolve(cwd);await mkdir(target,{recursive:true});
-  await git(target,["init"]);return gitInfo(target);
+  await git(target,["init"]);return gitInfo(target,{fresh:true});
 }
 export async function createBranch(cwd,name,{checkout=true,startPoint=null}={}){
   const args=checkout?["switch","-c",name]:["branch",name];
   if(startPoint) args.push(startPoint);
-  await git(cwd,args); return gitInfo(cwd);
+  await git(cwd,args); return gitInfo(cwd,{fresh:true});
 }
-export async function switchBranch(cwd,name){ await git(cwd,["switch",name]); return gitInfo(cwd); }
+export async function switchBranch(cwd,name){ await git(cwd,["switch",name]); return gitInfo(cwd,{fresh:true}); }
 export async function commitAll(cwd,message){
   await git(cwd,["add","-A"]);
   const result=await git(cwd,["commit","-m",message],{allowFailure:true});
-  return {result,...await gitInfo(cwd)};
+  return {result,...await gitInfo(cwd,{fresh:true})};
 }
-export async function fetchRepo(cwd){ await git(cwd,["fetch","--all","--prune"]); return gitInfo(cwd); }
-export async function pullRepo(cwd){ await git(cwd,["pull","--ff-only"]); return gitInfo(cwd); }
+export async function fetchRepo(cwd){ await git(cwd,["fetch","--all","--prune"]); return gitInfo(cwd,{fresh:true}); }
+export async function pullRepo(cwd){ await git(cwd,["pull","--ff-only"]); return gitInfo(cwd,{fresh:true}); }
 export async function pushRepo(cwd,{setUpstream=false}={}){
   const info=await gitInfo(cwd);
   const args=setUpstream&&info.branch?["push","-u","origin",info.branch]:["push"];
-  await git(cwd,args); return gitInfo(cwd);
+  await git(cwd,args); return gitInfo(cwd,{fresh:true});
 }
 export async function safeAutoPull(cwd){
   let info=await gitInfo(cwd);
@@ -109,7 +144,7 @@ export async function safeAutoPull(cwd){
   if(ahead>0)return {ok:false,reason:"local_commits",ahead,behind,defaultBranch,info};
   if(behind===0)return {ok:true,changed:false,ahead,behind,defaultBranch,info};
   await git(info.root,["pull","--ff-only"]);
-  return {ok:true,changed:true,ahead:0,behind,defaultBranch,info:await gitInfo(info.root)};
+  return {ok:true,changed:true,ahead:0,behind,defaultBranch,info:await gitInfo(info.root,{fresh:true})};
 }
 export function worktreeSubmoduleArgs(mode="recursive"){
   if(mode==="none")return null;
@@ -126,14 +161,14 @@ export async function createWorktree(cwd,{branch,path,baseBranch=null,submodules
   await git(info.root,args,{timeout:180000});
   const submoduleArgs=worktreeSubmoduleArgs(submodules);
   if(submoduleArgs)await git(dest,submoduleArgs,{timeout:10*60_000,maxBuffer:16*1024*1024});
-  return {worktree:dest,submodules:submodules||"recursive",info:await gitInfo(info.root)};
+  return {worktree:dest,submodules:submodules||"recursive",info:await gitInfo(info.root,{fresh:true})};
 }
 export async function restoreWorktree(cwd,{branch,path,submodules="recursive"}){
   const info=await gitInfo(cwd);if(!info.isGit)throw new Error("Source workspace is not a Git repository");
   const dest=resolve(path);const branchName=String(branch||"").trim();if(!branchName)throw new Error("Managed worktree branch is missing");
   await git(info.root,["worktree","add",dest,branchName],{timeout:180000});
   const submoduleArgs=worktreeSubmoduleArgs(submodules);if(submoduleArgs)await git(dest,submoduleArgs,{timeout:10*60_000,maxBuffer:16*1024*1024});
-  return {worktree:dest,submodules,info:await gitInfo(info.root)};
+  return {worktree:dest,submodules,info:await gitInfo(info.root,{fresh:true})};
 }
 export async function removeWorktree(cwd,path,{force=false}={}){
   const info=await gitInfo(cwd);
@@ -141,7 +176,7 @@ export async function removeWorktree(cwd,path,{force=false}={}){
   if(force) args.push("--force");
   args.push(resolve(path));
   await git(info.root,args,{timeout:180000});
-  return gitInfo(info.root);
+  return gitInfo(info.root,{fresh:true});
 }
 export async function sourceControlDiagnostics(cwd){
   const [gitVersion,ghVersion,ghAuth]=await Promise.all([

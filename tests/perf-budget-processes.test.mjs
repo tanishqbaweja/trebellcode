@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
@@ -87,15 +87,50 @@ async function fixtureRepository(prefix){
 }
 const countingGit=()=>{const calls=[];return {calls,gitFn:(cwd,args,options)=>{calls.push(args.join(" "));return git(cwd,args,options)}}};
 
-test("B6: a warm /api/git/info poll starts at most 7 git processes (guard at the baseline)",{timeout:30_000},async()=>{
+test("B6: a warm /api/git/info poll starts one git process",{timeout:30_000},async()=>{
   const dir=await fixtureRepository("trebell-git-budget-");
   try{
     const {calls,gitFn}=countingGit();
     const cold=await gitInfo(dir,{gitFn});assert.equal(cold.isGit,true);assert.equal(cold.branch,"main");
+    assert.equal(calls.length,7,"a cold read runs what every poll ran before");
     calls.length=0;
     const warm=await gitInfo(dir,{gitFn});
     assert.deepEqual(warm,cold);
-    // The UI polls every 3.5 s while a project thread is open: 7 processes each poll is about 120 a minute.
-    assert.ok(calls.length<=7,"a warm poll ran "+calls.length+" git processes: "+calls.join(", "));
+    // The UI polls every 3.5 s while a project thread is open: 7 processes each poll was about 120 a minute.
+    assert.deepEqual(calls,["status --porcelain=v1 -b"]);
   }finally{await rm(dir,{recursive:true,force:true})}
 });
+
+// What a warm poll answers equals a full read after each change a person or an agent makes to the repository.
+test("B6: gitInfo's kept repository part follows checkout, commit, new branches, remotes, worktrees and submodules",{timeout:180_000},async()=>{
+  const dir=await fixtureRepository("trebell-git-cache-"),linked=dir+"-linked",library=dir+"-library";
+  try{
+    const same=async(cwd,label)=>{const {calls,gitFn}=countingGit();const warm=await gitInfo(cwd,{gitFn});assert.deepEqual(warm,await gitInfo(cwd,{fresh:true}),label);return calls.length};
+    await gitInfo(dir);
+    assert.equal(await same(dir,"no change"),1);
+    await git(dir,["switch","-q","feature/one"]);assert.equal((await gitInfo(dir)).branch,"feature/one");await same(dir,"checkout");
+    await writeFile(join(dir,"a.txt"),"changed\n");assert.deepEqual((await gitInfo(dir)).status.map(item=>item.path),["a.txt","draft.txt"]);
+    await git(dir,["commit","-qam","change"]);await same(dir,"commit");
+    await git(dir,["branch","topic"]);assert.ok((await gitInfo(dir)).branches.includes("topic"));await same(dir,"new branch");
+    await git(dir,["branch","feature/two"]);assert.ok((await gitInfo(dir)).branches.includes("feature/two"));await same(dir,"a branch in an existing folder");
+    await git(dir,["remote","add","upstream","https://example.invalid/upstream.git"]);assert.equal((await gitInfo(dir)).remotes.length,4);await same(dir,"remote add");
+    await git(dir,["update-ref","refs/remotes/origin/main","HEAD"]);assert.equal((await gitInfo(dir)).upstream,null);await same(dir,"a remote ref");
+    await git(dir,["config","branch.feature/one.remote","origin"]);await git(dir,["config","branch.feature/one.merge","refs/heads/main"]);
+    assert.equal((await gitInfo(dir)).upstream,"origin/main");await same(dir,"upstream set");
+    // A linked worktree reads its own HEAD through its git dir; the main folder sees it in the worktree list.
+    await git(dir,["worktree","add","-q","-b","side",linked]);
+    assert.equal((await gitInfo(dir)).worktrees.length,2);await same(dir,"worktree add");
+    await gitInfo(linked);await git(linked,["switch","-q","-c","side-two"]);
+    assert.equal((await gitInfo(linked)).branch,"side-two");await same(linked,"switch in the linked worktree");
+    // A submodule's HEAD lives in the parent's .git/modules.
+    await mkdir(library);await git(library,["init","-q","-b","main"]);await git(library,["config","user.email","trebell@example.test"]);await git(library,["config","user.name","Trebell Test"]);
+    await writeFile(join(library,"lib.txt"),"lib\n");await git(library,["add","lib.txt"]);await git(library,["commit","-qm","lib"]);
+    await git(dir,["-c","protocol.file.allow=always","submodule","add","-q",library,"lib"]);
+    const sub=join(dir,"lib");assert.equal((await gitInfo(sub)).branch,"main");
+    await git(sub,["switch","-q","-c","lib-topic"]);assert.equal((await gitInfo(sub)).branch,"lib-topic");await same(sub,"switch in the submodule");
+  }finally{
+    await rm(linked,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(library,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+    await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
+});
+
