@@ -503,6 +503,46 @@ test.describe("Two commands on one key",()=>{
     await close();
   });
 
+  // The header's Command palette and Open sidebar buttons, on the chat and on the other pages, and the sidebar's Collapse button
+  // name the keys those commands are on, as the sidebar's hints do, and no key for a command that has none.
+  for(const mode of MODES)test(`the header and the sidebar name the keys the palette and the sidebar toggle are on (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    await request.post("/api/settings",{data:{keybindingRules:[{command:"commandPalette",key:"Ctrl+Shift+K",when:""},{command:"sidebarToggle",key:"Ctrl+Alt+Y",when:"!modalOpen"}]}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const header=page.locator(".chat-workspace header.workspace-header"),topbar=page.getByTestId("page-topbar");
+    const collapse=page.getByRole("button",{name:"Collapse sidebar",exact:true});
+    await expect(header.getByRole("button",{name:"Command palette",exact:true})).toHaveAttribute("title","Command palette · Ctrl+Shift+K");
+    await expect(collapse).toHaveAttribute("title","Collapse sidebar · Ctrl+Alt+Y");
+    await collapse.click();
+    await expect.poll(()=>sidebarCollapsed(page)).toBe(true);
+    const reopen=header.getByRole("button",{name:"Open sidebar",exact:true});
+    await expect(reopen).toHaveAttribute("title","Open sidebar · Ctrl+Alt+Y");
+    await reopen.hover();
+    await page.screenshot({animations:"disabled",path:shots+`header-key-titles-${mode}-1280.png`});
+    // The keys they name do what the buttons do.
+    await page.keyboard.press("Control+Alt+Y");
+    await expect.poll(()=>sidebarCollapsed(page)).toBe(false);
+    await page.keyboard.press("Control+Shift+K");
+    await expect(page.getByTestId("command-palette")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await nav(page,"Projects").click();
+    await expect(topbar.getByRole("button",{name:"Command palette",exact:true})).toHaveAttribute("title","Command palette · Ctrl+Shift+K");
+    // With no key, the buttons name none.
+    await request.post("/api/settings",{data:{keybindingRules:[{command:"commandPalette",key:"",when:""},{command:"sidebarToggle",key:"",when:"!modalOpen"}]}});
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await nav(page,"Projects").click();
+    await expect(topbar).toBeVisible();
+    await expect(topbar.getByRole("button",{name:"Command palette",exact:true})).toHaveAttribute("title","Command palette");
+    await expect(collapse).toHaveAttribute("title","Collapse sidebar");
+    await collapse.click();
+    await expect(topbar.getByRole("button",{name:"Open sidebar",exact:true})).toHaveAttribute("title","Open sidebar");
+    await page.setViewportSize({width:900,height:800});
+    await topbar.getByRole("button",{name:"Open sidebar",exact:true}).hover();
+    await page.screenshot({animations:"disabled",path:shots+`header-no-key-titles-${mode}-900.png`});
+  });
+
   // Cycle appearance mode and Cycle theme step on to the next choice, whatever it is: they run no single row of the palette, so
   // "Appearance: System" and "Theme: Trebell" offer no key, while a row whose command the key does run still shows it.
   for(const mode of MODES)test(`the palette offers the appearance and theme cycle keys on no row they do not run (${mode})`,async({page,request})=>{

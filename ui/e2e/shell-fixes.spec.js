@@ -477,7 +477,7 @@ for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(
 // picker, a project action, Review, the terminal and goal toggles), long names, prCount linked pull requests, and Stop while a
 // turn runs. The desktop bridge records each Open in window.__opens, answers it once window.__openHold (a promise, when set)
 // settles, and fails it while window.__openFails is set. others are more threads for the sidebar.
-async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,running=true,editors=[{id:"vscode",label:"Visual Studio Code"}],others=[]}){
+async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,running=true,editors=[{id:"vscode",label:"Visual Studio Code"}],others=[],settings={}}){
   await page.addInitScript(editors=>{window.__opens=[];window.__openFails=false;Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors}),open:async(path,id)=>{window.__opens.push(id);await window.__openHold;if(window.__openFails)throw new Error("Deliberate open failure: the editor could not be started")}}}})},editors);
   const project={id:"header-project",name:"Billing reconciliation service with a very long project name",path:process.cwd(),environmentId:null,branch:"feature/reconcile-refunds-in-the-ledger-export",scripts:[{id:"dev-server",name:"Start the billing dev server",command:"npm run dev -- --port 4173"}],preferredScriptId:"dev-server"};
   const thread={id:"header-thread",name:"Investigate why the nightly billing reconciliation job double counts refunds in the ledger export",preview:"Refunds",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Why are refunds counted twice?"}]},{type:"agentMessage",id:"assistant-1",text:"Looking."}]}]};
@@ -485,7 +485,7 @@ async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,ru
   const harness=await startHarness([thread,...others]);
   try{
     await page.setViewportSize({width,height});
-    await openApp(page,{harness,threads:[thread,...others],meta:{[thread.id]:{projectless:false,environmentId:null,linkedPullRequests:prs},...Object.fromEntries(others.map(other=>[other.id,{projectless:false,environmentId:null}]))},project,settings:{appearanceMode:mode},layout:{sidebarWidth:258,rightPanelWidth:520,terminalHeight:330}});
+    await openApp(page,{harness,threads:[thread,...others],meta:{[thread.id]:{projectless:false,environmentId:null,linkedPullRequests:prs},...Object.fromEntries(others.map(other=>[other.id,{projectless:false,environmentId:null}]))},project,settings:{appearanceMode:mode,...settings},layout:{sidebarWidth:258,rightPanelWidth:520,terminalHeight:330}});
     await openThread(page,thread.name);
     const header=page.locator(".chat-workspace .workspace-header");
     await expect(header.locator(".open-in-wrap")).toBeVisible();
@@ -627,6 +627,18 @@ for(const mode of ["dark","light"])test(`a turn's Stop button folds only the hea
     await expect(header.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);await settle(page);
     expect(await shownActions()).toEqual(idleShown);
     expect((await headerFold(header)).folded).toEqual(idle.folded);
+  }finally{await harness.close()}
+});
+
+// Folded into the More actions menu, Command palette shows the key it is on, as its button in the row names it.
+for(const [width,mode] of [[1280,"dark"],[1280,"light"],[1180,"dark"],[1180,"light"]])test(`the More actions menu shows the key Command palette is on at ${width}x800 in ${mode} mode`,async({page})=>{
+  const {harness,more,menu}=await openHeaderFixture(page,{width,mode,settings:{keybindingRules:[{command:"commandPalette",key:"Ctrl+Shift+K",when:""}]}});
+  try{
+    await more.click();
+    await expect(menu.getByRole("button",{name:/^Command palette/}).locator("kbd")).toHaveText("Ctrl+Shift+K");
+    await page.screenshot({path:join(shotsDir,`header-overflow-menu-palette-key-${mode}-${width}x800.png`),animations:"disabled"});
+    await menu.getByRole("button",{name:/^Command palette/}).click();
+    await expect(page.getByTestId("command-palette")).toBeVisible();
   }finally{await harness.close()}
 });
 

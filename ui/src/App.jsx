@@ -4839,7 +4839,9 @@ export default function App(){
     const rules=projectKeybindingRules(normalizeKeybindingRules(settings),projectlessMode?[]:currentProject?.scripts||[]),shadowed=shadowedKeybindings(rules);
     return command=>{const rule=rules.find(rule=>rule.command===command);return rule&&!shadowed.has(command)&&ruleRuns(rule)?rule.key:""};
   },[settings.keybindingRules,settings.keyboardShortcuts,projectlessMode,currentProject?.scripts]);
-  const sidebarShortcuts=useMemo(()=>({newChat:commandKey("newChat"),commandPalette:commandKey("commandPalette"),projects:commandKey("projects"),settings:commandKey("settings"),environments:commandKey("environments"),previewToggle:commandKey("previewToggle")}),[commandKey]);
+  const sidebarShortcuts=useMemo(()=>({newChat:commandKey("newChat"),commandPalette:commandKey("commandPalette"),sidebarToggle:commandKey("sidebarToggle"),projects:commandKey("projects"),settings:commandKey("settings"),environments:commandKey("environments"),previewToggle:commandKey("previewToggle")}),[commandKey]);
+  // The header's Open sidebar and Command palette buttons name the keys those commands are on, or none.
+  const withKey=(label,key)=>shortcutHint(key)?label+" · "+shortcutHint(key):label;
   const sidebarThreadAction=useLatestCallback(threadAction);
   const sidebarMoveThread=useLatestCallback(moveThreadOrder);
   const threadMoves=useMemo(()=>threadMoveAvailability(displayThreads,threadMeta),[displayThreads,threadMeta]);
@@ -5007,7 +5009,7 @@ export default function App(){
         {(viewSection==="chat"||viewSection==="new")&&<div className="chat-workspace">
           <header className="workspace-header" ref={workspaceHeaderRef}>
             <div className="workspace-breadcrumb">
-              {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title="Open sidebar · Ctrl+B"><PanelLeftOpen size={14}/></button>}
+              {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title={withKey("Open sidebar",sidebarShortcuts.sidebarToggle)}><PanelLeftOpen size={14}/></button>}
               <button className={"project-crumb"+(crumbProjectless?" projectless":"")} onClick={crumbProjectless||!window.trebellDesktop?.pickDirectory?()=>setSection("projects"):()=>runUserAction(pickWorkspace,"Could not open workspace")} title={crumbProjectless?"No project · choose a project":window.trebellDesktop?.pickDirectory?(crumbPath||"Open folder"):"Projects and workspaces"}>{crumbProjectless?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Projects and General chat"><ChevronDown size={12}/></button>
               <span>/</span>
               {/* Renaming needs a thread: before the first message the title is plain text, not a button that does nothing. A thread
@@ -5029,7 +5031,7 @@ export default function App(){
               {activeThread?.id&&!openingShown&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} data-fold="goal" onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
               <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
               <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={toggleAppearanceMode} aria-label={appearanceToggleLabel} title={appearanceToggleLabel}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
-              <button className="header-control icon-only palette-control" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
+              <button className="header-control icon-only palette-control" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title={withKey("Command palette",sidebarShortcuts.commandPalette)}><Command size={15}/></button>
               {/* Shown once actions fold: the folded ones in the row's order, then the theme and palette buttons, which the row has
                   set aside by then. */}
               <HeaderOverflowMenu items={[
@@ -5040,7 +5042,7 @@ export default function App(){
                 {id:"terminal",fold:"terminal",Icon:PanelBottom,label:"Terminal",pressed:panel==="terminal",onSelect:toggleTerminalPanel},
                 activeThread?.id&&!openingShown&&{id:"goal",fold:"goal",Icon:Target,label:"Thread goal",title:goal?.objective||"Set thread goal",pressed:rightPanelOpen&&rightPanelTab==="goal",onSelect:()=>openRightPanel("goal")},
                 {id:"appearance",Icon:resolvedMode==="dark"?Sun:Moon,label:appearanceToggleLabel,onSelect:toggleAppearanceMode},
-                {id:"palette",Icon:Command,label:"Command palette",hint:"Ctrl+K",onSelect:()=>setPaletteOpen(true)},
+                {id:"palette",Icon:Command,label:"Command palette",hint:shortcutHint(sidebarShortcuts.commandPalette),onSelect:()=>setPaletteOpen(true)},
               ]}/>
             </div>
           </header>
@@ -5077,14 +5079,14 @@ export default function App(){
 
         {PAGE_CRUMBS[section]&&(()=>{const [CrumbIcon,crumbLabel]=PAGE_CRUMBS[section];return <header className="workspace-header page-topbar" data-testid="page-topbar">
           <div className="workspace-breadcrumb">
-            {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title="Open sidebar · Ctrl+B"><PanelLeftOpen size={14}/></button>}
+            {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title={withKey("Open sidebar",sidebarShortcuts.sidebarToggle)}><PanelLeftOpen size={14}/></button>}
             {section==="licenses"&&<><a href="#settings" className="project-crumb page-crumb-back" onClick={event=>{event.preventDefault();setSection("settings")}} aria-label="Back to Settings" title="Back to Settings"><ChevronLeft size={14} aria-hidden="true"/><span>Settings</span></a><span>/</span></>}
             <span className="page-crumb"><CrumbIcon size={14} aria-hidden="true"/><strong>{crumbLabel}</strong>{section==="settings"&&settingsSectionLabel&&<><ChevronRight size={12} aria-hidden="true"/><em>{settingsSectionLabel}</em></>}</span>
           </div>
           <div className="workspace-header-actions">
             <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else{setRightPanelTab(tab=>tab||"files");setRightPanelOpen(true)}}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
             <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance")} aria-label={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"} title={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
-            <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
+            <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title={withKey("Command palette",sidebarShortcuts.commandPalette)}><Command size={15}/></button>
           </div>
         </header>})()}
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onOfferUndo={offerPageUndo} isProjectOpen={projectIsOpen} onProjectUpdated={projectsPageUpdated} onProjectRemoved={projectsPageRemoved} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}

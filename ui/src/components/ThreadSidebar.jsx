@@ -224,7 +224,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
       <button className="sidebar-brand" onClick={()=>setSection("chat")} aria-label="Threads">
         <img className="brand-mark" src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><strong>Trebell <em>Code</em></strong>
       </button>
-      <div className="sidebar-title-actions"><button className="sidebar-new-thread" onClick={onCollapse} aria-label="Collapse sidebar" title="Collapse sidebar · Ctrl+B"><PanelLeftClose size={15}/></button><button className="sidebar-new-thread" onClick={()=>runAction(onNew)} aria-label="New thread" title="New thread"><Plus size={16}/></button></div>
+      <div className="sidebar-title-actions"><button className="sidebar-new-thread" onClick={onCollapse} aria-label="Collapse sidebar" title={shortcutHint(shortcuts.sidebarToggle)?"Collapse sidebar · "+shortcutHint(shortcuts.sidebarToggle):"Collapse sidebar"}><PanelLeftClose size={15}/></button><button className="sidebar-new-thread" onClick={()=>runAction(onNew)} aria-label="New thread" title="New thread"><Plus size={16}/></button></div>
     </div>
 
     {onOpenPalette&&<button type="button" className="sidebar-palette-button" onClick={onOpenPalette} aria-label="Search or jump to" aria-keyshortcuts={ariaShortcut(shortcuts.commandPalette)} title="Search threads, projects and commands">
