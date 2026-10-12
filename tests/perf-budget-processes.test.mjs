@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
@@ -211,6 +211,44 @@ test("B8: a checkpoint's tree equals a fresh read of HEAD plus add -A, in every 
     await writeFile(join(wide,"a.txt"),"changed\n");await writeFile(join(wide,"b.txt"),"new\n");
     try{await same("a repository with SHA-256 object names",[],{repo:wide})}finally{await rm(wide,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
   }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(dir+"-home",{recursive:true,force:true})}
+});
+
+// git trusts an entry's stat data only when the entry is older than the index file, and compares the content of one as new as the
+// index (racily clean): a file an agent writes, git status refreshes and the agent writes again in the same second at the same size
+// differs from its entry only in content. The checkpoint's copy of the index must keep that, or add -A skips the file and Edit from
+// here would restore the older content.
+const noLocks={...process.env,GIT_OPTIONAL_LOCKS:"0"};
+async function racyCheckpoint(dir){
+  assert.match((await git(dir,["status","--porcelain"],{env:noLocks})).stdout,/^ M a\.txt$/m,"git status sees the edit");
+  const checkpoint=await new CheckpointService({state:checkpointState(),env:{...process.env,TREBELL_HOME:dir+"-home"}}).create({cwd:dir});
+  assert.equal((await git(dir,["show",checkpoint.commit+":a.txt"])).stdout,"HELLO\n","the checkpoint holds the file as it is on disk");
+  assert.equal((await git(dir,["rev-parse",checkpoint.commit+"^{tree}"])).stdout.trim(),await treeFromHead(dir));
+}
+test("B8: a checkpoint keeps a same-size edit git tells apart only by its content, with the times set",{timeout:60_000},async()=>{
+  const dir=await fixtureRepository("trebell-checkpoint-racy-"),file=join(dir,"a.txt"),at=Math.floor(Date.now()/1000)-100;
+  try{
+    // The index and the entry it keeps for a.txt share one second, set in the past so the test waits for no clock.
+    await utimes(file,at,at);await git(dir,["update-index","-q","--refresh"],{allowFailure:true});await utimes(join(dir,".git","index"),at,at);
+    await writeFile(file,"HELLO\n");await utimes(file,at,at);
+    await racyCheckpoint(dir);
+  }finally{await rm(dir,{recursive:true,force:true});await rm(dir+"-home",{recursive:true,force:true})}
+});
+test("B8: a checkpoint keeps a same-size edit made in the second git refreshed the index",{timeout:60_000},async t=>{
+  const dir=await fixtureRepository("trebell-checkpoint-racy-clock-"),file=join(dir,"a.txt");
+  try{
+    // Written, refreshed (an agent's or an editor's git status, diff or add) and written again, all within one wall-clock second.
+    let oneSecond=false;
+    for(let attempt=0;attempt<5&&!oneSecond;attempt++){
+      while(Date.now()%1000>50)await new Promise(resolve=>setTimeout(resolve,5));
+      const start=Date.now();
+      await writeFile(file,"hello\n");await git(dir,["update-index","-q","--refresh"],{allowFailure:true});await writeFile(file,"HELLO\n");
+      oneSecond=Math.floor(start/1000)===Math.floor(Date.now()/1000);
+    }
+    if(!oneSecond){t.skip("the machine was too busy to fit the three steps in one second");return}
+    // The checkpoint comes later, as a send's does, so its copy of the index is written in a later second.
+    await new Promise(resolve=>setTimeout(resolve,1200));
+    await racyCheckpoint(dir);
+  }finally{await rm(dir,{recursive:true,force:true});await rm(dir+"-home",{recursive:true,force:true})}
 });
 
 // Editor discovery runs on Electron's main process each time the chat header's Open-in control shows and again on each Open.

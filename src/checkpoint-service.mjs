@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
-import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { trebellHome } from "./paths.mjs";
 import { git, gitInfo } from "./git-service.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
@@ -156,8 +156,15 @@ export class CheckpointService{
     const indexPath=join(tmpDir,`index-${id}`);
     const childEnv={...baseEnv,GIT_INDEX_FILE:indexPath};
     try{
-      const seed=head.ok?await readFile(resolve(cwd,repositoryIndex)).then(buffer=>reusableIndex(buffer)?buffer:null).catch(()=>null):null;
-      if(seed){await writeFile(indexPath,seed);await this.#captureGit(info.root,["read-tree","--reset","HEAD"],{env:childEnv})}
+      // git trusts an entry's stat data only when the entry is older than the index file it reads, and compares the content of one as
+      // new as that file (racily clean: written again in the same second, at the same size). The copy takes the repository index's
+      // time, to the second and read before the content, so those entries are compared as git status compares them.
+      const source=resolve(cwd,repositoryIndex);
+      const seed=head.ok?await stat(source).then(async({mtimeMs})=>{
+        const buffer=await readFile(source);if(!reusableIndex(buffer))return false;
+        const seconds=Math.floor(mtimeMs/1000);await writeFile(indexPath,buffer);await utimes(indexPath,seconds,seconds);return true;
+      }).catch(()=>rm(indexPath,{force:true}).then(()=>false,()=>false)):false;
+      if(seed)await this.#captureGit(info.root,["read-tree","--reset","HEAD"],{env:childEnv});
       else if(head.ok) await this.#captureGit(info.root,["read-tree","HEAD"],{env:childEnv}); else await this.#captureGit(info.root,["read-tree","--empty"],{env:childEnv});
       await this.#stageCheckpoint(info.root,childEnv);
       const tree=(await this.#captureGit(info.root,this.#durable(["write-tree"]),{env:childEnv})).stdout.trim();
