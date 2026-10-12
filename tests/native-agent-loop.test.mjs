@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, readOnlyInspectionRun, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, readOnlyInspectionRun, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn as runNativeAgentTurnImpl } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
+// Historical controller tests opt in explicitly; production/default behavior stays lean.
+const runNativeAgentTurn=options=>runNativeAgentTurnImpl({midTaskProgressCheckpoints:true,...options});
 const batchEvidenceRecordAudit=(ids=["record-1","record-2"])=>ids.map(id=>({id,status:"closed",source_precedence_checked:true,chronology_checked:true,blocker_resolution_checked:true,later_contrary_checked:true,staged_value:`apply-${id}`,controlling_evidence:`authoritative-${id}`,contrary_evidence:`later and contrary authority checked for ${id}; none remains controlling`,dependency_record_id:"",dependency_necessity_checked:false,dependency_justification:"none",closure_reason:`authoritative evidence controls apply-${id}`}));
 const batchEvidencePrecommitVerdict=(overrides={})=>{
   const ids=Array.isArray(overrides.ids)?overrides.ids:["record-1","record-2"],recordAudit=overrides.record_audit??batchEvidenceRecordAudit(ids);
@@ -671,6 +673,28 @@ test("native agent reuses one hidden OpenAI continuation identity across model t
     executeTool:async()=>({success:true,content:"src/session.js"}),
   });
   assert.equal(result.text,"done");assert.equal(tokens.length,2);assert.ok(tokens[0]&&typeof tokens[0]==="object");assert.equal(tokens[0],tokens[1]);assert.equal(Object.getOwnPropertySymbols(requests[0]).includes(NATIVE_OPENAI_CONTINUATION_IDENTITY),true);assert.equal(JSON.stringify(requests[0]).includes("continuation-identity"),false);
+});
+
+test("native defaults to base-prompt progress guidance without mid-task checkpoints",async()=>{
+  const requests=[],events=[];let turn=0;
+  const result=await runNativeAgentTurnImpl({
+    model:"gpt-6-luna",provider:"openai",messages:[{role:"user",content:"Implement the requested feature."}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]}],
+    maxModelTurns:7,maxToolCalls:30,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn<=4)return {text:"",toolCalls:[
+        {id:`read-${turn}-a`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-a`})},
+        {id:`read-${turn}-b`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-b`})},
+      ],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[{id:"write",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"src/feature.mjs",content:"export const ready = true;\n"})}],usage:{}};
+      return {text:"implemented",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{success:true,path:"src/feature.mjs",size:27}:{success:true,matches:["evidence"]},
+  });
+  assert.equal(result.text,"implemented");assert.equal(requests.length,6);
+  assert.equal(requests.some(request=>request.messages.some(message=>message.role==="developer"&&/progress checkpoint|implementation escalation|convergence checkpoint|revision-churn checkpoint/i.test(String(message.content||"")))),false);
+  assert.equal(events.some(event=>["native.progress.implementation_checkpoint","native.progress.implementation_pressure","native.progress.implementation_call_blocked","native.progress.convergence_checkpoint","native.progress.revision_churn_checkpoint"].includes(event.name)),false);
 });
 
 test("native agent injects one implementation checkpoint after prolonged read-only exploration",async()=>{

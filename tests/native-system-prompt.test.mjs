@@ -20,9 +20,10 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/preserve existing externally visible contracts/i);
   assert.match(prompt,/public function\/class\/module names/i);
   assert.match(prompt,/keep compatibility shims/i);
-  assert.match(prompt,/smoke-test representative pre-existing entry points/i);
+  assert.match(prompt,/Do not add or run tests unless the user asks you to test or verify implementation/i);
+  assert.match(prompt,/Testing, smoke-check, benchmark, and verification guidance below applies only when the user explicitly asks/i);
   assert.match(prompt,/comments inside suspect implementation code as hypotheses/i);
-  assert.match(prompt,/deterministic local reproducer/i);
+  assert.match(prompt,/create a local reproducer only when the user asked to test\/verify/i);
   assert.match(prompt,/authoritative fixtures, configuration, schemas, or data files/i);
   assert.match(prompt,/compact audit of semantically meaningful input fields/i);
   assert.match(prompt,/unexplained unused field tied to an acceptance concept/i);
@@ -103,7 +104,7 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/pixel dumps/i);
   assert.match(prompt,/stop speculative polishing/i);
   assert.match(prompt,/acceptance-critical behavior/i);
-  assert.match(prompt,/reasonably testable requirement as unverified/i);
+  assert.match(prompt,/If the user asks for verification and project tests are absent/i);
   assert.match(prompt,/Before declaring an integration, service, daemon, endpoint, or runtime environment unavailable/i);
   assert.match(prompt,/existing run scripts\/configuration/i);
   assert.match(prompt,/bounded end-to-end smoke check over mocks alone/i);
@@ -121,11 +122,11 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/untrusted data/i);
 });
 
-test("Native post-edit verification guidance batches already-known independent checks without naming or chaining checks",()=>{
+test("Native post-edit verification guidance is conditional and batches requested checks",()=>{
   const prompt=nativeSystemPrompt({permissionMode:"supervised",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]});
-  const postEdit=prompt.split("\n").filter(line=>line.startsWith("- After a successful exact edit"));
+  const postEdit=prompt.split("\n").filter(line=>line.startsWith("- When the user explicitly asks for testing or verification after an edit"));
   assert.deepEqual(postEdit,[
-    "- After a successful exact edit, prefer the requested deterministic verification over rereading the same file only to confirm your own edit. When you already know several independent checks you intend to run, issue them as separate tool calls in the same response rather than one check per model turn; leave a check for a later turn only when choosing or interpreting it depends on an earlier result. Repair failures and re-run the relevant check.",
+    "- When the user explicitly asks for testing or verification after an edit, prefer the requested deterministic check over rereading the same file only to confirm your own edit. When several independent requested checks are already known, issue them together rather than spending one model turn on each. Repair failures and re-run only the relevant requested check.",
   ]);
   assert.doesNotMatch(postEdit[0],/git diff|nearest|smoke|script|broader|chain/i,"the rule must not name specific checks, suggest chaining checks into one script, or drop a narrower check");
 });
@@ -150,15 +151,14 @@ test("Native system prompt describes only dynamically exposed specialized capabi
   assert.match(prompt,/Permission profile: read-only/);
 });
 
-test("Native leaves repository tests and fixtures alone unless asked or they pin the reported wrong behavior",()=>{
+test("Native does not add or run repository tests unless asked",()=>{
   const prompt=nativeSystemPrompt({permissionMode:"full",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]});
-  const rule=prompt.split("\n").filter(line=>line.startsWith("- Do not add or modify repository tests"));
+  const rule=prompt.split("\n").filter(line=>line.startsWith("- Do not add or run tests"));
   assert.equal(rule.length,1);
-  assert.match(rule[0],/test fixtures, or test data unless the user or the repository's instructions ask for tests/);
-  assert.match(rule[0],/an existing test asserts behavior caused by the defect the task reports, in which case update only those expectations instead of special-casing the fix to keep them passing/);
-  assert.match(rule[0],/temporary checks outside the repository's test files, and delete the temporary files you created before finishing/);
+  assert.match(rule[0],/unless the user asks you to test or verify implementation/);
+  assert.match(rule[0],/Do not create or modify repository tests, test fixtures, or test data unless the user or the repository's instructions explicitly ask for them/);
   assert.ok(prompt.indexOf("- Make the smallest coherent fix")<prompt.indexOf(rule[0]),"the rule sits with the scope rules, before verification guidance");
-  assert.ok(prompt.indexOf(rule[0])<prompt.indexOf("- After a successful exact edit"));
+  assert.ok(prompt.indexOf(rule[0])<prompt.indexOf("- When the user explicitly asks for testing or verification after an edit"));
 });
 
 test("Native keeps every reported symptom and same-cause variant in scope",()=>{
@@ -169,12 +169,11 @@ test("Native keeps every reported symptom and same-cause variant in scope",()=>{
   assert.match(rule[0],/same cause in another operand, argument position, or sibling entry point, fix that too; it is part of the requested fix, not speculative hardening/);
 });
 
-test("Native runs the whole covering test module on its final revision and treats filtered runs as focused evidence",()=>{
+test("Native uses existing covering tests only when testing was explicitly requested",()=>{
   const prompt=nativeSystemPrompt({permissionMode:"full",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]});
-  const rule=prompt.split("\n").filter(line=>line.startsWith("- When an existing test file or module covers source you edited"));
+  const rule=prompt.split("\n").filter(line=>line.startsWith("- When the user explicitly asks for tests and an existing test file or module covers source you edited"));
   assert.equal(rule.length,1);
-  assert.match(rule[0],/run that whole file or module on your final revision before finishing, giving a slow run a larger timeout_ms/);
-  assert.match(rule[0],/selecting individual tests within it by -k, node id, or test name is focused evidence, not regression evidence/);
-  assert.match(rule[0],/Once it and your focused checks pass, add further checks only for a named requirement, a reported input form, or a case another rule calls for that they did not exercise/);
-  assert.ok(prompt.indexOf("- After a successful exact edit")<prompt.indexOf(rule[0]),"it follows the post-edit batching rule");
+  assert.match(rule[0],/prefer that existing coverage over inventing broader new suites/);
+  assert.match(rule[0],/Add further checks only for a named requirement or reported input form that the requested verification did not exercise/);
+  assert.ok(prompt.indexOf("- When the user explicitly asks for testing or verification after an edit")<prompt.indexOf(rule[0]),"it follows the requested-verification batching rule");
 });
