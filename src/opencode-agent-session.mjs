@@ -432,6 +432,8 @@ export class OpenCodeAgentSession{
   }
   async start({providerSessionId=null,model=null}={}){
     this.server=await startServer({command:this.command,cwd:this.cwd,env:this.env,serverUrl:this.serverUrl});
+    // A session closed while its server started had no server to stop then, so it stops it now.
+    if(this.closed){this.server.close?.();throw new Error("OpenCode was stopped while it started.")}
     this.server.child?.once?.("exit",(code,signal)=>{this.serverExit={code,signal}});
     this.client=createOpencodeClient({baseUrl:this.server.url,directory:this.cwd});
     this.v2Client=createOpencodeV2Client({baseUrl:this.server.url,directory:this.cwd});

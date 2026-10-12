@@ -46,7 +46,7 @@ const userMessages=turn=>turn.items.filter(item=>item.type==="userMessage");
 async function startRelay(options){
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{terminals:{},version:"test",...options});
   const port=await listen(server),ws=await connect("ws://127.0.0.1:"+port+"/api/agent/ws");
-  return {ws,rpc:request(ws),events:notifications(ws),close:async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()))}};
+  return {ws,rpc:request(ws),events:notifications(ws),reset:()=>relay.reset(),close:async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()))}};
 }
 // A saved thread as a restart leaves it: one finished turn in a conversation the harness keeps under providerSessionId.
 function savedThread(threadStore,{runtime,instanceId,providerSessionId,model="fixture-model",cwd}){
@@ -194,6 +194,37 @@ test("a fresh session that cannot start either fails the turn before it exists, 
   assert.equal(thread.providerSessionId,"grok-lost");assert.equal(thread.providerMeta.historyHandoff,undefined);
   const [entry]=fallbacks(journal);
   assert.equal(entry.status,"error");assert.equal(entry.data.lostSessionId,"grok-lost");assert.equal(entry.data.sessionId,null);assert.match(entry.data.error,/Out of disk space/);
+});
+
+// A reset (another environment) while the harness still starts the thread's session ends that start too: its process stops, the
+// turn waiting on it fails before it exists, and the next turn starts the harness again rather than running in the old session.
+test("a session still starting when the relay resets is stopped, and the turn it was for fails instead of running in it",async t=>{
+  const fx=await acpHarness(t,"grok",{lostError:null,loadDelayMs:20_000}),threadStore=new AgentThreadStore(fx.env),journal=memoryJournal();
+  // Every agent process the test started ends with it, also one the relay would no longer track.
+  onCleanup(t,async()=>{for(const pid of new Set((await fx.requests()).map(entry=>entry.pid)))try{process.kill(pid)}catch{}});
+  const saved=savedThread(threadStore,{runtime:"grok",instanceId:fx.harness.instance.id,providerSessionId:"grok-live",cwd:fx.root});
+  const relay=await startRelay({runtimeManager:fx.runtimeManager,threadStore,state:memoryState(),journal});onCleanup(t,relay.close);
+  const turn=relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text:"What word did I ask you to remember?"}]}).then(()=>null,error=>error);
+  let load=null;for(let tries=0;!load&&tries<100;tries++){load=(await fx.requests()).find(entry=>entry.method==="session/resume");if(!load)await new Promise(resolve=>setTimeout(resolve,100))}
+  assert.ok(load,"the harness is resuming the thread's conversation");
+  const resetAt=Date.now();await relay.reset();
+  const error=await turn;
+  assert.match(String(error?.message),/^The harness was restarted while this conversation was starting\.$/);
+  assert.ok(Date.now()-resetAt<10_000,"the turn fails as the reset ends the start, not when the harness would have answered");
+  const alive=pid=>{try{process.kill(pid,0);return true}catch{return false}};
+  for(let tries=0;alive(load.pid)&&tries<50;tries++)await new Promise(resolve=>setTimeout(resolve,100));
+  assert.equal(alive(load.pid),false,"the harness process stopped");
+  let thread=threadStore.get(saved.id);
+  assert.equal(thread.turns.length,1,"no turn exists, so the message stays in the composer");assert.equal(thread.providerSessionId,"grok-live");
+  // The next turn starts the harness again and runs in the thread's conversation.
+  await writeFile(join(fx.root,"config.json"),JSON.stringify({capabilities:fx.harness.capabilities,lostError:null}),"utf8");
+  const completed=relay.events.next(message=>message.method==="turn/completed");
+  await relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text:"What word did I ask you to remember?"}]});
+  assert.equal((await completed).params.turn.status,"completed");
+  const loads=(await fx.requests()).filter(entry=>entry.method==="session/resume");
+  assert.equal(loads.length,2);assert.notEqual(loads[1].pid,load.pid,"a new harness process");
+  thread=threadStore.get(saved.id);
+  assert.equal(thread.turns.length,2);assert.equal(thread.providerSessionId,"grok-live");
 });
 
 test("a harness that asks to sign in cannot run: its resume failure fails the turn as before, with no fresh session",async t=>{

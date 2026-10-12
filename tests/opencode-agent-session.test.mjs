@@ -811,3 +811,19 @@ test("OpenCode gets images, PDFs and other files as file parts, and audio and vi
     ]);
   }finally{await session.close();await fixture.close()}
 });
+
+// A session closed while `opencode serve` still starts (the relay closing or resetting) had no server to stop then: it stops the
+// server once that is up, and its start fails rather than going on against a server nobody will stop.
+test("an OpenCode session closed while its server starts stops that server and does not start",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-opencode-close-starting-"));
+  t.after(()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100}));
+  // With node as the command, `serve --hostname=... --port=...` runs this file: it says it listens a moment later and stays up.
+  await writeFile(join(root,"serve"),"setTimeout(()=>process.stdout.write('opencode server listening on http://127.0.0.1:9 \\n'),400);setInterval(()=>{},1000);","utf8");
+  const session=new OpenCodeAgentSession({command:process.execPath,cwd:root});
+  const starting=session.start().then(()=>null,error=>error);
+  await delay(100);await session.close();
+  const error=await starting;
+  assert.match(String(error?.message),/^OpenCode was stopped while it started\.$/);
+  const pid=session.server?.child?.pid;assert.ok(pid,"the server came up");
+  await eventually(()=>{try{process.kill(pid,0);return false}catch{return true}},{message:"the server stopped"});
+});

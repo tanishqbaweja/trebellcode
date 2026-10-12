@@ -839,9 +839,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const run=startSession(thread,context,options);sessionStarts.set(thread.id,run);
     try{return await run}finally{if(sessionStarts.get(thread.id)===run)sessionStarts.delete(thread.id)}
   }
+  // A close or reset of the relay (shutdown, another environment) ends the sessions still starting as well as the ones that run:
+  // the harness processes they started stop, and a start that returns afterwards is closed, never kept, so the turn waiting on it
+  // fails instead of running in a session of the harness as it was.
+  const startingSessions=new Set();let sessionGeneration=0;
+  const restartedWhileStarting=()=>new Error("The harness was restarted while this conversation was starting.");
+  async function startTracked(runtime,options){
+    startingSessions.add(runtime);
+    try{return await runtime.start(options)}finally{startingSessions.delete(runtime)}
+  }
   // freshIfLost: a turn is about to run, so a conversation the harness lost continues in a fresh session (see below); opening,
   // forking, compacting and rewinding a thread keep the lost-session error.
   async function startSession(thread,context,{permissionMode=null,model=null,freshIfLost=false}={}){
+    const generation=sessionGeneration;
     if(thread?.runtime==="native"){
       const storedNamespaces=Array.isArray(thread.providerMeta?.dynamicToolNamespaces)?thread.providerMeta.dynamicToolNamespaces:[],activeNamespaces=expandableNativeToolNamespaces(storedNamespaces);
       if(activeNamespaces.length!==storedNamespaces.length){
@@ -995,6 +1005,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       });
       runtime.__trebellMcpFingerprint=JSON.stringify(mcpServers);
       const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
+      if(generation!==sessionGeneration){await runtime.close().catch(()=>{});throw restartedWhileStarting()}
       const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
       threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session,nativeMcp:{namespaces:mcpTools.map(item=>item.name),failures:mcpBroker.failures()}},model:model||started.session.models?.currentModelId||thread.model||null});
       sessions.set(thread.id,runtime);return runtime;
@@ -1020,18 +1031,20 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // Antigravity's model list is the one its sessions report (T3), also when the thread's model turns out not to be offered.
     const reportModels=()=>{if(runtime instanceof AcpAgentSession&&instance.kind==="antigravity"&&runtime.sessionSetup)runtimeManager.rememberAcpSessionModels?.(instance,runtime.sessionSetup,{environmentId})};
     const savedSessionId=thread.providerSessionId||null,requestedModel=model||thread.model||null;
-    try{started=await runtime.start({providerSessionId:savedSessionId,model:requestedModel})}
+    try{started=await startTracked(runtime,{providerSessionId:savedSessionId,model:requestedModel})}
     catch(error){
       reportModels();await runtime.close().catch(()=>{});
+      if(generation!==sessionGeneration)throw restartedWhileStarting();
       // A harness that no longer has the thread's conversation continues it in one fresh session, whose first prompt hands the
       // earlier messages over (T3's provider resume fallback). A harness that cannot run at all fails as it is, and so does the
       // fresh session's start: a lost conversation never loops.
       if(!freshIfLost||!savedSessionId||!isHarnessSessionLost(error))throw error;
       lost={previousSessionId:String(savedSessionId),reason:error.message};
       runtime=create();prepare();
-      try{started=await runtime.start({providerSessionId:null,model:requestedModel})}
-      catch(freshError){reportModels();await runtime.close().catch(()=>{});recordResumeFallback(thread,{...lost,sessionId:null,error:freshError});throw freshError}
+      try{started=await startTracked(runtime,{providerSessionId:null,model:requestedModel})}
+      catch(freshError){reportModels();await runtime.close().catch(()=>{});if(generation!==sessionGeneration)throw restartedWhileStarting();recordResumeFallback(thread,{...lost,sessionId:null,error:freshError});throw freshError}
     }
+    if(generation!==sessionGeneration){await runtime.close().catch(()=>{});throw restartedWhileStarting()}
     reportModels();sessionModelReports.set(runtime,reportModels);
     const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
     // A resumed session keeps the thread's id; an ACP session reports the model it actually runs (an alias resolves to the real id).
@@ -1999,6 +2012,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   };
   server.on("upgrade",upgrade);
   async function closeSessions(){
+    sessionGeneration++;
+    for(const runtime of [...startingSessions])await runtime.close().catch(()=>{});
     for(const session of sessions.values())await session.close().catch(()=>{});sessions.clear();
     if(promptSettlements.size)await Promise.allSettled([...promptSettlements]);
   }
