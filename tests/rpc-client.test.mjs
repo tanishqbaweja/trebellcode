@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CodexRpcClient } from "../ui/src/rpc.js";
+import { readFileSync } from "node:fs";
+import { CodexRpcClient, requestTimeoutMs } from "../ui/src/rpc.js";
 
 class MockWebSocket {
   static OPEN=1;
@@ -71,4 +72,35 @@ test("Codex RPC notifications are also published to browser surfaces",async()=>{
     assert.deepEqual(events[0].detail,{method:"turn/diff/updated",params:{threadId:"thread-1",diff:[]}});
     client.close();
   }finally{globalThis.WebSocket=originalSocket;if(originalWindow===undefined)delete globalThis.window;else globalThis.window=originalWindow}
+});
+
+test("Codex RPC waits for a request that may start the thread's harness as long as the relay lets that start take, and for others a minute",async t=>{
+  const original=globalThis.WebSocket;globalThis.WebSocket=MockWebSocket;
+  try{
+    const client=new CodexRpcClient("ws://test");await client.connect();
+    t.mock.timers.enable({apis:["setTimeout"]});
+    const watch=promise=>{const state={settled:false,error:null};promise.then(()=>{state.settled=true},error=>{state.settled=true;state.error=error});return state};
+    const settle=()=>new Promise(resolve=>setImmediate(resolve));
+    const turn=watch(client.request("turn/start",{threadId:"thread-1"})),list=watch(client.request("thread/list",{}));
+    t.mock.timers.tick(60_000);await settle();
+    assert.equal(list.settled,true);assert.equal(list.error.message,"thread/list timed out");assert.equal(list.error.rpcTimedOut,true);
+    assert.equal(turn.settled,false);
+    t.mock.timers.tick(9*60_000-1);await settle();
+    assert.equal(turn.settled,false);
+    t.mock.timers.tick(1);await settle();
+    assert.equal(turn.settled,true);assert.equal(turn.error.message,"turn/start timed out");assert.equal(turn.error.rpcTimedOut,true);
+    client.close();
+  }finally{globalThis.WebSocket=original}
+});
+
+// The relay starts a thread's harness session (ensureSession) inside these requests' handlers, where a start can take minutes.
+test("every relay request that may start the thread's harness session waits longer than a minute",()=>{
+  const starting=new Set();let method=null;
+  for(const line of readFileSync(new URL("../src/agent-relay.mjs",import.meta.url),"utf8").split("\n")){
+    const handler=line.match(/if\(method==="([^"]+)"\)/);if(handler)method=handler[1];
+    if(method&&/await ensureSession\(/.test(line))starting.add(method);
+  }
+  assert.ok(["turn/start","thread/start","thread/resume","thread/revert"].every(name=>starting.has(name)),[...starting].join(", "));
+  for(const name of starting)assert.ok(requestTimeoutMs(name)>60_000,name+" may start the thread's harness session");
+  assert.equal(requestTimeoutMs("thread/list"),60_000);assert.equal(requestTimeoutMs("thread/read"),60_000);
 });

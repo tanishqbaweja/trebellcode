@@ -1,3 +1,10 @@
+// A request that may have to start the thread's harness first waits as long as the server lets that start take: an ACP agent's
+// initialize, session/load and session/new each have their own bound (up to 90, 90 and 180 s), and a conversation the harness
+// lost starts it once more. Giving up after a minute would call a turn that did start "not sent". Opening a thread starts the
+// harnesses that do not start lazily, and a rewind starts any harness that is not running yet.
+const HARNESS_START_METHODS = new Set(["turn/start", "thread/start", "thread/resume", "thread/fork", "thread/compact/start", "thread/revert", "review/start", "thread/queue/start", "thread/delegate"]);
+export const requestTimeoutMs = method => HARNESS_START_METHODS.has(method) ? 10 * 60_000 : 60_000;
+
 export class CodexRpcClient {
   constructor(url, { onNotification, onServerRequest, onStatus, clientVersion = "0.0.0" } = {}) {
     this.url = url;
@@ -66,8 +73,10 @@ export class CodexRpcClient {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
-        pending.reject(new Error(`${method} timed out`));
-      }, 60000);
+        const error = new Error(`${method} timed out`);
+        error.rpcTimedOut = true;
+        pending.reject(error);
+      }, requestTimeoutMs(method));
       this.pending.set(id, { resolve, reject, timer });
       try{this.socket.send(JSON.stringify({ method, id, params }))}
       catch(error){clearTimeout(timer);this.pending.delete(id);reject(error)}

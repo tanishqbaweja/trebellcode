@@ -17,9 +17,9 @@ const json=(route,value)=>route.fulfill({status:200,contentType:"application/jso
 async function listen(server){await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));return server.address().port}
 
 // Cursor over ACP, scripted by a JSON file it reads at every request (so a test can change it between turns): it logs each request,
-// answers session/load with config.lostError when set, numbers its new sessions (or fails them with config.newError), and answers
-// a prompt with one file read (config.delayMs long) and config.reply, or refuses it outright with config.promptError (as a rate or
-// plan limit does).
+// answers session/load with config.lostError when set, numbers its new sessions, each config.newDelayMs late (or fails them with
+// config.newError), and answers a prompt with one file read (config.delayMs long) and config.reply, or refuses it outright with
+// config.promptError (as a rate or plan limit does).
 const FAKE_CURSOR=String.raw`
 import readline from "node:readline";
 import { appendFileSync, readFileSync } from "node:fs";
@@ -34,6 +34,7 @@ async function handle(m){
   const models={currentModelId:"fixture-model",availableModels:[{modelId:"fixture-model",name:"Fixture Model"}]};
   if(m.method==="session/load"||m.method==="session/resume")return config.lostError?fail(config.lostError):reply({models});
   if(m.method==="session/new"){
+    if(config.newDelayMs)await delay(config.newDelayMs);
     if(config.newError)return fail(config.newError);
     const count=readFileSync(log,"utf8").split("\n").filter(line=>line.includes('"method":"session/new"')).length;
     return reply({sessionId:"fresh-"+count,models});
@@ -352,6 +353,62 @@ test("a send whose new session cannot start says why beside the composer that ke
     await expectReadingOrder(reply(page,"Noted: HERON."),userRow(page,draft+" Both"),handoff,page.locator(".agent-block [data-testid=activity-card]"),reply(page,"You asked me to remember PELICAN and HERON."));
     await expect(page.locator(".tool-event.kind-error")).toHaveCount(0);
     await page.screenshot({animations:"disabled",path:auditDir+"send-failed-then-handed-over-dark-1280x800.png"});
+  }finally{await fx.close()}
+});
+
+// A new session can take more than a minute to start (Antigravity's took 63 s live), and the send waits as long as the relay lets the
+// start take: the message stays in the conversation, after a few seconds the composer says whom it waits for, and a turn that does
+// start is never called "not sent". The header toggle switches the mode as a person would; the routed settings keep it.
+test("a send that waits more than a minute for a new session says whom it waits for and is never called not sent",async({page})=>{
+  test.setTimeout(150_000);
+  const fx=await cursorFixture("Cursor slow new session",{providerSessionId:"cursor-lost",config:{lostError:LOST,newDelayMs:15_000,reply:"You asked me to remember PELICAN."}});
+  try{
+    await routeApp(page,fx);
+    let saved={};
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()!=="POST")return route.fallback();saved={...saved,...route.request().postDataJSON()};return json(route,saved)});
+    // The window's timers run on a clock the test moves on, past the minute a send used to wait, without waiting that long.
+    await page.clock.install();
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await openThreadRow(page,"Cursor slow new session");
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert"),handoff=page.getByTestId("session-handoff"),question="What word did I ask you to remember?";
+    await expect(composer).toBeEnabled();
+    await composer.click();await page.keyboard.type(question,{delay:20});await page.keyboard.press("Enter");
+    await expect(userRow(page,question)).toBeVisible();
+    await expect(composer).toHaveAttribute("placeholder","Sending…");
+    await page.clock.fastForward("00:06");
+    await expect(composer).toHaveAttribute("placeholder","Sending · waiting for Cursor…");
+    // Past the minute: still waiting, with the message in the conversation, the draft not put back and no note beside the composer.
+    await page.clock.fastForward("01:00");await frames(page,3);
+    await expect(alert).toHaveCount(0);await expect(composer).toHaveValue("");
+    await expect(composer).toHaveAttribute("placeholder","Sending · waiting for Cursor…");
+    await expect(userRow(page,question)).toHaveCount(1);
+    expect((await fx.requests()).map(entry=>entry.method)).not.toContain("session/prompt");
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await frames(page,2);
+      if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+      for(const [width,height] of [[1280,800],[900,800]]){
+        await page.setViewportSize({width,height});await frames(page,3);
+        // The whole note fits on the composer's first line, and the page never scrolls sideways.
+        const fit=await composer.evaluate(node=>{
+          const style=getComputedStyle(node),context=document.createElement("canvas").getContext("2d");context.font=style.font;
+          const room=node.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight),shell=document.querySelector(".workspace-shell");
+          return {oneLine:context.measureText(node.placeholder).width<=room,sideways:shell.scrollWidth>shell.clientWidth+1};
+        });
+        expect(fit,`${mode} ${width}x${height}`).toEqual({oneLine:true,sideways:false});
+        await page.screenshot({animations:"disabled",path:`${auditDir}send-waiting-${mode}-${width}x${height}.png`});
+      }
+    }
+    await page.setViewportSize({width:1280,height:800});await frames(page,2);
+    await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
+    // The new session starts and the turn runs in it: the one message, the handoff row, the reply, and the composer free again.
+    await expect(reply(page,"You asked me to remember PELICAN.")).toBeVisible({timeout:30_000});
+    await expect(userRow(page,question)).toHaveCount(1);await expect(alert).toHaveCount(0);
+    await expect(handoff).toHaveCount(1);await expect(handoff).toHaveText(HANDED_OVER);
+    await expect(composer).toBeEnabled();await expect(composer).toHaveValue("");
+    expect((await fx.requests()).map(entry=>[entry.method,entry.params?.sessionId??null]).filter(([method])=>["session/load","session/resume","session/new","session/prompt"].includes(method))).toEqual([["session/load","cursor-lost"],["session/new",null],["session/prompt","fresh-1"]]);
+    await expectReadingOrder(userRow(page,question),handoff,reply(page,"You asked me to remember PELICAN."));
+    await page.screenshot({animations:"disabled",path:auditDir+"send-waiting-then-replied-dark-1280x800.png"});
   }finally{await fx.close()}
 });
 

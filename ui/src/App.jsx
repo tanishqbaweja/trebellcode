@@ -580,6 +580,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const [modelOpen,setModelOpen]=useState(false);
   const [modelQuery,setModelQuery]=useState("");
   const [listening,setListening]=useState(false);
+  // A send still unanswered after a few seconds is waiting on the harness, most often to start (a new session can take a minute),
+  // so the composer says whom it waits for.
+  const [sendWaiting,setSendWaiting]=useState(false);
+  useEffect(()=>{if(!submitting){setSendWaiting(false);return}const timer=setTimeout(()=>setSendWaiting(true),5000);return()=>clearTimeout(timer)},[submitting]);
   const [caret,setCaret]=useState(0);
   const [mentionItems,setMentionItems]=useState([]);
   const [mentionIndex,setMentionIndex]=useState(0);
@@ -807,7 +811,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const sendLabel=running&&!steerFollowUps?"Queue follow-up":running?"Steer agent":"Send message";
   // starting: Trebell's first load has not yet said which harness runs, so the composer names none. threadSettingsWait: another
   // thread's opening state covers the open thread, so the pickers that change the open thread's own mode and agent wait for it.
-  const composerPlaceholder=openingThread?"Opening thread…":submitting?"Sending…":starting?"Starting Trebell Code…"
+  const composerPlaceholder=openingThread?"Opening thread…":submitting?(sendWaiting?`Sending · waiting for ${agentRuntimeLabel}…`:"Sending…"):starting?"Starting Trebell Code…"
     :providerReady?(runtimeSwitchLabel||(!transportReady?transportMessage:running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"))
     :modelProviderRuntime?`Configure ${providerLabel} in Settings…`
     :`Configure ${agentRuntimeLabel} in Settings…`;
@@ -4204,7 +4208,7 @@ export default function App(){
     }
     // A turn/start that fails has no turn to show it on: the error goes next to the composer that kept the draft, never onto the
     // last turn's card (a worktree that could not be set up says why in its own card).
-    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);setRunning(false);setEvents([]);if(!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e)))setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."})});
+    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);setRunning(false);setEvents([]);if(!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e)))setComposerAlert({kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."})});
   }
   async function send(promptOverride=null){
     if(openingThreadRef.current)return;
