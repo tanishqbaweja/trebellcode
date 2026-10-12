@@ -196,3 +196,9 @@ test("a bulk action names each thread it could not change with the harness's rea
   assert.equal(bulkActionFailure("archive",[{title:"Old notes",error:new Error("Archive is read-only. ")}]),"Could not archive “Old notes”: Archive is read-only.");
   assert.equal(bulkActionFailure("snooze",[{title:"A",error:"Sections are read-only"},{title:"B",error:null}]),"Could not snooze 2 threads: “A” (Sections are read-only); “B” (Unknown error).");
 });
+
+test("a bulk action refused for every thread for one reason says the reason once, by the count",()=>{
+  const failed=Array.from({length:10},(_,index)=>({title:"Payments refactor step "+(index+1),error:new Error(index%2?"Archive is read-only.":"Archive is read-only")}));
+  assert.equal(bulkActionFailure("archive",failed),"Could not archive 10 threads: Archive is read-only.");
+  assert.equal(bulkActionFailure("pin",[{title:"A",error:"Trebell Native is not connected"},{title:"B",error:new Error("Trebell Native is not connected.")}]),"Could not pin 2 threads: Trebell Native is not connected.");
+});

@@ -9,11 +9,13 @@ const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkd
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 const names=["Bulk one","Bulk two","Bulk three","Bulk four"];
 
-// refuse(message) names an error to answer a request with instead of the relay.
+// refuse(message) names an error to answer a request with instead of the relay. stop() stops the harness as far as the page can
+// tell: its socket closes and every reconnect is turned away.
 async function proxyRelay(page,harness){
-  const proxy={refuse:()=>null};
+  const proxy={refuse:()=>null,stopped:false,sockets:[]};
   await page.routeWebSocket(harness.wsUrl,ws=>{
-    const server=ws.connectToServer();
+    if(proxy.stopped){ws.close({code:1011,reason:"harness stopped"});return}
+    const server=ws.connectToServer();proxy.sockets.push(ws);
     ws.onMessage(message=>{
       let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
       const refusal=parsed?.id!=null&&parsed.method?proxy.refuse(parsed):null;
@@ -21,14 +23,15 @@ async function proxyRelay(page,harness){
       server.send(message);
     });
   });
+  proxy.stop=()=>{proxy.stopped=true;for(const ws of proxy.sockets.splice(0))ws.close({code:1011,reason:"harness stopped"})};
   return proxy;
 }
 
-// Four threads, a minute apart, with "Bulk one" open. meta is what Trebell keeps of each thread (its snooze time among it), as the
-// GUI server keeps it.
-async function openSidebarApp(page){
+// The threads in list (the four Bulk ones unless given), a minute apart, with the first open. meta is what Trebell keeps of each
+// thread (its snooze time among it), as the GUI server keeps it.
+async function openSidebarApp(page,list=names){
   const harness=await startRelayHarness();
-  for(const name of names)harness.seedThread(name,[{user:"Work on "+name.toLowerCase(),items:[replyItem("seed-reply-"+harness.threads.length,"Done with "+name.toLowerCase()+".")]}]);
+  for(const name of list)harness.seedThread(name,[{user:"Work on "+name.toLowerCase(),items:[replyItem("seed-reply-"+harness.threads.length,"Done with "+name.toLowerCase()+".")]}]);
   const base=Math.floor(Date.now()/1000)-3600;harness.threads.forEach((thread,index)=>harness.threadStore.update(thread.id,{updatedAt:base-index*60},{touch:false}));
   await routeRelayApp(page,harness);
   const meta=Object.fromEntries(harness.threads.map(thread=>[thread.id,{projectless:false,environmentId:null,cwd:harness.repo,runtime:"native",runtimeInstanceId:"native-default"}]));
@@ -42,8 +45,8 @@ async function openSidebarApp(page){
   const proxy=await proxyRelay(page,harness);
   await page.setViewportSize({width:1280,height:800});
   await page.goto("/");
-  await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
-  const row=threadRow(page,"Bulk one");await row.locator(".thread-main").click();
+  await expect.poll(()=>groups(page)).toEqual([["Active",list]]);
+  const row=threadRow(page,list[0]);await row.locator(".thread-main").click();
   await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
   const id=name=>harness.threads.find(thread=>thread.name===name).id;
   return {harness,proxy,meta,id};
@@ -197,5 +200,32 @@ test("closing the Snooze dialog with Cancel, Escape or its close button gives fo
     await bulkSnooze.click();await expect(dialog).toBeVisible();
     await dialog.getByRole("button",{name:"Cancel",exact:true}).click();await expect(dialog).toHaveCount(0);
     await expect(bulkSnooze).toBeFocused();
+  }finally{await harness.close()}
+});
+
+test("a bulk Archive the harness refuses for every thread says its reason once and keeps the threads in view",async({page})=>{
+  test.setTimeout(120_000);
+  const list=Array.from({length:10},(_,index)=>"Payments refactor step "+String(index+1).padStart(2,"0")+" with the refund flow");
+  const {harness,proxy}=await openSidebarApp(page,list);
+  try{
+    proxy.refuse=message=>message.method==="thread/archive"?"Archive is read-only":null;
+    await selectThreads(page,list);
+    await bulkBar(page).getByRole("button",{name:"Archive",exact:true}).click();
+    const alert=sidebarAlert(page);
+    await expect(alert).toHaveText("Could not archive 10 threads: Archive is read-only.");
+    expect(await selected(page)).toEqual(list);
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        // The threads still selected show under the alert, which takes a line or two of the sidebar: the list stays where the
+        // person left it, at the last ones ticked.
+        await expect(threadRow(page,list[9])).toBeInViewport();await expect(threadRow(page,list[8])).toBeInViewport();
+        const [box,sidebar]=await Promise.all([alert.boundingBox(),page.locator(".sidebar").boundingBox()]);
+        expect(box.height).toBeLessThan(sidebar.height/8);
+        await page.screenshot({animations:"disabled",path:auditDir+"sidebar-bulk-archive-all-refused-"+mode+"-"+width+"x800.png"});
+      }
+      await page.setViewportSize({width:1280,height:800});
+    }
   }finally{await harness.close()}
 });
