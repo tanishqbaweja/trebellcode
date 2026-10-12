@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
+import { git, gitInfo } from "../src/git-service.mjs";
 
 // Process budgets for the child processes Trebell starts while it sits idle (goal.md section 6; perf plan budgets B6-B8). Each one
 // counts launches through an injected runner, so the numbers do not depend on how busy the machine is.
@@ -70,4 +74,28 @@ test("B7: Settings' own check asks again at once, and probes that overlap share 
   assert.equal(launches.grok,6,"the Settings listing checks every harness again");
   await manager.probe("grok");
   assert.equal(launches.grok,6,"and what it found is reused");
+});
+
+// A small repository with a commit, two branches, a remote and an untracked file, as a project folder looks.
+async function fixtureRepository(prefix){
+  const dir=await mkdtemp(join(tmpdir(),prefix));
+  await git(dir,["init","-q","-b","main"]);await git(dir,["config","user.email","trebell@example.test"]);await git(dir,["config","user.name","Trebell Test"]);
+  await writeFile(join(dir,"a.txt"),"hello\n");await git(dir,["add","a.txt"]);await git(dir,["commit","-qm","init"]);
+  await git(dir,["branch","feature/one"]);await git(dir,["remote","add","origin","https://example.invalid/repo.git"]);
+  await writeFile(join(dir,"draft.txt"),"untracked\n");
+  return dir;
+}
+const countingGit=()=>{const calls=[];return {calls,gitFn:(cwd,args,options)=>{calls.push(args.join(" "));return git(cwd,args,options)}}};
+
+test("B6: a warm /api/git/info poll starts at most 7 git processes (guard at the baseline)",{timeout:30_000},async()=>{
+  const dir=await fixtureRepository("trebell-git-budget-");
+  try{
+    const {calls,gitFn}=countingGit();
+    const cold=await gitInfo(dir,{gitFn});assert.equal(cold.isGit,true);assert.equal(cold.branch,"main");
+    calls.length=0;
+    const warm=await gitInfo(dir,{gitFn});
+    assert.deepEqual(warm,cold);
+    // The UI polls every 3.5 s while a project thread is open: 7 processes each poll is about 120 a minute.
+    assert.ok(calls.length<=7,"a warm poll ran "+calls.length+" git processes: "+calls.join(", "));
+  }finally{await rm(dir,{recursive:true,force:true})}
 });
