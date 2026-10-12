@@ -251,6 +251,23 @@ test("B3: opening a long thread reads its history from sqlite at most once, and 
   }finally{await relay.close()}
 });
 
+// The rest of an open: the app asks for the thread's goal and continuity beside the resume. Each copied the whole stored thread (a
+// JSON round trip of 3.2 MB) to read its turns' times, ids and statuses, the continuity twice when the thread has a goal.
+test("the goal and continuity reads of an open parse none of the stored history",async t=>{
+  const relay=await budgetRelay("trebell-budget-continuity-");
+  try{
+    const thread=relay.threadStore.importHistory({...BUDGET_THREAD,cwd:relay.root,turns:seededTurns(3.2)});
+    await relay.rpc("thread/goal/set",{threadId:thread.id,objective:"Keep the seeded history"});
+    const turns=relay.threadStore.get(thread.id).turns,completed=turns.filter(turn=>turn.status==="completed").slice(-10).map(turn=>turn.id);
+    const counters=serverCounters(relay.threadStore);counters.start();let goal,continuity;
+    try{[goal,continuity]=await Promise.all([relay.rpc("thread/goal/get",{threadId:thread.id}),relay.rpc("thread/continuity/get",{threadId:thread.id})])}finally{counters.stop()}
+    const read={readMB:counters.counts.readBytes/1024/1024,parsedMB:counters.counts.parsedChars/1024/1024};t.diagnostic("goal and continuity "+JSON.stringify(read));
+    assert.equal(goal.goal.objective,"Keep the seeded history");assert.equal(goal.goal.turnsUsed,0);
+    assert.equal(completed.length,10);assert.deepEqual(continuity.continuity.completedTurnIds,completed);assert.equal(continuity.continuity.objective,"Keep the seeded history");
+    assert.ok(read.readMB<=0.01&&read.parsedMB<=10,"goal and continuity "+JSON.stringify(read));
+  }finally{await relay.close()}
+});
+
 // B19: browsing threads starts no harness. A thread of a harness whose session opens with its next turn shows its saved transcript
 // and launches nothing; OpenCode's opened its session at once, starting `opencode serve` (4 processes, 499 MB) per reopened chat.
 const LAZY_KINDS=["cursor","grok","antigravity","opencode"];
