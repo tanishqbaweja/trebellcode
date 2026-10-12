@@ -47,7 +47,8 @@ test("B4: the turn listings a thread read prepares use no temporary B-tree and k
 // its stream, so a test can count the stream alone. No model and no real harness is involved.
 const BUDGET_AGENT=String.raw`
 import readline from "node:readline";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 // Each agent process logs the requests it gets to a file of its own in the folder it is given, named for its start and its pid.
 const log=process.argv[3]?join(process.argv[3],Date.now()+"-"+process.pid+".log"):null;if(log)appendFileSync(log,"");
@@ -60,9 +61,17 @@ let cancelled=false;
 async function until(file){while(file&&!existsSync(file)&&!cancelled)await sleep(5)}
 // Paced against the clock, not per timer tick (Windows rounds a short timer up to about 15 ms); no rate sends all at once.
 async function paced(count,rate,step){const start=performance.now();for(let i=0;i<count&&!cancelled;){const due=rate?Math.floor((performance.now()-start)*rate/1000)+1:count;while(i<count&&i<due&&!cancelled)step(i++);if(i<count)await sleep(2)}}
+const readPlan=()=>JSON.parse(readFileSync(process.argv[2],"utf8"));
 async function prompt(id){
-  const plan=JSON.parse(readFileSync(process.argv[2],"utf8"));cancelled=false;
+  const plan=readPlan();cancelled=false;
   await until(plan.startFile);
+  // Tools the turn reports, each started and completed; spawnPidFile leaves a process running, as a command run in the background does.
+  for(const [index,tool] of (plan.tools||[]).entries()){
+    const toolCallId="budget-call-"+index;
+    update({sessionUpdate:"tool_call",toolCallId,title:tool.title||tool.kind,kind:tool.kind,status:"in_progress",rawInput:{}});
+    if(tool.spawnPidFile){const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore",windowsHide:true});writeFileSync(tool.spawnPidFile,String(child.pid))}
+    update({sessionUpdate:"tool_call_update",toolCallId,status:"completed",rawOutput:tool.rawOutput??"done"});
+  }
   if(plan.toolUpdates){
     const toolCallId="budget-tool";let output="";
     update({sessionUpdate:"tool_call",toolCallId,title:"npm test",kind:"execute",status:"in_progress",rawInput:{command:"npm test"}});
@@ -72,6 +81,12 @@ async function prompt(id){
   await paced(plan.chunks||0,plan.rate,i=>update({sessionUpdate:"agent_message_chunk",content:{type:"text",text:("w"+i+" ").padEnd(23,"x")+" "}}));
   await until(plan.endFile);
   send({jsonrpc:"2.0",id,result:{stopReason:cancelled?"cancelled":"end_turn"}});
+  // What the harness sends on its own once the prompt has answered, as Grok answers a finished background task in a turn of its own.
+  for(const step of plan.after||[]){
+    if(step.delay)await sleep(step.delay);
+    if(step.update)send({jsonrpc:"2.0",method:"session/update",params:{sessionId,...(step.meta?{_meta:step.meta}:{}),update:step.update}});
+    if(step.notify)send({jsonrpc:"2.0",method:step.notify.method,params:step.notify.params});
+  }
 }
 function handle(m){
   if(log&&m.method)appendFileSync(log,m.method+"\n");
@@ -111,8 +126,8 @@ async function budgetRelay(prefix,{instances=[BUDGET_INSTANCE],env:extra={}}={})
     ws.on("message",onMessage);ws.send(JSON.stringify({id,method,params}));
   });
   // Resolves once count notifications of method have arrived, matched in their text so that waiting parses nothing.
-  const notified=(method,count=1)=>new Promise(resolve=>{let seen=0;const needle='"method":"'+method+'"',onMessage=raw=>{if(String(raw).includes(needle)&&++seen>=count){ws.off("message",onMessage);resolve()}};ws.on("message",onMessage)});
-  const close=async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})};
+  const notified=(method,count=1)=>new Promise(resolve=>{let seen=0;const needle='"method":"'+method+'"',onMessage=raw=>{if(String(raw).includes(needle)&&++seen>=count){ws.off("message",onMessage);resolve(true)}};ws.on("message",onMessage)});
+  const close=async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})};
   // How many notifications of method have arrived so far, counted as notified() matches them.
   const counter=method=>{const needle='"method":"'+method+'"',counts={n:0};ws.on("message",raw=>{if(String(raw).includes(needle))counts.n++});return counts};
   // The agent processes started so far, oldest first: each one's pid and the requests it got.
@@ -120,6 +135,8 @@ async function budgetRelay(prefix,{instances=[BUDGET_INSTANCE],env:extra={}}={})
   return {root,threadStore,plan,rpc,notified,counter,close,launches,modes,agentProcesses,file:name=>join(root,name)};
 }
 const alive=pid=>{try{process.kill(pid,0);return true}catch{return false}};
+// Whether promise settles within ms (false if it does not).
+const within=(promise,ms)=>Promise.race([promise,new Promise(resolve=>{const timer=setTimeout(()=>resolve(false),ms);timer.unref?.()})]);
 async function eventually(check,ms=10_000){const end=Date.now()+ms;while(!(await check())){if(Date.now()>end)return false;await new Promise(done=>setTimeout(done,20))}return true}
 // A stored history of about mb megabytes: turns of a short request and a 3 KB reply.
 function seededTurns(mb){
@@ -295,7 +312,8 @@ test("B9: an idle harness session is released, one with a running turn is kept, 
   try{
     const idle=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root,providerMeta:{...BUDGET_THREAD.providerMeta,permissionProfile:"edits"}});
     const working=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root});
-    await writeFile(relay.plan,JSON.stringify({chunks:3}),"utf8");
+    // A harness that only read, searched and edited files has nothing left running once its turn ends.
+    await writeFile(relay.plan,JSON.stringify({chunks:3,tools:[{kind:"read",title:"Read README.md"},{kind:"search",title:"Search the workspace"},{kind:"edit",title:"Edit notes.md"}]}),"utf8");
     let completed=relay.notified("turn/completed");await relay.rpc("turn/start",{threadId:idle.id,input:[{type:"text",text:"First"}]});await completed;
     const [first]=await relay.agentProcesses();assert.ok(alive(first.pid),"the idle thread's harness runs after its turn");
     await writeFile(relay.plan,JSON.stringify({chunks:1,endFile:relay.file("end")}),"utf8");
@@ -317,4 +335,50 @@ test("B9: an idle harness session is released, one with a running turn is kept, 
     assert.deepEqual([relay.modes[0],relay.modes.at(-1)],["edits","edits"]);
     const reply=relay.threadStore.get(idle.id).turns.at(-1).items.find(item=>item.type==="agentMessage");assert.ok(reply?.text.includes("w4 "),"the resumed turn's reply is stored");
   }finally{await relay.close()}
+});
+
+// The sweep stops a released harness's whole process tree (taskkill /T on Windows), so it keeps a session whose harness ran a tool
+// that can outlive its turn: what that tool left running went on until the thread closed before the sweep, and nothing says when it
+// ends. SWEEP_ENV shortens the idle time to 300 ms, against the default ten minutes.
+const SWEEP_ENV=Object.freeze({TREBELL_AGENT_SESSION_IDLE_MS:"300",TREBELL_AGENT_SESSION_SWEEP_MS:"50"});
+
+// Grok runs a long command in the background (its tool call answers BackgroundTaskStarted while the command runs) and answers once it
+// ends in a task-completed-* turn of its own, with no prompt running in between. Closing the idle session stopped Grok and its task.
+test("the idle sweep keeps a Grok session whose background task has not reported back, so its wake turn still arrives",async()=>{
+  const relay=await budgetRelay("trebell-budget-wake-",{env:SWEEP_ENV});
+  try{
+    const thread=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:1,tools:[{kind:"execute",title:"npm test",rawOutput:{type:"BackgroundTaskStarted",task_id:"task-1"}}],after:[
+      {delay:1500,meta:{promptId:"task-completed-1"},update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:"Background task finished."}}},
+      {delay:50,notify:{method:"_x.ai/session_notification",params:{sessionId:"budget-session",update:{sessionUpdate:"turn_completed",prompt_id:"task-completed-1",stop_reason:"end_turn"}}}},
+    ]}),"utf8");
+    const first=relay.notified("turn/completed");
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Run the long test suite in the background"}]});await first;
+    const woke=await within(relay.notified("turn/completed"),6000),turns=relay.threadStore.get(thread.id).turns;
+    assert.ok(woke,"the background task's wake turn completes; agent processes "+JSON.stringify((await relay.agentProcesses()).map(agent=>({alive:alive(agent.pid),methods:agent.methods}))));
+    assert.equal(turns.length,2);
+    assert.ok(turns[1].items.some(item=>item.type==="agentMessage"&&item.text.includes("Background task finished.")),"the wake turn's reply is stored");
+  }finally{await relay.close()}
+});
+
+// A command a harness ran can leave a process going after its turn, such as a dev server or a watcher started in the background. A
+// second thread whose harness only read a file shows the sweep at work in the same relay: its session is let go.
+test("the idle sweep leaves a process a harness's command started in the background running",async()=>{
+  const relay=await budgetRelay("trebell-budget-background-",{env:SWEEP_ENV});let backgroundPid=0;
+  try{
+    const thread=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root}),reader=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root}),pidFile=relay.file("background.pid");
+    await writeFile(relay.plan,JSON.stringify({chunks:1,tools:[{kind:"execute",title:"npm run dev",spawnPidFile:pidFile,rawOutput:"Started the dev server in the background."}]}),"utf8");
+    let completed=relay.notified("turn/completed");
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Start the dev server in the background"}]});await completed;
+    backgroundPid=Number(readFileSync(pidFile,"utf8"));assert.ok(alive(backgroundPid),"the background process runs once the turn ends");
+    await writeFile(relay.plan,JSON.stringify({chunks:1,tools:[{kind:"read",title:"Read README.md"}]}),"utf8");
+    completed=relay.notified("turn/completed");
+    await relay.rpc("turn/start",{threadId:reader.id,input:[{type:"text",text:"What does the README say?"}]});await completed;
+    const [harness,read]=await relay.agentProcesses();
+    assert.ok(await eventually(()=>!alive(read.pid)),"the session that only read a file is let go");
+    await new Promise(done=>setTimeout(done,1000));
+    const agents=(await relay.agentProcesses()).map(agent=>({alive:alive(agent.pid),methods:agent.methods}));
+    assert.ok(alive(backgroundPid),"the background process still runs after the sweep; agent processes "+JSON.stringify(agents));
+    assert.ok(alive(harness.pid),"its harness is kept");
+  }finally{await relay.close();if(backgroundPid&&alive(backgroundPid))try{process.kill(backgroundPid)}catch{}}
 });

@@ -54,6 +54,9 @@ const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_process","trebell_brow
 const RETIRED_NATIVE_TOOL_NAMESPACES=new Set(["trebell_device"]);
 // ACP harnesses and OpenCode run processes per thread; reopening one of their threads does not start them (see thread/resume).
 const LAZY_SESSION_RUNTIMES=new Set(["cursor","grok","antigravity","opencode"]);
+// The tool kinds whose work ends with the call. A harness that ran any other (a command, a subagent, an MCP tool, a call of no kind)
+// may have left it running past its turn: a dev server or a watcher, or a Grok background task that answers in a wake turn of its own.
+const SETTLED_TOOL_KINDS=new Set(["read","edit","delete","move","search","fetch","switch_mode"]);
 function expandableNativeToolNamespaces(values=[]){
   const requested=[...new Set((Array.isArray(values)?values:[]).map(value=>String(value||"").trim()).filter(Boolean))];
   const active=requested.filter(name=>!RETIRED_NATIVE_TOOL_NAMESPACES.has(name));
@@ -704,7 +707,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // through ensureSession, as a reopened lazy thread does. Trebell Native's session runs in this process, and Claude Code releases its
   // own after 30 minutes (CLAUDE_IDLE_RELEASE_MS), so neither is swept. TREBELL_AGENT_SESSION_IDLE_MS and
   // TREBELL_AGENT_SESSION_SWEEP_MS shorten both for a test.
-  const sessionEnv=runtimeManager?.env||process.env,sessionUsed=new WeakMap();
+  // A session whose harness ran a tool that can outlive its turn (sessionLeftWork, see SETTLED_TOOL_KINDS) is kept until its thread
+  // closes, as every session was: closing it stops the harness's whole process tree, and with it what the harness left running, and
+  // nothing in ACP says when that work ends.
+  const sessionEnv=runtimeManager?.env||process.env,sessionUsed=new WeakMap(),sessionLeftWork=new WeakSet();
   const SESSION_IDLE_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS):10*60_000;
   const SESSION_SWEEP_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS):60_000;
   const socketContexts=new Set();
@@ -897,7 +903,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   function sweepIdleSessions(){
     const now=Date.now();
     for(const [threadId,session] of sessions){
-      if(!(session instanceof AcpAgentSession||session instanceof OpenCodeAgentSession)||session.busy||session.activePrompt)continue;
+      if(!(session instanceof AcpAgentSession||session instanceof OpenCodeAgentSession)||session.busy||session.activePrompt||sessionLeftWork.has(session))continue;
       if(now-(sessionUsed.get(session)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
       if([...socketContexts].some(context=>context.waitsOn?.(threadId)))continue;
       sessions.delete(threadId);void session.close().catch(error=>log("Could not close an idle harness session: "+(error?.message||String(error))));
@@ -1332,7 +1338,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // A chunk needs only the last turn's id and status; reading the stored thread for each one read and parsed all of its history.
     const update=params?.update||{};const thread=peekThread(threadId);if(!thread)return;const lastTurn=thread.turns?.at(-1),turnId=lastTurn?.id||null;
     const type=update.sessionUpdate;
-    if(type==="tool_call"||type==="tool_call_update")endReasoning(threadId);
+    if(type==="tool_call"||type==="tool_call_update"){endReasoning(threadId);if(!SETTLED_TOOL_KINDS.has(update.kind)){const live=sessions.get(threadId);if(live)sessionLeftWork.add(live)}}
     if(type==="agent_message_chunk"){
       const session=sessions.get(threadId),text=agentTextAfterToolCall(session,update.content?.type==="text"?update.content.text||"":"");
       if(text)endReasoning(threadId);
