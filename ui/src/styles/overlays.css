@@ -201,8 +201,10 @@
 .mcp-elicitation-modal .mcp-multiselect label:has(input:checked),.mcp-elicitation-modal .mcp-multiselect label.selected{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2));background:var(--acsoft);color:var(--tx0)}
 .mcp-elicitation-modal :is(.mcp-multiselect,.mcp-boolean) input[type=checkbox]{width:14px;height:14px;margin:0;accent-color:var(--ac);cursor:pointer}
 .mcp-elicitation-modal .mcp-boolean{display:flex;align-items:center;gap:8px;color:var(--tx1);font-size:12.5px;font-weight:500}
-/* The field named in the validation error. */
-.mcp-elicitation-modal .mcp-field :is(input.tb-input,select.tb-select)[aria-invalid="true"]{border-color:var(--errb)!important;box-shadow:0 0 0 3px var(--errt)}
+/* The field named in the validation error keeps its red line with focus and in light mode or a custom theme, whose field line and
+   focus colour (the legacy neutralizer below) outweigh a plain [aria-invalid] rule. */
+.mcp-elicitation-modal .mcp-field.invalid :is(input.tb-input,select.tb-select)[aria-invalid="true"],
+.mcp-elicitation-modal .mcp-field.invalid :is(input.tb-input,select.tb-select)[aria-invalid="true"]:focus{border-color:var(--errb)!important;box-shadow:0 0 0 3px var(--errt)}
 .mcp-elicitation-modal .mcp-field.invalid>.mcp-field-label{color:var(--err)}
 .mcp-elicitation-modal .mcp-field.invalid .mcp-multiselect label:not(.selected){border-color:var(--errb)}
 .mcp-elicitation-modal .mcp-url-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;padding:9px 9px 9px 12px;border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg0)}

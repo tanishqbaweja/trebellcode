@@ -116,6 +116,87 @@ for(const mode of MODES){
   });
 }
 
+// ============ Invalid fields ============
+// A field the page refuses keeps its red line in dark and in light: left, under the pointer and with the keyboard in it, whatever
+// the shared field rules of that mode say. Its line is read once it has eased into place.
+const reddish=value=>{
+  const text=String(value),srgb=text.match(/^color\(srgb\s+([^)]+)\)$/);
+  const parts=srgb?srgb[1].split(/[\s/]+/).filter(Boolean).map(Number).map((part,index)=>index<3?part*255:part):(text.match(/[\d.]+/g)||[]).map(Number);
+  return parts.length>=3&&parts[0]-Math.max(parts[1],parts[2])>40&&(parts[3]??1)>=.2;
+};
+async function invalidLines(page,field,name){
+  const line=()=>field.evaluate(node=>{for(const animation of node.getAnimations())animation.finish();return getComputedStyle(node).borderTopColor});
+  const out={};
+  for(const mode of MODES){
+    await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+    await field.evaluate(node=>node.blur());await page.mouse.move(1,1);
+    const left=await line();
+    await field.hover();const hovered=await line();
+    await field.focus();const focused=await line();
+    await page.mouse.move(1,1);const focusedAway=await line();
+    out[mode]={left,hovered,focused,focusedAway};
+    for(const width of [1280,900]){
+      await page.setViewportSize({width,height:800});await field.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`invalid-${name}-${mode}-${width}.png`});
+      await field.evaluate(node=>node.blur());
+      await page.screenshot({animations:"disabled",path:shots+`invalid-${name}-left-${mode}-${width}.png`});
+      await field.focus();
+    }
+    await page.setViewportSize({width:1280,height:800});
+  }
+  console.log("INVALID-LINES "+name+" "+JSON.stringify(out));
+  for(const [mode,looks] of Object.entries(out))for(const [state,colour] of Object.entries(looks))expect.soft(reddish(colour),`${name} ${mode} ${state}: ${colour}`).toBe(true);
+}
+
+test("a refused field keeps its red line in both modes, with focus, without it and under the pointer: Environments, Clone and Shortcuts",async({page,request})=>{
+  test.setTimeout(90_000);
+  await page.route(/\/api\/environments$/,async route=>{
+    if(route.request().method()!=="GET")return route.continue();
+    const body=await (await route.fetch()).json();
+    return json(route,{...body,profiles:[{id:"polish-ssh",name:"Build box",type:"ssh",host:"build.example.com",user:"dev",port:22,cwd:"",enabled:true}],capabilities:{...body.capabilities,ssh:{available:true,version:"OpenSSH fixture"}}});
+  });
+  await open(page,request);
+  // The Environments port.
+  await nav(page,"Environments").click();
+  const form=page.locator(".environment-create");
+  await form.getByRole("combobox",{name:"Type"}).selectOption("ssh");
+  const port=form.getByRole("spinbutton",{name:"Port"});
+  await port.fill("0");
+  await expect(port).toHaveAttribute("aria-invalid","true");
+  await expect(form.getByRole("alert")).toHaveText("Port must be a whole number from 1 to 65535.");
+  await invalidLines(page,port,"environment-port");
+  // The Clone parent directory.
+  await nav(page,"Projects").click();
+  const clone=page.locator(".clone-card");
+  await clone.getByRole("textbox",{name:"Clone URL"}).fill("https://github.com/owner/repo.git");
+  await clone.getByRole("button",{name:"Clone",exact:true}).click();
+  const parent=clone.getByRole("textbox",{name:"Clone parent directory"});
+  await expect(parent).toHaveAttribute("aria-invalid","true");
+  await invalidLines(page,parent,"clone-parent");
+  // A shortcut.
+  await nav(page,"Settings").click();
+  await page.getByRole("navigation",{name:"Settings categories"}).getByRole("button",{name:/^Shortcuts/}).click();
+  const key=page.getByRole("textbox",{name:"Toggle main sidebar shortcut",exact:true});
+  await key.click();await key.press("ControlOrMeta+A");await key.pressSequentially("Ctrl+",{delay:15});await key.press("Tab");
+  await expect(key).toHaveAttribute("aria-invalid","true");
+  await invalidLines(page,key,"shortcut");
+});
+
+test("a field an MCP server's form refuses keeps its red line in both modes, with focus, without it and under the pointer",async({page})=>{
+  const threads=historyThreads(1);
+  const fixture=await startCodex(threads);
+  try{
+    await openCodexHistory(page,fixture,threads);
+    fixture.emit({id:"polish-elicitation",method:"mcpServer/elicitation/request",params:{threadId:threads[0].id,serverName:"polish_app",mode:"form",message:"Name the deployment",requestedSchema:{type:"object",properties:{label:{type:"string",title:"Deployment name"}},required:["label"]}}});
+    const modal=page.getByTestId("mcp-elicitation");
+    await expect(modal).toBeVisible();
+    await modal.getByRole("button",{name:"Submit",exact:true}).click();
+    const field=modal.getByRole("textbox",{name:/Deployment name/});
+    await expect(field).toHaveAttribute("aria-invalid","true");
+    await invalidLines(page,field,"mcp-form");
+  }finally{await fixture.close()}
+});
+
 // ============ History (behind a fake Codex app-server) ============
 const LONG_TITLE="Investigate why the nightly integration pipeline for the payments gateway keeps timing out on the reconciliation step after the database migration";
 const LONG_PREVIEW="C:\\Users\\someone\\source\\repos\\a-very-long-folder-name-for-the-payments-gateway-service\\src\\reconciliation\\nightly-job.ts";
@@ -149,7 +230,7 @@ async function startCodex(threads){
     });
   });
   const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
-  return {port,async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
+  return {port,emit(message){for(const socket of sockets)socket.send(JSON.stringify(message))},async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
 async function openCodexHistory(page,fixture,threads,{mode="dark",width=1280,height=800}={}){
   await page.setViewportSize({width,height});
