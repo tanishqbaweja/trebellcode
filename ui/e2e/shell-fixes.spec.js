@@ -644,22 +644,22 @@ for(const [width,mode] of [[1280,"dark"],[1280,"light"],[1180,"dark"],[1180,"lig
 
 // A turn that ends while the More actions menu is open gives Stop's room back to the row, so the last action folded returns to
 // it and leaves the menu, which stays open with the rest. Keyboard focus on that action's menu item moves to the menu's button
-// instead of falling off the page.
+// instead of falling off the page. With one linked pull request, Stop is what keeps Open in folded at this size.
 test("a turn ending while the More actions menu is open gives one action back to the row and keeps focus in the menu at 1180x800",async({page})=>{
   test.setTimeout(40_000);
-  const {harness,thread,header,more,menu}=await openHeaderFixture(page,{width:1180});
+  const {harness,thread,header,more,menu}=await openHeaderFixture(page,{width:1180,prCount:1});
   try{
     const running=await headerFold(header);
-    expect(running.folded).toEqual(HEADER_FOLD_ORDER);
+    expect(running.folded).toEqual(HEADER_FOLD_ORDER.slice(0,-1));
     await more.click();await expect(menu).toBeVisible();
-    const source=menu.getByRole("button",{name:/^Source control/});
-    await source.focus();await expect(source).toBeFocused();
+    const openIn=menu.getByRole("button",{name:"Open",exact:true});
+    await openIn.focus();await expect(openIn).toBeFocused();
     harness.push("turn/completed",{threadId:thread.id,turn:{id:"turn-live",status:"completed",completedAt:now()}});
     await expect(header.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);await settle(page);
     const ended=await headerFold(header);
     await expectFoldedOnlyAsNeeded(header,ended);
-    expect(ended.folded).toEqual(HEADER_FOLD_ORDER.slice(0,-1));
-    await expect(menu).toBeVisible();await expect(source).toBeHidden();
+    expect(ended.folded).toEqual(HEADER_FOLD_ORDER.slice(0,-2));
+    await expect(menu).toBeVisible();await expect(openIn).toBeHidden();
     await expect(more).toBeFocused();
     await expect(menu.locator(":scope>button:visible").first()).toHaveText("Start the billing dev server");
     await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await expect(more).toBeFocused();
@@ -671,7 +671,7 @@ test("a turn ending while the More actions menu is open gives one action back to
 // row does not show at this fit (the theme toggle), goes to the control before the button. It never falls to the page.
 for(const mode of ["dark","light"])test(`a turn ending that gives the row every action back moves keyboard focus from the More actions menu to the row at 1280x800 in ${mode} mode`,async({page})=>{
   test.setTimeout(50_000);
-  const {harness,thread,header,more,menu}=await openHeaderFixture(page,{width:1280,mode,prCount:0});
+  const {harness,thread,header,more,menu}=await openHeaderFixture(page,{width:1280,mode,prCount:1});
   const unfolded=async()=>{expect((await headerFold(header)).folded).toEqual([]);await expect(more).toBeHidden();await expect(menu).toHaveCount(0)};
   const terminal=page.getByTestId("terminal-toggle"),panelToggle=page.getByTestId("right-panel-toggle");
   try{
@@ -704,7 +704,7 @@ for(const mode of ["dark","light"])test(`a More actions item chosen with the key
   test.setTimeout(45_000);
   const {harness,header,more,menu}=await openHeaderFixture(page,{width:1180,mode});
   try{
-    expect((await headerFold(header)).folded).toEqual(HEADER_FOLD_ORDER);
+    expect((await headerFold(header)).folded).toEqual(HEADER_FOLD_ORDER.slice(0,-1));
     await more.focus();await page.keyboard.press("Enter");await expect(menu).toBeVisible();
     await tabToMenuItem(page,menu,"Terminal");await page.keyboard.press("Enter");
     await expect(page.getByTestId("drawer")).toBeVisible();await expect(menu).toHaveCount(0);
@@ -718,7 +718,7 @@ for(const mode of ["dark","light"])test(`a More actions item chosen with the key
     await expect.poll(()=>page.evaluate(()=>window.__opens)).toEqual(["vscode"]);
     // Shift+Tab from the first item goes back to the button, and the menu stays open.
     await page.keyboard.press("Enter");await expect(menu).toBeVisible();
-    await page.keyboard.press("Tab");await expect(menu.getByRole("button",{name:/^Source control/})).toBeFocused();
+    await page.keyboard.press("Tab");await expect(menu.getByRole("button",{name:"Open",exact:true})).toBeFocused();
     await page.keyboard.press("Shift+Tab");await expect(more).toBeFocused();await expect(menu).toBeVisible();
     // Tab past the last item closes the menu, and focus goes on to what follows the header.
     await tabToMenuItem(page,menu,/^Command palette/);await page.keyboard.press("Tab");
