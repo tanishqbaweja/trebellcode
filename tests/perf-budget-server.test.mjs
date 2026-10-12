@@ -1,14 +1,58 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import { WebSocket, WebSocketServer } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
+
+const require=createRequire(import.meta.url);
+const sqlite=require("node:sqlite");
 
 // Performance budgets for the server's state, its Codex relay hook and its HTTP serving, as load-independent counts (the perf plan's
 // section 2).
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+
+// Counts, while on, the sqlite connections, statements and write transactions of every store built after it is installed (they take
+// DatabaseSync from node:sqlite when constructed), and the JSON the process parses.
+function processCounter(){
+  const counts={opens:0,statements:0,writes:0,parsedChars:0},RealDatabase=sqlite.DatabaseSync,realParse=JSON.parse;let on=false;
+  sqlite.DatabaseSync=class extends RealDatabase{
+    constructor(...args){super(...args);if(on)counts.opens++}
+    prepare(sql){if(on)counts.statements++;return super.prepare(sql)}
+    exec(sql){if(on&&/BEGIN IMMEDIATE/i.test(String(sql)))counts.writes++;return super.exec(sql)}
+  };
+  JSON.parse=function(text,reviver){if(on&&typeof text==="string")counts.parsedChars+=text.length;return realParse.call(this,text,reviver)};
+  return {counts,start(){for(const key of Object.keys(counts))counts[key]=0;on=true},stop(){on=false},restore(){sqlite.DatabaseSync=RealDatabase;JSON.parse=realParse}};
+}
+
+// B5: the Codex relay hook read the thread meta twice from sqlite (a connection each, plus a parse and a clone of the whole meta) and
+// the settings for every upstream message, before the journal dropped deltas as noise (scripts/perf/codex-relay.mjs: 2 connections
+// and 198 KB parsed per delta with a 50 KB meta).
+test("B5: a Codex reply delta through the relay costs no more sqlite connections than the baseline",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-budget-b5-")),[port,appPort]=await Promise.all([freePort(),freePort()]),counter=processCounter();
+  const upstreamHttp=createServer(),wss=new WebSocketServer({noServer:true});
+  upstreamHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.id!=null&&message.method)ws.send(JSON.stringify({id:message.id,result:{}}))}));
+  let gui=null,client=null;
+  try{
+    await new Promise((resolve,reject)=>upstreamHttp.listen(appPort,"127.0.0.1",resolve).once("error",reject));
+    gui=await createGuiServer({port,appPort,mock:true,env:{...process.env,TREBELL_HOME:home}});
+    const threadId="codex-budget-b5";
+    await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,patch:{runtime:"codex",runtimeInstanceId:"codex-default",cwd:home,environmentId:null,codexToolCallIds:Array.from({length:1500},(_,i)=>"call_"+i.toString(36).padStart(24,"0"))}})});
+    client=new WebSocket(gui.url.replace(/^http/,"ws")+"/api/codex/ws");await new Promise((resolve,reject)=>{client.once("open",resolve);client.once("error",reject)});
+    const arrived={};client.on("message",raw=>{const method=/"method":"([^"]+)"/.exec(String(raw).slice(0,120))?.[1]||"(reply)";arrived[method]=(arrived[method]||0)+1});
+    client.send(JSON.stringify({id:1,method:"model/list",params:{}}));
+    for(let i=0;i<500&&!arrived["(reply)"];i++)await sleep(10);
+    assert.ok(arrived["(reply)"],"the relay opened its upstream connection");
+    const send=(method,make,count)=>{const before=arrived[method]||0,messages=Array.from({length:count},make);counter.start();for(const text of messages)for(const socket of wss.clients)socket.send(text);return (async()=>{for(let i=0;i<3000&&(arrived[method]||0)-before<count;i++)await sleep(2);counter.stop();assert.equal((arrived[method]||0)-before,count,method+" all arrived");return {...counter.counts}})()};
+    const deltas=200,delta=await send("item/agentMessage/delta",()=>JSON.stringify({method:"item/agentMessage/delta",params:{threadId,turnId:"turn-1",itemId:"item-1",delta:"tok "}}),deltas);
+    assert.ok(delta.opens/deltas<=2,"sqlite connections per delta: "+delta.opens/deltas);
+  }finally{counter.restore();client?.close();await gui?.close();for(const socket of wss.clients)socket.terminate();wss.close();await new Promise(resolve=>upstreamHttp.close(resolve));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
+});
 
 // B12b: a reload or a restart fetched the whole bundle again (1,577 KB on the perf home, scripts/perf/reload.mjs), because nothing
 // was served with a cache header. Hashed assets are now kept for good and index.html is revalidated.
