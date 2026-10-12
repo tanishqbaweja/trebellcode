@@ -314,6 +314,8 @@ function attachmentDisplayName(path){
 // Replaces the activity row with the event's id, or adds the event.
 // Failures the worktree setup card already shows (the activity list does not repeat them).
 const WORKTREE_CARD_ERRORS=new WeakSet();
+// A send Stop ended before its turn existed (startTurn marks the error trebellSendStopped): its draft goes back with no note.
+const sendStoppedError=()=>Object.assign(new Error("Stopped before the turn started."),{trebellSendStopped:true});
 function upsertEvent(events,event){return events.some(item=>item.id===event.id)?events.map(item=>item.id===event.id?{...item,...event}:item):[...events,event]}
 function historyFromThread(thread,checkpointByTurn={}){
   return historyFromTurns(thread?.turns||[],checkpointByTurn);
@@ -936,6 +938,8 @@ export default function App(){
   // goal waiting to turn active after its first turn starts.
   const [codexThreadState,setCodexThreadState]=useState(null); const codexGoalActivationRef=useRef(null);
   const submittingRef=useRef(false);
+  // The send whose turn/start has not answered yet (startTurn): {threadId,requested,stopped}. Stop marks it (stop()).
+  const pendingSendRef=useRef(null);
   const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
   const [settings,setSettings]=useState(()=>({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:DEFAULT_MODEL_PROVIDER,...cachedAppearanceSettings()}));
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
@@ -2504,6 +2508,8 @@ export default function App(){
         const remaining=dispatching.filter(item=>item.id!==next.id);
         if(threadId)await persistLocalQueue(threadId,remaining);else setQueued(remaining);
       }catch(error){
+        // Stop ended it before its turn existed and put the whole queue, this follow-up too, back into the composer (stop()).
+        if(error?.trebellSendStopped){setEvents([]);return}
         const failed=dispatching.map(item=>item.id===next.id?{...item,dispatchingAt:null,autoStartFailed:true}:item);
         try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}
         // As a send that fails: no turn exists to show it on, so why goes beside the composer, under the queue that keeps the
@@ -3914,6 +3920,10 @@ export default function App(){
     if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>prependThread(prev,thread));setTurnActivity(emptyTurnActivity(thread.id));setProjectPath(cwd)}
     // The live card leaves the last turn here: until the new turn starts it lists only this send's notices, under no turn's name.
     const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,{id:clientId,role:"user",text}])}setCardTurnId(null);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
+    // Until turn/start answers the send has no turn for Stop to name, and a harness that has to start first can take a minute: Stop
+    // meanwhile marks this send stopped (stop()), so it sends nothing more, and a turn the harness started before the Stop reached it
+    // is stopped as soon as it is named.
+    const pendingSend={threadId:thread.id,requested:false,stopped:false};pendingSendRef.current=pendingSend;
     try{
       let checkpoint=null;
       if(!projectlessMode){
@@ -3938,11 +3948,16 @@ export default function App(){
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
       const turnContext={...repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
+      if(pendingSend.stopped)throw sendStoppedError();pendingSend.requested=true;
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
+      if(pendingSendRef.current===pendingSend)pendingSendRef.current=null;
+      if(pendingSend.stopped&&turnId&&turnStillRuns(result.turn))void rpc.request("turn/interrupt",{threadId:thread.id,turnId}).catch(()=>{});
       if(goalActivation)await activateCodexGoal(goalActivation);
       if(turnId){const key=turnInfoKey(thread.id,turnId),mode=permissionModeLabel(permissionModeOverride||permissionMode);if(key&&mode)setTurnInfo(prev=>({...prev,[key]:{...prev[key],mode}}))}
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
     }catch(error){
+      if(pendingSendRef.current===pendingSend)pendingSendRef.current=null;
+      if(pendingSend.stopped&&error&&typeof error==="object")error.trebellSendStopped=true;
       setMessages(prev=>prev.filter(message=>message.id!==clientId));
       setRunning(false);setActiveTurnId(null);
       if(codexGoalActivationRef.current?.threadId===thread.id)codexGoalActivationRef.current=null;
@@ -4216,7 +4231,8 @@ export default function App(){
     }
     // A turn/start that fails has no turn to show it on: the error goes next to the composer that kept the draft, never onto the
     // last turn's card (a worktree that could not be set up says why in its own card).
-    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);setRunning(false);setEvents([]);if(!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e)))setComposerAlert({kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."})});
+    // A send Stop ended before its turn existed puts the draft back as it was, with no note: nothing went wrong.
+    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);setRunning(false);setEvents([]);if(!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e)))setComposerAlert({kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."})});
   }
   async function send(promptOverride=null){
     if(openingThreadRef.current)return;
@@ -4303,6 +4319,7 @@ export default function App(){
       await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips));
       const remaining=dispatching.filter(q=>q.id!==item.id);if(threadId)await persistLocalQueue(threadId,remaining);else setQueued(remaining);
     }catch(error){
+      if(error?.trebellSendStopped)return;
       const failed=dispatching.map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:true}:q);try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}throw error;
     }
   }
@@ -4333,11 +4350,18 @@ export default function App(){
         const latest=threadTelemetryRef.current[threadId];if(latest&&Object.prototype.hasOwnProperty.call(latest,"turnId"))turnId=latest.turnId;
       }
     }
-    if(rpc&&activeThread?.id&&turnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId});
+    // A send whose turn/start has not answered stops too. The agent relay ends it where it waits (for the harness to start, or before
+    // its prompt) and the send puts its draft back; Codex names no turn before it answers, so startTurn stops the turn it names.
+    const pendingSend=pendingSendRef.current?.threadId===activeThread?.id?pendingSendRef.current:null;
+    if(pendingSend)pendingSend.stopped=true;
+    if(rpc&&activeThread?.id&&(turnId||pendingSend?.requested&&agentRuntime!=="codex"))await rpc.request("turn/interrupt",{threadId:activeThread.id,...(turnId?{turnId}:{})});
     if(runtimeCapabilities.nativeQueue&&queueMode==="native"){setRunning(false);setActiveTurnId(null);await loadNativeQueue(rpc,activeThread?.id);return}
-    const restored=restoreQueuedDraft({prompt,attachments,contextChips,queued,maxAttachments:MAX_COMPOSER_ATTACHMENTS});
+    // The queue goes back into the composer beside what it holds by then, which may be the draft of the send just stopped.
+    const returned=queued;
     if(activeThread?.id)await persistLocalQueue(activeThread.id,[]);else setQueued([]);
-    setPrompt(restored.prompt);setAttachments(restored.attachments);setContextChips(restored.contextChips);
+    setPrompt(current=>restoreQueuedDraft({prompt:current,queued:returned}).prompt);
+    setAttachments(current=>restoreQueuedDraft({attachments:current,queued:returned,maxAttachments:MAX_COMPOSER_ATTACHMENTS}).attachments);
+    setContextChips(current=>restoreQueuedDraft({contextChips:current,queued:returned,maxAttachments:MAX_COMPOSER_ATTACHMENTS}).contextChips);
     setRunning(false);
   }
   async function editFromHere(message){

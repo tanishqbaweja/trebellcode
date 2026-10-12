@@ -227,6 +227,54 @@ test("a session still starting when the relay resets is stopped, and the turn it
   assert.equal(thread.turns.length,2);assert.equal(thread.providerSessionId,"grok-live");
 });
 
+// Stop (turn/interrupt) while a send still waits for its thread's harness to start, as every send after ten idle minutes now does:
+// the send has neither a turn nor a prompt to cancel yet. It ends at once, before its turn exists, and the harness is never sent its
+// prompt. The start goes on, and the thread's next send runs in the session it left, in the same harness process.
+test("Stop while a send waits for its harness to start ends the send before its turn exists, and the next send runs in that start",async t=>{
+  const fx=await acpHarness(t,"grok",{lostError:null,loadDelayMs:1500}),threadStore=new AgentThreadStore(fx.env),journal=memoryJournal();
+  onCleanup(t,async()=>{for(const pid of new Set((await fx.requests()).map(entry=>entry.pid)))try{process.kill(pid)}catch{}});
+  const saved=savedThread(threadStore,{runtime:"grok",instanceId:fx.harness.instance.id,providerSessionId:"grok-live",cwd:fx.root});
+  const relay=await startRelay({runtimeManager:fx.runtimeManager,threadStore,state:memoryState(),journal});onCleanup(t,relay.close);
+  const send=relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text:"Do not run this"}]}).then(()=>null,error=>error);
+  let resume=null;for(let tries=0;!resume&&tries<100;tries++){resume=(await fx.requests()).find(entry=>entry.method==="session/resume");if(!resume)await new Promise(resolve=>setTimeout(resolve,50))}
+  assert.ok(resume,"the harness is resuming the thread's conversation");
+  const stoppedAt=Date.now();await relay.rpc("turn/interrupt",{threadId:saved.id});
+  const error=await send;
+  assert.match(String(error?.message),/^Stopped before the turn started\.$/);
+  assert.ok(Date.now()-stoppedAt<1000,"the send ends as Stop reaches it, not once the harness has started");
+  // Past the end of the start: the harness got no prompt, and no turn exists for the stopped send.
+  await new Promise(resolve=>setTimeout(resolve,2000));
+  const sessionRequests=async()=>(await fx.requests()).map(entry=>entry.method).filter(method=>["session/resume","session/new","session/prompt"].includes(method));
+  assert.deepEqual(await sessionRequests(),["session/resume"]);
+  assert.equal(threadStore.get(saved.id).turns.length,1);
+  assert.deepEqual(relay.events.seen.filter(message=>message.method==="turn/started"),[]);
+  const completed=relay.events.next(message=>message.method==="turn/completed");
+  await relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text:"What word did I ask you to remember?"}]});
+  assert.equal((await completed).params.turn.status,"completed");
+  assert.deepEqual(await sessionRequests(),["session/resume","session/prompt"]);
+  assert.equal(new Set((await fx.requests()).map(entry=>entry.pid)).size,1,"one harness process");
+  assert.equal(threadStore.get(saved.id).turns.length,2);
+});
+
+// The same Stop once the send's turn exists but before its prompt went (the relay still gathers the turn's context, here a slow
+// repository read): the turn ends cancelled and the harness is never sent it.
+test("Stop after a send's turn started but before its prompt went ends that turn cancelled, and the harness is never sent it",async t=>{
+  const fx=await acpHarness(t,"grok",{lostError:null}),threadStore=new AgentThreadStore(fx.env),journal=memoryJournal();
+  let release;const read=new Promise(resolve=>{release=resolve});
+  const repositoryKnowledge={context:async()=>{await read;return null}};
+  const saved=savedThread(threadStore,{runtime:"grok",instanceId:fx.harness.instance.id,providerSessionId:"grok-live",cwd:fx.root});
+  const relay=await startRelay({runtimeManager:fx.runtimeManager,threadStore,state:memoryState(),journal,repositoryKnowledge});onCleanup(t,relay.close);
+  const started=relay.events.next(message=>message.method==="turn/started");
+  const send=relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text:"Do not run this"}]});
+  const turnId=(await started).params.turn.id,completed=relay.events.next(message=>message.method==="turn/completed");
+  await relay.rpc("turn/interrupt",{threadId:saved.id,turnId});release();
+  const answered=await send,ended=(await completed).params.turn;
+  assert.deepEqual([answered.turn.id,answered.turn.status,ended.id,ended.status],[turnId,"cancelled",turnId,"cancelled"]);
+  await new Promise(resolve=>setTimeout(resolve,300));
+  assert.equal((await fx.requests()).some(entry=>entry.method==="session/prompt"),false,"the harness is never sent the prompt");
+  assert.equal(threadStore.get(saved.id).turns.at(-1).status,"cancelled");
+});
+
 test("a harness that asks to sign in cannot run: its resume failure fails the turn as before, with no fresh session",async t=>{
   const fx=await acpHarness(t,"cursor",{lostError:{code:-32000,message:"Authentication required"}}),threadStore=new AgentThreadStore(fx.env),journal=memoryJournal();
   const saved=savedThread(threadStore,{runtime:"cursor",instanceId:fx.harness.instance.id,providerSessionId:"cursor-lost",cwd:fx.root});

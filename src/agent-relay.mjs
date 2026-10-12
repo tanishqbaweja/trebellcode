@@ -1437,19 +1437,47 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     emit("thread/tools/updated",{threadId:thread.id,added,namespaces,thread:updated});return {supported:true,thread:updated,added,namespaces};
   }
 
+  // A send (turn/start) waits before its prompt reaches the harness: for the thread's harness to start, which now follows every ten
+  // idle minutes and takes Cursor 15-60 s and Antigravity about a minute, and for what it gathers first. Stop (turn/interrupt) has no
+  // prompt to cancel then, so it marks the thread's waiting sends and each ends where it is: one whose turn does not exist yet fails
+  // before it does, and one whose turn exists ends it cancelled, never sending the prompt. A harness start a stopped send leaves goes
+  // on, and the thread's next send runs in its session.
+  const waitingSends=new Map();
+  const stoppedBeforeTurn=()=>new Error("Stopped before the turn started.");
+  function waitingSend(threadId){
+    let sends=waitingSends.get(threadId);if(!sends)waitingSends.set(threadId,sends=new Set());
+    let stop;const send={stopped:false,stop:new Promise(resolve=>{stop=resolve})};
+    send.interrupt=()=>{send.stopped=true;stop()};
+    send.done=()=>{sends.delete(send);if(!sends.size&&waitingSends.get(threadId)===sends)waitingSends.delete(threadId)};
+    sends.add(send);return send;
+  }
+  async function sessionUnlessStopped(send,starting){
+    if(!send)return starting;
+    const session=await Promise.race([starting,send.stop.then(()=>null)]);
+    if(send.stopped)throw stoppedBeforeTurn();
+    return session;
+  }
+  function endStoppedTurn(threadId,turnId){
+    const turn=threadStore.finishTurn(threadId,turnId,{status:"cancelled"});
+    emit("turn/completed",{threadId,turn});emit("thread/status/changed",{threadId,status:threadMetadata(threadId)?.status||{type:"idle"}});
+    return turn;
+  }
   // A request about a thread holds its session from the idle sweep until it is answered, and its answer counts as use: a fork, a
   // compaction or a rewind waits on the live session with no prompt running, and the sweep closed the session under it ("ACP runtime
   // stopped").
   async function request(context,method,params={}){
     const threadId=params?.threadId?String(params.threadId):"";if(!threadId)return serveRequest(context,method,params);
     threadRequests.set(threadId,(threadRequests.get(threadId)||0)+1);
-    try{return await serveRequest(context,method,params)}
+    const send=method==="turn/start"?waitingSend(threadId):null;
+    try{return await serveRequest(context,method,params,send)}
     finally{
+      send?.done();
       const left=threadRequests.get(threadId)-1;if(left>0)threadRequests.set(threadId,left);else threadRequests.delete(threadId);
       const live=sessions.get(threadId);if(live)sessionUsed.set(live,Date.now());
     }
   }
-  async function serveRequest(context,method,params={}){
+  // send: a turn/start's place among the thread's waiting sends (waitingSends).
+  async function serveRequest(context,method,params={},send=null){
     if(method==="initialize")return {userAgent:"trebell-agent-relay",capabilities:{experimentalApi:true}};
     if(params?.threadId)flushToolWrites(String(params.threadId));
     const runtime=runtimeManager.activeRuntime();
@@ -1837,7 +1865,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const providerPatch=requestedProvider?{modelProvider:requestedProvider}:{};
       if(Object.keys(permissionPatch).length||Object.keys(providerPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch,...providerPatch}});
       if(thread.runtime==="native"&&Array.isArray(params.dynamicToolNamespaces)&&params.dynamicToolNamespaces.length)thread=(await ensureNativeToolNamespaces(thread,params.dynamicToolNamespaces)).thread;
-      const session=await ensureSession(thread,context,{model:params.model||thread.model,freshIfLost:true});
+      const session=await sessionUnlessStopped(send,ensureSession(thread,context,{model:params.model||thread.model,freshIfLost:true}));
       if(requestedProvider&&typeof session.setProvider==="function")session.setProvider(requestedProvider);
       if(runtime==="native"&&typeof session.setReasoningEffort==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setReasoningEffort(Object.prototype.hasOwnProperty.call(params,"reasoningEffort")?params.reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",providerId,nextModel))}
       if(runtime==="native"&&typeof session.setServiceTier==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setServiceTier(Object.prototype.hasOwnProperty.call(params,"serviceTier")?params.serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",providerId,nextModel))}
@@ -1873,6 +1901,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         if(typeof nativeModelContextWindow==="function")try{contextWindow=await nativeModelContextWindow({provider:requestedProvider||thread.providerMeta?.modelProvider||null,model:params.model||thread.model||null,thread:threadStore.get(thread.id)||thread})}catch(error){log("Native model context metadata unavailable: "+(error?.message||String(error)))}
         session.setContextWindow(contextWindow);
       }
+      if(send?.stopped)throw stoppedBeforeTurn();
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
       if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;
       // The stored message is the redacted one: a secret pasted into the first message never reaches the thread list.
@@ -1887,10 +1916,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const promptOptions={messageId:randomUUID(),agent:selectedAgent,...handoffDelivery(thread.id,turn.id,pending)};
       if(session instanceof NativeAgentSession&&Array.isArray(params.toolAllowlist)&&params.toolAllowlist.length)promptOptions.toolAllowlist=params.toolAllowlist.map(item=>String(item||"").trim()).filter(Boolean).slice(0,100);
       if(session instanceof NativeAgentSession)Object.assign(promptOptions,nativeGoalPromptOptions(turnGoal));
+      if(send?.stopped)return {turn:endStoppedTurn(thread.id,turn.id)};
       settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null,context,resend:claudeLostSessionResend({thread,turn,session,input,durable,promptOptions,excludeTurnId:turn.id})});
       return {turn};
     }
     if(method==="turn/interrupt"){
+      for(const send of waitingSends.get(String(params.threadId||""))||[])send.interrupt();
       const target=sessions.get(params.threadId);target?.cancel();
       // Stop answers a harness's waiting approvals, questions and form requests as cancelled and withdraws their cards, for Claude Code
       // and OpenCode as for the ACP harnesses (T3 cancels every pending runtime request of an interrupted run).

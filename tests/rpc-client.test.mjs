@@ -93,12 +93,13 @@ test("Codex RPC waits for a request that may start the thread's harness as long 
   }finally{globalThis.WebSocket=original}
 });
 
-// The relay starts a thread's harness session (ensureSession) inside these requests' handlers, where a start can take minutes.
+// The relay starts a thread's harness session (ensureSession) inside these requests' handlers, where a start can take minutes. A
+// send waits for it through what lets Stop end it first (sessionUnlessStopped), so a call counts however it is awaited.
 test("every relay request that may start the thread's harness session waits longer than a minute",()=>{
   const starting=new Set();let method=null;
   for(const line of readFileSync(new URL("../src/agent-relay.mjs",import.meta.url),"utf8").split("\n")){
     const handler=line.match(/if\(method==="([^"]+)"\)/);if(handler)method=handler[1];
-    if(method&&/await ensureSession\(/.test(line))starting.add(method);
+    if(method&&/\bensureSession\(/.test(line))starting.add(method);
   }
   assert.ok(["turn/start","thread/start","thread/resume","thread/revert"].every(name=>starting.has(name)),[...starting].join(", "));
   for(const name of starting)assert.ok(requestTimeoutMs(name)>60_000,name+" may start the thread's harness session");
