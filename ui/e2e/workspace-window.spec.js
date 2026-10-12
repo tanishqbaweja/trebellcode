@@ -468,6 +468,13 @@ test("the Files editor asks before it drops unsaved edits, and a save never writ
   await editNotes(" and more");await button("Save").click();
   await expect(editor).toHaveCount(0);
   expect(await readFile(notes,"utf8")).toBe("line one\nline two\nagent line\nmine again and more");
+  // Closing the editor shows the file as it is on disk, with a change the agent made meanwhile.
+  await editNotes(" dropped");
+  await writeFile(notes,"agent again\n");
+  await button("Cancel").click();
+  await question.getByRole("button",{name:"Discard changes"}).click();
+  await expect(editor).toHaveCount(0);
+  await expect(right.locator(".syntax-view")).toContainText("agent again");await expect(right.locator(".syntax-view")).not.toContainText("dropped");
   // A file deleted on disk is not made again by a plain Save either: the panel says it is gone, and Overwrite writes it back.
   await editNotes("!");
   await rm(notes);
@@ -477,7 +484,7 @@ test("the Files editor asks before it drops unsaved edits, and a save never writ
   await expect.poll(()=>readFile(notes,"utf8").catch(()=>"(none)")).toBe("(none)");
   await gone.getByRole("button",{name:"Overwrite"}).click();
   await expect(editor).toHaveCount(0);
-  expect(await readFile(notes,"utf8")).toBe("line one\nline two\nagent line\nmine again and more!");
+  expect(await readFile(notes,"utf8")).toBe("agent again\n!");
 });
 
 test("a binary file opens as binary, with its size and no Edit, and its bytes stay as they were",async({page,request})=>{
