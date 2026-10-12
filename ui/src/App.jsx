@@ -2205,12 +2205,9 @@ export default function App(){
             const reopen=activeId?((listed||[]).find(thread=>thread.id===activeId)||cataloged):null;
             const resumedHere=resumedOnRef.current?.client===current&&resumedOnRef.current.threadId===activeId;
             if(!reopen||resumedHere||threadCatalogRuntime(reopen,threadMeta[reopen.id]||{},agentRuntime)!==agentRuntime)break;
-            // The thread shown that cannot open again on this transport says why and stays shown as it was, rather than fail the
-            // transport into reconnecting over and over; a transport that drops meanwhile still reconnects.
-            const asked=openSeqRef.current+1;
-            try{await openThread(reopen,{client:current,preserveSection:true})}
-            catch(error){if(disposed||!current.isConnected())throw error;showActionError(error,"Could not reopen thread");break}
-            if(disposed)return;
+            // A reopen that fails fails this transport, which connects again and reopens the thread shown (the composer says why
+            // meanwhile), as a harness still starting after a restart needs.
+            const asked=openSeqRef.current+1;await openThread(reopen,{client:current,preserveSection:true});if(disposed)return;
             if(openSeqRef.current===asked)break;
           }
         }
