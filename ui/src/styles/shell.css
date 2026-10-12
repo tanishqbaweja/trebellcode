@@ -195,7 +195,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header .header-control.branch-control span{max-width:140px}
 .workspace-header .header-control.stop-control{color:var(--err)}
 .workspace-header .header-control.stop-control:hover{background:var(--errt);color:var(--err)}
-.workspace-header .header-control:is(:disabled,:disabled:hover){background:transparent;color:var(--tx3);cursor:default}
+/* A held control (Review during a turn) fades as well: the muted text colour alone is hardly lighter than an enabled control's in
+   light mode. */
+.workspace-header .header-control:is(:disabled,:disabled:hover){background:transparent;color:var(--tx3);cursor:default;opacity:.65}
 /* A line parts the labelled actions from the icon toggles: it goes before the first toggle the row shows, when a labelled action
    shows before it. Folded actions (data-folded, see the narrow-header rules below) count as neither. */
 .workspace-header .workspace-header-actions>:is(.header-control:not(.icon-only),.open-in-wrap):not([data-folded])~.header-control.icon-only:not([data-folded]):not(.header-control.icon-only:not([data-folded])~*){position:relative;margin-left:9px}

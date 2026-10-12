@@ -66,6 +66,17 @@ async function shoot(page,name){
   for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+"x800.png"})}
   await page.setViewportSize({width:1280,height:800});
 }
+// How far a control stands out from the header, as a person sees it: the contrast of its text at its opacity with the background
+// behind it, once a mode switch has finished fading the colours.
+const contrast=locator=>locator.evaluate(async node=>{
+  await Promise.all(document.getAnimations().filter(animation=>animation instanceof CSSTransition).map(animation=>animation.finished.catch(()=>null)));
+  const rgb=value=>value.match(/[\d.]+/g).slice(0,3).map(Number);
+  const luminance=channels=>channels.reduce((sum,value,index)=>{value/=255;return sum+[0.2126,0.7152,0.0722][index]*(value<=0.03928?value/12.92:((value+0.055)/1.055)**2.4)},0);
+  let back=node.parentElement;while(back&&getComputedStyle(back).backgroundColor==="rgba(0, 0, 0, 0)")back=back.parentElement;
+  const behind=rgb(getComputedStyle(back||document.body).backgroundColor),style=getComputedStyle(node),alpha=Number(style.opacity);
+  const [lighter,darker]=[luminance(rgb(style.color).map((value,index)=>value*alpha+behind[index]*(1-alpha))),luminance(behind)].sort((a,b)=>b-a);
+  return (lighter+0.05)/(darker+0.05);
+});
 const dialog=page=>page.locator("dialog.inspector-text-prompt");
 // A person clicks the title, types the new name over the old one and presses Enter.
 async function rename(page,title,name){
@@ -137,11 +148,14 @@ test("Review waits while a turn runs, and a review the harness does not start ad
   const review=header.getByRole("button",{name:"Review",exact:true}),stop=header.getByRole("button",{name:"Stop",exact:true});
   try{
     await expect(review).toBeEnabled();await expect(review).toHaveAttribute("title","Review uncommitted changes");
+    const enabled={};for(const mode of ["dark","light"]){await switchMode(page,mode);enabled[mode]=await contrast(review)}
+    await switchMode(page,"dark");
     await page.getByTestId("composer").click();await page.keyboard.type("Run the long task",{delay:20});await page.keyboard.press("Enter");
     await expect(stop).toBeVisible({timeout:15_000});
     await expect(review).toBeDisabled();
     await expect(review).toHaveAttribute("title","Wait for the running turn to finish before reviewing");
-    for(const mode of ["dark","light"]){await switchMode(page,mode);await shoot(page,"header-review-during-turn")}
+    // Held, Review reads as held at a glance in both modes: it stands out from the header far less than when it can be clicked.
+    for(const mode of ["dark","light"]){await switchMode(page,mode);expect(await contrast(review)).toBeLessThan(enabled[mode]*0.6);await shoot(page,"header-review-during-turn")}
     await switchMode(page,"dark");
     held.open();
     await expect(page.getByText("Long task done.")).toBeVisible({timeout:15_000});
