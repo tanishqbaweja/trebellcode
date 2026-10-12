@@ -3,7 +3,7 @@
 //
 //   node scripts/perf/run.mjs [--out <dir>] [--reps 5] [--idle-seconds 180] [--threads 500] [--long-turns 1000] [--big-items 600]
 //                             [--only bundle,micro,startup,open,typing,scroll,stream,idle,memory,harness,relay-stream,
-//                                     harness-sessions,settings-poll,animation-control,electron]
+//                                     harness-sessions,settings-poll,animation-control,electron] [--heap-snapshot]
 //   node scripts/perf/summarize.mjs <out>/results.json > <out>/summary.md
 //
 // The whole run takes about 50 minutes on a busy 20-thread machine.
@@ -407,15 +407,17 @@ await scenario("memory",async()=>{
   const {page,cdp,server}=await mainSession();
   await openThread(page,PERF_THREADS.short);await sleep(1500);
   const point=async label=>{await server.gc();const snap=await server.snapshot(false),tree=await serverTree(server),heap=await heapAndDom(cdp);return {label,at:new Date().toISOString(),...heap,serverRssMB:snap.memory.rssMB,serverHeapUsedMB:snap.memory.heapUsedMB,serverProcesses:tree.rows.length,serverTreeWorkingSetMB:Number((tree.rows.reduce((s,r)=>s+r.workingSet,0)/1048576).toFixed(1)),children:countBy(tree.rows.filter(row=>row.pid!==server.pid),row=>processRole(row))}};
-  const points=[await point("start (short thread)")];const openMs=[];
+  // --heap-snapshot: the server's heap after a GC at the start and at the end, beside results.json (compare them with heap-diff.mjs).
+  const heapSnapshots=[],heapSnapshot=async name=>{if(argv.includes("--heap-snapshot"))heapSnapshots.push(await server.heapSnapshot(join(out,name)))};
+  const points=[await point("start (short thread)")];const openMs=[];await heapSnapshot("memory-start.heapsnapshot");
   for(let i=0;i<50;i++){
     const name=filler(Math.floor(fillerCount*0.8)-i*7);
     try{openMs.push(Math.round(await openThread(page,name,{timeoutMs:30_000})))}catch(error){openMs.push(null);results.errors.push({scenario:"memory",thread:name,error:String(error.message).slice(0,300)})}
     if((i+1)%10===0){points.push(await point("after "+(i+1)+" threads"));log("memory",points.at(-1).label,"heap",points.at(-1).heapUsedMB,"dom",points.at(-1).domNodes,"server rss",points.at(-1).serverRssMB,"procs",points.at(-1).serverProcesses)}
   }
   await openThread(page,PERF_THREADS.short);await sleep(30_000);
-  points.push(await point("back on the short thread, 30 s idle"));
-  return {points,openMs:summarize(openMs,0),heapGrowthMB:Number((points.at(-1).heapUsedMB-points[0].heapUsedMB).toFixed(2)),domGrowth:(points.at(-1).domNodes||0)-(points[0].domNodes||0),listenerGrowth:(points.at(-1).jsEventListeners||0)-(points[0].jsEventListeners||0),serverRssGrowthMB:Number((points.at(-1).serverRssMB-points[0].serverRssMB).toFixed(1)),serverProcessGrowth:points.at(-1).serverProcesses-points[0].serverProcesses};
+  points.push(await point("back on the short thread, 30 s idle"));await heapSnapshot("memory-end.heapsnapshot");
+  return {points,heapSnapshots,openMs:summarize(openMs,0),heapGrowthMB:Number((points.at(-1).heapUsedMB-points[0].heapUsedMB).toFixed(2)),domGrowth:(points.at(-1).domNodes||0)-(points[0].domNodes||0),listenerGrowth:(points.at(-1).jsEventListeners||0)-(points[0].jsEventListeners||0),serverRssGrowthMB:Number((points.at(-1).serverRssMB-points[0].serverRssMB).toFixed(1)),serverProcessGrowth:points.at(-1).serverProcesses-points[0].serverProcesses};
 });
 
 // ---------- 8. harness processes ----------

@@ -44,6 +44,7 @@ export async function startServer({repoRoot,home,runDir,uiDist,port,appPort,extr
     profileStart:()=>ask("profile-start"),
     profileStop:file=>ask("profile-stop",{file},300_000),
     gc:()=>ask("gc"),
+    heapSnapshot:file=>ask("heap-snapshot",{file},300_000),
     async stop(){
       if(child.exitCode!==null)return;
       const exited=new Promise(resolve=>child.once("exit",resolve));

@@ -2,12 +2,13 @@
 // spawns, sqlite connections, statements and payload bytes, JSON parse/stringify bytes, file writes, HTTP requests, WebSocket
 // sends, timers), measures the event loop (delay histogram, utilization) and CPU, profiles on request, and routes fetch: loopback
 // passes, https://api.openai.com/* goes to the scripted fake (fake-openai.mjs), anything else is refused and counted. The parent
-// talks to it over the IPC channel: {perfTap:"snapshot",reset}, {perfTap:"script",replies:[...]}, {perfTap:"profile-start"} and
-// {perfTap:"profile-stop",file}. Product code is not changed; every patch wraps a builtin.
+// talks to it over the IPC channel: {perfTap:"snapshot",reset}, {perfTap:"script",replies:[...]}, {perfTap:"profile-start"},
+// {perfTap:"profile-stop",file} and {perfTap:"heap-snapshot",file}. Product code is not changed; every patch wraps a builtin.
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { Session } from "node:inspector";
 import { writeFileSync } from "node:fs";
+import { writeHeapSnapshot } from "node:v8";
 import { createFakeOpenAi } from "./fake-openai.mjs";
 
 const require=createRequire(import.meta.url);
@@ -177,6 +178,7 @@ process.on("message",async message=>{
     if(message.perfTap==="profile-start"){session=new Session();session.connect();await post("Profiler.enable");await post("Profiler.setSamplingInterval",{interval:Number(message.intervalUs)||250});await post("Profiler.start");return reply({ok:true})}
     if(message.perfTap==="profile-stop"){const {profile}=await post("Profiler.stop");session.disconnect();session=null;if(message.file)writeFileSync(message.file,realStringify(profile));return reply(summarizeProfile(profile))}
     if(message.perfTap==="gc"){globalThis.gc?.();return reply({ok:Boolean(globalThis.gc)})}
+    if(message.perfTap==="heap-snapshot"){const started=performance.now(),file=writeHeapSnapshot(message.file);return reply({file,ms:Math.round(performance.now()-started)})}
     // The server's own SIGTERM handler closes it (and stops its Codex app-servers); Windows has no signal to send it from outside.
     if(message.perfTap==="shutdown"){reply({ok:true});if(process.listenerCount("SIGTERM"))process.emit("SIGTERM");else process.exit(0);return}
     reply({error:"unknown command"});
