@@ -236,7 +236,8 @@ const ThreadSidebar=memo(function ThreadSidebar({
       <div className="search-box">
         <Search size={13}/>
         <input ref={searchRef} value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Escape"&&query){e.preventDefault();setQuery("")}}} placeholder="Search threads" aria-label="Search threads"/>
-        {query&&<button onClick={()=>setQuery("")} aria-label="Clear search">×</button>}
+        {/* Clearing removes this button, so focus goes back to the field instead of falling to the page. */}
+        {query&&<button onClick={()=>{setQuery("");searchRef.current?.focus()}} aria-label="Clear search">×</button>}
       </div>
       <button className="sidebar-bulk-toggle" onClick={()=>setSelectedIds(bulk?new Set():new Set(threads.filter(thread=>threadCatalogRuntime(thread,threadMeta[thread.id]||{},agentRuntime)===agentRuntime).slice(0,1).map(t=>t.id)))} title="Thread actions" aria-label="Thread actions">
         {bulk?<SlidersHorizontal size={14}/>:<MoreHorizontal size={15}/>}
