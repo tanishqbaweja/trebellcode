@@ -129,12 +129,14 @@ async function budgetRelay(prefix,{instances=[BUDGET_INSTANCE],env:extra={}}={})
   });
   // Resolves once count notifications of method have arrived, matched in their text so that waiting parses nothing.
   const notified=(method,count=1)=>new Promise(resolve=>{let seen=0;const needle='"method":"'+method+'"',onMessage=raw=>{if(String(raw).includes(needle)&&++seen>=count){ws.off("message",onMessage);resolve(true)}};ws.on("message",onMessage)});
-  const close=async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})};
+  // shutdown stops the relay and its server; close also removes the home, once.
+  let shut=null;const shutdown=()=>shut||=(async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()))})();
+  const close=async()=>{await shutdown();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})};
   // How many notifications of method have arrived so far, counted as notified() matches them.
   const counter=method=>{const needle='"method":"'+method+'"',counts={n:0};ws.on("message",raw=>{if(String(raw).includes(needle))counts.n++});return counts};
   // The agent processes started so far, oldest first: each one's pid and the requests it got.
   const agentProcesses=async()=>(await readdir(agents)).sort().map(name=>({pid:Number(name.split(/[-.]/)[1]),methods:readFileSync(join(agents,name),"utf8").split("\n").filter(Boolean)}));
-  return {root,threadStore,plan,rpc,notified,counter,close,launches,modes,agentProcesses,file:name=>join(root,name)};
+  return {root,threadStore,plan,rpc,notified,counter,shutdown,close,launches,modes,agentProcesses,file:name=>join(root,name)};
 }
 const alive=pid=>{try{process.kill(pid,0);return true}catch{return false}};
 // Whether promise settles within ms (false if it does not).
@@ -420,6 +422,29 @@ test("the idle sweep keeps a session its harness could not take up again, so the
     assert.ok(await within(completed,6000),"the second turn completes");
     assert.equal(agents.length,1,"both turns ran in the one harness");
   }finally{await relay.close()}
+});
+
+// Two sends at once on a thread whose session the sweep let go (two windows, or a send beside a fork) each started a harness, and the
+// later one took the thread: the other's was held by nothing, so neither the sweep nor the relay's close stopped it.
+test("two sends at once on a thread the sweep let go start one harness, and the relay's close stops it",async()=>{
+  const relay=await budgetRelay("trebell-budget-two-sends-",{env:SWEEP_ENV});let left=[];
+  try{
+    const thread=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:1}),"utf8");
+    let completed=relay.notified("turn/completed");await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"First"}]});await completed;
+    const [first]=await relay.agentProcesses();assert.ok(await eventually(()=>!alive(first.pid)),"the sweep lets the idle session go");
+    completed=relay.notified("turn/completed",2);
+    await Promise.all(["From one window","From another"].map(text=>relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text}]})));
+    assert.ok(await within(completed,8000),"both turns complete");
+    const agents=await relay.agentProcesses();
+    assert.equal(agents.length,2,"the first turn's harness, then one for both sends: "+JSON.stringify(agents.map(agent=>agent.methods)));
+  }finally{
+    // A harness the relay's close leaves running is counted, then stopped: it would hold the home and keep this process alive.
+    const pids=(await relay.agentProcesses()).map(agent=>agent.pid);await relay.shutdown();
+    await eventually(()=>!pids.some(alive),3000);left=pids.filter(alive);for(const pid of left)try{process.kill(pid)}catch{}
+    await relay.close();
+  }
+  assert.deepEqual(left,[],"the relay's close stops every harness the thread started");
 });
 
 // OpenCode's local session names each OpenCode tool's ACP kind. Its searches (grep, glob, list) went out as "other", a kind the sweep
