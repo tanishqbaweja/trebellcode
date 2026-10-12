@@ -4022,7 +4022,7 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     const boundedRow=page.locator(".thread-row").filter({hasText:"OpenCode bounded history"});
     await expect(boundedRow.getByRole("img",{name:"Running"})).toBeVisible();
     const composer=page.getByTestId("composer");
-    // OpenCode steers a busy turn the way T3 Code does (a4cd8196 made it advertise steering), so with followUpMode "steer" the
+    // OpenCode steers a busy turn the way T3 Code does (00c28de7 made it advertise steering), so with followUpMode "steer" the
     // follow-up goes into the running turn instead of the queue.
     await expect(composer).toHaveAttribute("placeholder","Steer the running agent…");
     await expect(page.locator(".composer-status")).toContainText("Steer follow-ups");
