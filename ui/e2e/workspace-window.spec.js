@@ -245,9 +245,10 @@ async function openProjectInspector(page,request,name,path=null){
 }
 
 // A real folder holding `files` (relative path: text or bytes), opened as a project with the Files view beside it, and removed when
-// the test ends. row(name) is the tree row a person clicks to open that file.
+// the test ends; a Git read the server still runs in it holds it on Windows, so the removal waits for that and never fails the test.
+// row(name) is the tree row a person clicks to open that file.
 const folders=[];
-test.afterEach(async()=>{for(const dir of folders.splice(0))await rm(dir,{recursive:true,force:true,maxRetries:5})});
+test.afterEach(async()=>{for(const dir of folders.splice(0))await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250}).catch(()=>{})});
 async function openFilesFolder(page,request,name,files){
   const dir=await mkdtemp(join(tmpdir(),"trebell-files-"));folders.push(dir);
   for(const [relative,content] of Object.entries(files)){await mkdir(dirname(join(dir,relative)),{recursive:true});await writeFile(join(dir,relative),content)}
