@@ -99,6 +99,53 @@ test("F4(c): the context packet is asked for while the checkpoint is made, and i
   }finally{finish.open();await fixture.close()}
 });
 
+// B14 (the page half) and B17: what a project thread left open does at idle, over 30 s with the window focused and 30 s without it:
+// the requests the page sends the server (each git/info runs git there) and the page timers that fire, by kind and delay. The test
+// switches the focus the page sees (document.hasFocus and the window's blur and focus events), so the run does not depend on the
+// browser window's own focus. The only timers that fire are the idle polls': git (3.5 s, 15 s for a remote workspace), branch
+// reviews and settlements (30 s).
+const B14_PAGE_REQUESTS_PER_MINUTE={focused:21,unfocused:21};
+const B17_TIMER_FIRES_PER_30S={focused:11,unfocused:11};
+const B17_IDLE_POLL_DELAYS=new Set([3500,15_000,30_000]);
+const idleInstruments=()=>{
+  let focused=true;Document.prototype.hasFocus=function(){return focused};
+  window.__setFocus=value=>{focused=value;window.dispatchEvent(new Event(value?"focus":"blur"))};
+  const fired=window.__timersFired={};
+  for(const [kind,name] of [["timeout","setTimeout"],["interval","setInterval"]]){
+    const original=window[name];
+    window[name]=function(callback,ms,...rest){if(typeof callback!=="function")return original.call(this,callback,ms,...rest);const key=kind+" "+(Number(ms)||0);return original.call(this,function(...args){fired[key]=(fired[key]||0)+1;return callback.apply(this,args)},ms,...rest)};
+  }
+};
+
+test("B14, B17: a project thread left open asks the server and fires timers only for its idle polls, with focus and without",async({page})=>{
+  test.setTimeout(150_000);
+  await page.addInitScript(idleInstruments);
+  const fixture=await startStreamingFixture(page),requests=[];
+  page.on("request",request=>{const url=new URL(request.url());if(url.pathname.startsWith("/api/"))requests.push({at:Date.now(),path:request.method()+" "+url.pathname})});
+  try{
+    await fixture.open("Native streaming");await page.mouse.move(2,2);await page.waitForTimeout(4000);
+    const measure=async()=>{
+      const from=Date.now(),before=await page.evaluate(()=>({...window.__timersFired}));await page.waitForTimeout(30_000);
+      const after=await page.evaluate(()=>({...window.__timersFired})),to=Date.now(),inWindow=requests.filter(row=>row.at>=from&&row.at<to);
+      const timers=Object.fromEntries(Object.entries(after).map(([key,value])=>[key,value-(before[key]||0)]).filter(([,value])=>value>0));
+      return {requestsPerMinute:Number((inWindow.length*60_000/(to-from)).toFixed(1)),requests:inWindow.reduce((counts,row)=>({...counts,[row.path]:(counts[row.path]||0)+1}),{}),timerFires:Object.values(timers).reduce((sum,value)=>sum+value,0),timers};
+    };
+    const focused=await measure();
+    // The poll already waiting when the focus goes keeps its time; the window starts after it.
+    await page.evaluate(()=>window.__setFocus(false));await page.waitForTimeout(4000);
+    const unfocused=await measure();
+    const focusAt=Date.now();await page.evaluate(()=>window.__setFocus(true));
+    await expect.poll(()=>requests.some(row=>row.at>=focusAt&&row.path==="GET /api/git/info"),{intervals:[100],timeout:5000}).toBe(true);
+    const gitAfterFocusMs=requests.find(row=>row.at>=focusAt&&row.path==="GET /api/git/info").at-focusAt;
+    console.log("B14/B17 idle on a project thread:",JSON.stringify({focused,unfocused,gitAfterFocusMs}));
+    for(const [name,row] of Object.entries({focused,unfocused})){
+      expect(row.requestsPerMinute,name+" "+JSON.stringify(row.requests)).toBeLessThanOrEqual(B14_PAGE_REQUESTS_PER_MINUTE[name]);
+      expect(row.timerFires,name+" "+JSON.stringify(row.timers)).toBeLessThanOrEqual(B17_TIMER_FIRES_PER_30S[name]);
+      expect(Object.keys(row.timers).filter(key=>!B17_IDLE_POLL_DELAYS.has(Number(key.split(" ")[1]))),name).toEqual([]);
+    }
+  }finally{await fixture.close()}
+});
+
 // B11's risk: ChatMarkdown loads after the first paint, so a reply rendered before it arrives shows as its plain text. The first
 // reply after a load is already Markdown, live and finished: no reply ever shows as plain text.
 const watchPlainText=()=>{const shown=window.__plainTextShown=[];new MutationObserver(()=>{for(const node of document.querySelectorAll(".chat-markdown > p[style]"))if(!shown.includes(node.textContent))shown.push(node.textContent)}).observe(document,{subtree:true,childList:true})};
