@@ -260,6 +260,44 @@ test.describe("Removing a project",()=>{
     expect(await paletteRuns(),"the palette runs the restored project's action").toBe(1);
     await page.screenshot({animations:"disabled",path:shots+`project-open-restored-${mode}-1280.png`});
   });
+
+  // A setting of the open project is still saving (a slow server; the server has already applied it) when the person removes the
+  // project. The save's answer comes after the removal and does not bring the removed project back into the header.
+  for(const mode of MODES)test(`a save that answers after the open project's removal does not name it again (${mode})`,async({page,request})=>{
+    const boot=await open(page,request,{mode});
+    const path=join(boot.cwd,"ui");
+    await request.post("/api/projects",{data:{path,name:"Project A",activate:true,scripts:[{id:"a-tests",name:"A tests",command:"npm test"}]}});
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const header=page.locator("header.workspace-header").first(),crumb=header.locator(".project-crumb:not(.sidebar-reopen) span"),action=header.getByRole("button",{name:"A tests",exact:true});
+    await expect(crumb).toHaveText("Project A");await expect(action).toBeVisible();
+    let release=()=>{};const held=new Promise(resolve=>{release=resolve});let sent=false,answered=false,readSince=false;
+    await page.route(/\/api\/projects$/,async route=>{
+      if(route.request().method()!=="POST"||route.request().postDataJSON()?.permissionMode!=="supervised")return route.fallback();
+      sent=true;const response=await route.fetch();await held;await route.fulfill({response});answered=true;
+    });
+    // The page reads the list again once it has the save's answer.
+    page.on("request",item=>{if(answered&&item.method()==="GET"&&/\/api\/projects$/.test(item.url()))readSince=true});
+    try{
+      await nav(page,"Projects").click();
+      const card=projectCard(page,"Project A");
+      await card.getByRole("combobox",{name:"Permissions"}).selectOption("supervised");
+      await expect.poll(()=>sent).toBe(true);
+      await card.getByRole("button",{name:"Remove Project A",exact:true}).click();
+      await expect(page.getByTestId("thread-undo-toast")).toContainText("Project “Project A” removed");
+      release();
+      await expect.poll(()=>readSince).toBe(true);
+      await nav(page,"New task").click();
+      await expect(page.getByTestId("composer")).toBeVisible();
+      await expect(crumb,"the header names the removed project again").toHaveText("ui");
+      await expect(action,"the header offers the removed project's action again").toHaveCount(0);
+      expect((await listedProjects(request)).filter(project=>project.path===path),"the project is removed on the server").toEqual([]);
+      await page.screenshot({animations:"disabled",path:shots+`project-save-after-removal-${mode}-1280.png`});
+      await page.setViewportSize({width:900,height:800});
+      await expect(crumb).toHaveText("ui");
+      await page.screenshot({animations:"disabled",path:shots+`project-save-after-removal-${mode}-900.png`});
+    }finally{release();await page.unrouteAll({behavior:"ignoreErrors"})}
+  });
 });
 
 test.describe("Removing an environment",()=>{
