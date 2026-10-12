@@ -3115,9 +3115,9 @@ export default function App(){
   const sectionTop=useLatestCallback((sectionId,exceptId)=>sectionFirstThread(threads,sectionId,threadMeta,exceptId));
   // A thread moved into or out of a section takes its place there by recent activity, as it always has (nobody put it anywhere), except
   // in a Codex section a person ordered, where every thread holds its place: it goes first there. The list is read again for the places
-  // the runtime gave.
+  // the runtime gave. With the harness away nothing moves, and the move fails so that no Undo or wake time stands for it.
   async function moveThread(thread,destination){
-    if(!rpc||rpcStatus!=="connected")return;
+    if(!rpc||rpcStatus!=="connected")throw new Error(agentRuntimeLabel+" is not connected");
     const target=destination==="active"?null:sections[destination==="pin"?"Pinned":destination==="snooze"?"Snoozed":destination==="settle"?"Settled":destination];
     const first=target&&agentRuntime==="codex"&&orderedSectionsRef.current.includes(String(target.id))?sectionTop(target.id,thread.id):null;
     await rpc.request("thread/section/move",{threadId:thread.id,sectionId:target?.id||null,beforeThreadId:first?.id||null});
@@ -3145,7 +3145,7 @@ export default function App(){
       try{await moveThread(thread,"snooze")}catch(error){await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null});throw error}
       label="Thread snoozed";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
     }else if(action==="archive"){
-      if(!rpc)return null;
+      if(!rpc||rpcStatus!=="connected")throw new Error(agentRuntimeLabel+" is not connected");
       // A thread still opening ends its open first, so that its answer cannot bring the archived thread back (nor save it un-archived).
       if(openingThreadRef.current===String(thread.id))await newChat();
       await rpc.request("thread/archive",{threadId:thread.id});await updateThreadMeta(thread.id,{archived:true});setThreads(prev=>prev.filter(t=>t.id!==thread.id));await leaveRemovedThread(thread.id);label="Thread archived";

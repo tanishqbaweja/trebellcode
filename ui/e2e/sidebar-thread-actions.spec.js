@@ -229,3 +229,39 @@ test("a bulk Archive the harness refuses for every thread says its reason once a
     }
   }finally{await harness.close()}
 });
+
+test("with the harness away, a bulk Pin and a Snooze say they could not, offer no Undo and leave the threads as they were",async({page})=>{
+  test.setTimeout(90_000);
+  const {harness,proxy,meta,id}=await openSidebarApp(page);
+  try{
+    proxy.stop();
+    await expect(page.getByTestId("composer-transport")).toContainText("Trebell Native");
+    await selectThreads(page,["Bulk two","Bulk three"]);
+    await bulkBar(page).getByRole("button",{name:"Pin",exact:true}).click();
+    await expect(sidebarAlert(page)).toHaveText("Could not pin 2 threads: Trebell Native is not connected.");
+    await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+    await expect(undoToast(page)).toHaveCount(0);
+    expect(await selected(page)).toEqual(["Bulk two","Bulk three"]);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await shoot(page,"sidebar-bulk-pin-harness-away")}
+    await switchMode(page,"dark");
+    // Archive says the same.
+    await bulkBar(page).getByRole("button",{name:"Archive",exact:true}).click();
+    await expect(sidebarAlert(page)).toHaveText("Could not archive 2 threads: Trebell Native is not connected.");
+    await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+    await page.getByRole("button",{name:"Thread actions",exact:true}).click();await expect(bulkBar(page)).toHaveCount(0);
+    // A Snooze from the row's menu: the dialog stays and says why, and no wake time is kept.
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      const row=await rowMenu(page,"Bulk three");
+      await row.getByRole("button",{name:"Snooze…",exact:true}).click();
+      const dialog=snoozeDialog(page);await expect(dialog).toBeVisible();
+      await dialog.getByRole("button",{name:"Snooze",exact:true}).click();
+      await expect(dialog.getByRole("alert")).toHaveText("Could not snooze “Bulk three”: Trebell Native is not connected.");
+      await expect(dialog).toBeVisible();await expect(undoToast(page)).toHaveCount(0);
+      await shoot(page,"sidebar-snooze-harness-away");
+      await dialog.getByRole("button",{name:"Cancel",exact:true}).click();await expect(dialog).toHaveCount(0);
+    }
+    await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+    expect(meta[id("Bulk three")].snoozedUntil??null).toBe(null);
+  }finally{await harness.close()}
+});
