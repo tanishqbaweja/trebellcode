@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 import { keepThreadMeta } from "./test-home.js";
 
 // The command palette from the keyboard (keys typed straight after Ctrl+K, where focus goes after a command) and moving between pages
@@ -586,4 +587,43 @@ test.describe("Back and forward to a thread",()=>{
       await expect(page.locator(".thread-row")).toHaveCount(threads.length);
     }finally{await fixture.close()}
   });
+});
+
+// ============ Threads the palette's search finds beyond the loaded list, on Trebell Native's relay ============
+// 130 threads a minute apart, newest first: the sidebar lists the newest 100, and Trebell keeps a note of every thread without its
+// name. The appearance setting stays in the page.
+async function openOlderThreads(page){
+  const harness=await startRelayHarness(),now=Math.floor(Date.now()/1000);
+  const providerMeta={runtimeInstanceId:"native-default",modelProvider:"agentrouter",permissionProfile:"auto",projectless:false,environmentId:null};
+  for(let index=0;index<130;index++){const name="Old task "+String(index).padStart(3,"0");harness.threads.push(harness.threadStore.importHistory({runtime:"native",cwd:harness.repo,providerSessionId:"palette-older-"+index,model:"gpt-5.6",name,preview:name,providerMeta,createdAt:now-600-index*60,updatedAt:now-index*60}))}
+  await routeRelayApp(page,harness);
+  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().postDataJSON()||{})}):route.fallback());
+  await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await expect(page.locator('.thread-main[title="Old task 000"]')).toBeVisible();
+  return harness;
+}
+
+test("a thread the palette's search finds beyond the loaded list shows by its name, and Enter opens it",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openOlderThreads(page);
+  try{
+    const palette=page.getByTestId("command-palette"),composer=page.getByTestId("composer");
+    const found=palette.locator(".command-palette-item.kind-thread");
+    for(const mode of ["dark","light"]){
+      const html=page.locator("html");if(await html.getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").first().click();await expect(html).toHaveAttribute("data-mode",mode)}
+      await composer.click();await page.keyboard.press("Control+K");
+      await expect(palette.locator(".command-palette-item").first()).toBeVisible();
+      await page.keyboard.type("Old task 120",{delay:25});
+      await expect(found).toHaveCount(1);
+      await expect(found.locator("strong")).toHaveText("Old task 120");
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(found).toBeInViewport();await page.screenshot({animations:"disabled",path:shots+"palette-older-thread-"+mode+"-"+width+".png"})}
+      await page.setViewportSize({width:1280,height:800});
+      if(mode==="dark"){await page.keyboard.press("Escape");await expect(palette).toBeHidden()}
+    }
+    await page.keyboard.press("Enter");
+    await expect(palette).toBeHidden();
+    await expect(page.locator(".workspace-header .thread-title-button strong")).toHaveText("Old task 120");
+  }finally{await harness.close()}
 });

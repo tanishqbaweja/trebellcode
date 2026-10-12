@@ -116,7 +116,9 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
     const raw=query.trim();const actionOnly=raw.startsWith(">");const q=(actionOnly?raw.slice(1):raw).trim().toLowerCase();
     const messageMap=new Map((messageMatches||[]).map(match=>[match.threadId,match.excerpt]));
     const threadMap=new Map((threads||[]).map(thread=>[thread.id,thread]));
-    for(const match of messageMatches||[])if(match.thread?.id&&!threadMap.has(match.thread.id))threadMap.set(match.thread.id,match.thread);
+    // A thread the list holds only as what Trebell saved of it (one beyond the listed page, kept without its name) shows as the search
+    // found it, as the sidebar's search shows it.
+    for(const match of messageMatches||[])if(match.thread?.id&&(!threadMap.has(match.thread.id)||threadMap.get(match.thread.id).__trebellCatalog))threadMap.set(match.thread.id,match.thread);
     const commands=actions.map(action=>({...action,kind:"command"}));
     const projectItems=(projects||[]).map(project=>{
       const environmentId=project.environmentId||"local";
