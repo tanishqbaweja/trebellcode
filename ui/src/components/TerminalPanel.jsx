@@ -156,12 +156,14 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   function send(id,event){event?.preventDefault();if(write(id,(lines[id]||"")+"\r"))setLines(previous=>({...previous,[id]:""}))}
   function ctrlC(id){write(id,"\x03")}
   // A paste of several lines reaches the program as a terminal sends it, each finished line with its Enter, and the text after
-  // the last line break stays on the command line; the single-line input used to join the lines into one command.
+  // the last line break stays on the command line; the single-line input used to join the lines into one command. The first
+  // pasted line goes in at the caret, and its Enter sends the whole command typed around it, as a terminal's Enter does.
   function paste(id,event){
     const text=event.clipboardData?.getData("text")||"";if(!/[\r\n]/.test(text))return;
     event.preventDefault();const input=event.currentTarget;
-    const parts=(input.value.slice(0,input.selectionStart)+text+input.value.slice(input.selectionEnd)).split(/\r\n|\r|\n/),rest=parts.pop();
-    if(write(id,parts.map(line=>line+"\r").join("")))setLines(previous=>({...previous,[id]:rest}));
+    const lines=text.split(/\r\n|\r|\n/),rest=lines.pop();
+    lines[0]=input.value.slice(0,input.selectionStart)+lines[0]+input.value.slice(input.selectionEnd);
+    if(write(id,lines.map(line=>line+"\r").join("")))setLines(previous=>({...previous,[id]:rest}));
   }
   async function attachRecent(session){
     if(!onAttachExcerpt||attachBusy)return;

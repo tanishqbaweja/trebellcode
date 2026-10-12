@@ -106,6 +106,13 @@ test("a paste of several lines runs each finished line and leaves the last one o
     await page.keyboard.press("Enter");
     await expect(screen).toContainText(/^pasted-three$/m);
     await expect(input).toHaveValue("");
+    // Pasted with the caret inside a typed command, the first line goes in at the caret, and its Enter sends the whole command.
+    await page.keyboard.type("echo AB",{delay:8});await page.keyboard.press("ArrowLeft");
+    await page.evaluate(()=>navigator.clipboard.writeText("1\r\n2"));
+    await page.keyboard.press("Control+V");
+    await expect(screen).toContainText(/^A1B$/m);
+    await expect(input).toHaveValue("2");
+    await shots(page,"terminal-paste-inside-command");
   }finally{await shell.close()}
 });
 
