@@ -73,6 +73,32 @@ test("B16: a 20 KB reply streams without the whole reply parsed again on every c
   }finally{finish.open();await fixture.close()}
 });
 
+// F4(c): a send asks for the context packet while it makes its file checkpoint (the packet only reads files), and uses the packet
+// where it did before: a checkpoint that fails still shows its notice above the packet's.
+test("F4(c): the context packet is asked for while the checkpoint is made, and its notice follows the checkpoint's",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startStreamingFixture(page),asked=gate(),shown=gate(),finish=gate(),log=[];
+  try{
+    // The checkpoint fails 0.4 s after the packet has been asked for (so the packet's answer comes first), or after 3 s.
+    await page.route(/\/api\/checkpoints$/,async route=>{
+      if(route.request().method()!=="POST")return route.fallback();
+      log.push("checkpoint asked");await Promise.race([asked.promise,new Promise(resolve=>setTimeout(resolve,3000))]);await new Promise(resolve=>setTimeout(resolve,400));log.push("checkpoint answered");
+      await route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate checkpoint failure"})});
+    });
+    await page.route(/\/api\/context\/packet$/,route=>{log.push("packet asked");asked.open();return route.fallback()});
+    const head="## The relay\n\nIt keeps each turn **in order** and writes `item/completed` once, after the call returns, so a reader sees the same history after a reload as while the turn runs.\n\n";
+    fixture.script.push(async(request,hook)=>{hook({type:"text",delta:head});shown.open();await finish.promise;return reply(request,head+"Done.")});
+    await fixture.open("Native streaming");await fixture.send("Say how the relay orders turns. Do not change any files.");await shown.promise;
+    const notices=page.locator(".tool-event");
+    await expect(notices.filter({hasText:"Trebell context skipped"})).toHaveCount(1,{timeout:10_000});
+    const texts=await notices.allTextContents(),checkpointAt=texts.findIndex(text=>text.includes("Could not create file checkpoint")),packetAt=texts.findIndex(text=>text.includes("Trebell context skipped"));
+    console.log("F4(c) send:",JSON.stringify({log,checkpointAt,packetAt}));
+    expect(log.indexOf("packet asked"),log.join(", ")).toBeLessThan(log.indexOf("checkpoint answered"));
+    expect(checkpointAt).toBeGreaterThanOrEqual(0);expect(packetAt).toBeGreaterThan(checkpointAt);
+    finish.open();await expect(page.locator(".history-assistant .assistant-message-text")).toContainText("Done.",{timeout:15_000});
+  }finally{finish.open();await fixture.close()}
+});
+
 // B11's risk: ChatMarkdown loads after the first paint, so a reply rendered before it arrives shows as its plain text. The first
 // reply after a load is already Markdown, live and finished: no reply ever shows as plain text.
 const watchPlainText=()=>{const shown=window.__plainTextShown=[];new MutationObserver(()=>{for(const node of document.querySelectorAll(".chat-markdown > p[style]"))if(!shown.includes(node.textContent))shown.push(node.textContent)}).observe(document,{subtree:true,childList:true})};

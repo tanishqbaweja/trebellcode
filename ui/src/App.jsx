@@ -3862,18 +3862,22 @@ export default function App(){
       return {attempted:true,compacted:false,decision,error};
     }
   }
-  async function prepareTurnContext(thread,cwd,text,paths,{projectless=projectlessMode,background=false,ignoreUsage=false}={}){
+  async function prepareTurnContext(thread,cwd,text,paths,{projectless=projectlessMode,background=false,ignoreUsage=false,ready=true}={}){
     if(projectless||bootstrap.mock||!thread?.id||!cwd)return null;
     const usage=ignoreUsage?null:(threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null));
     const previousTask=contextTaskRef.current.get(thread.id)||threadMeta[thread.id]?.trebellContext?.continuityTask||threadMeta[thread.id]?.trebellContext?.userTask||threadMeta[thread.id]?.trebellContext?.task||"";
     const contextTask=contextTaskText(text,previousTask);
     const continuityTask=contextTaskAnchor(text,previousTask);
     try{
-      const packet=await api("/api/context/packet",{method:"POST",body:{
+      const request=api("/api/context/packet",{method:"POST",body:{
         path:cwd,task:contextTask,focusPaths:paths||[],environmentId:workspaceEnvironmentId||null,
         tokensUsed:usage?.last?.inputTokens??null,contextWindow:usage?.modelContextWindow??null,
         deliveryProjection:agentRuntime==="native"?"seed":null,userTask:String(text||""),
-      }});
+      }});request.catch(()=>{});
+      // A send asks for the packet while it makes its file checkpoint and uses it once the send gets here (ready): the packet's
+      // notice still follows the checkpoint's, and a send that fails before then (ready false) leaves no trace of it.
+      if(!await ready)return null;
+      const packet=await request;
       if(packet.skipped){
         const pressure={...(packet.budget||{}),at:Date.now(),skipped:true};
         try{await updateThreadMeta(thread.id,{trebellContextPressure:pressure,trebellContextError:null},{strict:true})}
@@ -3924,6 +3928,9 @@ export default function App(){
     // meanwhile marks this send stopped (stop()), so it sends nothing more, and a turn the harness started before the Stop reached it
     // is stopped as soon as it is named.
     const pendingSend={threadId:thread.id,requested:false,stopped:false};pendingSendRef.current=pendingSend;
+    // The context packet only reads files, so the server builds it while the checkpoint is made and the goal set; reached says the
+    // send got to it.
+    let reached=()=>{};const contextReady=prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted,ready:new Promise(resolve=>{reached=resolve})});
     try{
       let checkpoint=null;
       if(!projectlessMode){
@@ -3945,7 +3952,7 @@ export default function App(){
       const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{});
       const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
       const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
-      const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
+      reached(true);const contextPacket=await contextReady;
       const turnContext={...repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
       if(pendingSend.stopped)throw sendStoppedError();pendingSend.requested=true;
@@ -3958,7 +3965,7 @@ export default function App(){
     }catch(error){
       if(pendingSendRef.current===pendingSend)pendingSendRef.current=null;
       if(pendingSend.stopped&&error&&typeof error==="object")error.trebellSendStopped=true;
-      setMessages(prev=>prev.filter(message=>message.id!==clientId));
+      reached(false);setMessages(prev=>prev.filter(message=>message.id!==clientId));
       setRunning(false);setActiveTurnId(null);
       if(codexGoalActivationRef.current?.threadId===thread.id)codexGoalActivationRef.current=null;
       throw error;
@@ -3972,6 +3979,8 @@ export default function App(){
     try{
       thread=await createThreadFor(modelId,cwd,{projectless,taskText:text});if(!thread?.id)throw new Error("Agent harness did not create a background thread");
       backgroundThreadsRef.current.add(thread.id);setThreads(prev=>[thread,...prev.filter(item=>item.id!==thread.id)]);
+      // The context packet only reads files, so it is built while the checkpoint is made.
+      const contextReady=prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true});
       let checkpoint=null;
       if(!projectless){
         try{checkpoint=await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}})}
@@ -3983,7 +3992,7 @@ export default function App(){
       const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
       turnRequestStarted=true;
       const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
-      const contextPacket=await prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true}),contextEntries=repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text});
+      const contextPacket=await contextReady,contextEntries=repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text});
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(contextEntries).length?{additionalContext:contextEntries}:{})});const turnId=result?.turn?.id||null;
       // The sidebar row shows the task running even when the harness sends no turn/started for a thread that is not open.
       if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
