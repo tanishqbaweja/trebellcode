@@ -405,12 +405,13 @@ test.describe("Back and forward",()=>{
 });
 
 // ============ Back and Forward to threads, behind a fake Codex app-server ============
-// The app-server answers what the app asks at start; delays holds a thread's resume (by id, in ms) or the thread list (list).
+// The app-server answers what the app asks at start; delays holds a thread's resume (by id, in ms) or the thread list (list). older
+// is the list's next page (History's Load older threads reads it); a thread on neither page is one the harness does not have.
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
 function fixtureThreads(names){const now=Date.now()/1000;return names.map((name,i)=>({id:"navigation-thread-"+i,name,preview:"Preview of "+name,cwd:process.cwd(),createdAt:now-1000-i*60,updatedAt:now-i*60,turns:[]}))}
 const EMPTY_LISTS=["threadSection/list","thread/loaded/list","thread/attachment/list","thread/queue/list","app/list","permissionProfile/list","hooks/list","experimentalFeature/list","plugin/share/list","collaborationMode/list","skills/list"];
-async function startCodex(threads,delays={}){
+async function startCodex(threads,delays={},older=[]){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
@@ -418,8 +419,12 @@ async function startCodex(threads,delays={}){
     ws.on("message",async data=>{
       const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
       const m=message.method;let result={};
-      if(m==="thread/list"){if(delays.list)await new Promise(resolve=>setTimeout(resolve,delays.list));result={data:threads,nextCursor:null}}
-      else if(m==="thread/resume"||m==="thread/read"){const id=message.params?.threadId;if(delays[id])await new Promise(resolve=>setTimeout(resolve,delays[id]));result={thread:threads.find(t=>t.id===id)||threads[0],itemsBackwardsCursor:null,turnsBackwardsCursor:null}}
+      if(m==="thread/list"){if(delays.list)await new Promise(resolve=>setTimeout(resolve,delays.list));result=message.params?.cursor==="older"?{data:older,nextCursor:null}:{data:threads,nextCursor:older.length?"older":null}}
+      else if(m==="thread/resume"||m==="thread/read"){
+        const id=message.params?.threadId,thread=[...threads,...older].find(t=>t.id===id);if(delays[id])await new Promise(resolve=>setTimeout(resolve,delays[id]));
+        if(!thread){try{ws.send(JSON.stringify({id:message.id,error:{code:-32600,message:"thread not found: "+id}}))}catch{}return}
+        result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null};
+      }
       else if(m==="initialize")result={userAgent:"navigation-fixture"};
       else if(EMPTY_LISTS.includes(m))result={data:[],nextCursor:null};
       else if(m==="thread/goal/get")result={goal:null};
@@ -436,12 +441,12 @@ async function startCodex(threads,delays={}){
     });
   });
   const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
-  return {port,async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
+  return {port,older,meta:{},async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
 async function openCodex(page,fixture,threads,{mode="dark",width=1280,height=800}={}){
   await page.setViewportSize({width,height});
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${fixture.port}`,cwd:process.cwd(),platform:process.platform,version:"navigation-fixture",activeEnvironmentId:null,activeEnvironment:null}));
-  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:Object.fromEntries(threads.map(t=>[t.id,{projectless:true,environmentId:null}]))}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:Object.fromEntries([...threads,...fixture.older].map(t=>[t.id,{projectless:true,environmentId:null,...fixture.meta[t.id]}]))}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
   await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
@@ -512,6 +517,71 @@ test.describe("Back and forward to a thread",()=>{
       await page.goBack();
       await expect(headerTitle(page)).toHaveText("Alpha thread");
       await expect.poll(()=>shownEntry(page)).toBe("chat:"+threads[0].id);
+    }finally{await fixture.close()}
+  });
+
+  // Threads past the list's first page, opened from History. After a reload the list holds only its first page again.
+  const olderThreads=names=>fixtureThreads(names).map((thread,i)=>({...thread,id:"navigation-older-"+i,updatedAt:thread.updatedAt-30*86400,createdAt:thread.createdAt-30*86400}));
+  async function openFromHistory(page,title,{loadOlder=false}={}){
+    await nav(page,"History").click();
+    if(loadOlder)await page.getByRole("button",{name:"Load older threads"}).click();
+    await page.locator(".history-thread-row").filter({hasText:title}).click();
+    await expect(headerTitle(page)).toHaveText(title);
+  }
+  for(const mode of ["dark","light"])test(`Back after a reload to a thread older than the thread list's first page opens it, as History would (${mode})`,async({page})=>{
+    const threads=fixtureThreads(["Alpha thread","Beta thread"]),older=olderThreads(["Old thread"]),fixture=await startCodex(threads,{},older);
+    try{
+      await openCodex(page,fixture,threads,{mode});
+      await openFromHistory(page,"Old thread",{loadOlder:true});
+      await expect.poll(()=>shownEntry(page)).toBe("chat:"+older[0].id);
+      await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+      await expect.poll(()=>shownEntry(page)).toBe("projects:"+older[0].id);
+      await page.reload();
+      await expect(page.getByTestId("composer")).toBeVisible();
+      await expect(page.locator(".thread-row")).toHaveCount(threads.length);
+      await expect.poll(()=>shownEntry(page)).toBe("chat:");
+      await page.goBack();
+      await expect(headerTitle(page),"Back to a thread the list's first page does not hold did not open it").toHaveText("Old thread",{timeout:10000});
+      await expect.poll(()=>shownEntry(page),{message:"the entry was rewritten as if its thread were gone"}).toBe("chat:"+older[0].id);
+      await expect(threadRow(page,older[0])).toHaveClass(/active/);
+      await page.screenshot({animations:"disabled",path:shots+`history-reload-back-older-thread-${mode}-1280.png`});
+      await page.setViewportSize({width:900,height:800});
+      await expect(headerTitle(page)).toHaveText("Old thread");
+      await page.screenshot({animations:"disabled",path:shots+`history-reload-back-older-thread-${mode}-900.png`});
+      // The entry still names the thread: Forward and Back again reach it.
+      await page.goForward();
+      await expect.poll(()=>shownEntry(page)).toBe("chat:");
+      await page.goBack();
+      await expect(headerTitle(page)).toHaveText("Old thread");
+      await expect.poll(()=>shownEntry(page)).toBe("chat:"+older[0].id);
+    }finally{await fixture.close()}
+  });
+
+  // A thread archived since, or one the harness no longer has, is gone: Back shows the page without it and its entry says so.
+  test("Back after a reload to an older thread that was archived or deleted since settles on the page without it",async({page})=>{
+    const threads=fixtureThreads(["Alpha thread","Beta thread"]),older=olderThreads(["Archived thread","Deleted thread"]),fixture=await startCodex(threads,{},older);
+    const [archived,deleted]=older;
+    try{
+      await openCodex(page,fixture,threads);
+      await openFromHistory(page,"Archived thread",{loadOlder:true});
+      await openFromHistory(page,"Deleted thread");
+      await nav(page,"Projects").click();await expect(projectsHeading(page)).toBeVisible();
+      await expect.poll(()=>shownEntry(page)).toBe("projects:"+deleted.id);
+      fixture.meta[archived.id]={archived:true};older.splice(older.indexOf(deleted),1);
+      await page.reload();
+      await expect(page.getByTestId("composer")).toBeVisible();
+      await expect.poll(()=>shownEntry(page)).toBe("chat:");
+      await page.goBack();
+      await expect.poll(()=>shownEntry(page),{message:"the deleted thread's entry"}).toBe("chat:");
+      await expect(page.getByTestId("composer")).toBeVisible();
+      await page.goBack();
+      await expect(page.locator(".history-page")).toBeVisible();
+      await expect.poll(()=>shownEntry(page),{message:"the History entry the archived thread was open behind"}).toBe("history:");
+      await page.goBack();
+      await expect.poll(()=>shownEntry(page),{message:"the archived thread's entry"}).toBe("chat:");
+      await expect(page.getByTestId("composer")).toBeVisible();
+      for(const title of ["Archived thread","Deleted thread"])await expect(headerTitle(page)).not.toHaveText(title);
+      await expect(page.locator(".thread-row")).toHaveCount(threads.length);
     }finally{await fixture.close()}
   });
 });

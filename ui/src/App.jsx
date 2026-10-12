@@ -1018,9 +1018,9 @@ export default function App(){
   const [navigationRevision,setNavigationRevision]=useState(0);
   // The threads a Back or Forward finds its entry's thread among: right after a reload the harness may not have listed them yet, and a
   // step to a thread waits for that list (navigationEntryThread). loaded: the harness has listed them; known: loaded, or no list is
-  // coming (it failed, or there is no harness transport to list them).
+  // coming (it failed, or there is no harness transport to list them). meta: what Trebell keeps of each thread (archived, hidden).
   const threadListKnown=threadListLoaded||Boolean(threadListError)||Boolean(bootstrap.mock)||!bootstrap.wsUrl||rpcStatus==="error";
-  const navigationThreadsRef=useRef(null);navigationThreadsRef.current={threads,loaded:threadListLoaded,known:threadListKnown};
+  const navigationThreadsRef=useRef(null);navigationThreadsRef.current={threads,loaded:threadListLoaded,known:threadListKnown,meta:threadMeta};
   useEffect(()=>{navigationHistoryRef.current.applying?.wake?.()},[threads,threadListKnown]);
   const writeNavigationEntry=(mode,entry)=>{
     if(!BROWSER_NAVIGATION||!entry)return;
@@ -1081,13 +1081,21 @@ export default function App(){
     }
   }
   // The thread of the entry a step goes to. Right after a reload the harness may not have listed its threads yet: the step waits for
-  // that list, until a later step or a move of the person's own takes over. null: not listed, or no list is coming.
+  // that list, until a later step or a move of the person's own takes over. One the list does not hold (older than its first page) is
+  // read from the harness, as History would list it. null: gone (archived or removed since, or the harness no longer has it), or no
+  // list is coming.
   async function navigationEntryThread(token,threadId){
     for(;;){
-      const {threads:listed,known}=navigationThreadsRef.current,thread=listed.find(item=>item.id===threadId);
-      if(thread||known||navigationHistoryRef.current.applying!==token||token.moved)return thread||null;
+      const {threads:listed,loaded,known}=navigationThreadsRef.current,thread=listed.find(item=>item.id===threadId);
+      if(thread||navigationHistoryRef.current.applying!==token||token.moved)return thread||null;
+      if(loaded)break;
+      if(known)return null;
       await new Promise(resolve=>{token.wake=resolve});
     }
+    const meta=navigationThreadsRef.current.meta[threadId]||{};
+    if(meta.deletedAt||meta.archived||meta.ephemeral||meta.catalogHidden)return null;
+    const read=await rpcRef.current?.request("thread/read",{threadId,includeTurns:false}).catch(()=>null);
+    return read?.thread&&!read.thread.archived?read.thread:null;
   }
   async function navigateHistory(delta){
     const nav=navigationHistoryRef.current,next=stepTarget(nav,delta);
