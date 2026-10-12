@@ -236,7 +236,9 @@ for(const mode of MODES){
     test.setTimeout(60_000);
     await open(page,request,{mode});
     await openLicenses(page);
-    await expect(rows(page).nth(20)).toBeVisible();
+    // The run's first read of the real list: the server walks every installed package for it, which took past the usual wait
+    // while another run loaded the machine.
+    await expect(rows(page).nth(20)).toBeVisible({timeout:20_000});
     const total=await rows(page).count();
     // Every row of the real list: name, version line and tag each shown whole, inside the row, and not on top of each other.
     const audit=()=>page.locator(".licenses-list").evaluate(list=>{
