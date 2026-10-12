@@ -102,7 +102,8 @@ test("an editor that Open started keeps running after the app that opened it qui
 
 // A GUI program's first ShowWindow takes the show state in its start-up info, where windowsHide puts SW_HIDE. The stand-in editor
 // is an Electron app that creates its window shown, as VS Code and Cursor do for a window that is not maximized, writes whether
-// Windows shows it and quits at once; the window sits off screen and transparent. A start with windowsHide shows it can tell.
+// Windows shows it (renamed into place, so the test never reads half of it) and quits at once; the window sits off screen and
+// transparent. A start with windowsHide shows the stand-in can tell.
 const electron=new URL("../node_modules/electron/dist/electron.exe",import.meta.url);
 test("an editor that Open starts shows its window",{skip:process.platform!=="win32"||!existsSync(electron)||Boolean(process.env.ELECTRON_RUN_AS_NODE),timeout:90_000},async t=>{
   const folder=await mkdtemp(join(tmpdir(),"trebell-editor-window-")),result=join(folder,"result.json"),executable=fileURLToPath(electron);
@@ -113,10 +114,10 @@ test("an editor that Open starts shows its window",{skip:process.platform!=="win
   };
   try{
     await writeFile(join(folder,"package.json"),JSON.stringify({name:"trebell-stand-in-editor",version:"1.0.0",main:"main.cjs"}));
-    await writeFile(join(folder,"main.cjs"),`const {app,BrowserWindow}=require("electron"),{writeFileSync}=require("node:fs"),{join}=require("node:path");
+    await writeFile(join(folder,"main.cjs"),`const {app,BrowserWindow}=require("electron"),{renameSync,writeFileSync}=require("node:fs"),{join}=require("node:path");
 for(const name of ["userData","sessionData","crashDumps","logs"])app.setPath(name,join(__dirname,"data-"+process.pid,name));
 app.commandLine.appendSwitch("disable-gpu");
-app.whenReady().then(()=>{const win=new BrowserWindow({show:true,x:-32000,y:-32000,width:200,height:100,opacity:0,skipTaskbar:true});writeFileSync(join(__dirname,"result.json"),JSON.stringify({visible:win.isVisible()}));app.exit(0)});
+app.whenReady().then(()=>{const win=new BrowserWindow({show:true,x:-32000,y:-32000,width:200,height:100,opacity:0,skipTaskbar:true});writeFileSync(join(__dirname,"result.tmp"),JSON.stringify({visible:win.isVisible()}));renameSync(join(__dirname,"result.tmp"),join(__dirname,"result.json"));app.exit(0)});
 `);
     const hidden=await shown(()=>{spawn(executable,[folder],{detached:true,stdio:"ignore",windowsHide:true}).unref()});
     assert.notEqual(hidden,null,"the stand-in editor started");
