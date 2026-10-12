@@ -226,3 +226,25 @@ test("/review typed in the composer says why a review did not start, as the head
     expect(errors).toEqual([]);
   }finally{held.open();await harness.close()}
 });
+
+test("a rename whose dialog outlives the harness says Trebell Native is not connected, as the title does",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,proxy,header}=await openHeaderApp(page);
+  const title=header.locator(".thread-title-button");
+  try{
+    // The theme button clears the message, so each mode renames again with the harness back.
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      proxy.start();await expect(title).toBeEnabled({timeout:20_000});
+      await title.click();await expect(dialog(page)).toBeVisible();
+      proxy.stop();
+      await expect(title).toHaveAttribute("title","Release checklist · Renaming needs Trebell Native to be connected");
+      await page.keyboard.type("Ship the release",{delay:25});await page.keyboard.press("Enter");await expect(dialog(page)).toHaveCount(0);
+      const alert=page.getByTestId("app-action-error");
+      await expect(alert).toHaveText("Could not rename thread: Trebell Native is not connected.");
+      await expect(title).toHaveText("Release checklist");
+      await shoot(page,"header-rename-harness-gone-mid-dialog");
+    }
+    expect(harness.threadStore.get(harness.threads[0].id).name).toBe("Release checklist");
+  }finally{await harness.close()}
+});
