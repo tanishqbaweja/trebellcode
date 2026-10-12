@@ -179,6 +179,26 @@ test("/goal with an objective sets the thread's goal, and /goal on New task keep
   }finally{await harness.close()}
 });
 
+test("/goal pause, resume and clear on a Native thread change its goal, as the Goal panel's buttons do",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page);
+  try{
+    const composer=page.getByTestId("composer"),panel=page.getByTestId("goal-panel"),objective=panel.getByLabel("Objective",{exact:true}),status=panel.locator(".goal-status");
+    const goal=async text=>{await composer.click();await page.keyboard.type(text,{delay:15});await page.keyboard.press("Enter");await expect(composer).toHaveValue("")};
+    await goal("/goal Make the login tests pass");
+    await expect(objective).toHaveValue("Make the login tests pass");await expect(status).toHaveText("active");
+    // The words are commands, never the objective.
+    await goal("/goal pause");
+    await expect(status).toHaveText("paused");await expect(objective).toHaveValue("Make the login tests pass");
+    await shootBoth(page,"goal-command-paused",()=>expect(status).toBeInViewport());
+    await goal("/goal resume");
+    await expect(status).toHaveText("active");await expect(objective).toHaveValue("Make the login tests pass");
+    await goal("/goal clear");
+    await expect(status).toHaveText("not set");await expect(objective).toHaveValue("");
+    await shootBoth(page,"goal-command-cleared",()=>expect(status).toBeInViewport());
+  }finally{await harness.close()}
+});
+
 // The browser's speech recognition, scripted: "blocked" refuses the microphone as a browser does when its permission is denied
 // (an error "not-allowed", then the end), and "listen" keeps listening until stop() is called.
 async function scriptedDictation(page){

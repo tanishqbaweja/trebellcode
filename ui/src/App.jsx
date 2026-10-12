@@ -4212,14 +4212,15 @@ export default function App(){
       return true;
     }
     if(command==="/goal"){
-      if(agentRuntime==="codex"){await runCodexGoalCommand(parseCodexGoalCommand(text));return true}
-      // Elsewhere /goal opens the thread's goal, and the text after it is the objective it sets. A goal is kept with a thread, so on New
-      // task the draft stays ("kept") and the composer says why.
-      const threadId=activeThread?.id,objective=text.slice(command.length).trim();
+      const goalCommand=parseCodexGoalCommand(text);
+      if(agentRuntime==="codex"){await runCodexGoalCommand(goalCommand);return true}
+      // Elsewhere /goal opens the thread's goal: pause, resume and clear change it as the Goal panel's buttons do, and any other text
+      // after it is the objective it sets. A goal is kept with a thread, so on New task the draft stays ("kept") and the composer says why.
+      const threadId=activeThread?.id,patch=goalCommand.type==="set"?{objective:goalCommand.objective,status:"active"}:goalCommand.type==="pause"?{status:"paused"}:goalCommand.type==="resume"?{status:"active"}:null;
       if(!threadId){setComposerAlert({kind:"send",text:"A goal belongs to a thread. Send a first message to start one, then set its goal. Your draft is kept."});return "kept"}
-      if(objective){
-        try{if(!rpc)throw new Error(agentRuntimeLabel+" is not connected yet");const result=await rpc.request("thread/goal/set",{threadId,objective,status:"active"});if(activeThreadRef.current?.id===threadId)setGoal(result?.goal||null)}
-        catch(error){setComposerAlert({kind:"send",text:"Could not set the goal: "+sentenceText(error?.message||String(error))+" Your draft is kept."});return "kept"}
+      if(patch||goalCommand.type==="clear"){
+        try{if(!rpc)throw new Error(agentRuntimeLabel+" is not connected yet");const result=await rpc.request(patch?"thread/goal/set":"thread/goal/clear",{threadId,...patch});if(activeThreadRef.current?.id===threadId)setGoal(patch&&result?.goal||null)}
+        catch(error){setComposerAlert({kind:"send",text:"Could not "+goalCommand.type+" the goal: "+sentenceText(error?.message||String(error))+" Your draft is kept."});return "kept"}
       }
       openRightPanel("goal");return true;
     }
