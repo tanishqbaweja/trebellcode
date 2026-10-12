@@ -162,6 +162,33 @@ test("B6: a folder below the root that becomes its own repository is answered as
   }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
+// git 2.45 and later can keep refs in reftable (git init --ref-format=reftable, init.defaultRefFormat, git refs migrate), the default
+// planned for Git 3. Such a repository's .git/HEAD always reads "ref: refs/heads/.invalid" and refs/heads is a stub file: a switch
+// or a new branch made in an agent's shell or a terminal changes only reftable/, the common dir's or a linked worktree's own.
+test("B6: gitInfo's kept repository part follows switches, new branches and worktrees in a reftable repository",{timeout:60_000},async t=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-git-reftable-")),linked=dir+"-linked";
+  try{
+    if(!(await git(dir,["init","-q","--ref-format=reftable","-b","main"],{allowFailure:true})).ok){t.skip("this git has no reftable support");return}
+    await git(dir,["config","user.email","trebell@example.test"]);await git(dir,["config","user.name","Trebell Test"]);
+    await writeFile(join(dir,"a.txt"),"hello\n");await git(dir,["add","a.txt"]);await git(dir,["commit","-qm","init"]);
+    const same=async(cwd,label)=>{const {calls,gitFn}=countingGit();const warm=await gitInfo(cwd,{gitFn});assert.deepEqual(warm,await gitInfo(cwd,{fresh:true}),label);return calls.length};
+    assert.equal((await gitInfo(dir)).branch,"main");
+    assert.equal(await same(dir,"no change"),1,"a warm poll of a reftable repository still starts one git process");
+    await git(dir,["switch","-q","-c","feature/login"]);
+    const switched=await gitInfo(dir);assert.equal(switched.branch,"feature/login");assert.ok(switched.branches.includes("feature/login"));await same(dir,"switch to a new branch");
+    await git(dir,["branch","topic"]);assert.ok((await gitInfo(dir)).branches.includes("topic"));await same(dir,"new branch");
+    await git(dir,["switch","-q","main"]);assert.equal((await gitInfo(dir)).branch,"main");await same(dir,"switch to a branch that exists");
+    // A linked worktree keeps its HEAD in its own reftable/ below the common dir's worktrees folder.
+    await git(dir,["worktree","add","-q","-b","side",linked]);assert.equal((await gitInfo(dir)).worktrees.length,2);await same(dir,"worktree add");
+    await gitInfo(linked);await git(linked,["switch","-q","topic"]);
+    assert.equal((await gitInfo(linked)).branch,"topic");await same(linked,"switch in the linked worktree");
+    // A switch also rewrites the worktree's index beside its reftable folder; a HEAD change alone (symbolic-ref) touches only that folder.
+    await gitInfo(dir,{fresh:true});await git(linked,["symbolic-ref","HEAD","refs/heads/side"]);
+    assert.ok((await gitInfo(dir)).worktrees.some(item=>item.branch==="side"),"the main folder lists the linked worktree on its new branch");
+    await same(dir,"a HEAD change in the linked worktree");
+  }finally{await rm(linked,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
+});
+
 // A checkpoint's tree as create() recorded it before it reused the repository's index: a fresh index read from HEAD, then add -A.
 async function treeFromHead(repo,exclusions=[]){
   const env={...process.env,GIT_INDEX_FILE:repo+"-from-head-index"};
