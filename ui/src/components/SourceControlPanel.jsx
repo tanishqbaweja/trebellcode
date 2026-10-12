@@ -122,7 +122,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     if(!stillShown(started))return false;
     if(d){setDiagnostics(d);settle("diagnostics",{ok:true})}
     const chosen=providerOverride||d?.selectedProvider||(d?.detectedProvider&&d.detectedProvider!=="unknown"?d.detectedProvider:"");
-    if(chosen&&!sourceProvider)setSourceProvider(chosen);
+    // Nothing chosen yet takes the detected host. The choice is read as it is now: a project switch clears it just before this
+    // refresh, while this render's value still names the last project's host (which left every other project on Auto detect).
+    if(chosen)setSourceProvider(current=>current||chosen);
     try{
       const p=await api("/api/source-control/prs?"+query({path:projectPath,...(chosen?{provider:chosen}:{})}));
       if(!stillShown(started))return false;

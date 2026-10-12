@@ -916,3 +916,31 @@ test("Fetch shows how far the branch is behind or ahead, and a refused Pull or P
   expect(lines.some(line=>/^\s*! \[rejected\]/.test(line))).toBe(true);
   await shootBothModes(page,"source-control-push-rejected");
 });
+
+test("each project selects its detected code host every time it is opened",async({page,request})=>{
+  test.setTimeout(90_000);
+  const first=await mkdtemp(join(tmpdir(),"trebell-host-first-")),second=await mkdtemp(join(tmpdir(),"trebell-host-second-"));repositories.push(first,second);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,info:{upstream:null,remotes:[]}});
+  await request.post("/api/projects",{data:{path:second,name:"Source control host second"}});
+  const {right,repository}=await openGitPanel(page,request,"Source control host first",first);
+  const codeHost=repository.locator(".source-provider-field select"),publish=repository.getByRole("button",{name:"Publish repository"});
+  const open=async name=>{
+    await page.getByRole("button",{name:"Projects",exact:true}).click();
+    await page.locator(".project-card").filter({hasText:name}).locator(".project-open").click();
+    if(!await right.isVisible())await page.getByTestId("right-panel-toggle").click();
+    await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  };
+  const prsAskedWith=()=>host.calls.filter(call=>call.path==="prs").at(-1)?.query.provider;
+  await expect(codeHost).toHaveValue("github");await expect(publish).toBeVisible();
+  for(const name of ["Source control host second","Source control host first","Source control host second","Source control host first"]){
+    const asked=host.calls.filter(call=>call.path==="prs").length;
+    await open(name);
+    await expect.poll(()=>host.calls.filter(call=>call.path==="prs").length).toBeGreaterThan(asked);
+    await expect(codeHost).toHaveValue("github");
+    await expect(repository).toContainText("GitHub · authenticated");
+    await expect(publish).toBeVisible();
+    expect(prsAskedWith(),name).toBe("github");
+  }
+  await shootBothModes(page,"source-control-host-after-switches");
+});
