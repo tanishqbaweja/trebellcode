@@ -89,7 +89,7 @@
 /* Shared inspector controls ------------------------------------------------------------------ */
 /* Standard small button (tb-btn--sm). */
 :root:root .context-panel :where(
-  .workspace-window-footer button,.file-head>div>button,.file-empty button,.empty-state button,
+  .workspace-window-footer button,.file-head>div>button,.file-empty button,.workspace-file-conflict button,.empty-state button,
   .sc-toolbar button,.sc-card button,.pr-head button,.pr-actions button,.pr-comment-edit,.branch-pr-badge button,.linked-pr-panel-head button,
   .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
   .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
@@ -100,14 +100,14 @@
   font:550 11.5px/1 var(--font);white-space:nowrap;cursor:pointer;box-shadow:none;transition:background .14s,color .14s,border-color .14s,filter .14s;
 }
 :root:root .context-panel :where(
-  .workspace-window-footer button,.file-head>div>button,.file-empty button,.empty-state button,
+  .workspace-window-footer button,.file-head>div>button,.file-empty button,.workspace-file-conflict button,.empty-state button,
   .sc-toolbar button,.sc-card button,.pr-head button,.pr-actions button,.pr-comment-edit,.branch-pr-badge button,.linked-pr-panel-head button,
   .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
   .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
   .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button
 ):hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
 :root:root .context-panel :where(
-  .workspace-window-footer button,.file-head>div>button,.file-empty button,.empty-state button,
+  .workspace-window-footer button,.file-head>div>button,.file-empty button,.workspace-file-conflict button,.empty-state button,
   .sc-toolbar button,.sc-card button,.pr-head button,.pr-actions button,.pr-comment-edit,.branch-pr-badge button,.linked-pr-panel-head button,
   .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
   .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
@@ -205,6 +205,9 @@
 :root:root .context-panel .tree-list button i:hover{background:var(--bg4);color:var(--ac)}
 :root:root .context-panel :is(.workspace-tree-error,.workspace-file-error){margin:6px;padding:8px 10px;border:1px solid var(--errb)!important;border-radius:8px;background:var(--errt)!important;color:var(--err)!important;font-size:11.5px;line-height:1.45;overflow-wrap:anywhere}
 :root:root .context-panel .workspace-file-error{margin:8px 10px 0}
+/* A save refused because the file changed on disk: what happened, then the two ways on (Reload from disk, Overwrite). */
+:root:root .context-panel .workspace-file-conflict{display:grid;gap:8px}
+:root:root .context-panel .workspace-file-conflict>div{display:flex;flex-wrap:wrap;gap:6px}
 :root:root .context-panel .file-view{min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-rows:auto minmax(0,1fr);border:0!important;border-radius:0;background:var(--bg0)!important}
 :root:root .context-panel .file-view.has-error{grid-template-rows:auto auto minmax(0,1fr)}
 :root:root .context-panel .file-head{
@@ -1077,6 +1080,8 @@
 :root:root .inspector-text-prompt::backdrop{background:var(--ovl);backdrop-filter:blur(2px)}
 :root:root .inspector-text-prompt>form{display:grid;gap:16px;margin:0;padding:18px 18px 16px}
 :root:root .inspector-text-prompt label{display:grid;gap:9px;margin:0;font:600 13px/1.4 var(--font);color:var(--tx0)!important;overflow-wrap:anywhere}
+/* A question with no field (askConfirm) reads as the field's label does. */
+:root:root .inspector-text-prompt p{margin:0;font:600 13px/1.4 var(--font);color:var(--tx0)!important;overflow-wrap:anywhere}
 :root:root .inspector-text-prompt input{
   box-sizing:border-box;width:100%;height:36px;min-width:0;padding:0 12px;border:1px solid var(--line2)!important;border-radius:9px;background:var(--bg2)!important;
   color:var(--tx0)!important;font:400 13px/1 var(--font);outline:none;box-shadow:none;transition:border-color .15s,box-shadow .15s;
@@ -1091,6 +1096,8 @@
 :root:root .inspector-text-prompt-actions button:hover{background:var(--bg4)!important;color:var(--tx0)!important}
 :root:root .inspector-text-prompt-actions button.primary{border-color:transparent!important;background:var(--acfill)!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow)}
 :root:root .inspector-text-prompt-actions button.primary:hover{filter:brightness(1.1);color:#fff!important}
+:root:root .inspector-text-prompt-actions button.danger{border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
+:root:root .inspector-text-prompt-actions button.danger:hover{background:color-mix(in srgb,var(--err) 16%,transparent)!important;color:var(--err)!important}
 :root:root .inspector-text-prompt-actions button:focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 60%,transparent);outline-offset:2px}
 
 /* ---------------------------------------------------------------- Polish pass (review findings) */

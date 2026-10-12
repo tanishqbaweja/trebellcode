@@ -7,7 +7,7 @@ import { changedPathPlans, fitGlyphs, glyphRuns } from "../changed-name-fit.js";
 import { highlightSyntax } from "../syntax-language.js";
 import { WORKSPACE_CHANGED_PAGE_SIZE, WORKSPACE_DIFF_CHUNK_CHARS, WORKSPACE_TREE_PAGE_SIZE, workspaceListWindow, workspaceTextWindow } from "../workspace-view-window.js";
 import OpenInPicker from "./OpenInPicker.jsx";
-import { askText } from "./RightPanel.jsx";
+import { askConfirm, askText } from "./RightPanel.jsx";
 
 const IMAGE_EXT=new Set(["png","jpg","jpeg","gif","webp","bmp","svg","ico"]);
 const VIDEO_EXT=new Set(["mp4","webm","mov"]);
@@ -146,6 +146,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [file,setFile]=useState(null);
   const [edit,setEdit]=useState(false);
   const [draft,setDraft]=useState("");
+  const [conflict,setConflict]=useState(null);
   const [diff,setDiff]=useState({status:"",diff:""});
   const [diffError,setDiffError]=useState("");
   // Whether a diff has been read for this project: until then the Diff tab says it is loading, never that the tree is clean.
@@ -190,7 +191,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
       if(lands()){setDiff(data);setDiffError(data.error||"");setDiffLoaded(true)}
     }catch(error){if(lands())setDiffError(String(error?.message??error??"").trim()||"No reason was given.")}
   }
-  useEffect(()=>{diffShownRef.current=diffRequestRef.current;setDiff({status:"",diff:""});setDiffError("");setDiffLoaded(false);setTreeLimit(WORKSPACE_TREE_PAGE_SIZE);setChangedLimit(WORKSPACE_CHANGED_PAGE_SIZE);setDiffLimit(WORKSPACE_DIFF_CHUNK_CHARS);refreshTree();refreshDiff();setFile(null);setError("");},[projectPath,environmentId]);
+  useEffect(()=>{diffShownRef.current=diffRequestRef.current;setDiff({status:"",diff:""});setDiffError("");setDiffLoaded(false);setTreeLimit(WORKSPACE_TREE_PAGE_SIZE);setChangedLimit(WORKSPACE_CHANGED_PAGE_SIZE);setDiffLimit(WORKSPACE_DIFF_CHUNK_CHARS);refreshTree();refreshDiff();setFile(null);setEdit(false);setConflict(null);setError("");},[projectPath,environmentId]);
   // Opening the Changes view, from either switch, reads the working tree again; the last answer stays on screen meanwhile.
   const shownTabRef=useRef(tab);
   useEffect(()=>{const previous=shownTabRef.current;shownTabRef.current=tab;if(tab==="diff"&&previous!=="diff"&&allowDiff)refreshDiff()},[tab]);
@@ -226,8 +227,14 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     return()=>clearTimeout(t);
   },[query,projectPath,environmentId]);
 
-  async function open(path){
-    setError("");
+  // Unsaved edits are never dropped unasked: opening a file or closing the editor asks first, and Escape keeps them. A save names
+  // the version the editor loaded, so the server refuses one over a file that changed on disk since (an agent's edit, a delete);
+  // the panel then keeps the edits and offers the file on disk (Reload from disk) or the edits saved over the version it found.
+  const unsaved=Boolean(file&&edit&&draft!==(file.content??""));
+  async function keepUnsaved(){return unsaved&&!await askConfirm("Discard your changes to "+file.name+"?",{confirm:"Discard changes",cancel:"Keep editing"})}
+  async function open(path,{discard=false}={}){
+    if(!discard&&await keepUnsaved())return;
+    setError("");setConflict(null);
     const name=String(path).split(/[\\/]/).pop()||path;
     const kind=previewKind(name);
     if(["image","video","audio","pdf"].includes(kind)){
@@ -243,12 +250,15 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
       setError(actionError("Could not open "+name,err));
     }
   }
-  async function save(){
+  async function save(version=file.version){
     setError("");
     try{
-      const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path:file.path,content:draft,environmentId}});
-      setFile({...data,kind:previewKind(data.name)});setDraft(data.content);setEdit(false);await refreshDiff();
-    }catch(err){setError(actionError("Could not save "+(file?.name||"the file"),err))}
+      const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path:file.path,content:draft,version,environmentId}});
+      setConflict(null);setFile({...data,kind:previewKind(data.name)});setDraft(data.content);setEdit(false);await refreshDiff();
+    }catch(err){
+      if(err.status===409)setConflict({message:err.message,version:err.data?.version??null});
+      else setError(actionError("Could not save "+(file?.name||"the file"),err));
+    }
   }
   async function changeReviewed(path,value){
     if(!onReviewedChange||actionBusy)return;
@@ -304,7 +314,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
         <div className="tree-list">{(searchError||treeError)&&<p className="workspace-tree-error" role="alert">{searchError||treeError}</p>}{treeLoading?<p>Loading…</p>:treeWindow.visible.map(entry=><button data-workspace-entry key={entry.path} className={(entry.isDirectory?"tree-dir":"tree-file")+(file?.path===entry.path?" active":"")} title={entry.relativePath||entry.name} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{treeLabel(entry,Boolean(query))}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}{treeWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setTreeLimit(limit=>limit+WORKSPACE_TREE_PAGE_SIZE)}>Show {treeWindow.nextCount} more files</button><span>{treeWindow.shown} of {treeWindow.total} shown</span></div>}</div>
-        <div className={"file-view"+(error?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>{setError("");if(edit)setDraft(file.content??"");setEdit(v=>!v)}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{preview()}</div>
+        <div className={"file-view"+(error||conflict?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={async()=>{if(await keepUnsaved())return;setError("");setConflict(null);if(edit)setDraft(file.content??"");setEdit(!edit)}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={()=>save()}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{conflict&&<div className="workspace-file-error workspace-file-conflict" role="alert"><span>{conflict.message} Reload from disk drops your edits; Overwrite saves yours in its place.</span><div><button onClick={()=>open(file.path,{discard:true})}>Reload from disk</button><button onClick={()=>save(conflict.version)}>Overwrite</button></div></div>}{preview()}</div>
       </div>
     </div>}
     {tab==="diff"&&!allowDiff&&<div className="changes-empty"><FileDiff size={20}/><strong>No repository changes</strong><span>General chats are not attached to a repository, so there is nothing to diff.</span></div>}

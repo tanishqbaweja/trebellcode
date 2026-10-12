@@ -52,6 +52,35 @@ function askTextInApp(message,defaultValue){
   });
 }
 
+// Asks before something is dropped, in the same dialog with no field: resolves to true on the `confirm` button and to false on the
+// `cancel` one or Escape. It opens with focus on `cancel`, so Enter keeps things as they are.
+export function askConfirm(message,{confirm,cancel}){
+  return new Promise(resolve=>{
+    const opener=document.activeElement;
+    const dialog=document.createElement("dialog");
+    dialog.className="inspector-text-prompt";
+    const form=document.createElement("form");
+    const text=document.createElement("p");text.textContent=message;
+    text.id="inspector-text-prompt-"+Math.random().toString(36).slice(2);dialog.setAttribute("aria-labelledby",text.id);
+    const actions=document.createElement("div");actions.className="inspector-text-prompt-actions";
+    const keep=document.createElement("button");Object.assign(keep,{type:"button",textContent:cancel});
+    const drop=document.createElement("button");Object.assign(drop,{type:"button",textContent:confirm,className:"danger"});
+    actions.append(keep,drop);form.append(text,actions);dialog.append(form);
+    const finish=value=>{
+      if(!dialog.isConnected)return;
+      dialog.close();dialog.remove();
+      try{if(opener?.isConnected)opener.focus()}catch{}
+      resolve(value);
+    };
+    form.addEventListener("submit",event=>event.preventDefault());
+    keep.addEventListener("click",()=>finish(false));
+    drop.addEventListener("click",()=>finish(true));
+    dialog.addEventListener("cancel",event=>{event.preventDefault();finish(false)});
+    document.body.append(dialog);
+    dialog.showModal();keep.focus();
+  });
+}
+
 export default function RightPanel({active,onActive,onClose,children,disabledTabs=[],hiddenTabs=[],maximized=false,onToggleMaximized}){
   const tabScrollRef=useRef(null);
   // The active tab stays in view when the strip is narrower than its tabs (keyboard and palette switches included).

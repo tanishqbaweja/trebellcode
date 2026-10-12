@@ -409,6 +409,76 @@ test("a working-tree read that answers after newer reads started still shows, an
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-stream-newest-light-1280x800.png",fullPage:true});
 });
 
+test("the Files editor asks before it drops unsaved edits, and a save never writes over a file that changed on disk",async({page,request})=>{
+  test.setTimeout(90_000);
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace unsaved edits",{"notes.txt":"line one\nline two\n","app.js":"console.log(1);\n"});
+  const head=right.locator(".file-head strong"),editor=right.locator("textarea.file-editor"),notes=join(dir,"notes.txt");
+  const button=name=>right.locator(".file-head").getByRole("button",{name,exact:true});
+  const question=page.getByRole("dialog",{name:"Discard your changes to notes.txt?"});
+  const editNotes=async text=>{await button("Edit").click();await editor.click();await page.keyboard.press("Control+End");await page.keyboard.type(text,{delay:20})};
+  const openFile=async name=>{await row(name).click();await expect(head).toHaveText(name)};
+  await openFile("notes.txt");
+  await expect(right.locator(".syntax-view")).toContainText("line two");
+  await editNotes("my edit");
+
+  // Opening another file asks first, with focus on keeping the edits; Escape keeps them, as does Keep editing.
+  await row("app.js").click();
+  await expect(question).toBeVisible();
+  await expect(question.getByRole("button",{name:"Keep editing"})).toBeFocused();
+  await shootBothModes(page,"workspace-unsaved-question",{close:()=>page.keyboard.press("Escape"),reopen:async()=>{await row("app.js").click();await expect(question).toBeVisible()}});
+  await page.keyboard.press("Escape");
+  await expect(question).toHaveCount(0);
+  await expect(head).toHaveText("notes.txt");await expect(editor).toHaveValue("line one\nline two\nmy edit");
+  // Cancel closes the editor: it asks the same question.
+  await button("Cancel").click();
+  await question.getByRole("button",{name:"Keep editing"}).click();
+  await expect(editor).toHaveValue("line one\nline two\nmy edit");
+  // Discard changes drops them and opens the other file; the file on disk never had them.
+  await row("app.js").click();
+  await question.getByRole("button",{name:"Discard changes"}).click();
+  await expect(head).toHaveText("app.js");
+  expect(await readFile(notes,"utf8")).toBe("line one\nline two\n");
+  // An editor with nothing changed closes and gives way with no question.
+  await openFile("notes.txt");await button("Edit").click();await expect(editor).toBeVisible();
+  await openFile("app.js");await expect(question).toHaveCount(0);
+
+  // An agent writes the open file while it is edited: Save writes nothing, says so, and keeps the edit in the editor.
+  await openFile("notes.txt");
+  await editNotes("mine");
+  await writeFile(notes,"line one\nline two\nagent line\n");
+  await button("Save").click();
+  const conflict=right.getByRole("alert").filter({hasText:"changed on disk"});
+  await expect(conflict).toContainText("notes.txt changed on disk after you opened it.");
+  expect(await readFile(notes,"utf8")).toBe("line one\nline two\nagent line\n");
+  await expect(editor).toHaveValue("line one\nline two\nmine");
+  await shootBothModes(page,"workspace-save-conflict");
+  // Reload from disk shows the agent's version in place of the edit.
+  await conflict.getByRole("button",{name:"Reload from disk"}).click();
+  await expect(editor).toHaveCount(0);await expect(conflict).toHaveCount(0);
+  await expect(right.locator(".syntax-view")).toContainText("agent line");
+  // Overwrite saves the edit over a version that changed, and a later save of that version needs no question.
+  await editNotes("mine again");
+  await writeFile(notes,"agent rewrote it\n");
+  await button("Save").click();
+  await conflict.getByRole("button",{name:"Overwrite"}).click();
+  await expect(editor).toHaveCount(0);
+  await expect(right.locator(".syntax-view")).toContainText("mine again");
+  expect(await readFile(notes,"utf8")).toBe("line one\nline two\nagent line\nmine again");
+  await editNotes(" and more");await button("Save").click();
+  await expect(editor).toHaveCount(0);
+  expect(await readFile(notes,"utf8")).toBe("line one\nline two\nagent line\nmine again and more");
+  // A file deleted on disk is not made again by a plain Save either: the panel says it is gone, and Overwrite writes it back.
+  await editNotes("!");
+  await rm(notes);
+  await button("Save").click();
+  const gone=right.getByRole("alert").filter({hasText:"deleted on disk"});
+  await expect(gone).toContainText("notes.txt was deleted on disk after you opened it.");
+  await expect.poll(()=>readFile(notes,"utf8").catch(()=>"(none)")).toBe("(none)");
+  await gone.getByRole("button",{name:"Overwrite"}).click();
+  await expect(editor).toHaveCount(0);
+  expect(await readFile(notes,"utf8")).toBe("line one\nline two\nagent line\nmine again and more!");
+});
+
 test("a binary file opens as binary, with its size and no Edit, and its bytes stay as they were",async({page,request})=>{
   test.setTimeout(60_000);
   // Every byte value (NUL included), and a Latin-1 text whose "é" is not UTF-8.

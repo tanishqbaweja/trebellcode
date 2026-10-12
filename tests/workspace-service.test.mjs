@@ -132,7 +132,7 @@ test("the Files editor reads bytes that are not UTF-8 text as binary, and never 
     assert.ok((await readFile(join(dir,"logo.png"))).equals(png));assert.ok((await readFile(join(dir,"latin1.txt"))).equals(latin));
     const text=await environmentWorkspaceEditorFile(join(dir,"bom.txt"),{root:dir});
     assert.equal(text.binary,false);assert.equal(text.content,"﻿naïve “text”\r\nline two\r\n");
-    await environmentWorkspaceEditorSave(join(dir,"bom.txt"),text.content,{root:dir});
+    assert.equal((await environmentWorkspaceEditorSave(join(dir,"bom.txt"),text.content,{root:dir,version:text.version})).version,text.version);
     assert.ok((await readFile(join(dir,"bom.txt"))).equals(bom),"saving what was read writes the same bytes back");
   }finally{await rm(dir,{recursive:true,force:true});}
 });
@@ -148,8 +148,45 @@ test("a remote file reaches the Files editor byte for byte, binary ones as binar
   // Carriage returns and the trailing blank line survive the trip, so saving the text unchanged writes the same bytes.
   const text=await environmentWorkspaceEditorFile("/srv/app/src/index.js",options);
   assert.equal(text.content,"export const ok=1;\r\n\r\n");
-  await environmentWorkspaceEditorSave("/srv/app/src/index.js",text.content,options);
+  assert.equal((await environmentWorkspaceEditorSave("/srv/app/src/index.js",text.content,{...options,version:text.version})).version,text.version);
   assert.ok(files.get("/srv/app/src/index.js").equals(code));
   await assert.rejects(()=>environmentWorkspaceEditorFile("/etc/passwd",options),/outside the active workspace/i);
+});
+
+test("a Files editor save names the version it edited, and a file that changed or went on disk since is not written",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-version-"));
+  try{
+    const path=join(dir,"notes.txt");
+    await writeFile(path,"one\n");
+    const opened=await environmentWorkspaceEditorFile(path,{root:dir});
+    // An agent writes the file while it is open: the save of the old version writes nothing and names what is there now.
+    await writeFile(path,"agent\n");
+    const changed=await environmentWorkspaceEditorSave(path,"mine\n",{root:dir,version:opened.version});
+    assert.deepEqual(changed,{conflict:"changed",version:(await environmentWorkspaceEditorFile(path,{root:dir})).version,error:"notes.txt changed on disk after you opened it."});
+    assert.equal(await readFile(path,"utf8"),"agent\n");
+    // A save with no version is a save over nothing, so it never writes over a file either.
+    assert.equal((await environmentWorkspaceEditorSave(path,"mine\n",{root:dir})).conflict,"changed");
+    // Overwrite names the version the refusal named; the next save names the version that one wrote.
+    const overwritten=await environmentWorkspaceEditorSave(path,"mine\n",{root:dir,version:changed.version});
+    assert.equal(await readFile(path,"utf8"),"mine\n");assert.equal(overwritten.content,"mine\n");
+    await environmentWorkspaceEditorSave(path,"mine twice\n",{root:dir,version:overwritten.version});
+    assert.equal(await readFile(path,"utf8"),"mine twice\n");
+    // A file deleted since it was opened is not made again by a save of its old version, only by one made over no file.
+    const before=(await environmentWorkspaceEditorFile(path,{root:dir})).version;
+    await rm(path);
+    assert.deepEqual(await environmentWorkspaceEditorSave(path,"again\n",{root:dir,version:before}),{conflict:"deleted",version:null,error:"notes.txt was deleted on disk after you opened it."});
+    await assert.rejects(()=>readFile(path),{code:"ENOENT"});
+    await environmentWorkspaceEditorSave(path,"again\n",{root:dir,version:null});
+    assert.equal(await readFile(path,"utf8"),"again\n");
+  }finally{await rm(dir,{recursive:true,force:true});}
+  // On a remote environment too.
+  const files=new Map([["/srv/app/notes.txt",Buffer.from("one\n")]]),options={environments:remoteFiles(files),environmentId:"ssh-a",root:"/srv/app"};
+  const opened=await environmentWorkspaceEditorFile("/srv/app/notes.txt",options);
+  files.set("/srv/app/notes.txt",Buffer.from("agent\n"));
+  const changed=await environmentWorkspaceEditorSave("/srv/app/notes.txt","mine\n",{...options,version:opened.version});
+  assert.equal(changed.conflict,"changed");assert.equal(files.get("/srv/app/notes.txt").toString(),"agent\n");
+  files.delete("/srv/app/notes.txt");
+  assert.equal((await environmentWorkspaceEditorSave("/srv/app/notes.txt","mine\n",{...options,version:changed.version})).conflict,"deleted");
+  assert.equal(files.has("/srv/app/notes.txt"),false);
 });
 

@@ -2713,7 +2713,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         try{
           const body=await readJsonBody(req,4*1024*1024);
           const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
-          return json(res,200,await environmentWorkspaceEditorSave(body.path,body.content,{root:body.root||null,environments,environmentId}));
+          const saved=await environmentWorkspaceEditorSave(body.path,body.content,{version:body.version??null,root:body.root||null,environments,environmentId});
+          return json(res,saved.conflict?409:200,saved);
         }catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
       }
       try{

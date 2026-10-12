@@ -259,6 +259,8 @@ export function environmentWorkspacePath(root,filePath,{environments=null,enviro
 // The Files panel's viewer and editor read a file as bytes (a remote one streams from its environment, so no byte is lost to text
 // decoding on the way). It is text only when its bytes are UTF-8 with no NUL byte, so saving what the editor shows writes the same
 // bytes back; anything else (an image, an archive, a UTF-16 or Latin-1 file) is binary, shown with its size and never as text.
+// The version is a hash of the bytes read: a save names the version it edited, so a change made on disk since is never overwritten
+// unseen.
 async function editorBytes(filePath,maxBytes,{root=null,environments=null,environmentId=null}={}){
   const located=environmentWorkspacePath(root,filePath,{environments,environmentId});
   const name=located.remote?posix.basename(located.path):basename(located.path);
@@ -278,21 +280,26 @@ async function editorBytes(filePath,maxBytes,{root=null,environments=null,enviro
 }
 function editorView({located,name,bytes},environmentId=null){
   const binary=bytes.includes(0)||!isUtf8(bytes);
-  return {path:located.path,name,size:bytes.length,binary,content:binary?null:bytes.toString("utf8"),...(located.remote?{environmentId}:{})};
+  return {path:located.path,name,size:bytes.length,version:createHash("sha256").update(bytes).digest("hex"),binary,content:binary?null:bytes.toString("utf8"),...(located.remote?{environmentId}:{})};
 }
 
 export async function environmentWorkspaceEditorFile(filePath,{maxBytes=512_000,root=null,environments=null,environmentId=null}={}){
   return editorView(await editorBytes(filePath,maxBytes,{root,environments,environmentId}),environmentId);
 }
 
-// Saves the editor's text. A file that is binary on disk is never saved over as text.
-export async function environmentWorkspaceEditorSave(filePath,content,{root=null,environments=null,environmentId=null}={}){
+// Saves the editor's text over the version it edited (null: no file yet). A file that changed or went on disk since is not written:
+// the answer says so and names the version there now (null when it is gone), which an Overwrite then saves over. A binary file is
+// never saved over as text. On a remote environment a file that cannot be read counts as gone, as a missing file and a failed read
+// look alike there.
+export async function environmentWorkspaceEditorSave(filePath,content,{version=null,root=null,environments=null,environmentId=null}={}){
   const bytes=Buffer.from(String(content??""),"utf8");
   if(bytes.length>2*1024*1024)throw new Error("File is too large to edit (maximum 2 MB)");
-  const current=await editorBytes(filePath,32*1024*1024,{root,environments,environmentId}).then(read=>editorView(read),error=>{if(error?.code==="ENOENT")return null;throw error});
-  if(current?.binary)throw new Error(current.name+" is a binary file, so it is not saved as text");
   const located=environmentWorkspacePath(root,filePath,{environments,environmentId});
+  const current=await editorBytes(filePath,32*1024*1024,{root,environments,environmentId}).then(read=>editorView(read),error=>{if(error?.code==="ENOENT"||located.remote)return null;throw error});
+  if(current?.binary)throw new Error(current.name+" is a binary file, so it is not saved as text");
+  const name=located.remote?posix.basename(located.path):basename(located.path);
+  if((current?.version??null)!==(version||null))return {conflict:current?"changed":"deleted",version:current?.version??null,error:name+(current?" changed on disk after you opened it.":" was deleted on disk after you opened it.")};
   if(located.remote)await environments.writeTextFile(environmentId,located.path,bytes);
   else{await mkdir(dirname(located.path),{recursive:true});await writeFile(located.path,bytes)}
-  return editorView({located,name:located.remote?posix.basename(located.path):basename(located.path),bytes},environmentId);
+  return editorView({located,name,bytes},environmentId);
 }
