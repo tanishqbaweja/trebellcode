@@ -196,17 +196,40 @@ for(const mode of MODES){
     await expect(rows(page).nth(2)).not.toHaveClass(/active/);
   });
 
-  test(`a notice that fails to load says so in the pane (${mode})`,async({page,request})=>{
+  test(`a notice that fails to load says so in the pane, and Retry reads it again (${mode})`,async({page,request})=>{
     await open(page,request,{mode});
     await page.route(/\/api\/licenses$/,route=>json(route,LIST));
-    await page.route(/\/api\/licenses\/detail\?/,route=>json(route,{error:"License entry was not found"},404));
+    let fail=true,reads=0;
+    await page.route(/\/api\/licenses\/detail\?/,route=>{reads++;return fail?json(route,{error:"License entry was not found"},404):json(route,noticeOf(PACKAGES[3]))});
     await openLicenses(page);
     await rows(page).nth(3).click();
-    const pane=page.locator(".license-detail");
+    const pane=page.locator(".license-detail"),failure=pane.getByRole("alert");
     await expect(pane.locator(".license-detail-head strong")).toHaveText(PACKAGES[3].name);
-    await expect(pane.getByRole("alert")).toHaveText("Could not load this notice: License entry was not found");
+    await expect(failure).toContainText("Could not load this notice: License entry was not found");
     await expect(pane).not.toContainText("Select a package");
+    const retry=failure.getByRole("button",{name:"Retry"});
+    await expect(retry,"a failed notice offers no Retry; only clicking its row again reads it").toBeVisible();
     await page.screenshot({animations:"disabled",path:shots+`notice-failed-${mode}-1280.png`});
+    await page.setViewportSize({width:900,height:800});
+    await expect(retry).toBeInViewport();
+    expect(await sideways(page)).toBe(false);
+    await page.screenshot({animations:"disabled",path:shots+`notice-failed-${mode}-900.png`});
+    await page.setViewportSize({width:1280,height:800});
+    // A second failure keeps the alert and puts focus back on Retry.
+    await retry.focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>reads).toBe(2);
+    await expect(failure.getByRole("button",{name:"Retry"})).toBeFocused();
+    await expect(rows(page).nth(3)).toHaveClass(/active/);
+    await page.screenshot({animations:"disabled",path:shots+`notice-failed-retry-focus-${mode}-1280.png`});
+    // Once it reads, the notice shows under the package's name and focus stays in the pane, on its Close button.
+    fail=false;
+    await page.keyboard.press("Enter");
+    await expect(pane.locator("pre")).toHaveText(noticeOf(PACKAGES[3]).text);
+    await expect(pane.getByRole("alert")).toHaveCount(0);
+    await expect(pane.getByRole("button",{name:"Close license"})).toBeFocused();
+    expect(reads).toBe(3);
+    await page.screenshot({animations:"disabled",path:shots+`notice-failed-then-retried-${mode}-1280.png`});
   });
 
   test(`package names read in full however narrow the list is (${mode})`,async({page,request})=>{

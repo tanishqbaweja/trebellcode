@@ -14,7 +14,7 @@ export default function LicensesPage(){
   // The open package: the row picked last and where its notice read stands ({item,status:"loading"|"ready"|"failed",detail,error}).
   // The pane names that row straight away. Reads are numbered, so a late answer for a row picked before, or for a pane that was
   // closed meanwhile, is dropped instead of filling the pane under another row's highlight.
-  const [opened,setOpened]=useState(null);const noticeRead=useRef(0);
+  const [opened,setOpened]=useState(null);const noticeRead=useRef(0),noticeRetried=useRef(false),noticeRetryRef=useRef(null),noticeCloseRef=useRef(null);
   const loadList=useCallback(async()=>{
     const read=++listRead.current;
     setList({status:"loading",items:[],error:""});
@@ -42,6 +42,16 @@ export default function LicensesPage(){
     catch(error){if(read===noticeRead.current)setOpened({item,status:"failed",detail:null,error:reason(error)})}
   }
   function close(){noticeRead.current++;setOpened(null)}
+  // The notice's Retry goes away while it reads, so focus then lands on the pane's Close (the notice follows it), or on Retry again
+  // when it failed again. Focus put somewhere meanwhile (another row picked) stays there.
+  useEffect(()=>{
+    if(!noticeRetried.current||opened?.status==="loading")return;
+    noticeRetried.current=false;
+    const focused=document.activeElement;
+    if(focused&&focused!==document.body&&focused.isConnected)return;
+    (opened?.status==="failed"?noticeRetryRef.current:noticeCloseRef.current)?.focus();
+  },[opened?.status]);
+  function retryNotice(){noticeRetried.current=true;open(opened.item)}
   return <div className="licenses-page">
     <div className="licenses-toolbar"><div className="licenses-search"><Search size={13}/><input ref={searchRef} value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Escape"&&query){e.preventDefault();e.stopPropagation();setQuery("")}}} placeholder="Search package, version or license"/></div>{/* Until the list is read the count is a dash the list's own status explains, so a screen reader skips it. */}<span aria-hidden={list.status==="ready"?undefined:"true"}>{list.status==="ready"?`${filtered.length} of ${items.length}`:"—"}</span></div>
     <div className="licenses-layout"><div className="licenses-list" ref={listRef} aria-busy={list.status==="loading"?"true":undefined}>{list.status==="loading"?<div className="license-list-empty license-list-loading" role="status"><LoaderCircle size={17} aria-hidden="true"/><strong>Loading licenses…</strong></div>
@@ -49,9 +59,9 @@ export default function LicensesPage(){
       :filtered.length?filtered.map(item=><button key={item.id} className={opened?.item.id===item.id?"active":""} onClick={()=>open(item)}><FileText size={13}/><span className="license-row-text"><strong>{item.name}</strong><span className="license-row-meta"><small>{versionLine(item)}</small><em>{item.component}</em></span></span></button>)
       :<div className="license-list-empty"><FileText size={17} aria-hidden="true"/><strong>{searched?"No matching packages":"No packages found"}</strong><span>{searched?"Try a package name, version, or license type.":"This installation has no third-party packages to list."}</span></div>}</div>
       <div className="license-detail">{opened?<>
-        <div className="license-detail-head"><div><strong>{opened.item.name}</strong><span>{versionLine(opened.item)}</span></div><button type="button" aria-label="Close license" title="Close license" onClick={close}><X size={13}/></button></div>
+        <div className="license-detail-head"><div><strong>{opened.item.name}</strong><span>{versionLine(opened.item)}</span></div><button type="button" ref={noticeCloseRef} aria-label="Close license" title="Close license" onClick={close}><X size={13}/></button></div>
         {opened.status==="ready"?<>{opened.detail?.homepage&&<p>{opened.detail.homepage}</p>}<pre>{opened.detail?.text||""}</pre></>
-          :opened.status==="failed"?<div className="inline-error license-notice-failed" role="alert">Could not load this notice: {opened.error}</div>
+          :opened.status==="failed"?<div className="inline-error license-notice-failed" role="alert"><span>Could not load this notice: {opened.error}</span><button type="button" ref={noticeRetryRef} onClick={retryNotice}>Retry</button></div>
           :<div className="license-notice-loading" role="status" aria-busy="true"><LoaderCircle size={14} aria-hidden="true"/>Loading the notice…</div>}
       </>:<div className="license-empty-state"><FileText size={20}/><strong>Select a package</strong><span>Its installed license notice will appear here.</span></div>}</div>
     </div>
