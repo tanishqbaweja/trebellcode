@@ -548,6 +548,71 @@ test.describe("Renaming a project",()=>{
     expect((await listedProjects(request)).find(project=>project.path===boot.cwd&&!project.environmentId)?.name).toBe("Renamed While Moving");
   });
 
+  // A rename begun straight away, before Enter or leaving the field, keeps its place when Git answers and the card is drawn again
+  // in its repository's group: the field still has the keyboard, the text typed so far and the caret where it was. So does a field
+  // of the card's action editor. Nothing is saved until the person saves it.
+  for(const mode of MODES)test(`a field being typed in keeps its text, caret and focus when the card moves into its repository's group (${mode})`,async({page,request})=>{
+    const boot=await open(page,request,{mode});
+    const saves=[];
+    page.on("request",item=>{if(item.method()==="POST"&&/\/api\/projects$/.test(item.url()))saves.push(item.postDataJSON())});
+    let release=()=>{},held=Promise.resolve();
+    const hold=()=>{held=new Promise(resolve=>{release=resolve})};
+    await page.route(/\/api\/git\/info/,async route=>{await held;return json(route,{isGit:true,branch:"main",remotes:[{name:"origin",kind:"fetch",url:"https://example.com/polish/workspace.git"}]})});
+    const group=page.locator(".project-group-head").filter({hasText:"https://example.com/polish/workspace.git"});
+    const card=page.locator(".project-card.active"),title=card.locator(".project-open strong");
+    const caret=field=>field.evaluate(node=>[node.selectionStart,node.selectionEnd]);
+    hold();
+    await nav(page,"Projects").click();
+    await expect(title).toHaveText(MAIN);
+    await card.getByRole("button",{name:/Project identity/}).click();
+    const name=card.getByRole("textbox",{name:"Name"});
+    await name.click();
+    await name.press("ControlOrMeta+A");
+    await name.pressSequentially("Renamed Wile Moving",{delay:15});
+    for(let i=0;i<" Moving".length;i++)await name.press("ArrowLeft");
+    expect(await caret(name)).toEqual([12,12]);
+    const field=await name.elementHandle();
+    release();
+    await expect(group).toBeVisible();
+    expect(await field.evaluate(node=>node.isConnected),"the card was drawn again").toBe(false);
+    await expect(name,"the Name field drawn again has the keyboard").toBeFocused();
+    await expect(name).toHaveValue("Renamed Wile Moving");
+    expect(await caret(name),"the caret is where it was").toEqual([12,12]);
+    await card.locator(".project-identity-editor").scrollIntoViewIfNeeded();
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:shots+`project-name-typing-redrawn-${mode}-${width}.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    await page.waitForTimeout(300);
+    expect(saves,"drawing the card again saves nothing").toEqual([]);
+    // Typing carries on at the caret, and Enter saves the name once.
+    await page.keyboard.press("ArrowLeft");await page.keyboard.press("ArrowLeft");await page.keyboard.press("ArrowLeft");
+    await page.keyboard.type("h");
+    await expect(name).toHaveValue("Renamed While Moving");
+    await page.keyboard.press("Enter");
+    await expect(title).toHaveText("Renamed While Moving");
+    expect(saves.map(body=>body.name)).toEqual(["Renamed While Moving"]);
+
+    // A field of the action editor, which keeps its text on the page, keeps the keyboard and its caret too.
+    hold();
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await nav(page,"Projects").click();
+    await expect(title).toHaveText("Renamed While Moving");
+    await card.getByRole("button",{name:"Add action",exact:true}).click();
+    const command=card.getByPlaceholder("Command (e.g. npm run dev)");
+    await command.click();
+    await command.pressSequentially("npm run dve",{delay:15});
+    await command.press("ArrowLeft");
+    const before=await command.elementHandle();
+    release();
+    await expect(group).toBeVisible();
+    expect(await before.evaluate(node=>node.isConnected),"the card was drawn again").toBe(false);
+    await expect(command,"the command field drawn again has the keyboard").toBeFocused();
+    expect(await caret(command)).toEqual([10,10]);
+    await page.keyboard.press("Backspace");await page.keyboard.press("ArrowRight");await page.keyboard.type("v");
+    await expect(command).toHaveValue("npm run dev");
+    expect(saves.length,"nothing more was saved").toBe(1);
+  });
+
   for(const mode of MODES)test(`clearing the name puts the saved name back and says why (${mode})`,async({page,request})=>{
     const boot=await open(page,request,{mode});
     await openProjects(page);

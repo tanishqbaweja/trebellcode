@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState} from "react";
+import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, MessageSquareText, Pencil, Play, Plus, RefreshCw, Search, Settings2, SquareTerminal, Trash2, Workflow, X } from "lucide-react";
 import { api } from "../api.js";
 import { baseProjectRecord, enrichProjectRecords, projectCardDetail, projectEnvironmentLabel, summarizeProjectRefreshErrors } from "../project-enrichment.js";
@@ -38,6 +38,10 @@ function autoMonogram(name="Project"){
 function autoColor(name="Project"){
   let hash=0;for(const ch of String(name))hash=(hash*31+ch.charCodeAt(0))>>>0;return ICON_COLORS[hash%ICON_COLORS.length];
 }
+// A field of a card as it is found again in the card drawn in its place: what names it (its label, placeholder or class), and
+// which of the card's fields so named it is.
+const cardFields=card=>[...card.querySelectorAll("input,select,textarea,button")];
+const fieldName=field=>[field.tagName,field.type,field.getAttribute("aria-label")||field.getAttribute("placeholder")||field.getAttribute("title")||field.className||(field.closest("label")||field).textContent.trim()].join("|");
 function ProjectIcon({project}){
   const icon=project.icon;
   if(icon?.kind==="image")return <span className="project-icon project-icon-image"><img src={icon.value} alt=""/></span>;
@@ -223,6 +227,28 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     if(value===saved)return;
     const sending=sendingNamesRef.current;sending.set(project.id,value);
     void saveProject(project,{name:value}).finally(()=>{if(sending.get(project.id)===value)sending.delete(project.id)});
+  }
+  // That redraw also took the keyboard out of the card, and with it a name typed but not yet saved. The field that has focus as the
+  // old card goes is found again in the new one (fieldName) and gets back its text, its caret and the keyboard, so a person who
+  // starts typing in a card straight away carries on where they were. What a card leaves that no new card takes in the same
+  // commit (it was removed, or the page left) is dropped.
+  const movedFieldRef=useRef(null),cardRefs=useRef(new Map());
+  useLayoutEffect(()=>{movedFieldRef.current=null});
+  function cardRef(id){
+    if(!cardRefs.current.has(id))cardRefs.current.set(id,card=>{
+      const moved=movedFieldRef.current;
+      if(moved?.id===id){
+        movedFieldRef.current=null;
+        const field=cardFields(card).filter(item=>fieldName(item)===moved.name)[moved.index];
+        if(field){if(moved.text!=null)field.value=moved.text;field.focus();if(moved.start!=null)try{field.setSelectionRange(moved.start,moved.end,moved.direction)}catch{}}
+      }
+      return()=>{
+        const active=document.activeElement;if(!card.contains(active)||active===card)return;
+        const name=fieldName(active),typed=/^(INPUT|TEXTAREA)$/.test(active.tagName)&&!/^(checkbox|radio|file|color)$/.test(active.type);
+        movedFieldRef.current={id,name,index:cardFields(card).filter(item=>fieldName(item)===name).indexOf(active),text:typed?active.value:null,start:typed?active.selectionStart:null,end:typed?active.selectionEnd:null,direction:typed?active.selectionDirection:null};
+      };
+    });
+    return cardRefs.current.get(id);
   }
   // Each edit starts from the newest cleanup value (including edits still saving) and shows at once, so two quick
   // clicks on a slow server both stick instead of the second save overwriting the first with stale rules.
@@ -463,7 +489,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"");setCloneParentError("")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input ref={cloneParentRef} aria-label="Clone parent directory" aria-invalid={cloneParentError?"true":undefined} aria-describedby={cloneParentError?"clone-parent-error":undefined} value={cloneParent} onChange={e=>{setCloneParent(e.target.value);setCloneParentError("")}} placeholder="Parent directory" title="Remote parent directory"/>}{cloneParentError&&<p id="clone-parent-error" className="clone-field-error" role="alert">{cloneParentError}</p>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy==="clone"?"Starting…":"Clone"}</button></div>}
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.totalCount} checkout{group.totalCount===1?"":"s"}</span></div></div>
-      <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id}>
+      <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id} ref={cardRef(p.id)}>
         <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong title={p.name}>{p.name}</strong><span title={projectEnvironmentLabel(p,environmentData.profiles)+" · "+p.path}>{projectEnvironmentLabel(p,environmentData.profiles)} · {p.path}</span><small title={projectCardDetail(p)||undefined}>{projectCardDetail(p)}</small></div></button>
         <button className="project-remove" aria-label={"Remove "+p.name} onClick={()=>removeProject(p)} disabled={busy}><Trash2 size={13}/></button>
         {p.cloneJob&&p.cloneJob.status!=="completed"&&<div className={"project-clone-status "+p.cloneJob.status}><div><strong>{p.cloneJob.phase||"Cloning repository"}</strong><span>{p.cloneJob.status==="failed"?(p.cloneJob.error||"Clone failed"):p.cloneJob.status==="cancelled"?"Clone cancelled":Math.round(p.cloneJob.progress||0)+"%"}</span></div>{["running","cancelling"].includes(p.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(p.cloneJob.progress)||0)+"%"}}/></i>}<div>{p.cloneJob.status==="running"&&<button onClick={()=>cloneAction(p,"cancel")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(p.cloneJob.status)&&<button onClick={()=>cloneAction(p,"retry")}><RefreshCw size={11}/> Retry</button>}</div></div>}
