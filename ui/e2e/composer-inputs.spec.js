@@ -245,6 +245,32 @@ test("dictation says when the microphone is blocked, and a second click on the m
   }finally{await harness.close()}
 });
 
+test("the blocked-microphone note gives way to the send: a refused send says it was not sent, and a sent one brings the context meter back",async({page})=>{
+  test.setTimeout(90_000);
+  await scriptedDictation(page);
+  let refusing=true;
+  const harness=await openComposerApp(page,{replies:[{text:"Login page checked."}],refuse:message=>refusing&&message.method==="turn/start"?"Provider quota exhausted":null});
+  try{
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert"),mic=page.getByRole("button",{name:"Voice dictation"}),context=page.locator(".composer-context");
+    await composer.click();await page.keyboard.type("Check the login page",{delay:15});
+    await mic.click();
+    await expect(alert).toHaveText("The microphone is blocked. Allow microphone access for Trebell Code to dictate.");
+    // The person sends what they typed instead, and the harness refuses the turn.
+    await composer.click();await page.keyboard.press("Enter");
+    await expect(alert).toHaveText("Not sent: Provider quota exhausted. Your draft is kept.");
+    await expect(composer).toHaveValue("Check the login page");
+    await shootBoth(page,"dictation-blocked-then-send-refused",()=>expect(alert).toBeInViewport());
+    // Blocked again and then sent: the note goes with the message, and the context meter is back.
+    refusing=false;
+    await mic.click();await expect(alert).toHaveText(/microphone is blocked/);
+    await composer.click();await page.keyboard.press("Enter");
+    await expect(page.getByText("Login page checked.")).toBeVisible({timeout:15_000});
+    await expect(composer).toHaveValue("");
+    await expect(alert).toHaveCount(0);await expect(context).toBeVisible();
+    await shootBoth(page,"dictation-blocked-then-sent",()=>expect(context).toBeInViewport());
+  }finally{await harness.close()}
+});
+
 test("a welcome suggestion puts its prompt in the composer with the caret at its end, so Enter sends it",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page,{newTask:true,replies:[{text:"Found the bug and fixed it."}]});
