@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { keepThreadMeta } from "./test-home.js";
 
 // Trebell Native on each model provider, as the live provider sweep met them: a provider without a key, a key the provider
 // refuses, OpenAI's long model list and a saved Thinking level the model does not offer. The GUI server is mocked at its
@@ -67,6 +68,7 @@ async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models
   const row=id=>({id,name:PROVIDER_NAMES[id],official:["openai","anthropic","gemini"].includes(id),requiresKey:true,hasKey:id===server.provider&&server.hasKey,keyCheck:id===server.provider?server.keyCheck:null});
   const providers=()=>({selected:server.provider,providers:Object.keys(PROVIDER_NAMES).map(row),status:{...row(server.provider),ready:server.hasKey},ready:server.hasKey});
   const runtimes=()=>({selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[{id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true,version:"Built into Trebell Code"}]});
+  await keepThreadMeta(page);
   await page.route(/\/api\/bootstrap$/,route=>json(route,bootstrap()));
   await page.route(/\/api\/state$/,route=>json(route,{settings:settings(),projects:[],threadMeta:{}}));
   await page.route(/\/api\/settings$/,route=>{

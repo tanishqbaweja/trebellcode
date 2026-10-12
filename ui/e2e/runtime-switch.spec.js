@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { keepThreadMeta } from "./test-home.js";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -80,6 +81,7 @@ async function startHarness(page,{runtime="claude",catalogs=CATALOGS,catalogGate
     return {selectedRuntime:server.runtime,selectedInstanceId:server.runtime+"-default",definitions:HARNESSES.map(([id,name,protocol])=>({id,name,protocol,multipleInstances:profileEditing&&id==="claude"})),instances:statuses.map(({id,kind,name})=>({id,kind,displayName:name,enabled:true})),statuses};
   };
   const catalog=async active=>{await catalogGate?.(active);return catalogs[active]};
+  await keepThreadMeta(page);
   await page.route(/\/api\/bootstrap$/,route=>{server.counts.bootstrap++;return json(route,bootstrap())});
   await page.route(/\/api\/state$/,route=>json(route,{settings:settings(),projects:[],threadMeta:{}}));
   await page.route(/\/api\/settings$/,route=>json(route,settings()));

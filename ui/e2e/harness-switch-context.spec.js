@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { keepThreadMeta } from "./test-home.js";
 
 // What a harness switch, and the turn that runs before it, may leave behind on screen: the previous harness's Git text error or
 // in-flight Git text, a second sidebar row for a thread announced before its thread/start answer, and the previous socket's approval.
@@ -113,6 +114,7 @@ async function startHarness(page,{runtime,approvalCommands={},goalSet="reject",p
   };
   await page.route(/\/api\/bootstrap$/,async route=>{if(++server.counts.bootstrap===1&&holdStartupState)await holdStartupState;return json(route,bootstrap())});
   await page.route(/\/api\/state$/,async route=>{if(++server.counts.state===1&&holdStartupState)await holdStartupState;return json(route,{settings:settings(),projects:project?[project]:[],threadMeta})});
+  await keepThreadMeta(page);
   await page.route(/\/api\/settings$/,route=>json(route,settings()));
   // holdStartupModels holds the first /api/models answer (the startup load's), which still answers for the runtime it was asked under.
   await page.route(/\/api\/models(?:\?.*)?$/,async route=>{const asked=++server.counts.models,runtime=server.runtime;if(holdStartupModels&&asked===1)await holdStartupModels;return json(route,catalogs[runtime])});

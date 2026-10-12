@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { attachAgentRelay } from "../../src/agent-relay.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
+import { keepThreadMeta } from "./test-home.js";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 async function listen(server){await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));return server.address().port}
@@ -63,6 +64,7 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
   const port=await listen(server);
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   try{
+    await keepThreadMeta(page);
     await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"gemini",agentRuntimeInstanceId:"gemini-default",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+port+"/api/agent/ws",cwd:root,platform:process.platform,version:"fixture",activeEnvironmentId:null,activeEnvironment:null}));
     await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"gemini",agentRuntimeInstanceId:"gemini-default",modelProvider:"openai",defaultPermissionMode:"full",defaultWorkspaceMode:"current"},projects:[],threadMeta:Object.fromEntries(meta)}));
     await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,{models:["fixture-model"],metadata:{provider:"gemini",models:[{id:"fixture-model",name:"Fixture Model",provider:"gemini",agent:"Gemini"}]}}));

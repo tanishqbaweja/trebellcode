@@ -664,7 +664,7 @@ test("composer file mention failures stay visible and keep the mention retryable
 
 test("composer file mentions use fuzzy shared workspace search",async({page,request})=>{
   test.setTimeout(30_000);
-  const dir=await mkdtemp(join(tmpdir(),"trebell-fuzzy-mention-"));
+  const dir=await mkdtemp(join(tmpdir(),"trebell-fuzzy-mention-"));let project=null;
   try{
     const components=join(dir,"src","components"),utils=join(dir,"src","utils");
     await Promise.all([mkdir(components,{recursive:true}),mkdir(utils,{recursive:true})]);
@@ -673,7 +673,7 @@ test("composer file mentions use fuzzy shared workspace search",async({page,requ
       writeFile(join(utils,"compareUsers.js"),"export function compareUsers(){}\n","utf8"),
     ]);
     await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
-    await request.post("/api/projects",{data:{path:dir,name:"Fuzzy Mention Workspace",activate:true}});
+    project=(await (await request.post("/api/projects",{data:{path:dir,name:"Fuzzy Mention Workspace",activate:true}})).json()).project;
     await page.goto("/");
     const composer=page.getByTestId("composer");await expect(composer).toBeVisible();await composer.fill("Inspect @ucard");
     const menu=page.getByTestId("file-mention-menu");await expect(menu).toBeVisible();
@@ -681,16 +681,20 @@ test("composer file mentions use fuzzy shared workspace search",async({page,requ
     await expect(menu).not.toContainText("compareUsers.js");
     await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"chat-fuzzy-file-mention-1280x800.png",fullPage:true});
     await match.click();await expect(page.getByTestId("context-chips")).toContainText("UserCard.jsx");await expect(composer).toHaveValue(/Inspect @src[\\/]components[\\/]UserCard\.jsx /);
-  }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
+  }finally{
+    // The mock server keeps projects for the whole run: the folder goes, so its project goes too.
+    if(project?.id)await request.delete("/api/projects?id="+encodeURIComponent(project.id)).catch(()=>{});
+    await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
 });
 
 test("workspace panel refreshes from live RPC file-change notifications",async({page,request})=>{
   test.setTimeout(30_000);
-  const dir=await mkdtemp(join(tmpdir(),"trebell-live-workspace-"));
+  const dir=await mkdtemp(join(tmpdir(),"trebell-live-workspace-"));let project=null;
   try{
     await writeFile(join(dir,"initial.txt"),"initial\n","utf8");
     await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
-    await request.post("/api/projects",{data:{path:dir,name:"Live Workspace",activate:true}});
+    project=(await (await request.post("/api/projects",{data:{path:dir,name:"Live Workspace",activate:true}})).json()).project;
     await page.goto("/");
     await page.getByTestId("right-panel-toggle").click();
     const panel=page.getByTestId("right-panel");await expect(panel).toBeVisible();await expect(panel).toContainText("initial.txt");
@@ -702,7 +706,10 @@ test("workspace panel refreshes from live RPC file-change notifications",async({
     await request.post("/api/settings",{data:{appearance:"light",appearanceMode:"light"}});
     await page.reload();await page.getByTestId("right-panel-toggle").click();await expect(page.getByTestId("right-panel")).toContainText("agent-created.txt");
     await page.screenshot({animations:"disabled",path:auditDir+"workspace-live-file-refresh-light-1280x800.png",fullPage:true});
-  }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
+  }finally{
+    if(project?.id)await request.delete("/api/projects?id="+encodeURIComponent(project.id)).catch(()=>{});
+    await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
 });
 
 test("navigation history shortcuts visibly restore prior app surfaces",async({page,request})=>{
@@ -1019,6 +1026,8 @@ test("command palette keeps failed actions visible with useful feedback",async({
   await headerAction.click();
   await expect(page.getByTestId("app-action-error")).toContainText("Project action failed: Deliberate project action failure");
   await page.screenshot({animations:"disabled",path:auditDir+"header-project-action-error-1280x800.png",fullPage:true});
+  // The mock server keeps the project for every test and spec after this one, which would otherwise all show this action.
+  await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}});
 });
 
 test("command palette refresh failures preserve the last valid project catalog",async({page,request})=>{
@@ -3730,6 +3739,7 @@ test("project and environment configuration forms stay readable when expanded",a
   const envMetrics=await addCard.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(envMetrics.scroll).toBeLessThanOrEqual(envMetrics.client+1);
   await page.screenshot({animations:"disabled",path:auditDir+"environments-ssh-form-1280x800.png",fullPage:true});
+  await request.delete("/api/environments?id=visual-ssh");
 });
 
 test("project refresh and removal failures preserve the existing project card",async({page,request})=>{
@@ -4344,6 +4354,8 @@ test("environment refresh and removal failures preserve the existing environment
   const metrics=await page.locator(".environments-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({animations:"disabled",path:auditDir+"environments-action-error-1280x800.png",fullPage:true});
+  // Its removal failed on purpose in the page; the mock server keeps it for the whole run unless it goes here.
+  await request.delete("/api/environments?id=failure-ssh");
 });
 
 test("workspace file refresh and save failures stay visible without lying about state",async({page,request})=>{
@@ -5294,6 +5306,7 @@ test("custom theme stays coherent across chat panel and command palette",async({
   await page.keyboard.press("Escape");
   await page.setViewportSize({width:1280,height:800});
   await page.screenshot({animations:"disabled",path:auditDir+"custom-theme-chat-panel-1280x800.png",fullPage:true});
+  await request.post("/api/settings",{data:{customThemes:[],appearance:"dark",appearanceMode:"dark"}});
 });
 
 test("provider switching reuses its response without depending on bootstrap refresh",async({page})=>{

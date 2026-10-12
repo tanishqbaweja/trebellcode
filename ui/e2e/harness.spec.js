@@ -1,7 +1,20 @@
 import { test, expect } from "@playwright/test";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { e2eHome } from "./test-home.js";
+
+// The mock server keeps its state for the whole run: put back what the first test adds (the SSH environment, its project and its
+// defaults, the published and the custom theme, slower panels, the project's icon), so the specs after this one start as they expect.
+test.afterEach(async({request})=>{
+  await rm(join(e2eHome(),"themes","e2e-published.json"),{force:true});
+  const {projects=[]}=await (await request.get("/api/projects")).json();
+  for(const project of projects)if(project.environmentId==="ssh-palette")await request.delete("/api/projects?id="+encodeURIComponent(project.id));
+  await request.delete("/api/environments?id=ssh-palette");
+  const {settings={}}=await (await request.get("/api/state")).json(),{"ssh-palette":_,...environmentDefaults}=settings.environmentDefaults||{};
+  await request.post("/api/settings",{data:{appearance:"dark",appearanceMode:"dark",customThemes:[],environmentThemeSelections:{},panelAnimationMs:0,environmentDefaults}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,icon:null,worktreeSubmodules:null}});
+});
 
 async function expectModelCatalog(page,labels){
   const picker=page.getByTestId("model-picker");await expect(picker).toBeVisible();await expect(picker).toBeEnabled({timeout:15_000});await picker.click();

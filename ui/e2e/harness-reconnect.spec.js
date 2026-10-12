@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { keepThreadMeta } from "./test-home.js";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 
@@ -44,6 +45,7 @@ test("a send while the harness transport is down keeps the draft, never falls ba
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   try{
+    await keepThreadMeta(page);
     await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"harness-reconnect-fixture"}));
     await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
     await page.route(/\/api\/settings$/,route=>json(route,settings));
@@ -97,6 +99,7 @@ test("before the harness has ever connected the thread list says it is waiting f
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   try{
+    await keepThreadMeta(page);
     await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"harness-reconnect-fixture"}));
     await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
     await page.route(/\/api\/settings$/,route=>json(route,settings));

@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { keepThreadMeta } from "./test-home.js";
 
 // The command palette from the keyboard (keys typed straight after Ctrl+K, where focus goes after a command) and moving between pages
 // with the browser's Back and Forward beside the app's own Navigate back/forward shortcuts.
@@ -445,6 +446,7 @@ async function startCodex(threads,delays={},older=[]){
 }
 async function openCodex(page,fixture,threads,{mode="dark",width=1280,height=800}={}){
   await page.setViewportSize({width,height});
+  await keepThreadMeta(page);
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${fixture.port}`,cwd:process.cwd(),platform:process.platform,version:"navigation-fixture",activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:Object.fromEntries([...threads,...fixture.older].map(t=>[t.id,{projectless:true,environmentId:null,...fixture.meta[t.id]}]))}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
