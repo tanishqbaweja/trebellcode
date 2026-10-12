@@ -68,18 +68,21 @@ test("B5: a Codex reply delta through the relay opens no sqlite connection and p
 
 // B10: on every load the page posts the catalog fields of each listed thread it has not seen in this tab (100 on the perf home), and
 // each POST /api/thread-meta was a sqlite write transaction even when nothing had changed (scripts/perf/reload.mjs: 100 write
-// transactions on a reload and on a restart).
-test("B10: re-posting a thread's unchanged catalog fields costs no more write transactions than the baseline",async()=>{
+// transactions on a reload and on a restart). A patch that changes nothing but the time is no longer written.
+test("B10: re-posting a thread's unchanged catalog fields makes no write transaction and keeps its updatedAt",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-budget-b10-")),env={...process.env,TREBELL_HOME:home};
   try{
     const state=new TrebellStateStore(env);let writes=0;
     state.collections.DatabaseSync=class extends sqlite.DatabaseSync{exec(sql){if(/BEGIN IMMEDIATE/i.test(String(sql)))writes++;return super.exec(sql)}};
     const snapshot={id:"thread-b10",name:"Fix the build",preview:"The build fails on main",cwd:home,model:"gpt-5",updatedAt:1000,createdAt:900,status:{type:"idle",activeFlags:[]},section:null,projectId:null,runtime:"codex",provider:"openai"};
     const patch={runtime:"codex",provider:"openai",runtimeInstanceId:"codex-default",model:"gpt-5",threadSnapshot:snapshot};
-    state.updateThreadMeta("thread-b10",patch);assert.equal(writes,1,"the first post is written");
+    const first=state.updateThreadMeta("thread-b10",patch);assert.equal(writes,1,"the first post is written");
+    await new Promise(resolve=>setTimeout(resolve,5));
     // The page sends the same fields again as JSON, on every load.
-    state.updateThreadMeta("thread-b10",JSON.parse(JSON.stringify(patch)));
-    assert.ok(writes-1<=1,"write transactions for an unchanged post: "+(writes-1));
+    const again=state.updateThreadMeta("thread-b10",JSON.parse(JSON.stringify(patch)));
+    assert.equal(writes-1,0,"write transactions for an unchanged post");assert.deepEqual(again,first);assert.equal(again.updatedAt,first.updatedAt);
+    const changed=state.updateThreadMeta("thread-b10",{...patch,threadSnapshot:{...snapshot,name:"Fix the build on main"}});
+    assert.equal(writes-1,1,"a changed field is written");assert.ok(changed.updatedAt>first.updatedAt);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 

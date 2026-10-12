@@ -91,3 +91,30 @@ test("thread meta reads come from a write-through copy that always matches the r
     state.updateThreadMeta("thread-late",{cwd:"C:/late"});assert.equal(row("thread-late").cwd,"C:/late");assert.equal(state.collections.db,null);assert.equal(counts.opens,opensAfterClose+2);
   }finally{state?.close();await rm(home,{recursive:true,force:true})}
 });
+
+// A patch that changes nothing but the time is not written. Everything else writes as before: a new thread, an empty patch or one of
+// only updatedAt (a touch), a removed key, and a stored value the redaction would now change.
+test("an unchanged thread meta patch keeps the row and its updatedAt",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-thread-meta-unchanged-")),secret="unchanged-meta-secret",env={...process.env,TREBELL_HOME:home},dbPath=join(home,"trebell.sqlite");
+  const row=threadId=>{const db=new DatabaseSync(dbPath);try{return db.prepare("SELECT updated_at,payload_json FROM state_thread_meta WHERE thread_id=?").get(threadId)||null}finally{db.close()}};
+  const later=()=>new Promise(resolve=>setTimeout(resolve,5));
+  try{
+    let state=new TrebellStateStore(env),writes=0;
+    const count=store=>{store.collections.DatabaseSync=class extends DatabaseSync{exec(sql){if(/BEGIN IMMEDIATE/i.test(String(sql)))writes++;return super.exec(sql)}}};count(state);
+    assert.equal(state.updateThreadMeta("thread-new",{archived:undefined}).archived,undefined);assert.equal(writes,1,"a new thread gets its row");assert.ok(row("thread-new"));
+    const stored=state.updateThreadMeta("thread-1",{cwd:"C:/repo",goal:{status:"active",objective:"Ship"},note:"uses "+secret});
+    const storedRow=row("thread-1");writes=0;await later();
+    const same=state.updateThreadMeta("thread-1",{cwd:"C:/repo",goal:{objective:"Ship",status:"active"},missing:undefined});
+    assert.equal(writes,0,"same values, keys in another order, and an absent key cleared");assert.deepEqual(same,stored);assert.deepEqual(row("thread-1"),storedRow);
+    same.goal.status="changed";assert.equal(state.threadMeta("thread-1").goal.status,"active","the returned meta is the caller's copy");
+    for(const patch of [{},{updatedAt:1}]){await later();const touched=state.updateThreadMeta("thread-1",patch);assert.ok(touched.updatedAt>stored.updatedAt,JSON.stringify(patch)+" still touches the thread")}
+    assert.equal(writes,2);
+    await later();assert.equal(Object.prototype.hasOwnProperty.call(state.updateThreadMeta("thread-1",{note:undefined}),"note"),false);assert.equal(writes,3,"removing a key is written");
+    state.updateThreadMeta("thread-1",{note:"uses "+secret});writes=0;
+    // A secret that is now in the environment is redacted on the next write, so that write is not skipped.
+    state=new TrebellStateStore({...env,THREAD_META_TOKEN:secret});count(state);
+    const redacted=state.updateThreadMeta("thread-1",{cwd:"C:/repo"});
+    assert.equal(writes,1);assert.match(redacted.note,/[redacted]/);assert.doesNotMatch(row("thread-1").payload_json,new RegExp(secret));
+    assert.equal(state.updateThreadMeta("thread-1",{note:"uses "+secret}).updatedAt,redacted.updatedAt,"the same secret again stores the same redacted text");assert.equal(writes,1);
+  }finally{await rm(home,{recursive:true,force:true})}
+});

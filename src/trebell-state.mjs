@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { trebellHome } from "./paths.mjs";
 import { normalizeMcpServers } from "./mcp-registry.mjs";
 import { redactSecretValue, withoutSecretEnvironment } from "./secret-redactor.mjs";
@@ -72,6 +73,15 @@ function clone(value){ return JSON.parse(JSON.stringify(value)); }
 // How much stored thread-meta text the store keeps in memory: the most recently used 64 threads, at most 2 M characters in all.
 const THREAD_META_CACHE=Object.freeze({entries:64,chars:2*1024*1024});
 function parseThreadMeta(text){try{return JSON.parse(text||"null")}catch{return null}}
+// Whether writing next would store what the thread has apart from the time of the write: each key the patch names (but updatedAt)
+// holds its stored value, and the redaction left every other key as it was.
+function unchangedThreadMeta(stored,next,patch){
+  if(!stored||typeof stored!=="object"||Array.isArray(stored))return false;
+  const keys=Object.keys(patch||{}).filter(key=>key!=="updatedAt");
+  if(!keys.length||!keys.every(key=>isDeepStrictEqual(next[key],stored[key])))return false;
+  const {updatedAt:_after,...after}=next,{updatedAt:_before,...before}=stored;
+  return isDeepStrictEqual(clone(after),clone(before));
+}
 function normalizeCleanupRules(rules={}){
   const rawDays=rules?.worktreeAfterDays;const numeric=rawDays==null?null:Math.trunc(Number(rawDays));const worktreeAfterDays=Number.isFinite(numeric)&&numeric>=1?Math.min(3650,numeric):null;
   return {worktreeAfterDays,worktreeOnMerge:Boolean(rules?.worktreeOnMerge),worktreeOnDelete:Boolean(rules?.worktreeOnDelete),worktreeUnchanged:Boolean(rules?.worktreeUnchanged)};
@@ -437,12 +447,13 @@ export class TrebellStateStore {
     this.state.projects=this.state.projects.filter(p=>p.id!==id);
     this.#save();
   }
-  // From sqlite, a fresh parse that the caller may change; from the legacy file, the live entry, which callers copy.
+  // The thread's stored meta, or null when it has none. From sqlite it is a fresh parse the caller may change; from the legacy file it
+  // is the live entry, which callers copy.
   #storedThreadMeta(threadId){
-    if(!this.collections)return this.state.threadMeta[threadId]||{};
+    if(!this.collections)return this.state.threadMeta[threadId]||null;
     const key=String(threadId),text=this.#threadMetaText.get(key)??this.collections.threadMetaText(key);
-    if(text==null)return {};
-    this.#rememberThreadMeta(key,text);return parseThreadMeta(text)||{};
+    if(text==null)return null;
+    this.#rememberThreadMeta(key,text);return parseThreadMeta(text);
   }
   #rememberThreadMeta(key,text){
     this.#forgetThreadMeta(key);this.#threadMetaText.set(key,text);this.#threadMetaChars+=text.length;
@@ -455,7 +466,7 @@ export class TrebellStateStore {
     this.collections.putThreadMeta(key,item,text);this.#rememberThreadMeta(key,text);return JSON.parse(text);
   }
   threadMeta(threadId){
-    const stored=this.#storedThreadMeta(threadId);
+    const stored=this.#storedThreadMeta(threadId)||{};
     const queue=migrateLegacyQueueItems(stored.trebellQueue);if(!queue.changed)return this.collections?stored:clone(stored);
     // Queued follow-ups saved with a retired provider's model are kept but lose that model.
     const next={...stored,trebellQueue:queue.items};
@@ -464,9 +475,12 @@ export class TrebellStateStore {
     return clone(next);
   }
   updateThreadMeta(threadId,patch={}){
-    const current=this.#storedThreadMeta(threadId);
+    const stored=this.#storedThreadMeta(threadId),current=stored||{};
     const next=redactSecretValue({...current,...patch,updatedAt:Date.now()},{environment:this.env,maxDepth:20,maxArray:10000,maxFields:5000});
     for(const [key,value] of Object.entries(next)) if(value===undefined) delete next[key];
+    // A patch that changes nothing but the time is not written, and the thread keeps its updatedAt and so its place in the catalog
+    // order. The page posts the catalog fields of every thread it lists on each load, which was a write per thread.
+    if(stored&&unchangedThreadMeta(stored,next,patch))return this.collections?stored:clone(stored);
     if(this.collections)return this.#putThreadMeta(threadId,next);
     this.state.threadMeta[threadId]=next;
     this.#save();
