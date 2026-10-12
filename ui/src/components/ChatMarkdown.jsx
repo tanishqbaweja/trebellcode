@@ -41,7 +41,11 @@ function CodeBlock({children}){
 }
 
 const COMPONENTS={a:MarkdownLink,pre:CodeBlock};
+// A perf spec that sets window.__trebellPerf before the app loads gets the length of each text parsed here (perf-budgets.spec.js,
+// B16); nothing is kept otherwise.
+const perf=typeof window==="undefined"?null:window.__trebellPerf||null;
 
 export default memo(function ChatMarkdown({text,lineBreaks=false}){
-  return <ReactMarkdown remarkPlugins={lineBreaks?LINE_BREAK_PLUGINS:REMARK_PLUGINS} components={COMPONENTS}>{String(text||"")}</ReactMarkdown>;
+  const value=String(text||"");if(perf)(perf.markdown||=[]).push(value.length);
+  return <ReactMarkdown remarkPlugins={lineBreaks?LINE_BREAK_PLUGINS:REMARK_PLUGINS} components={COMPONENTS}>{value}</ReactMarkdown>;
 });
