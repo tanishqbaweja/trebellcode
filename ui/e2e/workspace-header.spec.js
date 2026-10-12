@@ -1,0 +1,97 @@
+import { test,expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
+
+// The workspace header over a Trebell Native thread on the real agent relay, with the provider scripted: the project crumb, the
+// thread title (Rename), the branch button and Review.
+const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+function gate(){let open=()=>{};const promise=new Promise(resolve=>{open=resolve});return {promise,open}}
+
+// The page's socket to the relay goes through this proxy: refuse(message) names an error to answer a request with instead of the
+// relay, and answer(message) a result. stop() stops the harness as far as the page can tell (its socket closes and every reconnect
+// is turned away) until start().
+async function proxyRelay(page,harness){
+  const proxy={refuse:()=>null,answer:()=>undefined,stopped:false,sockets:[]};
+  await page.routeWebSocket(harness.wsUrl,ws=>{
+    if(proxy.stopped){ws.close({code:1011,reason:"harness stopped"});return}
+    const server=ws.connectToServer();proxy.sockets.push(ws);
+    ws.onMessage(message=>{
+      let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
+      if(parsed?.id!=null&&parsed.method){
+        const refusal=proxy.refuse(parsed);if(refusal){ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:refusal}}));return}
+        const result=proxy.answer(parsed);if(result!==undefined){ws.send(JSON.stringify({id:parsed.id,result}));return}
+      }
+      server.send(message);
+    });
+  });
+  proxy.stop=()=>{proxy.stopped=true;for(const ws of proxy.sockets.splice(0))ws.close({code:1011,reason:"harness stopped"})};
+  proxy.start=()=>{proxy.stopped=false};
+  return proxy;
+}
+
+// One thread per name, opened on the first. branch makes the project a Git repository on that branch with a change to review;
+// desktop stands in for the desktop app's bridge (its folder picker counts its calls). window.prompt throws, as it does in the
+// desktop app, so Rename asks in the app's own dialog.
+async function openHeaderApp(page,{names=["Release checklist"],replies=[],branch=null,desktop=false}={}){
+  const harness=await startRelayHarness({replies});
+  for(const name of names)harness.seedThread(name,[{user:"Prepare the "+name.toLowerCase(),items:[replyItem("seed-reply-"+harness.threads.length,"Ready when you are.")]}]);
+  await routeRelayApp(page,harness);
+  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  if(branch)await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:true,cwd:harness.repo,root:harness.repo,branch,branches:[branch],upstream:null,status:[{path:"app.js",index:" ",workingTree:"M"}],remotes:[],worktrees:[{path:harness.repo,branch}]}));
+  const proxy=await proxyRelay(page,harness);
+  await page.addInitScript(isDesktop=>{
+    window.prompt=()=>{throw new Error("prompt() is and will not be supported.")};
+    if(isDesktop)window.trebellDesktop={pickDirectory:async()=>{window.__folderPicks=(window.__folderPicks||0)+1;return null}};
+  },desktop);
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  const row=page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${names[0]}"]`)});
+  await row.locator(".thread-main").click();
+  await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
+  return {harness,proxy,header:page.locator(".chat-workspace .workspace-header")};
+}
+// The header's theme button, as a person switches between dark and light, and the window at 1280x800 and 900x800 in that mode.
+async function switchMode(page,mode){
+  const html=page.locator("html");if(await html.getAttribute("data-mode")===mode)return;
+  const toggle=page.getByTestId("appearance-toggle").first();
+  if(await toggle.isVisible())await toggle.click();
+  else{await page.getByRole("button",{name:"More actions",exact:true}).click();await page.getByRole("button",{name:/^Switch to (light|dark) mode$/}).click()}
+  await expect(html).toHaveAttribute("data-mode",mode);
+}
+async function shoot(page,name){
+  const mode=await page.locator("html").getAttribute("data-mode");
+  for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+"x800.png"})}
+  await page.setViewportSize({width:1280,height:800});
+}
+const dialog=page=>page.locator("dialog.inspector-text-prompt");
+// A person clicks the title, types the new name over the old one and presses Enter.
+async function rename(page,title,name){
+  await title.click();await expect(dialog(page)).toBeVisible();
+  await page.keyboard.type(name,{delay:25});await page.keyboard.press("Enter");await expect(dialog(page)).toHaveCount(0);
+}
+
+test("the header gives the whole thread title and branch name on hover when it cuts them",async({page})=>{
+  test.setTimeout(60_000);
+  const name="Release checklist for the payments service and the refund flow, with every step the on-call engineer has to run before the Friday deploy window closes",branch="feature/lane-b-sidebar-and-header-exploration-with-a-long-branch-name";
+  const {harness,header}=await openHeaderApp(page,{names:[name],branch});
+  const title=header.locator(".thread-title-button"),branchButton=header.locator(".branch-control");
+  try{
+    await expect(branchButton).toBeVisible();
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        // The header cuts the title (and at 900px shows the branch as an icon); the tooltip gives each whole.
+        await expect.poll(()=>title.locator("strong").evaluate(node=>node.scrollWidth>node.clientWidth)).toBe(true);
+        await expect(title).toHaveAttribute("title",name+" · Rename thread");
+        await expect(branchButton).toHaveAttribute("title",branch+" · Source control");
+        await title.hover();
+        await page.screenshot({animations:"disabled",path:auditDir+"header-long-title-branch-"+mode+"-"+width+"x800.png"});
+      }
+      await page.setViewportSize({width:1280,height:800});
+    }
+  }finally{await harness.close()}
+});

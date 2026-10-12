@@ -5057,15 +5057,16 @@ export default function App(){
               <span>/</span>
               {/* Renaming needs a thread: before the first message the title is plain text, not a button that does nothing. A thread
                   still opening keeps the button, disabled, so a quick open does not flash it away and back. The pull requests, Review,
-                  Stop and the goal belong to the thread before the click: they go once its opening state covers it. */}
-              {headerThread?.id?<button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} disabled={Boolean(openingView)} title={openingView?undefined:"Rename thread"}><strong>{activeTitle}</strong><ChevronDown size={13}/></button>:<span className="thread-title-button is-static"><strong>{activeTitle}</strong></span>}
+                  Stop and the goal belong to the thread before the click: they go once its opening state covers it. The header cuts a
+                  long title (and the branch name, which goes icon-only first), so their tooltips give them whole. */}
+              {headerThread?.id?<button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} disabled={Boolean(openingView)} title={openingView?undefined:activeTitle+" · Rename thread"}><strong>{activeTitle}</strong><ChevronDown size={13}/></button>:<span className="thread-title-button is-static"><strong>{activeTitle}</strong></span>}
               {/* In a narrow header the first chip stands for every linked pull request ("#482 +1", then the icon and a count); its
                   tooltip names the others. */}
               {activeThread?.id&&!openingShown&&linkedPullRequests.map((pr,index,all)=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")} aria-label={"Pull request #"+pr.number} title={"Open pull request #"+pr.number+(index===0&&all.length>1?" · also linked: "+all.slice(1).map(other=>"#"+other.number).join(", "):"")}><GitBranch size={11} aria-hidden="true"/><span className="header-pr-number">#{pr.number}</span>{index===0&&all.length>1&&<><span className="header-pr-more" aria-hidden="true">+{all.length-1}</span><span className="header-pr-count" aria-hidden="true">{all.length}</span></>}</button>)}
             </div>
             <div className="workspace-header-actions">
               {/* data-fold names the actions header-fit.js folds into the More actions menu when the title needs their room. */}
-              {gitInfo?.isGit&&projectControlsShown&&<button className="header-control branch-control" data-fold="source" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
+              {gitInfo?.isGit&&projectControlsShown&&<button className="header-control branch-control" data-fold="source" onClick={()=>openRightPanel("source")} title={(gitInfo.branch||"detached")+" · Source control"}><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
               {headerOpenInShown&&projectControlsShown&&<OpenInControl openIn={headerOpenIn} fold="open-in"/>}
               {headerScript&&projectControlsShown&&<button className="header-control script-control" data-fold="script" onClick={runHeaderScript} aria-label={headerScript.name} title={headerScript.command}><Play size={13}/><span>{headerScript.name}</span></button>}
               {activeThread?.id&&!openingShown&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} aria-label="Review" title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
