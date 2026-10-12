@@ -800,15 +800,17 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const item=reasoningItem(live);threadStore.addItem(threadId,live.turnId,item);
     emit("item/completed",{threadId,turnId:live.turnId,item,completedAtMs:Date.now()});
   }
+  // The goal and the continuity read only the thread's turn times, ids and statuses and its recovery state, and return objects of
+  // their own, so they read the store's shared copy (each took a full copy of the thread, on every open and every turn start).
   function durableGoal(threadId){
     const raw=state?.threadMeta?.(threadId)?.goal;if(!raw)return null;
-    const thread=threadStore.get(threadId),createdAt=Number(raw.createdAt)||(Number(thread?.createdAt)||Math.floor(Date.now()/1000))*1000;
+    const thread=peekThread(threadId),createdAt=Number(raw.createdAt)||(Number(thread?.createdAt)||Math.floor(Date.now()/1000))*1000;
     const goal=normalizeGoal({threadId,previous:{...raw,createdAt},patch:{},now:Number(raw.updatedAt)||Date.now()});
     const childAgentsUsed=threadStore.list().filter(item=>item?.parentThreadId===threadId).length;
     return enrichGoal(goal,{usage:state?.threadUsage?.(threadId,{since:goal.createdAt}),turns:thread?.turns||[],childAgentsUsed,childAgentTelemetryComplete:true});
   }
   function durableContinuity(threadId){
-    const thread=threadStore.get(threadId),meta=state?.threadMeta?.(threadId)||{};
+    const thread=peekThread(threadId),meta=state?.threadMeta?.(threadId)||{};
     return continuitySnapshot({
       threadId,thread,meta,goal:durableGoal(threadId),
       verificationRecords:state?.verificationRecords?.({threadId,limit:10})||[],

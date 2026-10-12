@@ -259,12 +259,14 @@ test("the goal and continuity reads of an open parse none of the stored history"
     const thread=relay.threadStore.importHistory({...BUDGET_THREAD,cwd:relay.root,turns:seededTurns(3.2)});
     await relay.rpc("thread/goal/set",{threadId:thread.id,objective:"Keep the seeded history"});
     const turns=relay.threadStore.get(thread.id).turns,completed=turns.filter(turn=>turn.status==="completed").slice(-10).map(turn=>turn.id);
+    // They read the store's shared copy now, frozen here so that a change to it would fail.
+    const peek=relay.threadStore.peek.bind(relay.threadStore);relay.threadStore.peek=id=>deepFreeze(peek(id));
     const counters=serverCounters(relay.threadStore);counters.start();let goal,continuity;
     try{[goal,continuity]=await Promise.all([relay.rpc("thread/goal/get",{threadId:thread.id}),relay.rpc("thread/continuity/get",{threadId:thread.id})])}finally{counters.stop()}
     const read={readMB:counters.counts.readBytes/1024/1024,parsedMB:counters.counts.parsedChars/1024/1024};t.diagnostic("goal and continuity "+JSON.stringify(read));
     assert.equal(goal.goal.objective,"Keep the seeded history");assert.equal(goal.goal.turnsUsed,0);
     assert.equal(completed.length,10);assert.deepEqual(continuity.continuity.completedTurnIds,completed);assert.equal(continuity.continuity.objective,"Keep the seeded history");
-    assert.ok(read.readMB<=0.01&&read.parsedMB<=10,"goal and continuity "+JSON.stringify(read));
+    assert.ok(read.readMB===0&&read.parsedMB<=0.01,"goal and continuity "+JSON.stringify(read));
   }finally{await relay.close()}
 });
 
