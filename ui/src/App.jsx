@@ -4889,7 +4889,8 @@ export default function App(){
     ...(!projectlessMode?[{id:"diff",label:"Changes",detail:"Inspect the current Git diff",onRun:()=>openRightPanel("diff")},{id:"git",label:"Source control",detail:gitInfo?.branch||"Git and pull requests",onRun:()=>openRightPanel("source")}]:[]),
     ...(!projectlessMode?[{id:"context",label:"Trebell context",detail:"Inspect repository context supplied to the latest turn",onRun:()=>openRightPanel("context")}]:[]),
     ...(paletteThread?[{id:"link-pr",label:"Link pull request",detail:"Attach a hosted review to this thread",onRun:async()=>{const url=await askText("Pull request URL");if(url)await linkPullRequestUrl(url,"manual")}}]:[]),
-    {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:shortcutHint(commandKey("terminal")),onRun:()=>setPanel("terminal")},
+    // Toggle terminal's key opens the terminal only while it is closed (it closes an open one), so this row offers it only then.
+    {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:panel==="terminal"?"":shortcutHint(commandKey("terminal")),onRun:()=>setPanel("terminal")},
     ...((currentProject?.scripts||[]).map(script=>({id:"project-action:"+script.id,label:"Run "+script.name,detail:script.command,onRun:()=>runProjectAction(script)}))),
     {id:"browser",label:"Browser",detail:window.trebellDesktop?.browser?"Open Trebell Agent Browser":"Open hosted preview and local dev-server tools",onRun:()=>openRightPanel("preview")},
     ...(runtimeCapabilities.delegation?[{id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")}]:[]),

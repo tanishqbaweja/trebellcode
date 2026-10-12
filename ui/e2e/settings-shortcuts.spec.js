@@ -532,6 +532,32 @@ test.describe("Two commands on one key",()=>{
     await expect.poll(async()=>(await saved(request)).appearance).toBe("midnight");
   });
 
+  // The Terminal row opens the terminal. Toggle terminal's key does that only while the terminal is closed, and closes an open
+  // one, so the row offers the key only while it is closed.
+  for(const mode of MODES)test(`the palette's Terminal row offers Toggle terminal's key only while the terminal is closed (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    const palette=page.getByTestId("command-palette"),drawer=page.locator(".terminal-drawer");
+    const item=palette.locator(".command-palette-item").filter({has:page.locator("strong",{hasText:/^Terminal$/})}).first();
+    const find=async()=>{await page.keyboard.press("Control+K");await expect(palette).toBeVisible();await palette.locator("input").fill("Terminal");await expect(item).toBeVisible()};
+    await find();
+    await expect(item.locator("kbd")).toHaveText("Ctrl+Shift+T");
+    await item.click();
+    await expect(palette).toBeHidden();
+    await expect(drawer).toBeVisible();
+    await find();
+    await expect(item.locator("kbd"),"the row offers the key that closes the terminal").toHaveCount(0);
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:shots+`palette-terminal-row-open-${mode}-${width}.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    // The row keeps the terminal open; the key closes it, and the row offers the key again.
+    await item.click();
+    await expect(palette).toBeHidden();
+    await expect(drawer).toBeVisible();
+    await page.keyboard.press("Control+Shift+T");
+    await expect(drawer).toHaveCount(0);
+    await find();
+    await expect(item.locator("kbd")).toHaveText("Ctrl+Shift+T");
+  });
+
   // Shortcuts for project actions are saved for every project, but an action exists only in its own project. Elsewhere its key
   // stays with the command it would take, instead of running nothing.
   test("a key saved for an action this project does not have stays with the command it would take",async({page,request})=>{
