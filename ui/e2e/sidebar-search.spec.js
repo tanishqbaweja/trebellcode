@@ -55,6 +55,28 @@ async function shoot(page,name){
   await page.setViewportSize({width:1280,height:800});
 }
 
+test("the sidebar search finds threads by their title or their project's name, not by the folders around the project",async({page})=>{
+  await page.setViewportSize({width:1280,height:800});
+  await openCatalog(page);
+  for(const mode of ["dark","light"]){
+    await switchMode(page,mode);
+    // Every folder holds "fixtures", so a search that read whole paths listed every thread for "fix".
+    await search(page,"fix");
+    await expect.poll(()=>listed(page)).toEqual(["Fix login redirect","Fix timezone bug"]);
+    await shoot(page,"sidebar-search-title");
+  }
+  // Beacon's threads by the project's name, which its folder (b-repo) does not hold; the General chat, whose scratch folder is
+  // named after Beacon, belongs to no project.
+  await search(page,"beacon");
+  await expect.poll(()=>listed(page)).toEqual(["Fix timezone bug","Write release notes"]);
+  await search(page,"atlas");
+  await expect.poll(()=>listed(page)).toEqual(["Fix login redirect","Explain codebase"]);
+  // A word only the paths hold finds nothing.
+  await search(page,"work");
+  await expect.poll(()=>listed(page)).toEqual([]);
+  await expect(page.locator(".sidebar-empty")).toHaveText("No matching threads.");
+});
+
 test("Clear search gives the list back and leaves focus in the search field, ready for the next search",async({page})=>{
   await page.setViewportSize({width:1280,height:800});
   await openCatalog(page);

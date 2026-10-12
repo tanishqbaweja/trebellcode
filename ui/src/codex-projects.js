@@ -1,4 +1,4 @@
-function normalizedPath(value){
+export function normalizedPath(value){
   const text=String(value||"").trim().replace(/\\/g,"/").replace(/\/+$/,"");
   return /^[a-z]:\//i.test(text)?text.toLowerCase():text;
 }

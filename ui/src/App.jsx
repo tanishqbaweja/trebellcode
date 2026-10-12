@@ -32,7 +32,7 @@ import { approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
 import { isListedThread, prependThread } from "./thread-list-state.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
-import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-message-search.js";
+import { matchingMessageExcerpt, matchingPullRequestExcerpt, sidebarSearchMatches } from "./thread-message-search.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
 import { THREAD_SCROLL_END_THRESHOLD, captureHistoryPrependAnchor, captureThreadScrollPosition, historyAnchorDisturbed, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
 import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
@@ -2367,7 +2367,7 @@ export default function App(){
   },[section,rightPanelOpen,rightPanelTab]);
 
   useEffect(()=>{
-    if(!query.trim()){setSearchResults(null);setThreadSearchError("");return} const q=query.toLowerCase(); const titleMatches=threads.filter(t=>titleOf(t).toLowerCase().includes(q)||(t.cwd||"").toLowerCase().includes(q)||Boolean(matchingPullRequestExcerpt(threadMeta[t.id]||{},q)));
+    if(!query.trim()){setSearchResults(null);setThreadSearchError("");return} const titleMatches=sidebarSearchMatches(threads,query.toLowerCase(),{threadMeta,projects:projectRecords});
     setThreadSearchError("");
     if(!rpc||rpcStatus!=="connected"||query.length<2){setSearchResults(titleMatches);return}
     let cancelled=false; const timer=setTimeout(async()=>{
@@ -2384,7 +2384,7 @@ export default function App(){
         if(!cancelled){setSearchResults(threadsInListOrder([...found.values()],threads));setThreadSearchError("Could not search thread messages: "+(error?.message||String(error)))}
       }
     },250);return()=>{cancelled=true;clearTimeout(timer)}
-  },[query,threads,threadMeta,rpc,rpcStatus,agentRuntime,runtimeCapabilities.threadSearch]);
+  },[query,threads,threadMeta,projectRecords,rpc,rpcStatus,agentRuntime,runtimeCapabilities.threadSearch]);
 
   function showActionError(error,label="Action failed"){
     const detail=error?.message||String(error)||"Unknown error";

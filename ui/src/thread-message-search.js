@@ -1,3 +1,6 @@
+import { normalizedPath } from "./codex-projects.js";
+import { threadTitle } from "./thread-catalog.js";
+
 export function searchableThreadMessage(item={}){
   if(item?.type!=="userMessage"&&item?.type!=="agentMessage")return "";
   if(typeof item.text==="string")return item.text.trim();
@@ -42,4 +45,24 @@ export function matchingPullRequestExcerpt(meta={},query){
     return repository+(number?"#"+number+" ":"")+title;
   }
   return null;
+}
+
+// What the sidebar search finds in the threads it lists: a thread whose title has the query, whose project's name has it (the
+// project named as the header crumb names it: its record's name, else its folder's), or whose linked pull request matches it.
+// The rest of the folder path is left out, since the folders a project sits in (a home or repos folder) would match nearly
+// every thread. A General chat belongs to no project. query is matched as typed, lower-cased.
+export function sidebarSearchMatches(threads=[],query="",{threadMeta={},projects=[]}={}){
+  const needle=String(query||"").toLowerCase();if(!needle.trim())return [];
+  const key=(path,environmentId)=>(environmentId||"")+"|"+normalizedPath(path);
+  const names=new Map((projects||[]).map(project=>[key(project.path,project.environmentId),String(project.name||"").trim()]));
+  return (threads||[]).filter(thread=>{
+    const meta=threadMeta?.[thread?.id]||{};
+    if(threadTitle(thread).toLowerCase().includes(needle))return true;
+    const projectless=Object.prototype.hasOwnProperty.call(meta,"projectless")?meta.projectless:thread?.providerMeta?.projectless;
+    if(!projectless&&thread?.cwd){
+      const name=names.get(key(thread.cwd,meta.environmentId??thread.providerMeta?.environmentId))||normalizedPath(thread.cwd).split("/").filter(Boolean).at(-1)||"";
+      if(name.toLowerCase().includes(needle))return true;
+    }
+    return Boolean(matchingPullRequestExcerpt(meta,needle));
+  });
 }
