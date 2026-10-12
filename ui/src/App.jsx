@@ -4396,11 +4396,15 @@ export default function App(){
     setPrompt(stash.text||"");setAttachments(stash.attachments||[]);setContextChips(stash.contextChips||[]);
   }
   async function addFiles(paths){setAttachments(prev=>[...new Set([...prev,...paths])].slice(0,MAX_COMPOSER_ATTACHMENTS))}
-  async function addContextPath(path,{kind="context",label="Context",detail="",sourcePath=null}={}){
+  // A chip with a `key` (a pull request's number and address) replaces the one attached before with that key, as a path attached
+  // again does: the text behind it is written anew each time, so its path is new too.
+  async function addContextPath(path,{kind="context",label="Context",detail="",sourcePath=null,key=null}={}){
     if(!path)return null;
-    if(!attachments.includes(path)&&attachments.length>=MAX_COMPOSER_ATTACHMENTS)throw new Error(`Composer supports up to ${MAX_COMPOSER_ATTACHMENTS} attachments/context items.`);
+    const replaced=key?contextChips.filter(chip=>chip.key===key&&chip.path!==path).map(chip=>chip.path):[];
+    if(!attachments.includes(path)&&attachments.length-replaced.length>=MAX_COMPOSER_ATTACHMENTS)throw new Error(`Composer supports up to ${MAX_COMPOSER_ATTACHMENTS} attachments/context items.`);
+    replaced.forEach(removeContext);
     await addFiles([path]);
-    setContextChips(prev=>[...prev.filter(chip=>chip.path!==path),{id:crypto.randomUUID(),path,kind,label,detail,sourcePath:sourcePath||null}].slice(-MAX_COMPOSER_ATTACHMENTS));
+    setContextChips(prev=>[...prev.filter(chip=>chip.path!==path),{id:crypto.randomUUID(),path,kind,label,detail,sourcePath:sourcePath||null,...(key?{key}:{})}].slice(-MAX_COMPOSER_ATTACHMENTS));
     return path;
   }
   async function prepareAttachmentPaths(paths){
@@ -4417,7 +4421,7 @@ export default function App(){
     if(environmentId!==undefined)body.environmentId=environmentId;
     return api("/api/attachments/validate",{method:"POST",body});
   }
-  async function addContextAttachment({name,text,kind="context",label="Context",detail=""}){const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});const [path]=await prepareAttachmentPaths([d.path]);return addContextPath(path,{kind,label,detail})}
+  async function addContextAttachment({name,text,kind="context",label="Context",detail="",key=null}){const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});const [path]=await prepareAttachmentPaths([d.path]);return addContextPath(path,{kind,label,detail,key})}
   function removeContext(path){setContextChips(prev=>prev.filter(chip=>chip.path!==path));setAttachments(prev=>prev.filter(item=>item!==path))}
   const searchComposerFiles=useCallback(async query=>{
     if(projectlessMode||!projectPath||!String(query||"").trim())return [];
@@ -4498,7 +4502,7 @@ export default function App(){
     setPrompt(prev=>(prev?prev+" ":"")+"Address the attached review comment. ");
     setPanel(null);setSection("chat");
   }
-  async function attachPr(pr){const text=["Pull request #"+pr.number+": "+pr.title,pr.url,pr.headRefName+" -> "+pr.baseRefName,pr.body||""].join("\n");await addContextAttachment({name:"pr-"+pr.number+".txt",text,kind:"pr",label:"PR #"+pr.number,detail:pr.title});setSection("chat")}
+  async function attachPr(pr){const text=["Pull request #"+pr.number+": "+pr.title,pr.url,pr.headRefName+" -> "+pr.baseRefName,pr.body||""].join("\n");await addContextAttachment({name:"pr-"+pr.number+".txt",text,kind:"pr",label:"PR #"+pr.number,detail:pr.title,key:"pr "+pr.number+" "+(pr.url||"")});setSection("chat")}
   // Links answered for a thread update that thread's metadata, and the visible list only while that thread is still open: a link
   // or sync started in one thread can answer after another one was opened (the render that started it still names the old thread).
   function applyThreadPullRequestLinks(threadId,links){

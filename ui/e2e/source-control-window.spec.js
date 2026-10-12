@@ -997,3 +997,24 @@ test("Link to thread with no thread open says to open one first",async({page,req
   await expect(link).toBeEnabled();
   await shootBothModes(page,"source-control-link-without-thread");
 });
+
+test("attaching the same pull request again keeps one chip, holding its text as it is now, as a file attached twice does",async({page,request})=>{
+  test.setTimeout(60_000);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,prs:[samplePr(21,{title:"Only PR"}),samplePr(22,{title:"Second PR"})]});
+  const {pulls}=await openGitPanel(page,request,"Source control attach twice");
+  const chips=page.getByTestId("context-chips").getByTestId("context-chip"),shelf=page.locator(".attachment-shelf > span"),attachButton=pulls.locator(".pr-actions").getByRole("button",{name:"Attach"});
+  const attach=async(number,title)=>{await pulls.locator(".pr-list").getByRole("button",{name:new RegExp("#"+number+" ")}).click();await expect(pulls.locator(".pr-detail h3")).toHaveText("#"+number+" "+title);await attachButton.click();await expect(attachButton).toBeEnabled()};
+  await attach(21,"Only PR");
+  await expect(chips).toHaveText([/PR #21\s*Only PR/]);
+  // Renamed on the host and attached again, the pull request still has one chip, now with its new title and text.
+  host.prs[0].title="Only PR, renamed";
+  await attach(21,"Only PR, renamed");
+  await expect(chips).toHaveText([/PR #21\s*Only PR, renamed/]);
+  await expect(shelf).toHaveCount(0);
+  // Another pull request is a chip of its own.
+  await attach(22,"Second PR");
+  await expect(chips).toHaveText([/PR #21\s*Only PR, renamed/,/PR #22\s*Second PR/]);
+  await expect(shelf).toHaveCount(0);
+  await shootBothModes(page,"source-control-attach-twice");
+});
