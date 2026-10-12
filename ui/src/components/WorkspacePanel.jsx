@@ -245,8 +245,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
       // Binary content is never text in the viewer, whatever the file's extension says it is.
       setFile({...data,kind:data.binary?"binary":kind});setDraft(data.content??"");setEdit(false);
     }catch(err){
-      if(!file){setFile({path,name,kind:"unsupported",content:null});setDraft("");setEdit(false)}
-      // The file head still names the file that stays open, so the error names the one that failed.
+      // The file that failed takes the view, with why, so the file shown before (and its Edit) never sits under another file's error.
+      setFile({path,name,kind:"unsupported",content:null});setDraft("");setEdit(false);
       setError(actionError("Could not open "+name,err));
     }
   }
@@ -303,13 +303,13 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     if(file.kind==="markdown")return <MarkdownPreview content={file.content}/>;
     if(file.kind==="table")return <div className="table-preview"><table><tbody>{table.map((row,rowIndex)=><tr key={rowIndex}>{row.map((cell,colIndex)=>rowIndex===0?<th key={colIndex}>{cell}</th>:<td key={colIndex}>{cell}</td>)}</tr>)}</tbody></table>{table.length>=300&&<p>Preview limited to 300 rows.</p>}</div>;
     if(file.kind==="binary")return <div className="file-empty"><strong>Binary file</strong><span>{formatBytes(file.size)} · not shown as text</span></div>;
-    if(file.kind==="unsupported")return <div className="file-empty"><strong>Preview unavailable</strong><span>{error||"This file is binary or too large for the text editor."}</span><button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach to chat</button></div>;
+    if(file.kind==="unsupported")return <div className="file-empty"><strong>Preview unavailable</strong><span role="alert">{error||"This file is too large for the text editor."}</span><button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach to chat</button></div>;
     return <pre className="syntax-view">{highlighted==null?<code>{file.content}</code>:<code dangerouslySetInnerHTML={{__html:highlighted}}/>}</pre>;
   }
 
   const editable=Boolean(file&&["text","html","markdown","table"].includes(file.kind));
   return <div className="workspace-panel">
-    <div className="panel-tabs"><div className="workspace-seg"><button className={tab==="files"?"active":""} onClick={()=>onTabChange?.("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>tab==="diff"?refreshDiff():onTabChange?.("diff")}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}</div>{tab==="diff"&&allowDiff&&changedPaths.length>0&&<button className={"workspace-refresh workspace-wrap"+(wrapDiff?" active":"")} aria-pressed={wrapDiff} aria-label={wrapDiff?"Disable diff line wrapping":"Enable diff line wrapping"} title={wrapDiff?"Disable line wrapping":"Enable line wrapping"} onClick={toggleDiffWrap}><WrapText size={13}/></button>}<button className="workspace-refresh" aria-label="Refresh workspace files" title="Refresh files and changes" onClick={()=>{refreshTree();if(allowDiff)refreshDiff()}}><RefreshCw size={13}/></button></div>
+    <div className="panel-tabs"><div className="workspace-seg"><button className={tab==="files"?"active":""} onClick={()=>onTabChange?.("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>tab==="diff"?refreshDiff():onTabChange?.("diff")}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}</div>{tab==="diff"&&allowDiff&&changedPaths.length>0&&<button className={"workspace-refresh workspace-wrap"+(wrapDiff?" active":"")} aria-pressed={wrapDiff} aria-label={wrapDiff?"Disable diff line wrapping":"Enable diff line wrapping"} title={wrapDiff?"Disable line wrapping":"Enable line wrapping"} onClick={toggleDiffWrap}><WrapText size={13}/></button>}<button className="workspace-refresh" aria-label="Refresh workspace files" title="Refresh files and changes" onClick={()=>{refreshTree();if(allowDiff)refreshDiff();if(file&&!edit)open(file.path)}}><RefreshCw size={13}/></button></div>
     {tab==="files"&&<div className="workspace-files">
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">

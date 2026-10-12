@@ -504,6 +504,41 @@ test("a binary file opens as binary, with its size and no Edit, and its bytes st
   await expect(button("Edit")).toBeVisible();
 });
 
+test("a file that fails to open takes the place of the one in view, and Refresh reads the open file again",async({page,request})=>{
+  test.setTimeout(60_000);
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace failed opens",{"notes.txt":"first version\n","app.js":"console.log(1);\n","style.css":"body{}\n","big.txt":"x".repeat(600*1024)});
+  const head=right.locator(".file-head strong"),view=right.locator(".file-view"),edit=right.locator(".file-head").getByRole("button",{name:"Edit",exact:true});
+  const refresh=()=>right.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
+  // A file deleted on disk while the tree still lists it: the view names it and why it did not open, and shows nothing else.
+  await row("notes.txt").click();
+  await expect(view.locator(".syntax-view")).toContainText("first version");
+  await rm(join(dir,"style.css"));
+  await row("style.css").click();
+  await expect(head).toHaveText("style.css");
+  await expect(view.getByRole("alert")).toContainText("Could not open style.css");
+  await expect(view.locator(".syntax-view")).toHaveCount(0);await expect(edit).toHaveCount(0);
+  await shootBothModes(page,"workspace-open-failed-deleted");
+  // A file too large to preview, opened over another file, likewise.
+  await row("notes.txt").click();await expect(edit).toBeVisible();
+  await row("big.txt").click();
+  await expect(head).toHaveText("big.txt");
+  await expect(view.getByRole("alert")).toContainText("File is too large to preview (600 KB)");
+  await expect(view.locator(".syntax-view")).toHaveCount(0);await expect(edit).toHaveCount(0);
+  // Refresh reads the open file again: a change on disk shows, and a file deleted on disk shows that it could not be read.
+  await row("notes.txt").click();
+  await writeFile(join(dir,"notes.txt"),"second version\n");
+  await refresh();
+  await expect(view.locator(".syntax-view")).toContainText("second version");
+  await row("app.js").click();await expect(view.locator(".syntax-view")).toContainText("console.log");
+  await rm(join(dir,"app.js"));
+  await refresh();
+  await expect(head).toHaveText("app.js");
+  await expect(view.getByRole("alert")).toContainText("Could not open app.js");
+  await expect(view.locator(".syntax-view")).toHaveCount(0);await expect(edit).toHaveCount(0);
+  await expect(row("app.js")).toHaveCount(0);
+  await shootBothModes(page,"workspace-open-file-deleted-refresh");
+});
+
 // A Codex app server holding the given threads: enough for the sidebar to list them and for the app to open them.
 async function startThreadHarness(threads){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();

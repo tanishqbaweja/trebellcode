@@ -4470,7 +4470,7 @@ test("workspace diff lines wrap by default, can scroll instead, and the choice i
   await expect(panel.locator(".git-diff")).toHaveClass(/\bwrap\b/);
 });
 
-test("workspace file open failures preserve the current valid file",async({page,request})=>{
+test("a workspace file that fails to open takes the view, with why, from the file shown before",async({page,request})=>{
   test.setTimeout(30_000);
   // Prose with words a JavaScript grammar colours and text that looks like markup.
   const goodText="keep this valid file visible\nif (this) return <b>x & y</b>;";
@@ -4501,14 +4501,18 @@ test("workspace file open failures preserve the current valid file",async({page,
   };
   await plainText();
   await bad.click();
-  await expect(panel.locator(".workspace-file-error")).toHaveText("Could not open bad.txt: Deliberate workspace file open failure");
-  await expect(panel.locator(".file-head strong")).toHaveText("good.txt");
-  await expect(panel.locator(".syntax-view")).toContainText("keep this valid file visible");
-  await plainText();
+  // The file shown before, and its Edit, are not left under another file's error.
+  await expect(panel.locator(".file-head strong")).toHaveText("bad.txt");
+  await expect(panel.locator(".file-empty [role=alert]")).toHaveText("Could not open bad.txt: Deliberate workspace file open failure");
+  await expect(panel.locator(".syntax-view")).toHaveCount(0);
+  await expect(panel.locator(".file-head").getByRole("button",{name:"Edit",exact:true})).toHaveCount(0);
   await page.setViewportSize({width:1280,height:800});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-file-open-error-1280x800.png",fullPage:true});
+  await good.click();
+  await expect(panel.locator(".file-head strong")).toHaveText("good.txt");
+  await plainText();
 });
 
 test("Diff review actions roll back and stay visible when persistence fails",async({page})=>{
