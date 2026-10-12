@@ -161,9 +161,9 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   function paste(id,event){
     const text=event.clipboardData?.getData("text")||"";if(!/[\r\n]/.test(text))return;
     event.preventDefault();const input=event.currentTarget;
-    const lines=text.split(/\r\n|\r|\n/),rest=lines.pop();
-    lines[0]=input.value.slice(0,input.selectionStart)+lines[0]+input.value.slice(input.selectionEnd);
-    if(write(id,lines.map(line=>line+"\r").join("")))setLines(previous=>({...previous,[id]:rest}));
+    const pasted=text.split(/\r\n|\r|\n/),rest=pasted.pop();
+    pasted[0]=input.value.slice(0,input.selectionStart)+pasted[0]+input.value.slice(input.selectionEnd);
+    if(write(id,pasted.map(line=>line+"\r").join("")))setLines(previous=>({...previous,[id]:rest}));
   }
   async function attachRecent(session){
     if(!onAttachExcerpt||attachBusy)return;
@@ -194,8 +194,8 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     };
   },[activeId,paneIds,sessions,projectPath,environmentId]);
 
-  // Each chunk of a screen is its own text node, so new output redraws only the last one. A screen that has dropped its first
-  // lines says so where they were.
+  // Each chunk of a screen is its own text node, so new output redraws only the last one. A screen that has dropped earlier
+  // output says so where it was.
   const screenContent=id=>{
     const screen=screens.current.get(id);if(!screen?.chunks.length)return "Terminal connected.\n";
     return <>{screen.dropped>0&&<span className="terminal-dropped">Earlier output was dropped: the screen keeps the last {TERMINAL_SCROLLBACK_LINES.toLocaleString()} lines, up to {TERMINAL_SCROLLBACK_CHARS.toLocaleString()} characters.</span>}{screen.chunks.map(chunk=><span key={chunk.id}>{chunk.text}</span>)}</>;
