@@ -3239,7 +3239,7 @@ export default function App(){
     if(action==="snooze"){setSnoozeRequest({threads:selected,bulk:true});return}
     const {results,failed}=await eachThreadAction(selected,thread=>reversibleThreadAction(thread,action,{offerUndo:false}));
     setSelectedThreadIds(new Set(failed.map(item=>item.thread.id)));
-    if(results.length){const noun=results.length===1?"thread":results.length+" threads";const verb=action==="pin"?"pinned":action==="settle"?"settled":action==="archive"?"archived":"updated";offerThreadUndo(noun+" "+verb,()=>undoThreadActions(results))}
+    if(results.length){const noun=results.length===1?"Thread":results.length+" threads";const verb=action==="pin"?"pinned":action==="settle"?"settled":action==="archive"?"archived":"updated";offerThreadUndo(noun+" "+verb,()=>undoThreadActions(results))}
     if(failed.length)throw new Error(bulkActionFailure(action,failed));
   }
   // A thread the harness will not snooze keeps the dialog open on it, which says why: the open thread's activity is about another

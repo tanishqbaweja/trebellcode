@@ -265,3 +265,17 @@ test("with the harness away, a bulk Pin and a Snooze say they could not, offer n
     expect(meta[id("Bulk three")].snoozedUntil??null).toBe(null);
   }finally{await harness.close()}
 });
+
+test("a bulk Pin that pins one of the threads offers Undo for “Thread pinned”",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,proxy,id}=await openSidebarApp(page);
+  try{
+    proxy.refuse=message=>message.method==="thread/section/move"&&message.params?.threadId===id("Bulk two")?"Second pin refused":null;
+    await selectThreads(page,["Bulk one","Bulk two"]);
+    await bulkBar(page).getByRole("button",{name:"Pin",exact:true}).click();
+    await expect(sidebarAlert(page)).toHaveText("Could not pin “Bulk two”: Second pin refused.");
+    await expect.poll(()=>groups(page)).toEqual([["Pinned",["Bulk one"]],["Active",["Bulk two","Bulk three","Bulk four"]]]);
+    await expect(undoToast(page).locator("span").first()).toHaveText("Thread pinned");
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await shoot(page,"sidebar-bulk-pin-one-of-two")}
+  }finally{await harness.close()}
+});
