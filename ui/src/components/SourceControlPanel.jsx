@@ -179,10 +179,11 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       if(!stillShown(started))return null;
       setInfo(data.result?.info||data.result||info);await refreshAfterSuccess(gitActionSuccessLabel(action),sourceProvider,started);return data;
     }catch(e){
-      reportError(started,actionErrorUnlessNamed(gitActionFailureLabel(action),e,NAMES_NOTHING_TO_COMMIT));
       // A refused action can find the repository changed under it (a pull refused over a local edit, a commit with nothing left to
-      // commit), so the view is read again; the error stays on screen.
+      // commit), so the view is read again first; the banner then says why the action was refused, even when that read could not
+      // list the pull requests (the pull-request card says so itself).
       if(stillShown(started))await refresh();
+      reportError(started,actionErrorUnlessNamed(gitActionFailureLabel(action),e,NAMES_NOTHING_TO_COMMIT));
       return null;
     }finally{setBusy("")}
   }

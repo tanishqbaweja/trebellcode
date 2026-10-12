@@ -917,6 +917,41 @@ test("Fetch shows how far the branch is behind or ahead, and a refused Pull or P
   await shootBothModes(page,"source-control-push-rejected");
 });
 
+test("a refused Pull keeps git's reason on screen when the refresh after it cannot list the pull requests",async({page,request})=>{
+  test.setTimeout(90_000);
+  const base=await mkdtemp(join(tmpdir(),"trebell-git-sync-"));repositories.push(base);
+  const run=(cwd,args)=>execFileAsync("git",args,{cwd,windowsHide:true,encoding:"utf8"}).then(result=>result.stdout.trim());
+  const origin=join(base,"origin.git"),work=join(base,"work"),peer=join(base,"peer");
+  await run(base,["init","--bare","-b","main",origin]);await run(base,["clone",origin,work]);
+  for(const [key,value] of [["user.email","trebell-test@example.invalid"],["user.name","Trebell Test"]])await run(work,["config",key,value]);
+  await writeFile(join(work,"shared.txt"),"base line\n","utf8");await run(work,["add","shared.txt"]);await run(work,["commit","-m","Base"]);await run(work,["push","-u","origin","main"]);
+  await run(base,["clone",origin,peer]);for(const [key,value] of [["user.email","peer@example.invalid"],["user.name","Peer"]])await run(peer,["config",key,value]);
+  await writeFile(join(peer,"shared.txt"),"base line\npeer line\n","utf8");await run(peer,["commit","-am","Peer change"]);await run(peer,["push"]);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await scriptCodeHost(page,{boot,info:false});
+  // Once the host is out of reach its pull-request list fails, as the server answers when the host's list call throws.
+  let hostDown=false;const unreachable="fetch failed: getaddrinfo ENOTFOUND code.example.test";
+  await page.route("**/api/source-control/prs?**",route=>hostDown?route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({ok:false,items:[],error:unreachable})}):route.fallback());
+  const {right,changes,repository,pulls}=await openGitPanel(page,request,"Source control pull refused offline",work);
+  const alert=right.locator(".source-control-error");
+  await right.getByRole("button",{name:"Fetch",exact:true}).click();
+  await expect(repository.locator("p").filter({hasText:"Upstream:"})).toHaveText("Upstream: origin/main 1 commit behind");
+  await writeFile(join(work,"shared.txt"),"base line\nmy local line\n","utf8");
+  hostDown=true;
+  await right.getByRole("button",{name:"Pull",exact:true}).click();
+  // The view is read again (Changes shows the edit, the card says it could not list the pull requests) and the banner says why
+  // git refused the pull.
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  await expect(pulls.locator(".pr-empty-state")).toContainText("Could not list pull requests");
+  await expect(pulls.locator(".pr-empty-state")).toContainText(unreachable);
+  await expect(alert).toContainText("Could not pull:");
+  await expect(alert).toContainText("would be overwritten by merge");
+  await expect(alert).not.toContainText("pull requests");
+  await shootBothModes(page,"source-control-pull-refused-host-down");
+  await pulls.locator(".pr-empty-state").scrollIntoViewIfNeeded();
+  await shootBothModes(page,"source-control-pull-refused-host-down-card");
+});
+
 test("each project selects its detected code host every time it is opened",async({page,request})=>{
   test.setTimeout(90_000);
   const first=await mkdtemp(join(tmpdir(),"trebell-host-first-")),second=await mkdtemp(join(tmpdir(),"trebell-host-second-"));repositories.push(first,second);
