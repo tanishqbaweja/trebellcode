@@ -92,9 +92,11 @@ function handle(m){
   if(log&&m.method)appendFileSync(log,m.method+"\n");
   if(m.method==="session/cancel"){cancelled=true;return}
   if(!m.method||m.id==null)return;
-  if(m.method==="initialize")return send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"budget",version:"1"},agentCapabilities:{loadSession:false,sessionCapabilities:{resume:{}}}}});
+  if(m.method==="initialize")return send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"budget",version:"1"},agentCapabilities:readPlan().agentCapabilities||{loadSession:false,sessionCapabilities:{resume:{}}}}});
   if(m.method==="session/new")return send({jsonrpc:"2.0",id:m.id,result:{sessionId,models:{currentModelId:"fixture-model",availableModels:[{modelId:"fixture-model",name:"Fixture"}]}}});
   if(m.method==="session/prompt")return void prompt(m.id);
+  // A fork that takes forkDelayMs to answer, as a harness copying a long conversation does.
+  if(m.method==="session/fork")return void setTimeout(()=>send({jsonrpc:"2.0",id:m.id,result:{sessionId:"budget-fork"}}),readPlan().forkDelayMs||0);
   return send({jsonrpc:"2.0",id:m.id,result:{}});
 }
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{try{handle(JSON.parse(line))}catch{}});
@@ -381,4 +383,22 @@ test("the idle sweep leaves a process a harness's command started in the backgro
     assert.ok(alive(backgroundPid),"the background process still runs after the sweep; agent processes "+JSON.stringify(agents));
     assert.ok(alive(harness.pid),"its harness is kept");
   }finally{await relay.close();if(backgroundPid&&alive(backgroundPid))try{process.kill(backgroundPid)}catch{}}
+});
+
+// thread/fork, thread/compact/start and thread/revert wait on the thread's live session with no prompt running (a fork, OpenCode's
+// summarize, a rewind). The sweep closed the session under such a request once the idle time since the last turn had passed, and the
+// request failed with "ACP runtime stopped". Here a fork that takes 1.5 s starts right after a turn.
+test("the idle sweep keeps a session while a request on its thread is in flight, and lets it go once it is answered",async()=>{
+  const relay=await budgetRelay("trebell-budget-fork-",{env:SWEEP_ENV});
+  try{
+    const thread=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:1,forkDelayMs:1500,agentCapabilities:{loadSession:false,sessionCapabilities:{resume:{},fork:{}}}}),"utf8");
+    const completed=relay.notified("turn/completed");
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello"}]});await completed;
+    const forked=await relay.rpc("thread/fork",{threadId:thread.id}).then(result=>({ok:true,result}),error=>({ok:false,error:String(error.message).split(/\r?\n/)[0]}));
+    const [agent]=await relay.agentProcesses();
+    assert.ok(forked.ok,"the fork completes: "+JSON.stringify(forked)+"; agent requests "+JSON.stringify(agent.methods));
+    assert.equal(forked.result.thread.providerSessionId,"budget-fork");
+    assert.ok(await eventually(()=>!alive(agent.pid)),"once the fork is answered, the idle session is let go");
+  }finally{await relay.close()}
 });
