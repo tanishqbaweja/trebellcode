@@ -60,7 +60,7 @@ export class AgentThreadStore{
   // the CLI and the benchmarks only read them), and an entry changes only once sqlite has the write, built from the JSON text and
   // the row written, in sqlite's turn order, and is dropped on a failed write, so an entry is what a read of sqlite gives. Callers
   // of peek() share the entry and must not change it; every write builds new objects, so a peeked thread stays as it was.
-  #cache=new Map();#cacheChars=0;#cacheTimer=null;
+  #cache=new Map();#cacheChars=0;#cacheTimer=null;#shared=new WeakSet();
   constructor(env=process.env,{keepConnection=false}={}){
     this.env=env;
     this.storage=new SqliteAgentThreadStore(env,{keepConnection});
@@ -100,12 +100,15 @@ export class AgentThreadStore{
       const read=this.storage.read(key);if(!read)return null;
       const chars=read.metaChars+read.order.reduce((sum,turn)=>sum+turn.chars,0);
       // A thread with a turn that did not parse, or one larger than the whole bound, is served as read and not kept.
-      if(!read.complete||chars>THREAD_CACHE.chars)return read.thread;
+      if(!read.complete||chars>THREAD_CACHE.chars){this.#shared.add(read.thread);return read.thread}
       entry={thread:read.thread,order:read.order,metaChars:read.metaChars,chars,usedAt:0};
       this.#cache.set(key,entry);this.#cacheChars+=chars;this.#trimCache();
     }
-    entry.usedAt=Date.now();this.#armCacheTimer();return entry.thread;
+    entry.usedAt=Date.now();this.#armCacheTimer();this.#shared.add(entry.thread);return entry.thread;
   }
+  // Whether thread is one peek handed out (the current copy or an earlier one): its objects are shared, so a caller that keeps or
+  // changes a thread takes get()'s copy instead.
+  isShared(thread){return Boolean(thread)&&typeof thread==="object"&&this.#shared.has(thread)}
   // After a write sqlite took: the entry takes the meta row and the turn as written. A new turn goes after every turn that sorts
   // at or before it (its rowid is the largest); a turn whose start time changed would move among equal times by a rowid the entry
   // does not know, so that drops the entry.

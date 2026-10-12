@@ -202,11 +202,14 @@ test("a running command's stored output trails its stream by at most 500 ms, is 
 });
 
 // B3: opening a long thread as the app does: a resume without turns, then the newest page of items and the turn outcomes beside it.
-// Each request read the whole stored thread: 15.8 MB read from sqlite and 31.6 MB of JSON parsed per open of a 3.2 MB thread.
+// Each request read the whole stored thread: 15.8 MB read from sqlite and 31.6 MB of JSON parsed per open of a 3.2 MB thread. They
+// read the store's shared parsed copy now, so every thread it hands out is frozen here: a request that changed it would fail.
+function deepFreeze(value){if(value&&typeof value==="object"&&!Object.isFrozen(value)){Object.freeze(value);for(const item of Object.values(value))deepFreeze(item)}return value}
 test("B3: opening a long thread reads its history from sqlite at most once, and a second open soon after reads none",async t=>{
   const relay=await budgetRelay("trebell-budget-b3-");
   try{
     const thread=relay.threadStore.importHistory({...BUDGET_THREAD,cwd:relay.root,turns:seededTurns(3.2)});
+    const peek=relay.threadStore.peek.bind(relay.threadStore);relay.threadStore.peek=id=>deepFreeze(peek(id));
     const open=async()=>{
       const counters=serverCounters(relay.threadStore);counters.start();
       try{
@@ -220,7 +223,17 @@ test("B3: opening a long thread reads its history from sqlite at most once, and 
       return {readMB:counters.counts.readBytes/1024/1024,parsedMB:counters.counts.parsedChars/1024/1024};
     };
     const first=await open(),second=await open(),report=JSON.stringify({first,second});t.diagnostic("per open "+report);
-    assert.ok(first.readMB<=17&&first.parsedMB<=34,"first open "+report);
-    assert.ok(second.readMB<=17&&second.parsedMB<=34,"second open "+report);
+    assert.ok(first.readMB<=3.5&&first.parsedMB<=4,"first open "+report);
+    assert.ok(second.readMB===0&&second.parsedMB<=0.01,"second open "+report);
+    // The other ways the window reads a thread, each over the frozen copy (no copy of it is parsed): the whole thread, the items of one
+    // turn from the oldest, turns with all or some of their items, and a search.
+    const counters=serverCounters(relay.threadStore);counters.start();
+    try{
+      const whole=await relay.rpc("thread/resume",{threadId:thread.id,cwd:relay.root});assert.equal(whole.thread.turns.length,thread.turns.length);
+      const oneTurn=await relay.rpc("thread/items/list",{threadId:thread.id,turnId:thread.turns[3].id,limit:10});assert.deepEqual(oneTurn.data.map(entry=>entry.item.id),["user-seed-3","agent-seed-3"]);
+      for(const itemsView of ["full","summary"]){const page=await relay.rpc("thread/turns/list",{threadId:thread.id,limit:5,sortDirection:"asc",itemsView});assert.equal(page.data[0].items.length,2)}
+      const found=await relay.rpc("thread/searchOccurrences",{threadId:thread.id,searchTerm:"seed request 7",limit:5});assert.equal(found.data[0].turnId,"seed-7");
+    }finally{counters.stop()}
+    assert.ok(counters.counts.readBytes===0&&counters.counts.parsedChars<=10_000,"the other reads "+JSON.stringify(counters.counts));
   }finally{await relay.close()}
 });

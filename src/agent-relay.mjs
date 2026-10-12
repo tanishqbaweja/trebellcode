@@ -919,6 +919,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       else session.setPermissionMode(accessLevel);
     }
     if(session)return session;
+    // A session keeps the thread it starts from (its history, and the handlers that answer its requests), so it is built from a copy
+    // of its own, never the store's shared one.
+    if(threadStore.isShared?.(thread))thread=threadStore.get(thread.id)||thread;
     const effectivePermissionMode=normalizePermissionMode(permissionMode||thread.providerMeta?.permissionProfile||"supervised");
     const instances=runtimeManager.instances();
     const instance=instances.find(item=>item.id===thread.runtimeInstanceId)||instances.find(item=>item.kind===thread.runtime)||runtimeManager.activeInstance();
@@ -1481,28 +1484,30 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const thread=threadStore.update(seed.id,{providerSessionId:session.sessionId,model:threadStore.get(seed.id)?.model||params.model||session.sessionSetup?.models?.currentModelId||null});
       emit("thread/started",{thread});return {thread};
     }
+    // An open reads the thread's shared copy: one read and parse of its history on the first open, none on the pages after it or
+    // the next open, and only a page is copied (each request read and parsed the whole stored thread, 4 to 5 times per open).
     if(method==="thread/resume"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
       // An ACP harness's conversation opens with the thread's next turn, as T3 Code opens a provider session lazily ("a later
       // user command ... opens a session"): the reopened thread shows its saved transcript at once, where Cursor's start and
       // session/load kept it blank for half a minute in the live tour, and browsing threads starts no harness process. A harness
       // that no longer has the thread's conversation does not fail the open either: the saved transcript shows, and the next
       // turn continues the thread in a fresh session, as it does for the lazy harnesses.
       if(!LAZY_SESSION_RUNTIMES.has(thread.runtime))await ensureSession(thread,context,{model:params.model||thread.model}).catch(error=>{if(!isHarnessSessionLost(error))throw error});
-      const resumed=agentThreadResumePayload(threadStore.get(thread.id),params),collaborationMode=thread.runtime==="claude"||thread.runtime==="cursor"?resumed?.thread?.settings?.collaborationMode:null;
+      const resumed=agentThreadResumePayload(peekThread(thread.id),params),collaborationMode=thread.runtime==="claude"||thread.runtime==="cursor"?resumed?.thread?.settings?.collaborationMode:null;
       // The composer shows the collaboration mode the thread last ran in (Claude Code's and Cursor's Plan mode).
       return collaborationMode?.mode?{...resumed,collaborationMode}:resumed;
     }
     if(method==="thread/items/list"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
       return paginateAgentThreadItems(thread,params);
     }
     if(method==="thread/turns/list"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
       return paginateAgentThreadTurns(thread,params);
     }
     if(method==="thread/searchOccurrences"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
       return searchAgentThreadOccurrences(thread,params);
     }
     if(method==="thread/name/set"){
