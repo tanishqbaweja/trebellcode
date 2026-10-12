@@ -4898,6 +4898,9 @@ export default function App(){
   const headerScript=(currentProject?.scripts||[]).find(item=>item.id===currentProject.preferredScriptId)||currentProject?.scripts?.[0]||null;
   const runHeaderScript=()=>runUserAction(()=>runProjectAction(headerScript),"Project action failed");
   const reviewFromHeader=()=>runUserAction(startReview,"Could not start review");
+  // A rename the harness refuses says why, and the title keeps its name; with the harness away the title cannot rename at all.
+  const renameFromHeader=()=>runUserAction(renameThread,"Could not rename thread");
+  const renameReady=Boolean(rpc)&&rpcStatus==="connected";
   const toggleTerminalPanel=()=>setPanel(panel==="terminal"?null:"terminal");
   const toggleAppearanceMode=()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance");
   const appearanceToggleLabel=resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode";
@@ -5059,7 +5062,7 @@ export default function App(){
                   still opening keeps the button, disabled, so a quick open does not flash it away and back. The pull requests, Review,
                   Stop and the goal belong to the thread before the click: they go once its opening state covers it. The header cuts a
                   long title (and the branch name, which goes icon-only first), so their tooltips give them whole. */}
-              {headerThread?.id?<button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} disabled={Boolean(openingView)} title={openingView?undefined:activeTitle+" · Rename thread"}><strong>{activeTitle}</strong><ChevronDown size={13}/></button>:<span className="thread-title-button is-static"><strong>{activeTitle}</strong></span>}
+              {headerThread?.id?<button className="thread-title-button" onDoubleClick={renameFromHeader} onClick={renameFromHeader} disabled={Boolean(openingView)||!renameReady} title={openingView?undefined:activeTitle+" · "+(renameReady?"Rename thread":"Renaming needs "+agentRuntimeLabel+" to be connected")}><strong>{activeTitle}</strong><ChevronDown size={13}/></button>:<span className="thread-title-button is-static"><strong>{activeTitle}</strong></span>}
               {/* In a narrow header the first chip stands for every linked pull request ("#482 +1", then the icon and a count); its
                   tooltip names the others. */}
               {activeThread?.id&&!openingShown&&linkedPullRequests.map((pr,index,all)=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")} aria-label={"Pull request #"+pr.number} title={"Open pull request #"+pr.number+(index===0&&all.length>1?" · also linked: "+all.slice(1).map(other=>"#"+other.number).join(", "):"")}><GitBranch size={11} aria-hidden="true"/><span className="header-pr-number">#{pr.number}</span>{index===0&&all.length>1&&<><span className="header-pr-more" aria-hidden="true">+{all.length-1}</span><span className="header-pr-count" aria-hidden="true">{all.length}</span></>}</button>)}

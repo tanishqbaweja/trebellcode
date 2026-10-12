@@ -73,6 +73,43 @@ async function rename(page,title,name){
   await page.keyboard.type(name,{delay:25});await page.keyboard.press("Enter");await expect(dialog(page)).toHaveCount(0);
 }
 
+test("a refused rename says why and keeps the title, and while the harness is stopped the title says why it cannot rename",async({page})=>{
+  test.setTimeout(90_000);
+  const errors=[];page.on("pageerror",error=>errors.push(String(error?.message||error)));
+  const {harness,proxy,header}=await openHeaderApp(page);
+  const title=header.locator(".thread-title-button"),thread=harness.threads[0];
+  try{
+    await expect(title).toHaveText("Release checklist");
+    proxy.refuse=message=>message.method==="thread/name/set"?"Thread name store is read-only":null;
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      await rename(page,title,"Ship the release");
+      await expect(page.getByTestId("app-action-error")).toHaveText("Could not rename thread: Thread name store is read-only");
+      await expect(title).toHaveText("Release checklist");await expect(title).toBeFocused();
+      await expect(page.locator('.thread-row.active .thread-main[title="Release checklist"]')).toBeVisible();
+      await shoot(page,"header-rename-refused");
+    }
+    expect(harness.threadStore.get(thread.id).name).toBe("Release checklist");
+    expect(errors).toEqual([]);
+    // The harness stops: the title cannot rename and says why instead of opening a dialog that fails.
+    proxy.stop();
+    await expect(title).toBeDisabled();
+    await expect(title).toHaveAttribute("title","Release checklist · Renaming needs Trebell Native to be connected");
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      await shoot(page,"header-rename-harness-stopped");
+    }
+    // Once it is back, the same rename goes through.
+    proxy.refuse=()=>null;proxy.start();
+    await expect(title).toBeEnabled({timeout:20_000});await expect(title).toHaveAttribute("title","Release checklist · Rename thread");
+    await rename(page,title,"Ship the release");
+    await expect(title).toHaveText("Ship the release");
+    await expect(page.locator('.thread-row.active .thread-main[title="Ship the release"]')).toBeVisible();
+    expect(harness.threadStore.get(thread.id).name).toBe("Ship the release");
+    expect(errors).toEqual([]);
+  }finally{await harness.close()}
+});
+
 test("the header gives the whole thread title and branch name on hover when it cuts them",async({page})=>{
   test.setTimeout(60_000);
   const name="Release checklist for the payments service and the refund flow, with every step the on-call engineer has to run before the Friday deploy window closes",branch="feature/lane-b-sidebar-and-header-exploration-with-a-long-branch-name";
