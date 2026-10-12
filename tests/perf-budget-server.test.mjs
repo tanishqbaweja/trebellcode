@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
+import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 const require=createRequire(import.meta.url);
 const sqlite=require("node:sqlite");
@@ -63,6 +64,23 @@ test("B5: a Codex reply delta through the relay opens no sqlite connection and p
     const db=new sqlite.DatabaseSync(join(home,"trebell.sqlite"));
     try{const row=JSON.parse(db.prepare("SELECT payload_json FROM state_thread_meta WHERE thread_id=?").get(threadId).payload_json);assert.deepEqual(row,meta)}finally{db.close()}
   }finally{counter.restore();client?.close();await gui?.close();for(const socket of wss.clients)socket.terminate();wss.close();await new Promise(resolve=>upstreamHttp.close(resolve));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
+});
+
+// B10: on every load the page posts the catalog fields of each listed thread it has not seen in this tab (100 on the perf home), and
+// each POST /api/thread-meta was a sqlite write transaction even when nothing had changed (scripts/perf/reload.mjs: 100 write
+// transactions on a reload and on a restart).
+test("B10: re-posting a thread's unchanged catalog fields costs no more write transactions than the baseline",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-budget-b10-")),env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);let writes=0;
+    state.collections.DatabaseSync=class extends sqlite.DatabaseSync{exec(sql){if(/BEGIN IMMEDIATE/i.test(String(sql)))writes++;return super.exec(sql)}};
+    const snapshot={id:"thread-b10",name:"Fix the build",preview:"The build fails on main",cwd:home,model:"gpt-5",updatedAt:1000,createdAt:900,status:{type:"idle",activeFlags:[]},section:null,projectId:null,runtime:"codex",provider:"openai"};
+    const patch={runtime:"codex",provider:"openai",runtimeInstanceId:"codex-default",model:"gpt-5",threadSnapshot:snapshot};
+    state.updateThreadMeta("thread-b10",patch);assert.equal(writes,1,"the first post is written");
+    // The page sends the same fields again as JSON, on every load.
+    state.updateThreadMeta("thread-b10",JSON.parse(JSON.stringify(patch)));
+    assert.ok(writes-1<=1,"write transactions for an unchanged post: "+(writes-1));
+  }finally{await rm(home,{recursive:true,force:true})}
 });
 
 // B12b: a reload or a restart fetched the whole bundle again (1,577 KB on the perf home, scripts/perf/reload.mjs), because nothing
