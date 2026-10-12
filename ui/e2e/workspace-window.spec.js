@@ -554,6 +554,27 @@ test("a file search with no match says that no files match",async({page,request}
   await expect(list).not.toContainText("No files match");
 });
 
+test("the Markdown preview draws bold, italic and inline code, and shows markup in the file as text",async({page,request})=>{
+  test.setTimeout(45_000);
+  const readme="# Notes\nA **bold** word, an *italic* one and `inline code`, but 2 * 3 * 4 stays as it is.\n- a list item with **bold `code`** in it\n> a quote with *italic* text\nMarkup stays text: <b>not bold</b> <img src=x onerror=\"window.__injected=1\">\n```\n**not bold in a fence**\n```\n";
+  const {right,row}=await openFilesFolder(page,request,"Workspace markdown",{"README.md":readme});
+  await row("README.md").click();
+  const md=right.locator(".markdown-preview");
+  await expect(md.locator("h1")).toHaveText("Notes");
+  await expect(md.locator("p").first()).toHaveText("A bold word, an italic one and inline code, but 2 * 3 * 4 stays as it is.");
+  await expect(md.locator("strong")).toHaveText(["bold","bold code"]);
+  await expect(md.locator("em")).toHaveText(["italic","italic"]);
+  // The app's fonts have no italic face, so italic text is drawn slanted only where the browser may slant it.
+  expect(await md.locator("em").first().evaluate(node=>getComputedStyle(node).fontSynthesisStyle)).toBe("auto");
+  await expect(md.locator("code")).toHaveText(["inline code","code"]);
+  await expect(md.locator("blockquote em")).toHaveText("italic");
+  await expect(md).toContainText("Markup stays text: <b>not bold</b> <img src=x onerror=\"window.__injected=1\">");
+  await expect(md.locator("b,img")).toHaveCount(0);
+  expect(await page.evaluate(()=>window.__injected)).toBeUndefined();
+  await expect(md.locator("pre")).toHaveText("**not bold in a fence**");
+  await shootBothModes(page,"workspace-markdown-inline");
+});
+
 // A Codex app server holding the given threads: enough for the sidebar to list them and for the app to open them.
 async function startThreadHarness(threads){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();

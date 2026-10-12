@@ -264,6 +264,10 @@
 :root:root .context-panel .markdown-preview .md-fence:empty{margin:0 0 8px;padding:0;height:8px;border-radius:0 0 8px 8px}
 :root:root .context-panel .markdown-preview .md-list{display:flex;gap:8px;margin:2px 0;color:var(--tx1)}
 :root:root .context-panel .markdown-preview .md-gap{height:8px}
+:root:root .context-panel .markdown-preview strong{font-weight:650;color:var(--tx0)!important}
+/* The app's fonts have no italic face and the app turns synthesis off, which drew *italic* upright. */
+:root:root .context-panel .markdown-preview em{font-style:italic;font-synthesis-style:auto}
+:root:root .context-panel .markdown-preview code{padding:1px 5px;border-radius:5px;background:var(--bg2)!important;color:var(--tx0)!important;font:400 11.5px/1.5 var(--mono)}
 :root:root .context-panel .table-preview{box-sizing:border-box;padding:12px}
 :root:root .context-panel .table-preview table{border-collapse:separate;border-spacing:0;min-width:100%;font:400 11.5px/1.4 var(--mono);border:1px solid var(--line);border-radius:9px;overflow:hidden}
 :root:root .context-panel .table-preview :is(th,td){padding:6px 10px;border:0;border-bottom:1px solid var(--line);border-right:1px solid var(--line);text-align:left;white-space:nowrap}

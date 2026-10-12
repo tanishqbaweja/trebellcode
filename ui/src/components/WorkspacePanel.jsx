@@ -47,17 +47,30 @@ function parseDelimited(text,delimiter=","){
   if(cell||row.length){row.push(cell);rows.push(row)}
   return rows;
 }
+// A line's inline marks: `code` (its text kept as it is), **bold** and *italic*, which may hold code. Each mark is an element
+// holding text, so nothing in the file is ever read as HTML; a lone "*" (2 * 3) stays text.
+const INLINE_MARK=/(`+)(.+?)\1|\*\*(?=\S)(.+?)(?<=\S)\*\*|\*(?=[^\s*])(.+?)(?<=[^\s*])\*/g;
+function inlineMarks(text){
+  const parts=[];let last=0;
+  for(const match of text.matchAll(INLINE_MARK)){
+    if(match.index>last)parts.push(text.slice(last,match.index));
+    parts.push(match[2]!=null?<code key={match.index}>{match[2]}</code>:match[3]!=null?<strong key={match.index}>{inlineMarks(match[3])}</strong>:<em key={match.index}>{inlineMarks(match[4])}</em>);
+    last=match.index+match[0].length;
+  }
+  if(last<text.length)parts.push(text.slice(last));
+  return parts;
+}
 function MarkdownPreview({content}){
   const lines=String(content||"").split(/\r?\n/);
   let fenced=false;
   return <div className="markdown-preview">{lines.map((line,index)=>{
     if(line.trim().startsWith("```")){fenced=!fenced;return <div className="md-fence" key={index}>{fenced?"code":""}</div>}
     if(fenced)return <pre key={index}>{line||" "}</pre>;
-    const h=line.match(/^(#{1,6})\s+(.+)$/);if(h)return React.createElement("h"+h[1].length,{key:index},h[2]);
-    const item=line.match(/^\s*[-*+]\s+(.+)$/);if(item)return <div className="md-list" key={index}>• <span>{item[1]}</span></div>;
-    if(line.startsWith(">"))return <blockquote key={index}>{line.replace(/^>\s?/,"")}</blockquote>;
+    const h=line.match(/^(#{1,6})\s+(.+)$/);if(h)return React.createElement("h"+h[1].length,{key:index},inlineMarks(h[2]));
+    const item=line.match(/^\s*[-*+]\s+(.+)$/);if(item)return <div className="md-list" key={index}>• <span>{inlineMarks(item[1])}</span></div>;
+    if(line.startsWith(">"))return <blockquote key={index}>{inlineMarks(line.replace(/^>\s?/,""))}</blockquote>;
     if(!line.trim())return <div className="md-gap" key={index}/>;
-    return <p key={index}>{line}</p>;
+    return <p key={index}>{inlineMarks(line)}</p>;
   })}</div>;
 }
 function fileIcon(name){
