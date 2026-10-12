@@ -331,6 +331,36 @@ test.describe("Typing a shortcut",()=>{
     await expect.poll(()=>sidebarCollapsed(page)).toBe(false);
     expect(saves.length).toBe(1);
   });
+
+  // The matcher drops a misspelt modifier and a context the app does not set reads as false, so saved before the checks came in,
+  // "Ctlr+B" answered to a bare B, taking that letter from the composer, and "!Always" held everywhere. Neither runs, as their
+  // rows say.
+  for(const mode of MODES)test(`a saved shortcut or condition the checks refuse runs nothing, as its row says (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    await request.post("/api/settings",{data:{keybindingRules:[{command:"sidebarToggle",key:"Ctlr+B",when:"!modalOpen"},{command:"terminal",key:"Ctrl+Shift+T",when:"!Always"}]}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await openShortcuts(page);
+    const sidebarRow=row(page,"Toggle main sidebar"),terminalRow=row(page,"Toggle terminal");
+    await expect(sidebarRow.getByRole("alert")).toHaveText("“Ctlr” is not a modifier key. Use Ctrl, Alt, Shift or Mod. Until then the saved shortcut does not work.");
+    await expect(terminalRow.getByRole("alert")).toHaveText("“Always” is not a context. Leave When empty to use the shortcut everywhere. Until then the saved condition does not work.");
+    for(const width of [1280,900]){
+      await page.setViewportSize({width,height:800});
+      await sidebarRow.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`saved-refused-runs-nothing-${mode}-${width}.png`});
+    }
+    await page.setViewportSize({width:1280,height:800});
+    await nav(page,"New task").click();
+    const composer=page.getByTestId("composer");
+    await composer.click();
+    await page.keyboard.type("abc");
+    await expect(composer,"a bare B ran the saved Ctlr+B").toHaveValue("abc");
+    await page.keyboard.press("Control+Shift+T");
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    expect(await sidebarCollapsed(page),"a bare B toggled the sidebar").toBe(false);
+    await expect(page.locator(".terminal-drawer"),"Ctrl+Shift+T ran Toggle terminal under “!Always”").toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:shots+`saved-refused-composer-${mode}-1280.png`});
+  });
 });
 
 test.describe("Two commands on one key",()=>{

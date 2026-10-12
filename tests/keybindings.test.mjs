@@ -234,6 +234,17 @@ test("a condition naming a context the app never sets is refused, with the conte
   assert.equal(whenProblem("projectOpen && !modalOpen"),"","the condition a project action starts with");
 });
 
+test("a saved shortcut or condition the checks refuse runs nothing, as Settings says",()=>{
+  // Saved before the checks came in. "Ctlr+B" does not take a bare B from typing, and "!Always" does not hold everywhere.
+  assert.equal(resolveKeybinding(event("b"),{keybindingRules:[{command:"sidebarToggle",key:"Ctlr+B",when:"!modalOpen"}]},{modalOpen:false}),null);
+  assert.equal(resolveKeybinding(event("b",{ctrlKey:true}),{keybindingRules:[{command:"sidebarToggle",key:"Ctrl+B",when:"!Always"}]},{modalOpen:false}),null);
+  assert.equal(resolveKeybinding(event("b",{ctrlKey:true}),{keybindingRules:[{command:"sidebarToggle",key:"Ctrl+B",when:"!modalOpen"}]},{modalOpen:false}),"sidebarToggle");
+  // Nor does such a rule take its key from another command: New thread keeps Ctrl+N, and is not listed as losing it.
+  const taken={keybindingRules:[{command:"commandPalette",key:"Ctrl+N",when:"!modalOpen || somewhere"}]};
+  assert.equal(resolveKeybinding(event("n",{ctrlKey:true}),taken,{modalOpen:false}),"newChat");
+  assert.equal(shadowedKeybindings(normalizeKeybindingRules(taken),false).size,0);
+});
+
 test("the contexts Settings accepts are the ones the app sets for a key press",()=>{
   const app=readFileSync(new URL("../ui/src/App.jsx",import.meta.url),"utf8");
   const end=app.indexOf("const command=resolveKeybinding(event,");

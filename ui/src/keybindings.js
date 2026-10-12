@@ -110,7 +110,7 @@ export function evaluateWhen(expression,context={}){
   return Boolean(result);
 }
 
-// The contexts the app sets for each key press (the keydown handler in App.jsx). Any other name reads as false.
+// The contexts the app sets for each key press (the keydown handler in App.jsx). A rule whose condition names any other does not run.
 export const KEYBINDING_CONTEXTS=["chatFocus","codexRuntime","threadSearch","terminalFocus","terminalOpen","previewFocus","modelPickerOpen","textInputFocus","projectOpen","threadOpen","running","modalOpen","rightPanelOpen","sidebarOpen","undoAvailable","pullRequestOpen","desktop"];
 
 // Why the resolver cannot read a condition, or "" when it can. It skips a condition it cannot read.
@@ -139,9 +139,8 @@ function nearestContext(name){
   for(const context of KEYBINDING_CONTEXTS){const distance=editDistance(lower,context.toLowerCase());if(distance<bestDistance){best=context;bestDistance=distance}}
   return best;
 }
-// Why a typed condition cannot be used, or "" when it can (blank means always). The resolver skips a condition it cannot read,
-// and a name that is not a context is false every time, so saving either would switch the shortcut off; the message says how
-// to fix it instead.
+// Why a typed condition cannot be used, or "" when it can (blank means always). The resolver skips a condition it cannot read or
+// that names a context the app does not set, so saving either would switch the shortcut off; the message says how to fix it instead.
 export function whenProblem(expression){
   const syntax=whenSyntaxProblem(expression);if(syntax)return syntax;
   const unknown=conditionNames(expression).find(name=>!KEYBINDING_CONTEXTS.includes(name));
@@ -212,8 +211,8 @@ const KEY_NAME_FIXES={up:"ArrowUp",down:"ArrowDown",left:"ArrowLeft",right:"Arro
 const knownKey=name=>[...name].length===1||/^f([1-9]|1\d|2[0-4])$/.test(name)||NAMED_KEYS.has(name);
 // Why a typed shortcut cannot be used, or "" when it can. Blank (unbound) and a key with any modifiers are fine. "Ctrl+" and
 // "Ctrl+Shift" stop on a modifier and never match a key; "Ctlr+B" names a modifier that does not exist, which the matcher drops,
-// so it would answer to a bare B; "Ctrl+Up" names a key the browser calls ArrowUp, so it would never fire. The message names
-// the modifiers as the field shows them (Mod as Ctrl, or ⌘ on macOS).
+// so it would answer to a bare B (the resolver runs no shortcut refused here); "Ctrl+Up" names a key the browser calls ArrowUp, so
+// it would never fire. The message names the modifiers as the field shows them (Mod as Ctrl, or ⌘ on macOS).
 export function shortcutProblem(value,mac=MAC_PLATFORM){
   const text=String(value??"").trim();
   if(!text)return "";
@@ -250,7 +249,7 @@ const holds=(expression,context)=>{try{return evaluateWhen(expression,context)}c
 // Ctrl+`, Mod+1-9) or for a narrower context that should win (Mod+N in a focused terminal), so none of them is listed. Conditions
 // are compared over every combination of the contexts they name. Returns a Map of command -> {key, by: commands that run instead}.
 export function shadowedKeybindings(rules,mac=MAC_PLATFORM){
-  const usable=rules.map((rule,index)=>({rule,index,signature:shortcutSignature(rule.key,mac)})).filter(item=>item.signature&&!whenSyntaxProblem(item.rule.when));
+  const usable=rules.map((rule,index)=>({rule,index,signature:shortcutSignature(rule.key,mac)})).filter(item=>item.signature&&ruleRuns(item.rule));
   const shadowed=new Map();
   for(const item of usable){
     const later=usable.filter(other=>other.index>item.index&&other.signature===item.signature).reverse();
@@ -277,13 +276,16 @@ export function projectKeybindingRules(rules,scripts=[]){
   return rules.filter(rule=>!/^script\..+\.run$/.test(rule.command)||actions.has(rule.command));
 }
 
+// A shortcut or condition the checks refuse does not run, as Settings says, even one saved before they came in: "Ctlr+B" would
+// take a bare B from typing, and "!Always" would hold everywhere.
+export const ruleRuns=rule=>!shortcutProblem(rule.key)&&!whenProblem(rule.when);
+
 // scripts: the open project's actions; given, the rules for actions it does not have are left out (projectKeybindingRules).
 export function resolveKeybinding(event,settings={},context={},{scripts}={}){
   const all=normalizeKeybindingRules(settings),rules=scripts?projectKeybindingRules(all,scripts):all;
   for(let index=rules.length-1;index>=0;index--){
     const rule=rules[index];
-    if(!shortcutMatches(event,rule.key))continue;
-    try{if(evaluateWhen(rule.when,context))return rule.command}catch{}
+    if(shortcutMatches(event,rule.key)&&ruleRuns(rule)&&evaluateWhen(rule.when,context))return rule.command;
   }
   return null;
 }
