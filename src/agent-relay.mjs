@@ -916,10 +916,18 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(session instanceof AcpAgentSession&&!session.resumable)continue;
       if(now-(sessionUsed.get(session)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
       if([...socketContexts].some(context=>context.waitsOn?.(threadId)))continue;
-      sessions.delete(threadId);void session.close().catch(error=>log("Could not close an idle harness session: "+(error?.message||String(error))));
+      sessions.delete(threadId);releaseSession(session,error=>log("Could not close an idle harness session: "+(error?.message||String(error))));
     }
   }
   const sessionSweep=setInterval(sweepIdleSessions,SESSION_SWEEP_MS);sessionSweep.unref?.();
+  // A session the relay lets go on its own (the idle sweep, a harness that died, a rewind that starts the conversation over) leaves
+  // sessions at once and closes after: an ACP harness gets up to 5 s to answer session/close before its process tree is stopped. A
+  // close or reset of the relay waits for those closes too (closeSessions), so no harness outlives the relay.
+  const sessionReleases=new Set();
+  function releaseSession(session,onError=()=>{}){
+    const release=(async()=>session.close())().catch(onError).finally(()=>sessionReleases.delete(release));
+    sessionReleases.add(release);return release;
+  }
   // A close or reset of the relay (shutdown, another environment) ends the sessions still starting as well as the ones that run:
   // the harness processes they started stop, and a start that returns afterwards is closed, never kept, so the turn waiting on it
   // fails instead of running in a session of the harness as it was. A start that has not launched its harness by then never does,
@@ -1248,7 +1256,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       endReasoning(thread.id,turn.id);
       if(error?.code==="CLAUDE_REWIND_REJECTED"){
         // The next turn rebuilds the Claude session from the thread's restored provider state.
-        if(sessions.get(thread.id)===session){sessions.delete(thread.id);void session.close?.().catch(()=>{})}
+        if(sessions.get(thread.id)===session){sessions.delete(thread.id);releaseSession(session)}
         const restored=restoreClaudeRejectedRewind(threadStore,thread.id,error);
         if(restored){
           emit("error",{threadId:thread.id,turnId:turn.id,message:"Claude could not safely rewind because the provider transcript changed. The original conversation was restored."});
@@ -1426,7 +1434,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // A dead ACP process leaves the thread: the next turn starts the harness again and resumes the conversation (T3 releases
       // an errored session), and its open approval or question cards are withdrawn.
       const runtimeSession=sessions.get(threadId);
-      if(runtimeSession instanceof AcpAgentSession&&runtimeSession.dead){sessions.delete(threadId);void runtimeSession.close().catch(()=>{});for(const context of socketContexts)context.cancelThreadRequests?.(threadId)}
+      if(runtimeSession instanceof AcpAgentSession&&runtimeSession.dead){sessions.delete(threadId);releaseSession(runtimeSession);for(const context of socketContexts)context.cancelThreadRequests?.(threadId)}
       emit("error",{threadId,turnId,message:update.message||"Agent runtime stopped"});
     }
   }
@@ -2020,7 +2028,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const live=sessions.get(thread.id),label=runtimeHarnessLabel(thread.runtime);
         if(thread.status?.type==="active"||live?.busy)throw new Error(`Stop the running ${label} turn before reverting this thread.`);
         const index=(thread.turns||[]).findIndex(item=>item.id===params.beforeTurnId);if(index<0)throw new Error(`${label} revert target turn was not found.`);
-        if(live){sessions.delete(thread.id);await live.close().catch(()=>{})}
+        if(live){sessions.delete(thread.id);await releaseSession(live)}
         const updated=threadStore.update(thread.id,{turns:thread.turns.slice(0,index),providerSessionId:"",status:{type:"idle"}});
         emit("thread/reverted",{threadId:thread.id,thread:updated});return {thread:updated};
       }
@@ -2151,6 +2159,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     sessionGeneration++;
     for(const runtime of [...startingSessions])await runtime.close().catch(()=>{});
     for(const session of sessions.values())await session.close().catch(()=>{});sessions.clear();
+    if(sessionReleases.size)await Promise.allSettled([...sessionReleases]);
     if(promptSettlements.size)await Promise.allSettled([...promptSettlements]);
     for(const threadId of [...toolWrites.keys()])settleToolWrites(threadId);
   }

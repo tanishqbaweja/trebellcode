@@ -117,6 +117,8 @@ function handle(m){
   if(m.method==="session/prompt")return void prompt(m.id);
   // A fork that takes forkDelayMs to answer, as a harness copying a long conversation does.
   if(m.method==="session/fork")return void setTimeout(()=>send({jsonrpc:"2.0",id:m.id,result:{sessionId:"budget-fork"}}),readPlan().forkDelayMs||0);
+  // A session/close that takes closeDelayMs to answer, as a harness saving its conversation does.
+  if(m.method==="session/close")return void setTimeout(()=>send({jsonrpc:"2.0",id:m.id,result:{}}),readPlan().closeDelayMs||0);
   return send({jsonrpc:"2.0",id:m.id,result:{}});
 }
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{try{handle(JSON.parse(line))}catch{}});
@@ -483,6 +485,22 @@ test("two sends at once on a thread the sweep let go start one harness, and the 
     await relay.close();
   }
   assert.deepEqual(left,[],"the relay's close stops every harness the thread started");
+});
+
+// The sweep closes a session it lets go in the background: the session waits up to 5 s for its harness to answer session/close, then
+// stops the harness's process tree. The relay's close (the server's shutdown) returned without waiting for that, so a server that
+// exited right after a sweep let a session go left its harness running. Here the harness takes 3 s to answer session/close.
+test("the relay's close waits for a session the idle sweep is still closing, so its harness stops with the relay",async()=>{
+  const relay=await budgetRelay("trebell-budget-sweep-close-",{env:SWEEP_ENV});
+  try{
+    const thread=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:1,closeDelayMs:3000}),"utf8");
+    const completed=relay.notified("turn/completed");await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello"}]});await completed;
+    const [agent]=await relay.agentProcesses();
+    assert.ok(await eventually(async()=>(await relay.agentProcesses())[0].methods.includes("session/close"),5000),"the sweep is closing the idle session");
+    await relay.shutdown();
+    assert.ok(await eventually(()=>!alive(agent.pid),1000),"the harness the sweep was closing stops with the relay's close");
+  }finally{await relay.close()}
 });
 
 // OpenCode's local session names each OpenCode tool's ACP kind. Its searches (grep, glob, list) went out as "other", a kind the sweep
