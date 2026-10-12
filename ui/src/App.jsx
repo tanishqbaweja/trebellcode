@@ -4500,7 +4500,7 @@ export default function App(){
     await addContextPath(path,{kind:"file",label:item.name||String(item.path).split(/[\\/]/).pop()||"File",detail:item.relativePath||item.path,sourcePath:item.path});
     return path;
   }
-  async function pickFiles(){
+  async function pickFiles(label){
     const native=window.trebellDesktop?.pickFiles;
     if(native){const p=await native();if(p?.length){const prepared=await prepareAttachmentPaths(p);await addFiles(prepared);return prepared}return[]}
     const files=await new Promise(resolve=>{
@@ -4511,21 +4511,24 @@ export default function App(){
       window.addEventListener("focus",()=>setTimeout(()=>{if(!settled&&!input.files?.length)done([])},250),{once:true});
       input.click();
     });
-    return uploadBrowserFiles(files);
+    return uploadBrowserFiles(files,label);
   }
-  // A file over the size limit is refused before anything is read. Each file taken shows on the shelf as uploading until the server
-  // has it, and then as attached.
-  async function uploadBrowserFiles(files){
+  // A file over the size limit is refused by its name before anything is read. With label (what the composer's toast says could not
+  // be done) the refusal shows at once, while the files taken upload, each on the shelf as uploading until the server has it and then
+  // as attached. What failed is thrown at the end: an upload that failed, or else the refusal.
+  async function uploadBrowserFiles(files,label=""){
     const picked=files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length)),uploaded=[];
-    let firstError=picked.map(attachmentSizeError).find(Boolean)||null;
+    const tooLarge=picked.filter(file=>attachmentSizeError(file)),refusal=tooLarge.length?new Error(tooLarge.map(file=>(file.name||"A file")+": "+attachmentSizeError(file).message).join("; ")):null;
+    if(refusal&&label)showActionError(refusal,label);
     const taken=picked.filter(file=>!attachmentSizeError(file)).map(file=>({file,id:crypto.randomUUID(),name:file.name||"attachment"}));
     if(taken.length)setUploadingFiles(prev=>[...prev,...taken.map(({id,name})=>({id,name}))]);
+    let failure=null;
     for(const {file,id} of taken){
       try{const {path}=await blobAttachment(file);uploaded.push(path);addFiles([path])}
-      catch(error){firstError ||= error}
+      catch(error){failure ||= error}
       finally{setUploadingFiles(prev=>prev.filter(item=>item.id!==id))}
     }
-    if(firstError)throw firstError;
+    if(failure||refusal)throw failure||refusal;
     return uploaded;
   }
   async function blobAttachment(file){const tooLarge=attachmentSizeError(file);if(tooLarge)throw tooLarge;const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");reader.onerror=()=>reject(new Error((file.name||"The file")+": "+(reader.error?.message||"the browser could not read it")));reader.readAsDataURL(file)});const stored=await api("/api/attachments/blob",{method:"POST",body:{name:file.name,mime:file.type,dataBase64:data}});const [path]=await prepareAttachmentPaths([stored.path]);return {...stored,path}}
@@ -4537,7 +4540,7 @@ export default function App(){
     await addContextPath(path,{kind:"computer",label:"Desktop snapshot",detail:(shot.width&&shot.height)?shot.width+"×"+shot.height:"PNG capture"});
   }
   async function onPaste(e){
-    const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();try{await uploadBrowserFiles(files)}catch(error){showActionError(error,"Could not attach pasted files")}return}
+    const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();try{await uploadBrowserFiles(files,"Could not attach pasted files")}catch(error){showActionError(error,"Could not attach pasted files")}return}
     const text=e.clipboardData?.getData("text/plain")||"";const start=Number(e.currentTarget?.selectionStart)||0,end=Number(e.currentTarget?.selectionEnd)||start;const nextLength=prompt.length-(end-start)+text.length;
     if(text.length>=32768||nextLength>MAX_COMPOSER_CHARS){
       e.preventDefault();
@@ -4552,7 +4555,7 @@ export default function App(){
     }
   }
   // A dropped folder comes as a file the browser cannot read: it is left out and named as a folder, and the files beside it attach.
-  async function onDrop(e){e.preventDefault();const items=[...(e.dataTransfer?.items||[])].filter(item=>item.kind==="file"),isFolder=item=>Boolean(item.webkitGetAsEntry?.()?.isDirectory),folders=items.some(isFolder),files=items.filter(item=>!isFolder(item)).map(item=>item.getAsFile()).filter(Boolean);try{await uploadBrowserFiles(files);if(folders)throw new Error("Folders cannot be attached")}catch(error){showActionError(error,"Could not attach dropped files")}}
+  async function onDrop(e){e.preventDefault();const items=[...(e.dataTransfer?.items||[])].filter(item=>item.kind==="file"),isFolder=item=>Boolean(item.webkitGetAsEntry?.()?.isDirectory),folders=items.some(isFolder),files=items.filter(item=>!isFolder(item)).map(item=>item.getAsFile()).filter(Boolean);try{await uploadBrowserFiles(files,"Could not attach dropped files");if(folders)throw new Error("Folders cannot be attached")}catch(error){showActionError(error,"Could not attach dropped files")}}
   async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}
   async function citeAssistant(message,excerpt=""){
     const selected=String(excerpt||"").trim();
@@ -4889,7 +4892,7 @@ export default function App(){
   const composerSetModel=useLatestCallback(changeComposerModel);
   const composerRemoveAttachment=useLatestCallback(path=>setAttachments(prev=>prev.filter(x=>x!==path)));
   const composerRemoveContext=useLatestCallback(removeContext);
-  const composerPickFiles=useLatestCallback(()=>runUserAction(pickFiles,"Could not attach files"));
+  const composerPickFiles=useLatestCallback(()=>runUserAction(()=>pickFiles("Could not attach files"),"Could not attach files"));
   const composerCaptureScreen=useLatestCallback(()=>runUserAction(captureDesktop,"Could not capture screen"));
   const composerPaste=useLatestCallback(onPaste);
   const composerDrop=useLatestCallback(onDrop);
