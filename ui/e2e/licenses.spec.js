@@ -40,6 +40,8 @@ async function openLicenses(page){
   await expect(page.locator(".licenses-page")).toBeVisible();
 }
 const count=page=>page.locator(".licenses-toolbar>span");
+// The toolbar as a screen reader has it: while the list loads or failed, its column's status says so, and no bare dash is read.
+const toolbarSpoken=page=>page.locator(".licenses-toolbar").ariaSnapshot();
 const rows=page=>page.locator(".licenses-list>button");
 const sideways=page=>page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth+1);
 test.afterEach(async({request})=>{await request.post("/api/settings",{data:BASE})});
@@ -56,6 +58,7 @@ for(const mode of MODES){
     await expect(list.getByRole("status")).toHaveText("Loading licenses…");
     await expect(list).toHaveAttribute("aria-busy","true");
     await expect(count(page)).toHaveText("—");
+    expect(await toolbarSpoken(page),"a screen reader reads the loading count as a bare dash").not.toContain("—");
     await page.screenshot({animations:"disabled",path:shots+`loading-${mode}-1280.png`});
     await page.setViewportSize({width:900,height:800});
     await expect(list.getByRole("status")).toBeVisible();
@@ -66,6 +69,7 @@ for(const mode of MODES){
     await expect(list).not.toHaveAttribute("aria-busy","true");
     await expect(list.getByRole("status")).toHaveCount(0);
     await expect(count(page)).toHaveText(`${PACKAGES.length} of ${PACKAGES.length}`);
+    expect(await toolbarSpoken(page)).toContain(`${PACKAGES.length} of ${PACKAGES.length}`);
   });
 
   test(`a failed list says it could not load it, and Retry loads it (${mode})`,async({page,request})=>{
@@ -79,6 +83,7 @@ for(const mode of MODES){
     await expect(failure).toContainText("Deliberate licenses failure");
     await expect(page.getByText("No matching packages"),"a failed read reads as an empty search").toHaveCount(0);
     await expect(count(page)).toHaveText("—");
+    expect(await toolbarSpoken(page),"a screen reader reads the count of a failed list as a bare dash").not.toContain("—");
     // The reason sits with the list it belongs to, not at the bottom of the notice pane.
     await expect(page.locator(".license-detail").getByText("Deliberate licenses failure")).toHaveCount(0);
     await page.screenshot({animations:"disabled",path:shots+`failed-${mode}-1280.png`});
