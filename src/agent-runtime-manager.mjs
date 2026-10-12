@@ -34,9 +34,10 @@ export function runtimeCapabilities(kind){
 }
 
 const CODEX_ACCOUNT_REUSE_MS=60_000;
-// A probe's answer, whatever it says, is reused this long: Settings polls the active harness every 5 s and every thread start
-// probes again, and each probe launches the CLI one to three times. Settings' own listing (its open, Refresh and the follow-up of a
-// sign-in), a switch and an install ask with fresh, so a sign-in made outside Trebell shows at the latest a minute later.
+// A probe's ready answer is reused this long: Settings polls the active harness every 5 s and every thread start probes again, and
+// each probe launches the CLI one to three times. Settings' own listing (its open, Refresh and the follow-up of a sign-in), a switch
+// and an install ask with fresh. An answer that the harness cannot run is asked again each time, as Codex's account read is, so a
+// sign-in made outside Trebell lets the next chat start; a sign-out shows at the latest a minute later.
 const PROBE_REUSE_MS=60_000;
 // An ACP harness's model list is kept this long once it has models (T3 keeps Cursor's for 30 minutes per version).
 const ACP_MODEL_LIST_REUSE_MS=30*60_000;
@@ -591,18 +592,22 @@ export class AgentRuntimeManager{
     return [];
   }
   #probes=new Map();
-  // One answer per profile and environment: callers that ask while it runs share it, and later ones reuse it for PROBE_REUSE_MS.
-  // fresh starts a new one, which the next callers share. Each caller gets its own copy.
+  // One answer per profile and environment: callers that ask while it runs share it, and later ones reuse a ready answer for
+  // PROBE_REUSE_MS. An answer that the harness cannot run is not kept, and a caller that joined one asks again (or joins a probe
+  // started after it asked): a thread start refuses on it, and the person may just have signed in outside Trebell, or the check
+  // timed out under load. fresh starts a new one, which the next callers share. Each caller gets its own copy.
   async probe(instanceOrKind,{environmentId=undefined,fresh=false}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="native")return this.#probeNow(instance,{environmentId});
     const key=JSON.stringify([this.activeEnvironment(environmentId)?.id||"local",instance]),cached=this.#probes.get(key);
-    if(!fresh&&cached?.pending)return structuredClone(await cached.pending);
-    if(!fresh&&cached&&this.now()-cached.at<PROBE_REUSE_MS)return structuredClone(cached.value);
+    if(!fresh&&cached?.pending){
+      const value=await cached.pending;if(value?.available)return structuredClone(value);
+      const next=this.#probes.get(key);if(next?.pending&&next.pending!==cached.pending)return structuredClone(await next.pending);
+    }else if(!fresh&&cached&&this.now()-cached.at<PROBE_REUSE_MS)return structuredClone(cached.value);
     const pending=this.#probeNow(instance,{environmentId,fresh});this.#probes.set(key,{pending});
     try{
       const value=await pending;
-      if(this.#probes.get(key)?.pending===pending)this.#probes.set(key,{at:this.now(),value});
+      if(this.#probes.get(key)?.pending===pending){if(value?.available)this.#probes.set(key,{at:this.now(),value});else this.#probes.delete(key)}
       return structuredClone(value);
     }catch(error){
       if(this.#probes.get(key)?.pending===pending)this.#probes.delete(key);

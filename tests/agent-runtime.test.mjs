@@ -607,6 +607,40 @@ test("a local harness's version check is kept until its binary changes, and a fr
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+// The relay probes before it starts a harness session (ensureSession) and refuses the chat on an answer that cannot run, with the
+// harness's own advice ("Run `claude auth login` and try again"); that answer must not outlive a sign-in the person then makes.
+function claudeSignIn(){
+  const auth={signedIn:false,hold:null},launches=[];
+  const profile={id:"ssh-sign-in",type:"ssh",cwd:"/srv/app"};
+  const environments={
+    get:id=>id===profile.id?profile:null,
+    // The sign-in state is read as the check starts; hold keeps that check running.
+    executeArgv:async(_id,{args})=>{launches.push(args.join(" "));if(args[0]!=="auth")return {exitCode:0,stdout:"2.1.0 (Claude Code)\n",stderr:""};const loggedIn=auth.signedIn;await auth.hold;return {exitCode:0,stdout:JSON.stringify({loggedIn}),stderr:""}},
+    spawnArgv:()=>{throw new Error("not used")},
+  };
+  const manager=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id,agentRuntime:"claude"})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test"}});
+  return {auth,launches,manager,chatStart:()=>manager.probe(manager.instances().find(item=>item.kind==="claude"),{environmentId:profile.id})};
+}
+test("a probe that finds the harness unable to run is asked again, so a chat started after a sign-in outside Trebell starts",async()=>{
+  const {auth,launches,manager,chatStart}=claudeSignIn();
+  // Settings' poll or the bootstrap finds Claude Code signed out; the person runs `claude auth login` in a terminal of their own.
+  assert.equal((await manager.probe("claude")).available,false);
+  auth.signedIn=true;
+  const status=await chatStart();assert.equal(status.available,true,"the chat start was refused: "+status.message);
+  // A ready answer is reused, as before.
+  const asked=launches.length;await chatStart();await manager.probe("claude");assert.equal(launches.length,asked);
+});
+test("a chat start that joins a running probe asks again when that probe finds the harness unable to run",async()=>{
+  const {auth,launches,manager,chatStart}=claudeSignIn();let release;auth.hold=new Promise(resolve=>{release=resolve});
+  // The poll's check began before the sign-in finished; the chat starts while it still runs.
+  const polled=manager.probe("claude");await new Promise(resolve=>setImmediate(resolve));
+  auth.signedIn=true;const started=chatStart(),again=chatStart();
+  auth.hold=null;release();
+  assert.equal((await polled).available,false,"the poll keeps its own answer");
+  assert.equal((await started).available,true);assert.equal((await again).available,true);
+  assert.equal(launches.filter(line=>line==="auth status").length,2,"the two chat starts share one check made after they asked");
+});
+
 test("runtime auth commands use the provider's real interactive CLI flow",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-auth-command-"));const env={...process.env,TREBELL_HOME:home};
   try{
