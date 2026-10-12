@@ -197,6 +197,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header .header-control.branch-control span{max-width:140px}
 .workspace-header .header-control.stop-control{color:var(--err)}
 .workspace-header .header-control.stop-control:hover{background:var(--errt);color:var(--err)}
+.workspace-header .header-control:is(:disabled,:disabled:hover){background:transparent;color:var(--tx3);cursor:default}
 /* A line parts the labelled actions from the icon toggles: it goes before the first toggle the row shows, when a labelled action
    shows before it. Folded actions (data-folded, see the narrow-header rules below) count as neither. */
 .workspace-header .workspace-header-actions>:is(.header-control:not(.icon-only),.open-in-wrap):not([data-folded])~.header-control.icon-only:not([data-folded]):not(.header-control.icon-only:not([data-folded])~*){position:relative;margin-left:9px}
@@ -611,6 +612,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control.branch-control:hover{background:var(--bg2)!important;border-color:var(--line2)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control.stop-control{color:var(--err)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control.stop-control:hover{background:var(--errt)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control:is(:disabled,:disabled:hover){background:transparent!important;color:var(--tx3)!important;cursor:default}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .chat-workspace .thread-find-bar{background:var(--panel)!important;border-color:var(--line2)!important;box-shadow:var(--shadow)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .chat-workspace .thread-find-bar input{background:transparent!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .chat-workspace .thread-find-snippet{background:var(--bg2)!important;color:var(--tx2)!important}
@@ -726,6 +728,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header .header-overflow-menu>button:hover>svg{color:var(--tx1)}
 .workspace-header .header-overflow-menu>button[aria-pressed="true"]{color:var(--tx0)}
 .workspace-header .header-overflow-menu>button[aria-pressed="true"]>svg{color:var(--ac)}
+.workspace-header .header-overflow-menu>button:is(:disabled,:disabled:hover){background:transparent;color:var(--tx3);cursor:default}
+.workspace-header .header-overflow-menu>button:disabled>svg{color:var(--tx3)}
 .workspace-header .header-overflow-menu>.header-overflow-node{display:flex;padding:3px 5px}
 .workspace-header .header-overflow-menu>.header-overflow-node:empty{display:none}
 .workspace-header .header-overflow-menu>.header-overflow-node>.open-in-wrap,.workspace-header .header-overflow-menu .open-in-picker{flex:1 1 auto}

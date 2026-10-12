@@ -4582,11 +4582,14 @@ export default function App(){
   async function shareThread(){const text=messages.filter(m=>m.role==="user"||m.role==="assistant").map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
   async function startReview(){
     if(!rpc||!activeThread?.id)throw new Error("Start or open a thread before reviewing.");
-    // A review is a turn, and no turn starts while a thread opens (sends wait the same way).
+    // A review is a turn, and no turn starts while a thread opens (sends wait the same way) or while another one runs.
     if(openingThreadRef.current)throw new Error("Wait for the thread to finish opening before reviewing.");
+    if(running)throw new Error("Wait for the running turn to finish before reviewing.");
     const result=await rpc.request("review/start",{threadId:activeThread.id,target:{type:"uncommittedChanges"}});
-    if(result?.turn?.id){setRunning(true);setActiveTurnId(result.turn.id)}
-    setEvents(prev=>[...prev,{id:"review-"+Date.now(),kind:"tool",title:"Reviewing uncommitted changes",status:"running",raw:result||{}}]);
+    // A review runs only as the turn the harness started for it: an answer without one started nothing.
+    if(!result?.turn?.id)throw new Error(agentRuntimeLabel+" did not start a review.");
+    setRunning(true);setActiveTurnId(result.turn.id);
+    setEvents(prev=>[...prev,{id:"review-"+Date.now(),kind:"tool",title:"Reviewing uncommitted changes",status:"running",raw:result}]);
     return result;
   }
   async function runProjectAction(script){
@@ -4898,6 +4901,7 @@ export default function App(){
   const headerScript=(currentProject?.scripts||[]).find(item=>item.id===currentProject.preferredScriptId)||currentProject?.scripts?.[0]||null;
   const runHeaderScript=()=>runUserAction(()=>runProjectAction(headerScript),"Project action failed");
   const reviewFromHeader=()=>runUserAction(startReview,"Could not start review");
+  const reviewHint=running?"Wait for the running turn to finish before reviewing":"Review uncommitted changes";
   // A rename the harness refuses says why, and the title keeps its name; with the harness away the title cannot rename at all.
   const renameFromHeader=()=>runUserAction(renameThread,"Could not rename thread");
   const renameReady=Boolean(rpc)&&rpcStatus==="connected";
@@ -5072,7 +5076,7 @@ export default function App(){
               {gitInfo?.isGit&&projectControlsShown&&<button className="header-control branch-control" data-fold="source" onClick={()=>openRightPanel("source")} title={(gitInfo.branch||"detached")+" · Source control"}><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
               {headerOpenInShown&&projectControlsShown&&<OpenInControl openIn={headerOpenIn} fold="open-in"/>}
               {headerScript&&projectControlsShown&&<button className="header-control script-control" data-fold="script" onClick={runHeaderScript} aria-label={headerScript.name} title={headerScript.command}><Play size={13}/><span>{headerScript.name}</span></button>}
-              {activeThread?.id&&!openingShown&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} aria-label="Review" title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
+              {activeThread?.id&&!openingShown&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} disabled={running} aria-label="Review" title={reviewHint}><ShieldCheck size={14}/><span>Review</span></button>}
               {running&&!openingShown&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label="Stop" title="Stop the running turn"><CircleStop size={14}/><span>Stop</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} data-fold="terminal" onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               {activeThread?.id&&!openingShown&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} data-fold="goal" onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
@@ -5085,7 +5089,7 @@ export default function App(){
                 gitInfo?.isGit&&projectControlsShown&&{id:"source",fold:"source",Icon:GitBranch,label:"Source control",detail:gitInfo.branch||"detached",onSelect:()=>openRightPanel("source")},
                 headerOpenInShown&&projectControlsShown&&{id:"open-in",fold:"open-in",render:close=><OpenInControl openIn={headerOpenIn} onOpen={()=>{close();openProjectFromMenu()}}/>},
                 headerScript&&projectControlsShown&&{id:"script",fold:"script",Icon:Play,label:headerScript.name,title:headerScript.command,onSelect:runHeaderScript},
-                activeThread?.id&&!openingShown&&gitInfo?.isGit&&{id:"review",fold:"review",Icon:ShieldCheck,label:"Review",title:"Review uncommitted changes",onSelect:reviewFromHeader},
+                activeThread?.id&&!openingShown&&gitInfo?.isGit&&{id:"review",fold:"review",Icon:ShieldCheck,label:"Review",title:reviewHint,disabled:running,onSelect:reviewFromHeader},
                 {id:"terminal",fold:"terminal",Icon:PanelBottom,label:"Terminal",pressed:panel==="terminal",onSelect:toggleTerminalPanel},
                 activeThread?.id&&!openingShown&&{id:"goal",fold:"goal",Icon:Target,label:"Thread goal",title:goal?.objective||"Set thread goal",pressed:rightPanelOpen&&rightPanelTab==="goal",onSelect:()=>openRightPanel("goal")},
                 {id:"appearance",Icon:resolvedMode==="dark"?Sun:Moon,label:appearanceToggleLabel,onSelect:toggleAppearanceMode},

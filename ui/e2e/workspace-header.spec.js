@@ -110,6 +110,31 @@ test("a refused rename says why and keeps the title, and while the harness is st
   }finally{await harness.close()}
 });
 
+test("Review waits while a turn runs, and a review the harness does not start adds no running step",async({page})=>{
+  test.setTimeout(90_000);
+  const held=gate();
+  const {harness,proxy,header}=await openHeaderApp(page,{branch:"main",replies:[async()=>{await held.promise;return {text:"Long task done."}}]});
+  const review=header.getByRole("button",{name:"Review",exact:true}),stop=header.getByRole("button",{name:"Stop",exact:true});
+  try{
+    await expect(review).toBeEnabled();await expect(review).toHaveAttribute("title","Review uncommitted changes");
+    await page.getByTestId("composer").click();await page.keyboard.type("Run the long task",{delay:20});await page.keyboard.press("Enter");
+    await expect(stop).toBeVisible({timeout:15_000});
+    await expect(review).toBeDisabled();
+    await expect(review).toHaveAttribute("title","Wait for the running turn to finish before reviewing");
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await shoot(page,"header-review-during-turn")}
+    await switchMode(page,"dark");
+    held.open();
+    await expect(page.getByText("Long task done.")).toBeVisible({timeout:15_000});
+    await expect(stop).toHaveCount(0);await expect(review).toBeEnabled();
+    // A harness that answers without starting a review turn: nothing claims a review is running, and the header says it did not start.
+    proxy.answer=message=>message.method==="review/start"?{}:undefined;
+    await review.click();
+    await expect(page.getByTestId("app-action-error")).toHaveText("Could not start review: Trebell Native did not start a review.");
+    await expect(page.getByText("Reviewing uncommitted changes")).toHaveCount(0);
+    await expect(stop).toHaveCount(0);await expect(review).toBeEnabled();
+  }finally{held.open();await harness.close()}
+});
+
 test("the header gives the whole thread title and branch name on hover when it cuts them",async({page})=>{
   test.setTimeout(60_000);
   const name="Release checklist for the payments service and the refund flow, with every step the on-call engineer has to run before the Friday deploy window closes",branch="feature/lane-b-sidebar-and-header-exploration-with-a-long-branch-name";

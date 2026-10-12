@@ -3,7 +3,7 @@ import { MoreHorizontal } from "lucide-react";
 
 // The workspace header's More actions menu. header-fit.js shows it once the row has to fold actions, and the menu lists the
 // folded ones, so every action stays reachable however narrow the main column is. Each item is
-// {id,fold,Icon,label,detail,hint,title,pressed,onSelect}, or {id,fold,render} for a control that draws itself (the Open-in
+// {id,fold,Icon,label,detail,hint,title,pressed,disabled,onSelect}, or {id,fold,render} for a control that draws itself (the Open-in
 // picker): render(close) returns it, and it calls close when it runs its action. An item with fold (its row control's data-fold)
 // shows only while that control is folded; one without shows whenever the menu does. Falsy items are skipped. It closes like
 // the other menus: Escape (focus returns to its button), a click outside it, focus moving out of it and its button (Tab past the
@@ -62,7 +62,7 @@ export default function HeaderOverflowMenu({items=[]}){
   return <div className="header-overflow" ref={wrapRef}>
     <button ref={buttonRef} type="button" className={"header-control icon-only"+(open?" active":"")} onClick={()=>setOpen(value=>!value)} aria-label="More actions" title="More actions" aria-expanded={open}><MoreHorizontal size={16}/></button>
     {open&&<div className="header-overflow-menu" data-testid="header-overflow-menu">
-      {shown.map(item=>item.render?<div className="header-overflow-node" key={item.id} data-fold={item.fold}>{item.render(close)}</div>:<button key={item.id} type="button" data-fold={item.fold} onClick={()=>choose(item)} title={item.title||undefined} aria-pressed={item.pressed==null?undefined:Boolean(item.pressed)}>
+      {shown.map(item=>item.render?<div className="header-overflow-node" key={item.id} data-fold={item.fold}>{item.render(close)}</div>:<button key={item.id} type="button" data-fold={item.fold} onClick={()=>choose(item)} disabled={Boolean(item.disabled)} title={item.title||undefined} aria-pressed={item.pressed==null?undefined:Boolean(item.pressed)}>
         {item.Icon&&<item.Icon size={14} aria-hidden="true"/>}<span>{item.label}</span>{item.detail&&<small>{item.detail}</small>}{item.hint&&<kbd className="tb-kbd">{item.hint}</kbd>}
       </button>)}
     </div>}
