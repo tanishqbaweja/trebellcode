@@ -1019,6 +1019,38 @@ test("a pull request action that finishes after another one was opened keeps tha
   await shootBothModes(page,"source-control-late-merge-failure");
 });
 
+test("a pull request opened again while its own action is on its way shows what the action did once it is done",async({page,request})=>{
+  test.setTimeout(60_000);
+  await asInDesktopApp(page);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,prs:[samplePr(11,{title:"Feature one"})]});
+  const {right,pulls}=await openGitPanel(page,request,"Source control same pull request again");
+  const dialog=page.locator("dialog.inspector-text-prompt"),detail=pulls.locator(".pr-detail"),actions=detail.locator(".pr-actions");
+  const listed=pulls.locator(".pr-list").getByRole("button",{name:/#11 Feature one/});
+  const held=()=>{let release;const promise=new Promise(resolve=>{release=resolve});return {promise,release}};
+  const detailReads=()=>host.calls.filter(call=>call.path==="pr-detail").length;
+  // While a reviewer is being requested the person clicks the pull request in the list again: once asked, the reviewer is listed.
+  await listed.click();await expect(detail.locator("h3")).toHaveText("#11 Feature one");
+  let hold=held();host.hold["request-reviewer"]=hold.promise;
+  await actions.getByRole("button",{name:"Request reviewer"}).click();
+  await expect(dialog).toContainText("Reviewer username");await page.keyboard.type("octocat",{delay:15});await page.keyboard.press("Enter");
+  await expect.poll(()=>host.actions().length).toBe(1);
+  let reads=detailReads();await listed.click();await expect.poll(detailReads).toBe(reads+1);
+  delete host.hold["request-reviewer"];hold.release();
+  await expect(detail.locator(".review-list").last().locator(":scope > div")).toHaveText([/^octocat\s*requested$/i]);
+  // Likewise a merge: once it is done the detail shows the pull request merged, with no Merge or Auto-merge left to offer.
+  hold=held();host.hold.merge=hold.promise;
+  await actions.getByRole("button",{name:"Merge",exact:true}).click();await dialog.getByRole("button",{name:"Merge",exact:true}).click();
+  await expect.poll(()=>host.actions().length).toBe(2);
+  reads=detailReads();await listed.click();await expect.poll(detailReads).toBe(reads+1);
+  delete host.hold.merge;hold.release();
+  await expect(right.locator(".source-control-notice")).toHaveText("Pull request #11 was merged.");
+  await expect(actions.getByRole("button",{name:"Merge",exact:true})).toHaveCount(0);
+  await expect(actions.getByRole("button",{name:"Auto-merge",exact:true})).toHaveCount(0);
+  await detail.scrollIntoViewIfNeeded();
+  await shootBothModes(page,"source-control-merged-after-reopen");
+});
+
 test("Link to thread with no thread open says to open one first",async({page,request})=>{
   test.setTimeout(60_000);
   const boot=await (await request.get("/api/bootstrap")).json();

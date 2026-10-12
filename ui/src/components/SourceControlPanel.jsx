@@ -60,7 +60,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const [statusLimit,setStatusLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [prLimit,setPrLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [fileLimit,setFileLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
-  const prDetailRef=useRef(null),openPrRequestRef=useRef(0);
+  const prDetailRef=useRef(null),openPrRequestRef=useRef(null);
   // What the last refresh could not load: "info" (the repository itself) or "prs" (only the pull-request list, after the
   // repository view was refreshed), so a successful action reports the part that actually failed.
   const refreshFailureRef=useRef(null);
@@ -221,9 +221,10 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       partialSuccess("Pull request was created",issues,started);
     }catch(e){reportError(started,actionError("Could not create the pull request",e))}finally{if(ownsBusy)setBusy("")}
   }
-  // Only the pull request opened last is shown: a detail that answers after another one was opened is dropped.
+  // Only the pull request opened last is shown: a detail that answers after another one was opened is dropped. Each open is its own
+  // request, which names the pull request it opens.
   async function openPr(pr){
-    const started=contextRef.current,request=++openPrRequestRef.current,current=()=>stillShown(started)&&request===openPrRequestRef.current;
+    const started=contextRef.current,request=openPrRequestRef.current={number:pr.number},current=()=>stillShown(started)&&request===openPrRequestRef.current;
     setError("");
     let d=null;
     // The banner names what could not load; a caller that reports the failure in its own sentence gets the bare reason.
@@ -274,14 +275,15 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     try{const result=await api("/api/source-control/pr-viewed",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||selectedPr.provider||null,number:selectedPr.number,files:[{path:file.path,viewed:value}]})});if(stillShown(started))setViewed({prNumber:selectedPr.number,store:result.store||viewed.store,files:result.files||[],loading:false})}
     catch(error){reportError(started,actionError("Could not mark "+file.path+(value?" viewed":" unviewed"),error))}finally{setBusy("")}
   }
-  // An action belongs to the pull request it was started on: its detail is read again only while no other one was opened since.
+  // An action belongs to the pull request it was started on: its detail is read again while that is the one opened last, so one
+  // opened again during the action shows what the action did, and another one opened since stays.
   async function prAction(actionName,extra={},{done=""}={}){
-    const started=contextRef.current,pr=selectedPr,opened=openPrRequestRef.current;
+    const started=contextRef.current,pr=selectedPr;
     setBusy(actionName);setError("");
     try{
       const result=await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:pr.number,action:actionName,...extra})});
       if(!stillShown(started))return result;
-      const issues=[];if(openPrRequestRef.current===opened){const detailError=await openPr(pr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
+      const issues=[];if(openPrRequestRef.current?.number===pr.number){const detailError=await openPr(pr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
       const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
       partialSuccess(done||"Pull request action "+actionName+" on #"+pr.number+" succeeded",issues,started,Boolean(done));
       return result;
@@ -341,7 +343,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       ?"Merge "+mergeScope.map(pr=>"#"+pr.number).join(" → ")+" using "+stackMergeMethod+" as one GitHub stack operation? GitHub will enforce branch rules and merge queues."
       :"Rebase stack "+label+"? This rewrites the remote stack branches bottom-to-top with force-with-lease and restarts checks. Your current checkout is not changed.";
     if(!confirm(promptText))return;
-    const started=contextRef.current,opened=openPrRequestRef.current;
+    const started=contextRef.current;
     setBusy(kind+"-stack");setError("");
     try{
       if(kind==="merge"){
@@ -351,7 +353,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       }
       if(!stillShown(started))return;
       const issues=[];const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
-      if(selectedPr&&openPrRequestRef.current===opened){const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
+      if(selectedPr&&openPrRequestRef.current?.number===selectedPr.number){const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
       partialSuccess("Stack "+kind+" succeeded",issues,started);
     }catch(e){reportError(started,actionError(kind==="merge"?"Could not merge the stack":"Could not rebase the stack",e))}
     finally{setBusy("")}
