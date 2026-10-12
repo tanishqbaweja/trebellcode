@@ -7,7 +7,7 @@ import { createGuiServer } from "../src/gui-server.mjs";
 import { parseFirefoxProfiles, readFirefoxCookieDatabase } from "./firefox-import.mjs";
 import { chromiumCookieDatabase, discoverHeliumProfiles, readHeliumProfileCookies } from "./chromium-import.mjs";
 import { DEFAULT_SNAPSHOT_CONFIG, normalizeSnapshotConfig } from "./snapshot-config.mjs";
-import { discoverEditors } from "./editor-discovery.mjs";
+import { listEditors, startEditor } from "./editor-discovery.mjs";
 import { createUpdaterController } from "./updater-controller.mjs";
 import { decodePowerShellJsonBase64, decodePowerShellStderr } from "./powershell-output.mjs";
 
@@ -180,7 +180,7 @@ function setBackgroundEnabled(value){
 }
 
 async function availableEditors(){
-  const items=await discoverEditors();
+  const items=await listEditors();
   items.push({id:"file-manager",label:process.platform==="win32"?"File Explorer":process.platform==="darwin"?"Finder":"File Manager",executable:null});
   return items;
 }
@@ -199,8 +199,8 @@ async function openWorkspaceIn(targetPath,editorId){
   const editors=await availableEditors();
   const editor=editors.find(item=>item.id===editorId);
   if(!editor?.executable)throw new Error("That editor is not available on this machine.");
-  const child=execFile(editor.executable,[absolute],{windowsHide:true},()=>{});
-  child.unref?.();
+  // A launch that fails is reported, and the next list looks for the editors again, in case this one moved or was removed.
+  try{await startEditor(editor,absolute)}catch(error){listEditors({refresh:true}).catch(()=>{});throw error}
   return {ok:true,editorId,path:absolute};
 }
 

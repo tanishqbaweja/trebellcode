@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { CheckpointService } from "../src/checkpoint-service.mjs";
-import { discoverEditors } from "../desktop/editor-discovery.mjs";
+import { discoverEditors, listEditors } from "../desktop/editor-discovery.mjs";
 import { git, gitInfo } from "../src/git-service.mjs";
 
 // Process budgets for the child processes Trebell starts while it sits idle (goal.md section 6; perf plan budgets B6-B8). Each one
@@ -214,10 +214,15 @@ test("B8: a checkpoint's tree equals a fresh read of HEAD plus add -A, in every 
 });
 
 // Editor discovery runs on Electron's main process each time the chat header's Open-in control shows and again on each Open.
-test("M8: one editor discovery looks each editor command up with at most 22 where launches",async()=>{
-  // Each lookup is one where.exe (which on macOS and Linux) launch; none finds anything here, so every command is asked.
-  let lookups=0;
-  const editors=await discoverEditors({platform:"win32",env:{LOCALAPPDATA:"C:\\Users\\dev\\AppData\\Local"},commandFinder:async()=>{lookups++;return null},exists:()=>false,readDirectory:()=>[]});
+test("M8: one editor discovery starts one where launch, and the kept list none",async()=>{
+  // It was 22, one where.exe (which on macOS and Linux) per editor command, one after another.
+  const launches=[];
+  const exec=(file,args,_options,callback)=>{launches.push([file,...args]);callback(Object.assign(new Error("not found"),{code:1}),"","INFO: Could not find files for the given pattern(s).\r\n")};
+  const editors=await discoverEditors({platform:"win32",env:{LOCALAPPDATA:"C:\\Users\\dev\\AppData\\Local"},exec,exists:()=>false,readDirectory:()=>[]});
   assert.deepEqual(editors,[]);
-  assert.ok(lookups<=22,lookups+" lookups");
+  assert.equal(launches.length,1);assert.equal(launches[0].length,23,"where gets all 22 commands at once");
+  let clock=1_000_000;launches.length=0;
+  const discover=()=>discoverEditors({platform:"win32",env:{},exec,exists:()=>false,readDirectory:()=>[]});
+  await listEditors({refresh:true,now:()=>clock,discover});clock+=5*60_000;await listEditors({now:()=>clock,discover});
+  assert.equal(launches.length,1,"the header showing again within ten minutes starts no process");
 });

@@ -1,6 +1,7 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { posix, win32 } from "node:path";
+import { windowsCommandShimTarget } from "../src/windows-command-shim.mjs";
 
 const JETBRAINS_NAMES={
   idea:["IntelliJ IDEA","IntelliJ IDEA CE","IntelliJ IDEA Ultimate"],
@@ -122,30 +123,107 @@ export function findCommand(command,{platform=process.platform,env=process.env,e
   });
 }
 
+// where.exe and which both take several names, so one launch answers every editor's commands. where prints each name's matches
+// in PATH order, grouped by name, and exits 1 only when it found none; which exits 1 when any name is missing. What they printed
+// counts either way. Each command maps to its matches, first match first.
+export function findCommands(commands,{platform=process.platform,env=process.env,exec=execFile}={}){
+  const path=platformPath(platform),wanted=new Map(commands.map(command=>[command.toLowerCase(),command]));
+  const extensions=platform==="win32"?String(env.PATHEXT||".COM;.EXE;.BAT;.CMD").toLowerCase().split(";").filter(Boolean):[];
+  return new Promise(resolve=>{
+    exec(platform==="win32"?"where":"which",commands,{windowsHide:true,timeout:5000,env},(_error,stdout)=>{
+      const found=new Map();
+      for(const line of String(stdout||"").split(/\r?\n/).map(value=>value.trim()).filter(Boolean)){
+        const name=path.basename(line).toLowerCase(),extension=path.extname(name);
+        const command=wanted.get(name)||(extensions.includes(extension)?wanted.get(name.slice(0,-extension.length)):undefined);
+        if(command)found.set(command,[...(found.get(command)||[]),line]);
+      }
+      resolve(found);
+    });
+  });
+}
+
+// Electron editors put a bin\<name>.cmd beside an extensionless shell script, and the .cmd runs the editor's own program
+// ("%~dp0..\Code.exe" for VS Code, "%~dp0..\..\..\Cursor.exe" for Cursor), which opens a folder it is given.
+const LAUNCHER_PROGRAM=/"%~dp0([^"%]+\.exe)"/i;
+function launcherProgram(match,{readFile,exists}){
+  if(!/\.(?:cmd|bat)$/i.test(match))return null;
+  let text="";try{text=readFile(match)}catch{return null}
+  const found=text.match(LAUNCHER_PROGRAM);if(!found)return null;
+  const program=win32.normalize(win32.join(win32.dirname(match),found[1]));
+  try{return exists(program)?program:null}catch{return null}
+}
+// What execFile can start on Windows: an .exe or .com as it is, and a .cmd or .bat launcher through the program it runs. where
+// lists VS Code's extensionless bin\code first, which execFile cannot start at all.
+function windowsLaunchable(matches,{readFile,exists}){
+  for(const match of matches){
+    if(/\.(?:exe|com)$/i.test(match))return match;
+    const target=windowsCommandShimTarget(match,{platform:"win32",read:readFile,exists})||launcherProgram(match,{readFile,exists});
+    if(target)return target;
+  }
+  return null;
+}
+
 export async function resolveEditorExecutable(spec,{
   platform=process.platform,
   env=process.env,
   exists=existsSync,
   readDirectory=readdirSync,
+  readFile=path=>readFileSync(path,"utf8"),
   commandFinder=findCommand,
 }={}){
+  // A finder answers a path or, from findCommands, every match; on Windows the first one execFile can start wins, then the
+  // standard install folders, and only then a match it cannot start, which still names the editor as before.
+  let unstartable=null;
   for(const command of spec.commands){
     const found=await commandFinder(command,{platform,env});
-    if(found)return found;
+    const matches=Array.isArray(found)?found:found?[found]:[];
+    const launchable=platform==="win32"?windowsLaunchable(matches,{readFile,exists}):matches[0];
+    if(launchable)return launchable;
+    unstartable||=matches[0]||null;
   }
   const candidates=[
     ...standardCandidates(spec,{platform,env,readDirectory}),
     ...toolboxCandidates(spec,{platform,env,readDirectory}),
   ];
   for(const candidate of candidates)try{if(candidate&&exists(candidate))return candidate}catch{}
-  return null;
+  return unstartable;
 }
 
+// One where (or which) launch for every editor's commands, and each folder the install scans look in is read once.
 export async function discoverEditors(options={}){
+  const {platform=process.platform,env=process.env,exec=execFile,readDirectory=readdirSync}=options;
+  const found=options.commandFinder?null:await findCommands(EDITOR_SPECS.flatMap(spec=>spec.commands),{platform,env,exec});
+  const commandFinder=options.commandFinder||(async command=>found.get(command)||null);
+  const folders=new Map(),readOnce=path=>{if(!folders.has(path))folders.set(path,safeDirectoryEntries(path,readDirectory));return folders.get(path)};
   const editors=[];
   for(const spec of EDITOR_SPECS){
-    const executable=await resolveEditorExecutable(spec,options);
+    const executable=await resolveEditorExecutable(spec,{...options,commandFinder,readDirectory:readOnce});
     if(executable)editors.push({id:spec.id,label:spec.label,executable});
   }
   return editors;
+}
+
+// The editors found are kept for the app run: the header lists them each time it shows and Open looks its editor up again. An
+// editor installed meanwhile shows within 10 minutes, or at the next list after refresh (an Open that could not start asks for
+// one). Calls that overlap share one discovery.
+const EDITOR_LIST_REUSE_MS=10*60_000;
+let editorList=null;
+export function listEditors({refresh=false,now=Date.now,discover=discoverEditors}={}){
+  if(refresh||!editorList||now()-editorList.at>=EDITOR_LIST_REUSE_MS){
+    const pending=discover().catch(error=>{if(editorList?.pending===pending)editorList=null;throw error});
+    editorList={at:now(),pending};
+  }
+  return editorList.pending.then(editors=>editors.map(editor=>({...editor})));
+}
+
+// Starts the editor and resolves once its process exists. A launch that fails (the file is gone, or Windows cannot start it
+// directly) rejects with the reason instead of answering as opened.
+export function startEditor(editor,path,{exec=execFile}={}){
+  return new Promise((resolve,reject)=>{
+    const fail=error=>reject(new Error("Could not start "+editor.label+": "+(error?.message||String(error))));
+    let child;
+    try{child=exec(editor.executable,[path],{windowsHide:true},()=>{})}catch(error){fail(error);return}
+    child.once("error",fail);
+    child.once("spawn",()=>{child.unref?.();resolve()});
+  });
 }
