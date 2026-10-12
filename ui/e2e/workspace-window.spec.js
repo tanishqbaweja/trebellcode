@@ -575,6 +575,32 @@ test("the Markdown preview draws bold, italic and inline code, and shows markup 
   await shootBothModes(page,"workspace-markdown-inline");
 });
 
+test("the tree's attach control and the attachment's remove button are named controls the keyboard reaches",async({page,request})=>{
+  test.setTimeout(45_000);
+  const {right,row}=await openFilesFolder(page,request,"Workspace attach keys",{"notes.txt":"notes\n","readme.txt":"readme\n"});
+  // Tab from the search field reaches the first file's row, then its attach control: a button of its own, not one inside the row.
+  await right.getByPlaceholder("Search files…").click();
+  await page.keyboard.press("Tab");
+  await expect(row("notes.txt")).toBeFocused();
+  await page.keyboard.press("Tab");
+  const attach=right.getByRole("button",{name:"Attach notes.txt to chat",exact:true});
+  await expect(attach).toBeFocused();
+  await expect.poll(()=>attach.evaluate(node=>getComputedStyle(node).opacity)).toBe("1");
+  expect(await attach.evaluate(node=>Boolean(node.parentElement.closest("button")))).toBe(false);
+  await shootBothModes(page,"workspace-tree-attach-focus",{reopen:async()=>{await right.getByPlaceholder("Search files…").click();await page.keyboard.press("Tab");await page.keyboard.press("Tab");await expect(attach).toBeFocused()}});
+  await page.keyboard.press("Enter");
+  const chip=page.locator(".attachment-shelf > span").filter({hasText:"notes.txt"});
+  await expect(chip).toBeVisible();
+  // The attachment's remove button is named for its file; Shift+Tab from the composer reaches it and Enter removes the file.
+  await page.getByTestId("composer").click();
+  await page.keyboard.press("Shift+Tab");
+  const remove=page.getByRole("button",{name:"Remove notes.txt",exact:true});
+  await expect(remove).toBeFocused();
+  await shootBothModes(page,"workspace-attachment-remove-focus",{reopen:async()=>{await page.getByTestId("composer").click();await page.keyboard.press("Shift+Tab");await expect(remove).toBeFocused()}});
+  await page.keyboard.press("Enter");
+  await expect(chip).toHaveCount(0);
+});
+
 // A Codex app server holding the given threads: enough for the sidebar to list them and for the app to open them.
 async function startThreadHarness(threads){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();

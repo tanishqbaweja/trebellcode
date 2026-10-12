@@ -200,9 +200,16 @@
 :root:root .context-panel .tree-list button.tree-dir:hover{background:transparent!important;color:var(--tx1)!important}
 :root:root .context-panel .tree-list button.tree-dir>svg,:root:root .context-panel .tree-list button.active>svg{color:var(--ac)}
 :root:root .context-panel .tree-list button span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-:root:root .context-panel .tree-list button i{position:absolute;right:3px;top:50%;width:22px;height:22px;display:grid;place-items:center;border-radius:6px;background:var(--bg3);color:var(--tx2);opacity:0;transform:translateY(-50%);transition:opacity .12s,background .12s,color .12s}
-:root:root .context-panel .tree-list button:is(:hover,:focus-visible,.active) i{opacity:1}
-:root:root .context-panel .tree-list button i:hover{background:var(--bg4);color:var(--ac)}
+/* A file row's attach control is a button of its own beside the row's button (not inside it), so Tab reaches it; it shows on the
+   row's hover or focus and on the open file's row. */
+:root:root .context-panel .tree-list .tree-row{position:relative}
+:root:root .context-panel .tree-list button.tree-attach{
+  position:absolute;right:3px;top:50%;width:22px;min-height:22px;height:22px;display:grid;grid-template-columns:none;place-items:center;gap:0;padding:0;
+  border-radius:6px;background:var(--bg3)!important;color:var(--tx2)!important;opacity:0;transform:translateY(-50%);transition:opacity .12s,background .12s,color .12s;
+}
+:root:root .context-panel .tree-list button.tree-attach>svg{color:inherit}
+:root:root .context-panel .tree-list :is(.tree-row:is(:hover,:focus-within)>button.tree-attach,button.active+button.tree-attach){opacity:1}
+:root:root .context-panel .tree-list button.tree-attach:hover{background:var(--bg4)!important;color:var(--ac)!important}
 :root:root .context-panel :is(.workspace-tree-error,.workspace-file-error){margin:6px;padding:8px 10px;border:1px solid var(--errb)!important;border-radius:8px;background:var(--errt)!important;color:var(--err)!important;font-size:11.5px;line-height:1.45;overflow-wrap:anywhere}
 :root:root .context-panel .workspace-file-error{margin:8px 10px 0}
 /* A save refused because the file changed on disk: what happened, then the two ways on (Reload from disk, Overwrite). */
