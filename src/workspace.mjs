@@ -271,11 +271,13 @@ async function editorBytes(filePath,maxBytes,{root=null,environments=null,enviro
   if(size>maxBytes)throw tooLarge(size);
   if(!located.remote)return {located,name,bytes:await readFile(located.path)};
   const child=environments.streamFile(environmentId,located.path),chunks=[];let count=0;
+  // The read's end is awaited once the bytes are in; a failure that comes first is held for that await, never left unhandled.
   const closed=new Promise((resolveClose,reject)=>{child.once("error",reject);child.once("close",code=>code===0?resolveClose():reject(new Error("Could not read remote file")))});
+  closed.catch(()=>{});
   try{
     for await(const chunk of child.stdout){count+=chunk.length;if(count>maxBytes)throw tooLarge(count);chunks.push(chunk)}
     await closed;
-  }catch(error){child.kill?.();await closed.catch(()=>{});throw error}
+  }catch(error){child.kill?.();throw error}
   return {located,name,bytes:Buffer.concat(chunks,count)};
 }
 function editorView({located,name,bytes},environmentId=null){

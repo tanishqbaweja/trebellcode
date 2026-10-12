@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { promisify } from "node:util";
 import {
   environmentWorkspaceDiff,
@@ -151,6 +151,9 @@ test("a remote file reaches the Files editor byte for byte, binary ones as binar
   assert.equal((await environmentWorkspaceEditorSave("/srv/app/src/index.js",text.content,{...options,version:text.version})).version,text.version);
   assert.ok(files.get("/srv/app/src/index.js").equals(code));
   await assert.rejects(()=>environmentWorkspaceEditorFile("/etc/passwd",options),/outside the active workspace/i);
+  // A connection that fails before the file has streamed fails the read, and only the read.
+  const failing={...options.environments,streamFile:()=>{const child=new EventEmitter();child.stdout=new PassThrough();child.kill=()=>{};setImmediate(()=>{child.emit("error",new Error("ssh: connection reset"));setTimeout(()=>child.stdout.end(),20)});return child}};
+  await assert.rejects(()=>environmentWorkspaceEditorFile("/srv/app/src/index.js",{...options,environments:failing}),/connection reset/);
 });
 
 test("a Files editor save names the version it edited, and a file that changed or went on disk since is not written",async()=>{
