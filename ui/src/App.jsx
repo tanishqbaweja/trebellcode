@@ -5006,7 +5006,8 @@ export default function App(){
   // The palette's thread actions are for the thread the header names: none while another one opens (its own are not loaded yet).
   const paletteThread=Boolean(activeThread?.id&&!openingView);
   // A welcome suggestion fills the composer and gives it the focus with the caret at the end, so Enter sends it and typing carries on.
-  function suggestPrompt(text){setPrompt(text);requestAnimationFrame(()=>{const node=document.querySelector('[data-testid="composer"]');if(!node)return;node.focus();node.setSelectionRange(text.length,text.length)})}
+  // It replaces the draft as an edit does, so a note about the draft it replaces goes.
+  function suggestPrompt(text){composerPromptEdit();setPrompt(text);requestAnimationFrame(()=>{const node=document.querySelector('[data-testid="composer"]');if(!node)return;node.focus();node.setSelectionRange(text.length,text.length)})}
   const paletteActions=paletteOpen?[
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:shortcutHint(commandKey("newChat")),onRun:newChat},
     {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},

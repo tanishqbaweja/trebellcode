@@ -204,6 +204,12 @@ test("/goal with an objective sets the thread's goal, and /goal on New task keep
     // Editing the draft clears the note.
     await composer.click();await page.keyboard.press("End");await page.keyboard.type("!",{delay:15});
     await expect(alert).toHaveCount(0);
+    // So does a welcome suggestion that takes the draft's place.
+    await page.keyboard.press("Enter");await expect(alert).toHaveText(GOAL_NEEDS_THREAD);
+    await page.getByRole("button",{name:"Fix a bug",exact:true}).click();
+    await expect(composer).toHaveValue("Find a useful bug, fix it, and run the relevant tests.");
+    await expect(alert).toHaveCount(0);
+    await shootBoth(page,"goal-note-gone-after-suggestion",()=>expect(composer).toBeInViewport());
   }finally{await harness.close()}
 });
 
