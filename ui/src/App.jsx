@@ -4396,8 +4396,8 @@ export default function App(){
     setPrompt(stash.text||"");setAttachments(stash.attachments||[]);setContextChips(stash.contextChips||[]);
   }
   async function addFiles(paths){setAttachments(prev=>[...new Set([...prev,...paths])].slice(0,MAX_COMPOSER_ATTACHMENTS))}
-  // A chip with a `key` (a pull request's number and address) replaces the one attached before with that key, as a path attached
-  // again does: the text behind it is written anew each time, so its path is new too.
+  // A chip with a `key` (a pull request's identity) replaces the one attached before with that key, as a path attached again does:
+  // the text behind it is written anew each time, so its path is new too.
   async function addContextPath(path,{kind="context",label="Context",detail="",sourcePath=null,key=null}={}){
     if(!path)return null;
     const replaced=key?contextChips.filter(chip=>chip.key===key&&chip.path!==path).map(chip=>chip.path):[];
@@ -4502,7 +4502,7 @@ export default function App(){
     setPrompt(prev=>(prev?prev+" ":"")+"Address the attached review comment. ");
     setPanel(null);setSection("chat");
   }
-  async function attachPr(pr){const text=["Pull request #"+pr.number+": "+pr.title,pr.url,pr.headRefName+" -> "+pr.baseRefName,pr.body||""].join("\n");await addContextAttachment({name:"pr-"+pr.number+".txt",text,kind:"pr",label:"PR #"+pr.number,detail:pr.title,key:"pr "+pr.number+" "+(pr.url||"")});setSection("chat")}
+  async function attachPr(pr){const text=["Pull request #"+pr.number+": "+pr.title,pr.url,pr.headRefName+" -> "+pr.baseRefName,pr.body||""].join("\n");await addContextAttachment({name:"pr-"+pr.number+".txt",text,kind:"pr",label:"PR #"+pr.number,detail:pr.title,key:pullRequestIdentity(pr)});setSection("chat")}
   // Links answered for a thread update that thread's metadata, and the visible list only while that thread is still open: a link
   // or sync started in one thread can answer after another one was opened (the render that started it still names the old thread).
   function applyThreadPullRequestLinks(threadId,links){
