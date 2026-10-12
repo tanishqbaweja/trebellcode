@@ -298,6 +298,47 @@ test.describe("Removing a project",()=>{
       await page.screenshot({animations:"disabled",path:shots+`project-save-after-removal-${mode}-900.png`});
     }finally{release();await page.unrouteAll({behavior:"ignoreErrors"})}
   });
+
+  // The palette shows the project list it read when it was last open until it has read the list again. A project removed on
+  // Projects is not offered there meanwhile (opening it would add it back), and its Undo puts it back there at once.
+  for(const mode of MODES)test(`the palette offers a removed project no more, and a restored one again, before it reads the list again (${mode})`,async({page,request})=>{
+    const boot=await open(page,request,{mode});
+    await request.post("/api/projects",{data:{path:join(boot.cwd,"ui"),name:"Project A"}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const palette=page.getByTestId("command-palette"),toast=page.getByTestId("thread-undo-toast");
+    const projectRow=palette.locator(".command-palette-item").filter({has:page.locator("strong",{hasText:/^Project A$/})});
+    const search=async()=>{
+      await page.keyboard.press("Control+K");
+      await expect(palette).toBeVisible();
+      await palette.locator("input").fill("Project A");
+      await expect(palette.locator(".command-palette-item,.command-palette-empty").first()).toBeVisible();
+    };
+    await search();
+    await expect(projectRow).toBeVisible();
+    await page.keyboard.press("Escape");await expect(palette).toBeHidden();
+    await nav(page,"Projects").click();
+    await projectCard(page,"Project A").getByRole("button",{name:"Remove Project A",exact:true}).click();
+    await expect(toast).toContainText("Project “Project A” removed");
+    await expect(projectCard(page,"Project A")).toHaveCount(0);
+    // From here the server answers no read of the list until the test ends.
+    let release=()=>{};const held=new Promise(resolve=>{release=resolve});
+    await page.route(/\/api\/projects$/,async route=>{if(route.request().method()==="GET")await held;return route.fallback()});
+    try{
+      await search();
+      await expect(projectRow,"the palette offers the project just removed").toHaveCount(0);
+      await page.screenshot({animations:"disabled",path:shots+`palette-project-removed-${mode}-1280.png`});
+      await page.setViewportSize({width:900,height:800});
+      await page.screenshot({animations:"disabled",path:shots+`palette-project-removed-${mode}-900.png`});
+      await page.setViewportSize({width:1280,height:800});
+      await page.keyboard.press("Escape");await expect(palette).toBeHidden();
+      await toast.getByRole("button",{name:"Undo",exact:true}).click();
+      await expect(toast).toHaveCount(0);
+      await search();
+      await expect(projectRow,"the palette offers the restored project").toBeVisible();
+      await page.screenshot({animations:"disabled",path:shots+`palette-project-restored-${mode}-1280.png`});
+    }finally{release();await page.unrouteAll({behavior:"ignoreErrors"})}
+  });
 });
 
 test.describe("Removing an environment",()=>{

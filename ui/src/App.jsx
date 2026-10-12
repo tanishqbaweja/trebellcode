@@ -4873,11 +4873,12 @@ export default function App(){
   // page), so both read the project that is open when they run, not the one open when the page last drew.
   const projectIsOpen=useLatestCallback(project=>!projectlessMode&&Boolean(project?.path)&&project.path===projectPath&&(project.environmentId||null)===(workspaceEnvironmentId||null));
   // Projects says at once when a project changes, is removed or is put back (under a new id), so the header, its action, the
-  // palette and the crumb of a thread still opening name what the list holds now. The open project's removal leaves its folder open.
+  // palette's actions and projects (the list it read when last open, until it reads it again) and the crumb of a thread still
+  // opening name what the list holds now. The open project's removal leaves its folder open.
   // A save that answers after its project was removed names a record that is gone (one put back has a new id), so it is let go.
   const removedProjectIdsRef=useRef(new Set());
-  const projectsPageUpdated=useLatestCallback(project=>{if(removedProjectIdsRef.current.has(project?.id))return;if(project?.id)setProjectRecords(previous=>[project,...previous.filter(item=>item.id!==project.id)]);if(projectIsOpen(project))setCurrentProject(project)});
-  const projectsPageRemoved=useLatestCallback(project=>{removedProjectIdsRef.current.add(project?.id);setProjectRecords(previous=>previous.filter(item=>item.id!==project?.id));setCurrentProject(current=>current&&current.id===project?.id?null:current)});
+  const projectsPageUpdated=useLatestCallback(project=>{if(removedProjectIdsRef.current.has(project?.id))return;if(project?.id){setProjectRecords(previous=>[project,...previous.filter(item=>item.id!==project.id)]);setPaletteProjects(previous=>previous.some(item=>item.id===project.id)?previous.map(item=>item.id===project.id?project:item):[...previous,project])}if(projectIsOpen(project))setCurrentProject(project)});
+  const projectsPageRemoved=useLatestCallback(project=>{removedProjectIdsRef.current.add(project?.id);setProjectRecords(previous=>previous.filter(item=>item.id!==project?.id));setPaletteProjects(previous=>previous.filter(item=>item.id!==project?.id));setCurrentProject(current=>current&&current.id===project?.id?null:current)});
   // Retry's outcome (the list, or the error again) shows in the sidebar itself.
   const sidebarRetryThreads=useLatestCallback(()=>loadThreads(rpcRef.current).then(()=>undefined));
   const runningSidebarIds=useMemo(()=>runningThreadIds(displayThreads,{activeThreadId:activeThread?.id,activeRunning:running,turnStates:threadTurnStates}),[displayThreads,activeThread?.id,running,threadTurnStates]);
