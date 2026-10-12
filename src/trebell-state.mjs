@@ -69,6 +69,9 @@ const DEFAULT_STATE = Object.freeze({
 });
 
 function clone(value){ return JSON.parse(JSON.stringify(value)); }
+// How much stored thread-meta text the store keeps in memory: the most recently used 64 threads, at most 2 M characters in all.
+const THREAD_META_CACHE=Object.freeze({entries:64,chars:2*1024*1024});
+function parseThreadMeta(text){try{return JSON.parse(text||"null")}catch{return null}}
 function normalizeCleanupRules(rules={}){
   const rawDays=rules?.worktreeAfterDays;const numeric=rawDays==null?null:Math.trunc(Number(rawDays));const worktreeAfterDays=Number.isFinite(numeric)&&numeric>=1?Math.min(3650,numeric):null;
   return {worktreeAfterDays,worktreeOnMerge:Boolean(rules?.worktreeOnMerge),worktreeOnDelete:Boolean(rules?.worktreeOnDelete),worktreeUnchanged:Boolean(rules?.worktreeUnchanged)};
@@ -152,7 +155,11 @@ function normalizeScopedObject(value={}){
 }
 
 export class TrebellStateStore {
-  constructor(env=process.env){
+  // Thread meta as the JSON text its sqlite row holds, so a read parses it without a round trip to sqlite. This store is the only
+  // writer of state_thread_meta (one GUI server per home; the CLI and the repository MCP server never write thread meta), and it
+  // replaces or drops an entry only once sqlite has the change, so an entry never differs from its row.
+  #threadMetaText=new Map();#threadMetaChars=0;
+  constructor(env=process.env,{keepConnection=false}={}){
     this.env=env;
     this.path=join(trebellHome(env),"ui-state.json");
     mkdirSync(dirname(this.path),{recursive:true});
@@ -160,7 +167,7 @@ export class TrebellStateStore {
     this.state=this.#load();
     this.collections=null;
     try{
-      const collections=new SqliteStateCollections(env);
+      const collections=new SqliteStateCollections(env,{keepConnection});
       const legacy=redactSecretValue({threadMeta:this.state.threadMeta,checkpoints:this.state.checkpoints,usageRecords:this.state.usageRecords,verificationRecords:this.state.verificationRecords,repositoryKnowledge:this.state.repositoryKnowledge},{environment:env,maxDepth:20,maxArray:10000,maxFields:5000});
       const migrated=collections.importLegacy(legacy);this.collections=collections;
       this.state.threadMeta={};this.state.checkpoints=[];this.state.usageRecords=[];this.state.verificationRecords=[];this.state.repositoryKnowledge=[];
@@ -231,6 +238,8 @@ export class TrebellStateStore {
     writeFileSync(tmp,JSON.stringify(persisted,null,2),{encoding:"utf8",mode:0o600});
     renameSync(tmp,this.path);
   }
+  // Closes the sqlite connection a store built with keepConnection holds. Later calls open their own.
+  close(){this.collections?.close()}
   snapshot({includeCollections=true,threadMetaView="full",threadMetaLimit=null}={}){
     const out=clone(this.state);
     if(threadMetaView==="catalog"&&threadMetaLimit!=null){const page=this.threadMetaCatalogPage({limit:threadMetaLimit});out.threadMeta=page.threadMeta;out.threadMetaNextCursor=page.nextCursor}
@@ -428,19 +437,37 @@ export class TrebellStateStore {
     this.state.projects=this.state.projects.filter(p=>p.id!==id);
     this.#save();
   }
+  // From sqlite, a fresh parse that the caller may change; from the legacy file, the live entry, which callers copy.
+  #storedThreadMeta(threadId){
+    if(!this.collections)return this.state.threadMeta[threadId]||{};
+    const key=String(threadId),text=this.#threadMetaText.get(key)??this.collections.threadMetaText(key);
+    if(text==null)return {};
+    this.#rememberThreadMeta(key,text);return parseThreadMeta(text)||{};
+  }
+  #rememberThreadMeta(key,text){
+    this.#forgetThreadMeta(key);this.#threadMetaText.set(key,text);this.#threadMetaChars+=text.length;
+    for(const oldest of this.#threadMetaText.keys()){if(this.#threadMetaText.size<=THREAD_META_CACHE.entries&&this.#threadMetaChars<=THREAD_META_CACHE.chars)break;this.#forgetThreadMeta(oldest)}
+  }
+  #forgetThreadMeta(key){const text=this.#threadMetaText.get(key);if(text===undefined)return;this.#threadMetaText.delete(key);this.#threadMetaChars-=text.length}
+  // The entry is dropped before the write, so a write that fails leaves the next read to sqlite.
+  #putThreadMeta(threadId,item){
+    const key=String(threadId),text=JSON.stringify(item);this.#forgetThreadMeta(key);
+    this.collections.putThreadMeta(key,item,text);this.#rememberThreadMeta(key,text);return JSON.parse(text);
+  }
   threadMeta(threadId){
-    const stored=this.collections?(this.collections.threadMeta(threadId)||{}):(this.state.threadMeta[threadId]||{});
-    const queue=migrateLegacyQueueItems(stored.trebellQueue);if(!queue.changed)return clone(stored);
+    const stored=this.#storedThreadMeta(threadId);
+    const queue=migrateLegacyQueueItems(stored.trebellQueue);if(!queue.changed)return this.collections?stored:clone(stored);
     // Queued follow-ups saved with a retired provider's model are kept but lose that model.
     const next={...stored,trebellQueue:queue.items};
-    if(this.collections)this.collections.putThreadMeta(threadId,next);else{this.state.threadMeta[threadId]=next;this.#save()}
+    if(this.collections)return this.#putThreadMeta(threadId,next);
+    this.state.threadMeta[threadId]=next;this.#save();
     return clone(next);
   }
   updateThreadMeta(threadId,patch={}){
-    const current=this.collections?(this.collections.threadMeta(threadId)||{}):(this.state.threadMeta[threadId]||{});
+    const current=this.#storedThreadMeta(threadId);
     const next=redactSecretValue({...current,...patch,updatedAt:Date.now()},{environment:this.env,maxDepth:20,maxArray:10000,maxFields:5000});
     for(const [key,value] of Object.entries(next)) if(value===undefined) delete next[key];
-    if(this.collections){this.collections.putThreadMeta(threadId,next);return clone(next)}
+    if(this.collections)return this.#putThreadMeta(threadId,next);
     this.state.threadMeta[threadId]=next;
     this.#save();
     return clone(next);
@@ -454,7 +481,7 @@ export class TrebellStateStore {
     return {threadMeta:clone(Object.fromEntries(page)),nextCursor:nextOffset<rows.length?"legacy:"+nextOffset:null};
   }
   removeThreadMeta(threadId){
-    if(this.collections)return this.collections.removeThreadMeta(threadId);
+    if(this.collections){this.#forgetThreadMeta(String(threadId));return this.collections.removeThreadMeta(threadId)}
     if(!Object.prototype.hasOwnProperty.call(this.state.threadMeta,threadId))return false;
     delete this.state.threadMeta[threadId];this.#save();return true;
   }

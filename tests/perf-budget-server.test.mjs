@@ -31,8 +31,9 @@ function processCounter(){
 
 // B5: the Codex relay hook read the thread meta twice from sqlite (a connection each, plus a parse and a clone of the whole meta) and
 // the settings for every upstream message, before the journal dropped deltas as noise (scripts/perf/codex-relay.mjs: 2 connections
-// and 198 KB parsed per delta with a 50 KB meta).
-test("B5: a Codex reply delta through the relay costs no more sqlite connections than the baseline",async()=>{
+// and 198 KB parsed per delta with a 50 KB meta). It now skips the lookups for a method the journal drops, and the state store keeps
+// its connection and the meta it last read or wrote.
+test("B5: a Codex reply delta through the relay opens no sqlite connection and parses none of the thread's meta",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-budget-b5-")),[port,appPort]=await Promise.all([freePort(),freePort()]),counter=processCounter();
   const upstreamHttp=createServer(),wss=new WebSocketServer({noServer:true});
   upstreamHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
@@ -50,7 +51,17 @@ test("B5: a Codex reply delta through the relay costs no more sqlite connections
     assert.ok(arrived["(reply)"],"the relay opened its upstream connection");
     const send=(method,make,count)=>{const before=arrived[method]||0,messages=Array.from({length:count},make);counter.start();for(const text of messages)for(const socket of wss.clients)socket.send(text);return (async()=>{for(let i=0;i<3000&&(arrived[method]||0)-before<count;i++)await sleep(2);counter.stop();assert.equal((arrived[method]||0)-before,count,method+" all arrived");return {...counter.counts}})()};
     const deltas=200,delta=await send("item/agentMessage/delta",()=>JSON.stringify({method:"item/agentMessage/delta",params:{threadId,turnId:"turn-1",itemId:"item-1",delta:"tok "}}),deltas);
-    assert.ok(delta.opens/deltas<=2,"sqlite connections per delta: "+delta.opens/deltas);
+    assert.equal(delta.opens,0,"sqlite connections for "+deltas+" deltas");assert.equal(delta.statements,0,"sqlite statements for "+deltas+" deltas");assert.equal(delta.writes,0);
+    // The relay parses each message once (about 130 characters); the meta is 48 KB.
+    assert.ok(delta.parsedChars/deltas<=512,"JSON characters parsed per delta: "+delta.parsedChars/deltas);
+    // A tool call is recorded (one write each) on the connection the store keeps.
+    let toolSequence=0;const tools=20,tool=await send("item/started",()=>JSON.stringify({method:"item/started",params:{threadId,turnId:"turn-1",item:{type:"commandExecution",id:"tool-"+(++toolSequence),command:["npm","test"],status:"inProgress"}}}),tools);
+    assert.equal(tool.opens,0,"sqlite connections for "+tools+" tool calls");assert.equal(tool.writes,tools,"one write transaction per tool call");
+    const meta=await fetch(gui.url+"/api/thread-meta?threadId="+threadId).then(response=>response.json());
+    assert.equal(meta.codexToolCallCount,tools);assert.deepEqual(meta.codexToolCallIds.slice(-2),["turn-1:tool-19","turn-1:tool-20"]);
+    // The server answers from the meta it keeps, so check the row too.
+    const db=new sqlite.DatabaseSync(join(home,"trebell.sqlite"));
+    try{const row=JSON.parse(db.prepare("SELECT payload_json FROM state_thread_meta WHERE thread_id=?").get(threadId).payload_json);assert.deepEqual(row,meta)}finally{db.close()}
   }finally{counter.restore();client?.close();await gui?.close();for(const socket of wss.clients)socket.terminate();wss.close();await new Promise(resolve=>upstreamHttp.close(resolve));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 

@@ -50,7 +50,7 @@ import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
 import { repositoryContextDeliveryPacket } from "./context-provenance.mjs";
 import { RepositoryKnowledgeService } from "./repository-knowledge-service.mjs";
 import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, parseRepositoryToolArguments, repositoryDynamicToolNamespace, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
-import { EventJournal } from "./event-journal.mjs";
+import { EventJournal, NOISY_METHOD } from "./event-journal.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { preferredCodexDefaultModel } from "./codex-model-catalog.mjs";
 import { codexGoalRecord, codexGoalSetParams, codexGoalStatus } from "./codex-goal.mjs";
@@ -530,7 +530,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const fetchImpl=offlineE2E?offlineE2eFetch(fetchFn):fetchFn;
   const bootId=randomUUID();
   const dist=String(env.TREBELL_UI_DIST||"").trim()?resolve(String(env.TREBELL_UI_DIST).trim()):resolve(packageRoot,"ui","dist");
-  const state=new TrebellStateStore(env);
+  // The server keeps one sqlite connection for its state (closed in close()) instead of opening one per read or write.
+  const state=new TrebellStateStore(env,{keepConnection:true});
   // After the settings migration above: delete what retired model providers left under the Trebell home.
   removeRetiredProviderData(env,{log:message=>console.error(message)});
   const eventJournal=new EventJournal(env);
@@ -591,8 +592,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return nativeModelContextWindows.get(key)||null;
   }
   const safeLogText=value=>boundDiagnosticText(redactSecretText(value,{environment:env}));
-  function codexRuntimeProvider(threadId=null){
-    const meta=threadId?state.threadMeta(threadId):null;
+  function codexRuntimeProvider(threadId=null,meta=threadId?state.threadMeta(threadId):null){
     if(meta?.runtimeInstanceId)return meta.runtimeInstanceId;
     if(agentRuntimes.activeRuntime()==="codex")return agentRuntimes.activeInstance().id;
     return "codex-default";
@@ -3120,9 +3120,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     },
     enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
       log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:safeLogText(message)}),
+    // The journal drops noisy methods (token deltas, listings, reads), so the trace looks up the thread's meta and the settings only
+    // for a method it keeps. A reply streams one delta per token, and each lookup was a sqlite read of the whole meta.
     onClientMessage:message=>{
-      const traceParams=message?.params||{};const traceThreadId=traceParams.threadId||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
-      eventJournal.recordProtocol({runtime:"codex",provider:codexRuntimeProvider(traceThreadId),environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"client",method:message?.method||"",params:traceParams});
+      const traceMethod=message?.method||"";
+      if(traceMethod&&!NOISY_METHOD.test(traceMethod)){
+        const traceParams=message?.params||{};const traceThreadId=traceParams.threadId||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
+        eventJournal.recordProtocol({runtime:"codex",provider:codexRuntimeProvider(traceThreadId,traceMeta),environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"client",method:traceMethod,params:traceParams});
+      }
       if((message?.method==="thread/resume"||message?.method==="turn/start")&&message.params?.threadId&&message.params?.cwd){
         state.updateThreadMeta(message.params.threadId,{cwd:message.params.cwd,runtime:"codex",deletedAt:null});
       }
@@ -3139,8 +3144,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       const params=message?.params||{};
       recordCodexBudgetEvidence(state,message);
       recordCodexRecoveryItemEvidence(state,message);
-      const traceThreadId=params.threadId||params.thread?.id||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
-      eventJournal.recordProtocol({runtime:"codex",provider:codexRuntimeProvider(traceThreadId),environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"runtime",method:message?.method||route?.requestMethod||"",params});
+      const traceMethod=message?.method||route?.requestMethod||"";
+      if(traceMethod&&!NOISY_METHOD.test(traceMethod)){
+        const traceThreadId=params.threadId||params.thread?.id||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
+        eventJournal.recordProtocol({runtime:"codex",provider:codexRuntimeProvider(traceThreadId,traceMeta),environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"runtime",method:traceMethod,params});
+      }
       const startedThread=message?.method==="thread/started"?params.thread:(route?.requestMethod==="thread/start"?message?.result?.thread:null);
       if(startedThread?.id){
         recordCodexChildAgentEvidence(state,startedThread);
@@ -3246,6 +3254,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         stopCodexAppServers(),
         eventJournal.close(),
       ]);
+      state.close();
       await new Promise(resolve=>server.close(resolve));
     },
   };

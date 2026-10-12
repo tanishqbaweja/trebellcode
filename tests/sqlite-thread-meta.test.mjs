@@ -52,3 +52,42 @@ test("thread metadata migrates to SQLite and stays durable without returning to 
     const persistedAgain=JSON.parse(await readFile(statePath,"utf8"));assert.equal(Object.prototype.hasOwnProperty.call(persistedAgain,"threadMeta"),false);
   }finally{await rm(home,{recursive:true,force:true})}
 });
+
+// The store keeps the text of the meta it last read or wrote and, when asked, one sqlite connection. The row stays the source of
+// truth: a write lands in sqlite before it is served, a write that fails is not served, and a removed thread reads as empty.
+test("thread meta reads come from a write-through copy that always matches the row",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-thread-meta-cache-")),env={...process.env,TREBELL_HOME:home},dbPath=join(home,"trebell.sqlite");
+  const withDb=fn=>{const db=new DatabaseSync(dbPath);try{return fn(db)}finally{db.close()}};
+  const row=threadId=>withDb(db=>{const found=db.prepare("SELECT payload_json FROM state_thread_meta WHERE thread_id=?").get(threadId);return found?JSON.parse(found.payload_json):null});
+  let state=null;
+  try{
+    state=new TrebellStateStore(env,{keepConnection:true});
+    const counts={opens:0,statements:0};
+    state.collections.DatabaseSync=class extends DatabaseSync{constructor(...args){super(...args);counts.opens++}prepare(sql){counts.statements++;return super.prepare(sql)}};
+    const written=state.updateThreadMeta("thread-1",{cwd:"C:/repo",tags:["a"],nested:{value:1}});
+    assert.deepEqual(row("thread-1"),written);assert.deepEqual(counts,{opens:1,statements:2},"one kept connection; a read of the missing row and the write");
+    // The kept connection runs at the durability a connection of its own has, not the schema setup's synchronous=NORMAL.
+    assert.equal(state.collections.db.prepare("PRAGMA synchronous").get().synchronous,withDb(db=>db.prepare("PRAGMA synchronous").get().synchronous));counts.statements--;
+    const read=state.threadMeta("thread-1");
+    assert.deepEqual(read,written);assert.equal(counts.statements,2,"a cached read runs no statement");
+    read.tags.push("changed");read.nested.value=2;written.tags.push("changed");
+    assert.deepEqual(state.threadMeta("thread-1").tags,["a"],"callers get their own copy");assert.equal(state.threadMeta("thread-1").nested.value,1);
+    // A write that sqlite rejects is neither served nor kept, and the connection it failed on is replaced.
+    withDb(db=>db.exec("CREATE TRIGGER reject_meta BEFORE UPDATE ON state_thread_meta WHEN NEW.payload_json LIKE '%C:/rejected%' BEGIN SELECT RAISE(ABORT,'rejected write'); END;"));
+    assert.throws(()=>state.updateThreadMeta("thread-1",{cwd:"C:/rejected"}),/rejected write/);
+    withDb(db=>db.exec("DROP TRIGGER reject_meta"));
+    const statementsBefore=counts.statements;
+    assert.equal(state.threadMeta("thread-1").cwd,"C:/repo");assert.equal(row("thread-1").cwd,"C:/repo");
+    assert.equal(counts.statements,statementsBefore+1,"the read after a failed write goes to sqlite");assert.equal(counts.opens,2);
+    assert.equal(state.updateThreadMeta("thread-1",{cwd:"C:/next"}).cwd,"C:/next");assert.equal(state.threadMeta("thread-1").cwd,"C:/next");assert.equal(row("thread-1").cwd,"C:/next");
+    assert.equal(state.removeThreadMeta("thread-1"),true);assert.deepEqual(state.threadMeta("thread-1"),{});assert.equal(row("thread-1"),null);
+    // It keeps the 64 threads used last.
+    for(let index=0;index<70;index++)state.updateThreadMeta("thread-many-"+index,{cwd:"C:/repo-"+index});
+    const statementsAfterWrites=counts.statements;
+    assert.equal(state.threadMeta("thread-many-69").cwd,"C:/repo-69");assert.equal(state.threadMeta("thread-many-6").cwd,"C:/repo-6");assert.equal(counts.statements,statementsAfterWrites);
+    assert.equal(state.threadMeta("thread-many-0").cwd,"C:/repo-0");assert.equal(counts.statements,statementsAfterWrites+1);
+    // After close, a late write still lands and each call opens and closes its own connection.
+    state.close();const opensAfterClose=counts.opens;
+    state.updateThreadMeta("thread-late",{cwd:"C:/late"});assert.equal(row("thread-late").cwd,"C:/late");assert.equal(state.collections.db,null);assert.equal(counts.opens,opensAfterClose+2);
+  }finally{state?.close();await rm(home,{recursive:true,force:true})}
+});

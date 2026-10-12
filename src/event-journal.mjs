@@ -10,8 +10,9 @@ import { createReplayFixture } from "./event-replay.mjs";
 
 const DEFAULT_MAX_RECORDS=5000;
 const DEFAULT_MAX_BYTES=8*1024*1024;
-// Token streams (a reply's or a thought's deltas) are noise: one record per chunk would crowd the bounded journal.
-const NOISY_METHOD=/(?:^initialize$|\/delta$|\/progress$|tokenUsage\/updated$|reasoning\/(?:activity|textDelta|summaryTextDelta)$|\/list$|\/read$|\/get$|\/search$|capabilities\/read$)/i;
+// Token streams (a reply's or a thought's deltas) are noise: one record per chunk would crowd the bounded journal. The Codex relay hook
+// tests a method against it first, so it does no lookups for a message the journal would drop.
+export const NOISY_METHOD=/(?:^initialize$|\/delta$|\/progress$|tokenUsage\/updated$|reasoning\/(?:activity|textDelta|summaryTextDelta)$|\/list$|\/read$|\/get$|\/search$|capabilities\/read$)/i;
 function clone(value){return JSON.parse(JSON.stringify(value))}
 
 function compactProtocolData(method,params={}){

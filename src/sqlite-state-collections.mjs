@@ -50,9 +50,9 @@ export function threadMetaCatalogProjection(item={}){
 }
 
 export class SqliteStateCollections{
-  constructor(env=process.env){
+  constructor(env=process.env,{keepConnection=false}={}){
     const DatabaseSync=databaseSync();if(!DatabaseSync)throw new Error("node:sqlite is unavailable");
-    this.DatabaseSync=DatabaseSync;this.path=join(trebellHome(env),"trebell.sqlite");mkdirSync(dirname(this.path),{recursive:true});
+    this.DatabaseSync=DatabaseSync;this.path=join(trebellHome(env),"trebell.sqlite");mkdirSync(dirname(this.path),{recursive:true});this.db=null;this.keepConnection=false;
     this.#withDb(db=>{
       db.exec("PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
       db.exec(`
@@ -94,14 +94,23 @@ export class SqliteStateCollections{
         for(const row of stale){let item={};try{item=JSON.parse(row.payload_json||"{}")}catch{}update.run(JSON.stringify(threadMetaCatalogProjection(item)),String(row.thread_id))}
       }
     });
+    // Set once the schema's connection has closed, so a kept connection does not inherit its synchronous=NORMAL and every write stays
+    // as durable as it is on a connection of its own.
+    this.keepConnection=Boolean(keepConnection);
   }
+  #open(){const db=new this.DatabaseSync(this.path);db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");return db}
+  // Opening a connection costs 1-2 ms, more than most of the reads it serves, so a long-lived owner (the GUI server, which closes it
+  // on shutdown) keeps one. An error drops it, and the next call starts on a fresh connection with no transaction left open.
   #withDb(fn,{write=false}={}){
-    const db=new this.DatabaseSync(this.path);db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
+    const kept=this.keepConnection,db=kept?(this.db||=this.#open()):this.#open();
     if(write)db.exec("BEGIN IMMEDIATE");
     try{const value=fn(db);if(write)db.exec("COMMIT");return value}
-    catch(error){if(write)try{db.exec("ROLLBACK")}catch{}throw error}
-    finally{db.close()}
+    catch(error){if(write)try{db.exec("ROLLBACK")}catch{}if(kept)this.#drop();throw error}
+    finally{if(!kept)db.close()}
   }
+  #drop(){const db=this.db;this.db=null;try{db?.close()}catch{}}
+  // After close, each call opens and closes its own connection again, so a late write still lands and no file stays open.
+  close(){this.keepConnection=false;this.#drop()}
   #prune(db,table,orderColumn,limit){db.prepare(`DELETE FROM ${table} WHERE id IN (SELECT id FROM ${table} ORDER BY ${orderColumn} DESC LIMIT -1 OFFSET ?)` ).run(limit)}
   importLegacy({threadMeta={},checkpoints=[],usageRecords=[],verificationRecords=[],repositoryKnowledge=[]}={}){
     const threadEntries=threadMeta&&typeof threadMeta==="object"&&!Array.isArray(threadMeta)?Object.entries(threadMeta):[];
@@ -121,7 +130,8 @@ export class SqliteStateCollections{
     },{write:true});return true;
   }
   threadMeta(threadId){return this.#withDb(db=>payload(db.prepare("SELECT payload_json FROM state_thread_meta WHERE thread_id=?").get(String(threadId))))}
-  putThreadMeta(threadId,item){return this.#withDb(db=>{db.prepare("INSERT INTO state_thread_meta(thread_id,runtime,environment_id,updated_at,catalog_json,payload_json) VALUES(?,?,?,?,?,?) ON CONFLICT(thread_id) DO UPDATE SET runtime=excluded.runtime,environment_id=excluded.environment_id,updated_at=excluded.updated_at,catalog_json=excluded.catalog_json,payload_json=excluded.payload_json").run(String(threadId),item?.runtime||null,normalizedEnvironment(item?.environmentId),Number(item?.updatedAt)||Date.now(),JSON.stringify(threadMetaCatalogProjection(item||{})),JSON.stringify(item||{}));return item},{write:true})}
+  threadMetaText(threadId){return this.#withDb(db=>db.prepare("SELECT payload_json FROM state_thread_meta WHERE thread_id=?").get(String(threadId))?.payload_json??null)}
+  putThreadMeta(threadId,item,payloadJson=JSON.stringify(item||{})){return this.#withDb(db=>{db.prepare("INSERT INTO state_thread_meta(thread_id,runtime,environment_id,updated_at,catalog_json,payload_json) VALUES(?,?,?,?,?,?) ON CONFLICT(thread_id) DO UPDATE SET runtime=excluded.runtime,environment_id=excluded.environment_id,updated_at=excluded.updated_at,catalog_json=excluded.catalog_json,payload_json=excluded.payload_json").run(String(threadId),item?.runtime||null,normalizedEnvironment(item?.environmentId),Number(item?.updatedAt)||Date.now(),JSON.stringify(threadMetaCatalogProjection(item||{})),payloadJson);return item},{write:true})}
   removeThreadMeta(threadId){return this.#withDb(db=>Number(db.prepare("DELETE FROM state_thread_meta WHERE thread_id=?").run(String(threadId))?.changes)||0,{write:true})>0}
   threadMetaMap(){return this.#withDb(db=>Object.fromEntries(db.prepare("SELECT thread_id,payload_json FROM state_thread_meta ORDER BY updated_at DESC").all().map(row=>[String(row.thread_id),payload(row)||{}])))}
   threadMetaCatalogMap(){return this.#withDb(db=>Object.fromEntries(db.prepare("SELECT thread_id,catalog_json FROM state_thread_meta ORDER BY updated_at DESC").all().map(row=>{let item={};try{item=JSON.parse(row.catalog_json||"{}")}catch{}return [String(row.thread_id),item]})))}
