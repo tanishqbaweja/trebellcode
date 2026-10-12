@@ -155,13 +155,14 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
       return current.map((paneId,index)=>index===replace?id:paneId);
     });
   }
-  function send(id,event){
-    event?.preventDefault();const line=lines[id]||"";const socket=sockets.current.get(id);
-    if(!line)return;
-    if(socket?.readyState!==WebSocket.OPEN){setError("Terminal is reconnecting. Try again in a moment.");return}
-    setError("");socket.send(JSON.stringify({type:"input",data:line+"\r"}));setLines(previous=>({...previous,[id]:""}));
+  function write(id,data){
+    const socket=sockets.current.get(id);
+    if(socket?.readyState!==WebSocket.OPEN){setError("Terminal is reconnecting. Try again in a moment.");return false}
+    setError("");socket.send(JSON.stringify({type:"input",data}));return true;
   }
-  function ctrlC(id){const socket=sockets.current.get(id);if(socket?.readyState!==WebSocket.OPEN){setError("Terminal is reconnecting. Try again in a moment.");return}setError("");socket.send(JSON.stringify({type:"input",data:"\x03"}))}
+  // An empty line is sent too: its Enter is what ends a Python block or takes the default a prompt offers.
+  function send(id,event){event?.preventDefault();if(write(id,(lines[id]||"")+"\r"))setLines(previous=>({...previous,[id]:""}))}
+  function ctrlC(id){write(id,"\x03")}
   async function attachRecent(session){
     if(!onAttachExcerpt||attachBusy)return;
     const text=(outputs[session.id]||"").slice(-8000);if(!text.trim())return;
