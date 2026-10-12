@@ -144,8 +144,9 @@ test("a long run of output leaves the terminal manager's event loop free and its
       await new Promise(resolve=>setTimeout(resolve,100));
     }
     delay.disable();
-    // Cutting the buffer back on every message held the loop for up to a second at a time (p99 about 600 ms).
-    assert.ok(delay.percentile(99)/1e6<200,"event loop delay p99 "+Math.round(delay.percentile(99)/1e6)+" ms");
+    // Cutting the buffer back on every message held the loop for seconds at a time: its longest waits (the 99.9th percentile)
+    // ran from 0.7 to 1.4 s, against about 25 ms now, while its 99th percentile sometimes stayed under 200 ms.
+    assert.ok(delay.percentile(99.9)/1e6<300,"event loop delay p99.9 "+Math.round(delay.percentile(99.9)/1e6)+" ms");
     assert.ok(terminals.snapshot(session.id).buffer.split("\n").length<=5501);
   }finally{await terminals.shutdown()}
 });
