@@ -4201,7 +4201,8 @@ export default function App(){
     if(command==="/git"){openRightPanel("source");return true}
     if(command==="/preview"){openRightPanel("preview");return true}
     if(command==="/agents"){if(runtimeCapabilities.delegation)openRightPanel("agents");else setEvents(prev=>[...prev,{id:"agents-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose delegated-agent controls`,status:"done",raw:{}}]);return true}
-    if(command==="/review"){await startReview();return true}
+    // /review is the header's Review, and a review that does not start says why the same way.
+    if(command==="/review"){await runUserAction(startReview,"Could not start review");return true}
     if(command==="/feedback"){
       if(agentRuntime!=="codex"||!activeThread?.id||!rpc){setEvents(prev=>[...prev,{id:"feedback-unavailable-"+Date.now(),kind:"error",title:"Codex feedback requires an existing Codex thread",status:"done",raw:{}}]);return true}
       try{

@@ -191,3 +191,38 @@ test("the header gives the whole thread title and branch name on hover when it c
     }
   }finally{await harness.close()}
 });
+
+test("/review typed in the composer says why a review did not start, as the header's Review does",async({page})=>{
+  test.setTimeout(90_000);
+  const errors=[];page.on("pageerror",error=>errors.push(String(error?.message||error)));
+  const held=gate();
+  const {harness,proxy,header}=await openHeaderApp(page,{branch:"main",replies:[async()=>{await held.promise;return {text:"Long task done."}}]});
+  const composer=page.getByTestId("composer"),alert=page.getByTestId("app-action-error"),stop=header.getByRole("button",{name:"Stop",exact:true});
+  const slashReview=async()=>{await composer.click();await page.keyboard.type("/review",{delay:25});await page.keyboard.press("Enter")};
+  try{
+    // While a turn runs, as the header's Review is held. (The theme button clears the message, so each mode asks again.)
+    await composer.click();await page.keyboard.type("Run the long task",{delay:20});await page.keyboard.press("Enter");
+    await expect(stop).toBeVisible({timeout:15_000});
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      await slashReview();
+      await expect(alert).toHaveText("Could not start review: Wait for the running turn to finish before reviewing.");
+      await expect(composer).toHaveValue("");
+      await shoot(page,"header-slash-review-during-turn");
+    }
+    await switchMode(page,"dark");
+    held.open();
+    await expect(page.getByText("Long task done.")).toBeVisible({timeout:15_000});await expect(stop).toHaveCount(0);
+    // A harness that answers without starting a review turn.
+    proxy.answer=message=>message.method==="review/start"?{}:undefined;
+    await slashReview();
+    await expect(alert).toHaveText("Could not start review: Trebell Native did not start a review.");
+    await expect(page.getByText("Reviewing uncommitted changes")).toHaveCount(0);
+    // On New task there is no thread to review yet.
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await expect(page.locator(".thread-row.active")).toHaveCount(0);
+    await slashReview();
+    await expect(alert).toHaveText("Could not start review: Start or open a thread before reviewing.");
+    expect(errors).toEqual([]);
+  }finally{held.open();await harness.close()}
+});
