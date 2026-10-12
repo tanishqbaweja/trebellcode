@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 import { EDITOR_SPECS, discoverEditors, listEditors, resolveEditorExecutable, startEditor } from "../desktop/editor-discovery.mjs";
 
 const missingCommand=async()=>null;
@@ -76,7 +77,7 @@ test("an editor that cannot be started is reported instead of answered as opened
   const started=child(),launches=[];
   const opening=startEditor({label:"Zed",executable:"/opt/zed"},"/repo",{spawnFn:(...launch)=>{launches.push(launch);setImmediate(()=>started.emit("spawn"));return started}});
   await opening;assert.equal(started.unrefed,true);
-  assert.deepEqual(launches,[["/opt/zed",["/repo"],{detached:true,stdio:"ignore",windowsHide:true}]]);
+  assert.deepEqual(launches,[["/opt/zed",["/repo"],{detached:true,stdio:"ignore"}]],"no windowsHide: a GUI editor's first ShowWindow would take its SW_HIDE");
   const missing=child();
   await assert.rejects(startEditor({label:"Visual Studio Code",executable:"D:\\VS Code\\bin\\code"},"D:\\repo",{spawnFn:()=>{setImmediate(()=>missing.emit("error",Object.assign(new Error("spawn D:\\VS Code\\bin\\code ENOENT"),{code:"ENOENT"})));return missing}}),
     /Could not start Visual Studio Code: spawn .* ENOENT/);
@@ -97,6 +98,32 @@ test("an editor that Open started keeps running after the app that opened it qui
     if(alive)process.kill(pid);
     assert.equal(alive,true,"the editor ended when the process that opened it quit");
   }finally{await rm(folder,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
+});
+
+// A GUI program's first ShowWindow takes the show state in its start-up info, where windowsHide puts SW_HIDE. The stand-in editor
+// is an Electron app that creates its window shown, as VS Code and Cursor do for a window that is not maximized, writes whether
+// Windows shows it and quits at once; the window sits off screen and transparent. A start with windowsHide shows it can tell.
+const electron=new URL("../node_modules/electron/dist/electron.exe",import.meta.url);
+test("an editor that Open starts shows its window",{skip:process.platform!=="win32"||!existsSync(electron)||Boolean(process.env.ELECTRON_RUN_AS_NODE),timeout:90_000},async t=>{
+  const folder=await mkdtemp(join(tmpdir(),"trebell-editor-window-")),result=join(folder,"result.json"),executable=fileURLToPath(electron);
+  const shown=async start=>{
+    await rm(result,{force:true});await start();
+    for(const until=Date.now()+60_000;!existsSync(result)&&Date.now()<until;)await new Promise(resolve=>setTimeout(resolve,50));
+    return existsSync(result)?JSON.parse(readFileSync(result,"utf8")).visible:null;
+  };
+  try{
+    await writeFile(join(folder,"package.json"),JSON.stringify({name:"trebell-stand-in-editor",version:"1.0.0",main:"main.cjs"}));
+    await writeFile(join(folder,"main.cjs"),`const {app,BrowserWindow}=require("electron"),{writeFileSync}=require("node:fs"),{join}=require("node:path");
+for(const name of ["userData","sessionData","crashDumps","logs"])app.setPath(name,join(__dirname,"data-"+process.pid,name));
+app.commandLine.appendSwitch("disable-gpu");
+app.whenReady().then(()=>{const win=new BrowserWindow({show:true,x:-32000,y:-32000,width:200,height:100,opacity:0,skipTaskbar:true});writeFileSync(join(__dirname,"result.json"),JSON.stringify({visible:win.isVisible()}));app.exit(0)});
+`);
+    const hidden=await shown(()=>{spawn(executable,[folder],{detached:true,stdio:"ignore",windowsHide:true}).unref()});
+    assert.notEqual(hidden,null,"the stand-in editor started");
+    if(hidden){t.skip("this Electron shows its window whatever the start-up info says, so the stand-in cannot tell");return}
+    // Open passes the folder as the editor's only argument; Electron runs it as the app.
+    assert.equal(await shown(()=>startEditor({label:"Stand-in editor",executable},folder)),true,"the window of the editor Open started shows");
+  }finally{await new Promise(resolve=>setTimeout(resolve,1000));await rm(folder,{recursive:true,force:true,maxRetries:20,retryDelay:200})}
 });
 
 test("the editor list is kept for the app run, shared while it is found, and found again after ten minutes or on refresh",async()=>{

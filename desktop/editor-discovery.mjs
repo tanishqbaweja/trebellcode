@@ -219,12 +219,14 @@ export function listEditors({refresh=false,now=Date.now,discover=discoverEditors
 // Starts the editor and resolves once its process exists. A launch that fails (the file is gone, or Windows cannot start it
 // directly) rejects with the reason instead of answering as opened. The editor runs detached with no pipes, as its own launchers
 // start it (VS Code's cli.js): on Windows a child that is not detached is in Trebell's kill-on-close job and ends when Trebell
-// quits, and output piped back would fill a buffer nobody reads.
+// quits, and output piped back would fill a buffer nobody reads. It is not started hidden either: windowsHide puts SW_HIDE in the
+// start-up info, which a GUI program's first ShowWindow takes, so a VS Code that was not running kept its window hidden; detached
+// already starts a console program with no console window.
 export function startEditor(editor,path,{spawnFn=spawn}={}){
   return new Promise((resolve,reject)=>{
     const fail=error=>reject(new Error("Could not start "+editor.label+": "+(error?.message||String(error))));
     let child;
-    try{child=spawnFn(editor.executable,[path],{detached:true,stdio:"ignore",windowsHide:true})}catch(error){fail(error);return}
+    try{child=spawnFn(editor.executable,[path],{detached:true,stdio:"ignore"})}catch(error){fail(error);return}
     child.once("error",fail);
     child.once("spawn",()=>{child.unref?.();resolve()});
   });
