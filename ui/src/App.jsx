@@ -2461,7 +2461,7 @@ export default function App(){
       else if(command==="terminalNew"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-new")),0)}
       else if(command==="terminalClose")window.dispatchEvent(new CustomEvent("trebell:terminal-close"));
       else if(command==="rightPanelClose"){setRightPanelOpen(false);setRightPanelMaximized(false)}
-      else if(command==="rightPanelToggle"){if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel(rightPanelTab||"files")}
+      else if(command==="rightPanelToggle")toggleRightPanel();
       else if(command==="rightPanelMaximize")setRightPanelMaximized(value=>!value);
       else if(command==="diffToggle"){
         if(rightPanelOpen&&rightPanelTab==="diff"){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("diff");
@@ -4712,12 +4712,13 @@ export default function App(){
   }
 
   function openRightPanel(tab="files"){
-    if(projectlessMode&&["diff","source"].includes(tab)){
-      setEvents(prev=>[...prev,{id:"general-panel-"+Date.now(),kind:"tool",title:"General chats do not have Git or repository changes.",status:"done",raw:{tab}}]);
-      return;
-    }
+    // Said in the notice beside the conversation, which the next press replaces: each press used to add a row to the conversation.
+    if(projectlessMode&&["diff","source"].includes(tab)){showActionError({message:"General chats do not have Git or repository changes."},tab==="diff"?"Changes":"Source control");return}
     setRightPanelTab(tab);setRightPanelOpen(true);setSection("chat");
   }
+  // The header toggle and its key reopen the panel on the tab it was closed on (the toggle used to reopen it on Files); a General
+  // chat, which has no Git or repository changes, reopens it on Files.
+  function toggleRightPanel(){if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel(projectlessMode&&["diff","source"].includes(rightPanelTab)?"files":rightPanelTab||"files")}
   function navigateSection(next){
     if(next==="source"){openRightPanel("source");return}
     if(next==="preview"){openRightPanel("preview");return}
@@ -5071,7 +5072,7 @@ export default function App(){
               {running&&!openingShown&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label="Stop" title="Stop the running turn"><CircleStop size={14}/><span>Stop</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} data-fold="terminal" onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               {activeThread?.id&&!openingShown&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} data-fold="goal" onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
-              <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
+              <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={toggleRightPanel} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
               <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={toggleAppearanceMode} aria-label={appearanceToggleLabel} title={appearanceToggleLabel}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
               <button className="header-control icon-only palette-control" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title={withKey("Command palette",sidebarShortcuts.commandPalette)}><Command size={15}/></button>
               {/* Shown once actions fold: the folded ones in the row's order, then the theme and palette buttons, which the row has
