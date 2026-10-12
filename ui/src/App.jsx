@@ -689,12 +689,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     recognition.continuous=false;
     recognition.onstart=()=>setListening(true);
     recognition.onend=()=>{if(recognitionRef.current===recognition)recognitionRef.current=null;setListening(false)};
-    recognition.onerror=event=>{setListening(false);const text=DICTATION_ERRORS[event?.error];if(text)setDictationAlert({kind:"dictation",text})};
+    recognition.onerror=event=>{if(recognitionRef.current===recognition)recognitionRef.current=null;setListening(false);const text=DICTATION_ERRORS[event?.error];if(text)setDictationAlert({kind:"dictation",text})};
     recognition.onresult=(event)=>{
       const text=[...event.results].map(result=>result[0]?.transcript||"").join(" ").trim();
       if(text)setPrompt(prev=>(prev&& !/\s$/.test(prev)?prev+" ":"")+text);
     };
-    recognition.start();
+    try{recognition.start()}catch(error){recognitionRef.current=null;setDictationAlert({kind:"dictation",text:"Dictation could not start: "+sentenceText(error?.message||String(error))})}
   }
   async function chooseMention(item){
     if(!activeMention||!item||mentionBusy)return;

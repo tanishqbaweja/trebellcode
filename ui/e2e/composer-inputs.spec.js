@@ -177,7 +177,7 @@ async function scriptedDictation(page){
   await page.addInitScript(()=>{
     window.__dictation={mode:"blocked",starts:0,stops:0};
     class Recognition{
-      start(){window.__dictation.starts++;setTimeout(()=>{if(window.__dictation.mode==="blocked"){this.onerror?.({error:"not-allowed"});this.onend?.()}else this.onstart?.()},30)}
+      start(){window.__dictation.starts++;if(window.__dictation.mode==="unavailable")throw new DOMException("Speech recognition is not available.","NotSupportedError");setTimeout(()=>{if(window.__dictation.mode==="blocked"){this.onerror?.({error:"not-allowed"});this.onend?.()}else this.onstart?.()},30)}
       stop(){window.__dictation.stops++;setTimeout(()=>this.onend?.(),30)}
       abort(){this.stop()}
     }
@@ -205,6 +205,15 @@ test("dictation says when the microphone is blocked, and a second click on the m
     await expect(mic).toHaveAttribute("aria-pressed","false");
     await expect(mic).toHaveAttribute("title","Voice dictation");
     expect(await page.evaluate(()=>window.__dictation)).toEqual({mode:"listen",starts:2,stops:1});
+    // A recognition that cannot start says so, and the next click starts a new one.
+    await page.evaluate(()=>{window.__dictation.mode="unavailable"});
+    await mic.click();
+    await expect(alert).toHaveText("Dictation could not start: Speech recognition is not available.");
+    await page.evaluate(()=>{window.__dictation.mode="listen"});
+    await mic.click();
+    await expect(mic).toHaveAttribute("aria-pressed","true");
+    await mic.click();
+    await expect(mic).toHaveAttribute("aria-pressed","false");
   }finally{await harness.close()}
 });
 
