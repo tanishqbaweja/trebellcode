@@ -227,6 +227,33 @@ test("a session still starting when the relay resets is stopped, and the turn it
   assert.equal(thread.turns.length,2);assert.equal(thread.providerSessionId,"grok-live");
 });
 
+// Two sends waiting on one session start (two windows, or a send beside a fork) when the relay resets or closes: the start is
+// stopped, both sends fail, and nothing starts the harness again. The send that waited on the other's start used to start it anew
+// once that start failed: after a reset its turn ran in the new harness, and after a close that harness ran on with no window, which
+// a server exiting then leaves behind.
+for(const end of ["reset","close"]){
+  test(`two sends waiting on one session start fail when the relay ${end==="reset"?"resets":"closes"}, and no harness starts after it`,async t=>{
+    const fx=await acpHarness(t,"grok",{lostError:null,loadDelayMs:3000}),threadStore=new AgentThreadStore(fx.env),journal=memoryJournal();
+    onCleanup(t,async()=>{for(const pid of new Set((await fx.requests()).map(entry=>entry.pid)))try{process.kill(pid)}catch{}});
+    const saved=savedThread(threadStore,{runtime:"grok",instanceId:fx.harness.instance.id,providerSessionId:"grok-live",cwd:fx.root});
+    const relay=await startRelay({runtimeManager:fx.runtimeManager,threadStore,state:memoryState(),journal});
+    let closed=null;const close=()=>closed||=relay.close();onCleanup(t,close);
+    const sends=Promise.all(["From one window","From another"].map(text=>relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text}]}).then(()=>"started",error=>error.message)));
+    let resume=null;for(let tries=0;!resume&&tries<100;tries++){resume=(await fx.requests()).find(entry=>entry.method==="session/resume");if(!resume)await new Promise(resolve=>setTimeout(resolve,50))}
+    assert.ok(resume,"the harness is resuming the thread's conversation");
+    if(end==="reset"){await relay.reset();assert.deepEqual(await sends,Array(2).fill("The harness was restarted while this conversation was starting."))}
+    else await close();
+    const alive=pid=>{try{process.kill(pid,0);return true}catch{return false}};
+    assert.equal(alive(resume.pid),false,"the start's harness stopped with the "+end);
+    // Long enough for a harness started after the reset or close to have answered initialize.
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    const requests=await fx.requests();
+    assert.deepEqual([...new Set(requests.map(entry=>entry.pid))],[resume.pid],"one harness process: "+JSON.stringify(requests.map(entry=>entry.pid+" "+entry.method)));
+    assert.equal(requests.some(entry=>entry.method==="session/prompt"),false,"no prompt");
+    assert.equal(threadStore.get(saved.id).turns.length,1,"neither send's turn exists");
+  });
+}
+
 // Stop (turn/interrupt) while a send still waits for its thread's harness to start, as every send after ten idle minutes now does:
 // the send has neither a turn nor a prompt to cancel yet. It ends at once, before its turn exists, and the harness is never sent its
 // prompt. The start goes on, and the thread's next send runs in the session it left, in the same harness process.

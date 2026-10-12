@@ -899,7 +899,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   async function ensureSession(thread,context,options={}){
     if(thread?.runtime==="native")return usedSession(await startSession(thread,context,options));
     const starting=sessionStarts.get(thread?.id);
-    if(starting){await starting.catch(()=>{});return ensureSession(threadStore.get(thread.id)||thread,context,options)}
+    if(starting){
+      // A close or reset while this call waited ended the start it waited on: the call fails as that start's own did, instead of
+      // starting the harness again after the relay closed or in the environment it left.
+      const generation=sessionGeneration;await starting.catch(()=>{});
+      if(generation!==sessionGeneration)throw restartedWhileStarting();
+      return ensureSession(threadStore.get(thread.id)||thread,context,options);
+    }
     const run=startSession(thread,context,options);sessionStarts.set(thread.id,run);
     try{return usedSession(await run)}finally{if(sessionStarts.get(thread.id)===run)sessionStarts.delete(thread.id)}
   }
@@ -916,16 +922,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const sessionSweep=setInterval(sweepIdleSessions,SESSION_SWEEP_MS);sessionSweep.unref?.();
   // A close or reset of the relay (shutdown, another environment) ends the sessions still starting as well as the ones that run:
   // the harness processes they started stop, and a start that returns afterwards is closed, never kept, so the turn waiting on it
-  // fails instead of running in a session of the harness as it was.
+  // fails instead of running in a session of the harness as it was. A start that has not launched its harness by then never does,
+  // and once the relay closes no start begins.
   const startingSessions=new Set();let sessionGeneration=0;
   const restartedWhileStarting=()=>new Error("The harness was restarted while this conversation was starting.");
-  async function startTracked(runtime,options){
+  async function startTracked(runtime,options,generation){
+    if(generation!==sessionGeneration)throw restartedWhileStarting();
     startingSessions.add(runtime);
     try{return await runtime.start(options)}finally{startingSessions.delete(runtime)}
   }
   // freshIfLost: a turn is about to run, so a conversation the harness lost continues in a fresh session (see below); opening,
   // forking, compacting and rewinding a thread keep the lost-session error.
   async function startSession(thread,context,{permissionMode=null,model=null,freshIfLost=false}={}){
+    if(closing)throw new Error("The relay closed before the harness started.");
     const generation=sessionGeneration;
     if(thread?.runtime==="native"){
       const storedNamespaces=Array.isArray(thread.providerMeta?.dynamicToolNamespaces)?thread.providerMeta.dynamicToolNamespaces:[],activeNamespaces=expandableNativeToolNamespaces(storedNamespaces);
@@ -1109,7 +1118,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // Antigravity's model list is the one its sessions report (T3), also when the thread's model turns out not to be offered.
     const reportModels=()=>{if(runtime instanceof AcpAgentSession&&instance.kind==="antigravity"&&runtime.sessionSetup)runtimeManager.rememberAcpSessionModels?.(instance,runtime.sessionSetup,{environmentId})};
     const savedSessionId=thread.providerSessionId||null,requestedModel=model||thread.model||null;
-    try{started=await startTracked(runtime,{providerSessionId:savedSessionId,model:requestedModel})}
+    try{started=await startTracked(runtime,{providerSessionId:savedSessionId,model:requestedModel},generation)}
     catch(error){
       reportModels();await runtime.close().catch(()=>{});
       if(generation!==sessionGeneration)throw restartedWhileStarting();
@@ -1119,7 +1128,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(!freshIfLost||!savedSessionId||!isHarnessSessionLost(error))throw error;
       lost={previousSessionId:String(savedSessionId),reason:error.message};
       runtime=create();prepare();
-      try{started=await startTracked(runtime,{providerSessionId:null,model:requestedModel})}
+      try{started=await startTracked(runtime,{providerSessionId:null,model:requestedModel},generation)}
       catch(freshError){reportModels();await runtime.close().catch(()=>{});if(generation!==sessionGeneration)throw restartedWhileStarting();recordResumeFallback(thread,{...lost,sessionId:null,error:freshError});throw freshError}
     }
     if(generation!==sessionGeneration){await runtime.close().catch(()=>{});throw restartedWhileStarting()}
