@@ -80,10 +80,13 @@ export class SqliteAgentThreadStore{
       .run(row.id,row.runtime,row.provider_session_id,row.updated_at,row.archived,String(thread.name||thread.preview||""),row.payload_json);
     return row;
   }
-  #writeTurn(db,threadId,turn){
+  // searchUnchanged: the caller knows the turn's user messages and its last agent message are as they were (a tool's update), so
+  // its search rows stand.
+  #writeTurn(db,threadId,turn,{searchUnchanged=false}={}){
     const row={id:String(turn.id),started_at:Number(turn.startedAt)||null,payload_json:JSON.stringify(turn)};
     db.prepare("INSERT INTO agent_turns(thread_id,id,status,started_at,completed_at,payload_json) VALUES(?,?,?,?,?,?) ON CONFLICT(thread_id,id) DO UPDATE SET status=excluded.status,started_at=excluded.started_at,completed_at=excluded.completed_at,payload_json=excluded.payload_json")
       .run(String(threadId),row.id,turn.status==null?null:String(turn.status),row.started_at,Number(turn.completedAt)||null,row.payload_json);
+    if(searchUnchanged)return row;
     db.prepare("DELETE FROM agent_search_fts WHERE thread_id=? AND turn_id=?").run(String(threadId),String(turn.id));
     const insert=db.prepare("INSERT INTO agent_search_fts(thread_id,turn_id,item_id,ordinal,kind,text) VALUES(?,?,?,?,?,?)");
     for(const item of searchItems(turn))insert.run(String(threadId),String(turn.id),item.itemId,item.ordinal,item.kind,item.text);
@@ -201,7 +204,7 @@ export class SqliteAgentThreadStore{
       return row;
     },{write:true});
   }
-  putThreadAndTurn(thread,turn){return this.#withDb(db=>({thread:this.#writeThreadMeta(db,thread),turn:this.#writeTurn(db,thread.id,turn)}),{write:true})}
+  putThreadAndTurn(thread,turn,{searchUnchanged=false}={}){return this.#withDb(db=>({thread:this.#writeThreadMeta(db,thread),turn:this.#writeTurn(db,thread.id,turn,{searchUnchanged})}),{write:true})}
   delete(id){return this.#withDb(db=>{db.prepare("DELETE FROM agent_search_fts WHERE thread_id=?").run(String(id));return Number(db.prepare("DELETE FROM agent_threads WHERE id=?").run(String(id))?.changes)||0},{write:true})>0}
 }
 

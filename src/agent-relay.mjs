@@ -49,6 +49,7 @@ import { dirname, join } from "node:path";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
+const TOOL_WRITE_MS=500;
 const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_process","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
 const RETIRED_NATIVE_TOOL_NAMESPACES=new Set(["trebell_device"]);
 // ACP harnesses run a process per thread; reopening one of their threads does not start it (see thread/resume).
@@ -700,6 +701,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const socketContexts=new Set();
   const recoveryInFlight=new Set();
   const liveToolOutput=new Map();
+  // A running tool's latest item waiting to be stored, per thread and tool call: {turnId,at,item,timer}.
+  const toolWrites=new Map();
   // The reasoning segment each thread's harness is thinking in: {id,turnId,messageId,text}.
   const liveReasoning=new Map();
   const pendingDelegations=new Map();
@@ -732,6 +735,42 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     environments,environment:runtimeManager?.env||process.env,platform:runtimeManager?.platform||process.platform,
     onEvent:event=>{const thread=threadMetadata(event.threadId);journal?.record?.({runtime:"native",provider:agentProviderIdentity(thread),environmentId:thread?.providerMeta?.environmentId??null,threadId:event.threadId,category:"process",name:event.name,status:event.status,data:event.data||{}})},
   });
+  // A command's output comes as one tool_call_update per piece of output. Each update still goes to the windows at once, but the
+  // thread stores a running tool's item at most every TOOL_WRITE_MS, with a trailing write of the last one: each update rewrote the
+  // whole turn in a write transaction of its own. A crash loses at most that much of a running command's output, and the restart
+  // marks the turn interrupted. The tool's start, its end and the turn's end write at once, and a request about the thread first
+  // writes what waits, so a read never serves an older item than the windows were sent.
+  function writeToolItem(threadId,toolCallId,turnId,item,{done=false}={}){
+    const entry=toolWrites.get(threadId)?.get(toolCallId);
+    if(entry){if(entry.item&&entry.turnId===turnId){clearTimeout(entry.timer);entry.timer=null;item={...entry.item,...item};entry.item=null}else flushToolItem(threadId,toolCallId)}
+    threadStore.addItem(threadId,turnId,item);
+    if(done)return forgetToolItem(threadId,toolCallId);
+    let calls=toolWrites.get(threadId);if(!calls)toolWrites.set(threadId,calls=new Map());
+    calls.set(toolCallId,{turnId,at:Date.now(),item:null,timer:null});
+  }
+  function deferToolItem(threadId,toolCallId,turnId,item){
+    const entry=toolWrites.get(threadId)?.get(toolCallId),now=Date.now();
+    if(!entry||entry.turnId!==turnId||(!entry.item&&now-entry.at>=TOOL_WRITE_MS))return writeToolItem(threadId,toolCallId,turnId,item);
+    // Each update is the item merged over the stored one, so the waiting updates merged in order store as the last of them would.
+    entry.item=entry.item?{...entry.item,...item}:item;
+    if(!entry.timer){entry.timer=setTimeout(()=>flushToolItem(threadId,toolCallId),Math.max(0,entry.at+TOOL_WRITE_MS-now));entry.timer.unref?.()}
+  }
+  function flushToolItem(threadId,toolCallId){
+    const entry=toolWrites.get(threadId)?.get(toolCallId);if(!entry)return;
+    clearTimeout(entry.timer);entry.timer=null;if(!entry.item)return;
+    const item=entry.item;entry.item=null;entry.at=Date.now();
+    try{threadStore.addItem(threadId,entry.turnId,item)}catch(error){log("Could not store a tool's output: "+(error?.message||String(error)))}
+  }
+  function forgetToolItem(threadId,toolCallId){
+    const calls=toolWrites.get(threadId),entry=calls?.get(toolCallId);if(!entry)return;
+    clearTimeout(entry.timer);calls.delete(toolCallId);if(!calls.size)toolWrites.delete(threadId);
+  }
+  function flushToolWrites(threadId){for(const toolCallId of [...(toolWrites.get(threadId)?.keys()||[])])flushToolItem(threadId,toolCallId)}
+  // At a turn's end what waits is written and the thread's tool calls are let go; a deleted thread's are dropped unwritten.
+  function settleToolWrites(threadId,{write=true}={}){
+    if(write)flushToolWrites(threadId);
+    for(const toolCallId of [...(toolWrites.get(threadId)?.keys()||[])])forgetToolItem(threadId,toolCallId);
+  }
   function clearLiveToolOutput(threadId){
     const prefix=String(threadId||"")+":";
     for(const key of liveToolOutput.keys())if(key.startsWith(prefix))liveToolOutput.delete(key);
@@ -1149,7 +1188,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       threadStore.updateTurn(thread.id,turn.id,{modelTurns:Math.max(0,Math.floor(count))});
     };
     const settlement=promptPromise.then(result=>{
-      endNativeDraft(session,thread.id,turn.id);
+      settleToolWrites(thread.id);endNativeDraft(session,thread.id,turn.id);
       endReasoning(thread.id,turn.id);persistUsage(result);persistModelTurns(result?.raw?.modelTurns);
       const providerMessageId=result?.providerMessageId||result?.userMessageId||null;
       const providerUserMessageId=result?.userMessageId||null;
@@ -1160,7 +1199,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
     }).catch(error=>{
       if(resend&&isHarnessSessionLost(error))return settlePrompt({thread,turn,session,promptPromise:resend(error),model,context});
-      endNativeDraft(session,thread.id,turn.id);
+      settleToolWrites(thread.id);endNativeDraft(session,thread.id,turn.id);
       endReasoning(thread.id,turn.id);
       if(error?.code==="CLAUDE_REWIND_REJECTED"){
         // The next turn rebuilds the Claude session from the thread's restored provider state.
@@ -1287,7 +1326,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const toolSession=sessions.get(threadId);if(toolSession)toolSession.__assistantBreak=true;
       const key=threadId+":"+String(update.toolCallId||"");
       const lifecycle=agentToolLifecycle(update,liveToolOutput.get(key)||"");const {item}=lifecycle;
-      if(turnId)threadStore.addItem(threadId,turnId,item);
+      if(turnId)writeToolItem(threadId,String(update.toolCallId||""),turnId,item,{done:lifecycle.terminal});
       emit("item/started",{threadId,turnId,item,startedAtMs:Date.now()});
       if(lifecycle.outputDelta)emit("item/commandExecution/outputDelta",{threadId,turnId,itemId:item.id,delta:lifecycle.outputDelta});
       if(lifecycle.terminal){liveToolOutput.delete(key);emit("item/completed",{threadId,turnId,item,completedAtMs:Date.now()})}
@@ -1295,7 +1334,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }else if(type==="tool_call_update"){
       const key=threadId+":"+String(update.toolCallId||"");
       const lifecycle=agentToolLifecycle(update,liveToolOutput.get(key)||"");const {item}=lifecycle;
-      if(turnId)threadStore.addItem(threadId,turnId,item);
+      if(turnId){if(lifecycle.terminal)writeToolItem(threadId,String(update.toolCallId||""),turnId,item,{done:true});else deferToolItem(threadId,String(update.toolCallId||""),turnId,item)}
       if(lifecycle.outputDelta)emit("item/commandExecution/outputDelta",{threadId,turnId,itemId:item.id,delta:lifecycle.outputDelta});
       if(lifecycle.terminal){liveToolOutput.delete(key);emit("item/completed",{threadId,turnId,item,completedAtMs:Date.now()})}
       else{if(lifecycle.output)liveToolOutput.set(key,lifecycle.output);emit("item/tool/progress",{threadId,turnId,item})}
@@ -1364,6 +1403,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
 
   async function request(context,method,params={}){
     if(method==="initialize")return {userAgent:"trebell-agent-relay",capabilities:{experimentalApi:true}};
+    if(params?.threadId)flushToolWrites(String(params.threadId));
     const runtime=runtimeManager.activeRuntime();
     const target=params?.threadId?threadMetadata(params.threadId):null;
     journal?.recordProtocol?.({
@@ -1473,7 +1513,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const deletedThread=threadStore.get(params.threadId);
       if(deletedThread?.runtime==="native")await nativeBackgroundProcesses.clean(params.threadId).catch(()=>{});
       const runtimeSession=sessions.get(params.threadId);if(runtimeSession instanceof ClaudeAgentSession)await runtimeSession.delete().catch(()=>{});else await runtimeSession?.close().catch(()=>{});
-      sessions.delete(params.threadId);threadStore.delete(params.threadId);if(state?.removeThreadMeta)state.removeThreadMeta(params.threadId);else state?.updateThreadMeta?.(params.threadId,{deletedAt:Date.now(),archived:true});emit("thread/deleted",{threadId:params.threadId});if(onThreadDeleted)try{await onThreadDeleted(deletedThread)}catch{}return {ok:true}
+      sessions.delete(params.threadId);settleToolWrites(params.threadId,{write:false});threadStore.delete(params.threadId);if(state?.removeThreadMeta)state.removeThreadMeta(params.threadId);else state?.updateThreadMeta?.(params.threadId,{deletedAt:Date.now(),archived:true});emit("thread/deleted",{threadId:params.threadId});if(onThreadDeleted)try{await onThreadDeleted(deletedThread)}catch{}return {ok:true}
     }
     if(method==="thread/section/move"){
       // The thread goes where beforeThreadId says (thread-section-order.mjs), and the place is kept with the thread. Neither a move nor
@@ -2020,6 +2060,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     for(const runtime of [...startingSessions])await runtime.close().catch(()=>{});
     for(const session of sessions.values())await session.close().catch(()=>{});sessions.clear();
     if(promptSettlements.size)await Promise.allSettled([...promptSettlements]);
+    for(const threadId of [...toolWrites.keys()])settleToolWrites(threadId);
   }
   return {reset:closeSessions,close:async()=>{
     closing=true;stopModelUpdates();

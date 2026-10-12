@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -51,11 +51,13 @@ const sessionId="budget-session";
 const send=message=>process.stdout.write(JSON.stringify(message)+"\n");
 const update=value=>send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:value}});
 const sleep=ms=>new Promise(done=>setTimeout(done,ms));
-async function until(file){while(file&&!existsSync(file))await sleep(5)}
+// Stop (session/cancel) ends the stream where it is, and the prompt answers cancelled.
+let cancelled=false;
+async function until(file){while(file&&!existsSync(file)&&!cancelled)await sleep(5)}
 // Paced against the clock, not per timer tick (Windows rounds a short timer up to about 15 ms); no rate sends all at once.
-async function paced(count,rate,step){const start=performance.now();for(let i=0;i<count;){const due=rate?Math.floor((performance.now()-start)*rate/1000)+1:count;while(i<count&&i<due)step(i++);if(i<count)await sleep(2)}}
+async function paced(count,rate,step){const start=performance.now();for(let i=0;i<count&&!cancelled;){const due=rate?Math.floor((performance.now()-start)*rate/1000)+1:count;while(i<count&&i<due&&!cancelled)step(i++);if(i<count)await sleep(2)}}
 async function prompt(id){
-  const plan=JSON.parse(readFileSync(process.argv[2],"utf8"));
+  const plan=JSON.parse(readFileSync(process.argv[2],"utf8"));cancelled=false;
   await until(plan.startFile);
   if(plan.toolUpdates){
     const toolCallId="budget-tool";let output="";
@@ -65,9 +67,10 @@ async function prompt(id){
   }
   await paced(plan.chunks||0,plan.rate,i=>update({sessionUpdate:"agent_message_chunk",content:{type:"text",text:("w"+i+" ").padEnd(23,"x")+" "}}));
   await until(plan.endFile);
-  send({jsonrpc:"2.0",id,result:{stopReason:"end_turn"}});
+  send({jsonrpc:"2.0",id,result:{stopReason:cancelled?"cancelled":"end_turn"}});
 }
 function handle(m){
+  if(m.method==="session/cancel"){cancelled=true;return}
   if(!m.method||m.id==null)return;
   if(m.method==="initialize")return send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"budget",version:"1"},agentCapabilities:{loadSession:false,sessionCapabilities:{resume:{}}}}});
   if(m.method==="session/new")return send({jsonrpc:"2.0",id:m.id,result:{sessionId,models:{currentModelId:"fixture-model",availableModels:[{modelId:"fixture-model",name:"Fixture"}]}}});
@@ -101,7 +104,9 @@ async function budgetRelay(prefix){
   // Resolves once count notifications of method have arrived, matched in their text so that waiting parses nothing.
   const notified=(method,count=1)=>new Promise(resolve=>{let seen=0;const needle='"method":"'+method+'"',onMessage=raw=>{if(String(raw).includes(needle)&&++seen>=count){ws.off("message",onMessage);resolve()}};ws.on("message",onMessage)});
   const close=async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})};
-  return {root,threadStore,plan,rpc,notified,close,file:name=>join(root,name)};
+  // How many notifications of method have arrived so far, counted as notified() matches them.
+  const counter=method=>{const needle='"method":"'+method+'"',counts={n:0};ws.on("message",raw=>{if(String(raw).includes(needle))counts.n++});return counts};
+  return {root,threadStore,plan,rpc,notified,counter,close,file:name=>join(root,name)};
 }
 // A stored history of about mb megabytes: turns of a short request and a 3 KB reply.
 function seededTurns(mb){
@@ -149,7 +154,8 @@ test("B1: a streamed text chunk of a harness reply opens no sqlite connection an
 });
 
 // B2: a command's streamed output. Each tool_call_update read the thread and rewrote the whole turn and its search rows in a write
-// transaction of its own: 205 transactions and 4.3 MB bound to statements for 200 updates.
+// transaction of its own: 205 transactions and 4.3 MB bound to statements for 200 updates. A running tool's item is stored at most
+// every 500 ms now (with a trailing write), and its search rows stand.
 test("B2: a command's 200 output updates take a bounded number of write transactions and bytes, and the stored item is the last",async t=>{
   const relay=await budgetRelay("trebell-budget-b2-");
   try{
@@ -158,11 +164,40 @@ test("B2: a command's 200 output updates take a bounded number of write transact
     const counters=serverCounters(relay.threadStore),completed=relay.notified("turn/completed");
     counters.start();try{await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Run the tests"}]});await completed}finally{counters.stop()}
     const totals={transactions:counters.counts.transactions,boundMB:counters.counts.boundBytes/1024/1024};t.diagnostic("per reply "+JSON.stringify(totals));
-    assert.ok(totals.transactions<=210,"write transactions "+JSON.stringify(totals));
-    assert.ok(totals.boundMB<=4.6,"bytes bound "+JSON.stringify(totals));
+    assert.ok(totals.transactions<=30,"write transactions "+JSON.stringify(totals));
+    assert.ok(totals.boundMB<=1,"bytes bound "+JSON.stringify(totals));
     const item=relay.threadStore.get(thread.id).turns.at(-1).items.find(entry=>entry.type==="commandExecution");
     assert.equal(item?.status,"completed");
     assert.equal(item.aggregatedOutput.split("\n").filter(Boolean).length,updates,"the stored output is the last update's");
+  }finally{await relay.close()}
+});
+
+// What the 500 ms costs: a crash loses at most that much of a running command's stored output, and the restart marks its turn
+// interrupted; a request about the thread reads the output the windows were sent; Stop stores all of it.
+test("a running command's stored output trails its stream by at most 500 ms, is current for a request, and is whole after Stop",async t=>{
+  const relay=await budgetRelay("trebell-budget-tool-writes-");
+  try{
+    const thread=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root}),progress=relay.counter("item/tool/progress");
+    await writeFile(relay.plan,JSON.stringify({toolUpdates:5000,rate:100,terminal:false,endFile:relay.file("end")}),"utf8");
+    const lines=item=>String(item?.aggregatedOutput||"").split("\n").filter(Boolean).length,commandOf=turn=>turn?.items?.find(entry=>entry.type==="commandExecution");
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Run the tests"}]});
+    await relay.notified("item/tool/progress",150);
+    // A crash leaves what sqlite has: a copy of the database taken now, restarted in a home of its own.
+    const sent=progress.n,crashHome=join(relay.root,"crash-home"),source=new DatabaseSync(join(relay.root,"home","trebell.sqlite"));
+    await mkdir(crashHome,{recursive:true});
+    try{source.exec("VACUUM INTO '"+join(crashHome,"trebell.sqlite").replaceAll("'","''")+"'")}finally{source.close()}
+    const restarted=new AgentThreadStore({...process.env,TREBELL_HOME:crashHome}),stored=lines(commandOf(restarted.get(thread.id).turns.at(-1)));
+    t.diagnostic("crash copy: sent "+sent+", stored "+stored);
+    assert.ok(stored>0&&sent-stored<=60,"at 100 updates a second, the stored output trails what was sent by at most 500 ms: sent "+sent+", stored "+stored);
+    restarted.reconcileRestart({continueAfterRestart:true});
+    const recovered=restarted.get(thread.id);
+    assert.equal(recovered.turns.at(-1).status,"interrupted");assert.equal(recovered.recovery?.blocked,true,"its unfinished command blocks an automatic continuation");
+    // Every update this window had when it asked was already on the server, so the answer holds at least that much output.
+    const seen=progress.n,listed=await relay.rpc("thread/items/list",{threadId:thread.id,limit:10,sortDirection:"desc"});
+    assert.ok(lines(listed.data.find(entry=>entry.item.type==="commandExecution")?.item)>=seen,"a request writes what waits before it reads");
+    const completed=relay.notified("turn/completed");await relay.rpc("turn/interrupt",{threadId:thread.id});await completed;
+    const final=relay.threadStore.get(thread.id).turns.at(-1);
+    assert.equal(final.status,"cancelled");assert.equal(lines(commandOf(final)),progress.n,"Stop stores every update the windows were sent");
   }finally{await relay.close()}
 });
 

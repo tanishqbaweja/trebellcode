@@ -10,6 +10,8 @@ const REASONING_PART_LIMIT=64*1024;
 // How much parsed history the store keeps: the 2 threads used last, at most 32 M characters of their stored JSON, each dropped after
 // a minute unused.
 const THREAD_CACHE=Object.freeze({entries:2,chars:32*1024*1024,idleMs:60_000});
+// The items a turn's search rows come from: its user messages and its last agent message.
+const searchedItem=item=>item?.type==="userMessage"||item?.type==="agentMessage";
 
 function recoveryToolSummary(item={}){
   return {
@@ -233,7 +235,8 @@ export class AgentThreadStore{
     const index=found.turn.items.findIndex(entry=>entry.id===item.id),previous=index>=0?found.turn.items[index]:null;
     const stored=persistedItem(previous?{...previous,...item}:item,this.env),items=found.turn.items.slice();
     if(index>=0)items[index]=stored;else items.push(stored);
-    const thread={...found.thread,updatedAt:Math.floor(Date.now()/1000)};this.#persistTurn(thread,{...found.turn,items});this.#cacheMetadata(thread);return clone(stored);
+    // A tool's item leaves the turn's searched items where they were, so its search rows are not rewritten.
+    const thread={...found.thread,updatedAt:Math.floor(Date.now()/1000)};this.#persistTurn(thread,{...found.turn,items},{searchUnchanged:!searchedItem(previous)&&!searchedItem(stored)});this.#cacheMetadata(thread);return clone(stored);
   }
   finishTurn(threadId,turnId,{status="completed",error=null}={}){
     const found=this.#turnOf(threadId,turnId);if(!found)return null;
