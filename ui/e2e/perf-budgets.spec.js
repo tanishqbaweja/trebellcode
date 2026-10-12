@@ -34,7 +34,7 @@ test("B15: no infinite animation runs at idle on a chat, a new chat, Settings or
 // B16: while a 20 KB reply streams at 32 deltas a second, the React commits a second (through the DevTools hook React looks for as
 // it loads), the Markdown parses of the whole reply so far (any parse over 4 KB, where a finished block or the open tail of this
 // reply is under 1 KB) and the characters parsed in all.
-const B16_STREAM={commitsPerSecond:16,wholeTextParses:340,charsParsed:4_300_000};
+const B16_STREAM={commitsPerSecond:16,wholeTextParses:0,charsParsed:200_000};
 const countRenders=()=>{
   const perf=window.__trebellPerf={markdown:[],commits:0};
   window.__REACT_DEVTOOLS_GLOBAL_HOOK__={renderers:new Map(),supportsFiber:true,isDisabled:false,checkDCE(){},inject(renderer){const id=this.renderers.size+1;this.renderers.set(id,renderer);return id},onScheduleFiberRoot(){},onCommitFiberRoot(){perf.commits++},onCommitFiberUnmount(){},onPostCommitFiberRoot(){}};

@@ -12,7 +12,7 @@ import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
-import ChatMarkdown from "./components/ChatMarkdown.jsx";
+import ChatMarkdown,{ StreamingMarkdown } from "./components/ChatMarkdown.jsx";
 import RightPanel, { askText } from "./components/RightPanel.jsx";
 import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
@@ -394,7 +394,7 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,threadI
   }),[]);
   if(!events.length&&!assistantText)return null;
   // A reply that streams without any tool or reasoning step has no activity to list, so it shows only its text.
-  return <div className="agent-block">{events.length>0&&<TurnActivityCard live threadId={threadId} turnId={turnId} rows={events} defaultOpen onToggleLayout={onToggleLayout} onInspectChanges={canInspectChanges?openWorkspace:null} commandOutputs={commandOutputs} mcpProgress={mcpProgress}/>}{assistantText&&<div className="assistant-answer chat-markdown"><ChatMarkdown text={assistantText}/></div>}</div>;
+  return <div className="agent-block">{events.length>0&&<TurnActivityCard live threadId={threadId} turnId={turnId} rows={events} defaultOpen onToggleLayout={onToggleLayout} onInspectChanges={canInspectChanges?openWorkspace:null} commandOutputs={commandOutputs} mcpProgress={mcpProgress}/>}{assistantText&&<div className="assistant-answer chat-markdown"><StreamingMarkdown text={assistantText}/></div>}</div>;
 }));
 
 // covered: another thread's opening state is up. The bar belongs to the thread being left, so it hides without closing (a failed open
