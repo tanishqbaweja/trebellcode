@@ -199,9 +199,10 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     return <>{screen.dropped>0&&<span className="terminal-dropped">Earlier lines were dropped: the screen keeps the last {TERMINAL_SCROLLBACK_LINES.toLocaleString()} lines.</span>}{screen.chunks.map(chunk=><span key={chunk.id}>{chunk.text}</span>)}</>;
   };
   const paneSessions=paneIds.map(id=>sessions.find(session=>session.id===id)).filter(Boolean);
-  // Stacked panes keep room for a few lines and the command line each; when four do not fit the drawer the stack scrolls
-  // instead of squeezing every pane until its input covers the output.
-  const paneStyle=paneSessions.length>1?(splitDirection==="vertical"?{gridTemplateRows:"repeat("+paneSessions.length+",minmax(170px,1fr))"}:{gridTemplateColumns:"repeat("+paneSessions.length+",minmax(0,1fr))"}):{};
+  // Stacked panes keep room for a few lines and the command line each, and side-by-side panes room for a usable command field;
+  // when four do not fit the drawer the panes scroll instead of squeezing every pane until its input covers the output or its
+  // command field shows three characters.
+  const paneStyle=paneSessions.length>1?(splitDirection==="vertical"?{gridTemplateRows:"repeat("+paneSessions.length+",minmax(170px,1fr))"}:{gridTemplateColumns:"repeat("+paneSessions.length+",minmax(250px,1fr))"}):{};
   return <div className="real-terminal">
     <div className="terminal-tabs">
       {/* Session tabs scroll on their own so New and the split buttons stay in reach however many terminals are open. */}

@@ -53,9 +53,10 @@ async function openTerminal(page,request){
   return {drawer,pane,screen,input};
 }
 
-// Dark and light screenshots at 1280x800 and 900 wide, switched with the header's appearance toggle as a person switches them.
-async function shots(page,name){
-  for(const width of [1280,900]){
+// Dark and light screenshots at 1280x800 and 900 wide (and any other widths asked for), switched with the header's appearance
+// toggle as a person switches them.
+async function shots(page,name,widths=[1280,900]){
+  for(const width of widths){
     await page.setViewportSize({width,height:800});
     for(const mode of ["dark","light"]){
       if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
@@ -154,5 +155,33 @@ test("a line the terminal wraps at its edge reads as it was printed, without a r
     await expect(screen).toContainText(new RegExp("^"+token+"$","m"));
     await expect(screen).toContainText(">echo "+token);
     await shots(page,"terminal-wrapped-line");
+  }finally{await shell.close()}
+});
+
+test("four side-by-side panes keep a usable command line in a 700 px window, and the last one is reached by scrolling the panes",async({page,request})=>{
+  test.setTimeout(90_000);
+  const shell=await realTerminals(page);
+  try{
+    const {drawer}=await openTerminal(page,request);
+    const split=drawer.getByTitle("Split horizontally"),panes=drawer.locator(".terminal-pane");
+    for(let count=2;count<=4;count++){await split.click();await expect(panes).toHaveCount(count);await expect(panes.nth(count-1).locator(".terminal-screen")).toHaveText(PROMPT,{timeout:20_000})}
+    await page.setViewportSize({width:700,height:800});
+    // Each command field keeps room for about a dozen characters (it was down to three).
+    for(let index=0;index<4;index++){
+      const width=await panes.nth(index).locator(".terminal-command-line input").evaluate(node=>node.getBoundingClientRect().width);
+      expect(width,"command field of pane "+(index+1)).toBeGreaterThanOrEqual(90);
+    }
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth-window.innerWidth),"no sideways page scroll").toBeLessThanOrEqual(1);
+    // The panes scroll sideways inside the drawer, so the last one is in reach of the wheel.
+    const box=drawer.locator(".terminal-panes"),last=panes.nth(3),lastInput=last.locator(".terminal-command-line input");
+    const inView=()=>lastInput.evaluate(node=>{const field=node.getBoundingClientRect(),view=node.closest(".terminal-panes").getBoundingClientRect();return field.left>=view.left&&field.right<=view.right+1});
+    expect(await inView(),"the last pane starts out of view").toBe(false);
+    await box.hover();
+    for(let turn=0;turn<20&&await box.evaluate(node=>node.scrollLeft+node.clientWidth<node.scrollWidth-1);turn++)await page.mouse.wheel(400,0);
+    expect(await inView(),"the last pane is in view after scrolling").toBe(true);
+    await lastInput.click();
+    await run(page,"echo pane-four");
+    await expect(last.locator(".terminal-screen")).toContainText(/^pane-four$/m);
+    await shots(page,"terminal-four-panes-narrow",[1280,900,700]);
   }finally{await shell.close()}
 });

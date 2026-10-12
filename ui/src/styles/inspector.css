@@ -1003,8 +1003,9 @@
 :root:root .terminal-drawer .terminal-error>button{flex:none;width:22px;height:22px;display:grid;place-items:center;padding:0;border:0!important;border-radius:6px;background:transparent!important;color:inherit!important;opacity:.75;cursor:pointer}
 :root:root .terminal-drawer .terminal-error>button:hover{opacity:1;background:color-mix(in srgb,var(--err) 14%,transparent)!important}
 :root:root .terminal-drawer .terminal-content>.terminal-panes{flex:1 1 auto;min-height:112px;display:grid;overflow:hidden;border:1px solid var(--line)!important;border-radius:var(--r-m);background:var(--bg0)!important}
-/* Stacked panes keep at least 170px each (set inline) and the stack scrolls when four do not fit. */
+/* Stacked panes keep at least 170px each and side-by-side panes 250px (set inline); the panes scroll when four do not fit. */
 :root:root .terminal-drawer .terminal-content>.terminal-panes.vertical{overflow-y:auto;overscroll-behavior:contain}
+:root:root .terminal-drawer .terminal-content>.terminal-panes.horizontal{overflow-x:auto;overscroll-behavior-x:contain}
 :root:root .terminal-drawer .terminal-pane{container:terminal-pane/inline-size;min-width:0;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto auto;background:var(--bg0)!important;border-left:1px solid var(--line)!important;box-shadow:none}
 :root:root .terminal-drawer .terminal-pane:first-child{border-left:0!important}
 /* A single pane needs no title row: the active tab above already names it. */
