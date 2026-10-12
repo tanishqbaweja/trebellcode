@@ -347,13 +347,13 @@ class Channel{
   }
 }
 // transcripts: the sessions Claude Code has a transcript for (a query creates one). fail(options): an error the CLI exits with
-// before it starts the session, or null.
-function fakeClaudeSdk({transcripts=new Set(),fail=()=>null}={}){
+// before it starts the session (failAfterMs after the query opens), or null.
+function fakeClaudeSdk({transcripts=new Set(),fail=()=>null,failAfterMs=20}={}){
   const calls=[];
   const query=({prompt,options})=>{
     const out=new Channel(),call={options,inputs:[]};calls.push(call);
     const failure=fail(options,calls.length);
-    if(failure){setTimeout(()=>out.end(failure),20);void (async()=>{for await(const message of prompt)call.inputs.push(message)})()}
+    if(failure){setTimeout(()=>out.end(failure),failAfterMs);void (async()=>{for await(const message of prompt)call.inputs.push(message)})()}
     else void (async()=>{
       let index=0;
       for await(const message of prompt){
@@ -425,6 +425,29 @@ test("Claude Code saying 'No conversation found' as the query opens sends the tu
   assert.equal(userMessages(turn).length,1,"the user's message is in the thread once");
   assert.match(turn.items[1].reason,/No conversation found with session ID/);
   assert.deepEqual(fallbacks(journal).map(entry=>entry.data.lostSessionId),[lostId]);
+});
+
+// The CLI takes a moment to say it has no conversation, and the turn runs meanwhile, so the person can steer it. That message went
+// to a query that ran nothing: it goes to the fresh conversation with the turn's own message, and the thread keeps each one once.
+test("a message steered in before Claude Code says it has no conversation goes to the fresh conversation with the turn's own",async t=>{
+  const {root,env}=await claudeHome(t),threadStore=new AgentThreadStore(env),journal=memoryJournal(),lostId="ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const claude=fakeClaudeSdk({transcripts:new Set([lostId]),failAfterMs:600,fail:options=>options.resume?new Error(`Claude Code process exited with code 1. stderr: No conversation found with session ID: ${options.resume}`):null});
+  const saved=savedThread(threadStore,{runtime:"claude",instanceId:CLAUDE_INSTANCE.id,providerSessionId:lostId,model:"claude-test",cwd:root});
+  const relay=await startRelay({runtimeManager:claudeRuntimeManager,threadStore,state:memoryState(),journal,claudeSdk:claude.sdk});onCleanup(t,relay.close);
+  const completed=relay.events.next(message=>message.method==="turn/completed");
+  const started=await relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text:"What word did I ask you to remember?"}]});
+  await new Promise(resolve=>setTimeout(resolve,100));
+  const steered=await relay.rpc("turn/steer",{threadId:saved.id,expectedTurnId:started.turn.id,input:[{type:"text",text:"Also spell it backwards."}]});
+  assert.equal(steered.accepted,true);
+  assert.equal((await completed).params.turn.status,"completed");
+  assert.equal(claude.calls.length,2,"the lost resume, then the fresh conversation");
+  assert.equal(claude.calls[1].inputs.length,1,"one message to the fresh conversation");
+  const [context,request,steer]=promptText(claude.calls[1]);
+  assert.ok(context.includes(HISTORY_ENTRY+"Claude Code no longer had it."));
+  assert.deepEqual([request,steer],["What word did I ask you to remember?","Also spell it backwards."]);
+  const turn=threadStore.get(saved.id).turns.at(-1);
+  assert.deepEqual(userMessages(turn).map(item=>item.content.map(part=>part.text).join("")),["What word did I ask you to remember?","Also spell it backwards."],"each message once in the thread");
+  assert.equal(turn.items.filter(item=>item.type==="sessionHandoff").length,1);
 });
 
 test("the second send to a fresh Claude Code conversation never sends again: its failure fails the turn and keeps the message",async t=>{

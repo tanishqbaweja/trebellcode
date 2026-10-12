@@ -1080,8 +1080,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(threadStore.addItem(threadId,turnId,item))emit("item/completed",{threadId,turnId,item,completedAtMs:Date.now()});
   }
   // Claude Code says it has no conversation under the thread's id only when the turn's query opens, before any output: the same
-  // session starts a fresh conversation and the turn goes there once more, with the earlier messages handed over. The thread
-  // keeps one user message, and the second send never sends again.
+  // session starts a fresh conversation and the turn goes there once more, with the earlier messages handed over and whatever was
+  // steered into the turn meanwhile after its own message (the error's steered). The thread keeps each user message once, and the
+  // second send never sends again.
   function claudeLostSessionResend({thread,turn,session,input,durable,promptOptions,excludeTurnId=null}){
     if(!(session instanceof ClaudeAgentSession))return null;
     return async error=>{
@@ -1091,7 +1092,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       beginHistoryHandoff(thread,{previousSessionId,sessionId,reason:error?.message});
       const pending=pendingHistoryHandoff(thread.id,turn.id,{excludeTurnId});
       const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context},promptContextOptions(thread,session));
-      return session.prompt(prompt,{...promptOptions,messageId:randomUUID(),...handoffDelivery(thread.id,turn.id,pending)});
+      return session.prompt([...prompt,...(Array.isArray(error?.steered)?error.steered:[]).flat()],{...promptOptions,messageId:randomUUID(),...handoffDelivery(thread.id,turn.id,pending)});
     };
   }
 

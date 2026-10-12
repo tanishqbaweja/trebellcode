@@ -318,7 +318,7 @@ export class ClaudeAgentSession{
     const turn=this.turn&&!this.turn.settled?this.turn:null,live=turn?.live;
     if(!turn||!live||live.closed)throw new Error("Claude Code has no running turn to steer.");
     const uuid=randomUUID();
-    turn.uuids.add(uuid);turn.steered=true;
+    turn.uuids.add(uuid);turn.steered=true;turn.steers.push(parts);
     live.input.push({type:"user",message:{role:"user",content:claudeUserContent(parts)},parent_tool_use_id:null,priority:"now",uuid});
     return {accepted:true,pending:0};
   }
@@ -486,7 +486,7 @@ export class ClaudeAgentSession{
   #newTurn({promptUuid=null,live,wake=false}){
     let resolve,reject;const promise=new Promise((res,rej)=>{resolve=res;reject=rej});
     return {
-      id:randomUUID(),promptUuid,uuids:new Set(promptUuid?[promptUuid]:[]),live,wake,echoed:!promptUuid,cursor:null,steered:false,cancelRequested:false,
+      id:randomUUID(),promptUuid,uuids:new Set(promptUuid?[promptUuid]:[]),live,wake,echoed:!promptUuid,cursor:null,steered:false,steers:[],cancelRequested:false,
       result:null,queryError:null,cost:0,emittedText:false,separator:false,stream:null,textBlocks:new Map(),thoughtMessages:new Set(),
       authFailure:false,rateLimited:false,apiErrorText:null,rejectedLimits:new Set(),announcedLimits:new Set(),settled:false,promise,resolve,reject,
     };
@@ -519,9 +519,10 @@ export class ClaudeAgentSession{
     if(turn.cancelRequested||isAbortResult(result)||isStoppedResult(result))return turn.resolve({stopReason:"cancelled",...ids,raw});
     // Claude Code that has no transcript for the session it was asked to resume says so and exits before it starts the session
     // or answers: a lost session, which the relay continues once in a fresh one (startFresh) with the earlier messages handed over.
+    // What was steered into the turn meanwhile went to this query, which ran none of it, so the error carries it on (steered).
     if(live?.resumed&&!live.sawInit&&!turn.emittedText){
       const said=[String(turn.queryError?.message||""),...(result?userFacingErrors(result):[])].find(text=>CLAUDE_NO_CONVERSATION.test(text));
-      if(said)return turn.reject(new HarnessSessionLostError(`Claude Code could not resume this conversation: ${said.replace(/^Claude Code returned an error result:\s*/,"")}`,{harness:"claude",sessionId:live.resumed}));
+      if(said)return turn.reject(Object.assign(new HarnessSessionLostError(`Claude Code could not resume this conversation: ${said.replace(/^Claude Code returned an error result:\s*/,"")}`,{harness:"claude",sessionId:live.resumed}),{steered:[...turn.steers]}));
     }
     // A turn the process started is in the transcript even when it failed: its ids let a later turn be edited.
     const failedIds=live?.sawInit&&turn.echoed?ids:{};
