@@ -361,6 +361,36 @@ test.describe("Typing a shortcut",()=>{
     await expect(page.locator(".terminal-drawer"),"Ctrl+Shift+T ran Toggle terminal under “!Always”").toHaveCount(0);
     await page.screenshot({animations:"disabled",path:shots+`saved-refused-composer-${mode}-1280.png`});
   });
+
+  // Such a saved key or condition runs nothing, so the sidebar and the palette offer no key for its command, as for a key another
+  // command takes; once a key that works is saved, they show it.
+  for(const mode of MODES)test(`a saved shortcut or condition the checks refuse is offered by neither the sidebar nor the palette (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    await request.post("/api/settings",{data:{keybindingRules:[{command:"newChat",key:"Ctrl+Up",when:"!modalOpen"},{command:"projects",key:"Ctrl+Shift+P",when:"Always"}]}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const newTask=nav(page,"New task"),palette=page.getByTestId("command-palette");
+    await expect(nav(page,"Settings").locator("kbd")).toHaveText("Ctrl+,");
+    await expect(newTask.locator("kbd"),"the sidebar offers a key that does not work").toHaveCount(0);
+    await expect(newTask).not.toHaveAttribute("aria-keyshortcuts",/./);
+    await expect(nav(page,"Projects").locator("kbd"),"the sidebar offers a key whose condition never holds").toHaveCount(0);
+    await page.keyboard.press("Control+K");
+    await expect(palette).toBeVisible();
+    await palette.locator("input").fill("New thread");
+    const item=palette.locator(".command-palette-item").filter({has:page.locator("strong",{hasText:/^New thread$/})}).first();
+    await expect(item).toBeVisible();
+    await expect(item.locator("kbd"),"the palette offers a key that does not work").toHaveCount(0);
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:shots+`saved-refused-not-offered-${mode}-${width}.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    await page.keyboard.press("Escape");
+    await expect(palette).toBeHidden();
+    await openShortcuts(page);
+    await expect(row(page,"New thread").getByRole("alert")).toHaveText("“Up” is not a key name. Use ArrowUp. Until then the saved shortcut does not work.");
+    await retype(keyField(page,"New thread"),"Ctrl+ArrowUp");
+    await keyField(page,"New thread").press("Enter");
+    await expect.poll(async()=>(await savedRule(request,"newChat"))?.key).toBe("Ctrl+ArrowUp");
+    await expect(newTask.locator("kbd")).toHaveText("Ctrl+ArrowUp");
+  });
 });
 
 test.describe("Two commands on one key",()=>{

@@ -19,7 +19,7 @@ import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx";
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
-import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, shadowedKeybindings, shortcutHint } from "./keybindings.js";
+import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, ruleRuns, shadowedKeybindings, shortcutHint } from "./keybindings.js";
 import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, movedDuringStep, navigationKey, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
@@ -4834,10 +4834,10 @@ export default function App(){
   const closePalette=useCallback(()=>setPaletteOpen(false),[]);
   // The sidebar and the command palette show the user's own keybindings (Settings > Shortcuts), not the defaults. A command whose
   // key another command takes over everywhere it runs (Settings > Shortcuts says which) shows no key, since pressing it runs the
-  // other command.
+  // other command, and nor does one whose saved key or condition Settings flags as not working, since pressing it runs nothing.
   const commandKey=useMemo(()=>{
     const rules=projectKeybindingRules(normalizeKeybindingRules(settings),projectlessMode?[]:currentProject?.scripts||[]),shadowed=shadowedKeybindings(rules);
-    return command=>shadowed.has(command)?"":rules.find(rule=>rule.command===command)?.key||"";
+    return command=>{const rule=rules.find(rule=>rule.command===command);return rule&&!shadowed.has(command)&&ruleRuns(rule)?rule.key:""};
   },[settings.keybindingRules,settings.keyboardShortcuts,projectlessMode,currentProject?.scripts]);
   const sidebarShortcuts=useMemo(()=>({newChat:commandKey("newChat"),commandPalette:commandKey("commandPalette"),projects:commandKey("projects"),settings:commandKey("settings"),environments:commandKey("environments"),previewToggle:commandKey("previewToggle")}),[commandKey]);
   const sidebarThreadAction=useLatestCallback(threadAction);
