@@ -828,9 +828,20 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     return Boolean(runtimeManager.remoteIo?.(runtimeManager.runtimeCwd?.(thread.cwd,environmentId)??thread.cwd,environmentId));
   }
 
+  // A harness thread's session starts once at a time: a call while it starts (a second window sending, restart recovery racing a
+  // send) waits for that start and then goes on as a later call would, so the thread never runs two harness processes or two
+  // fresh sessions for a conversation the harness lost. Native threads keep their own path.
+  const sessionStarts=new Map();
+  async function ensureSession(thread,context,options={}){
+    if(thread?.runtime==="native")return startSession(thread,context,options);
+    const starting=sessionStarts.get(thread?.id);
+    if(starting){await starting.catch(()=>{});return ensureSession(threadStore.get(thread.id)||thread,context,options)}
+    const run=startSession(thread,context,options);sessionStarts.set(thread.id,run);
+    try{return await run}finally{if(sessionStarts.get(thread.id)===run)sessionStarts.delete(thread.id)}
+  }
   // freshIfLost: a turn is about to run, so a conversation the harness lost continues in a fresh session (see below); opening,
   // forking, compacting and rewinding a thread keep the lost-session error.
-  async function ensureSession(thread,context,{permissionMode=null,model=null,freshIfLost=false}={}){
+  async function startSession(thread,context,{permissionMode=null,model=null,freshIfLost=false}={}){
     if(thread?.runtime==="native"){
       const storedNamespaces=Array.isArray(thread.providerMeta?.dynamicToolNamespaces)?thread.providerMeta.dynamicToolNamespaces:[],activeNamespaces=expandableNativeToolNamespaces(storedNamespaces);
       if(activeNamespaces.length!==storedNamespaces.length){
@@ -1040,11 +1051,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     threadStore.update(thread.id,{providerMeta:{...meta,historyHandoff:{status:"pending",runtime:thread.runtime,previousSessionId,sessionId,reason:diagnosticText(reason),at:Date.now()}}});
     recordResumeFallback(thread,{previousSessionId,sessionId,reason});
   }
-  // The waiting handoff as the prompt's trebell.thread_history entry: the thread's earlier conversation, without the turn's own
-  // message (excludeTurnId), or null when nothing waits.
-  function pendingHistoryHandoff(threadId,{excludeTurnId=null}={}){
+  // The waiting handoff as the prompt's trebell.thread_history entry for turnId's prompt: the thread's earlier conversation, without
+  // the turn's own message (excludeTurnId), or null when nothing waits. One turn at a time carries it (handoffTurns): a turn started
+  // while that one still runs (a second window, restart recovery racing a send) sends without it, so it goes over once.
+  const handoffTurns=new Map();
+  function pendingHistoryHandoff(threadId,turnId,{excludeTurnId=null}={}){
     const meta=threadMetadata(threadId);if(!meta||meta.runtime==="native"||meta.providerMeta?.historyHandoff?.status!=="pending")return null;
     const thread=threadStore.get(threadId);if(!thread)return null;
+    const carrier=handoffTurns.get(threadId);if(carrier!==turnId&&thread.turns.some(turn=>turn?.id===carrier&&turn.status==="inProgress"))return null;
+    handoffTurns.set(threadId,turnId);
     const history=threadHistoryHandoff(thread.turns,{harness:runtimeHarnessLabel(thread.runtime),excludeTurnId});
     return {history,context:history?{"trebell.thread_history":{kind:"application",value:history.text}}:{}};
   }
@@ -1059,6 +1074,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   }
   function deliverHistoryHandoff(threadId,turnId,history){
     const meta=threadMetadata(threadId)?.providerMeta||{},handoff=meta.historyHandoff;if(handoff?.status!=="pending")return;
+    handoffTurns.delete(threadId);
     threadStore.update(threadId,{providerMeta:{...meta,historyHandoff:{...handoff,status:"delivered",turnId,deliveredAt:Date.now(),included:history?.included||0,omitted:history?.omitted||0}}});
     const item=sessionHandoffItem(turnId,handoff,history);
     if(threadStore.addItem(threadId,turnId,item))emit("item/completed",{threadId,turnId,item,completedAtMs:Date.now()});
@@ -1073,7 +1089,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const meta=threadMetadata(thread.id)?.providerMeta||{};
       threadStore.update(thread.id,{providerSessionId:sessionId,providerMeta:{...meta,setup:started.session}});
       beginHistoryHandoff(thread,{previousSessionId,sessionId,reason:error?.message});
-      const pending=pendingHistoryHandoff(thread.id,{excludeTurnId});
+      const pending=pendingHistoryHandoff(thread.id,turn.id,{excludeTurnId});
       const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context},promptContextOptions(thread,session));
       return session.prompt(prompt,{...promptOptions,messageId:randomUUID(),...handoffDelivery(thread.id,turn.id,pending)});
     };
@@ -1184,7 +1200,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         // A conversation the harness lost goes on in a fresh session that is handed the interrupted turn's message too, since
         // the prompt only says to continue.
         const continueText="Continue where you left off.",input=[{type:"text",text:continueText}];
-        const durable=await withDurableContext(thread.id,{},continueText),pending=pendingHistoryHandoff(thread.id);
+        const durable=await withDurableContext(thread.id,{},continueText),pending=pendingHistoryHandoff(thread.id,turn.id);
         const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context},promptContextOptions(thread,session));
         const promptOptions={messageId:randomUUID(),agent:thread.agent||null,...(thread.runtime==="native"?nativeGoalPromptOptions(goal):{}),...handoffDelivery(thread.id,turn.id,pending)};
         settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:thread.model||null,context,resend:claudeLostSessionResend({thread,turn,session,input,durable,promptOptions})});
@@ -1756,7 +1772,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       session.__usage=null;
       emit("turn/started",{threadId:thread.id,turn});
       // A fresh session that took over a lost conversation is handed the thread's earlier messages (the turn's own goes as the request).
-      const input=params.input||[],durable=await withDurableContext(thread.id,params.additionalContext||{},textOfInput(input)),pending=pendingHistoryHandoff(thread.id,{excludeTurnId:turn.id});
+      const input=params.input||[],durable=await withDurableContext(thread.id,params.additionalContext||{},textOfInput(input)),pending=pendingHistoryHandoff(thread.id,turn.id,{excludeTurnId:turn.id});
       const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context},promptContextOptions(thread,session));
       const selectedAgent=Object.prototype.hasOwnProperty.call(params,"agent")?(params.agent||null):(thread.agent||null);
       if(selectedAgent!==thread.agent)threadStore.update(thread.id,{agent:selectedAgent});

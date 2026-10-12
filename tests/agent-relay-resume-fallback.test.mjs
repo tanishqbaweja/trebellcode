@@ -59,8 +59,9 @@ function savedThread(threadStore,{runtime,instanceId,providerSessionId,model="fi
 }
 const HISTORY_ENTRY="[application context · trebell.thread_history]\nThe earlier conversation of this thread, handed over because ";
 
-// An ACP agent scripted by a JSON file: it logs each request (one JSON line), answers session/load and session/resume with
-// config.lostError when set, numbers its new sessions across launches and answers prompts with config.reply.
+// An ACP agent scripted by a JSON file: it logs each request (one JSON line, with the process it reached), answers session/load and
+// session/resume with config.lostError when set (config.loadDelayMs late), numbers its new sessions across launches and answers
+// prompts with config.reply.
 const FAKE_ACP_AGENT=String.raw`
 import readline from "node:readline";
 import { appendFileSync, readFileSync } from "node:fs";
@@ -68,10 +69,10 @@ const [log,configPath]=process.argv.slice(2),config=JSON.parse(readFileSync(conf
 const send=message=>process.stdout.write(JSON.stringify(message)+"\n");
 function handle(m){
   if(!m.method||m.id==null)return;
-  appendFileSync(log,JSON.stringify({method:m.method,params:m.params??null})+"\n");
+  appendFileSync(log,JSON.stringify({pid:process.pid,method:m.method,params:m.params??null})+"\n");
   const reply=result=>send({jsonrpc:"2.0",id:m.id,result}),fail=error=>send({jsonrpc:"2.0",id:m.id,error});
   if(m.method==="initialize")return reply({protocolVersion:1,agentInfo:{name:"fixture",version:"1"},agentCapabilities:config.capabilities});
-  if(m.method==="session/load"||m.method==="session/resume")return config.lostError?fail(config.lostError):reply({});
+  if(m.method==="session/load"||m.method==="session/resume")return setTimeout(()=>config.lostError?fail(config.lostError):reply({}),config.loadDelayMs||0);
   if(m.method==="session/new"){
     if(config.newError)return fail(config.newError);
     const count=readFileSync(log,"utf8").split("\n").filter(line=>line.includes('"method":"session/new"')).length;
@@ -171,6 +172,31 @@ test("a harness that asks to sign in cannot run: its resume failure fails the tu
   assert.equal((await fx.requests()).some(entry=>entry.method==="session/new"),false);
   assert.equal(threadStore.get(saved.id).providerSessionId,"cursor-lost");assert.equal(fallbacks(journal).length,0);
 });
+
+// Two turn/starts for one thread at once (two windows, or restart recovery racing a send): one harness process and, for a
+// conversation the harness lost, one fresh session that is handed the earlier messages once, with one journal entry and one row.
+for(const lost of [true,false]){
+  test(`two sends at once on a Grok conversation ${lost?"the harness lost":"it still has"} share one session start`,async t=>{
+    const fx=await acpHarness(t,"grok",{loadDelayMs:150,...(lost?{}:{lostError:null})}),threadStore=new AgentThreadStore(fx.env),journal=memoryJournal();
+    // Every agent process the test started ends with it, also one the relay would no longer track.
+    onCleanup(t,async()=>{for(const pid of new Set((await fx.requests()).map(entry=>entry.pid)))try{process.kill(pid)}catch{}});
+    const saved=savedThread(threadStore,{runtime:"grok",instanceId:fx.harness.instance.id,providerSessionId:lost?"grok-lost":"grok-kept",cwd:fx.root});
+    const relay=await startRelay({runtimeManager:fx.runtimeManager,threadStore,state:memoryState(),journal});onCleanup(t,relay.close);
+    const started=await Promise.all(["First question","Second question"].map(text=>relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text}]})));
+    for(let waited=0;relay.events.seen.filter(message=>message.method==="turn/completed").length<2;waited+=50){assert.ok(waited<15_000,"both turns complete");await new Promise(resolve=>setTimeout(resolve,50))}
+    const requests=await fx.requests(),thread=threadStore.get(saved.id),prompts=requests.filter(entry=>entry.method==="session/prompt");
+    assert.deepEqual(relay.events.seen.filter(message=>message.method==="turn/completed").map(message=>message.params.turn.status),["completed","completed"]);
+    assert.equal(new Set(requests.map(entry=>entry.pid)).size,lost?2:1,lost?"one process for the resume, one for the fresh session":"one process");
+    assert.equal(requests.filter(entry=>entry.method==="session/resume").length,1,"the saved session is resumed once");
+    assert.equal(requests.filter(entry=>entry.method==="session/new").length,lost?1:0);
+    assert.deepEqual(prompts.map(entry=>entry.params.sessionId),lost?["fresh-1","fresh-1"]:["grok-kept","grok-kept"],"both turns run in the thread's one session");
+    assert.equal(prompts.filter(entry=>JSON.stringify(entry.params.prompt).includes("trebell.thread_history")).length,lost?1:0,"the earlier messages go over once");
+    assert.equal(fallbacks(journal).length,lost?1:0);
+    const rows=thread.turns.flatMap(turn=>turn.items.filter(item=>item.type==="sessionHandoff").map(()=>turn.id));
+    assert.equal(rows.length,lost?1:0);if(lost)assert.ok(started.some(result=>result.turn.id===rows[0]),"the row is on the turn that handed them over");
+    assert.equal(thread.providerSessionId,lost?"fresh-1":"grok-kept");
+  });
+}
 
 // A stand-in for `opencode serve` that keeps sessions in memory and answers a session it does not have with 404. It lists a
 // session's messages and forks one as OpenCode does, copying the messages whose IDs sort before the fork's messageID.
