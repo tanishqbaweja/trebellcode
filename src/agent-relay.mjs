@@ -733,6 +733,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // The store's shared copy of a thread (AgentThreadStore.peek), for a handler that only reads it: no sqlite read, no parse and no
   // copy of its history. It must not be changed, nor kept past the handler.
   const peekThread=id=>typeof threadStore.peek==="function"?threadStore.peek(id):threadStore.get(id);
+  // The id and status of a thread's last turn (AgentThreadStore.lastTurn), or null for no such thread.
+  const lastTurnOf=id=>{if(typeof threadStore.lastTurn==="function")return threadStore.lastTurn(id);const thread=peekThread(id),turn=thread?.turns?.at(-1);return thread?{id:turn?.id??null,status:turn?.status??null}:null};
   async function createVerificationCheckpoint(thread,label){
     if(!checkpoints?.create||!thread?.cwd)return null;
     try{
@@ -1338,7 +1340,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const draftType=params?.update?.sessionUpdate;
     if(draftType==="agent_message_draft_delta"||draftType==="agent_message_draft_reset")return handleNativeDraft(threadId,params.update,source);
     // A chunk needs only the last turn's id and status; reading the stored thread for each one read and parsed all of its history.
-    const update=params?.update||{};const thread=peekThread(threadId);if(!thread)return;const lastTurn=thread.turns?.at(-1),turnId=lastTurn?.id||null;
+    const update=params?.update||{};const lastTurn=lastTurnOf(threadId);if(!lastTurn)return;const turnId=lastTurn.id||null;
     const type=update.sessionUpdate;
     if(type==="tool_call"||type==="tool_call_update"){endReasoning(threadId);if(!SETTLED_TOOL_KINDS.has(update.kind)){const live=sessions.get(threadId);if(live)sessionLeftWork.add(live)}}
     if(type==="agent_message_chunk"){

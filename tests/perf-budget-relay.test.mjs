@@ -28,8 +28,10 @@ test("B4: the turn listings a thread read prepares use no temporary B-tree and k
     // A turn with no start time sorts first, and equal times keep the order the turns were written in.
     assert.deepEqual(store.get(thread.id).turns.map(item=>item.id),["a","e","d","c","b"]);
     store.storage.untitledFirstMessages();
+    // The last turn a chunk reads from sqlite alone (a thread the store keeps no parsed copy of) is the one get() lists last.
+    assert.deepEqual(store.storage.lastTurn(thread.id),{id:"b",status:"completed"});
     const listings=[...new Set(prepared.filter(sql=>/FROM agent_turns\b/i.test(sql)&&/ORDER BY/i.test(sql)))];
-    assert.equal(listings.length,2,"get() and the untitled-title read each list a thread's turns");
+    assert.equal(listings.length,3,"get(), the untitled-title read and the last-turn read each list a thread's turns");
     const db=new DatabaseSync(path);
     try{
       for(const sql of listings){const plan=db.prepare("EXPLAIN QUERY PLAN "+sql).all().map(row=>String(row.detail));assert.ok(!plan.some(detail=>/TEMP B-TREE/i.test(detail)),sql+" plans "+plan.join("; "))}
@@ -39,6 +41,24 @@ test("B4: the turn listings a thread read prepares use no temporary B-tree and k
     new AgentThreadStore(env);
     const reopened=new DatabaseSync(path);
     try{assert.ok(reopened.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='agent_turns_thread_order_idx'").get())}finally{reopened.close()}
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+// What a chunk reads of its thread: the last turn's id and status, the same from the store's parsed copy as from sqlite's turn row
+// when no copy is kept, and through each write; the row read takes no payload and parses nothing.
+test("the last turn a chunk reads matches the stored thread whether the store keeps it or not, and reads no history",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-budget-last-turn-")),env={...process.env,TREBELL_HOME:home};
+  try{
+    const store=new AgentThreadStore(env),thread=store.importHistory({runtime:"grok",cwd:home,providerSessionId:"budget-last",name:"Seeded",turns:seededTurns(0.5)}),empty=store.create({runtime:"grok",cwd:home,name:"Empty"});
+    const turn=store.addTurn(thread.id,{inputText:"Next"}),cold=new AgentThreadStore(env),counters=serverCounters(cold);
+    counters.start();let read;try{read=cold.lastTurn(thread.id)}finally{counters.stop()}
+    assert.deepEqual(read,{id:turn.id,status:"inProgress"});assert.deepEqual(store.lastTurn(thread.id),read,"the parsed copy agrees");
+    assert.ok(counters.counts.parsedChars===0&&counters.counts.readBytes<=100,"the row read "+JSON.stringify(counters.counts));
+    store.finishTurn(thread.id,turn.id);
+    for(const each of [store,cold])assert.deepEqual(each.lastTurn(thread.id),{id:turn.id,status:"completed"});
+    assert.deepEqual(cold.lastTurn(empty.id),{id:null,status:null});assert.deepEqual(store.lastTurn(empty.id),{id:null,status:null});
+    store.delete(thread.id);
+    for(const each of [store,cold])assert.equal(each.lastTurn(thread.id),null,"a deleted thread has none");
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
@@ -184,6 +204,24 @@ test("B1: a streamed text chunk of a harness reply opens no sqlite connection an
     assert.ok(perChunk.parsedKB<=2,"JSON parsed per chunk "+JSON.stringify(perChunk));
     const reply=relay.threadStore.get(thread.id).turns.at(-1).items.find(item=>item.type==="agentMessage");
     assert.ok(reply?.text.startsWith("w0 ")&&reply.text.includes("w199 "),"the reply is stored whole");
+  }finally{await relay.close()}
+});
+
+// B1 with three harness threads streaming at once (three chats working side by side). The store keeps parsed copies of the 2
+// threads used last, so each chunk pushed another out and read and parsed its whole thread again, as it did for a thread too large
+// to keep (over 32 M characters). A chunk takes the last turn's id and status alone now, from sqlite's turn row when no copy is kept.
+test("B1: three harness threads streaming at once read and parse none of their stored history per chunk",async t=>{
+  const relay=await budgetRelay("trebell-budget-b1-three-");
+  try{
+    const threads=[0,1,2].map(n=>relay.threadStore.importHistory({...BUDGET_THREAD,providerSessionId:"budget-session-"+n,cwd:relay.root,turns:seededTurns(0.5)})),chunks=3*60;
+    await writeFile(relay.plan,JSON.stringify({chunks:chunks/3,rate:30,startFile:relay.file("start"),endFile:relay.file("end")}),"utf8");
+    for(const thread of threads)await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Stream a reply"}]});
+    const counters=serverCounters(relay.threadStore),streamed=relay.notified("item/agentMessage/delta",chunks);
+    counters.start();try{await writeFile(relay.file("start"),"go","utf8");await streamed}finally{counters.stop()}
+    const completed=relay.notified("turn/completed",3);await writeFile(relay.file("end"),"done","utf8");await completed;
+    const perChunk={connections:counters.counts.connections/chunks,readKB:counters.counts.readBytes/1024/chunks,parsedKB:counters.counts.parsedChars/1024/chunks};t.diagnostic("per chunk "+JSON.stringify(perChunk));
+    assert.ok(perChunk.readKB<=2&&perChunk.parsedKB<=2,"read and parsed per chunk "+JSON.stringify(perChunk));
+    for(const thread of threads){const reply=relay.threadStore.get(thread.id).turns.at(-1).items.find(item=>item.type==="agentMessage");assert.ok(reply?.text.includes("w59 "),"each reply is stored whole")}
   }finally{await relay.close()}
 });
 

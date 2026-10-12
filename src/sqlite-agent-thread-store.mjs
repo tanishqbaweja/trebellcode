@@ -191,6 +191,15 @@ export class SqliteAgentThreadStore{
       return {thread:threadFromRow(row,turns),order,metaChars:String(row.payload_json??"").length,complete};
     });
   }
+  // The id and status of a thread's last turn row in read()'s order (both null for a thread with no turns), or null for no such thread:
+  // the row's own columns, written with its payload, so no payload is read or parsed.
+  lastTurn(threadId){
+    return this.#withDb(db=>{
+      if(!db.prepare("SELECT 1 FROM agent_threads WHERE id=?").get(String(threadId)))return null;
+      const row=db.prepare("SELECT id,status FROM agent_turns WHERE thread_id=? ORDER BY COALESCE(started_at,0) DESC,rowid DESC LIMIT 1").get(String(threadId));
+      return {id:row?String(row.id):null,status:row?.status??null};
+    });
+  }
   findProviderSession(runtime,providerSessionId){
     return this.#withDb(db=>{
       const row=db.prepare("SELECT * FROM agent_threads WHERE runtime=? AND provider_session_id=? ORDER BY updated_at DESC LIMIT 1").get(String(runtime),String(providerSessionId));

@@ -106,6 +106,13 @@ export class AgentThreadStore{
     }
     entry.usedAt=Date.now();this.#armCacheTimer();this.#shared.add(entry.thread);return entry.thread;
   }
+  // The id and status of the thread's last turn (both null when it has none), or null for no such thread, for a caller that needs
+  // only those (a streamed chunk): from the parsed copy when the store keeps one, else from sqlite's turn row alone. A thread with no
+  // copy kept (one over the bound, or a third streaming beside two others) was read and parsed whole for each chunk.
+  lastTurn(id){
+    if(!this.#cache.has(String(id)))return this.storage.lastTurn(id);
+    const turn=this.peek(id).turns.at(-1);return {id:turn?.id??null,status:turn?.status??null};
+  }
   // Whether thread is one peek handed out (the current copy or an earlier one): its objects are shared, so a caller that keeps or
   // changes a thread takes get()'s copy instead.
   isShared(thread){return Boolean(thread)&&typeof thread==="object"&&this.#shared.has(thread)}
