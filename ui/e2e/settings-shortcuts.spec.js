@@ -376,6 +376,35 @@ test.describe("Two commands on one key",()=>{
     await close();
   });
 
+  // Cycle appearance mode and Cycle theme step on to the next choice, whatever it is: they run no single row of the palette, so
+  // "Appearance: System" and "Theme: Trebell" offer no key, while a row whose command the key does run still shows it.
+  for(const mode of MODES)test(`the palette offers the appearance and theme cycle keys on no row they do not run (${mode})`,async({page,request})=>{
+    await open(page,request,{mode});
+    const palette=page.getByTestId("command-palette"),search=palette.locator("input"),rows=palette.locator(".command-palette-item");
+    const label=text=>rows.filter({has:page.locator("strong",{hasText:new RegExp("^"+text+"$")})});
+    await page.keyboard.press("Control+K");
+    await expect(palette).toBeVisible();
+    await search.fill("Appearance:");
+    await expect(rows).toHaveCount(3);
+    await expect(label("Appearance: System")).toBeVisible();
+    await expect(rows.locator("kbd"),"an appearance row offers the key that cycles the modes").toHaveCount(0);
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:shots+`palette-appearance-rows-${mode}-${width}.png`})}
+    await search.fill("Theme:");
+    await expect(rows).toHaveCount(3);
+    await expect(label("Theme: Trebell")).toBeVisible();
+    await expect(rows.locator("kbd"),"a theme row offers the key that cycles the themes").toHaveCount(0);
+    for(const width of [900,1280]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:shots+`palette-theme-rows-${mode}-${width}.png`})}
+    await search.fill("New thread");
+    await expect(label("New thread").locator("kbd")).toHaveText("Ctrl+N");
+    await page.keyboard.press("Escape");
+    await expect(palette).toBeHidden();
+    // The keys step on from the current choice: Dark goes on to System but Light to Dark, and Trebell to Midnight.
+    await page.keyboard.press("Control+Alt+Shift+A");
+    await expect.poll(async()=>(await saved(request)).appearanceMode).toBe(mode==="dark"?"system":"dark");
+    await page.keyboard.press("Control+Alt+A");
+    await expect.poll(async()=>(await saved(request)).appearance).toBe("midnight");
+  });
+
   // Shortcuts for project actions are saved for every project, but an action exists only in its own project. Elsewhere its key
   // stays with the command it would take, instead of running nothing.
   test("a key saved for an action this project does not have stays with the command it would take",async({page,request})=>{

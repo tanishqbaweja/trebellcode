@@ -4888,10 +4888,11 @@ export default function App(){
     {id:"environments",label:"Environments",detail:"Local, WSL and SSH",onRun:()=>setSection("environments")},
     {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>setSection("usage")},
     {id:"licenses",label:"Open source licenses",detail:"Third-party packages and installed license notices",onRun:()=>setSection("licenses")},
-    {id:"appearance-system",label:"Appearance: System",detail:"Follow the operating system light/dark setting",shortcut:shortcutHint(commandKey("cycleAppearance")),onRun:()=>saveAppSettings({appearanceMode:"system"})},
+    // Cycle appearance mode and Cycle theme step on to the next choice, whatever it is, so no single row here offers their keys.
+    {id:"appearance-system",label:"Appearance: System",detail:"Follow the operating system light/dark setting",onRun:()=>saveAppSettings({appearanceMode:"system"})},
     {id:"appearance-light",label:"Appearance: Light",detail:"Use light appearance",onRun:()=>saveAppSettings({appearanceMode:"light"})},
     {id:"appearance-dark",label:"Appearance: Dark",detail:"Use dark appearance",onRun:()=>saveAppSettings({appearanceMode:"dark"})},
-    {id:"theme-trebell",label:"Theme: Trebell",detail:"Default purple Trebell palette",shortcut:shortcutHint(commandKey("cycleTheme")),onRun:()=>saveAppSettings({appearance:"dark"})},
+    {id:"theme-trebell",label:"Theme: Trebell",detail:"Default purple Trebell palette",onRun:()=>saveAppSettings({appearance:"dark"})},
     {id:"theme-midnight",label:"Theme: Midnight",detail:"Cooler deep-blue Trebell palette",onRun:()=>saveAppSettings({appearance:"midnight"})},
     {id:"theme-black",label:"Theme: Black",detail:"OLED-friendly black Trebell palette",onRun:()=>saveAppSettings({appearance:"black"})},
     ...(settings.customThemes||[]).map(theme=>({id:"theme-custom:"+theme.id,label:"Theme: "+theme.name,detail:`Custom ${theme.appearance||"dark"} theme`,onRun:()=>saveAppSettings({appearance:theme.id})})),
