@@ -4213,9 +4213,9 @@ export default function App(){
       // Elsewhere /goal opens the thread's goal, and the text after it is the objective it sets. A goal is kept with a thread, so on New
       // task the draft stays ("kept") and the composer says why.
       const threadId=activeThread?.id,objective=text.slice(command.length).trim();
-      if(!threadId||!rpc){setComposerAlert({kind:"send",text:"A goal belongs to a thread. Send a first message to start one, then set its goal. Your draft is kept."});return "kept"}
+      if(!threadId){setComposerAlert({kind:"send",text:"A goal belongs to a thread. Send a first message to start one, then set its goal. Your draft is kept."});return "kept"}
       if(objective){
-        try{const result=await rpc.request("thread/goal/set",{threadId,objective,status:"active"});if(activeThreadRef.current?.id===threadId)setGoal(result?.goal||null)}
+        try{if(!rpc)throw new Error(agentRuntimeLabel+" is not connected yet");const result=await rpc.request("thread/goal/set",{threadId,objective,status:"active"});if(activeThreadRef.current?.id===threadId)setGoal(result?.goal||null)}
         catch(error){setComposerAlert({kind:"send",text:"Could not set the goal: "+sentenceText(error?.message||String(error))+" Your draft is kept."});return "kept"}
       }
       openRightPanel("goal");return true;

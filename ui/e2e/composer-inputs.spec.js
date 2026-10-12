@@ -10,10 +10,20 @@ const auditDir=fileURLToPath(new URL("../../visual-audit/composer-inputs/",impor
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 
 // One thread, "Composer thread", open, unless newTask leaves the window on New task. replies answers the provider's calls in order.
-async function openComposerApp(page,{newTask=false,replies=[]}={}){
+// refuse(message), when given, names an error to answer a request with instead of the relay (a harness refusing it).
+async function openComposerApp(page,{newTask=false,replies=[],refuse=null}={}){
   const harness=await startRelayHarness({replies});
   harness.seedThread("Composer thread",[{user:"Look at the login page",items:[replyItem("seed-reply-1","The login page renders.")]}]);
   await routeRelayApp(page,harness);
+  if(refuse)await page.routeWebSocket(harness.wsUrl,ws=>{
+    const server=ws.connectToServer();
+    ws.onMessage(message=>{
+      let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
+      const refusal=parsed?.id!=null&&parsed.method?refuse(parsed):null;
+      if(refusal){ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:refusal}}));return}
+      server.send(message);
+    });
+  });
   // The theme button's setting stays in the page, so later specs on the shared server keep theirs.
   await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
@@ -125,12 +135,20 @@ test("a dropped folder is named as a folder, and a dropped file the browser cann
 const GOAL_NEEDS_THREAD="A goal belongs to a thread. Send a first message to start one, then set its goal. Your draft is kept.";
 test("/goal with an objective sets the thread's goal, and /goal on New task keeps the draft and says a thread comes first",async({page})=>{
   test.setTimeout(90_000);
-  const harness=await openComposerApp(page);
+  // The harness refuses the first goal it is asked to set.
+  let refusals=1;
+  const harness=await openComposerApp(page,{refuse:message=>message.method==="thread/goal/set"&&refusals-->0?"Goal store is read-only":null});
   try{
     const composer=page.getByTestId("composer"),panel=page.getByTestId("goal-panel");
     await composer.click();
     await page.keyboard.type("/goal Make the login tests pass",{delay:15});
     await page.keyboard.press("Enter");
+    await expect(page.getByTestId("composer-alert")).toHaveText("Could not set the goal: Goal store is read-only. Your draft is kept.");
+    await expect(composer).toHaveValue("/goal Make the login tests pass");
+    await expect(panel).toHaveCount(0);
+    await shootBoth(page,"goal-command-refused",()=>expect(page.getByTestId("composer-alert")).toBeInViewport());
+    // Sent again, the goal is set and the Goal panel opens on it.
+    await composer.click();await page.keyboard.press("Enter");
     await expect(panel.getByLabel("Objective",{exact:true})).toHaveValue("Make the login tests pass");
     await expect(panel.locator(".goal-status")).toHaveText(/active/i);
     await expect(composer).toHaveValue("");
