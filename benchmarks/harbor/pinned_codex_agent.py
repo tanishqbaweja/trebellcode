@@ -127,6 +127,11 @@ class PinnedCodexAgent(Codex):
         archive_remote = shlex.quote(self._REMOTE_ARCHIVE)
         binary = shlex.quote(self._REMOTE_BINARY)
         expected = shlex.quote(self._PINNED_VERSION)
+        # CODEX_HOME is made here as root, but Codex and Harbor's run() write into
+        # it as the agent, which is the image's own USER when the task names no
+        # user (risk-scorer-replay runs as nobody). Harbor then sets no
+        # default_user, so it cannot be chowned; it is opened like the sessions
+        # folder instead.
         await self.exec_as_root(
             environment,
             command=(
@@ -138,7 +143,7 @@ class PinnedCodexAgent(Codex):
                 "mkdir -p /tmp/codex-home /logs/agent/codex-sessions; "
                 "rm -rf /tmp/codex-home/sessions; "
                 "ln -s /logs/agent/codex-sessions /tmp/codex-home/sessions; "
-                "chmod 0777 /logs/agent/codex-sessions; "
+                "chmod 0777 /tmp/codex-home /logs/agent/codex-sessions; "
                 "actual=\"$(codex --version | sed -E 's/^codex-cli[[:space:]]+//')\"; "
                 f"test \"$actual\" = {expected} || {{ echo \"Unexpected Codex version: $actual\" >&2; exit 1; }}"
             ),

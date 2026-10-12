@@ -657,6 +657,8 @@ test("Pinned Harbor Codex adapter pins the official version and uses Windows-saf
   assert.match(source,/codex --version/);
   assert.match(source,/\/logs\/agent\/codex-sessions/);
   assert.match(source,/ln -s \/logs\/agent\/codex-sessions \/tmp\/codex-home\/sessions/);
+  // The root install makes CODEX_HOME; an image that runs as its own USER must still be able to write in it.
+  assert.match(source,/chmod 0777 \/tmp\/codex-home /);
   assert.match(source,/def _get_session_dir\(self\)/);
   assert.match(source,/self\.logs_dir \/ "codex-sessions"/);
   assert.match(source,/WinError 1920/);
