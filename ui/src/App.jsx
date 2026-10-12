@@ -12,7 +12,7 @@ import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
-import ChatMarkdown,{ StreamingMarkdown } from "./components/ChatMarkdown.jsx";
+import ChatMarkdown,{ StreamingMarkdown } from "./components/LazyChatMarkdown.jsx";
 import RightPanel, { askText } from "./components/RightPanel.jsx";
 import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";

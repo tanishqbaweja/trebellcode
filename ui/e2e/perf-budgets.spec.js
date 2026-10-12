@@ -72,3 +72,22 @@ test("B16: a 20 KB reply streams without the whole reply parsed again on every c
     expect(charsParsed).toBeLessThanOrEqual(B16_STREAM.charsParsed);
   }finally{finish.open();await fixture.close()}
 });
+
+// B11's risk: ChatMarkdown loads after the first paint, so a reply rendered before it arrives shows as its plain text. The first
+// reply after a load is already Markdown, live and finished: no reply ever shows as plain text.
+const watchPlainText=()=>{const shown=window.__plainTextShown=[];new MutationObserver(()=>{for(const node of document.querySelectorAll(".chat-markdown > p[style]"))if(!shown.includes(node.textContent))shown.push(node.textContent)}).observe(document,{subtree:true,childList:true})};
+
+test("B11: the first reply after a load renders as Markdown, never as its plain text",async({page})=>{
+  test.setTimeout(60_000);
+  await page.addInitScript(watchPlainText);
+  const fixture=await startStreamingFixture(page),shown=gate(),finish=gate();
+  // The live draft shows from 160 characters and a blank line on.
+  const head="## The relay\n\nIt keeps each turn **in order** and writes `item/completed` once, after the call returns, so a reader sees the same history after a reload as while the turn runs.\n\n";
+  try{
+    fixture.script.push(async(request,hook)=>{hook({type:"text",delta:head});shown.open();await finish.promise;return reply(request,head+"- one\n- two\n\n```js\nconst value = 1;\n```")});
+    await fixture.open("Native streaming");await fixture.send("Say how the relay orders turns. Do not change any files.");await shown.promise;
+    await expect(live(page).locator("h2")).toHaveText("The relay");await expect(live(page).locator("strong")).toHaveText("in order");
+    finish.open();await expect(page.locator(".history-assistant .assistant-message-text pre")).toContainText("const value = 1;",{timeout:15_000});
+    expect(await page.evaluate(()=>window.__plainTextShown)).toEqual([]);
+  }finally{finish.open();await fixture.close()}
+});

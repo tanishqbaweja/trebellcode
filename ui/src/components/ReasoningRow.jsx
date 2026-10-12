@@ -1,7 +1,7 @@
 import React,{memo,useState} from "react";
 import { Brain, ChevronRight } from "lucide-react";
 import { reasoningPreview } from "../reasoning-text.js";
-import ChatMarkdown from "./ChatMarkdown.jsx";
+import ChatMarkdown from "./LazyChatMarkdown.jsx";
 import "./ReasoningRow.css";
 
 // A row the person opened stays open when its finished thought moves from the live activity into the conversation.

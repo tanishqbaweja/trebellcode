@@ -7,7 +7,8 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 
 // B11: the KB the UI build ships, raw and gzip: what index.html loads before the app can run (the entry script and its static
 // imports, and the CSS), and the chunks loaded later. The build goes to a gitignored folder of the checkout, on the checkout's drive.
-const B11={initialJs:{rawKB:800,gzipKB:250},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:485,gzipKB:158}};
+// The Markdown renderer loads after the first paint (LazyChatMarkdown.jsx), so its 159 KB count with the lazy chunks.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:645,gzipKB:208}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
