@@ -150,6 +150,9 @@ function ChangedFilePath({plan}){
 // resets it. The edit is kept here by project, and the editor opens with it again when the Files view comes back to that project.
 const keptEdits=new Map();
 const hasUnsavedEdit=({file,edit,draft})=>Boolean(file&&edit&&draft!==(file.content??""));
+// The editor hands its text back with "\n" line ends whatever the file had, so a file most of whose lines end in "\r\n" (a Windows
+// file) is saved with "\r\n" again, and an edit to one line leaves the others' line ends as they were.
+function fileLineEnds(text,original){const crlf=(original.match(/\r\n/g)||[]).length,breaks=(original.match(/\n/g)||[]).length;return crlf*2>breaks?text.replace(/\r?\n/g,"\r\n"):text}
 
 // The inspector's Files and Diff tabs and this panel's Files | Changes switch are one choice, which the inspector holds (`tab`): the
 // switch hands a choice to onTabChange, and the panel stays mounted across it, so an open file or a search survives the switch.
@@ -295,7 +298,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     if(saving)return;
     const request=openRequestRef.current,path=file.path,sent=draft;setError("");setSaving(true);
     try{
-      const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path,content:sent,version,environmentId}});
+      const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path,content:fileLineEnds(sent,file.content??""),version,environmentId}});
       const saved={...data,kind:previewKind(data.name)};
       if(request!==openRequestRef.current){const kept=keptEdits.get(editKey);if(kept?.file.path===path){if(kept.draft===sent)keptEdits.delete(editKey);else keptEdits.set(editKey,{...kept,file:saved,conflict:null})}return}
       setConflict(null);setFile(saved);if(liveEditRef.current.draft===sent){setDraft(data.content);setEdit(false)}refreshDiff();

@@ -578,6 +578,19 @@ test("a save answered after the person opened another project stays out of it, a
   expect(await readFile(notes,"utf8")).toBe("line one\nsaved text again");
 });
 
+test("an edit to a file with Windows line ends keeps them on every line",async({page,request})=>{
+  test.setTimeout(45_000);
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace line ends",{"win.txt":"first\r\nsecond\r\nthird\r\n","unix.txt":"one\ntwo\n"});
+  const editor=right.locator("textarea.file-editor"),button=name=>right.locator(".file-head").getByRole("button",{name,exact:true});
+  // The first line gets a word at its end; the file keeps the line ends it had.
+  for(const [name,saved] of [["win.txt","first line\r\nsecond\r\nthird\r\n"],["unix.txt","one line\ntwo\n"]]){
+    await row(name).click();await expect(right.locator(".file-head strong")).toHaveText(name);
+    await button("Edit").click();await editor.click();await page.keyboard.press("Control+Home");await page.keyboard.press("End");await page.keyboard.type(" line",{delay:20});
+    await button("Save").click();
+    await expect(editor).toHaveCount(0);
+    expect(await readFile(join(dir,name),"utf8")).toBe(saved);
+  }
+});
 
 test("a binary file opens as binary, with its size and no Edit, and its bytes stay as they were",async({page,request})=>{
   test.setTimeout(60_000);
