@@ -614,6 +614,34 @@ test.describe("A long project name",()=>{
   });
 });
 
+// The path line and the Git line under a project's name stay one line each and end in an ellipsis when they do not fit, so each
+// carries its whole text as its tooltip, as the name does.
+test.describe("A long project path",()=>{
+  for(const mode of MODES)test(`and a long branch can be read in full on the card (${mode})`,async({page,request})=>{
+    const boot=await open(page,request,{mode});
+    const path=join(boot.cwd,"services","payments-gateway-with-a-very-long-folder-name","reconciliation","nightly-jobs-and-their-fixtures");
+    const branch="feature/reconcile-the-nightly-payments-ledger-against-the-gateway-export-before-the-migration-and-backfill-the-missing-settlement-records-for-every-region";
+    await request.post("/api/projects",{data:{path,name:"Deep Checkout"}});
+    await page.route(/\/api\/git\/info/,route=>new URL(route.request().url()).searchParams.get("path")===path?json(route,{isGit:true,branch,remotes:[]}):route.fallback());
+    await nav(page,"Projects").click();
+    const card=projectCard(page,"Deep Checkout"),line=card.locator(".project-open>div>span"),detail=card.locator(".project-open>div>small");
+    await expect(line).toHaveText("Local machine · "+path);
+    await expect(detail).toContainText(branch);
+    for(const width of [1280,900]){
+      await page.setViewportSize({width,height:800});
+      await card.scrollIntoViewIfNeeded();
+      for(const [what,text] of [["path",line],["Git line",detail]]){
+        const shown=await text.evaluate(node=>({cut:node.scrollWidth>node.clientWidth+1,tooltip:node.getAttribute("title")||"",full:node.textContent}));
+        expect(shown.cut,`the ${what} is cut at ${width} (so the test meets the ellipsis)`).toBe(true);
+        expect(shown.tooltip,`the ${what}'s tooltip has its whole text at ${width}`).toBe(shown.full);
+      }
+      expect(await sideways(page)).toBeLessThanOrEqual(1);
+      await line.hover();
+      await page.screenshot({animations:"disabled",path:shots+`project-long-path-${mode}-${width}.png`});
+    }
+  });
+});
+
 // The General chat card says Starting… while the General chat starts, not while the page is busy with something else, such as a
 // project being removed; nor does Clone.
 test.describe("The General chat card",()=>{
