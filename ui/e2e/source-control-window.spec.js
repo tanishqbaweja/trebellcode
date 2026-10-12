@@ -813,3 +813,27 @@ test("a commit a hook refuses, or one with nothing to commit, says why and keeps
   expect(await git(["log","--format=%s"])).toBe("Committed in a terminal\nSeed notes");
   await shootBothModes(page,"source-control-nothing-to-commit");
 });
+
+test("a commit that is made empties the message box, so the next message starts fresh",async({page,request})=>{
+  test.setTimeout(60_000);
+  const {root,git}=await realRepository({"notes.txt":"after\n"});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await scriptCodeHost(page,{boot,info:false});
+  const {changes}=await openGitPanel(page,request,"Source control commit message",root);
+  const message=changes.getByPlaceholder("Commit message"),commit=changes.getByRole("button",{name:"Commit",exact:true});
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  await message.click();await page.keyboard.type("First commit from the panel",{delay:15});
+  await commit.click();
+  await expect(changes.locator(".sc-clean")).toHaveText("Working tree clean.");
+  await expect(message).toHaveValue("");
+  await expect(commit).toBeDisabled();
+  expect(await git(["log","-1","--format=%s"])).toBe("First commit from the panel");
+  await shootBothModes(page,"source-control-after-commit");
+  // The next change gets its own message, not one appended to the last.
+  await writeFile(join(root,"notes.txt"),"after again\n","utf8");
+  await changes.getByRole("heading").scrollIntoViewIfNeeded();await page.getByTestId("right-panel").getByRole("button",{name:"Fetch",exact:true}).click();
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  await message.click();await page.keyboard.type("Second commit",{delay:15});await commit.click();
+  await expect(message).toHaveValue("");
+  expect(await git(["log","-2","--format=%s"])).toBe("Second commit\nFirst commit from the panel");
+});
