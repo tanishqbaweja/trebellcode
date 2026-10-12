@@ -52,7 +52,7 @@ import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
-import { movedSectionRanks, orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadsInListOrder, undoOrder } from "./thread-order.js";
+import { bulkActionFailure, movedSectionRanks, orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadsInListOrder, undoOrder } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { startFocusPoll } from "./focus-poll.js";
 import { userVerificationAvailability } from "./mcp-elicitation.js";
@@ -3192,24 +3192,31 @@ export default function App(){
     catch(error){throw new Error("the new order of "+name+" could not be saved ("+detail(error)+")")}
     orderedSectionsRef.current=ordered;
   }
+  // A bulk action tries every thread, one at a time: the ones it changed share one Undo, and the ones the harness refused stay
+  // selected while the error names each with its reason (failed: {thread,title,error}).
+  async function eachThreadAction(list,act){
+    const results=[],failed=[];
+    for(const thread of list){try{const result=await act(thread);if(result)results.push(result)}catch(error){failed.push({thread,title:titleOf(thread),error})}}
+    return {results,failed};
+  }
   async function bulkAction(action){
     const selected=[...selectedThreadIds].map(id=>threads.find(thread=>thread.id===id)).filter(Boolean);if(!selected.length)return;
     if(action==="snooze"){setSnoozeRequest({threads:selected,bulk:true});return}
-    const results=[];for(const thread of selected){const result=await reversibleThreadAction(thread,action,{offerUndo:false});if(result)results.push(result)}
-    setSelectedThreadIds(new Set());
+    const {results,failed}=await eachThreadAction(selected,thread=>reversibleThreadAction(thread,action,{offerUndo:false}));
+    setSelectedThreadIds(new Set(failed.map(item=>item.thread.id)));
     if(results.length){const noun=results.length===1?"thread":results.length+" threads";const verb=action==="pin"?"pinned":action==="settle"?"settled":action==="archive"?"archived":"updated";offerThreadUndo(noun+" "+verb,()=>undoThreadActions(results))}
+    if(failed.length)throw new Error(bulkActionFailure(action,failed));
   }
-  // A thread the harness will not snooze keeps the dialog open, which says why: the open thread's activity is about another thread.
+  // A thread the harness will not snooze keeps the dialog open on it, which says why: the open thread's activity is about another
+  // thread.
   async function submitSnooze(until){
-    const request=snoozeRequest;if(!request)return;const results=[];
-    for(const thread of request.threads||[]){
-      let result;
-      try{result=await reversibleThreadAction(thread,"snooze",{snoozeUntil:until,offerUndo:false})}
-      catch(error){throw new Error("Could not snooze “"+titleOf(thread)+"”: "+String(error?.message||error||"Unknown error").replace(/[.\s]+$/,"")+".")}
-      if(result)results.push(result);
-    }
-    if(request.bulk)setSelectedThreadIds(new Set());setSnoozeRequest(null);
+    const request=snoozeRequest;if(!request)return;
+    const {results,failed}=await eachThreadAction(request.threads||[],thread=>reversibleThreadAction(thread,"snooze",{snoozeUntil:until,offerUndo:false}));
+    if(request.bulk)setSelectedThreadIds(new Set(failed.map(item=>item.thread.id)));
     if(results.length){const label=results.length===1?"Thread snoozed":results.length+" threads snoozed";offerThreadUndo(label,()=>undoThreadActions(results))}
+    if(!failed.length){setSnoozeRequest(null);return}
+    setSnoozeRequest({...request,threads:failed.map(item=>item.thread)});
+    throw new Error(bulkActionFailure("snooze",failed));
   }
 
   async function loadPersistentThreadData(threadId){

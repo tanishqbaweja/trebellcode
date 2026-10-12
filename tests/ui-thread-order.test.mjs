@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { movedSectionRanks, orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadPlacementAnchor, threadsInListOrder, undoOrder } from "../ui/src/thread-order.js";
+import { bulkActionFailure, movedSectionRanks, orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadPlacementAnchor, threadsInListOrder, undoOrder } from "../ui/src/thread-order.js";
 
 const pinned={name:"Pinned",id:"pinned"};
 // Each thread's place in its section in list order, as the agent relay lists them (sectionRank).
@@ -187,4 +187,12 @@ test("a thread that is not in the ordered list has no moves",()=>{
   assert.equal(threadMoveAvailability(null).size,0);
   assert.deepEqual(threadOrderGroup([{id:"a"}],{id:"elsewhere"}),[]);
   assert.deepEqual(threadOrderGroup([{id:"a"}],null),[]);
+});
+
+test("a bulk action names each thread it could not change with the harness's reason",()=>{
+  assert.equal(bulkActionFailure("pin",[]),"");
+  assert.equal(bulkActionFailure("pin",[{title:"Bulk two",error:new Error("Second pin refused")}]),"Could not pin “Bulk two”: Second pin refused.");
+  // A reason that ends in a full stop or a space gets one full stop; a thrown string or nothing at all is said too.
+  assert.equal(bulkActionFailure("archive",[{title:"Old notes",error:new Error("Archive is read-only. ")}]),"Could not archive “Old notes”: Archive is read-only.");
+  assert.equal(bulkActionFailure("snooze",[{title:"A",error:"Sections are read-only"},{title:"B",error:null}]),"Could not snooze 2 threads: “A” (Sections are read-only); “B” (Unknown error).");
 });

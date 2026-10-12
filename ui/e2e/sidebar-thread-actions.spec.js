@@ -78,6 +78,72 @@ async function shoot(page,name){
   await page.setViewportSize({width:1280,height:800});
 }
 
+test("a bulk Pin or Archive tries every thread, says which one failed and why, offers Undo for the rest and keeps the failed one selected",async({page})=>{
+  test.setTimeout(120_000);
+  const {harness,proxy,id}=await openSidebarApp(page);
+  try{
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      // The harness refuses to move Bulk two; Bulk one and Bulk three, before and after it, are pinned all the same.
+      proxy.refuse=message=>message.method==="thread/section/move"&&message.params?.threadId===id("Bulk two")?"Second pin refused":null;
+      await selectThreads(page,["Bulk one","Bulk two","Bulk three"]);
+      await bulkBar(page).getByRole("button",{name:"Pin",exact:true}).click();
+      await expect(sidebarAlert(page)).toHaveText("Could not pin “Bulk two”: Second pin refused.");
+      await expect.poll(()=>groups(page)).toEqual([["Pinned",["Bulk one","Bulk three"]],["Active",["Bulk two","Bulk four"]]]);
+      await expect(undoToast(page)).toContainText("2 threads pinned");
+      await expect(bulkBar(page).locator("span")).toHaveText("1 selected");expect(await selected(page)).toEqual(["Bulk two"]);
+      await shoot(page,"sidebar-bulk-pin-partial");
+      // Undo puts back the two it pinned.
+      await undoToast(page).getByRole("button",{name:"Undo",exact:true}).click();
+      await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+      proxy.refuse=()=>null;
+      await page.getByRole("button",{name:"Thread actions",exact:true}).click();await expect(bulkBar(page)).toHaveCount(0);
+    }
+    await switchMode(page,"dark");
+    // Archive: the harness refuses Bulk three, the last one tried; the others are archived, and Undo brings them back.
+    proxy.refuse=message=>message.method==="thread/archive"&&message.params?.threadId===id("Bulk three")?"Archive is read-only":null;
+    await selectThreads(page,["Bulk two","Bulk three","Bulk four"]);
+    await bulkBar(page).getByRole("button",{name:"Archive",exact:true}).click();
+    await expect(sidebarAlert(page)).toHaveText("Could not archive “Bulk three”: Archive is read-only.");
+    await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk three"]]]);
+    await expect(undoToast(page)).toContainText("2 threads archived");
+    expect(await selected(page)).toEqual(["Bulk three"]);
+    proxy.refuse=()=>null;
+    await undoToast(page).getByRole("button",{name:"Undo",exact:true}).click();
+    await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+    expect(harness.threadStore.list("native").filter(thread=>thread.archived).length).toBe(0);
+  }finally{await harness.close()}
+});
+
+test("a bulk Snooze the harness refuses for one thread snoozes the rest with Undo, and the dialog stays on the refused one with the reason",async({page})=>{
+  test.setTimeout(90_000);
+  const {harness,proxy,meta,id}=await openSidebarApp(page);
+  try{
+    proxy.refuse=message=>message.method==="thread/section/move"&&message.params?.threadId===id("Bulk three")&&message.params?.sectionId?"Sections are read-only":null;
+    await selectThreads(page,["Bulk two","Bulk three","Bulk four"]);
+    await bulkBar(page).getByRole("button",{name:"Snooze",exact:true}).click();
+    const dialog=snoozeDialog(page);await expect(dialog).toBeVisible();await expect(dialog.locator("#snooze-dialog-title")).toHaveText("Snooze 3 threads");
+    await dialog.getByRole("button",{name:"Snooze",exact:true}).click();
+    await expect(dialog.getByRole("alert")).toHaveText("Could not snooze “Bulk three”: Sections are read-only.");
+    await expect(dialog.locator("#snooze-dialog-title")).toHaveText("Snooze thread");
+    await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk three"]],["Snoozed",["Bulk two","Bulk four"]]]);
+    await expect(undoToast(page)).toContainText("2 threads snoozed");
+    expect(await selected(page)).toEqual(["Bulk three"]);
+    // The refused thread keeps no wake time.
+    expect(meta[id("Bulk three")].snoozedUntil??null).toBe(null);expect(Number(meta[id("Bulk two")].snoozedUntil)).toBeGreaterThan(Date.now());
+    for(const mode of ["dark","light"]){
+      if(mode==="light"){await dialog.getByRole("button",{name:"Cancel",exact:true}).click();await switchMode(page,"light");await bulkBar(page).getByRole("button",{name:"Snooze",exact:true}).click();await dialog.getByRole("button",{name:"Snooze",exact:true}).click();await expect(dialog.getByRole("alert")).toHaveText("Could not snooze “Bulk three”: Sections are read-only.")}
+      await shoot(page,"sidebar-bulk-snooze-partial");
+    }
+    // Retried once the harness takes it, the dialog snoozes the one left and closes.
+    proxy.refuse=()=>null;
+    await dialog.getByRole("button",{name:"Snooze",exact:true}).click();
+    await expect(dialog).toHaveCount(0);
+    await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one"]],["Snoozed",["Bulk two","Bulk three","Bulk four"]]]);
+    await expect(bulkBar(page)).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
 test("a refused Snooze says why in the dialog, leaves the thread as it was and writes nothing in the open thread",async({page})=>{
   test.setTimeout(90_000);
   const {harness,proxy,meta,id}=await openSidebarApp(page);

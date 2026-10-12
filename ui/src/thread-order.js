@@ -78,6 +78,15 @@ export function undoOrder(items=[]){
   return order;
 }
 
+// What a bulk action says of the threads it could not change (failed: {title,error}, in the order tried): one by its title with
+// the harness's reason, several by their count and then each title with its own.
+export function bulkActionFailure(verb,failed=[]){
+  const reason=error=>String(error?.message||error||"Unknown error").replace(/[.\s]+$/,"");
+  if(!failed.length)return "";
+  if(failed.length===1)return "Could not "+verb+" “"+failed[0].title+"”: "+reason(failed[0].error)+".";
+  return "Could not "+verb+" "+failed.length+" threads: "+failed.map(item=>"“"+item.title+"” ("+reason(item.error)+")").join("; ")+".";
+}
+
 // The order a Codex section shown by recent activity is written in when a person first moves a thread in it: the threads as the
 // sidebar shows them (shown: ids, top first), then the section's other threads (members: Codex's listing of the section, which goes
 // beyond the sidebar's page) newest first, with the thread moved before beforeThreadId (null: the end).
