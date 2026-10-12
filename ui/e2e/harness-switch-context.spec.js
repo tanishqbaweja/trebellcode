@@ -534,7 +534,9 @@ test("a harness switch begun while Trebell is starting is not undone by the firs
   // "Switching to OpenCode…". Had the switch landed first, the first load's Cursor bootstrap and settings would also have undone it.
   test.setTimeout(60_000);
   let release=()=>{};const held=new Promise(resolve=>{release=resolve});
-  const {server,relay,close}=await startHarness(page,{runtime:"cursor",holdStartupModels:held});
+  // Its send runs in a project folder of its own: in the repository the suite runs from, the turn first waited on a checkpoint and
+  // the context of that whole repository (near 10 s cold, past the reply's wait in a loaded run) and left the checkpoint's ref there.
+  const directory=await projectDirectory(),{server,relay,close}=await startHarness(page,{runtime:"cursor",projectPath:directory.path,holdStartupModels:held});
   try{
     await page.goto("/");
     await selectHarness(page,"OpenCode");
@@ -550,7 +552,7 @@ test("a harness switch begun while Trebell is starting is not undone by the firs
     await composer.fill("First task.");await expect(send).toBeEnabled();await send.click();
     await expect(page.getByText("Fixture reply from opencode: done",{exact:true})).toBeVisible({timeout:15_000});
     expect(relay.calls("thread/start").map(call=>[call.runtime,call.params.model])).toEqual([["opencode","opencode/fixture-fast"]]);
-  }finally{release();await close()}
+  }finally{release();await close();await directory.close()}
 });
 
 // A saved harness thread the relay lists and resumes, with one finished turn.
