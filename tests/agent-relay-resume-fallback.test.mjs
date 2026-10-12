@@ -307,15 +307,16 @@ test("an OpenCode thread whose session is gone opens with its history, and its n
   const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(root,"home")}),journal=memoryJournal(),model="anthropic/claude-sonnet-4-5";
   const saved=savedThread(threadStore,{runtime:"opencode",instanceId:instance.id,providerSessionId:"ses_gone",model,cwd:root});
   const relay=await startRelay({runtimeManager,threadStore,state:memoryState(),journal});onCleanup(t,relay.close);
-  // Opening the thread asks OpenCode for the session, which it no longer has: the open still shows the saved history.
+  // Opening the thread shows the saved history and starts no OpenCode, as an ACP harness's thread opens: nothing asks OpenCode for
+  // the session it no longer has before a turn.
   const opened=await relay.rpc("thread/resume",{threadId:saved.id,cwd:root});
   assert.deepEqual(opened.thread.turns.map(turn=>turn.items.map(item=>item.type)),[["userMessage","agentMessage","commandExecution"]]);
-  assert.equal(fixture.called("GET /session/ses_gone").length,1);assert.equal(fixture.called("POST /session").length,0,"no fresh session before a turn");
+  assert.equal(fixture.called("GET /session/ses_gone").length,0);assert.equal(fixture.called("POST /session").length,0,"no fresh session before a turn");
   assert.equal(fallbacks(journal).length,0);
   const completed=relay.events.next(message=>message.method==="turn/completed");
   await relay.rpc("turn/start",{threadId:saved.id,model,input:[{type:"text",text:"What word did I ask you to remember?"}]});
   assert.equal((await completed).params.turn.status,"completed");
-  assert.equal(fixture.called("GET /session/ses_gone").length,2);assert.equal(fixture.called("POST /session").length,1);
+  assert.equal(fixture.called("GET /session/ses_gone").length,1);assert.equal(fixture.called("POST /session").length,1);
   const [prompt]=fixture.called("POST /session/ses_1/message").map(call=>call.body);
   const texts=prompt.parts.filter(part=>part.type==="text").map(part=>part.text);
   assert.ok(texts[0].includes(HISTORY_ENTRY+"OpenCode no longer had it."));assert.ok(texts[0].includes("[turn 1 · user]\nRemember the word PELICAN"));

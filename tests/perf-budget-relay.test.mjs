@@ -264,6 +264,38 @@ test("B19: reopening a Cursor, Grok, Antigravity or OpenCode thread launches no 
       launched[kind]=relay.launches.n-before;
     }
     t.diagnostic("launches per reopened thread "+JSON.stringify({launched,errors}));
-    for(const kind of LAZY_KINDS)assert.ok(launched[kind]<=1,kind+" "+JSON.stringify(launched));
+    for(const kind of LAZY_KINDS)assert.equal(launched[kind],0,kind+" "+JSON.stringify({launched,errors}));
+  }finally{await relay.close()}
+});
+
+
+// B9: a harness session held its processes until the server stopped (Grok 4 processes and 141 MB, Cursor 5 and 307 MB, OpenCode 4
+// and 499 MB per chat). The relay's sweep closes one left idle; TREBELL_AGENT_SESSION_IDLE_MS and _SWEEP_MS shorten it here.
+test("B9: an idle harness session is released, one with a running turn is kept, and the next turn resumes the conversation",async t=>{
+  const relay=await budgetRelay("trebell-budget-b9-",{env:{TREBELL_AGENT_SESSION_IDLE_MS:"400",TREBELL_AGENT_SESSION_SWEEP_MS:"50"}});
+  try{
+    const idle=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root,providerMeta:{...BUDGET_THREAD.providerMeta,permissionProfile:"edits"}});
+    const working=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:3}),"utf8");
+    let completed=relay.notified("turn/completed");await relay.rpc("turn/start",{threadId:idle.id,input:[{type:"text",text:"First"}]});await completed;
+    const [first]=await relay.agentProcesses();assert.ok(alive(first.pid),"the idle thread's harness runs after its turn");
+    await writeFile(relay.plan,JSON.stringify({chunks:1,endFile:relay.file("end")}),"utf8");
+    await relay.rpc("turn/start",{threadId:working.id,input:[{type:"text",text:"Keep working"}]});
+    const second=(await relay.agentProcesses()).find(agent=>agent.pid!==first.pid);
+    assert.ok(await eventually(()=>!alive(first.pid)),"the idle session is closed and its harness exits");
+    await new Promise(done=>setTimeout(done,800));
+    assert.ok(alive(second.pid),"a session with a running turn is kept past the idle time");
+    completed=relay.notified("turn/completed");await writeFile(relay.file("end"),"done","utf8");await completed;
+    assert.ok(await eventually(()=>!alive(second.pid)),"once its turn ends, that session is let go too");
+    // The idle thread's next turn starts its harness again with the thread's permission mode, resumes the stored conversation (no
+    // new one) and streams.
+    await writeFile(relay.plan,JSON.stringify({chunks:5}),"utf8");
+    const streamed=relay.notified("item/agentMessage/delta",5);completed=relay.notified("turn/completed");
+    await relay.rpc("turn/start",{threadId:idle.id,input:[{type:"text",text:"Again"}]});await streamed;await completed;
+    const agents=await relay.agentProcesses(),third=agents.at(-1);
+    t.diagnostic("agent processes "+JSON.stringify(agents.map(agent=>({alive:alive(agent.pid),methods:agent.methods}))));
+    assert.equal(agents.length,3);assert.ok(third.methods.includes("session/resume")&&!third.methods.includes("session/new"),third.methods.join(","));
+    assert.deepEqual([relay.modes[0],relay.modes.at(-1)],["edits","edits"]);
+    const reply=relay.threadStore.get(idle.id).turns.at(-1).items.find(item=>item.type==="agentMessage");assert.ok(reply?.text.includes("w4 "),"the resumed turn's reply is stored");
   }finally{await relay.close()}
 });

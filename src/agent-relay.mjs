@@ -52,8 +52,8 @@ const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
 const TOOL_WRITE_MS=500;
 const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_process","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
 const RETIRED_NATIVE_TOOL_NAMESPACES=new Set(["trebell_device"]);
-// ACP harnesses run a process per thread; reopening one of their threads does not start it (see thread/resume).
-const LAZY_SESSION_RUNTIMES=new Set(["cursor","grok","antigravity"]);
+// ACP harnesses and OpenCode run processes per thread; reopening one of their threads does not start them (see thread/resume).
+const LAZY_SESSION_RUNTIMES=new Set(["cursor","grok","antigravity","opencode"]);
 function expandableNativeToolNamespaces(values=[]){
   const requested=[...new Set((Array.isArray(values)?values:[]).map(value=>String(value||"").trim()).filter(Boolean))];
   const active=requested.filter(name=>!RETIRED_NATIVE_TOOL_NAMESPACES.has(name));
@@ -698,6 +698,15 @@ function formQuestions(params){
 export function attachAgentRelay(server,{runtimeManager,threadStore,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null,claudeSdk=null}={}){
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
+  // A harness session idle for SESSION_IDLE_MS (no turn running, no approval, question or form waiting) is closed by a sweep every
+  // SESSION_SWEEP_MS: each held its harness's processes (Grok 4 processes and 141 MB, Cursor 5 and 307 MB, OpenCode 4 and 499 MB),
+  // none of them released before the server stopped. The thread's next turn starts the harness again and resumes its conversation
+  // through ensureSession, as a reopened lazy thread does. Trebell Native's session runs in this process, and Claude Code releases its
+  // own after 30 minutes (CLAUDE_IDLE_RELEASE_MS), so neither is swept. TREBELL_AGENT_SESSION_IDLE_MS and
+  // TREBELL_AGENT_SESSION_SWEEP_MS shorten both for a test.
+  const sessionEnv=runtimeManager?.env||process.env,sessionUsed=new WeakMap();
+  const SESSION_IDLE_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS):10*60_000;
+  const SESSION_SWEEP_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS):60_000;
   const socketContexts=new Set();
   const recoveryInFlight=new Set();
   const liveToolOutput=new Map();
@@ -872,15 +881,27 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
 
   // A harness thread's session starts once at a time: a call while it starts (a second window sending, restart recovery racing a
   // send) waits for that start and then goes on as a later call would, so the thread never runs two harness processes or two
-  // fresh sessions for a conversation the harness lost. Native threads keep their own path.
+  // fresh sessions for a conversation the harness lost. Native threads keep their own path. Each call counts as use of the
+  // session it returns, which the idle sweep reads (sessionUsed).
   const sessionStarts=new Map();
+  const usedSession=session=>{sessionUsed.set(session,Date.now());return session};
   async function ensureSession(thread,context,options={}){
-    if(thread?.runtime==="native")return startSession(thread,context,options);
+    if(thread?.runtime==="native")return usedSession(await startSession(thread,context,options));
     const starting=sessionStarts.get(thread?.id);
     if(starting){await starting.catch(()=>{});return ensureSession(threadStore.get(thread.id)||thread,context,options)}
     const run=startSession(thread,context,options);sessionStarts.set(thread.id,run);
-    try{return await run}finally{if(sessionStarts.get(thread.id)===run)sessionStarts.delete(thread.id)}
+    try{return usedSession(await run)}finally{if(sessionStarts.get(thread.id)===run)sessionStarts.delete(thread.id)}
   }
+  function sweepIdleSessions(){
+    const now=Date.now();
+    for(const [threadId,session] of sessions){
+      if(!(session instanceof AcpAgentSession||session instanceof OpenCodeAgentSession)||session.busy||session.activePrompt)continue;
+      if(now-(sessionUsed.get(session)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
+      if([...socketContexts].some(context=>context.waitsOn?.(threadId)))continue;
+      sessions.delete(threadId);void session.close().catch(error=>log("Could not close an idle harness session: "+(error?.message||String(error))));
+    }
+  }
+  const sessionSweep=setInterval(sweepIdleSessions,SESSION_SWEEP_MS);sessionSweep.unref?.();
   // A close or reset of the relay (shutdown, another environment) ends the sessions still starting as well as the ones that run:
   // the harness processes they started stop, and a start that returns afterwards is closed, never kept, so the turn waiting on it
   // fails instead of running in a session of the harness as it was.
@@ -1222,7 +1243,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(error?.providerMessageId||error?.userMessageId)threadStore.updateTurn(thread.id,turn.id,{...(error.providerMessageId?{providerMessageId:error.providerMessageId}:{}),...(error.userMessageId?{providerUserMessageId:error.userMessageId}:{})});
       persistUsage(null);persistModelTurns(error?.nativeModelTurns);
       const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message:error.message}});emit("error",{threadId:thread.id,turnId:turn.id,message:error.message});emit("turn/completed",{threadId:thread.id,turn:completed});
-    }).finally(()=>{clearLiveToolOutput(thread.id);recoveryInFlight.delete(thread.id)});
+    }).finally(()=>{clearLiveToolOutput(thread.id);recoveryInFlight.delete(thread.id);if(sessions.get(thread.id)===session)sessionUsed.set(session,Date.now())});
     promptSettlements.add(settlement);
     void settlement.finally(()=>promptSettlements.delete(settlement)).catch(error=>log(error?.stack||String(error)));
     return settlement;
@@ -1974,6 +1995,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         serverRequest(method,params,owner=params?.threadId){
           const id=`agent-${nextServerId++}`;ws.send(JSON.stringify({id,method,params}));return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{pendingServer.delete(id);reject(new Error(`${method} user response timed out`))},5*60_000);pendingServer.set(id,{resolve,reject,timer,method,threadId:owner?String(owner):null})});
         },
+        // Whether an approval, a question or a form of the thread waits on this window's person (the idle sweep keeps its session).
+        waitsOn(threadId){const owner=String(threadId||"");for(const pending of pendingServer.values())if(pending.threadId===owner)return true;return false},
         // Stop, or an ACP process that died, answers the thread's open approvals, questions and form requests as cancelled and takes
         // them off the screen (T3 settles a session's pending approvals and user input when its turn is interrupted or the process exits).
         cancelThreadRequests(threadId){
@@ -2068,7 +2091,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     for(const threadId of [...toolWrites.keys()])settleToolWrites(threadId);
   }
   return {reset:closeSessions,close:async()=>{
-    closing=true;stopModelUpdates();
+    closing=true;stopModelUpdates();clearInterval(sessionSweep);
     server.off("upgrade",upgrade);
     for(const context of socketContexts){try{context.ws.terminate()}catch{}}
     socketContexts.clear();
