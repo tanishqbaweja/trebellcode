@@ -42,13 +42,32 @@ function countingEnvironment(){
   }};
 }
 
-test("B7: twelve Settings polls in a minute launch each harness CLI at most 24 times (guard at the baseline)",async()=>{
+test("B7: twelve Settings polls in a minute launch each harness CLI at most 3 times",async()=>{
   const {launches,profile,environments}=countingEnvironment();
   let clock=1_000_000;
   const manager=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test"},now:()=>clock});
   for(const kind of ["codex","claude","cursor","grok","opencode"]){
-    // /api/runtime probes the active harness on every 5-s poll.
+    // /api/runtime probes the active harness on every 5-s poll; a thread start's probe in the same minute is one more of these.
     for(let poll=0;poll<12;poll++){const status=await manager.probe(kind);assert.equal(status.installed,true,kind);clock+=5000}
   }
-  for(const kind of ["codex","claude","cursor","grok","opencode"])assert.ok((launches[kind]||0)<=24,kind+" launched "+launches[kind]+" times in 12 polls");
+  // Before the probe cache every poll probed again: 24 launches in 12 polls for each.
+  for(const kind of ["codex","claude","cursor","grok","opencode"])assert.ok((launches[kind]||0)<=3,kind+" launched "+launches[kind]+" times in 12 polls");
+  // The answer is reused for a minute whatever it says (Codex here is signed out), then the harness is asked again.
+  const before={...launches};clock+=61_000;
+  assert.equal((await manager.probe("codex")).authenticated,false);
+  assert.equal(launches.codex,before.codex+2,"after a minute the version check and the account read run again");
+});
+
+test("B7: Settings' own check asks again at once, and probes that overlap share one launch",async()=>{
+  const {launches,profile,environments}=countingEnvironment();
+  const manager=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test"}});
+  const [first,second]=await Promise.all([manager.probe("grok"),manager.probe("grok")]);
+  assert.equal(launches.grok,2,"two overlapping probes run one version check and one models check");
+  assert.deepEqual(first,second);assert.notEqual(first,second,"each caller gets its own copy");
+  await manager.probe("grok",{fresh:true});
+  assert.equal(launches.grok,4,"a fresh probe launches again");
+  await manager.snapshot();
+  assert.equal(launches.grok,6,"the Settings listing checks every harness again");
+  await manager.probe("grok");
+  assert.equal(launches.grok,6,"and what it found is reused");
 });

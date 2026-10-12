@@ -1,5 +1,5 @@
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
-import { existsSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, posix, resolve, win32 } from "node:path";
 import spawn from "cross-spawn";
@@ -34,6 +34,10 @@ export function runtimeCapabilities(kind){
 }
 
 const CODEX_ACCOUNT_REUSE_MS=60_000;
+// A probe's answer, whatever it says, is reused this long: Settings polls the active harness every 5 s and every thread start
+// probes again, and each probe launches the CLI one to three times. Settings' own listing (its open, Refresh and the follow-up of a
+// sign-in), a switch and an install ask with fresh, so a sign-in made outside Trebell shows at the latest a minute later.
+const PROBE_REUSE_MS=60_000;
 // An ACP harness's model list is kept this long once it has models (T3 keeps Cursor's for 30 minutes per version).
 const ACP_MODEL_LIST_REUSE_MS=30*60_000;
 const INSTALLABLE_PACKAGES=Object.freeze({
@@ -247,7 +251,7 @@ export function runtimeExecutableCandidates(kind,{env=process.env,platform=proce
 }
 
 export class AgentRuntimeManager{
-  constructor({state,env=process.env,environments=null,platform=process.platform,arch=process.arch,fetchImpl=globalThis.fetch,claudeCapabilitiesCache=claudeCapabilities}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.arch=arch;this.fetchImpl=fetchImpl;this.claudeCapabilitiesCache=claudeCapabilitiesCache}
+  constructor({state,env=process.env,environments=null,platform=process.platform,arch=process.arch,fetchImpl=globalThis.fetch,claudeCapabilitiesCache=claudeCapabilities,now=Date.now,runFn=run}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.arch=arch;this.fetchImpl=fetchImpl;this.claudeCapabilitiesCache=claudeCapabilitiesCache;this.now=now;this.runFn=runFn}
   definitions(){return Object.values(RUNTIMES).map(item=>({...item,capabilities:runtimeCapabilities(item.id)}))}
   capabilities(instanceOrKind=this.activeInstance()){
     const kind=typeof instanceOrKind==="string"
@@ -301,7 +305,7 @@ export class AgentRuntimeManager{
   async setActive({runtime,instanceId=null}={}){
     const kind=normalizeAgentRuntime(runtime);const instance=this.instances().find(item=>item.id===(instanceId||`${kind}-default`)&&item.kind===kind)||this.instances().find(item=>item.kind===kind);
     if(!instance)throw new Error(`No ${RUNTIMES[kind].name} runtime instance is configured`);
-    const status=await this.probe(instance);
+    const status=await this.probe(instance,{fresh:true});
     if(kind!=="codex"&&!status.available)throw new Error(status.message||`${RUNTIMES[kind].name} is unavailable`);
     this.state.updateSettings({agentRuntime:kind,agentRuntimeInstanceId:instance.id});
     return {runtime:kind,instance,status};
@@ -407,7 +411,7 @@ export class AgentRuntimeManager{
       const result=await this.environments.executeArgv(profile.id,{command:this.executable(instance,{environmentId:profile.id}),args,cwd:cwd||profile.cwd||"",timeoutMs,environmentNames:this.childEnvironmentKeys(instance)});
       return {ok:result.exitCode===0,code:result.exitCode,error:result.timedOut?"probe timed out":null,stdout:result.stdout||"",stderr:result.stderr||""};
     }
-    return run(this.executable(instance),args,{env:this.childEnv(instance),cwd:cwd||process.cwd(),timeoutMs});
+    return this.runFn(this.executable(instance),args,{env:this.childEnv(instance),cwd:cwd||process.cwd(),timeoutMs});
   }
   // One short-lived `codex app-server` per profile answers account/read. Ready answers are reused briefly because the
   // bootstrap payload probes the active profile on every request; concurrent probes share one process.
@@ -464,7 +468,7 @@ export class AgentRuntimeManager{
       if(this.activeEnvironment(environmentId))throw new Error("Managed Antigravity ACP installation is currently available only on the local machine");
       const installed=await installAntigravityRuntime({env:this.env,fetchImpl:this.fetchImpl,platform:this.platform,arch:this.arch});
       const instance=this.instances().find(item=>item.kind==="antigravity"&&item.id==="antigravity-default")||defaultInstance("antigravity");
-      const status=await this.probe(instance,{environmentId:null});
+      const status=await this.probe(instance,{environmentId:null,fresh:true});
       return {ok:true,runtime:"antigravity",managed:"acp-registry",targetVersion:installed.version,status};
     }
     if(target.runtime==="opencode")return await this.#installOpenCode(environmentId);
@@ -485,7 +489,7 @@ export class AgentRuntimeManager{
     if(!result.ok)throw new Error((result.stderr||result.stdout||("Could not install "+target.packageName)).trim().slice(-2000));
     const instances=this.instances();
     const instance=instances.find(item=>item.kind===target.runtime&&item.id===target.runtime+"-default")||instances.find(item=>item.kind===target.runtime)||defaultInstance(target.runtime);
-    const status=await this.probe(instance,{environmentId});
+    const status=await this.probe(instance,{environmentId,fresh:true});
     return {ok:true,runtime:target.runtime,packageName:target.packageName,targetVersion,compatibility,status,output:(result.stdout||result.stderr||"").trim().slice(-2000)};
   }
   // What installing or updating OpenCode runs, decided without changing anything (T3 openCodeUpdateFor): an OpenCode from its own
@@ -527,11 +531,11 @@ export class AgentRuntimeManager{
   async #installOpenCode(environmentId){
     const plan=await this.openCodeInstallPlan({environmentId});
     const result={runtime:"opencode",packageName:INSTALLABLE_PACKAGES.opencode,method:plan.method,targetVersion:plan.targetVersion,compatibility:plan.compatibility};
-    if(plan.installedVersion===plan.targetVersion)return {ok:true,...result,status:await this.probe(plan.instance,{environmentId}),output:`OpenCode ${plan.targetVersion} is already the newest OpenCode 1.x release.`};
+    if(plan.installedVersion===plan.targetVersion)return {ok:true,...result,status:await this.probe(plan.instance,{environmentId,fresh:true}),output:`OpenCode ${plan.targetVersion} is already the newest OpenCode 1.x release.`};
     const ran=await this.#runCommand(plan.command,plan.args,{timeoutMs:180_000,environmentId});
     if(!ran.ok)throw new Error((ran.stderr||ran.stdout||("Could not install OpenCode "+plan.targetVersion)).trim().slice(-2000));
     // The OpenCode this profile runs must now report the version installed.
-    const status=await this.probe(plan.instance,{environmentId}),running=parsedSemver(status.version)?.raw||null;
+    const status=await this.probe(plan.instance,{environmentId,fresh:true}),running=parsedSemver(status.version)?.raw||null;
     if(running!==plan.targetVersion)throw new Error(`OpenCode ${plan.targetVersion} was installed, but the OpenCode this profile runs (${status.binary||plan.binary||"opencode"}) ${running?"still reports "+running:"did not start: "+(status.message||"no answer")}.`);
     return {ok:true,...result,status,output:(ran.stdout||ran.stderr||"").trim().slice(-2000)};
   }
@@ -586,12 +590,45 @@ export class AgentRuntimeManager{
     if(instance.kind==="antigravity")return this.platform==="linux"?["--uid="]:[];
     return [];
   }
-  async probe(instanceOrKind,{environmentId=undefined}={}){
+  #probes=new Map();
+  // One answer per profile and environment: callers that ask while it runs share it, and later ones reuse it for PROBE_REUSE_MS.
+  // fresh starts a new one, which the next callers share. Each caller gets its own copy.
+  async probe(instanceOrKind,{environmentId=undefined,fresh=false}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
+    if(instance.kind==="native")return this.#probeNow(instance,{environmentId});
+    const key=JSON.stringify([this.activeEnvironment(environmentId)?.id||"local",instance]),cached=this.#probes.get(key);
+    if(!fresh&&cached?.pending)return structuredClone(await cached.pending);
+    if(!fresh&&cached&&this.now()-cached.at<PROBE_REUSE_MS)return structuredClone(cached.value);
+    const pending=this.#probeNow(instance,{environmentId,fresh});this.#probes.set(key,{pending});
+    try{
+      const value=await pending;
+      if(this.#probes.get(key)?.pending===pending)this.#probes.set(key,{at:this.now(),value});
+      return structuredClone(value);
+    }catch(error){
+      if(this.#probes.get(key)?.pending===pending)this.#probes.delete(key);
+      throw error;
+    }
+  }
+  #versions=new Map();
+  // A local binary's --version answer, kept until the file changes (its path, modification time and size). A launcher script can
+  // start a newer build without changing itself (Cursor's starts the newest folder in versions beside it), so its folder and that
+  // folder are part of the key. Remote profiles and failed checks are not kept.
+  async #versionCheck(instance,{environmentId=undefined,fresh=false}={}){
+    const profile=this.activeEnvironment(environmentId),local=!(profile&&profile.type!=="local"&&this.environments);
+    const command=local?this.executable(instance):null,found=command?commandOnPath(command,{env:this.childEnv(instance),platform:this.platform}):null;
+    const paths=!found?[]:/\.(?:cmd|bat|ps1)$/i.test(found)?[found,dirname(found),join(dirname(found),"versions")]:[found];
+    const signature=found?JSON.stringify(paths.map(path=>{try{const info=statSync(path);return [path,info.mtimeMs,info.size]}catch{return [path,null]}})):null;
+    const cached=signature?this.#versions.get(instance.id):null;
+    if(!fresh&&cached?.signature===signature)return cached.result;
+    const result=await this.#run(instance,["--version"],{timeoutMs:6000,environmentId});
+    if(signature&&result.ok)this.#versions.set(instance.id,{signature,result});
+    return result;
+  }
+  async #probeNow(instance,{environmentId=undefined,fresh=false}={}){
     const def=RUNTIMES[instance.kind];
     if(instance.kind==="native")return {id:instance.id,kind:"native",name:def.name,available:true,installed:true,authenticated:null,protocol:"native",managed:true,version:null,binary:null,message:"Built into Trebell Code"};
     if(instance.kind==="codex"){
-      const checked=await this.#run(instance,["--version"],{timeoutMs:6000,environmentId});
+      const checked=await this.#versionCheck(instance,{environmentId,fresh});
       if(!checked.ok){
         const missing=/ENOENT|not found|not recognized/i.test(String(checked.error||checked.stderr||""));
         return {id:instance.id,kind:"codex",name:def.name,available:false,installed:false,authenticated:false,protocol:"codex",version:null,binary:this.executable(instance,{environmentId}),message:missing?"Codex CLI was not found. Install it (npm install -g @openai/codex), then sign in with codex login.":(checked.stderr||checked.error||"Codex CLI is unavailable").trim().slice(0,500)};
@@ -620,8 +657,7 @@ export class AgentRuntimeManager{
         return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated!==false,installed:true,authenticated,protocol:def.protocol,managed:true,version:String(install.version),binary:command,account:auth.methodId?{authMethod:auth.methodId}:null,message};
       }
     }
-    const versionArgs=instance.kind==="antigravity"?["--version"]:["--version"];
-    const versionResult=await this.#run(instance,versionArgs,{timeoutMs:6000,environmentId});
+    const versionResult=await this.#versionCheck(instance,{environmentId,fresh});
     if(!versionResult.ok)return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:Boolean(def.managed),binary:command,message:runtimeProbeFailure(def,versionResult)};
     let authenticated=true,account=null,message="Ready";
     if(instance.kind==="claude"){
@@ -825,8 +861,9 @@ export class AgentRuntimeManager{
     const readText=async path=>{try{return await readFile(path,"utf8")}catch{return null}};
     return readAgentRuntimeUsage(instance.kind,{environment,platform:this.platform,home,readText,joinPath:join,fetchImpl:this.fetchImpl,serverUrl:instance.serverUrl||""});
   }
-  async snapshot(){
-    const instances=this.instances();const statuses=await Promise.all(instances.map(instance=>this.probe(instance)));
+  // The full listing answers Settings (its open, Refresh, a sign-in's follow-up) and the runtime mutations, so it checks again.
+  async snapshot({fresh=true}={}){
+    const instances=this.instances();const statuses=await Promise.all(instances.map(instance=>this.probe(instance,{fresh})));
     const publicInstances=instances.map(instance=>{
       const {environment,...safe}=instance;
       return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys)};

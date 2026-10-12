@@ -391,8 +391,9 @@ test("OpenCode compatibility blocks known-broken managed updates and pins verifi
     installedVersion="v2.0.24";const before=calls.length;
     await assert.rejects(()=>manager.install("opencode"),/OpenCode 2\.x converts OpenCode's shared database in place/);
     assert.deepEqual(calls.slice(before).map(call=>call.command+" "+call.args.join(" ")),["opencode --version"]);
-    // A remote 2.x is reported as unsupported (Trebell has not been verified with it); its ACP status check still runs.
-    const remote2x=await manager.probe("opencode");
+    // A remote 2.x is reported as unsupported (Trebell has not been verified with it); its ACP status check still runs. The probe
+    // answer of the install above is reused for a minute, so this asks again as Settings' Refresh does.
+    const remote2x=await manager.probe("opencode",{fresh:true});
     assert.equal(remote2x.compatibility.status,"unsupported");assert.equal(remote2x.authenticated,true);
   }finally{await rm(home,{recursive:true,force:true})}
 });
@@ -497,13 +498,14 @@ test("a local OpenCode's status counts the providers its own server connects, on
     assert.deepEqual({commands:listed.inventory.commands.map(item=>item.name),agents:listed.inventory.agents.map(item=>item.name)},{commands:["init"],agents:["build"]});
     assert.equal((await fixture.read()).calls.some(call=>call[1]==="auth"),false,"the provider count comes from OpenCode's server, not its credential list");
     // OpenCode 2.x runs nothing beyond its version check.
+    // A probe answer is reused for a minute, so the checks below ask again as Settings' Refresh does.
     await fixture.update({version:"opencode v2.0.24",calls:[]});
-    const v2=await manager.probe("opencode");
+    const v2=await manager.probe("opencode",{fresh:true});
     assert.equal(v2.available,false);assert.equal(v2.compatibility.status,"unsupported");assert.match(v2.message,/^OpenCode 2\.x is not supported yet/);
     assert.deepEqual((await fixture.read()).calls,[["opencode","--version"]]);
     // A server that cannot start makes OpenCode unavailable, with its reason.
     await fixture.update({version:"1.18.31",serveFails:true});
-    const broken=await manager.probe("opencode");
+    const broken=await manager.probe("opencode",{fresh:true});
     assert.equal(broken.available,false);assert.match(broken.message,/^OpenCode could not list its providers: OpenCode server exited with code 2\. config is broken/);
   }finally{await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
@@ -588,6 +590,23 @@ test("provider auth probes distinguish authenticated, unauthenticated and unknow
   assert.deepEqual(parseOpenCodeAuthList("— 0 credentials\n— 0 environment variables\n"),{connected:0,authenticated:null});
 });
 
+test("a local harness's version check is kept until its binary changes, and a fresh probe checks it again",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-probe-version-")),binary=join(home,"grok");
+  try{
+    await writeFile(binary,"build 1");
+    const calls=[];let clock=0;
+    const runFn=async(_command,args)=>{calls.push(args[0]);return {ok:true,code:0,error:null,stdout:args[0]==="models"?"You are logged in\n":"grok 1.2.0\n",stderr:""}};
+    const state={settings:()=>({agentRuntimeInstances:[{id:"grok-default",kind:"grok",binaryPath:binary}]})};
+    const manager=new AgentRuntimeManager({state,platform:"linux",env:{PATH:"/usr/bin",HOME:home},now:()=>clock,runFn});
+    assert.equal((await manager.probe("grok")).version,"grok 1.2.0");
+    clock+=61_000;await manager.probe("grok");
+    assert.deepEqual(calls,["--version","models","models"],"a minute later only the sign-in check runs again");
+    await writeFile(binary,"build 2, a newer one");clock+=61_000;await manager.probe("grok");
+    await manager.probe("grok",{fresh:true});
+    assert.deepEqual(calls,["--version","models","models","--version","models","--version","models"]);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("runtime auth commands use the provider's real interactive CLI flow",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-auth-command-"));const env={...process.env,TREBELL_HOME:home};
   try{
@@ -620,9 +639,10 @@ test("remote runtime probes use provider-native auth status without treating unk
     };
     const manager=new AgentRuntimeManager({state,env,environments});
     const cursorSignedOut=await manager.probe("cursor");assert.equal(cursorSignedOut.authenticated,false);assert.equal(cursorSignedOut.available,false);
-    cursorLoggedIn=true;const cursorReady=await manager.probe("cursor");assert.equal(cursorReady.authenticated,true);assert.equal(cursorReady.available,true);assert.equal(cursorReady.account.email,"dev@example.test");
+    // After a sign-in Settings checks again; a probe answer is otherwise reused for a minute.
+    cursorLoggedIn=true;const cursorReady=await manager.probe("cursor",{fresh:true});assert.equal(cursorReady.authenticated,true);assert.equal(cursorReady.available,true);assert.equal(cursorReady.account.email,"dev@example.test");
     const grokSignedOut=await manager.probe("grok");assert.equal(grokSignedOut.authenticated,false);assert.equal(grokSignedOut.available,false);
-    grokLoggedIn=true;assert.equal((await manager.probe("grok")).authenticated,true);
+    grokLoggedIn=true;assert.equal((await manager.probe("grok",{fresh:true})).authenticated,true);
     const openCode=await manager.probe("opencode");assert.equal(openCode.authenticated,null);assert.equal(openCode.available,true);assert.equal(openCode.account.connectedProviders,0);
   }finally{await rm(home,{recursive:true,force:true})}
 });

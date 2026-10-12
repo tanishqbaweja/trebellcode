@@ -83,7 +83,9 @@ test("a Codex profile is ready when signed in or when its model provider needs n
     assert.deepEqual(await status("signedout"),{available:false,authenticated:false,version:"codex-cli 0.162.0",message:"Codex CLI is not authenticated. Run codex login and try again.",account:{type:null,label:null}});
     const before=(await readFile(log,"utf8")).trim().split("\n").length;
     await status("chatgpt");
-    assert.equal((await readFile(log,"utf8")).trim().split("\n").length,before+1,"a ready answer is reused: only --version runs again");
+    assert.equal((await readFile(log,"utf8")).trim().split("\n").length,before,"a probe answer is reused for a minute: nothing runs again");
+    await manager.probe(manager.instances().find(item=>item.id==="codex-chatgpt"),{fresh:true});
+    assert.equal((await readFile(log,"utf8")).trim().split("\n").length,before+1,"Settings' re-check runs --version again and reuses the ready account answer");
   }finally{await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
