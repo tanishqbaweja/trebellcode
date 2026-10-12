@@ -550,6 +550,49 @@ test("a file that fails to open takes the place of the one in view, and Refresh 
   await shootBothModes(page,"workspace-open-file-deleted-refresh");
 });
 
+test("Edit pressed while Refresh still reads the open file keeps the editor and what is typed",async({page,request})=>{
+  test.setTimeout(45_000);
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace refresh then edit",{"notes.txt":"first\n"});
+  const editor=right.locator("textarea.file-editor"),notes=join(dir,"notes.txt");
+  await row("notes.txt").click();
+  await expect(right.locator(".syntax-view")).toContainText("first");
+  // An agent changes the file, the person presses Refresh, and the file's read again is held until they have started typing.
+  let release=null,held=0;const gate=new Promise(resolve=>{release=resolve});
+  await page.route("**/api/workspace/file?**",async route=>{if(held++===0)await gate;await route.continue()});
+  await writeFile(notes,"second\n");
+  await right.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
+  await expect.poll(()=>held).toBe(1);
+  await right.getByRole("button",{name:"Edit",exact:true}).click();
+  await editor.click();await page.keyboard.press("Control+End");await page.keyboard.type("mine",{delay:20});
+  const reread=page.waitForResponse(response=>response.url().includes("/api/workspace/file?")&&response.request().method()==="GET");
+  release();await (await reread).finished();
+  // The read that lands after Edit leaves the editor and the typing alone; Save, made from the text first shown, finds the change.
+  await right.getByRole("button",{name:"Save",exact:true}).click();
+  const conflict=right.getByRole("alert").filter({hasText:"changed on disk"});
+  await expect(conflict).toContainText("notes.txt changed on disk after you opened it.");
+  await expect(editor).toHaveValue("first\nmine");
+  expect(await readFile(notes,"utf8")).toBe("second\n");
+  await shootBothModes(page,"workspace-refresh-then-edit-conflict");
+});
+
+test("Refresh pressed while another file opens shows that file, never the one before it",async({page,request})=>{
+  test.setTimeout(45_000);
+  const {right,row}=await openFilesFolder(page,request,"Workspace refresh while opening",{"notes.txt":"notes\n","todo.txt":"todo\n"});
+  const head=right.locator(".file-head strong");
+  await row("notes.txt").click();
+  await expect(right.locator(".syntax-view")).toContainText("notes");
+  // todo.txt's read is held until Refresh has asked again; the reads name the file they ask for.
+  let release=null;const gate=new Promise(resolve=>{release=resolve}),asked=[];
+  await page.route("**/api/workspace/file?**",async route=>{asked.push(new URL(route.request().url()).searchParams.get("path").split(/[\\/]/).pop());if(asked.length===1)await gate;await route.continue()});
+  await row("todo.txt").click();
+  await expect.poll(()=>asked.length).toBe(1);
+  await right.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
+  await expect.poll(()=>asked).toEqual(["todo.txt","todo.txt"]);
+  release();
+  await expect(head).toHaveText("todo.txt");
+  await expect(right.locator(".syntax-view")).toContainText("todo");
+});
+
 test("a file search with no match says that no files match",async({page,request})=>{
   test.setTimeout(45_000);
   const {right,row}=await openFilesFolder(page,request,"Workspace empty search",{"notes.txt":"notes\n","src/app.js":"app\n"});
