@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { win32 } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, win32 } from "node:path";
 import { EDITOR_SPECS, discoverEditors, listEditors, resolveEditorExecutable, startEditor } from "../desktop/editor-discovery.mjs";
 
 const missingCommand=async()=>null;
@@ -69,13 +73,30 @@ test("Windows discovery skips an extensionless shim that where lists first and t
 
 test("an editor that cannot be started is reported instead of answered as opened",async()=>{
   const child=()=>{const emitter=new EventEmitter();emitter.unref=()=>{emitter.unrefed=true};return emitter};
-  const started=child();
-  const opening=startEditor({label:"Zed",executable:"/opt/zed"},"/repo",{exec:()=>{setImmediate(()=>started.emit("spawn"));return started}});
+  const started=child(),launches=[];
+  const opening=startEditor({label:"Zed",executable:"/opt/zed"},"/repo",{spawnFn:(...launch)=>{launches.push(launch);setImmediate(()=>started.emit("spawn"));return started}});
   await opening;assert.equal(started.unrefed,true);
+  assert.deepEqual(launches,[["/opt/zed",["/repo"],{detached:true,stdio:"ignore",windowsHide:true}]]);
   const missing=child();
-  await assert.rejects(startEditor({label:"Visual Studio Code",executable:"D:\\VS Code\\bin\\code"},"D:\\repo",{exec:()=>{setImmediate(()=>missing.emit("error",Object.assign(new Error("spawn D:\\VS Code\\bin\\code ENOENT"),{code:"ENOENT"})));return missing}}),
+  await assert.rejects(startEditor({label:"Visual Studio Code",executable:"D:\\VS Code\\bin\\code"},"D:\\repo",{spawnFn:()=>{setImmediate(()=>missing.emit("error",Object.assign(new Error("spawn D:\\VS Code\\bin\\code ENOENT"),{code:"ENOENT"})));return missing}}),
     /Could not start Visual Studio Code: spawn .* ENOENT/);
-  await assert.rejects(startEditor({label:"Cursor",executable:"C:\\Cursor\\cursor.cmd"},"C:\\repo",{exec:()=>{throw Object.assign(new Error("spawn EINVAL"),{code:"EINVAL"})}}),/Could not start Cursor: spawn EINVAL/);
+  await assert.rejects(startEditor({label:"Cursor",executable:"C:\\Cursor\\cursor.cmd"},"C:\\repo",{spawnFn:()=>{throw Object.assign(new Error("spawn EINVAL"),{code:"EINVAL"})}}),/Could not start Cursor: spawn EINVAL/);
+});
+
+// On Windows a child that is not detached sits in the opener's kill-on-close job, so quitting Trebell would end the editor it opened.
+test("an editor that Open started keeps running after the app that opened it quits",{timeout:30_000},async()=>{
+  const folder=await mkdtemp(join(tmpdir(),"trebell-editor-life-")),editor=join(folder,"editor.cjs"),pidFile=join(folder,"editor.pid");
+  try{
+    // A stand-in editor writes its process id and stays; a stand-in for Electron's main process opens it and quits at once.
+    await writeFile(editor,"require('fs').writeFileSync(process.env.TREBELL_EDITOR_PID_FILE,String(process.pid));setTimeout(()=>{},20000);\n");
+    const opener=`const {startEditor}=await import(process.argv[1]);await startEditor({label:"Stand-in editor",executable:process.execPath},process.argv[2]);const {existsSync}=await import("node:fs");const until=Date.now()+10000;while(!existsSync(process.argv[3])&&Date.now()<until)await new Promise(r=>setTimeout(r,50));process.exit(0)`;
+    const quit=spawnSync(process.execPath,["--input-type=module","-e",opener,new URL("../desktop/editor-discovery.mjs",import.meta.url).href,editor,pidFile],{windowsHide:true,env:{...process.env,TREBELL_EDITOR_PID_FILE:pidFile},timeout:20000});
+    assert.equal(quit.status,0,String(quit.stderr));assert.ok(existsSync(pidFile),"the editor started");
+    const pid=Number(readFileSync(pidFile,"utf8"));await new Promise(resolve=>setTimeout(resolve,500));
+    let alive=true;try{process.kill(pid,0)}catch{alive=false}
+    if(alive)process.kill(pid);
+    assert.equal(alive,true,"the editor ended when the process that opened it quit");
+  }finally{await rm(folder,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
 test("the editor list is kept for the app run, shared while it is found, and found again after ten minutes or on refresh",async()=>{

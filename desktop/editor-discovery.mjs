@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { posix, win32 } from "node:path";
 import { windowsCommandShimTarget } from "../src/windows-command-shim.mjs";
 
@@ -217,12 +217,14 @@ export function listEditors({refresh=false,now=Date.now,discover=discoverEditors
 }
 
 // Starts the editor and resolves once its process exists. A launch that fails (the file is gone, or Windows cannot start it
-// directly) rejects with the reason instead of answering as opened.
-export function startEditor(editor,path,{exec=execFile}={}){
+// directly) rejects with the reason instead of answering as opened. The editor runs detached with no pipes, as its own launchers
+// start it (VS Code's cli.js): on Windows a child that is not detached is in Trebell's kill-on-close job and ends when Trebell
+// quits, and output piped back would fill a buffer nobody reads.
+export function startEditor(editor,path,{spawnFn=spawn}={}){
   return new Promise((resolve,reject)=>{
     const fail=error=>reject(new Error("Could not start "+editor.label+": "+(error?.message||String(error))));
     let child;
-    try{child=exec(editor.executable,[path],{windowsHide:true},()=>{})}catch(error){fail(error);return}
+    try{child=spawnFn(editor.executable,[path],{detached:true,stdio:"ignore",windowsHide:true})}catch(error){fail(error);return}
     child.once("error",fail);
     child.once("spawn",()=>{child.unref?.();resolve()});
   });
