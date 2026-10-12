@@ -160,24 +160,28 @@ async function checkpointFixture(prefix){
 }
 const checkpointState=()=>({addCheckpoint:item=>({...item,createdAt:1}),checkpoints:()=>[],updateCheckpoint:()=>null});
 
-test("B8: a checkpoint of a project folder starts at most 14 git processes",{timeout:60_000},async()=>{
+test("B8: a checkpoint of a project folder starts at most 6 git processes",{timeout:60_000},async()=>{
   const dir=await checkpointFixture("trebell-checkpoint-budget-");
   try{
     const {calls,gitFn}=countingGit();
     const service=new CheckpointService({state:checkpointState(),env:{...process.env,TREBELL_HOME:dir+"-home"},gitFn,gitInfoFn:(cwd,options)=>gitInfo(cwd,{...options,gitFn})});
     const checkpoint=await service.create({cwd:dir});assert.equal(checkpoint.supported,true);
-    // gitInfo's 7 (only the root was used), rev-parse HEAD, read-tree, add, write-tree, commit-tree, update-ref.
-    assert.ok(calls.length<=14,calls.length+" git processes: "+calls.join(", "));
+    // One rev-parse for the root, the index and HEAD, then read-tree, add, write-tree, commit-tree and update-ref. It was 13: gitInfo's
+    // 7 for the root alone and a rev-parse HEAD of its own.
+    assert.ok(calls.length<=6,calls.length+" git processes: "+calls.join(", "));
+    assert.ok(calls.includes("read-tree --reset HEAD"),"the index was seeded from the repository's own");
   }finally{await rm(dir,{recursive:true,force:true});await rm(dir+"-home",{recursive:true,force:true})}
 });
 
 test("B8: a checkpoint's tree equals a fresh read of HEAD plus add -A, in every index state",{timeout:180_000},async()=>{
   const dir=await checkpointFixture("trebell-checkpoint-tree-");
   try{
-    const service=new CheckpointService({state:checkpointState(),env:{...process.env,TREBELL_HOME:dir+"-home"}});
-    const same=async(label,exclusions)=>{
-      const expected=await treeFromHead(dir,exclusions),checkpoint=await service.create({cwd:join(dir,"dir")});
-      assert.equal((await git(dir,["rev-parse",checkpoint.commit+"^{tree}"])).stdout.trim(),expected,label);
+    const {calls,gitFn}=countingGit(),service=new CheckpointService({state:checkpointState(),env:{...process.env,TREBELL_HOME:dir+"-home"},gitFn});
+    // seeded says which way the checkpoint read its index: from the repository's own, or afresh from HEAD.
+    const same=async(label,exclusions,{seeded=true,repo=dir}={})=>{
+      calls.length=0;const expected=await treeFromHead(repo,exclusions),checkpoint=await service.create({cwd:repo===dir?join(dir,"dir"):repo});
+      assert.equal((await git(repo,["rev-parse",checkpoint.commit+"^{tree}"])).stdout.trim(),expected,label);
+      assert.equal(calls.includes("read-tree --reset HEAD"),seeded,label+": "+calls.join(", "));
     };
     await same("staged, unstaged, deleted, untracked, ignored, force-added and intent-to-add files");
     const nested=join(dir,"nested");await mkdir(nested);await git(nested,["init","-q","-b","main"]);
@@ -188,16 +192,22 @@ test("B8: a checkpoint's tree equals a fresh read of HEAD plus add -A, in every 
     await rm(empty,{recursive:true,force:true});
     // Flags that keep add -A from reading a file: the checkpoint still records what is on disk.
     await git(dir,["update-index","--assume-unchanged","b.txt"]);await writeFile(join(dir,"b.txt"),"changed under assume-unchanged\n");
-    await same("an assume-unchanged file changed on disk");
+    await same("an assume-unchanged file changed on disk",[],{seeded:false});
     await git(dir,["update-index","--no-assume-unchanged","b.txt"]);await git(dir,["update-index","--skip-worktree","dir/d.txt"]);
     await writeFile(join(dir,"dir","d.txt"),"changed under skip-worktree\n");
-    await same("a skip-worktree file changed on disk");
+    await same("a skip-worktree file changed on disk",[],{seeded:false});
     await git(dir,["update-index","--no-skip-worktree","dir/d.txt"]);
+    await git(dir,["update-index","--index-version","4"]);await writeFile(join(dir,"dir","d.txt"),"changed again\n");
+    await same("an index in version 4, whose paths are prefix-compressed");
     // A merge stopped on a conflict leaves unmerged entries in the index.
     await git(dir,["add","-A"]);await git(dir,["commit","-qm","everything"]);await git(dir,["switch","-q","-c","other","HEAD~1"]);
     await writeFile(join(dir,"a.txt"),"other side\n");await git(dir,["commit","-qam","other"]);await git(dir,["switch","-q","main"]);
     await git(dir,["merge","other"],{allowFailure:true});
     assert.match((await git(dir,["ls-files","-u"])).stdout,/a\.txt/);
     await same("unmerged entries after a conflicted merge");
+    const wide=dir+"-sha256";await mkdir(wide);await git(wide,["init","-q","--object-format=sha256"]);
+    await writeFile(join(wide,"a.txt"),"a\n");await git(wide,["add","a.txt"]);await git(wide,["-c","user.email=t@example.test","-c","user.name=T","commit","-qm","a"]);
+    await writeFile(join(wide,"a.txt"),"changed\n");await writeFile(join(wide,"b.txt"),"new\n");
+    try{await same("a repository with SHA-256 object names",[],{repo:wide})}finally{await rm(wide,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
   }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(dir+"-home",{recursive:true,force:true})}
 });

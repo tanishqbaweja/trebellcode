@@ -28,7 +28,7 @@ test("checkpoint capture retries a transient Git failure without restarting the 
   const gitFn=async(_cwd,args)=>{
     calls.push([...args]);
     const command=gitCommand(args);
-    if(command==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
+    if(command==="rev-parse")return {ok:true,stdout:"/repo\n.git/index\nhead123\n",stderr:""};
     if(command==="read-tree")return {ok:true,stdout:"",stderr:""};
     if(command==="add"){
       addAttempts++;
@@ -65,7 +65,7 @@ test("local checkpoint Git processes receive a bounded environment instead of un
   const state={addCheckpoint:item=>({...item,createdAt:1}),checkpoints:()=>[],updateCheckpoint:()=>null};
   const gitFn=async(_cwd,args,options={})=>{
     gitEnvironments.push(options.env||null);const command=gitCommand(args);
-    if(command==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
+    if(command==="rev-parse")return {ok:true,stdout:"/repo\n.git/index\nhead123\n",stderr:""};
     if(command==="read-tree"||command==="add"||command==="update-ref")return {ok:true,stdout:"",stderr:""};
     if(command==="write-tree")return {ok:true,stdout:"tree123\n",stderr:""};
     if(command==="commit-tree")return {ok:true,stdout:"commit123\n",stderr:""};
@@ -77,7 +77,8 @@ test("local checkpoint Git processes receive a bounded environment instead of un
   });
   try{
     const checkpoint=await service.create({cwd:"/repo",threadId:"thread-safe-env"});
-    assert.equal(checkpoint.supported,true);assert.equal(infoEnvironments.length,1);
+    // The root comes from the checkpoint's own rev-parse, which runs with the same bounded environment.
+    assert.equal(checkpoint.supported,true);assert.equal(infoEnvironments.length,0);
     for(const environment of [...infoEnvironments,...gitEnvironments]){
       assert.ok(environment);assert.equal(environment.CHECKPOINT_PRIVATE_TOKEN,undefined);
       assert.equal(environment.PATH,parentEnv.PATH);assert.equal(environment.HOME,home);
@@ -97,7 +98,7 @@ test("checkpoint capture does not retry non-transient Git failures",async()=>{
     sleepFn:async()=>{sleepCalls++},
     gitFn:async(_cwd,args)=>{
       const command=gitCommand(args);
-      if(command==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
+      if(command==="rev-parse")return {ok:true,stdout:"/repo\n.git/index\nhead123\n",stderr:""};
       if(command==="read-tree")return {ok:true,stdout:"",stderr:""};
       if(command==="add"){addAttempts++;throw new Error("fatal: index file corrupt")}
       throw new Error("unexpected git "+args.join(" "));
@@ -147,7 +148,7 @@ test("checkpoint nested-repository recovery refuses excessive candidates before 
     gitFn:async(cwd,args)=>{
       if(cwd!=="/repo")nestedProbes++;
       const command=gitCommand(args);
-      if(command==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
+      if(command==="rev-parse")return {ok:true,stdout:"/repo\n.git/index\nhead123\n",stderr:""};
       if(command==="read-tree")return {ok:true,stdout:"",stderr:""};
       if(command==="add")throw new Error("error: 'empty-0/' does not have a commit checked out\nfatal: adding files failed");
       if(command==="ls-files")return {ok:true,stdout:candidates,stderr:""};
@@ -166,7 +167,7 @@ test("checkpoint objects and refs request fsync before state publication",async(
   const gitFn=async(_cwd,args)=>{
     assert.equal(published,false,"checkpoint state must not publish before Git finishes");
     calls.push([...args]);const command=gitCommand(args);
-    if(command==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
+    if(command==="rev-parse")return {ok:true,stdout:"/repo\n.git/index\nhead123\n",stderr:""};
     if(command==="read-tree"||command==="add"||command==="update-ref")return {ok:true,stdout:"",stderr:""};
     if(command==="write-tree")return {ok:true,stdout:"tree123\n",stderr:""};
     if(command==="commit-tree")return {ok:true,stdout:"commit123\n",stderr:""};

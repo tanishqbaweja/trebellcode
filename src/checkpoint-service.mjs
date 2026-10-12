@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { isAbsolute, join, posix, relative, sep } from "node:path";
-import { mkdir, realpath, rm, stat } from "node:fs/promises";
+import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { trebellHome } from "./paths.mjs";
 import { git, gitInfo } from "./git-service.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
@@ -14,6 +14,34 @@ export function isTransientCheckpointGitError(error){
   const message=String(error?.message||error||"");
   return /unable to create [^\n]*\.lock['"]?: file exists/i.test(message)
     || /(?:unable to stat|lstat\(|error: open\()[^\n]+: no such file or directory/i.test(message);
+}
+
+// Whether a copy of the repository's own index can seed a checkpoint's index. read-tree --reset HEAD over the copy gives the same
+// entries as a fresh read of HEAD but keeps the stat data of files whose content matches, so add -A hashes only the files that
+// changed instead of every file. An entry marked assume-unchanged or skip-worktree would keep add -A from reading that file even
+// when it changed on disk, and a split or sparse index points at other files, so those take the fresh read as before. The walk
+// tries both hash sizes and trusts only a walk that ends exactly at the checksum.
+function reusableIndex(buffer){
+  if(buffer.length<12||buffer.toString("latin1",0,4)!=="DIRC")return false;
+  const version=buffer.readUInt32BE(4),count=buffer.readUInt32BE(8);
+  if(version<2||version>4)return false;
+  const walk=hashSize=>{
+    let offset=12,blocked=false;
+    for(let entry=0;entry<count;entry++){
+      let at=offset+40+hashSize;if(at+2>buffer.length)return null;
+      const mode=buffer.readUInt32BE(offset+24),flags=buffer.readUInt16BE(at);at+=2;
+      if(flags&0x8000||(mode&0o170000)===0o040000)blocked=true;
+      if(flags&0x4000){if(version<3||at+2>buffer.length)return null;if(buffer.readUInt16BE(at)&0x4000)blocked=true;at+=2}
+      if(version===4){while(at<buffer.length&&buffer[at]&0x80)at++;const end=buffer.indexOf(0,at+1);if(end<0)return null;offset=end+1}
+      else{const length=flags&0xfff,end=length<0xfff?at+length:buffer.indexOf(0,at);if(end<0||end>=buffer.length)return null;offset+=(end-offset+8)&~7}
+    }
+    while(offset+8<=buffer.length-hashSize){
+      const name=buffer.toString("latin1",offset,offset+4);if(name==="link"||name==="sdir")blocked=true;
+      offset+=8+buffer.readUInt32BE(offset+4);
+    }
+    return offset===buffer.length-hashSize?!blocked:null;
+  };
+  return walk(20)??walk(32)??false;
 }
 
 export class CheckpointService{
@@ -117,16 +145,20 @@ export class CheckpointService{
   async create({cwd,threadId=null,label=null,environmentId=null}){
     if(environmentId&&!this.#remoteProfile(environmentId))throw new Error("Checkpoint environment is unavailable");
     if(this.#usesRemoteIo(environmentId))return this.#createRemote({cwd,threadId,label,environmentId});
-    const baseEnv=this.#localGitEnv(),info=await this.gitInfoFn(cwd,{env:baseEnv});
-    if(!info.isGit) return {supported:false,reason:"not_git"};
+    // One rev-parse gives the root, the repository's own index and HEAD; an unborn branch prints the first two and exits 1.
+    const baseEnv=this.#localGitEnv(),found=await this.gitFn(cwd,["rev-parse","--show-toplevel","--git-path","index","--verify","-q","HEAD"],{allowFailure:true,env:baseEnv});
+    const [root="",repositoryIndex="",headLine=""]=String(found.stdout||"").split(/\r?\n/).map(line=>line.trim());
+    if(!root||!repositoryIndex||(!found.ok&&found.code!==1)) return {supported:false,reason:"not_git"};
+    const info={root},head={ok:found.ok&&Boolean(headLine),stdout:headLine};
     const id=randomUUID();
     const tmpDir=join(trebellHome(this.env),"checkpoints");
     await mkdir(tmpDir,{recursive:true});
     const indexPath=join(tmpDir,`index-${id}`);
     const childEnv={...baseEnv,GIT_INDEX_FILE:indexPath};
     try{
-      const head=await this.gitFn(info.root,["rev-parse","HEAD"],{allowFailure:true,env:baseEnv});
-      if(head.ok) await this.#captureGit(info.root,["read-tree","HEAD"],{env:childEnv}); else await this.#captureGit(info.root,["read-tree","--empty"],{env:childEnv});
+      const seed=head.ok?await readFile(resolve(cwd,repositoryIndex)).then(buffer=>reusableIndex(buffer)?buffer:null).catch(()=>null):null;
+      if(seed){await writeFile(indexPath,seed);await this.#captureGit(info.root,["read-tree","--reset","HEAD"],{env:childEnv})}
+      else if(head.ok) await this.#captureGit(info.root,["read-tree","HEAD"],{env:childEnv}); else await this.#captureGit(info.root,["read-tree","--empty"],{env:childEnv});
       await this.#stageCheckpoint(info.root,childEnv);
       const tree=(await this.#captureGit(info.root,this.#durable(["write-tree"]),{env:childEnv})).stdout.trim();
       const args=["commit-tree",tree,"-m",label||"Trebell Code checkpoint"];
