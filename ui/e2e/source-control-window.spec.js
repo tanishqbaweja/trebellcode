@@ -1,9 +1,9 @@
 import { test,expect } from "@playwright/test";
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { mkdtemp,rm,writeFile } from "node:fs/promises";
+import { mkdir,mkdtemp,rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname,join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
@@ -370,11 +370,11 @@ test("Generate failures name the text that could not be written, unless the writ
   }
 });
 
-// Opens the Git panel of a project registered under `name`.
-async function openGitPanel(page,request,name){
+// Opens the Git panel of a project registered under `name` (the checkout, or the folder at `path`).
+async function openGitPanel(page,request,name,path=null){
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});
   const boot=await (await request.get("/api/bootstrap")).json();
-  await request.post("/api/projects",{data:{path:boot.cwd,name}});
+  await request.post("/api/projects",{data:{path:path||boot.cwd,name}});
   await page.setViewportSize({width:1280,height:800});
   await page.goto("/");
   await page.getByRole("button",{name:"Projects",exact:true}).click();
@@ -572,15 +572,16 @@ test("a repository with no remote says it has none instead of failing to list pu
 async function asInDesktopApp(page){
   await page.addInitScript(()=>{window.prompt=()=>{throw new Error("prompt() is and will not be supported.")};window.__opened=[];window.open=url=>{window.__opened.push(String(url));return null}});
 }
-// A repository on a scripted code host: /api/git/info answers host.info (changed in place by a test), and every /api/source-control/*
-// read and action answers as a host would, its pull requests changing with the actions. host.calls lists what the panel sent;
-// host.fail[action] fails the next such action with that reason, and host.hold[action] holds it until that promise settles.
+// A repository on a scripted code host: /api/git/info answers host.info (changed in place by a test; info:false leaves Git real), and
+// every /api/source-control/* read and action answers as a host would, its pull requests changing with the actions. host.calls lists
+// what the panel sent; host.fail[action] fails the next such action with that reason, and host.hold[action] holds it until that
+// promise settles.
 async function scriptCodeHost(page,{boot,prs=[],capabilities={},info={}}){
   const host={prs,calls:[],fail:{},hold:{},info:{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:"origin/main",status:[],worktrees:[{path:boot.cwd,branch:"main"}],remotes:[{name:"origin",url:"https://github.com/owner/repo.git",kind:"fetch"}],...info},
     capabilities:{create:true,edit:true,comment:true,editComments:true,review:true,merge:true,autoMerge:true,checkout:true,reviewers:true,publish:true,...capabilities}};
   const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
   const identity=pr=>({provider:"github",host:"github.com",repository:"owner/repo",number:pr.number});
-  await page.route("**/api/git/info?**",route=>json(route,host.info));
+  if(info!==false)await page.route("**/api/git/info?**",route=>json(route,host.info));
   await page.route(/\/api\/source-control\//,async route=>{
     const request=route.request(),url=new URL(request.url()),path=url.pathname.replace(/^.*\/api\/source-control\//,"");let body=null;try{body=request.postDataJSON()}catch{}
     host.calls.push({path,method:request.method(),query:Object.fromEntries(url.searchParams),body});
@@ -773,4 +774,42 @@ test("auto-merge that is on says so and is not offered again, and requested revi
   await shootBothModes(page,"source-control-auto-merge-on");
   await reviews.last().scrollIntoViewIfNeeded();
   await shootBothModes(page,"source-control-reviewer-requested");
+});
+
+// A real repository with one commit and `files` written over it (relative path: text), registered as a project; git runs Git in it,
+// and it is removed when the test ends.
+const repositories=[];
+test.afterEach(async()=>{for(const dir of repositories.splice(0))await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250}).catch(()=>{})});
+async function realRepository(files={}){
+  const root=await mkdtemp(join(tmpdir(),"trebell-git-panel-"));repositories.push(root);
+  const git=async args=>(await execFileAsync("git",args,{cwd:root,windowsHide:true,encoding:"utf8"})).stdout.trim();
+  await git(["init","-b","main"]);await git(["config","user.email","trebell-test@example.invalid"]);await git(["config","user.name","Trebell Test"]);
+  await writeFile(join(root,"notes.txt"),"before\n","utf8");await git(["add","notes.txt"]);await git(["commit","-m","Seed notes"]);
+  for(const [relative,content] of Object.entries(files)){await mkdir(dirname(join(root,relative)),{recursive:true});await writeFile(join(root,relative),content,"utf8")}
+  return {root,git};
+}
+
+test("a commit a hook refuses, or one with nothing to commit, says why and keeps the message",async({page,request})=>{
+  test.setTimeout(60_000);
+  const {root,git}=await realRepository({".git/hooks/pre-commit":"#!/bin/sh\necho 'the project hook refuses this commit' >&2\nexit 1\n","notes.txt":"after\n"});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await scriptCodeHost(page,{boot,info:false});
+  const {right,changes}=await openGitPanel(page,request,"Source control refused commit",root);
+  const message=changes.getByPlaceholder("Commit message"),commit=changes.getByRole("button",{name:"Commit",exact:true}),alert=right.locator(".source-control-error");
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  await message.click();await page.keyboard.type("Refused by the hook",{delay:15});
+  await commit.click();
+  await expect(alert).toHaveText("Could not commit: the project hook refuses this commit");
+  await expect(message).toHaveValue("Refused by the hook");
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  expect(await git(["log","--format=%s"])).toBe("Seed notes");
+  await shootBothModes(page,"source-control-commit-refused");
+  // With the change committed elsewhere, Commit says there is nothing to commit, and the message stays for the next change.
+  await rm(join(root,".git","hooks","pre-commit"));await git(["commit","-am","Committed in a terminal"]);
+  await commit.click();
+  await expect(alert).toHaveText("Nothing to commit: the working tree has no changes.");
+  await expect(message).toHaveValue("Refused by the hook");
+  await expect(changes.locator(".sc-clean")).toHaveText("Working tree clean.");
+  expect(await git(["log","--format=%s"])).toBe("Committed in a terminal\nSeed notes");
+  await shootBothModes(page,"source-control-nothing-to-commit");
 });

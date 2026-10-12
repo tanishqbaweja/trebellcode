@@ -3,7 +3,26 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, gitInfo, createBranch, createWorktree, removeWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
+import { git, gitInfo, commitAll, createBranch, createWorktree, removeWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
+
+test("a commit git refuses fails with git's reason, and a commit with nothing to commit says so",{timeout:20000},async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-commit-"));
+  try{
+    await git(dir,["init"]);await git(dir,["config","user.email","trebell@example.test"]);await git(dir,["config","user.name","Trebell Test"]);
+    // Nothing staged yet, not even a first commit.
+    await assert.rejects(()=>commitAll(dir,"Empty start"),{message:"Nothing to commit: the working tree has no changes."});
+    await writeFile(join(dir,"a.txt"),"hello\n");await commitAll(dir,"First");
+    // A pre-commit hook that refuses: its own words are the reason, and no commit is made.
+    await writeFile(join(dir,".git","hooks","pre-commit"),"#!/bin/sh\necho 'the hook refuses this commit' >&2\nexit 1\n");
+    await writeFile(join(dir,"a.txt"),"changed\n");
+    await assert.rejects(()=>commitAll(dir,"Refused"),{message:"the hook refuses this commit"});
+    assert.equal((await git(dir,["log","--format=%s"])).stdout.trim(),"First");
+    await rm(join(dir,".git","hooks","pre-commit"));
+    const committed=await commitAll(dir,"Accepted");
+    assert.equal(committed.status.length,0);assert.equal((await git(dir,["log","-1","--format=%s"])).stdout.trim(),"Accepted");
+    await assert.rejects(()=>commitAll(dir,"Nothing here"),{message:"Nothing to commit: the working tree has no changes."});
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:50})}
+});
 
 test("Git service reports status and branch operations",{timeout:20000},async()=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-git-"));

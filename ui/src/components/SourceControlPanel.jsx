@@ -9,9 +9,9 @@ import PullRequestComposer from "./PullRequestComposer.jsx";
 import { askChoice, askText } from "./RightPanel.jsx";
 
 // Errors that already say what failed: a harness writer names the Git text it could not write, and opening a linked thread can fail
-// with "Could not restore archived thread: …", "Could not load linked thread: …" or "Linked thread was not found."; anything else
-// gets the action first.
-const NAMES_GIT_TEXT=/\bGit text\b/i,NAMES_LINKED_THREAD=/\b(?:linked|archived) thread\b/i;
+// with "Could not restore archived thread: …", "Could not load linked thread: …" or "Linked thread was not found."; a commit with
+// nothing to commit says so in full ("Nothing to commit: …"); anything else gets the action first.
+const NAMES_GIT_TEXT=/\bGit text\b/i,NAMES_LINKED_THREAD=/\b(?:linked|archived) thread\b/i,NAMES_NOTHING_TO_COMMIT=/^Nothing to commit\b/;
 // A worktree folder or branch that starts like a sibling's, in two parts: the shared start gives way to an ellipsis before the part
 // that tells it apart does (`keep` characters of it; see distinctTextParts and inspector.css).
 function DistinctText({lead,tail,keep}){return <>{lead&&<span className="worktree-lead" style={{"--keep":String(keep)}}>{lead}</span>}<span className="worktree-tail">{tail}</span></>}
@@ -174,7 +174,13 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       const data=await api("/api/git/action",{method:"POST",body:environmentBody({action,cwd:projectPath,...extra})});
       if(!stillShown(started))return null;
       setInfo(data.result?.info||data.result||info);await refreshAfterSuccess(gitActionSuccessLabel(action),sourceProvider,started);return data;
-    }catch(e){reportError(started,actionError(gitActionFailureLabel(action),e));return null}finally{setBusy("")}
+    }catch(e){
+      reportError(started,actionErrorUnlessNamed(gitActionFailureLabel(action),e,NAMES_NOTHING_TO_COMMIT));
+      // A refused action can find the repository changed under it (a pull refused over a local edit, a commit with nothing left to
+      // commit), so the view is read again; the error stays on screen.
+      if(stillShown(started))await refresh();
+      return null;
+    }finally{setBusy("")}
   }
   // The text is written by the writer on screen when Generate was pressed. A switch of harness, profile or repository cancels it,
   // so neither its text nor its error ever shows under the next one; Generate clears the last error before it starts.

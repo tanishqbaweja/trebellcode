@@ -129,10 +129,13 @@ export async function createBranch(cwd,name,{checkout=true,startPoint=null}={}){
   await git(cwd,args); return gitInfo(cwd,{fresh:true});
 }
 export async function switchBranch(cwd,name){ await git(cwd,["switch",name]); return gitInfo(cwd,{fresh:true}); }
+// A commit git refuses (a hook, say) fails with git's own words; with nothing staged git would print a status listing instead, so
+// that case is named here.
 export async function commitAll(cwd,message){
   await git(cwd,["add","-A"]);
-  const result=await git(cwd,["commit","-m",message],{allowFailure:true});
-  return {result,...await gitInfo(cwd,{fresh:true})};
+  if((await git(cwd,["diff","--cached","--quiet"],{allowFailure:true})).ok)throw new Error("Nothing to commit: the working tree has no changes.");
+  await git(cwd,["commit","-m",message]);
+  return gitInfo(cwd,{fresh:true});
 }
 export async function fetchRepo(cwd){ await git(cwd,["fetch","--all","--prune"]); return gitInfo(cwd,{fresh:true}); }
 export async function pullRepo(cwd){ await git(cwd,["pull","--ff-only"]); return gitInfo(cwd,{fresh:true}); }
