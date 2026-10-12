@@ -6,7 +6,7 @@ import { SOURCE_CONTROL_PAGE_SIZE, sourceControlWindow } from "../source-control
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
 import { createGitTextRequests, sourceControlContext, sourceControlContextCurrent, sourceControlErrorAfterContextChange } from "../source-control-context.js";
 import PullRequestComposer from "./PullRequestComposer.jsx";
-import { askText } from "./RightPanel.jsx";
+import { askChoice, askText } from "./RightPanel.jsx";
 
 // Errors that already say what failed: a harness writer names the Git text it could not write, and opening a linked thread can fail
 // with "Could not restore archived thread: …", "Could not load linked thread: …" or "Linked thread was not found."; anything else
@@ -332,7 +332,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     const labels={gitlab:"Repository path (group/project or project)",forgejo:"Repository path (owner/repository or repository)",bitbucket:"Repository path (workspace/repository)","azure-devops":"Repository path (project/repository)"};
     const defaults={bitbucket:"workspace/"+localName,"azure-devops":"project/"+localName};
     const name=await askText(labels[sourceProvider]||"Repository name",defaults[sourceProvider]||localName);if(!name)return;
-    const visibility=sourceProvider==="azure-devops"?"private":confirm("Make this repository public?\n\nOK = public\nCancel = private")?"public":"private";
+    // Each answer is its own button, so Cancel and Escape publish nothing (OK and Cancel once meant public and private).
+    const visibility=sourceProvider==="azure-devops"?"private":await askChoice("Publish "+name+" on "+(diagnostics?.providers?.[sourceProvider]?.label||sourceProvider)+"?\n\nAnyone can see a public repository; a private one only you and the people you add can see.",{choices:[{value:"private",label:"Private"},{value:"public",label:"Public"}]});
+    if(!visibility)return;
     const started=contextRef.current;
     setBusy("publish");setError("");
     try{

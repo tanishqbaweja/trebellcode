@@ -681,3 +681,29 @@ test("a description or a comment keeps its line breaks, and a field left as it w
   await expect.poll(()=>host.calls.filter(call=>call.path==="pr").length).toBe(1);
   expect(host.calls.find(call=>call.path==="pr").body).toMatchObject({title:"Add the scratch change",body:written});
 });
+
+test("Publish asks public, private or cancel, and Cancel or Escape publishes nothing",async({page,request})=>{
+  test.setTimeout(60_000);
+  await asInDesktopApp(page);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,info:{upstream:null,remotes:[]}});
+  const {repository}=await openGitPanel(page,request,"Source control publish choice");
+  const dialog=page.locator("dialog.inspector-text-prompt"),publishes=()=>host.calls.filter(call=>call.path==="publish").map(call=>call.body);
+  const name=boot.cwd.split(/[\\/]/).filter(Boolean).pop();
+  const ask=async()=>{await repository.getByRole("button",{name:"Publish repository"}).click();await expect(dialog).toContainText("Repository name");await page.keyboard.press("Enter");await expect(dialog.getByRole("button",{name:"Public",exact:true})).toBeVisible()};
+  await ask();
+  // The question names the repository and the host, offers each answer as its own button, and opens on Cancel.
+  await expect(dialog.locator("p")).toHaveText("Publish "+name+" on GitHub?\n\nAnyone can see a public repository; a private one only you and the people you add can see.",{useInnerText:true});
+  await expect(dialog.getByRole("button")).toHaveText(["Cancel","Private","Public"]);
+  await expect(dialog.getByRole("button",{name:"Cancel"})).toBeFocused();
+  await shootBothModes(page,"source-control-publish-choice",{close:()=>page.keyboard.press("Escape"),reopen:ask});
+  // Escape, and Cancel, publish nothing.
+  await page.keyboard.press("Escape");await expect(dialog).toHaveCount(0);
+  await ask();await dialog.getByRole("button",{name:"Cancel"}).click();await expect(dialog).toHaveCount(0);
+  await ask();await dialog.getByRole("button",{name:"Private",exact:true}).click();
+  await expect.poll(publishes).toHaveLength(1);
+  await expect(repository.getByRole("button",{name:"Publish repository"})).toBeEnabled();
+  await ask();await dialog.getByRole("button",{name:"Public",exact:true}).click();
+  await expect.poll(publishes).toHaveLength(2);
+  expect(publishes().map(body=>[body.name,body.visibility])).toEqual([[name,"private"],[name,"public"]]);
+});

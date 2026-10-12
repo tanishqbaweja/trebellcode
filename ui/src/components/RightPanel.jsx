@@ -63,6 +63,13 @@ function askTextInApp(message,defaultValue,multiline){
 // Asks before something is dropped, in the same dialog with no field: resolves to true on the `confirm` button and to false on the
 // `cancel` one or Escape. It opens with focus on `cancel`, so Enter keeps things as they are.
 export function askConfirm(message,{confirm,cancel}){
+  return askChoice(message,{choices:[{value:true,label:confirm,tone:"danger"}],cancel}).then(value=>value===true);
+}
+
+// Asks for one of a few answers in the same dialog: one button per choice after `cancel`, each resolving to its `value` (`tone` is its
+// button class), and null on `cancel` or Escape. It opens with focus on `cancel`, so Enter keeps things as they are. A message's line
+// breaks show.
+export function askChoice(message,{choices,cancel="Cancel"}){
   return new Promise(resolve=>{
     const opener=document.activeElement;
     const dialog=document.createElement("dialog");
@@ -71,19 +78,17 @@ export function askConfirm(message,{confirm,cancel}){
     const text=document.createElement("p");text.textContent=message;
     text.id="inspector-text-prompt-"+Math.random().toString(36).slice(2);dialog.setAttribute("aria-labelledby",text.id);
     const actions=document.createElement("div");actions.className="inspector-text-prompt-actions";
-    const keep=document.createElement("button");Object.assign(keep,{type:"button",textContent:cancel});
-    const drop=document.createElement("button");Object.assign(drop,{type:"button",textContent:confirm,className:"danger"});
-    actions.append(keep,drop);form.append(text,actions);dialog.append(form);
     const finish=value=>{
       if(!dialog.isConnected)return;
       dialog.close();dialog.remove();
       try{if(opener?.isConnected)opener.focus()}catch{}
       resolve(value);
     };
+    const keep=document.createElement("button");Object.assign(keep,{type:"button",textContent:cancel});keep.addEventListener("click",()=>finish(null));actions.append(keep);
+    for(const choice of choices){const button=document.createElement("button");Object.assign(button,{type:"button",textContent:choice.label,className:choice.tone||""});button.addEventListener("click",()=>finish(choice.value));actions.append(button)}
+    form.append(text,actions);dialog.append(form);
     form.addEventListener("submit",event=>event.preventDefault());
-    keep.addEventListener("click",()=>finish(false));
-    drop.addEventListener("click",()=>finish(true));
-    dialog.addEventListener("cancel",event=>{event.preventDefault();finish(false)});
+    dialog.addEventListener("cancel",event=>{event.preventDefault();finish(null)});
     document.body.append(dialog);
     dialog.showModal();keep.focus();
   });
