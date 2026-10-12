@@ -78,9 +78,10 @@ function fixtureThread(id,name){
   ]}]};
 }
 
-test("an assistant reply renders its Markdown: code, emphasis, lists, links, a table and a copyable code block",async({page,context})=>{
+test("an assistant reply renders its Markdown: code, emphasis, lists, links, a table and a copyable code block",async({page})=>{
   test.setTimeout(45_000);
-  await context.grantPermissions(["clipboard-read","clipboard-write"]);
+  // The copy goes to the page's own clipboard, which allows it here; the machine's clipboard is never written or read.
+  await pageClipboard(page);await page.addInitScript(()=>{window.__clipboard.allowed=true});
   const thread=fixtureThread("markdown-reply","Markdown reply fixture"),harness=await startHarness(thread);
   try{
     await page.setViewportSize({width:1280,height:800});
@@ -120,8 +121,8 @@ test("an assistant reply renders its Markdown: code, emphasis, lists, links, a t
 
     await reply.getByRole("button",{name:"Copy code"}).click();
     await expect(reply.getByRole("button",{name:"Copied"})).toBeVisible();
-    // The Windows clipboard stores text with CRLF line ends; the copied text is otherwise the code exactly.
-    expect((await page.evaluate(()=>navigator.clipboard.readText())).replace(/\r\n/g,"\n")).toBe(CODE);
+    // The copied text is the code exactly, written once.
+    expect(await page.evaluate(()=>window.__clipboard.writes)).toEqual([CODE]);
     await expect(reply.getByRole("button",{name:"Copy code"})).toBeVisible({timeout:4000});
 
     // Selecting rendered text still offers the citation button.
