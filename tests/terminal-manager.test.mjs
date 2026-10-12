@@ -6,6 +6,22 @@ import { join } from "node:path";
 import { TerminalManager } from "../src/terminal-manager.mjs";
 import { buildRuntimeEnvironment } from "../src/runtime-environment.mjs";
 
+test("the terminal worker starts with the first terminal, and a manager that ran none shuts down without one",{timeout:20000},async()=>{
+  const idle=new TerminalManager({persist:false});
+  assert.equal(idle.child,null,"no worker before a terminal");assert.deepEqual(idle.list(),[]);
+  await idle.shutdown();assert.equal(idle.child,null,"shutting down starts none");
+  await assert.rejects(()=>idle.create({cwd:process.cwd()}),/shut down/,"a shut down manager starts no worker");
+  const terminals=new TerminalManager({persist:false});
+  try{
+    const shell=process.platform==="win32"?(process.env.COMSPEC||"cmd.exe"):(process.env.SHELL||"/bin/bash");
+    const args=process.platform==="win32"?["/d","/s","/c","exit /b 0"]:["-lc","exit 0"];
+    const first=await terminals.create({cwd:process.cwd(),shell,args});const worker=terminals.child;
+    assert.ok(worker?.pid,"the first terminal starts the worker");
+    await terminals.waitForExit(first.id,{timeoutMs:10000});
+    await terminals.create({cwd:process.cwd(),shell,args});assert.equal(terminals.child,worker,"later terminals share it");
+  }finally{await terminals.shutdown()}
+});
+
 test("persistent terminal worker starts a PTY and retains output",{timeout:20000},async()=>{
   const terminals=new TerminalManager({persist:false});
   try{

@@ -27,10 +27,11 @@ export class TerminalManager extends EventEmitter{
   constructor({env=process.env,persist=true}={}){
     super();
     this.env=env;this.persist=persist!==false;this.historyPath=join(trebellHome(env),"terminal-history.json");this.saveTimer=null;
-    this.closed=false;
+    this.closed=false;this.child=null;
     this.sessions=new Map(); this.pending=new Map(); this.nextRid=1; this.clients=new Map(); this.exitWaiters=new Map();
+    // The worker (a Node process with node-pty and a console host, about 60 MB) starts with the first terminal: the history and
+    // the session listings need none.
     this.#loadHistory();
-    this.#startWorker();
   }
   #loadHistory(){
     if(!this.persist)return;
@@ -85,6 +86,7 @@ export class TerminalManager extends EventEmitter{
     this.child.on("exit",()=>{for(const p of this.pending.values())p.reject(new Error("Terminal worker exited"));this.pending.clear();});
   }
   #rpc(action,payload={}){
+    if(!this.child){if(this.closed)return Promise.reject(new Error("Terminal worker is shut down"));this.#startWorker()}
     const rid=this.nextRid++;
     this.child.stdin.write(JSON.stringify({rid,action,...payload})+"\n");
     return new Promise((resolve,reject)=>{this.pending.set(rid,{resolve,reject});setTimeout(()=>{if(this.pending.delete(rid))reject(new Error("Terminal worker timed out"));},15000);});
@@ -161,6 +163,7 @@ export class TerminalManager extends EventEmitter{
       }
     }
     this.#saveHistory();
+    if(!this.child)return;
     await this.#rpc("shutdown").catch(()=>{});
     try{this.child.kill()}catch{}
   }
