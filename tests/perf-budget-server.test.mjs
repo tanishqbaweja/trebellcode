@@ -1,13 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
+import { descendants, processTable } from "../scripts/perf/lib/system.mjs";
 
 const require=createRequire(import.meta.url);
 const sqlite=require("node:sqlite");
@@ -118,4 +121,31 @@ test("B12b: hashed assets are served immutable and index.html revalidates to a 3
     const rebuilt=await get("/",{"if-none-match":etag});
     assert.equal(rebuilt.status,200);assert.notEqual(rebuilt.headers.get("etag"),etag);assert.match(await rebuilt.text(),/index-Zz81kLm0\.js/);
   }finally{await gui?.close();await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
+});
+
+// B18: before any thread opened, with Native active, the server already ran a Codex app-server for the Codex catalog and a terminal
+// worker, each with its console host (scripts/perf/run.mjs startup: 5 processes under the server, about 120 MB beside its own 126-130
+// MB; the fifth is the server's own console host, which Windows starts for it and this count leaves out). The server runs as shipped
+// (not mock) on a fresh home with Codex signed out, and the count is every process it started, 2 s after it listens.
+test("B18: a server with Native active runs at most 4 child processes before a thread opens",{timeout:90000},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-budget-b18-")),[port,appPort]=await Promise.all([freePort(),freePort()]);
+  const env={...process.env,TREBELL_HOME:home,CODEX_HOME:join(home,"codex-home"),TREBELL_GUI_MOCK:"",HARBOR_TELEMETRY:"0"};
+  await mkdir(env.CODEX_HOME,{recursive:true});
+  const state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",onboardingComplete:true});state.close();
+  const server=spawn(process.execPath,[fileURLToPath(new URL("../src/gui-server.mjs",import.meta.url)),"--port",String(port),"--app-port",String(appPort)],{env,windowsHide:true,stdio:"ignore"});
+  const exited=new Promise(resolve=>server.once("exit",resolve));
+  try{
+    let listening=false;
+    for(let i=0;i<600&&!listening&&server.exitCode===null;i++){listening=await fetch("http://127.0.0.1:"+port+"/api/health").then(response=>response.ok,()=>false);if(!listening)await sleep(50)}
+    assert.ok(listening,"the server listens");
+    await sleep(2000);
+    const children=descendants(await processTable(),[server.pid]).filter(row=>row.pid!==server.pid&&!(row.depth===1&&/^conhost\.exe$/i.test(row.name)));
+    assert.ok(children.length<=4,"child processes: "+children.map(row=>row.name+" "+(row.workingSet/1048576).toFixed(0)+" MB").join(", "));
+  }finally{
+    // Killing the server leaves its children running on Windows, so taskkill takes the tree.
+    if(process.platform==="win32")await new Promise(resolve=>{const killer=spawn("taskkill",["/PID",String(server.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});killer.once("exit",resolve);killer.once("error",resolve)});
+    else server.kill("SIGTERM");
+    await Promise.race([exited,sleep(10000)]);
+    await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100});
+  }
 });
