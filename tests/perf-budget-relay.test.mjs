@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -46,7 +47,10 @@ test("B4: the turn listings a thread read prepares use no temporary B-tree and k
 // its stream, so a test can count the stream alone. No model and no real harness is involved.
 const BUDGET_AGENT=String.raw`
 import readline from "node:readline";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+// Each agent process logs the requests it gets to a file of its own in the folder it is given, named for its start and its pid.
+const log=process.argv[3]?join(process.argv[3],Date.now()+"-"+process.pid+".log"):null;if(log)appendFileSync(log,"");
 const sessionId="budget-session";
 const send=message=>process.stdout.write(JSON.stringify(message)+"\n");
 const update=value=>send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:value}});
@@ -70,6 +74,7 @@ async function prompt(id){
   send({jsonrpc:"2.0",id,result:{stopReason:cancelled?"cancelled":"end_turn"}});
 }
 function handle(m){
+  if(log&&m.method)appendFileSync(log,m.method+"\n");
   if(m.method==="session/cancel"){cancelled=true;return}
   if(!m.method||m.id==null)return;
   if(m.method==="initialize")return send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"budget",version:"1"},agentCapabilities:{loadSession:false,sessionCapabilities:{resume:{}}}}});
@@ -83,14 +88,18 @@ const BUDGET_INSTANCE=Object.freeze({id:"grok-default",kind:"grok",displayName:"
 const BUDGET_THREAD=Object.freeze({runtime:"grok",providerSessionId:"budget-session",model:"fixture-model",providerMeta:{runtimeInstanceId:"grok-default",permissionProfile:"supervised"}});
 // The client reads replies with the JSON.parse it had before a test counts the server's.
 const parseJson=JSON.parse;
-async function budgetRelay(prefix){
-  const root=await mkdtemp(join(tmpdir(),prefix)),agent=join(root,"budget-acp.mjs"),plan=join(root,"plan.json");
-  await writeFile(agent,BUDGET_AGENT,"utf8");await writeFile(plan,"{}","utf8");
-  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env),meta=new Map();
+// instances: the harnesses the relay offers (the first is the active one); env: what the server's environment adds.
+async function budgetRelay(prefix,{instances=[BUDGET_INSTANCE],env:extra={}}={}){
+  const root=await mkdtemp(join(tmpdir(),prefix)),agent=join(root,"budget-acp.mjs"),plan=join(root,"plan.json"),agents=join(root,"agents");
+  await writeFile(agent,BUDGET_AGENT,"utf8");await writeFile(plan,"{}","utf8");await mkdir(agents,{recursive:true});
+  const env={...process.env,TREBELL_HOME:join(root,"home"),...extra},threadStore=new AgentThreadStore(env),meta=new Map(),launches={n:0},modes=[];
   const runtimeManager={
-    instances:()=>[{...BUDGET_INSTANCE}],activeInstance:()=>({...BUDGET_INSTANCE}),activeRuntime:()=>"grok",compatibleInstanceIds:()=>[BUDGET_INSTANCE.id],
-    probe:async()=>({id:BUDGET_INSTANCE.id,name:"Grok Build",available:true,authenticated:true,version:"fixture"}),
-    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),executable:()=>process.execPath,acpArgs:()=>[agent,plan],
+    env,instances:()=>instances.map(item=>({...item})),activeInstance:()=>({...instances[0]}),activeRuntime:()=>instances[0].kind,compatibleInstanceIds:()=>instances.map(item=>item.id),
+    probe:async instance=>({id:instance.id,name:instance.displayName,available:true,authenticated:true,version:"fixture"}),
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),
+    // The relay asks for a harness's command only to build a session for it: each ask is a launch. The permission mode is the
+    // launch argument Grok and Cursor take it in.
+    executable:()=>{launches.n++;return process.execPath},acpArgs:(_instance,mode)=>{modes.push(mode);return [agent,plan,agents]},
   };
   const state={settings:()=>({activeEnvironmentId:null}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
@@ -106,8 +115,12 @@ async function budgetRelay(prefix){
   const close=async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})};
   // How many notifications of method have arrived so far, counted as notified() matches them.
   const counter=method=>{const needle='"method":"'+method+'"',counts={n:0};ws.on("message",raw=>{if(String(raw).includes(needle))counts.n++});return counts};
-  return {root,threadStore,plan,rpc,notified,counter,close,file:name=>join(root,name)};
+  // The agent processes started so far, oldest first: each one's pid and the requests it got.
+  const agentProcesses=async()=>(await readdir(agents)).sort().map(name=>({pid:Number(name.split(/[-.]/)[1]),methods:readFileSync(join(agents,name),"utf8").split("\n").filter(Boolean)}));
+  return {root,threadStore,plan,rpc,notified,counter,close,launches,modes,agentProcesses,file:name=>join(root,name)};
 }
+const alive=pid=>{try{process.kill(pid,0);return true}catch{return false}};
+async function eventually(check,ms=10_000){const end=Date.now()+ms;while(!(await check())){if(Date.now()>end)return false;await new Promise(done=>setTimeout(done,20))}return true}
 // A stored history of about mb megabytes: turns of a short request and a 3 KB reply.
 function seededTurns(mb){
   const turns=[],reply="x".repeat(3000);
@@ -235,5 +248,22 @@ test("B3: opening a long thread reads its history from sqlite at most once, and 
       const found=await relay.rpc("thread/searchOccurrences",{threadId:thread.id,searchTerm:"seed request 7",limit:5});assert.equal(found.data[0].turnId,"seed-7");
     }finally{counters.stop()}
     assert.ok(counters.counts.readBytes===0&&counters.counts.parsedChars<=10_000,"the other reads "+JSON.stringify(counters.counts));
+  }finally{await relay.close()}
+});
+
+// B19: browsing threads starts no harness. A thread of a harness whose session opens with its next turn shows its saved transcript
+// and launches nothing; OpenCode's opened its session at once, starting `opencode serve` (4 processes, 499 MB) per reopened chat.
+const LAZY_KINDS=["cursor","grok","antigravity","opencode"];
+test("B19: reopening a Cursor, Grok, Antigravity or OpenCode thread launches no harness",async t=>{
+  const relay=await budgetRelay("trebell-budget-b19-",{instances:LAZY_KINDS.map(kind=>({id:kind+"-default",kind,displayName:kind,enabled:true}))});
+  try{
+    const launched={},errors={};
+    for(const kind of LAZY_KINDS){
+      const thread=relay.threadStore.create({...BUDGET_THREAD,runtime:kind,cwd:relay.root,providerMeta:{...BUDGET_THREAD.providerMeta,runtimeInstanceId:kind+"-default"}}),before=relay.launches.n;
+      await relay.rpc("thread/resume",{threadId:thread.id,cwd:relay.root,excludeTurns:true}).catch(error=>{errors[kind]=String(error.message).split(/\r?\n/)[0]});
+      launched[kind]=relay.launches.n-before;
+    }
+    t.diagnostic("launches per reopened thread "+JSON.stringify({launched,errors}));
+    for(const kind of LAZY_KINDS)assert.ok(launched[kind]<=1,kind+" "+JSON.stringify(launched));
   }finally{await relay.close()}
 });
