@@ -507,6 +507,9 @@
 :root:root :is(.capabilities-page,.usage-page) :is(.capability-details,.mcp-server-details)>summary::-webkit-details-marker{display:none}
 :root:root :is(.capabilities-page,.usage-page) :is(.capability-details,.mcp-server-details)>summary::before{content:"";flex:none;width:12px;height:12px;background:var(--chev) center/11px no-repeat;transform:rotate(-90deg);transition:transform .15s}
 :root:root :is(.capabilities-page,.usage-page) :is(.capability-details,.mcp-server-details)[open]>summary::before{transform:none}
+/* The card clips what spills past its rounded edge, and with it the focus ring drawn outside a summary that fills its width, so
+   that ring is drawn just inside the summary, its corners following the card's. */
+:root:root :is(.capabilities-page,.usage-page) .capability-details>summary:focus-visible{border-radius:calc(var(--r-m) - 1px);outline-offset:-2px}
 :root:root :is(.capabilities-page,.usage-page) .capability-details pre{max-height:260px;overflow:auto;margin:0!important;padding:10px 12px!important;border:0!important;border-top:1px solid var(--line)!important;background:var(--pg-code)!important;color:var(--tx2)!important;font:11px/1.6 var(--mono)!important;white-space:pre-wrap;word-break:break-word}
 :root:root .capabilities-page .capability-details>.capability-list{max-height:280px;padding:8px;border-top:1px solid var(--line)}
 :root:root .capabilities-page .capability-status{margin:10px 0 0!important;font-size:12px!important;line-height:1.5;color:var(--tx1)!important}

@@ -116,6 +116,75 @@ for(const mode of MODES){
   });
 }
 
+// Every place Tab stops on the Usage page shows that it has focus, in dark and light: the environment filter, each choice in its
+// menu, the period picker, the two buttons, and on the Codex account card its reset-credit button and the summary of what could not
+// be read. Each stop's look with focus is read against its look once focus has moved on.
+for(const mode of MODES){
+  test(`every Tab stop on the Usage page shows where focus is (${mode})`,async({page})=>{
+    const records=[usageRecord(0,"native","gpt-5.1",null,0.42),usageRecord(1,"codex","gpt-5.1-codex","polish-ssh",null)];
+    const threads=historyThreads(1);
+    const fixture=await startCodex(threads,{answers:{"account/rateLimits/read":{rateLimits:{planType:"plus"},rateLimitResetCredits:{availableCount:1,credits:[{id:"polish-credit",status:"available"}]}},"account/usage/read":{error:"Deliberate usage read failure"}}});
+    try{
+      await page.route(/\/api\/usage(?:\?.*)?$/,route=>route.request().method()==="GET"?json(route,usageAnswer(records)):route.continue());
+      await page.route(/\/api\/environments$/,route=>route.request().method()==="GET"?json(route,{profiles:[{id:"polish-ssh",name:"Build box",type:"ssh"}],activeEnvironmentId:null,activeEnvironment:null}):route.continue());
+      await openCodexHistory(page,fixture,threads,{mode});
+      await nav(page,"Usage").click();
+      await expect(page.locator(".usage-recent .usage-table")).toContainText("gpt-5.1-codex");
+      await expect(page.getByRole("button",{name:"Use reset credit"})).toBeVisible();
+      await expect(page.getByText("Unavailable Codex account data",{exact:true})).toBeVisible();
+      await page.getByRole("heading",{name:"Usage",level:2}).click();
+      const look=()=>page.evaluate(()=>{
+        const element=document.activeElement;for(const animation of element.getAnimations())animation.finish();
+        const style=getComputedStyle(element),alpha=(String(style.outlineColor).match(/[\d.]+/g)||[]).map(Number)[3]??1;
+        return {inPage:Boolean(element.closest(".usage-page")),name:(element.tagName+" "+(element.getAttribute("aria-label")||element.closest("label")?.textContent||element.textContent||"")).trim().slice(0,40),
+          outline:style.outlineStyle!=="none"&&parseFloat(style.outlineWidth)>=1&&alpha>.3?style.outlineWidth+" "+style.outlineColor:"",shadow:style.boxShadow==="none"?"":style.boxShadow,border:style.borderTopColor};
+      });
+      const stops=[];let opened=false;
+      for(let i=0;i<20;i++){
+        await page.keyboard.press("Tab");
+        const focused=await look();if(!focused.inPage)break;
+        const element=await page.evaluateHandle(()=>document.activeElement);
+        await page.screenshot({animations:"disabled",path:shots+`usage-tab-stop-${stops.length}-${mode}-1280.png`});
+        await page.keyboard.press("Shift+Tab");
+        const left=await element.evaluate(node=>{for(const animation of node.getAnimations())animation.finish();const style=getComputedStyle(node);return {focused:node===document.activeElement,shadow:style.boxShadow==="none"?"":style.boxShadow,border:style.borderTopColor}});
+        await page.keyboard.press("Tab");
+        expect(await element.evaluate(node=>node===document.activeElement),"Tab comes back to "+focused.name).toBe(true);
+        const ring=Boolean(focused.outline)||Boolean(focused.shadow&&focused.shadow!==left.shadow);
+        stops.push({...focused,left,ring});
+        if(!opened&&focused.name.startsWith("SUMMARY")){opened=true;await page.keyboard.press("Enter");await expect(page.locator(".usage-environment-filter")).toHaveAttribute("open","")}
+      }
+      console.log("USAGE-TAB-STOPS "+mode+" "+JSON.stringify(stops,null,1));
+      expect(stops.map(stop=>stop.name),"the stops Tab meets").toEqual(["SUMMARY All environments","BUTTON All environments","INPUT Local / legacylocal","INPUT Build boxssh","SELECT Period","BUTTON Refresh","BUTTON  Clear local history","BUTTON  Use reset credit","SUMMARY Unavailable Codex account data"]);
+      for(const stop of stops)expect.soft(stop.ring,`${stop.name} shows a ring with focus`).toBe(true);
+      // The summary's ring shows all round it, not cut away by the card it opens.
+      const summary=page.locator(".codex-account-usage .capability-details>summary");
+      const edges=await focusRingByTab(page,summary,page.getByRole("heading",{name:"Usage",level:2}));
+      console.log("USAGE-DETAILS-RING "+mode+" "+JSON.stringify(edges));
+      for(const [edge,share] of Object.entries(edges))expect.soft(share,`the ${edge} edge of the focused summary shows the ring`).toBeGreaterThan(.9);
+      await summary.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`usage-details-focus-${mode}-1280.png`});
+      await page.setViewportSize({width:900,height:800});
+      await page.keyboard.press("Shift+Tab");await page.keyboard.press("Tab");
+      await expect(summary).toBeFocused();
+      await page.screenshot({animations:"disabled",path:shots+`usage-details-focus-${mode}-900.png`});
+      // The Tools page draws the same card, and its summaries show the same ring.
+      await page.setViewportSize({width:1280,height:800});
+      await nav(page,"Tools").click();
+      const config=page.locator(".capabilities-page .capability-details>summary",{hasText:"Effective config"});
+      await config.scrollIntoViewIfNeeded();
+      const configEdges=await focusRingByTab(page,config,page.getByText("Configuration layers",{exact:true}));
+      console.log("TOOLS-DETAILS-RING "+mode+" "+JSON.stringify(configEdges));
+      for(const [edge,share] of Object.entries(configEdges))expect.soft(share,`the ${edge} edge of the focused Tools summary shows the ring`).toBeGreaterThan(.9);
+      await page.screenshot({animations:"disabled",path:shots+`tools-details-focus-${mode}-1280.png`});
+      await page.setViewportSize({width:900,height:800});
+      await config.scrollIntoViewIfNeeded();
+      await page.keyboard.press("Shift+Tab");await page.keyboard.press("Tab");
+      await expect(config).toBeFocused();
+      await page.screenshot({animations:"disabled",path:shots+`tools-details-focus-${mode}-900.png`});
+    }finally{await fixture.close()}
+  });
+}
+
 // ============ Invalid fields ============
 // A field the page refuses keeps its red line in dark and in light: left, under the pointer and with the keyboard in it, whatever
 // the shared field rules of that mode say. Its line is read once it has eased into place.
@@ -204,7 +273,8 @@ function historyThreads(count,{long=false}={}){
   const now=Date.now()/1000;
   return Array.from({length:count},(_,i)=>({id:"polish-thread-"+i,name:i===0&&long?LONG_TITLE:"Polish thread "+i,preview:i===0&&long?LONG_PREVIEW:"Preview of thread "+i,cwd:process.cwd(),createdAt:now-1000-i*60,updatedAt:now-i*60,turns:[]}));
 }
-async function startCodex(threads){
+// answers: results for further methods, or {error} for a method that fails.
+async function startCodex(threads,{answers={}}={}){
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
@@ -212,7 +282,9 @@ async function startCodex(threads){
     ws.on("message",data=>{
       const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
       const m=message.method;let result={};
-      if(m==="thread/list")result={data:threads,nextCursor:null};
+      if(answers[m]?.error){try{ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:answers[m].error}}))}catch{}return}
+      if(answers[m])result=answers[m];
+      else if(m==="thread/list")result={data:threads,nextCursor:null};
       else if(m==="thread/resume"||m==="thread/read")result={thread:threads.find(t=>t.id===message.params?.threadId)||threads[0],itemsBackwardsCursor:null,turnsBackwardsCursor:null};
       else if(m==="initialize")result={userAgent:"polish-fixture"};
       else if(["threadSection/list","thread/loaded/list","thread/attachment/list","thread/queue/list","app/list","permissionProfile/list","hooks/list","experimentalFeature/list","plugin/share/list","collaborationMode/list","skills/list"].includes(m))result={data:[],nextCursor:null};
