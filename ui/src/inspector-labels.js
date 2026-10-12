@@ -75,6 +75,16 @@ export function pullRequestChecks(rollup=[]){
   });
 }
 
+// How far a branch is from its upstream, read from the branch line of git status --porcelain -b ("## main...origin/main [ahead 1,
+// behind 2]"), which git computes on every status read, so a Fetch shows it at once. null when there is no upstream to compare with.
+export function gitUpstreamSync(header=""){
+  const match=/^## \S+?\.\.\.\S+(?: \[(.+)\])?$/.exec(String(header??"").trim());
+  if(!match)return null;
+  const part=name=>Number(new RegExp("\\b"+name+" (\\d+)").exec(match[1]||"")?.[1]||0),ahead=part("ahead"),behind=part("behind"),gone=match[1]==="gone";
+  const commits=(count,word)=>count+(count===1?" commit ":" commits ")+word;
+  return {ahead,behind,gone,label:gone?"upstream branch is gone":ahead&&behind?ahead+" ahead, "+behind+" behind":ahead?commits(ahead,"ahead"):behind?commits(behind,"behind"):"up to date"};
+}
+
 // One line of git status --short: its two-letter code and its path, unquoted.
 export function gitStatusEntry(line=""){
   const text=String(line??"");

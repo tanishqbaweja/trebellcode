@@ -1,6 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionError, actionErrorUnlessNamed, asSentence, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusEntry, gitStatusPath, pullRequestChecks, splitPath } from "../ui/src/inspector-labels.js";
+import { actionError, actionErrorUnlessNamed, asSentence, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusEntry, gitStatusPath, gitUpstreamSync, pullRequestChecks, splitPath } from "../ui/src/inspector-labels.js";
+
+test("the branch header of git status reads as how far the branch is from its upstream",()=>{
+  assert.deepEqual(gitUpstreamSync("## main...origin/main"),{ahead:0,behind:0,gone:false,label:"up to date"});
+  assert.deepEqual(gitUpstreamSync("## main...origin/main [behind 1]"),{ahead:0,behind:1,gone:false,label:"1 commit behind"});
+  assert.deepEqual(gitUpstreamSync("## main...origin/main [behind 3]"),{ahead:0,behind:3,gone:false,label:"3 commits behind"});
+  assert.deepEqual(gitUpstreamSync("## feature/x...origin/feature/x [ahead 2]"),{ahead:2,behind:0,gone:false,label:"2 commits ahead"});
+  assert.deepEqual(gitUpstreamSync("## main...origin/main [ahead 1, behind 2]"),{ahead:1,behind:2,gone:false,label:"1 ahead, 2 behind"});
+  assert.deepEqual(gitUpstreamSync("## main...origin/main [gone]"),{ahead:0,behind:0,gone:true,label:"upstream branch is gone"});
+  // No upstream, no branch, no commits yet: nothing to compare.
+  for(const header of ["## main","## HEAD (no branch)","## No commits yet on master","",undefined])assert.equal(gitUpstreamSync(header),null);
+});
 
 test("pull request checks read as a name and passed, failed, pending or skipped, whatever the host sends",()=>{
   assert.deepEqual(pullRequestChecks([

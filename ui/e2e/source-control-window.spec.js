@@ -878,3 +878,41 @@ test("after Initialize Git the branch picker shows the new branch, before its fi
   await expect(picker.locator("option")).toHaveText([branch]);
   await expect(picker).toHaveValue(branch);
 });
+
+test("Fetch shows how far the branch is behind or ahead, and a refused Pull or Push shows git's lines and the changes as they are",async({page,request})=>{
+  test.setTimeout(90_000);
+  // A repository with a local bare remote, and a second clone that pushes to it.
+  const base=await mkdtemp(join(tmpdir(),"trebell-git-sync-"));repositories.push(base);
+  const run=(cwd,args)=>execFileAsync("git",args,{cwd,windowsHide:true,encoding:"utf8"}).then(result=>result.stdout.trim());
+  const origin=join(base,"origin.git"),work=join(base,"work"),peer=join(base,"peer");
+  await run(base,["init","--bare","-b","main",origin]);await run(base,["clone",origin,work]);
+  for(const dir of [work])for(const [key,value] of [["user.email","trebell-test@example.invalid"],["user.name","Trebell Test"]])await run(dir,["config",key,value]);
+  await writeFile(join(work,"shared.txt"),"base line\n","utf8");await run(work,["add","shared.txt"]);await run(work,["commit","-m","Base"]);await run(work,["push","-u","origin","main"]);
+  await run(base,["clone",origin,peer]);for(const [key,value] of [["user.email","peer@example.invalid"],["user.name","Peer"]])await run(peer,["config",key,value]);
+  await writeFile(join(peer,"shared.txt"),"base line\npeer line\n","utf8");await run(peer,["commit","-am","Peer change"]);await run(peer,["push"]);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await scriptCodeHost(page,{boot,info:false});
+  const {right,changes,repository}=await openGitPanel(page,request,"Source control sync state",work);
+  const upstream=repository.locator("p").filter({hasText:"Upstream:"}),alert=right.locator(".source-control-error");
+  await expect(upstream).toHaveText("Upstream: origin/main up to date");
+  await right.getByRole("button",{name:"Fetch",exact:true}).click();
+  await expect(upstream).toHaveText("Upstream: origin/main 1 commit behind");
+  await shootBothModes(page,"source-control-behind-after-fetch");
+  // A local edit the incoming commit would overwrite: git refuses the pull, says why line by line, and Changes shows the edit.
+  await writeFile(join(work,"shared.txt"),"base line\nmy local line\n","utf8");
+  await right.getByRole("button",{name:"Pull",exact:true}).click();
+  await expect(alert).toContainText("Could not pull:");
+  await expect.poll(()=>alert.innerText()).toMatch(/would be overwritten by merge:\n\s*shared\.txt\n/);
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  await expect(changes.locator(".status-list > div")).toHaveText(/shared\.txt/);
+  await shootBothModes(page,"source-control-pull-refused");
+  // Committed locally, the branch has gone both ways; a refused Push keeps each of git's hints on its own line.
+  await run(work,["commit","-am","My change"]);
+  await right.getByRole("button",{name:"Push",exact:true}).click();
+  await expect(alert).toContainText("Could not push:");
+  await expect(upstream).toHaveText("Upstream: origin/main 1 ahead, 1 behind");
+  const lines=(await alert.innerText()).split("\n");
+  expect(lines.filter(line=>/^hint: /.test(line)).length).toBeGreaterThan(1);
+  expect(lines.some(line=>/^\s*! \[rejected\]/.test(line))).toBe(true);
+  await shootBothModes(page,"source-control-push-rejected");
+});
