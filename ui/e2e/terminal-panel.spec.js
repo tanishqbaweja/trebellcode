@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TerminalManager } from "../../src/terminal-manager.mjs";
+import { TERMINAL_SCROLLBACK_CHARS } from "../src/terminal-screen.js";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 mkdirSync(auditDir,{recursive:true});
@@ -139,12 +140,45 @@ test("a long run of output keeps the page responsive and the screen at its last 
     expect(lines,"the screen keeps a bounded scrollback").toBeLessThanOrEqual(5_002);
     await expect(screen).toContainText(/^line 30000$/m);
     await expect(screen).not.toContainText(/^line 1$/m);
-    await expect(pane.getByText("Earlier lines were dropped",{exact:false})).toBeVisible();
+    await expect(pane.getByText("Earlier output was dropped",{exact:false})).toBeVisible();
     // Scrolled back to the top, the screen says where its first lines went.
     await screen.hover();
     for(let turn=0;turn<60&&await screen.evaluate(node=>node.scrollTop>0);turn++)await page.mouse.wheel(0,-20_000);
     await expect.poll(()=>screen.evaluate(node=>node.scrollTop)).toBe(0);
     await shots(page,"terminal-long-output");
+  }finally{await shell.close()}
+});
+
+test("one very long line of output (a minified file printed) keeps the page responsive and the screen near its character cap",async({page,request})=>{
+  test.setTimeout(120_000);
+  const shell=await realTerminals(page);
+  try{
+    const {pane,screen,input}=await openTerminal(page,request);
+    await input.click();
+    // 3,000,000 characters on one line, then a line of its own.
+    await run(page,"node -e \"process.stdout.write('x'.repeat(3000000)+String.fromCharCode(10)+'long-line-done'+String.fromCharCode(10))\"");
+    const waits=[],started=Date.now();
+    for(;;){
+      const asked=Date.now();const tail=await screen.evaluate(node=>node.textContent.slice(-200));waits.push(Date.now()-asked);
+      if(/long-line-done\s[\s\S]*>\s*$/.test(tail))break;
+      expect(Date.now()-started,"the long line finishes").toBeLessThan(100_000);
+      await page.waitForTimeout(100);
+    }
+    const sorted=[...waits].sort((a,b)=>a-b),median=sorted[Math.floor(sorted.length/2)],worst=sorted[sorted.length-1];
+    const size=await screen.evaluate(node=>node.textContent.length);
+    console.log(`3,000,000 characters in ${Date.now()-started} ms; page answered in ${median} ms at the median and ${worst} ms at worst over ${waits.length} samples; the screen holds ${size} characters`);
+    // Before the cap the page answered in 3 s at the median and 5 s at worst, holding all 3,000,000 characters.
+    expect(median,"the median wait while output streams").toBeLessThan(1_000);
+    expect(worst,"the longest wait while output streams").toBeLessThan(3_000);
+    expect(size,"the screen keeps the line's end, near its character cap").toBeLessThan(TERMINAL_SCROLLBACK_CHARS*1.1+1000);
+    expect(await screen.evaluate(node=>/x{1000}\n+long-line-done\n/.test(node.textContent)),"the line's end is kept").toBe(true);
+    await expect(pane.getByText("Earlier output was dropped",{exact:false})).toBeVisible();
+    // Typing goes in at once after it.
+    await page.keyboard.type("echo next",{delay:10});await expect(input).toHaveValue("echo next");
+    await screen.hover();
+    for(let turn=0;turn<60&&await screen.evaluate(node=>node.scrollTop>0);turn++)await page.mouse.wheel(0,-20_000);
+    await expect.poll(()=>screen.evaluate(node=>node.scrollTop)).toBe(0);
+    await shots(page,"terminal-long-line");
   }finally{await shell.close()}
 });
 
