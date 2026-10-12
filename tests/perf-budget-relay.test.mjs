@@ -421,3 +421,45 @@ test("the idle sweep keeps a session its harness could not take up again, so the
     assert.equal(agents.length,1,"both turns ran in the one harness");
   }finally{await relay.close()}
 });
+
+// OpenCode's local session names each OpenCode tool's ACP kind. Its searches (grep, glob, list) went out as "other", a kind the sweep
+// keeps, so an OpenCode chat that only searched the workspace held its `opencode serve` (4 processes, 499 MB) until the thread closed.
+// A stand-in for `opencode serve` (its routes and event stream, as tests/opencode-agent-session.test.mjs's) reports the turn's tools
+// as completed tool parts, then answers; a released session has aborted its OpenCode session and dropped the event stream.
+async function fakeOpenCodeServer(tools){
+  const streams=new Set(),sessionID="ses_budget";let aborts=0,seq=0;
+  const emit=event=>{for(const res of streams)res.write("data: "+JSON.stringify(event)+"\n\n")};
+  const server=createServer(async(req,res)=>{
+    const key=req.method+" "+new URL(req.url,"http://127.0.0.1").pathname,json=value=>{res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify(value))};
+    for await(const _chunk of req);
+    if(key==="GET /event"){res.writeHead(200,{"content-type":"text/event-stream"});res.write("data: "+JSON.stringify({type:"server.connected",properties:{}})+"\n\n");streams.add(res);res.on("close",()=>streams.delete(res));return}
+    if(key==="GET /provider")return json({connected:["opencode"],default:{opencode:"big-pickle"},all:[{id:"opencode",models:{pickle:{id:"big-pickle"}}}]});
+    if(key==="GET /config")return json({});
+    if(key==="GET /command"||key==="GET /agent"||key==="GET /skill"||key==="GET /session/"+sessionID+"/message")return json([]);
+    if(key==="POST /session"||key==="GET /session/"+sessionID||key==="PATCH /session/"+sessionID)return json({id:sessionID});
+    if(key==="POST /session/"+sessionID+"/abort"){aborts++;return json(true)}
+    if(key==="POST /session/"+sessionID+"/message"){
+      const messageID="msg_a"+(++seq);
+      emit({type:"message.updated",properties:{sessionID,info:{id:messageID,sessionID,role:"assistant"}}});
+      for(const tool of tools)emit({type:"message.part.updated",properties:{part:{id:"prt_"+(++seq),sessionID,messageID,type:"tool",tool,callID:"call_"+seq,state:{status:"completed",title:tool,input:{},output:"done"}}}});
+      await new Promise(done=>setTimeout(done,150));
+      return json({info:{id:messageID,role:"assistant",tokens:{input:3,output:1}},parts:[{id:"prt_text_"+seq,type:"text",text:"OK"}]});
+    }
+    res.writeHead(404,{"content-type":"application/json"});res.end(JSON.stringify({name:"NotFoundError",data:{message:"No fixture route for "+key}}));
+  });
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  return {url:"http://127.0.0.1:"+server.address().port,released:()=>aborts>0&&!streams.size,close:()=>{for(const res of streams)res.end();server.closeAllConnections?.();return new Promise(resolve=>server.close(resolve))}};
+}
+test("the idle sweep lets an OpenCode session go whose turn only read and searched, and keeps one whose turn ran a command",async()=>{
+  for(const [tools,released] of [[["read","grep","glob","list"],true],[["bash"],false]]){
+    const fixture=await fakeOpenCodeServer(tools),relay=await budgetRelay("trebell-budget-opencode-",{instances:[{id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,serverUrl:fixture.url}],env:SWEEP_ENV});
+    try{
+      const thread=relay.threadStore.create({runtime:"opencode",providerSessionId:"ses_budget",cwd:relay.root,model:"opencode/big-pickle",providerMeta:{runtimeInstanceId:"opencode-default",permissionProfile:"supervised"}});
+      const completed=relay.notified("turn/completed");await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Where is the retry limit set?"}]});await completed;
+      const rows=relay.threadStore.get(thread.id).turns.at(-1).items.filter(item=>item.id?.startsWith("call_")).map(item=>item.type);
+      assert.deepEqual(rows,tools.map(tool=>tool==="bash"?"commandExecution":"dynamicToolCall"),"each tool shows the row it showed before");
+      if(released)assert.ok(await eventually(()=>fixture.released(),3000),"the session whose harness only read and searched is let go: "+tools.join(", "));
+      else{await new Promise(done=>setTimeout(done,1000));assert.ok(!fixture.released(),"the session whose harness ran a command is kept")}
+    }finally{await relay.close();await fixture.close()}
+  }
+});

@@ -379,6 +379,19 @@ function toolTitle(tool,stateTitle){
   if(id==="webfetch"||id==="fetch")return "Fetch URL";
   return stateTitle&&stateTitle.length<120?stateTitle:String(tool||"Tool");
 }
+// A tool's ACP kind. OpenCode's own ACP server calls grep and glob searches and webfetch a fetch; list, codesearch and websearch only
+// read too. The relay keeps a session whose harness ran a tool of another kind past the idle sweep (a command or a subagent can
+// outlive its turn), so an OpenCode chat whose searches went out as "other" kept its `opencode serve` until the thread closed. A read,
+// a search, a fetch and an other show the same tool row.
+function toolKind(tool){
+  const id=String(tool||"").toLowerCase();
+  if(id==="bash"||id==="shell")return "execute";
+  if(id==="edit"||id==="write")return "edit";
+  if(id==="read"||id==="list")return "read";
+  if(id==="grep"||id==="glob"||id==="search"||id==="codesearch")return "search";
+  if(id==="webfetch"||id==="fetch"||id==="websearch")return "fetch";
+  return "other";
+}
 const PERMISSION_LABELS=Object.freeze({edit:"Edit files",write:"Write file",bash:"Run command",read:"Read file",glob:"Find files",grep:"Search workspace",list:"List folder",webfetch:"Fetch URL",websearch:"Search the web",codesearch:"Search code",task:"Start a subtask",skill:"Load a skill",external_directory:"Use a folder outside the workspace",doom_loop:"Repeat the same tool call again"});
 // OpenCode 1.x after 1.14 asks with permission.asked {permission, patterns, metadata, tool}; older versions sent permission.updated {type, title}.
 function openCodePermissionTitle(request){
@@ -832,7 +845,7 @@ export class OpenCodeAgentSession{
         else if(delta)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:delta}}});
       }else if(part.type==="tool"){
         const status=part.state?.status==="running"?"in_progress":part.state?.status==="completed"?"completed":part.state?.status==="error"?"failed":"pending";
-        const update={sessionUpdate:part.state?.status==="pending"?"tool_call":"tool_call_update",toolCallId:part.callID||part.id,title:toolTitle(part.tool,part.state?.title),kind:part.tool==="bash"||part.tool==="shell"?"execute":part.tool==="edit"||part.tool==="write"?"edit":part.tool==="read"?"read":"other",status,rawInput:part.state?.input||{},rawOutput:part.state?.output||part.state?.error||null};
+        const update={sessionUpdate:part.state?.status==="pending"?"tool_call":"tool_call_update",toolCallId:part.callID||part.id,title:toolTitle(part.tool,part.state?.title),kind:toolKind(part.tool),status,rawInput:part.state?.input||{},rawOutput:part.state?.output||part.state?.error||null};
         this.onUpdate?.({sessionId:this.sessionId,update});
         // The task tool names the subagent's session once it has created it.
         if(part.tool==="task"&&part.state?.metadata?.sessionId)await this.#applyChildRules(part.state.metadata.sessionId);
