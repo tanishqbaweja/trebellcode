@@ -1,0 +1,104 @@
+import { test,expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
+
+// The sidebar's bulk actions and the Snooze dialog over Trebell Native threads on the real agent relay, with a proxy on the page's
+// socket that refuses what a test names (a harness refusing a thread's move or archive).
+const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+const names=["Bulk one","Bulk two","Bulk three","Bulk four"];
+
+// refuse(message) names an error to answer a request with instead of the relay.
+async function proxyRelay(page,harness){
+  const proxy={refuse:()=>null};
+  await page.routeWebSocket(harness.wsUrl,ws=>{
+    const server=ws.connectToServer();
+    ws.onMessage(message=>{
+      let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
+      const refusal=parsed?.id!=null&&parsed.method?proxy.refuse(parsed):null;
+      if(refusal){ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:refusal}}));return}
+      server.send(message);
+    });
+  });
+  return proxy;
+}
+
+// Four threads, a minute apart, with "Bulk one" open. meta is what Trebell keeps of each thread (its snooze time among it), as the
+// GUI server keeps it.
+async function openSidebarApp(page){
+  const harness=await startRelayHarness();
+  for(const name of names)harness.seedThread(name,[{user:"Work on "+name.toLowerCase(),items:[replyItem("seed-reply-"+harness.threads.length,"Done with "+name.toLowerCase()+".")]}]);
+  const base=Math.floor(Date.now()/1000)-3600;harness.threads.forEach((thread,index)=>harness.threadStore.update(thread.id,{updatedAt:base-index*60},{touch:false}));
+  await routeRelayApp(page,harness);
+  const meta=Object.fromEntries(harness.threads.map(thread=>[thread.id,{projectless:false,environmentId:null,cwd:harness.repo,runtime:"native",runtimeInstanceId:"native-default"}]));
+  await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>{
+    const request=route.request(),body=request.method()==="POST"?request.postDataJSON()||{}:{},id=String(body.threadId||new URL(request.url()).searchParams.get("threadId")||"");
+    if(request.method()==="POST")meta[id]={...(meta[id]||{}),...(body.patch||{})};
+    return json(route,meta[id]||{});
+  });
+  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  const proxy=await proxyRelay(page,harness);
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+  const row=threadRow(page,"Bulk one");await row.locator(".thread-main").click();
+  await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
+  const id=name=>harness.threads.find(thread=>thread.name===name).id;
+  return {harness,proxy,meta,id};
+}
+const groups=page=>page.locator(".thread-sections section").evaluateAll(sections=>sections.map(section=>[section.querySelector("h4 .thread-group-name").textContent,[...section.querySelectorAll(".thread-main")].map(node=>node.title)]));
+const threadRow=(page,name)=>page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
+const selected=page=>page.locator(".thread-row").evaluateAll(rows=>rows.filter(row=>row.querySelector(".thread-select")?.checked).map(row=>row.querySelector(".thread-main").title));
+const bulkBar=page=>page.locator(".bulk-bar");
+const undoToast=page=>page.getByTestId("thread-undo-toast");
+const sidebarAlert=page=>page.locator(".sidebar .sidebar-action-error");
+const snoozeDialog=page=>page.getByRole("dialog",{name:/^Snooze/});
+// Thread actions opens bulk mode with the first thread ticked; a person ticks the others in turn.
+async function selectThreads(page,list){
+  await page.getByRole("button",{name:"Thread actions",exact:true}).click();
+  await expect(page.locator(".thread-select").first()).toBeVisible();
+  for(const name of list)if(!(await selected(page)).includes(name))await threadRow(page,name).locator(".thread-select").click();
+  for(const name of await selected(page))if(!list.includes(name))await threadRow(page,name).locator(".thread-select").click();
+  await expect(bulkBar(page).locator("span")).toHaveText(list.length+" selected");
+}
+async function rowMenu(page,name){
+  const row=threadRow(page,name);await row.hover();await row.locator(".thread-menu summary").click();
+  await expect(row.locator(".thread-menu")).toHaveAttribute("open","");return row;
+}
+// The header's theme button, as a person switches between dark and light, and the window at 1280x800 and 900x800 in that mode.
+async function switchMode(page,mode){
+  const html=page.locator("html");if(await html.getAttribute("data-mode")===mode)return;
+  await page.getByTestId("appearance-toggle").first().click();await expect(html).toHaveAttribute("data-mode",mode);
+}
+async function shoot(page,name){
+  const mode=await page.locator("html").getAttribute("data-mode");
+  for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+"x800.png"})}
+  await page.setViewportSize({width:1280,height:800});
+}
+
+test("a refused Snooze says why in the dialog, leaves the thread as it was and writes nothing in the open thread",async({page})=>{
+  test.setTimeout(90_000);
+  const {harness,proxy,meta,id}=await openSidebarApp(page);
+  try{
+    proxy.refuse=message=>message.method==="thread/section/move"?"Sections are read-only":null;
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      const row=await rowMenu(page,"Bulk three");
+      await row.getByRole("button",{name:"Snooze…",exact:true}).click();
+      const dialog=snoozeDialog(page);await expect(dialog).toBeVisible();
+      await dialog.getByRole("button",{name:"Snooze",exact:true}).click();
+      await expect(dialog.getByRole("alert")).toHaveText("Could not snooze “Bulk three”: Sections are read-only.");
+      await expect(dialog).toBeVisible();
+      await shoot(page,"sidebar-snooze-refused");
+      await dialog.getByRole("button",{name:"Cancel",exact:true}).click();await expect(dialog).toHaveCount(0);
+    }
+    // Bulk three is as it was: in Active, with no wake time saved, and the open thread's conversation says nothing of it.
+    await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+    expect(meta[id("Bulk three")].snoozedUntil??null).toBe(null);
+    await expect(page.locator(".conversation-column").getByText("Sections are read-only")).toHaveCount(0);
+    await expect(threadRow(page,"Bulk three").locator(".thread-main > div > span")).not.toHaveText(/Wakes/);
+  }finally{await harness.close()}
+});
+

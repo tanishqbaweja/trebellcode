@@ -3105,7 +3105,10 @@ export default function App(){
       undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
     }else if(action==="snooze"){
       if(!Number.isFinite(Number(snoozeUntil))||Number(snoozeUntil)<=Date.now())throw new Error("Choose a future snooze time.");
-      await updateThreadMeta(thread.id,{snoozedUntil:Number(snoozeUntil)});await moveThread(thread,"snooze");label="Thread snoozed";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
+      // The wake time is saved first, so the thread shows it as it lands in Snoozed; a move the harness refuses takes it back.
+      await updateThreadMeta(thread.id,{snoozedUntil:Number(snoozeUntil)});
+      try{await moveThread(thread,"snooze")}catch(error){await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null});throw error}
+      label="Thread snoozed";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
     }else if(action==="archive"){
       if(!rpc)return null;
       // A thread still opening ends its open first, so that its answer cannot bring the archived thread back (nor save it un-archived).
@@ -3196,13 +3199,17 @@ export default function App(){
     setSelectedThreadIds(new Set());
     if(results.length){const noun=results.length===1?"thread":results.length+" threads";const verb=action==="pin"?"pinned":action==="settle"?"settled":action==="archive"?"archived":"updated";offerThreadUndo(noun+" "+verb,()=>undoThreadActions(results))}
   }
+  // A thread the harness will not snooze keeps the dialog open, which says why: the open thread's activity is about another thread.
   async function submitSnooze(until){
     const request=snoozeRequest;if(!request)return;const results=[];
-    try{
-      for(const thread of request.threads||[]){const result=await reversibleThreadAction(thread,"snooze",{snoozeUntil:until,offerUndo:false});if(result)results.push(result)}
-      if(request.bulk)setSelectedThreadIds(new Set());setSnoozeRequest(null);
-      if(results.length){const label=results.length===1?"Thread snoozed":results.length+" threads snoozed";offerThreadUndo(label,()=>undoThreadActions(results))}
-    }catch(error){setEvents(prev=>[...prev,{id:"snooze-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}])}
+    for(const thread of request.threads||[]){
+      let result;
+      try{result=await reversibleThreadAction(thread,"snooze",{snoozeUntil:until,offerUndo:false})}
+      catch(error){throw new Error("Could not snooze “"+titleOf(thread)+"”: "+String(error?.message||error||"Unknown error").replace(/[.\s]+$/,"")+".")}
+      if(result)results.push(result);
+    }
+    if(request.bulk)setSelectedThreadIds(new Set());setSnoozeRequest(null);
+    if(results.length){const label=results.length===1?"Thread snoozed":results.length+" threads snoozed";offerThreadUndo(label,()=>undoThreadActions(results))}
   }
 
   async function loadPersistentThreadData(threadId){

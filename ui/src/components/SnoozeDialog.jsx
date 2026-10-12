@@ -62,13 +62,8 @@ export default function SnoozeDialog({request,onSubmit,onCancel}){
     event?.preventDefault?.();
     if(invalid||busy)return;
     setBusy(true);setError("");
-    try{
-      await onSubmit(until);
-      // App closes this dialog when the snooze succeeds (this update is then dropped with the unmount). If the dialog
-      // is still open the move failed: App reports that only in the conversation behind this dialog, where nobody
-      // could see it, and the dialog used to just sit there with no feedback.
-      setError("Could not snooze "+(count>1?"these threads":"this thread")+". Close this dialog to see the error in the conversation, or try again.");
-    }
+    // App closes this dialog once the threads are snoozed; one the harness would not snooze keeps it open, with the reason here.
+    try{await onSubmit(until)}
     catch(err){setError(err?.message||String(err)||"Could not snooze.")}
     finally{setBusy(false)}
   }
