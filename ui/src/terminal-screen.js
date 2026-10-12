@@ -11,7 +11,7 @@ const CHUNK_LINES=200;
 
 export function createTerminalScreen({maxLines=TERMINAL_SCROLLBACK_LINES}={}){
   let chunks=[],lineCount=1,dropped=0,nextId=1;
-  let state="text",params="",oscLength=0,pendingReturn=false;
+  let state="text",params="",oscLength=0,pendingReturn=false,wrapChar="";
   function append(text){
     for(let start=0;start<text.length;){
       let chunk=chunks[chunks.length-1];
@@ -28,6 +28,8 @@ export function createTerminalScreen({maxLines=TERMINAL_SCROLLBACK_LINES}={}){
     }
   }
   const lastChar=()=>{for(let index=chunks.length-1;index>=0;index--){const text=chunks[index].text;if(text)return text[text.length-1]}return ""};
+  // The character before the line break the screen ends with, when the line before that break is not empty.
+  const charBeforeBreak=()=>{const text=chunks[chunks.length-1]?.text||"";return text.length>1&&text.endsWith("\n")&&text[text.length-2]!=="\n"?text[text.length-2]:""};
   function write(data){
     const text=String(data||"");let out="";
     const atLineStart=()=>{const last=out?out[out.length-1]:lastChar();return !last||last==="\n"};
@@ -42,16 +44,25 @@ export function createTerminalScreen({maxLines=TERMINAL_SCROLLBACK_LINES}={}){
         if(code>=0x20&&code<=0x3f&&params.length<64){params+=ch;continue}
         state="text";
         if(code>=0x40&&code<=0x7e){
-          if(ch==="H"){pendingReturn=false;if((Number(params.split(";")[1])||1)===1&&!atLineStart())out+="\n"}
-          else if(ch==="C")out+=" ".repeat(Math.min(Number(params)||1,240));
-          else if(ch==="J"&&(params==="2"||params==="3")){out="";chunks=[];lineCount=1;dropped=0;pendingReturn=false}
+          if(ch==="H"){
+            pendingReturn=false;
+            // ConPTY wraps a line at the screen's edge after a scroll by writing a line break, moving back up to the last column
+            // of the row it left and writing that column's character again: the wrap stays one line and the repeat is skipped.
+            if((Number(params.split(";")[1])||1)>1){append(out);out="";wrapChar=charBeforeBreak()}
+            else{wrapChar="";if(!atLineStart())out+="\n"}
+          }else if(ch==="C"){wrapChar="";out+=" ".repeat(Math.min(Number(params)||1,240))}
+          else if(ch==="J"&&(params==="2"||params==="3")){out="";chunks=[];lineCount=1;dropped=0;pendingReturn=false;wrapChar=""}
           continue;
         }
       }
       if(ch==="\x1b"){state="esc";continue}
-      if(ch==="\r"){pendingReturn=true;continue}
-      if(ch==="\n"){pendingReturn=false;out+="\n";continue}
+      if(ch==="\r"){pendingReturn=true;wrapChar="";continue}
+      if(ch==="\n"){pendingReturn=false;wrapChar="";out+="\n";continue}
       if(pendingReturn){pendingReturn=false;if(!atLineStart())out+="\n"}
+      if(wrapChar){
+        const repeated=ch===wrapChar;wrapChar="";
+        if(repeated){const last=chunks[chunks.length-1];last.text=last.text.slice(0,-1);last.lines--;lineCount--;continue}
+      }
       out+=ch;
     }
     append(out);
@@ -59,7 +70,7 @@ export function createTerminalScreen({maxLines=TERMINAL_SCROLLBACK_LINES}={}){
   return {
     write,
     // A snapshot replaces the screen with the session's history.
-    reset(buffer){chunks=[];lineCount=1;dropped=0;state="text";params="";pendingReturn=false;write(buffer)},
+    reset(buffer){chunks=[];lineCount=1;dropped=0;state="text";params="";pendingReturn=false;wrapChar="";write(buffer)},
     text:()=>chunks.map(chunk=>chunk.text).join(""),
     get chunks(){return chunks},
     get lines(){return lineCount},

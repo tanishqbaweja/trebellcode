@@ -139,3 +139,20 @@ test("a long run of output keeps the page responsive and the screen at its last 
     await shots(page,"terminal-long-output");
   }finally{await shell.close()}
 });
+
+test("a line the terminal wraps at its edge reads as it was printed, without a repeated character at the wrap",async({page,request})=>{
+  test.setTimeout(60_000);
+  const shell=await realTerminals(page);
+  try{
+    const {screen,input}=await openTerminal(page,request);
+    await input.click();
+    // A full screen first: once the screen scrolls, ConPTY writes the character at a wrap twice.
+    await run(page,"for /L %i in (1,1,40) do @echo filler %i");
+    await expect(screen).toContainText(/^filler 40$/m);
+    const token=Array.from({length:30},(_,index)=>"w"+String(index).padStart(3,"0")).join("-");
+    await run(page,"echo "+token);
+    await expect(screen).toContainText(new RegExp("^"+token+"$","m"));
+    await expect(screen).toContainText(">echo "+token);
+    await shots(page,"terminal-wrapped-line");
+  }finally{await shell.close()}
+});

@@ -62,3 +62,14 @@ test("a snapshot replaces the screen, and the chunks only change at the end whil
   screen.reset("\x1b[2J\x1b[Hrestored\r\nH:\\repo>");
   assert.equal(screen.text(),"restored\nH:\\repo>");
 });
+
+test("a line ConPTY wraps at the screen's edge after a scroll reads as one line, without the character it writes twice",()=>{
+  // ConPTY writes the row up to the last column, a line break, a move back up to that last column, the same character again,
+  // and the rest of the line.
+  const row="H:\\temp\\scratchpad\\ui-explore\\lane-c\\repos\\wo";
+  assert.equal(screenOf("hi 6\x1b[32;1H"+row+"\x1b[?25h","\r\n\x1b[31;120Hork>","echo hi 7\r","\n").text(),"hi 6\n"+row+"rk>echo hi 7\n");
+  assert.equal(screenOf(row+"\r","\n\x1b[31;1","20Ho","rk>").text(),row+"rk>");
+  // A move to a later column that does not repeat the character before the break keeps the break.
+  assert.equal(screenOf("abc\r\n\x1b[5;10Hxyz").text(),"abc\nxyz");
+  assert.equal(screenOf("\r\n\x1b[5;10Hxyz").text(),"\nxyz");
+});
