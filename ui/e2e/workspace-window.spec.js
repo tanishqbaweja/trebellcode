@@ -524,6 +524,28 @@ test("Save is busy until its answer comes, so a second press never reports the p
   expect(saves.answers).toEqual([200]);
 });
 
+test("text typed while a save is on its way stays in the editor, unsaved, and the next save writes it with no question",async({page,request})=>{
+  test.setTimeout(60_000);
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace typed during save",{"notes.txt":"line one\n"});
+  const editor=right.locator("textarea.file-editor"),button=name=>right.locator(".file-head").getByRole("button",{name,exact:true}),notes=join(dir,"notes.txt");
+  const saves=await holdSaves(page);
+  await row("notes.txt").click();
+  await button("Edit").click();await editor.click();await page.keyboard.press("Control+End");await page.keyboard.type("first",{delay:20});
+  await button("Save").click();
+  await expect.poll(()=>readFile(notes,"utf8")).toBe("line one\nfirst");
+  // The person goes back into the editor and keeps typing while the answer is on its way.
+  await editor.click();await page.keyboard.press("Control+End");await page.keyboard.type(" second",{delay:20});
+  const answered=saves.answered();saves.release();await answered;
+  await expect(button("Save")).toBeEnabled();await page.waitForTimeout(300);
+  await expect(editor).toHaveValue("line one\nfirst second");
+  await shootBothModes(page,"workspace-typed-during-save");
+  // Saving again writes the rest over the version just saved, with no word of a change on disk.
+  await button("Save").click();
+  await expect(editor).toHaveCount(0);
+  await expect(right.locator(".syntax-view")).toContainText("first second");
+  await expect(right.getByRole("alert")).toHaveCount(0);
+  expect(await readFile(notes,"utf8")).toBe("line one\nfirst second");
+});
 
 
 

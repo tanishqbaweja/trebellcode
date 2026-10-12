@@ -287,13 +287,14 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     }
   }
   // One save at a time: Save is busy until the answer comes, so a second press never sends the version the first one replaced,
-  // which the server would refuse as a change on disk.
+  // which the server would refuse as a change on disk. Text typed while it was on its way stays in the editor, unsaved, over the
+  // version saved.
   async function save(version=file.version){
     if(saving)return;
-    setError("");setSaving(true);
+    const sent=draft;setError("");setSaving(true);
     try{
-      const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path:file.path,content:draft,version,environmentId}});
-      setConflict(null);setFile({...data,kind:previewKind(data.name)});setDraft(data.content);setEdit(false);refreshDiff();
+      const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path:file.path,content:sent,version,environmentId}});
+      setConflict(null);setFile({...data,kind:previewKind(data.name)});if(liveEditRef.current.draft===sent){setDraft(data.content);setEdit(false)}refreshDiff();
     }catch(err){
       if(err.status===409)setConflict({message:err.message,version:err.data?.version??null});
       else setError(actionError("Could not save "+(file?.name||"the file"),err));
