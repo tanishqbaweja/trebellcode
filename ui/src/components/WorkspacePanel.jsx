@@ -167,6 +167,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [edit,setEdit]=useState(false);
   const [draft,setDraft]=useState("");
   const [conflict,setConflict]=useState(null);
+  const [saving,setSaving]=useState(false);
   const liveEditRef=useRef(null);liveEditRef.current={file,edit,draft,conflict};
   const [diff,setDiff]=useState({status:"",diff:""});
   const [diffError,setDiffError]=useState("");
@@ -285,15 +286,18 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
       setError(actionError("Could not open "+name,err));
     }
   }
+  // One save at a time: Save is busy until the answer comes, so a second press never sends the version the first one replaced,
+  // which the server would refuse as a change on disk.
   async function save(version=file.version){
-    setError("");
+    if(saving)return;
+    setError("");setSaving(true);
     try{
       const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path:file.path,content:draft,version,environmentId}});
-      setConflict(null);setFile({...data,kind:previewKind(data.name)});setDraft(data.content);setEdit(false);await refreshDiff();
+      setConflict(null);setFile({...data,kind:previewKind(data.name)});setDraft(data.content);setEdit(false);refreshDiff();
     }catch(err){
       if(err.status===409)setConflict({message:err.message,version:err.data?.version??null});
       else setError(actionError("Could not save "+(file?.name||"the file"),err));
-    }
+    }finally{setSaving(false)}
   }
   async function changeReviewed(path,value){
     if(!onReviewedChange||actionBusy)return;
@@ -349,7 +353,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
         <div className="tree-list">{(searchError||treeError)&&<p className="workspace-tree-error" role="alert">{searchError||treeError}</p>}{query.trim()&&searched===query&&!searchError&&!searchResults.length&&<p>No files match “{query.trim()}”.</p>}{treeLoading?<p>Loading…</p>:treeWindow.visible.map(entry=><div className="tree-row" key={entry.path}><button data-workspace-entry className={(entry.isDirectory?"tree-dir":"tree-file")+(file?.path===entry.path?" active":"")} title={entry.relativePath||entry.name} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{treeLabel(entry,Boolean(query))}</span></button>{entry.isFile&&<button className="tree-attach" aria-label={"Attach "+(entry.relativePath||entry.name)+" to chat"} title="Attach to chat" onClick={()=>onAttachPath?.(entry.path)}><Paperclip size={11}/></button>}</div>)}{treeWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setTreeLimit(limit=>limit+WORKSPACE_TREE_PAGE_SIZE)}>Show {treeWindow.nextCount} more files</button><span>{treeWindow.shown} of {treeWindow.total} shown</span></div>}</div>
-        <div className={"file-view"+(error||conflict?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={async()=>{if(!edit){openRequestRef.current++;openPathRef.current=file.path;setError("");setEdit(true);return}if(await keepUnsaved())return;setEdit(false);setDraft(file.content??"");open(file.path,{discard:true})}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={()=>save()}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{conflict&&<div className="workspace-file-error workspace-file-conflict" role="alert"><span>{conflict.message} Reload from disk drops your edits; Overwrite saves yours in its place.</span><div><button onClick={()=>open(file.path,{discard:true})}>Reload from disk</button><button onClick={()=>save(conflict.version)}>Overwrite</button></div></div>}{preview()}</div>
+        <div className={"file-view"+(error||conflict?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={async()=>{if(!edit){openRequestRef.current++;openPathRef.current=file.path;setError("");setEdit(true);return}if(await keepUnsaved())return;setEdit(false);setDraft(file.content??"");open(file.path,{discard:true})}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={()=>save()} disabled={saving} aria-busy={saving||undefined}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{conflict&&<div className="workspace-file-error workspace-file-conflict" role="alert"><span>{conflict.message} Reload from disk drops your edits; Overwrite saves yours in its place.</span><div><button onClick={()=>open(file.path,{discard:true})}>Reload from disk</button><button onClick={()=>save(conflict.version)} disabled={saving}>Overwrite</button></div></div>}{preview()}</div>
       </div>
     </div>}
     {tab==="diff"&&!allowDiff&&<div className="changes-empty"><FileDiff size={20}/><strong>No repository changes</strong><span>General chats are not attached to a repository, so there is nothing to diff.</span></div>}

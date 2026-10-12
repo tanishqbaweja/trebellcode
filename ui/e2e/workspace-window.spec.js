@@ -490,6 +490,43 @@ test("the Files editor asks before it drops unsaved edits, and a save never writ
   expect(await readFile(notes,"utf8")).toBe("agent again\n!");
 });
 
+// A save on a slow connection (a remote environment): the server writes at once, and the page has the answer only once the test
+// lets it through (release). answers lists each save's status as the server gave it; answered() waits for the page to have one.
+async function holdSaves(page){
+  let release=null;const gate=new Promise(resolve=>{release=resolve}),answers=[];
+  await page.route("**/api/workspace/file",async route=>{
+    if(route.request().method()!=="PUT")return route.continue();
+    const response=await route.fetch();answers.push(response.status());await gate;await route.fulfill({response});
+  });
+  const answered=()=>page.waitForResponse(response=>response.url().includes("/api/workspace/file")&&response.request().method()==="PUT").then(response=>response.finished());
+  return {answers,release,answered};
+}
+
+test("Save is busy until its answer comes, so a second press never reports the person's own save as a change on disk",async({page,request})=>{
+  test.setTimeout(60_000);
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace busy save",{"notes.txt":"line one\n"});
+  const editor=right.locator("textarea.file-editor"),button=name=>right.locator(".file-head").getByRole("button",{name,exact:true});
+  const saves=await holdSaves(page);
+  await row("notes.txt").click();
+  await button("Edit").click();await editor.click();await page.keyboard.press("Control+End");await page.keyboard.type("mine",{delay:20});
+  await button("Save").click();
+  await expect.poll(()=>readFile(join(dir,"notes.txt"),"utf8")).toBe("line one\nmine");
+  // While the answer is on its way Save is busy: pressed again from the keyboard or with the mouse, it sends nothing.
+  await expect(button("Save")).toBeDisabled();
+  await page.keyboard.press("Enter");await button("Save").click({force:true});
+  await page.waitForTimeout(300);
+  expect(saves.answers).toEqual([200]);
+  await shootBothModes(page,"workspace-save-busy");
+  const answered=saves.answered();saves.release();await answered;
+  await expect(editor).toHaveCount(0);
+  await expect(right.locator(".syntax-view")).toContainText("mine");
+  await expect(right.getByRole("alert")).toHaveCount(0);
+  expect(saves.answers).toEqual([200]);
+});
+
+
+
+
 test("a binary file opens as binary, with its size and no Edit, and its bytes stay as they were",async({page,request})=>{
   test.setTimeout(60_000);
   // Every byte value (NUL included), and a Latin-1 text whose "é" is not UTF-8.
@@ -549,6 +586,7 @@ test("a file that fails to open takes the place of the one in view, and Refresh 
   await expect(row("app.js")).toHaveCount(0);
   await shootBothModes(page,"workspace-open-file-deleted-refresh");
 });
+
 
 test("Edit pressed while Refresh still reads the open file keeps the editor and what is typed",async({page,request})=>{
   test.setTimeout(45_000);
@@ -666,6 +704,7 @@ test("the Markdown preview draws bold, italic and inline code, and shows markup 
   await expect(md.locator("pre")).toHaveText("**not bold in a fence**");
   await shootBothModes(page,"workspace-markdown-inline");
 });
+
 
 test("the tree's attach control and the attachment's remove button are named controls the keyboard reaches",async({page,request})=>{
   test.setTimeout(45_000);
