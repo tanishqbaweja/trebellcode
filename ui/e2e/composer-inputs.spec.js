@@ -152,3 +152,40 @@ test("/goal with an objective sets the thread's goal, and /goal on New task keep
     await expect(alert).toHaveCount(0);
   }finally{await harness.close()}
 });
+
+// The browser's speech recognition, scripted: "blocked" refuses the microphone as a browser does when its permission is denied
+// (an error "not-allowed", then the end), and "listen" keeps listening until stop() is called.
+async function scriptedDictation(page){
+  await page.addInitScript(()=>{
+    window.__dictation={mode:"blocked",starts:0,stops:0};
+    class Recognition{
+      start(){window.__dictation.starts++;setTimeout(()=>{if(window.__dictation.mode==="blocked"){this.onerror?.({error:"not-allowed"});this.onend?.()}else this.onstart?.()},30)}
+      stop(){window.__dictation.stops++;setTimeout(()=>this.onend?.(),30)}
+      abort(){this.stop()}
+    }
+    window.SpeechRecognition=Recognition;window.webkitSpeechRecognition=Recognition;
+  });
+}
+
+test("dictation says when the microphone is blocked, and a second click on the mic stops listening",async({page})=>{
+  test.setTimeout(90_000);
+  await scriptedDictation(page);
+  const harness=await openComposerApp(page);
+  try{
+    const mic=page.getByRole("button",{name:"Voice dictation"}),alert=page.getByTestId("composer-alert");
+    await mic.click();
+    await expect(alert).toHaveText("The microphone is blocked. Allow microphone access for Trebell Code to dictate.");
+    await expect(mic).toHaveAttribute("aria-pressed","false");
+    await shootBoth(page,"dictation-blocked",()=>expect(alert).toBeInViewport());
+    // Allowed, it listens until the mic is clicked again; the note about the blocked microphone goes as it starts.
+    await page.evaluate(()=>{window.__dictation.mode="listen"});
+    await mic.click();
+    await expect(mic).toHaveAttribute("aria-pressed","true");
+    await expect(mic).toHaveAttribute("title","Listening… click to stop");
+    await expect(alert).toHaveCount(0);
+    await mic.click();
+    await expect(mic).toHaveAttribute("aria-pressed","false");
+    await expect(mic).toHaveAttribute("title","Voice dictation");
+    expect(await page.evaluate(()=>window.__dictation)).toEqual({mode:"listen",starts:2,stops:1});
+  }finally{await harness.close()}
+});
