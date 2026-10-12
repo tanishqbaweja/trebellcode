@@ -983,3 +983,17 @@ test("a pull request action that finishes after another one was opened keeps tha
   await expect(heading).toHaveText("#15 Feature three");
   await shootBothModes(page,"source-control-late-merge-failure");
 });
+
+test("Link to thread with no thread open says to open one first",async({page,request})=>{
+  test.setTimeout(60_000);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,prs:[samplePr(11,{title:"Feature one"})]});
+  const {right,pulls}=await openGitPanel(page,request,"Source control link without thread");
+  await pulls.getByRole("button",{name:/#11 Feature one/}).click();
+  const link=pulls.locator(".pr-actions").getByRole("button",{name:"Link to thread"});
+  await link.click();
+  await expect(right.locator(".source-control-error")).toHaveText("Could not link the pull request: Open a thread before linking a pull request.");
+  expect(host.calls.filter(call=>call.path==="thread-link"&&call.method==="POST")).toEqual([]);
+  await expect(link).toBeEnabled();
+  await shootBothModes(page,"source-control-link-without-thread");
+});

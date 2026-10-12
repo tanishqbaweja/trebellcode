@@ -4506,7 +4506,7 @@ export default function App(){
     setThreadMeta(previous=>({...previous,[threadId]:{...(previous[threadId]||{}),linkedPullRequests:next}}));
   }
   async function linkPr(pr){
-    if(!activeThread?.id)return;
+    if(!activeThread?.id)throw new Error("Open a thread before linking a pull request.");
     const current=linkedPullRequests||[];
     const key=pullRequestIdentity(pr);const existing=current.find(item=>pullRequestIdentity(item)===key);
     const result=await api("/api/source-control/thread-link",{method:"POST",body:{
