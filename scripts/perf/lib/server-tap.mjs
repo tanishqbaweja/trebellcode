@@ -8,6 +8,7 @@ import { createRequire, syncBuiltinESMExports } from "node:module";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { Session } from "node:inspector";
 import { writeFileSync } from "node:fs";
+import { promisify } from "node:util";
 import { writeHeapSnapshot } from "node:v8";
 import { createFakeOpenAi } from "./fake-openai.mjs";
 
@@ -46,15 +47,19 @@ function commandKey(file,args){
 }
 // exec calls execFile through the module's exports, so a call made inside another counted call is not counted again.
 let spawnDepth=0;
+const counted=(name,real)=>function(file,args,...rest){
+  if(spawnDepth===0){
+    const key=name==="exec"||name==="execSync"?commandKey(String(file).split(" ")[0],String(file).split(" ").slice(1)):commandKey(file,args);
+    counters.spawns.total++;bump(counters.spawns.byCommand,key);counters.spawns.recent.push({at:Date.now(),via:name,key});if(counters.spawns.recent.length>400)counters.spawns.recent.shift();
+  }
+  spawnDepth++;try{return real.call(this,file,args,...rest)}finally{spawnDepth--}
+};
 for(const name of ["spawn","execFile","exec","fork","spawnSync","execFileSync","execSync"]){
   const real=cp[name];if(typeof real!=="function")continue;
-  cp[name]=function(file,args,...rest){
-    if(spawnDepth===0){
-      const key=name==="exec"||name==="execSync"?commandKey(String(file).split(" ")[0],String(file).split(" ").slice(1)):commandKey(file,args);
-      counters.spawns.total++;bump(counters.spawns.byCommand,key);counters.spawns.recent.push({at:Date.now(),via:name,key});if(counters.spawns.recent.length>400)counters.spawns.recent.shift();
-    }
-    spawnDepth++;try{return real.call(this,file,args,...rest)}finally{spawnDepth--}
-  };
+  cp[name]=counted(name,real);
+  // promisify(execFile) resolves {stdout,stderr} only through the builtin's own promisified form; without it the server's git
+  // helpers read an empty stdout (gitInfo answered root "" under the tap), so the wrapper carries that form, counted the same way.
+  const custom=real[promisify.custom];if(custom)Object.defineProperty(cp[name],promisify.custom,{value:counted(name,custom)});
 }
 
 // sqlite: every connection, statement and the bytes that cross the binding.
