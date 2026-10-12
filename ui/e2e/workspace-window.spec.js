@@ -747,6 +747,11 @@ test("a file search with no match says that no files match",async({page,request}
   await search.click();await page.keyboard.press("Control+A");await page.keyboard.type("notes",{delay:25});
   await expect(row("notes.txt")).toBeVisible();
   await expect(list).not.toContainText("No files match");
+  // A query of only spaces searches for nothing, so the tree shows.
+  await search.click();await page.keyboard.press("Control+A");await page.keyboard.type("  ",{delay:25});
+  await expect(row("app.js")).toBeVisible();await expect(row("notes.txt")).toBeVisible();
+  await expect(list).not.toContainText("No files match");
+  await shootBothModes(page,"workspace-search-spaces");
 });
 
 test("the Markdown preview draws bold, italic and inline code, and shows markup in the file as text",async({page,request})=>{
