@@ -52,7 +52,7 @@ function ProjectIcon({project}){
   return <span className="project-icon project-icon-monogram" style={style}>{text}</span>;
 }
 
-export default function ProjectsPage({currentPath,currentEnvironmentId=null,isProjectOpen=null,onOpen,onGeneralChat,onRunScript,onOpenPreview,onProjectUpdated,onOfferUndo,models=[]}){
+export default function ProjectsPage({currentPath,currentEnvironmentId=null,isProjectOpen=null,onOpen,onGeneralChat,onRunScript,onOpenPreview,onProjectUpdated,onProjectRemoved,onOfferUndo,models=[]}){
   const [projects,setProjects]=useState([]);
   const [cloneUrl,setCloneUrl]=useState("");
   const hasDesktopPicker=Boolean(window.trebellDesktop?.pickDirectory);
@@ -331,6 +331,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     setBusy(true);setError("");
     try{
       await api("/api/projects?id="+encodeURIComponent(removed.id),{method:"DELETE"});
+      try{onProjectRemoved?.(removed)}catch{}
       if(undoable)onOfferUndo(`Project “${removed.name}” removed`,()=>restoreProject(removed,{index}));
       await refreshAfterSuccess("Project was removed");
     }catch(err){setError("Could not remove project: "+(err.message||String(err)))}

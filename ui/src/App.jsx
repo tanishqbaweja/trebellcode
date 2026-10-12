@@ -945,7 +945,7 @@ export default function App(){
     catch{return {...DEFAULT_LAYOUT}}
   });
   const [permissionMode,setPermissionMode]=useState("supervised"); const [workspaceMode,setWorkspaceMode]=useState("current");
-  // projectRecords: the projects this window knows (the list at startup, then each project as it opens or changes), so a thread still
+  // projectRecords: the projects this window knows (the list at startup, then each project as it opens, changes or goes), so a thread still
   // opening is named by its project's record before that project opens.
   const [projectRecords,setProjectRecords]=useState([]);
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [cloneRefreshError,setCloneRefreshError]=useState(""); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
@@ -4870,7 +4870,10 @@ export default function App(){
   // A project's Undo on Projects can run after the person has left the page or opened another project (its toast outlives the
   // page), so both read the project that is open when they run, not the one open when the page last drew.
   const projectIsOpen=useLatestCallback(project=>!projectlessMode&&Boolean(project?.path)&&project.path===projectPath&&(project.environmentId||null)===(workspaceEnvironmentId||null));
-  const projectsPageUpdated=useLatestCallback(project=>{if(project?.id)setProjectRecords(previous=>previous.map(item=>item.id===project.id?project:item));if(projectIsOpen(project))setCurrentProject(project)});
+  // Projects says at once when a project changes, is removed or is put back (under a new id), so the header, its action, the
+  // palette and the crumb of a thread still opening name what the list holds now. The open project's removal leaves its folder open.
+  const projectsPageUpdated=useLatestCallback(project=>{if(project?.id)setProjectRecords(previous=>[project,...previous.filter(item=>item.id!==project.id)]);if(projectIsOpen(project))setCurrentProject(project)});
+  const projectsPageRemoved=useLatestCallback(project=>{setProjectRecords(previous=>previous.filter(item=>item.id!==project?.id));setCurrentProject(current=>current&&current.id===project?.id?null:current)});
   // Retry's outcome (the list, or the error again) shows in the sidebar itself.
   const sidebarRetryThreads=useLatestCallback(()=>loadThreads(rpcRef.current).then(()=>undefined));
   const runningSidebarIds=useMemo(()=>runningThreadIds(displayThreads,{activeThreadId:activeThread?.id,activeRunning:running,turnStates:threadTurnStates}),[displayThreads,activeThread?.id,running,threadTurnStates]);
@@ -5083,7 +5086,7 @@ export default function App(){
             <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
           </div>
         </header>})()}
-        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onOfferUndo={offerPageUndo} isProjectOpen={projectIsOpen} onProjectUpdated={projectsPageUpdated} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
+        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onOfferUndo={offerPageUndo} isProjectOpen={projectIsOpen} onProjectUpdated={projectsPageUpdated} onProjectRemoved={projectsPageRemoved} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
         {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} skillsLoad={skillsLoad} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} onSkillsReload={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage onOfferUndo={offerPageUndo}/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}

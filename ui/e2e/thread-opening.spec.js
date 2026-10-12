@@ -1057,6 +1057,56 @@ test("a thread of another project is named by that project in the crumb from the
   }finally{await harness.close()}
 });
 
+// Removed on Projects, a project no longer names its thread while that thread opens: the crumb shows the folder, as for a folder
+// with no project. Put back by Undo (under a new id), it names the thread again from the click.
+test("a thread of a project removed on Projects is named by its folder while it opens, and by the project once Undo puts it back",async({page})=>{
+  test.setTimeout(60_000);
+  const SITE_PATH=process.cwd().replace(/[\\/]+$/,"")+(process.platform==="win32"?"\\":"/")+"ui";
+  const SITE=savedThread("site-removed-thread","Landing page copy",{minutesAgo:20});SITE.thread.cwd=SITE_PATH;
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,SITE]});
+  // The project list as Trebell's server keeps it: a removal drops the record, a restore or an open of a folder without one adds it.
+  let records=[{id:"opening-project",name:PROJECT_NAME,path:process.cwd(),environmentId:null,effectiveSettings:{}},{id:"site-project",name:"Website",path:SITE_PATH,environmentId:null,effectiveSettings:{}}],added=0;
+  await page.route(/\/api\/projects(?:\?.*)?$/,route=>{
+    const request=route.request();
+    if(request.method()==="GET")return json(route,{projects:records});
+    if(request.method()==="DELETE"){const id=new URL(request.url()).searchParams.get("id");records=records.filter(item=>item.id!==id);return json(route,{ok:true})}
+    const body=request.postDataJSON()||{};let project=records.find(item=>item.path===body.path);
+    if(!project){project={id:"site-project-"+(++added),name:body.name||String(body.path).split(/[\\/]/).pop(),path:body.path,environmentId:null,effectiveSettings:{}};records=[project,...records]}
+    return json(route,{project});
+  });
+  const nav=label=>page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:label,exact:true});
+  const removeSite=()=>page.locator(".project-card").filter({hasText:"Website"}).getByRole("button",{name:"Remove Website",exact:true}).click();
+  const toast=page.getByTestId("thread-undo-toast");
+  const openSlowly=async(crumb,{shots=false}={})=>{
+    const release=harness.hold(SITE.thread.id);
+    await row(page,SITE).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
+    await expect(headerTitle(page)).toHaveText("Landing page copy");
+    await expect(projectCrumb(page),"the crumb of the thread opening").toHaveText(crumb);
+    if(shots)for(const [width,mode] of [[1280,"dark"],[1280,"light"],[900,"light"],[900,"dark"]]){
+      await page.setViewportSize({width,height:800});await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      await expect(projectCrumb(page)).toHaveText(crumb);
+      await page.screenshot({animations:"disabled",path:auditDir+`polish/thread-opening/removed-project-opening-${mode}-${width}.png`});
+    }
+    release();await expect(answer(page,SITE)).toBeVisible();
+  };
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await start(page,harness);await openRow(page,ALPHA);await expect(projectCrumb(page)).toHaveText(PROJECT_NAME);
+    // Removed and put back at once: the project names its thread again, under its new id.
+    await nav("Projects").click();await removeSite();
+    await toast.getByRole("button",{name:"Undo",exact:true}).click();await expect(toast).toHaveCount(0);
+    await expect.poll(()=>records.find(item=>item.path===SITE_PATH)?.id).toBe("site-project-1");
+    await openRow(page,ALPHA);
+    await openSlowly("Website");
+    // Removed for good: its thread is named by its folder while it opens.
+    await openRow(page,ALPHA);
+    await nav("Projects").click();await removeSite();await expect(toast).toBeVisible();
+    await expect.poll(()=>records.some(item=>item.path===SITE_PATH)).toBe(false);
+    await nav("New task").click();await expect(projectCrumb(page)).toHaveText(PROJECT_NAME);
+    await openSlowly("ui",{shots:true});
+  }finally{await harness.close()}
+});
+
 // A thread's notifications are held from the answer of its first resume, before its history is read. What the harness sends
 // while that history is read is already in it, so the held notifications are handled on top of it without doubling anything,
 // and a turn they start and end is timed from when they came. The turn runs one command, which shows once, on the turn's own card.

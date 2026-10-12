@@ -213,6 +213,53 @@ test.describe("Removing a project",()=>{
     await expect(page.locator(".project-card.active .project-open strong")).toHaveText(MAIN);
     await expect(projectCard(page,"Project A")).toBeVisible();
   });
+
+  // The person removes the project they are in, then looks around before choosing Undo: the header no longer names it or offers
+  // its action, nor does the palette, and Undo brings both back at once, without waiting for the app to read the project list.
+  for(const mode of MODES)test(`removing the open project shows at once in the header and the palette, and so does its Undo (${mode})`,async({page,request})=>{
+    const boot=await open(page,request,{mode});
+    const path=join(boot.cwd,"ui");
+    await request.post("/api/projects",{data:{path,name:"Project A",activate:true,scripts:[{id:"a-tests",name:"A tests",command:"npm test"}]}});
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const header=page.locator("header.workspace-header").first(),crumb=header.locator(".project-crumb:not(.sidebar-reopen) span"),toast=page.getByTestId("thread-undo-toast");
+    const action=header.getByRole("button",{name:"A tests",exact:true}),palette=page.getByTestId("command-palette");
+    // The palette searched for the action, once its code has come (the stand-in shown before it is busy): it lists the action, or
+    // says nothing matched.
+    const paletteRuns=async()=>{
+      await page.getByRole("button",{name:"Search or jump to"}).click();
+      await expect(palette).toBeVisible();
+      await page.keyboard.type("A tests");
+      await expect(palette.locator(".command-palette[aria-busy]")).toHaveCount(0);
+      await expect(palette.locator("input")).toHaveValue("A tests");
+      await expect(palette.locator(".command-palette-item,.command-palette-empty").first()).toBeVisible();
+      const found=await palette.locator(".command-palette-item").filter({hasText:/^Run A tests/}).count();
+      await page.keyboard.press("Escape");await expect(palette).toHaveCount(0);
+      return found;
+    };
+    await expect(crumb).toHaveText("Project A");await expect(action).toBeVisible();
+    await nav(page,"Projects").click();
+    await projectCard(page,"Project A").getByRole("button",{name:"Remove Project A",exact:true}).click();
+    await expect(toast).toContainText("Project “Project A” removed");
+    expect(await paletteRuns(),"the palette still runs the removed project's action").toBe(0);
+    await nav(page,"New task").click();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await expect(crumb,"the header still names the removed project").toHaveText("ui");
+    await expect(action,"the header still offers the removed project's action").toHaveCount(0);
+    // Its folder stays open, without the record: the branch still shows.
+    await expect(header.locator(".branch-control")).toBeVisible();
+    await page.screenshot({animations:"disabled",path:shots+`project-open-removed-${mode}-1280.png`});
+    await page.setViewportSize({width:900,height:800});
+    await expect(crumb).toHaveText("ui");
+    await page.screenshot({animations:"disabled",path:shots+`project-open-removed-${mode}-900.png`});
+    await page.setViewportSize({width:1280,height:800});
+    await toast.getByRole("button",{name:"Undo",exact:true}).click();
+    await expect(toast).toHaveCount(0);
+    await expect(crumb,"the header names the restored project").toHaveText("Project A");
+    await expect(action).toBeVisible();
+    expect(await paletteRuns(),"the palette runs the restored project's action").toBe(1);
+    await page.screenshot({animations:"disabled",path:shots+`project-open-restored-${mode}-1280.png`});
+  });
 });
 
 test.describe("Removing an environment",()=>{
