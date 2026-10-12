@@ -59,6 +59,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   const [cloneParentError,setCloneParentError]=useState("");
   const cloneParentRef=useRef(null);
   const [environmentData,setEnvironmentData]=useState({profiles:[]});
+  // What the page is busy with: true, or "general" or "clone" while that one starts. Only the one starting reads "Starting…".
   const [busy,setBusy]=useState(false);
   const [editor,setEditor]=useState(null);
   const [hookEditor,setHookEditor]=useState(null);
@@ -203,7 +204,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   }
   async function startGeneralChat(){
     if(!onGeneralChat||busy)return;
-    setBusy(true);setError("");
+    setBusy("general");setError("");
     try{await Promise.resolve(onGeneralChat())}
     catch(err){setError("Could not start General chat: "+(err.message||String(err)))}
     finally{setBusy(false)}
@@ -273,7 +274,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
       cloneParentRef.current?.focus();
       return;
     }
-    setBusy(true);setError("");
+    setBusy("clone");setError("");
     try{
       let result=null,destination="";
       try{
@@ -458,8 +459,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     <div className="page-actions project-page-actions"><div className="project-search-field"><Search size={14}/><input className="project-search" aria-label="Search projects" value={projectQuery} onChange={event=>setProjectQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"&&projectQuery){event.preventDefault();event.stopPropagation();setProjectQuery("")}}} placeholder="Search projects"/></div><span className="project-window-count">{listState==="ready"?projectView.shown+" / "+projectView.total:""}</span>{hasDesktopPicker&&<button className="project-add-local" onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button className="project-refresh" aria-label="Refresh projects" title="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
     {loadError&&<div className="provider-status-error project-load-error" role="alert"><span key={loadFailures}>{loadError}</span><button type="button" className="tb-btn tb-btn--sm" onClick={retryLoad} aria-disabled={retrying?"true":undefined}>{retrying?"Retrying…":"Retry"}</button></div>}
     {error&&<p className="provider-status-error" role="alert">{error}</p>}
-    <button className="general-chat-card" onClick={startGeneralChat} disabled={busy}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>{busy?"Starting…":"Start chat"}</em></button>
-    {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"");setCloneParentError("")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input ref={cloneParentRef} aria-label="Clone parent directory" aria-invalid={cloneParentError?"true":undefined} aria-describedby={cloneParentError?"clone-parent-error":undefined} value={cloneParent} onChange={e=>{setCloneParent(e.target.value);setCloneParentError("")}} placeholder="Parent directory" title="Remote parent directory"/>}{cloneParentError&&<p id="clone-parent-error" className="clone-field-error" role="alert">{cloneParentError}</p>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy?"Starting…":"Clone"}</button></div>}
+    <button className="general-chat-card" onClick={startGeneralChat} disabled={busy}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>{busy==="general"?"Starting…":"Start chat"}</em></button>
+    {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"");setCloneParentError("")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input ref={cloneParentRef} aria-label="Clone parent directory" aria-invalid={cloneParentError?"true":undefined} aria-describedby={cloneParentError?"clone-parent-error":undefined} value={cloneParent} onChange={e=>{setCloneParent(e.target.value);setCloneParentError("")}} placeholder="Parent directory" title="Remote parent directory"/>}{cloneParentError&&<p id="clone-parent-error" className="clone-field-error" role="alert">{cloneParentError}</p>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy==="clone"?"Starting…":"Clone"}</button></div>}
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.totalCount} checkout{group.totalCount===1?"":"s"}</span></div></div>
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id}>

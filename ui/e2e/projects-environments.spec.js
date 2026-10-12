@@ -613,3 +613,42 @@ test.describe("A long project name",()=>{
     await page.screenshot({animations:"disabled",path:shots+`project-longer-name-${mode}-900.png`});
   });
 });
+
+// The General chat card says Starting… while the General chat starts, not while the page is busy with something else, such as a
+// project being removed; nor does Clone.
+test.describe("The General chat card",()=>{
+  for(const mode of MODES)test(`says Starting only while the General chat starts (${mode})`,async({page,request})=>{
+    await page.route(/\/api\/environments$/,async route=>{
+      if(route.request().method()!=="GET")return route.fallback();
+      const body=await (await route.fetch()).json();
+      return json(route,{...body,profiles:[SSH_PROFILE]});
+    });
+    const boot=await open(page,request,{mode});
+    await request.post("/api/projects",{data:{path:join(boot.cwd,"docs"),name:"Neighbour Project"}});
+    let releaseRemoval;const removal=new Promise(resolve=>{releaseRemoval=resolve});
+    await page.route(/\/api\/projects\?id=/,async route=>{if(route.request().method()==="DELETE")await removal;return route.fallback()});
+    await openProjects(page);
+    const general=page.locator(".general-chat-card"),label=general.locator("em"),clone=page.locator(".clone-card").getByRole("button",{name:"Clone",exact:true});
+    await expect(label).toHaveText("Start chat");
+    await expect(clone).toBeVisible();
+    const remove=page.getByRole("button",{name:"Remove Neighbour Project",exact:true});
+    await remove.click();
+    await expect(remove,"the removal is under way").toBeDisabled();
+    await expect(label,"the General chat card while a project is removed").toHaveText("Start chat");
+    await expect(clone,"Clone while a project is removed").toHaveText("Clone");
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await general.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:shots+`general-chat-during-removal-${mode}-${width}.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    releaseRemoval();
+    await expect(projectCard(page,"Neighbour Project")).toHaveCount(0);
+    await expect(general).toBeEnabled();
+    // Starting the General chat says so until it has started.
+    let releaseStart;const start=new Promise(resolve=>{releaseStart=resolve});
+    await page.route(/\/api\/general-workspace$/,async route=>{await start;return route.fallback()});
+    await general.click();
+    await expect(label).toHaveText("Starting…");
+    await expect(clone,"Clone while the General chat starts").toHaveText("Clone");
+    await page.screenshot({animations:"disabled",path:shots+`general-chat-starting-${mode}-1280.png`});
+    releaseStart();
+    await expect(page.locator(".projects-page")).toHaveCount(0);
+  });
+});
