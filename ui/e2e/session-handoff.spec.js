@@ -18,7 +18,7 @@ async function listen(server){await new Promise((resolve,reject)=>server.listen(
 
 // Cursor over ACP, scripted by a JSON file it reads at every request (so a test can change it between turns): it logs each request,
 // answers session/load with config.lostError when set, numbers its new sessions (or fails them with config.newError), and answers
-// a prompt with one file read and config.reply.
+// a prompt with one file read and config.reply, or refuses it outright with config.promptError (as a rate or plan limit does).
 const FAKE_CURSOR=String.raw`
 import readline from "node:readline";
 import { appendFileSync, readFileSync } from "node:fs";
@@ -38,6 +38,7 @@ async function handle(m){
     return reply({sessionId:"fresh-"+count,models});
   }
   if(m.method==="session/prompt"){
+    if(config.promptError)return fail(config.promptError);
     const sessionId=m.params.sessionId,call="read-"+Date.now(),update=value=>send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:value}});
     update({sessionUpdate:"tool_call",toolCallId:call,title:"Read notes.md",kind:"read",status:"in_progress",rawInput:{path:"notes.md"}});
     await delay(400);
@@ -226,6 +227,51 @@ test("a turn that continues a conversation Cursor lost says so once in that turn
     await expect(handoff).toHaveCount(1);await expect(handoff).toHaveAttribute("data-turn-id",turnId);
     expect((await fx.requests()).filter(entry=>entry.method==="session/prompt").map(entry=>entry.params.sessionId)).toEqual(["fresh-1","fresh-1"]);
     await expectReadingOrder(handoff,card,reply(page,"You asked me to remember PELICAN."),userRow(page,"Thanks"));
+  }finally{await fx.close()}
+});
+
+// A new session that refuses the prompt carrying the earlier messages outright (a rate or plan limit) ran nothing and holds none of
+// them: the failed turn says why on its own and never that they went over, and the next turn Cursor runs carries them and says so.
+test("a new session that refuses the prompt carrying the earlier messages never says they went over, and the next turn hands them over",async({page})=>{
+  test.setTimeout(150_000);
+  const LIMIT="Rate limit exceeded, try again in a minute";
+  const fx=await cursorFixture("Cursor refused prompt",{providerSessionId:"cursor-lost",config:{lostError:LOST,promptError:{code:-32603,message:"Internal error",data:{message:LIMIT}}}});
+  try{
+    await routeApp(page,fx);await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await openThreadRow(page,"Cursor refused prompt");
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send"),handoff=page.getByTestId("session-handoff");
+    await expect(composer).toBeEnabled();
+    await composer.fill("What word did I ask you to remember?");await send.click();
+    // The turn exists, so its card says why it failed.
+    const liveCard=page.locator(".agent-block [data-testid=activity-card]");
+    await expect(liveCard).toContainText(LIMIT,{timeout:15_000});
+    const failedTurn=fx.threadStore.get(fx.thread.id).turns.at(-1);
+    expect([failedTurn.status,fx.threadStore.get(fx.thread.id).providerMeta.historyHandoff.status]).toEqual(["failed","pending"]);
+    await expect(handoff).toHaveCount(0);
+    await expectReadingOrder(userRow(page,"What word did I ask you to remember?"),liveCard);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      for(const [width,height] of [[1280,800],[900,800]]){
+        await page.setViewportSize({width,height});await frames(page,3);
+        await liveCard.scrollIntoViewIfNeeded();await frames(page,2);
+        await page.screenshot({animations:"disabled",path:`${auditDir}refused-prompt-${mode}-${width}x${height}.png`});
+      }
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1280,height:800});
+
+    // The limit lifts: the next turn runs in the same new session, carries the earlier messages (the refused turn among them) and says so.
+    await fx.configure({reply:"You asked me to remember PELICAN."});
+    await composer.fill("Try again: which word?");await send.click();
+    await expect(reply(page,"You asked me to remember PELICAN.")).toBeVisible({timeout:15_000});
+    const turnId=fx.threadStore.get(fx.thread.id).turns.at(-1).id;
+    await expect(handoff).toHaveCount(1);await expect(handoff).toHaveText(HANDED_OVER);await expect(handoff).toHaveAttribute("data-turn-id",turnId);
+    const prompts=(await fx.requests()).filter(entry=>entry.method==="session/prompt");
+    expect(prompts.map(entry=>[entry.params.sessionId,JSON.stringify(entry.params.prompt).includes("trebell.thread_history")])).toEqual([["fresh-1",true],["fresh-1",true]]);
+    // The refused turn, which ran no step, now ends in its stored failure.
+    const refusedEnd=page.locator(`[data-testid=turn-outcome-row][data-turn-id="${failedTurn.id}"]`);
+    await expect(refusedEnd).toContainText(LIMIT);
+    await expectReadingOrder(userRow(page,"What word did I ask you to remember?"),refusedEnd,userRow(page,"Try again: which word?"),handoff,liveCard,reply(page,"You asked me to remember PELICAN."));
+    await auditHandoff(page,"refused-prompt-then-handed-over");
   }finally{await fx.close()}
 });
 

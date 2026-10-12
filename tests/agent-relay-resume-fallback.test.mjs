@@ -61,7 +61,8 @@ const HISTORY_ENTRY="[application context · trebell.thread_history]\nThe earlie
 
 // An ACP agent scripted by a JSON file: it logs each request (one JSON line, with the process it reached), answers session/load and
 // session/resume with config.lostError when set (config.loadDelayMs late), numbers its new sessions across launches and answers
-// prompts with config.reply.
+// prompts with config.reply, after refusing the first config.refusePrompts of them outright with config.promptError (as a rate or
+// plan limit refuses one).
 const FAKE_ACP_AGENT=String.raw`
 import readline from "node:readline";
 import { appendFileSync, readFileSync } from "node:fs";
@@ -79,6 +80,7 @@ function handle(m){
     return reply({sessionId:"fresh-"+count,models:{currentModelId:"fixture-model",availableModels:[{modelId:"fixture-model",name:"Fixture"}]}});
   }
   if(m.method==="session/prompt"){
+    if(readFileSync(log,"utf8").split("\n").filter(line=>line.includes('"method":"session/prompt"')).length<=(config.refusePrompts||0))return fail(config.promptError);
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId:m.params.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:config.reply||"PELICAN"}}}});
     return reply({stopReason:"end_turn"});
   }
@@ -147,6 +149,36 @@ for(const runtime of ["cursor","grok"]){
     assert.equal((await fx.requests()).filter(entry=>entry.method==="session/new").length,1);
     const reopened=await relay.rpc("thread/resume",{threadId:saved.id,cwd:fx.root});
     assert.deepEqual(reopened.thread.turns.map(turn=>turn.items.filter(item=>item.type==="sessionHandoff").length),[0,1,0]);
+  });
+
+  // A harness that refuses the prompt outright (a rate or plan limit) ran nothing and holds nothing of it: the earlier messages
+  // wait, no row says they went over, and the next prompt the harness takes carries them, with the refused turn among them.
+  test(`a ${runtime} fresh session that refuses the prompt carrying the earlier messages is handed them with the next prompt it takes`,async t=>{
+    const promptError=runtime==="grok"?{code:-32003,message:"Rate limited"}:{code:-32603,message:"Internal error",data:{message:"Rate limit exceeded, try again in a minute"}};
+    const fx=await acpHarness(t,runtime,{refusePrompts:1,promptError}),threadStore=new AgentThreadStore(fx.env),journal=memoryJournal();
+    const saved=savedThread(threadStore,{runtime,instanceId:fx.harness.instance.id,providerSessionId:`${runtime}-lost`,cwd:fx.root});
+    const relay=await startRelay({runtimeManager:fx.runtimeManager,threadStore,state:memoryState(),journal});onCleanup(t,relay.close);
+    let completed=relay.events.next(message=>message.method==="turn/completed");
+    const refused=await relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text:"What word did I ask you to remember?"}]});
+    const failed=(await completed).params.turn;
+    assert.equal(failed.id,refused.turn.id);assert.equal(failed.status,"failed");
+    let thread=threadStore.get(saved.id);
+    assert.equal(thread.providerMeta.historyHandoff.status,"pending","the refused prompt never reached the conversation");
+    assert.deepEqual(thread.turns.at(-1).items.map(item=>item.type),["userMessage"],"no row says the messages went over");
+    completed=relay.events.next(message=>message.method==="turn/completed");
+    const next=await relay.rpc("turn/start",{threadId:saved.id,input:[{type:"text",text:"Try again: which word?"}]});
+    assert.equal((await completed).params.turn.status,"completed");
+    const prompts=(await fx.requests()).filter(entry=>entry.method==="session/prompt");
+    assert.deepEqual(prompts.map(entry=>entry.params.sessionId),["fresh-1","fresh-1"],"both prompts go to the one fresh session");
+    assert.deepEqual(prompts.map(entry=>JSON.stringify(entry.params.prompt).includes("trebell.thread_history")),[true,true]);
+    const [context,request]=prompts[1].params.prompt;
+    assert.deepEqual(request,{type:"text",text:"Try again: which word?"});
+    assert.ok(context.text.includes("[turn 1 · assistant]\nREMEMBERED"));assert.ok(context.text.includes("[turn 2 · user]\nWhat word did I ask you to remember?"));
+    thread=threadStore.get(saved.id);
+    assert.equal(thread.providerMeta.historyHandoff.status,"delivered");assert.equal(thread.providerMeta.historyHandoff.turnId,next.turn.id);
+    assert.deepEqual(thread.turns.map(turn=>turn.items.filter(item=>item.type==="sessionHandoff").length),[0,0,1],"the row is on the turn that handed them over");
+    assert.deepEqual(thread.turns.at(-1).items.map(item=>item.type),["userMessage","sessionHandoff","agentMessage"]);
+    assert.equal(fallbacks(journal).length,1,"one fallback");
   });
 }
 

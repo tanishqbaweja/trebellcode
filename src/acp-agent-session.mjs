@@ -374,8 +374,9 @@ export class AcpAgentSession{
     return acpConfigSelect(this.sessionSetup,"model").choices.find(choice=>choice.value===model)?.name||model;
   }
 
-  // onDelivered: told once the prompt, with the Trebell context beside it, is written to the harness (a slash command goes
-  // without that context, so it never tells).
+  // onDelivered: told once the harness has taken the prompt, with the Trebell context beside it, into its conversation: with the
+  // first update the prompt brings (a reply, a thought, a tool call) or with the harness's answer. A request the harness refuses
+  // outright (a rate or plan limit) never reached the conversation, and a slash command goes without that context, so neither tells.
   async prompt(content,{messageId=null,agent=undefined,onDelivered=null}={}){
     if(!this.client||!this.sessionId)throw new Error("ACP session is not started");
     if(this.dead)throw this.deadError||new Error(`${this.label} stopped`);
@@ -387,12 +388,11 @@ export class AcpAgentSession{
     const parts=this.runtime==="antigravity"&&!this.remoteIo?await antigravityPromptParts(commandParts||given):[...(commandParts||given)];
     if(!this.runtimeContextSent&&!command)parts.push({type:"text",text:runtimeInstructions({harness:this.label,model:this.#modelLabel()})});
     let markDone;const done=new Promise(resolve=>{markDone=resolve});
-    const active={promptId:this.runtime==="grok"?randomUUID():null,cancelled:false,transport:this.runtime==="cursor"?new CursorTransportFailure():null,done};
+    const active={promptId:this.runtime==="grok"?randomUUID():null,cancelled:false,transport:this.runtime==="cursor"?new CursorTransportFailure():null,done,taken:!command&&typeof onDelivered==="function"?onDelivered:null};
     this.activePrompt=active;
-    // The client writes a request at once or not at all (a closed client refuses it), so an open client after the call has it sent.
-    const sent=()=>{if(!command&&typeof onDelivered==="function"&&!this.client.closed)try{onDelivered()}catch{}};
     try{
-      const result=this.runtime==="grok"?await this.#grokPrompt(parts,active,messageId,sent):await this.#sendPrompt(parts,messageId,sent);
+      const result=this.runtime==="grok"?await this.#grokPrompt(parts,active,messageId):await this.client.prompt(this.sessionId,parts,{messageId});
+      this.#promptTaken(active);
       if(!command)this.runtimeContextSent=true;
       // Cursor streams a lost backend connection as the reply and ends the turn normally (T3 CursorTransportFailure).
       const failure=active.transport?.failure;
@@ -407,13 +407,14 @@ export class AcpAgentSession{
     }
   }
 
-  #sendPrompt(parts,messageId,sent){
-    const request=this.client.prompt(this.sessionId,parts,{messageId});
-    sent();return request;
+  // Tells, once, that the harness took the running prompt into its conversation (prompt's onDelivered).
+  #promptTaken(active){
+    const notify=active?.taken;if(!notify)return;
+    active.taken=null;try{notify()}catch{}
   }
 
   // Races session/prompt against Grok's own completion signals, keyed by the prompt id Trebell sends.
-  #grokPrompt(parts,active,messageId,sent=()=>{}){
+  #grokPrompt(parts,active,messageId){
     const promptId=active.promptId;
     return new Promise((resolve,reject)=>{
       let notice=null,timer=null,done=false;
@@ -427,7 +428,6 @@ export class AcpAgentSession{
         result=>{const failure=notice?grokCompletionFailure(notice):null;failure?finish(false,failure):finish(true,result)},
         error=>finish(false,grokPromptError(error,notice)),
       );
-      sent();
     });
   }
 
@@ -629,6 +629,9 @@ export class AcpAgentSession{
     const promptId=params?._meta?.promptId;
     if(this.runtime==="grok"&&!this.activePrompt&&typeof promptId==="string"&&promptId.startsWith(GROK_TASK_PROMPT_PREFIX)&&this.wake?.promptId!==promptId){this.#finishWake("end_turn");this.#beginWake(promptId)}
     if(this.activePrompt?.transport&&type==="agent_message_chunk"&&update.content?.type==="text")this.activePrompt.transport.push(update.content.text);
+    // Any update but session metadata while a prompt runs is the harness at work on it, so the prompt is in its conversation. It is
+    // told before the update goes on, so the delivery is recorded ahead of the turn's first step.
+    if(this.activePrompt&&!METADATA_UPDATES.has(type))this.#promptTaken(this.activePrompt);
     this.onUpdate?.(this.#decorate(params,update,type));
   }
 
