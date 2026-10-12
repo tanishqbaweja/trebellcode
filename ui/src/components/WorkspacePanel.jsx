@@ -143,6 +143,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [entries,setEntries]=useState([]);
   const [query,setQuery]=useState("");
   const [searchResults,setSearchResults]=useState([]);
+  // The query the results answer: a search with no match says so once its answer is in, not while it is still being read.
+  const [searched,setSearched]=useState("");
   const [file,setFile]=useState(null);
   const [edit,setEdit]=useState(false);
   const [draft,setDraft]=useState("");
@@ -221,7 +223,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     const t=setTimeout(async()=>{
       try{
         const data=await api("/api/workspace/search?"+params({path:projectPath,q:query}));
-        setSearchResults(data.items||[]);setSearchError("");
+        setSearchResults(data.items||[]);setSearched(query);setSearchError("");
       }catch(err){setSearchResults([]);setSearchError(actionError("Could not search workspace files",err))}
     },180);
     return()=>clearTimeout(t);
@@ -313,7 +315,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     {tab==="files"&&<div className="workspace-files">
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
-        <div className="tree-list">{(searchError||treeError)&&<p className="workspace-tree-error" role="alert">{searchError||treeError}</p>}{treeLoading?<p>Loading…</p>:treeWindow.visible.map(entry=><button data-workspace-entry key={entry.path} className={(entry.isDirectory?"tree-dir":"tree-file")+(file?.path===entry.path?" active":"")} title={entry.relativePath||entry.name} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{treeLabel(entry,Boolean(query))}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}{treeWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setTreeLimit(limit=>limit+WORKSPACE_TREE_PAGE_SIZE)}>Show {treeWindow.nextCount} more files</button><span>{treeWindow.shown} of {treeWindow.total} shown</span></div>}</div>
+        <div className="tree-list">{(searchError||treeError)&&<p className="workspace-tree-error" role="alert">{searchError||treeError}</p>}{query.trim()&&searched===query&&!searchError&&!searchResults.length&&<p>No files match “{query.trim()}”.</p>}{treeLoading?<p>Loading…</p>:treeWindow.visible.map(entry=><button data-workspace-entry key={entry.path} className={(entry.isDirectory?"tree-dir":"tree-file")+(file?.path===entry.path?" active":"")} title={entry.relativePath||entry.name} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{treeLabel(entry,Boolean(query))}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}{treeWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setTreeLimit(limit=>limit+WORKSPACE_TREE_PAGE_SIZE)}>Show {treeWindow.nextCount} more files</button><span>{treeWindow.shown} of {treeWindow.total} shown</span></div>}</div>
         <div className={"file-view"+(error||conflict?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={async()=>{if(await keepUnsaved())return;setError("");setConflict(null);if(edit)setDraft(file.content??"");setEdit(!edit)}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={()=>save()}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{conflict&&<div className="workspace-file-error workspace-file-conflict" role="alert"><span>{conflict.message} Reload from disk drops your edits; Overwrite saves yours in its place.</span><div><button onClick={()=>open(file.path,{discard:true})}>Reload from disk</button><button onClick={()=>save(conflict.version)}>Overwrite</button></div></div>}{preview()}</div>
       </div>
     </div>}

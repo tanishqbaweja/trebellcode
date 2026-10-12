@@ -539,6 +539,21 @@ test("a file that fails to open takes the place of the one in view, and Refresh 
   await shootBothModes(page,"workspace-open-file-deleted-refresh");
 });
 
+test("a file search with no match says that no files match",async({page,request})=>{
+  test.setTimeout(45_000);
+  const {right,row}=await openFilesFolder(page,request,"Workspace empty search",{"notes.txt":"notes\n","src/app.js":"app\n"});
+  const list=right.locator(".tree-list"),search=right.getByPlaceholder("Search files…");
+  await search.click();
+  await page.keyboard.type("zzz-no-such-file",{delay:25});
+  await expect(list).toContainText("No files match “zzz-no-such-file”.");
+  await expect(right.locator("[data-workspace-entry]")).toHaveCount(0);
+  await shootBothModes(page,"workspace-search-no-match");
+  // A query with a match lists it, with no message.
+  await search.click();await page.keyboard.press("Control+A");await page.keyboard.type("notes",{delay:25});
+  await expect(row("notes.txt")).toBeVisible();
+  await expect(list).not.toContainText("No files match");
+});
+
 // A Codex app server holding the given threads: enough for the sidebar to list them and for the app to open them.
 async function startThreadHarness(threads){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
