@@ -3583,7 +3583,7 @@ test("major workspace surfaces render their real destinations without horizontal
   };
 
   const projectCrumb=page.locator(".workspace-breadcrumb .project-crumb").first();
-  await expect(projectCrumb).toHaveAttribute("title","Projects and workspaces");
+  await expect(projectCrumb).toHaveAttribute("title",(await projectCrumb.textContent()).trim()+" · Projects and workspaces");
   await projectCrumb.click();
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
   await expect(page.getByRole("button",{name:"Add local project",exact:true})).toHaveCount(0);
@@ -4681,8 +4681,11 @@ test("failed workspace activation leaves the current project untouched",async({p
     if(route.request().method()==="POST")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate project activation failure"})});
     return route.continue();
   });
-  await crumb.click();
-  await expect(page.getByTestId("app-action-error")).toContainText("Could not open workspace: Deliberate project activation failure");
+  // The desktop app opens a folder from the palette (the header crumb opens Projects): the failure shows there.
+  await page.keyboard.press("Control+k");
+  await page.keyboard.type("Open workspace folder",{delay:20});await page.keyboard.press("Enter");
+  await expect(page.getByTestId("command-palette").getByRole("alert")).toHaveText("Deliberate project activation failure");
+  await page.keyboard.press("Escape");await expect(page.getByTestId("command-palette")).toBeHidden();
   await expect(crumb).toHaveText(beforeText||"");
   await expect(crumb).toHaveAttribute("title",beforeTitle||"");
   await expect(page.getByTestId("composer")).toBeVisible();

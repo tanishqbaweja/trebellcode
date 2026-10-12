@@ -541,8 +541,6 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .settings-card input{bac
 
 
 /* v1.1 harness cleanup */
-.project-switcher{width:24px;height:28px;border:0;background:transparent;border-radius:6px;color:#646a72;display:grid;place-items:center;margin-left:-5px}
-.project-switcher:hover{background:var(--t3-hover);color:#d7d9dd}
 .thread-menu{position:absolute;right:5px;top:7px;z-index:8}
 .thread-menu>summary{list-style:none;width:26px;height:26px;border-radius:6px;display:none;place-items:center;color:#777d85;cursor:pointer}
 .thread-menu>summary::-webkit-details-marker{display:none}

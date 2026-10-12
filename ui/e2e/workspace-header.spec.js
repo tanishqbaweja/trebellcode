@@ -110,6 +110,26 @@ test("a refused rename says why and keeps the title, and while the harness is st
   }finally{await harness.close()}
 });
 
+for(const build of ["browser","desktop"])test(`the project crumb opens Projects in the ${build} build, and nothing beside it poses as a menu`,async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,header}=await openHeaderApp(page,{desktop:build==="desktop"});
+  const crumb=header.locator(".project-crumb:not(.sidebar-reopen)");
+  try{
+    await expect(crumb).toHaveText("Relay History Project");
+    // One control: no chevron beside it or inside it that looks like a menu and is none.
+    await expect(header.locator(".workspace-breadcrumb button").filter({has:page.locator("svg.lucide-chevron-down")}).filter({hasNot:page.locator("strong")})).toHaveCount(0);
+    await expect(header.getByRole("button",{name:"Projects and General chat"})).toHaveCount(0);
+    await expect(crumb).not.toHaveAttribute("aria-haspopup",/./);await expect(crumb).toHaveAttribute("title","Relay History Project · Projects and workspaces");
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await shoot(page,"header-project-crumb-"+build)}
+    await switchMode(page,"dark");
+    await crumb.click();
+    const heading=page.getByRole("heading",{name:"Projects",level:1});
+    await expect(heading).toBeVisible();await expect(heading).toBeFocused();
+    if(build==="desktop")expect(await page.evaluate(()=>window.__folderPicks||0)).toBe(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"header-project-crumb-opens-projects-"+build+"-dark-1280x800.png"});
+  }finally{await harness.close()}
+});
+
 test("Review waits while a turn runs, and a review the harness does not start adds no running step",async({page})=>{
   test.setTimeout(90_000);
   const held=gate();

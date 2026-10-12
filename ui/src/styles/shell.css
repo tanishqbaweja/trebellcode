@@ -175,8 +175,6 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header :is(.project-crumb,.thread-title-button):hover{background:var(--bg3);color:var(--tx0)}
 .workspace-header .project-crumb svg{flex:none;color:var(--tx2)}
 .workspace-header .project-crumb span{max-width:min(220px,22vw)}
-.workspace-header .project-switcher{width:22px;height:30px;flex:none;margin-left:-3px;border-radius:7px;color:var(--tx3)}
-.workspace-header .project-switcher:hover{background:var(--bg3);color:var(--tx0)}
 .workspace-header .thread-title-button strong{max-width:min(360px,30vw);font-size:12.5px;font-weight:600;color:var(--tx0)}
 .workspace-header .thread-title-button svg{flex:none;color:var(--tx3)}
 .workspace-header .thread-title-button:disabled{cursor:default}

@@ -5060,7 +5060,9 @@ export default function App(){
           <header className="workspace-header" ref={workspaceHeaderRef}>
             <div className="workspace-breadcrumb">
               {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title={withKey("Open sidebar",sidebarShortcuts.sidebarToggle)}><PanelLeftOpen size={14}/></button>}
-              <button className={"project-crumb"+(crumbProjectless?" projectless":"")} onClick={crumbProjectless||!window.trebellDesktop?.pickDirectory?()=>setSection("projects"):()=>runUserAction(pickWorkspace,"Could not open workspace")} title={crumbProjectless?"No project · choose a project":window.trebellDesktop?.pickDirectory?(crumbPath||"Open folder"):"Projects and workspaces"}>{crumbProjectless?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Projects and General chat"><ChevronDown size={12}/></button>
+              {/* The crumb opens Projects, in the desktop app too (its folder picker is on Projects and in the palette), and nothing beside
+                  it looks like a menu. It goes with the chat view, so focus goes to the Projects heading instead of falling to the page. */}
+              <button className={"project-crumb"+(crumbProjectless?" projectless":"")} onClick={()=>{setSection("projects");requestAnimationFrame(focusShownView)}} title={crumbProjectless?"No project · choose a project":projectLabel+" · Projects and workspaces"}>{crumbProjectless?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button>
               <span>/</span>
               {/* Renaming needs a thread: before the first message the title is plain text, not a button that does nothing. A thread
                   still opening keeps the button, disabled, so a quick open does not flash it away and back. The pull requests, Review,
