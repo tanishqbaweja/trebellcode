@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 // Trebell performance baseline: one command, no window, no paid model call.
 //
-//   node scripts/perf/run.mjs [--out <dir>] [--only bundle,micro,startup,open,typing,scroll,stream,idle,memory,harness]
-//                             [--reps 5] [--idle-seconds 180] [--threads 500] [--long-turns 1000] [--big-items 600]
+//   node scripts/perf/run.mjs [--out <dir>] [--reps 5] [--idle-seconds 180] [--threads 500] [--long-turns 1000] [--big-items 600]
+//                             [--only bundle,micro,startup,open,typing,scroll,stream,idle,memory,harness,relay-stream,
+//                                     harness-sessions,settings-poll,animation-control,electron]
+//   node scripts/perf/summarize.mjs <out>/results.json > <out>/summary.md
 //
+// The whole run takes about 50 minutes on a busy 20-thread machine.
 // It builds the UI (with source maps) into <out>/ui-dist, seeds an isolated Trebell home under <out>/work (a small real git repo
 // as the project; a sidebar of --threads Native threads, one of --long-turns turns, one turn of --big-items items; one thread per
 // installed external harness), then runs the real GUI server (src/gui-server.mjs, not mock) with scripts/perf/lib/server-tap.mjs
@@ -11,7 +14,11 @@
 // (lib/fake-openai.mjs); every other external fetch is refused. Results: <out>/results.json (all raw samples and summaries) plus
 // traces and CPU profiles beside it. The default <out> is <os tmpdir>/trebell-perf/<timestamp>. Each timing sample carries the
 // machine's CPU load at that moment; timings repeat --reps times and report median and p90.
-import { cpSync, existsSync, mkdirSync, rmSync, statSync, readdirSync, writeFileSync } from "node:fs";
+// After the browser scenarios it runs the companion scripts, each as its own process and each runnable alone (see its header):
+// relay-stream.mjs (an external harness's streamed turn through the real relay, a scripted ACP agent), harness-sessions.mjs (the
+// installed real harnesses' sessions, started with no prompt), settings-poll.mjs (the Settings page's 5-s runtime probe per
+// harness), animation-control.mjs (idle with and without the running CSS animations) and electron.mjs (the desktop shell, hidden).
+import { cpSync, existsSync, mkdirSync, rmSync, statSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { cpus, tmpdir, totalmem, freemem, release } from "node:os";
 import { join, resolve } from "node:path";
@@ -27,14 +34,19 @@ const repoRoot=fileURLToPath(new URL("../../",import.meta.url));
 const argv=process.argv.slice(2),flag=(name,fallback)=>{const index=argv.indexOf("--"+name);return index>=0?argv[index+1]:fallback};
 const stamp=new Date().toISOString().replace(/[:.]/g,"-");
 const out=resolve(flag("out",join(tmpdir(),"trebell-perf",stamp)));
-const ALL=["bundle","micro","startup","open","typing","scroll","stream","idle","memory","harness"];
+const ALL=["bundle","micro","startup","open","typing","scroll","stream","idle","memory","harness","relay-stream","harness-sessions","settings-poll","animation-control","electron"];
 const only=new Set(String(flag("only",ALL.join(","))).split(",").map(value=>value.trim()).filter(Boolean));
 const reps=Math.max(1,Number(flag("reps",5))||5),idleSeconds=Math.max(30,Number(flag("idle-seconds",180))||180);
 const sizes={threads:Number(flag("threads",500))||500,longTurns:Number(flag("long-turns",1000))||1000,bigTurnItems:Number(flag("big-items",600))||600};
 mkdirSync(out,{recursive:true});
 const work=join(out,"work"),uiDist=join(out,"ui-dist");mkdirSync(work,{recursive:true});
 const meter=startLoadMeter();
-const results={startedAt:new Date().toISOString(),out,host:{platform:process.platform,release:release(),cpus:cpus().length,cpuModel:cpus()[0]?.model,totalMemGB:Number((totalmem()/2**30).toFixed(1)),freeMemGBAtStart:Number((freemem()/2**30).toFixed(1)),node:process.version},sizes,reps,idleSeconds,scenarios:{},errors:[]};
+// With --only on an <out> that already holds a run, the re-run scenarios replace theirs in its results.json and the rest are kept
+// (the seeded home and the UI build in <out> are reused too).
+let prior=null;
+if(argv.includes("--only")&&existsSync(join(out,"results.json")))try{prior=JSON.parse(readFileSync(join(out,"results.json"),"utf8"))}catch{}
+const results={...(prior||{}),startedAt:new Date().toISOString(),out,host:{platform:process.platform,release:release(),cpus:cpus().length,cpuModel:cpus()[0]?.model,totalMemGB:Number((totalmem()/2**30).toFixed(1)),freeMemGBAtStart:Number((freemem()/2**30).toFixed(1)),node:process.version},sizes,reps,idleSeconds,scenarios:{...(prior?.scenarios||{})},errors:(prior?.errors||[]).filter(entry=>!only.has(entry.scenario))};
+if(prior)results.merged=[...(prior.merged||[]),{priorStartedAt:prior.startedAt,rerun:[...only]}];
 const save=()=>writeFileSync(join(out,"results.json"),JSON.stringify(results,null,2));
 const log=(...parts)=>console.log(new Date().toISOString().slice(11,19),...parts);
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -72,8 +84,10 @@ await scenario("bundle",async()=>bundleReport({outDir:uiDist,modules:bundleModul
 
 await scenario("micro",async()=>{
   const file=join(out,"micro.json"),tap=pathToFileURL(join(repoRoot,"scripts","perf","lib","server-tap.mjs")).href;
-  await new Promise((resolve,reject)=>{const child=spawn(process.execPath,["--expose-gc","--import",tap,join(repoRoot,"scripts","perf","micro.mjs"),"--home",join(work,"micro-home"),"--repo",repo,"--out",file],{cwd:repoRoot,env:{...process.env,NODE_NO_WARNINGS:"1",CODEX_HOME:join(work,"codex-home-micro"),TEMP:join(work,"tmp"),TMP:join(work,"tmp")},windowsHide:true,stdio:["ignore","pipe","pipe"]});let err="";child.stderr.on("data",chunk=>err+=chunk);child.on("exit",code=>code===0?resolve():reject(new Error("micro exited "+code+": "+err.slice(-2000))));child.on("error",reject)});
-  const { readFileSync }=await import("node:fs");return JSON.parse(readFileSync(file,"utf8"));
+  // SQLite spills large sorts to TEMP; a missing TEMP directory fails them with "unable to open database file".
+  const temp=join(work,"tmp"),codexHome=join(work,"codex-home-micro");mkdirSync(temp,{recursive:true});mkdirSync(codexHome,{recursive:true});
+  await new Promise((resolve,reject)=>{const child=spawn(process.execPath,["--expose-gc","--import",tap,join(repoRoot,"scripts","perf","micro.mjs"),"--home",join(work,"micro-home"),"--repo",repo,"--out",file],{cwd:repoRoot,env:{...process.env,NODE_NO_WARNINGS:"1",CODEX_HOME:codexHome,TEMP:temp,TMP:temp,TMPDIR:temp},windowsHide:true,stdio:["ignore","pipe","pipe"]});let err="";child.stderr.on("data",chunk=>err+=chunk);child.on("exit",code=>code===0?resolve():reject(new Error("micro exited "+code+": "+err.slice(-2000))));child.on("error",reject)});
+  return JSON.parse(readFileSync(file,"utf8"));
 });
 
 // ---------- browser helpers ----------
@@ -417,7 +431,11 @@ await scenario("harness",async()=>{
     await page.goto(server.url,{waitUntil:"domcontentloaded"});
     let openMs=null,error=null;
     try{
-      const row=page.locator(`.thread-row .thread-main[title="${name}"]`).first();await row.waitFor({state:"visible",timeout:30_000});
+      // The sidebar is virtualized: a thread below its rendered rows is found through the search box, as openThread does.
+      const row=page.locator(`.thread-row .thread-main[title="${name}"]`).first();
+      await page.locator(".thread-row").first().waitFor({state:"visible",timeout:30_000});
+      if(!(await row.isVisible().catch(()=>false)))await page.locator(".search-box input").fill(name);
+      await row.waitFor({state:"visible",timeout:30_000});
       const t0=await pageNow(page);await row.click();
       openMs=Math.round((await frameWhen(page,{text:marker(name),timeoutMs:45_000}))-t0);
     }catch(caught){error=String(caught.message).split(String.fromCharCode(10))[0].slice(0,300)}
@@ -438,6 +456,26 @@ await scenario("harness",async()=>{
 
 if(main){await main.context.close().catch(()=>{});await main.server.stop()}
 if(browser)await browser.close();
+
+// ---------- companions: each its own process, one at a time, after this run's browser is closed ----------
+// Each writes <out>/<name>.json, which results.json also carries.
+async function companion(name,args,{tap=false}={}){
+  await scenario(name,async()=>{
+    const file=join(out,name+".json"),temp=join(work,"tmp");mkdirSync(temp,{recursive:true});
+    const tapArgs=tap?["--expose-gc","--import",pathToFileURL(join(repoRoot,"scripts","perf","lib","server-tap.mjs")).href]:[];
+    await new Promise((resolve,reject)=>{
+      const child=spawn(process.execPath,[...tapArgs,join(repoRoot,"scripts","perf",name+".mjs"),...args,"--out",file],{cwd:repoRoot,env:{...process.env,NODE_NO_WARNINGS:"1",TEMP:temp,TMP:temp,TMPDIR:temp},windowsHide:true,stdio:["ignore","pipe","pipe"]});
+      let err="";child.stdout.on("data",chunk=>log(name,String(chunk).trim().slice(0,300)));child.stderr.on("data",chunk=>err+=chunk);
+      child.on("exit",code=>code===0?resolve():reject(new Error(name+" exited "+code+": "+err.slice(-2000))));child.on("error",reject);
+    });
+    return JSON.parse(readFileSync(file,"utf8"));
+  });
+}
+await companion("relay-stream",["--home",join(work,"relay-home"),"--cwd",repo],{tap:true});
+await companion("harness-sessions",["--home",join(work,"harness-home"),"--ui-dist",uiDist,"--runtimes",externalRuntimes.join(",")||"grok"]);
+await companion("settings-poll",["--home",baseHome,"--ui-dist",uiDist,"--runtimes",["codex",...externalRuntimes].join(","),"--seconds","60"]);
+await companion("animation-control",["--home",baseHome,"--ui-dist",uiDist,"--seconds","20","--reps","3"]);
+await companion("electron",["--home",baseHome,"--ui-dist",uiDist,"--idle-seconds","60","--reps",String(reps)]);
 meter.stop();
 results.finishedAt=new Date().toISOString();results.freeMemGBAtEnd=Number((freemem()/2**30).toFixed(1));save();
 log("done",join(out,"results.json"),results.errors.length?results.errors.length+" errors":"");

@@ -34,14 +34,16 @@ export async function processTable(){
     const out=await run("ps",["-A","-o","pid=,ppid=,rss=,time=,comm="]);
     return out.trim().split(/\n/).map(line=>{const [pid,ppid,rss,time,...name]=line.trim().split(/\s+/);const parts=time.split(/[:-]/).map(Number);const seconds=parts.reduce((sum,value)=>sum*60+value,0);return {pid:Number(pid),ppid:Number(ppid),name:name.join(" "),cpuSeconds:seconds,workingSet:Number(rss)*1024,privateBytes:null,readBytes:null,writeBytes:null,writeOps:null,commandLine:""}});
   }
-  const script="$ErrorActionPreference='SilentlyContinue';Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{p=$_.ProcessId;pp=$_.ParentProcessId;n=$_.Name;u=[string]$_.UserModeTime;k=[string]$_.KernelModeTime;ws=[string]$_.WorkingSetSize;pv=[string]$_.PrivatePageCount;rb=[string]$_.ReadTransferCount;wb=[string]$_.WriteTransferCount;wo=[string]$_.WriteOperationCount;c=$(if($_.CommandLine){$_.CommandLine.Substring(0,[Math]::Min(400,$_.CommandLine.Length))}else{''})} } | ConvertTo-Json -Compress";
+  const script="$ErrorActionPreference='SilentlyContinue';Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{p=$_.ProcessId;pp=$_.ParentProcessId;n=$_.Name;u=[string]$_.UserModeTime;k=[string]$_.KernelModeTime;ws=[string]$_.WorkingSetSize;pv=[string]$_.PrivatePageCount;rb=[string]$_.ReadTransferCount;wb=[string]$_.WriteTransferCount;wo=[string]$_.WriteOperationCount;t=$(if($_.CreationDate){[string]$_.CreationDate.ToFileTimeUtc()}else{'0'});c=$(if($_.CommandLine){$_.CommandLine.Substring(0,[Math]::Min(400,$_.CommandLine.Length))}else{''})} } | ConvertTo-Json -Compress";
   const rows=JSON.parse(await powershell(script));
-  return (Array.isArray(rows)?rows:[rows]).map(row=>({pid:Number(row.p),ppid:Number(row.pp),name:String(row.n||""),cpuSeconds:(Number(row.u)+Number(row.k))/1e7,workingSet:Number(row.ws)||0,privateBytes:Number(row.pv)||0,readBytes:Number(row.rb)||0,writeBytes:Number(row.wb)||0,writeOps:Number(row.wo)||0,commandLine:String(row.c||"")}));
+  return (Array.isArray(rows)?rows:[rows]).map(row=>({pid:Number(row.p),ppid:Number(row.pp),name:String(row.n||""),cpuSeconds:(Number(row.u)+Number(row.k))/1e7,workingSet:Number(row.ws)||0,privateBytes:Number(row.pv)||0,readBytes:Number(row.rb)||0,writeBytes:Number(row.wb)||0,writeOps:Number(row.wo)||0,created:Number(row.t)||0,commandLine:String(row.c||"")}));
 }
 
-// The processes under the given roots (the roots included), each with its depth and root.
+// The processes under the given roots (the roots included), each with its depth and root. Windows reuses process ids and keeps an
+// orphan's dead parent id, so a child counts only when it started after its parent did.
 export function descendants(table,rootPids){
-  const children=new Map();for(const row of table){if(!children.has(row.ppid))children.set(row.ppid,[]);children.get(row.ppid).push(row)}
+  const children=new Map(),parents=new Map(table.map(row=>[row.pid,row]));
+  for(const row of table){const parent=parents.get(row.ppid);if(parent?.created&&row.created&&row.created<parent.created)continue;if(!children.has(row.ppid))children.set(row.ppid,[]);children.get(row.ppid).push(row)}
   const byPid=new Map(table.map(row=>[row.pid,row])),out=[],seen=new Set();
   for(const root of rootPids){
     const start=byPid.get(Number(root));if(!start)continue;

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Markdown tables from a perf run: node scripts/perf/summarize.mjs <out>/results.json [<electron.json>] > summary.md
+// (results.json carries the companions' results when run.mjs ran them; a separate electron.json is read when given.)
 // Every timing row is "median / p90 (n)" with the machine's CPU load beside it.
 import { readFileSync, existsSync } from "node:fs";
 
@@ -29,6 +30,7 @@ if(s.micro){
     ...m.stateCalls.map(row=>[row.label,mp(row.ms),row.perCall.sqliteOpens,Math.round(row.perCall.sqliteBytesRead/1024),Math.round(row.perCall.jsonParseChars/1024),row.machineLoadPercent]),
     [m.gitInfo.label+` (${m.gitInfo.perCall.spawns.median} git processes)`,mp(m.gitInfo.ms),"","","",m.gitInfo.machineLoadPercent],
     ...(m.probes||[]).map(row=>[row.label+` (${row.perCall.spawns.median} processes: ${row.perCall.spawnKeys.join(", ")})`,mp(row.ms),"","","",row.machineLoadPercent]),
+    ...(m.editorDiscovery?[[m.editorDiscovery.label+` (${m.editorDiscovery.perCall.spawns.median} processes; found ${(m.editorDiscovery.editorsFound||[]).join(", ")||"none"})`,mp(m.editorDiscovery.ms),"","","",m.editorDiscovery.machineLoadPercent]]:[]),
   ]);
   out(`addItem: WAL grew ${m.addItemPerUpdate.walGrowthKB} KB over 30 updates; the turn was ${Math.round(m.addItemPerUpdate.turnBytes/1024)} KB. Meta sizes: ${JSON.stringify(m.metaBytes)}.`);out("");
 }
@@ -89,11 +91,40 @@ if(s.harness){
   for(const x of h.externals)out(`- ${x.runtime}: open ${x.openMs??"failed"} ms${x.error?" ("+x.error.slice(0,140)+")":""}; spawned ${JSON.stringify(x.spawned)}; new processes: ${x.newProcesses.map(row=>`${row.name} ${row.workingSetMB} MB`).join(", ")||"none"}`);
   out("After leaving them, 60 s idle, by type: "+Object.entries(h.afterLeavingByRole||{}).map(([role,g])=>`${role} x${g.count}: ${g.corePercent}% / ${g.workingSetMB} MB`).join("; "));out("");
 }
-if(e){
+if(s["relay-stream"]){
+  const x=s["relay-stream"];out(`### External harness streaming through the relay (scripted ACP agent, ${x.chunks} chunks at ${x.rate}/s)`);
+  table(["History MB","turn ms","lag ms","server CPU % of a core","CPU ms per chunk","sqlite opens per chunk","JSON KB parsed per chunk","event-loop p99 / max ms","load %"],x.text.map(row=>[row.historyMB,mp(row.summary.ms),mp(row.summary.lagMs),mp(row.summary.corePercent),mp(row.summary.cpuMsPerChunk),mp(row.summary.sqliteOpensPerChunk),mp(row.summary.jsonParseKBPerChunk),row.summary.eventLoopP99Ms.median+" / "+row.summary.eventLoopMaxMs.median,mp(row.summary.machineLoad)]));
+  table(["History MB (tool turn)","turn ms","CPU ms per update","write transactions","sqlite bound KB written","disk KB written","disk write ops"],x.tools.map(row=>[row.historyMB,mp(row.summary.ms),mp(row.summary.cpuMsPerUpdate),mp(row.summary.writeTransactions),mp(row.summary.sqliteBoundWriteKB),mp(row.summary.diskWriteKB),mp(row.summary.diskWriteOps)]));
+  if(x.processes)out("ACP processes: "+JSON.stringify({...x.processes,perProcess:undefined}));out("");
+}
+if(s["harness-sessions"]){
+  const x=s["harness-sessions"];out("### Real harness sessions (thread/start, no prompt)");
+  for(const [runtime,entry] of Object.entries(x.runtimes||{})){
+    if(entry.refused){out(`- ${runtime}: refused (${entry.switched?.status}: ${String(entry.switched?.body||"").slice(0,120)})`);continue}
+    // The idle window covers every harness process started so far; this runtime's own are the ones its thread/starts added.
+    const own=new Set(entry.threads.flatMap(t=>t.newProcesses.map(row=>row.pid))),mine=(entry.idle?.processes||[]).filter(row=>own.has(row.pid));
+    const total=key=>Number(mine.reduce((sum,row)=>sum+(row[key]||0),0).toFixed(2));
+    out(`- ${runtime}: thread/start ${entry.threads.map(t=>t.threadStartMs+" ms"+(t.error?" ("+t.error.slice(0,80)+")":"")).join(", ")}; new processes ${entry.threads.map(t=>t.newProcesses.length).join(" + ")}; idle ${entry.idle?.seconds} s, its own ${mine.length}: ${total("workingSetMB")} MB WS, ${total("privateMB")} MB private, ${total("corePercent")}% of a core (all harness processes alive then: ${entry.idle?.processes?.length}, ${entry.idle?.totalWorkingSetMB} MB WS, ${entry.idle?.totalPrivateMB} MB private)`);
+  }
+  if(x.afterSwitchBack)out(`Still running ${x.afterSwitchBack.seconds} s after switching back to Native: ${x.afterSwitchBack.count} (${x.afterSwitchBack.workingSetMB} MB WS). Left after the server stopped: ${x.afterServerStop?.orphans?.length??"?"}.`);
+  if(x.staticCaching)out("Static caching headers: "+JSON.stringify(x.staticCaching));out("");
+}
+if(s["settings-poll"]){
+  const x=s["settings-poll"];out("### Settings page poll by active harness");
+  table(["Runtime","/api/runtime ms","polls per min","server spawns per min","spawns"],Object.entries(x.runtimes||{}).map(([runtime,row])=>row.runtimeRequestMs?[runtime,mp(row.runtimeRequestMs),row.runtimePollsPerMin,row.spawnsPerMin,JSON.stringify(row.spawnsByCommand)]:[runtime,"refused "+row.switched?.status,"","",""]));
+}
+if(s["animation-control"]){
+  const x=s["animation-control"];out("### Idle with and without the running CSS animations");
+  table(["Phase","frames drawn per s","renderer % of a core","GPU process %","machine load %"],Object.entries(x.phases||{}).map(([name,row])=>[name,mp(row.drawsPerSecond),mp(row.rendererCorePercent),mp(row.gpuCorePercent),mp(row.machineLoad)]));
+}
+const electronResult=e||s.electron||null;
+if(electronResult){
+  const e=electronResult;
   out("### Electron (hidden window, desktop/main.mjs as shipped)");
   out(`Startup: window loaded ${mp(e.startupSummary?.windowLoadedMs)} ms, composer ready ${mp(e.startupSummary?.composerReadyMs)} ms. Window visibility: ${JSON.stringify(e.visibility)}.`);
   for(const key of ["idleHome","idleThread"]){const i=e[key];if(!i)continue;out(`${key}: total WS ${i.totalWorkingSetMB} MB, private ${i.totalPrivateMB} MB; main event loop ${JSON.stringify(i.mainEventLoopMs)}; by role: `+Object.entries(i.byRole).map(([role,g])=>`${role} x${g.count}: ${g.corePercent}% / ${g.workingSetMB} MB`).join("; "));out("app.getAppMetrics: "+i.appMetrics.map(m=>`${m.type}${m.serviceName?"/"+m.serviceName:""} ${m.cpuPercent}% ${m.workingSetMB} MB`).join(", "))}
-  if(e.openLong)out(`Opening the 1000-turn thread: ${mp(e.openLong.ms)} ms; main-process event-loop max delay ${mp(e.openLong.mainLoopMaxMs)} ms.`);
+  if(e.openLong)out(`Opening the 1000-turn thread: ${mp(e.openLong.ms)} ms; main-process event-loop max delay ${mp(e.openLong.mainLoopMaxMs)} ms; main-process launches over ${e.openLong.threadSwitches} switches: ${JSON.stringify(e.openLong.mainProcessSpawnsDuringSwitches||{})}; page /api requests: ${JSON.stringify(e.openLong.pageApiRequestsDuringSwitches||{})}.`);
+  for(const key of ["idleHome","idleThread"]){if(e[key]?.mainProcessSpawns)out(`${key} main-process launches: ${JSON.stringify(e[key].mainProcessSpawns)}.`);if(e[key]?.pageApiRequests)out(`${key} page /api requests over ${e[key].seconds} s: ${JSON.stringify(e[key].pageApiRequests)}.`)}
   if(e.errors?.length)out("Electron errors: "+e.errors.map(x=>x.split("\n")[0]).join("; "));
 }
 console.log(lines.join("\n"));
