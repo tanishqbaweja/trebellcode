@@ -47,14 +47,15 @@ function parseDelimited(text,delimiter=","){
   if(cell||row.length){row.push(cell);rows.push(row)}
   return rows;
 }
-// A line's inline marks: `code` (its text kept as it is), **bold** and *italic*, which may hold code. Each mark is an element
-// holding text, so nothing in the file is ever read as HTML; a lone "*" (2 * 3) stays text.
-const INLINE_MARK=/(`+)(.+?)\1|\*\*(?=\S)(.+?)(?<=\S)\*\*|\*(?=[^\s*])(.+?)(?<=[^\s*])\*/g;
+// A line's inline marks: `code` (its text kept as it is), ***bold italic***, **bold** and *italic*, which may hold code; an italic
+// run may hold a **bold** one whole, so its first "*" does not end the italic. Each mark is an element holding text, so nothing in
+// the file is ever read as HTML; a lone "*" (2 * 3) stays text.
+const INLINE_MARK=/(`+)(.+?)\1|\*\*\*(?=[^\s*])(.+?)(?<=[^\s*])\*\*\*|\*\*(?=\S)(.+?)(?<=\S)\*\*|\*(?=[^\s*])((?:\*\*(?=\S).+?(?<=\S)\*\*|[^*]|\*(?=\s))+?)(?<=\S)\*/g;
 function inlineMarks(text){
   const parts=[];let last=0;
   for(const match of text.matchAll(INLINE_MARK)){
     if(match.index>last)parts.push(text.slice(last,match.index));
-    parts.push(match[2]!=null?<code key={match.index}>{match[2]}</code>:match[3]!=null?<strong key={match.index}>{inlineMarks(match[3])}</strong>:<em key={match.index}>{inlineMarks(match[4])}</em>);
+    parts.push(match[2]!=null?<code key={match.index}>{match[2]}</code>:match[3]!=null?<em key={match.index}><strong>{inlineMarks(match[3])}</strong></em>:match[4]!=null?<strong key={match.index}>{inlineMarks(match[4])}</strong>:<em key={match.index}>{inlineMarks(match[5])}</em>);
     last=match.index+match[0].length;
   }
   if(last<text.length)parts.push(text.slice(last));

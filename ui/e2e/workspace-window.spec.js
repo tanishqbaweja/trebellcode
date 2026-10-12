@@ -797,6 +797,18 @@ test("the Markdown preview draws bold, italic and inline code, and shows markup 
   await shootBothModes(page,"workspace-markdown-inline");
 });
 
+test("the Markdown preview draws bold inside italic and bold italic with no asterisks left over",async({page,request})=>{
+  test.setTimeout(45_000);
+  const readme="An *italic run with **bold** inside* here.\nAnd ***bold italic*** text.\nA **bold run with *italic* inside** too.\n";
+  const {right,row}=await openFilesFolder(page,request,"Workspace markdown nesting",{"README.md":readme});
+  await row("README.md").click();
+  const lines=right.locator(".markdown-preview p");
+  await expect(lines).toHaveText(["An italic run with bold inside here.","And bold italic text.","A bold run with italic inside too."]);
+  await expect(lines.nth(0).locator("em strong")).toHaveText("bold");
+  await expect(lines.nth(1).locator("em strong")).toHaveText("bold italic");
+  await expect(lines.nth(2).locator("strong em")).toHaveText("italic");
+  await shootBothModes(page,"workspace-markdown-nested");
+});
 
 test("the tree's attach control and the attachment's remove button are named controls the keyboard reaches",async({page,request})=>{
   test.setTimeout(45_000);
