@@ -593,6 +593,44 @@ test("Refresh pressed while another file opens shows that file, never the one be
   await expect(right.locator(".syntax-view")).toContainText("todo");
 });
 
+test("an unsaved edit is still in the editor after another inspector tab and after the panel is closed",async({page,request})=>{
+  test.setTimeout(60_000);
+  const {right,row,top,dir}=await openFilesFolder(page,request,"Workspace kept edits",{"notes.txt":"kept\n","todo.txt":"todo\n"});
+  const editor=right.locator("textarea.file-editor"),notes=join(dir,"notes.txt"),toggle=page.getByTestId("right-panel-toggle");
+  await row("notes.txt").click();
+  await right.getByRole("button",{name:"Edit",exact:true}).click();
+  await editor.click();await page.keyboard.press("Control+End");await page.keyboard.type("typed",{delay:20});
+  // Git, then Files again: the editor is back with what was typed.
+  await top.getByRole("button",{name:"Git",exact:true}).click();
+  await expect(editor).toHaveCount(0);
+  await top.getByRole("button",{name:"Files",exact:true}).click();
+  await expect(editor).toHaveValue("kept\ntyped");
+  await expect(right.locator(".file-head strong")).toHaveText("notes.txt");
+  // The panel closed and opened again, likewise; nothing was written meanwhile.
+  await toggle.click();await expect(right).toBeHidden();
+  await toggle.click();
+  await expect(editor).toHaveValue("kept\ntyped");
+  expect(await readFile(notes,"utf8")).toBe("kept\n");
+  await shootBothModes(page,"workspace-kept-edit");
+  // Saved, the edit is no longer kept: the next visit shows the file, not an editor.
+  await right.getByRole("button",{name:"Save",exact:true}).click();
+  await expect(editor).toHaveCount(0);
+  expect(await readFile(notes,"utf8")).toBe("kept\ntyped");
+  await top.getByRole("button",{name:"Git",exact:true}).click();
+  await top.getByRole("button",{name:"Files",exact:true}).click();
+  await expect(right.locator(".file-head")).toHaveCount(0);await expect(editor).toHaveCount(0);
+  // An edit dropped with Discard changes is not kept either.
+  await row("notes.txt").click();
+  await right.getByRole("button",{name:"Edit",exact:true}).click();
+  await editor.click();await page.keyboard.type("x",{delay:20});
+  await row("todo.txt").click();
+  await page.getByRole("dialog").getByRole("button",{name:"Discard changes",exact:true}).click();
+  await expect(right.locator(".file-head strong")).toHaveText("todo.txt");
+  await top.getByRole("button",{name:"Git",exact:true}).click();
+  await top.getByRole("button",{name:"Files",exact:true}).click();
+  await expect(editor).toHaveCount(0);
+});
+
 test("a file search with no match says that no files match",async({page,request})=>{
   test.setTimeout(45_000);
   const {right,row}=await openFilesFolder(page,request,"Workspace empty search",{"notes.txt":"notes\n","src/app.js":"app\n"});

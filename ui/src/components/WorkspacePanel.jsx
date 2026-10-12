@@ -146,6 +146,11 @@ function ChangedFilePath({plan}){
   return <span className="changed-file-path split" ref={ref}><bdi className={"changed-file-dir"+(plan.dirKeep!=null?" kept":"")}><FittedText glyphs={plan.dirGlyphs} shown={fit?.dir}/></bdi><span className="changed-file-sep">{plan.sep}</span>{name}</span>;
 }
 
+// An unsaved edit outlives the panel: another inspector tab, a closed panel or another environment unmounts it, and another project
+// resets it. The edit is kept here by project, and the editor opens with it again when the Files view comes back to that project.
+const keptEdits=new Map();
+const hasUnsavedEdit=({file,edit,draft})=>Boolean(file&&edit&&draft!==(file.content??""));
+
 // The inspector's Files and Diff tabs and this panel's Files | Changes switch are one choice, which the inspector holds (`tab`): the
 // switch hands a choice to onTabChange, and the panel stays mounted across it, so an open file or a search survives the switch.
 // Without a repository to diff (a general chat) the switch offers only Files, and a Diff tab carried over from a project says there is
@@ -162,6 +167,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [edit,setEdit]=useState(false);
   const [draft,setDraft]=useState("");
   const [conflict,setConflict]=useState(null);
+  const liveEditRef=useRef(null);liveEditRef.current={file,edit,draft,conflict};
   const [diff,setDiff]=useState({status:"",diff:""});
   const [diffError,setDiffError]=useState("");
   // Whether a diff has been read for this project: until then the Diff tab says it is loading, never that the tree is clean.
@@ -208,7 +214,12 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
       if(lands()){setDiff(data);setDiffError(data.error||"");setDiffLoaded(true)}
     }catch(error){if(lands())setDiffError(String(error?.message??error??"").trim()||"No reason was given.")}
   }
-  useEffect(()=>{diffShownRef.current=diffRequestRef.current;setDiff({status:"",diff:""});setDiffError("");setDiffLoaded(false);setTreeLimit(WORKSPACE_TREE_PAGE_SIZE);setChangedLimit(WORKSPACE_CHANGED_PAGE_SIZE);setDiffLimit(WORKSPACE_DIFF_CHUNK_CHARS);refreshTree();refreshDiff();openRequestRef.current++;setFile(null);setEdit(false);setConflict(null);setError("");},[projectPath,environmentId]);
+  useEffect(()=>{diffShownRef.current=diffRequestRef.current;setDiff({status:"",diff:""});setDiffError("");setDiffLoaded(false);setTreeLimit(WORKSPACE_TREE_PAGE_SIZE);setChangedLimit(WORKSPACE_CHANGED_PAGE_SIZE);setDiffLimit(WORKSPACE_DIFF_CHUNK_CHARS);refreshTree();refreshDiff();openRequestRef.current++;setFile(null);setEdit(false);setConflict(null);setError("");
+    const editKey=(environmentId||"")+"\n"+projectPath,kept=keptEdits.get(editKey);
+    if(kept){openPathRef.current=kept.file.path;setFile(kept.file);setDraft(kept.draft);setEdit(true);setConflict(kept.conflict)}
+    // The cleanup React runs right after the first run in development sees no file yet, so it leaves a kept edit as it is.
+    return()=>{const live=liveEditRef.current;if(hasUnsavedEdit(live))keptEdits.set(editKey,live);else if(live.file)keptEdits.delete(editKey)};
+  },[projectPath,environmentId]);
   // Opening the Changes view, from either switch, reads the working tree again; the last answer stays on screen meanwhile.
   const shownTabRef=useRef(tab);
   useEffect(()=>{const previous=shownTabRef.current;shownTabRef.current=tab;if(tab==="diff"&&previous!=="diff"&&allowDiff)refreshDiff()},[tab]);
@@ -251,7 +262,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   // when the person opens another file, starts editing or changes project is dropped, so it never closes the editor or replaces
   // what is typed (a save made from the text shown then finds any change on disk). Refresh and an agent's change read again the
   // file last asked for, never the one it is taking the place of.
-  const unsaved=Boolean(file&&edit&&draft!==(file.content??""));
+  const unsaved=hasUnsavedEdit({file,edit,draft});
   async function keepUnsaved(){return unsaved&&!await askConfirm("Discard your changes to "+file.name+"?",{confirm:"Discard changes",cancel:"Keep editing"})}
   async function open(path,{discard=false}={}){
     if(!discard&&await keepUnsaved())return;
