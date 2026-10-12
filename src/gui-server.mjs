@@ -567,7 +567,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   const agentRuntimes=new AgentRuntimeManager({state,env,environments,fetchImpl});
   const codexThreadModels=new Map();
-  const agentThreads=new AgentThreadStore(env);
+  // As state: one sqlite connection for the agent threads, closed in close(). The server is the only writer of them.
+  const agentThreads=new AgentThreadStore(env,{keepConnection:true});
   agentThreads.reconcileRestart({continueAfterRestart:Boolean(state.settings().continueThreadsAfterRestart)});
   for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
     const recovery=meta?.restartRecovery;
@@ -3254,7 +3255,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         stopCodexAppServers(),
         eventJournal.close(),
       ]);
-      state.close();
+      state.close();agentThreads.close();
       await new Promise(resolve=>server.close(resolve));
     },
   };

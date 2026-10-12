@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
+import { SqliteAgentThreadStore } from "../src/sqlite-agent-thread-store.mjs";
 
 const require=createRequire(import.meta.url);
 const {DatabaseSync}=require("node:sqlite");
@@ -62,11 +63,12 @@ test("AgentThreadStore metadata reads stay transcript-free and current without S
   const home=await mkdtemp(join(tmpdir(),"trebell-agent-metadata-")),env={...process.env,TREBELL_HOME:home};
   try{
     const store=new AgentThreadStore(env),thread=store.create({runtime:"native",cwd:home,providerSessionId:"metadata",model:"fixture",providerMeta:{permissionProfile:"supervised"}});
-    const originalGet=store.storage.get;let storageGets=0;store.storage.get=(...args)=>{storageGets++;return originalGet.apply(store.storage,args)};
-    const created=store.getMetadata(thread.id);assert.equal(created.id,thread.id);assert.deepEqual(created.turns,[]);assert.equal(created.status.type,"idle");assert.equal(storageGets,0);
+    const originalRead=store.storage.read;let storageReads=0;store.storage.read=(...args)=>{storageReads++;return originalRead.apply(store.storage,args)};
+    const created=store.getMetadata(thread.id);assert.equal(created.id,thread.id);assert.deepEqual(created.turns,[]);assert.equal(created.status.type,"idle");assert.equal(storageReads,0);
     created.providerMeta.permissionProfile="mutated";assert.equal(store.getMetadata(thread.id).providerMeta.permissionProfile,"supervised","metadata callers must receive an isolated copy");
-    const turn=store.addTurn(thread.id,{id:"metadata-turn",inputText:"hello"});assert.equal(turn.status,"inProgress");assert.equal(store.getMetadata(thread.id).status.type,"active");assert.deepEqual(store.getMetadata(thread.id).turns,[]);assert.equal(storageGets,1,"the write may hydrate once, but metadata reads must not add storage gets");
-    store.finishTurn(thread.id,turn.id);assert.equal(store.getMetadata(thread.id).status.type,"idle");assert.equal(storageGets,2);assert.equal(store.get(thread.id).turns.length,1);assert.equal(storageGets,3);
+    const turn=store.addTurn(thread.id,{id:"metadata-turn",inputText:"hello"});assert.equal(turn.status,"inProgress");assert.equal(store.getMetadata(thread.id).status.type,"active");assert.deepEqual(store.getMetadata(thread.id).turns,[]);assert.equal(storageReads,1,"the write may hydrate once, but metadata reads must not add storage reads");
+    // The thread the write read stays parsed, and each later write replaces it with what it wrote: no further sqlite read.
+    store.finishTurn(thread.id,turn.id);assert.equal(store.getMetadata(thread.id).status.type,"idle");assert.equal(storageReads,1);assert.equal(store.get(thread.id).turns.length,1);assert.equal(storageReads,1);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
@@ -107,5 +109,73 @@ test("a thread keeps a reasoning item's start and end within a bound, and redact
     assert.ok(stored.content[0].length<=64*1024,"the stored text is bounded");
     assert.ok(stored.content[0].startsWith("FIRST ")&&stored.content[0].endsWith(" LAST"),"it keeps the thought's start and end");
     assert.deepEqual(redacted.summary,["Using [redacted]"]);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+function deepFreeze(value){if(value&&typeof value==="object"&&!Object.isFrozen(value)){Object.freeze(value);for(const item of Object.values(value))deepFreeze(item)}return value}
+
+test("the thread a store keeps parsed is what a fresh sqlite read gives after every kind of write, and a write leaves a peeked thread as it was",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-cache-")),secret="cache-secret-that-must-not-survive",env={...process.env,TREBELL_HOME:home,CACHE_SECRET:secret};
+  try{
+    const store=new AgentThreadStore(env),reader=new SqliteAgentThreadStore(env);
+    // Every thread peek hands out, the store's own writes included, is frozen here: a write that changed a shared object would throw.
+    const peek=store.peek.bind(store);store.peek=id=>deepFreeze(peek(id));
+    const same=(id,label)=>assert.deepEqual(peek(id),reader.get(id),label);
+    const thread=store.create({runtime:"cursor",cwd:home,providerSessionId:"cache",providerMeta:{permissionProfile:"supervised"}});
+    const first=store.addTurn(thread.id,{inputText:"first "+secret,startedAt:100});same(thread.id,"a first turn");
+    const held=store.peek(thread.id);
+    store.addItem(thread.id,first.id,{type:"commandExecution",id:"tool-1",status:"inProgress",aggregatedOutput:"line 1"});same(thread.id,"a tool item");
+    store.addItem(thread.id,first.id,{type:"commandExecution",id:"tool-1",status:"completed",aggregatedOutput:"line 1\nline 2 "+secret});same(thread.id,"a tool update");
+    store.addItem(thread.id,first.id,{type:"agentMessage",id:"answer-1",text:"done"});same(thread.id,"an agent message");
+    store.finishTurn(thread.id,first.id);same(thread.id,"a finished turn");
+    // sqlite reads turns by start time, then in the order they were written: an earlier start goes before, an equal one after.
+    const earlier=store.addTurn(thread.id,{id:"earlier",inputText:"earlier",startedAt:50});same(thread.id,"an earlier turn");
+    store.addTurn(thread.id,{id:"tied",inputText:"tied",startedAt:100});same(thread.id,"a turn at an equal time");
+    store.addTurn(thread.id,{id:"untimed",inputText:"untimed",startedAt:null});same(thread.id,"a turn with no start time");
+    assert.deepEqual(peek(thread.id).turns.map(turn=>turn.id),["untimed","earlier",first.id,"tied"]);
+    store.updateTurn(thread.id,earlier.id,{modelTurns:3});same(thread.id,"a turn patch");
+    store.updateTurn(thread.id,"tied",{startedAt:10});same(thread.id,"a turn whose start time moved");
+    store.restartTurn(thread.id,"tied");same(thread.id,"a restarted turn");
+    store.finishTurn(thread.id,"tied",{status:"failed",error:{message:"stopped"}});same(thread.id,"a failed turn");
+    store.update(thread.id,{name:"Cache "+secret,providerMeta:{permissionProfile:"auto"}});same(thread.id,"a meta patch");
+    store.update(thread.id,{archived:true},{touch:false});same(thread.id,"an archive");
+    store.update(thread.id,{turns:peek(thread.id).turns.slice(0,2)});same(thread.id,"a rewind");
+    assert.equal(held.turns.length,1,"a thread peeked before the writes is as it was");assert.equal(held.turns[0].items.length,1);
+    assert.doesNotMatch(JSON.stringify(peek(thread.id)),new RegExp(secret),"the kept thread is the redacted one sqlite holds");
+    assert.equal(store.delete(thread.id),true);assert.equal(peek(thread.id),null,"a deleted thread is not served");
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("a store keeps the two threads used last, lets one go after a minute unused, and does not serve a write sqlite refused",async t=>{
+  t.mock.timers.enable({apis:["setTimeout","Date"],now:Date.now()});
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-cache-bound-")),env={...process.env,TREBELL_HOME:home};
+  try{
+    const store=new AgentThreadStore(env),ids=["a","b","c"].map(name=>store.create({runtime:"cursor",cwd:home,name}).id);
+    const read=store.storage.read;let reads=0;store.storage.read=(...args)=>{reads++;return read.apply(store.storage,args)};
+    for(const id of ids)store.peek(id);assert.equal(reads,3);
+    store.peek(ids[1]);store.peek(ids[2]);assert.equal(reads,3,"the two used last are held");
+    store.peek(ids[0]);assert.equal(reads,4,"the third was let go");
+    t.mock.timers.tick(59_000);store.peek(ids[0]);assert.equal(reads,4,"a thread used within the minute stays");
+    t.mock.timers.tick(1_001);store.peek(ids[2]);assert.equal(reads,5,"one unused for a minute is let go");
+    const turn=store.addTurn(ids[0],{inputText:"hello"}),put=store.storage.putThreadAndTurn;
+    store.storage.putThreadAndTurn=()=>{throw new Error("disk full")};
+    try{assert.throws(()=>store.addItem(ids[0],turn.id,{type:"agentMessage",id:"lost",text:"lost"}),/disk full/)}finally{store.storage.putThreadAndTurn=put}
+    assert.equal(store.peek(ids[0]).turns[0].items.some(item=>item.id==="lost"),false);assert.equal(reads,6,"the refused write dropped the thread, so it is read again");
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("a store with a kept connection writes on it as durably as on a connection of its own, and after close opens its own again",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-kept-")),env={...process.env,TREBELL_HOME:home};
+  try{
+    const store=new AgentThreadStore(env,{keepConnection:true}),reader=new SqliteAgentThreadStore(env),opened=[];
+    store.storage.DatabaseSync=class extends DatabaseSync{constructor(...args){super(...args);opened.push(args[0])}};
+    const thread=store.create({runtime:"cursor",cwd:home});store.finishTurn(thread.id,store.addTurn(thread.id,{inputText:"kept"}).id);
+    assert.equal(opened.length,0,"the reads and writes share the kept connection");
+    assert.equal(reader.get(thread.id).turns[0].status,"completed","another connection reads each write at once");
+    const probe=new DatabaseSync(store.path);
+    try{assert.equal(store.storage.db.prepare("PRAGMA synchronous").get().synchronous,probe.prepare("PRAGMA synchronous").get().synchronous,"not the schema setup's synchronous=NORMAL")}finally{probe.close()}
+    store.close();assert.equal(store.storage.db,null);
+    store.update(thread.id,{name:"After close"});assert.equal(opened.length,2,"a read and a write after close open connections of their own");
+    assert.equal(reader.get(thread.id).name,"After close");
   }finally{await rm(home,{recursive:true,force:true})}
 });

@@ -711,6 +711,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // composer then takes it (T3 pushes provider snapshots as they change).
   const stopModelUpdates=typeof runtimeManager?.onModelsChanged==="function"?runtimeManager.onModelsChanged(change=>{if(!closing)emit("agentRuntime/models/updated",change)}):()=>{};
   const threadMetadata=id=>typeof threadStore.getMetadata==="function"?threadStore.getMetadata(id):threadStore.get(id);
+  // The store's shared copy of a thread (AgentThreadStore.peek), for a handler that only reads it: no sqlite read, no parse and no
+  // copy of its history. It must not be changed, nor kept past the handler.
+  const peekThread=id=>typeof threadStore.peek==="function"?threadStore.peek(id):threadStore.get(id);
   async function createVerificationCheckpoint(thread,label){
     if(!checkpoints?.create||!thread?.cwd)return null;
     try{
@@ -1261,7 +1264,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   function handleUpdate(threadId,params,source=null){
     const draftType=params?.update?.sessionUpdate;
     if(draftType==="agent_message_draft_delta"||draftType==="agent_message_draft_reset")return handleNativeDraft(threadId,params.update,source);
-    const update=params?.update||{};const thread=threadStore.get(threadId);if(!thread)return;const turnId=thread.turns?.at(-1)?.id||null;
+    // A chunk needs only the last turn's id and status; reading the stored thread for each one read and parsed all of its history.
+    const update=params?.update||{};const thread=peekThread(threadId);if(!thread)return;const lastTurn=thread.turns?.at(-1),turnId=lastTurn?.id||null;
     const type=update.sessionUpdate;
     if(type==="tool_call"||type==="tool_call_update")endReasoning(threadId);
     if(type==="agent_message_chunk"){
@@ -1278,7 +1282,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(session)session.__assistant=(session.__assistant||"")+text;
     }else if(type==="agent_thought_chunk"){
       const text=update.content?.type==="text"?String(update.content.text||""):"";
-      if(text&&turnId&&thread.turns.at(-1).status==="inProgress")appendReasoning(threadId,turnId,text,update.messageId?String(update.messageId):null);
+      if(text&&turnId&&lastTurn.status==="inProgress")appendReasoning(threadId,turnId,text,update.messageId?String(update.messageId):null);
     }else if(type==="tool_call"){
       const toolSession=sessions.get(threadId);if(toolSession)toolSession.__assistantBreak=true;
       const key=threadId+":"+String(update.toolCallId||"");

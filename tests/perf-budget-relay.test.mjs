@@ -129,6 +129,7 @@ function serverCounters(store){
 
 // B1: a harness's text chunk needs only the id and status of the thread's last turn. It read and parsed the whole stored thread
 // for each chunk: a sqlite connection and 1 MB of JSON per chunk on a 0.5 MB thread, so the server fell behind as a thread grew.
+// The store's parsed copy (peek) serves it now; what is left is the thread metadata each notification names.
 test("B1: a streamed text chunk of a harness reply opens no sqlite connection and parses no stored history",async t=>{
   const relay=await budgetRelay("trebell-budget-b1-");
   try{
@@ -140,8 +141,8 @@ test("B1: a streamed text chunk of a harness reply opens no sqlite connection an
     counters.start();try{await writeFile(relay.file("start"),"go","utf8");await streamed}finally{counters.stop()}
     const completed=relay.notified("turn/completed");await writeFile(relay.file("end"),"done","utf8");await completed;
     const perChunk={connections:counters.counts.connections/chunks,parsedKB:counters.counts.parsedChars/1024/chunks};t.diagnostic("per chunk "+JSON.stringify(perChunk));
-    assert.ok(perChunk.connections<=1.1,"connections per chunk "+JSON.stringify(perChunk));
-    assert.ok(perChunk.parsedKB<=1.15*1024,"JSON parsed per chunk "+JSON.stringify(perChunk));
+    assert.equal(perChunk.connections,0,"connections per chunk "+JSON.stringify(perChunk));
+    assert.ok(perChunk.parsedKB<=2,"JSON parsed per chunk "+JSON.stringify(perChunk));
     const reply=relay.threadStore.get(thread.id).turns.at(-1).items.find(item=>item.type==="agentMessage");
     assert.ok(reply?.text.startsWith("w0 ")&&reply.text.includes("w199 "),"the reply is stored whole");
   }finally{await relay.close()}

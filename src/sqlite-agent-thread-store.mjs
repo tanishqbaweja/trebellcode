@@ -24,16 +24,16 @@ function searchItems(turn={}){
   }
   return out;
 }
-function threadFromRow(row,turns=[]){
+export function threadFromRow(row,turns=[]){
   if(!row)return null;
   const payload=parse(row.payload_json,{})||{};
   return {...payload,id:row.id,runtime:row.runtime||payload.runtime||"external",providerSessionId:row.provider_session_id??payload.providerSessionId??"",updatedAt:Number(row.updated_at)||Number(payload.updatedAt)||0,archived:Boolean(row.archived),turns};
 }
 
 export class SqliteAgentThreadStore{
-  constructor(env=process.env){
+  constructor(env=process.env,{keepConnection=false}={}){
     const DatabaseSync=databaseSync();if(!DatabaseSync)throw new Error("node:sqlite is unavailable");
-    this.DatabaseSync=DatabaseSync;this.env=env;this.path=join(trebellHome(env),"trebell.sqlite");this.legacyPath=join(trebellHome(env),"agent-threads.json");
+    this.DatabaseSync=DatabaseSync;this.env=env;this.path=join(trebellHome(env),"trebell.sqlite");this.legacyPath=join(trebellHome(env),"agent-threads.json");this.db=null;this.keepConnection=false;
     mkdirSync(dirname(this.path),{recursive:true});
     this.#withDb(db=>{
       db.exec("PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
@@ -55,25 +55,39 @@ export class SqliteAgentThreadStore{
       catch{db.exec("CREATE TABLE IF NOT EXISTS agent_search_fts(thread_id TEXT NOT NULL,turn_id TEXT NOT NULL,item_id TEXT NOT NULL,ordinal INTEGER NOT NULL,kind TEXT NOT NULL,text TEXT NOT NULL);CREATE INDEX IF NOT EXISTS agent_search_items_thread_idx ON agent_search_fts(thread_id,turn_id,ordinal)");this.searchMode="like"}
     });
     const migration=this.#migrateLegacyOnce();this.#retireLegacy(migration);this.#ensureSearchProjection();
+    // Set once the schema's connection has closed, so a kept connection does not inherit its synchronous=NORMAL and every write stays
+    // as durable as it is on a connection of its own.
+    this.keepConnection=Boolean(keepConnection);
   }
+  #open(){const db=new this.DatabaseSync(this.path);db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");return db}
+  // A long-lived owner (the GUI server, which closes it on shutdown) keeps one connection instead of opening one per read or write;
+  // WAL lets other readers in beside it. An error drops it, and the next call starts on a fresh connection with no transaction open.
   #withDb(fn,{write=false}={}){
-    const db=new this.DatabaseSync(this.path);db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
+    const kept=this.keepConnection,db=kept?(this.db||=this.#open()):this.#open();
     if(write)db.exec("BEGIN IMMEDIATE");
     try{const value=fn(db);if(write)db.exec("COMMIT");return value}
-    catch(error){if(write)try{db.exec("ROLLBACK")}catch{}throw error}
-    finally{db.close()}
+    catch(error){if(write)try{db.exec("ROLLBACK")}catch{}if(kept)this.#drop();throw error}
+    finally{if(!kept)db.close()}
   }
+  #drop(){const db=this.db;this.db=null;try{db?.close()}catch{}}
+  // After close, each call opens and closes its own connection again, so a late write still lands and no file stays open.
+  close(){this.keepConnection=false;this.#drop()}
+  // Each write returns the row as it bound it, which is the row a later read gives back.
   #writeThreadMeta(db,thread){
     const payload={...thread};delete payload.turns;
+    const row={id:String(thread.id),runtime:String(thread.runtime||"external"),provider_session_id:String(thread.providerSessionId||""),updated_at:Number(thread.updatedAt)||0,archived:thread.archived?1:0,payload_json:JSON.stringify(payload)};
     db.prepare("INSERT INTO agent_threads(id,runtime,provider_session_id,updated_at,archived,search_title,payload_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET runtime=excluded.runtime,provider_session_id=excluded.provider_session_id,updated_at=excluded.updated_at,archived=excluded.archived,search_title=excluded.search_title,payload_json=excluded.payload_json")
-      .run(String(thread.id),String(thread.runtime||"external"),String(thread.providerSessionId||""),Number(thread.updatedAt)||0,thread.archived?1:0,String(thread.name||thread.preview||""),JSON.stringify(payload));
+      .run(row.id,row.runtime,row.provider_session_id,row.updated_at,row.archived,String(thread.name||thread.preview||""),row.payload_json);
+    return row;
   }
   #writeTurn(db,threadId,turn){
+    const row={id:String(turn.id),started_at:Number(turn.startedAt)||null,payload_json:JSON.stringify(turn)};
     db.prepare("INSERT INTO agent_turns(thread_id,id,status,started_at,completed_at,payload_json) VALUES(?,?,?,?,?,?) ON CONFLICT(thread_id,id) DO UPDATE SET status=excluded.status,started_at=excluded.started_at,completed_at=excluded.completed_at,payload_json=excluded.payload_json")
-      .run(String(threadId),String(turn.id),turn.status==null?null:String(turn.status),Number(turn.startedAt)||null,Number(turn.completedAt)||null,JSON.stringify(turn));
+      .run(String(threadId),row.id,turn.status==null?null:String(turn.status),row.started_at,Number(turn.completedAt)||null,row.payload_json);
     db.prepare("DELETE FROM agent_search_fts WHERE thread_id=? AND turn_id=?").run(String(threadId),String(turn.id));
     const insert=db.prepare("INSERT INTO agent_search_fts(thread_id,turn_id,item_id,ordinal,kind,text) VALUES(?,?,?,?,?,?)");
     for(const item of searchItems(turn))insert.run(String(threadId),String(turn.id),item.itemId,item.ordinal,item.kind,item.text);
+    return row;
   }
   #migrateLegacyOnce(){
     return this.#withDb(db=>{
@@ -107,9 +121,10 @@ export class SqliteAgentThreadStore{
     const tmp=this.legacyPath+".tmp";
     try{writeFileSync(tmp,JSON.stringify({version:2,migratedTo:"trebell.sqlite",migratedAt:Number(migration.at)||Date.now(),importedThreads:Number(migration.count)||0},null,2),{encoding:"utf8",mode:0o600});renameSync(tmp,this.legacyPath)}catch{}
   }
-  #turnsForDb(db,threadId){
-    return db.prepare("SELECT payload_json FROM agent_turns WHERE thread_id=? ORDER BY COALESCE(started_at,0) ASC,rowid ASC").all(String(threadId)).map(turnFromRow).filter(Boolean);
+  #turnRows(db,threadId){
+    return db.prepare("SELECT id,started_at,payload_json FROM agent_turns WHERE thread_id=? ORDER BY COALESCE(started_at,0) ASC,rowid ASC").all(String(threadId));
   }
+  #turnsForDb(db,threadId){return this.#turnRows(db,threadId).map(turnFromRow).filter(Boolean)}
   list(runtime=null){
     return this.#withDb(db=>{
       const rows=runtime?db.prepare("SELECT * FROM agent_threads WHERE runtime=? ORDER BY updated_at DESC").all(String(runtime)):db.prepare("SELECT * FROM agent_threads ORDER BY updated_at DESC").all();
@@ -159,7 +174,20 @@ export class SqliteAgentThreadStore{
       return out;
     });
   }
-  get(id){return this.#withDb(db=>{const row=db.prepare("SELECT * FROM agent_threads WHERE id=?").get(String(id));return row?threadFromRow(row,this.#turnsForDb(db,row.id)):null})}
+  get(id){return this.read(id)?.thread??null}
+  // A thread as get() gives it, with each turn's id, its place in the turn order (COALESCE(started_at,0), then rowid) and the size
+  // of its stored JSON, and whether every turn parsed (one that does not is left out of the thread).
+  read(id){
+    return this.#withDb(db=>{
+      const row=db.prepare("SELECT * FROM agent_threads WHERE id=?").get(String(id));if(!row)return null;
+      const turns=[],order=[];let complete=true;
+      for(const turnRow of this.#turnRows(db,row.id)){
+        const turn=turnFromRow(turnRow);if(!turn){complete=false;continue}
+        turns.push(turn);order.push({id:String(turnRow.id),key:turnRow.started_at??0,chars:String(turnRow.payload_json).length});
+      }
+      return {thread:threadFromRow(row,turns),order,metaChars:String(row.payload_json??"").length,complete};
+    });
+  }
   findProviderSession(runtime,providerSessionId){
     return this.#withDb(db=>{
       const row=db.prepare("SELECT * FROM agent_threads WHERE runtime=? AND provider_session_id=? ORDER BY updated_at DESC LIMIT 1").get(String(runtime),String(providerSessionId));
@@ -167,12 +195,13 @@ export class SqliteAgentThreadStore{
     });
   }
   putThread(thread,{replaceTurns=false}={}){
-    this.#withDb(db=>{
-      this.#writeThreadMeta(db,thread);
+    return this.#withDb(db=>{
+      const row=this.#writeThreadMeta(db,thread);
       if(replaceTurns){db.prepare("DELETE FROM agent_search_fts WHERE thread_id=?").run(String(thread.id));db.prepare("DELETE FROM agent_turns WHERE thread_id=?").run(String(thread.id));for(const turn of Array.isArray(thread.turns)?thread.turns:[])if(turn?.id)this.#writeTurn(db,thread.id,turn)}
-    },{write:true});return thread;
+      return row;
+    },{write:true});
   }
-  putThreadAndTurn(thread,turn){this.#withDb(db=>{this.#writeThreadMeta(db,thread);this.#writeTurn(db,thread.id,turn)},{write:true});return turn}
+  putThreadAndTurn(thread,turn){return this.#withDb(db=>({thread:this.#writeThreadMeta(db,thread),turn:this.#writeTurn(db,thread.id,turn)}),{write:true})}
   delete(id){return this.#withDb(db=>{db.prepare("DELETE FROM agent_search_fts WHERE thread_id=?").run(String(id));return Number(db.prepare("DELETE FROM agent_threads WHERE id=?").run(String(id))?.changes)||0},{write:true})>0}
 }
 
