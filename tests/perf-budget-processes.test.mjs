@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { CheckpointService } from "../src/checkpoint-service.mjs";
+import { discoverEditors } from "../desktop/editor-discovery.mjs";
 import { git, gitInfo } from "../src/git-service.mjs";
 
 // Process budgets for the child processes Trebell starts while it sits idle (goal.md section 6; perf plan budgets B6-B8). Each one
@@ -210,4 +211,13 @@ test("B8: a checkpoint's tree equals a fresh read of HEAD plus add -A, in every 
     await writeFile(join(wide,"a.txt"),"changed\n");await writeFile(join(wide,"b.txt"),"new\n");
     try{await same("a repository with SHA-256 object names",[],{repo:wide})}finally{await rm(wide,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
   }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(dir+"-home",{recursive:true,force:true})}
+});
+
+// Editor discovery runs on Electron's main process each time the chat header's Open-in control shows and again on each Open.
+test("M8: one editor discovery looks each editor command up with at most 22 where launches",async()=>{
+  // Each lookup is one where.exe (which on macOS and Linux) launch; none finds anything here, so every command is asked.
+  let lookups=0;
+  const editors=await discoverEditors({platform:"win32",env:{LOCALAPPDATA:"C:\\Users\\dev\\AppData\\Local"},commandFinder:async()=>{lookups++;return null},exists:()=>false,readDirectory:()=>[]});
+  assert.deepEqual(editors,[]);
+  assert.ok(lookups<=22,lookups+" lookups");
 });
