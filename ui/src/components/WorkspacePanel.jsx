@@ -169,6 +169,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [conflict,setConflict]=useState(null);
   const [saving,setSaving]=useState(false);
   const liveEditRef=useRef(null);liveEditRef.current={file,edit,draft,conflict};
+  const editKey=(environmentId||"")+"\n"+projectPath;
   const [diff,setDiff]=useState({status:"",diff:""});
   const [diffError,setDiffError]=useState("");
   // Whether a diff has been read for this project: until then the Diff tab says it is loading, never that the tree is clean.
@@ -216,7 +217,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     }catch(error){if(lands())setDiffError(String(error?.message??error??"").trim()||"No reason was given.")}
   }
   useEffect(()=>{diffShownRef.current=diffRequestRef.current;setDiff({status:"",diff:""});setDiffError("");setDiffLoaded(false);setTreeLimit(WORKSPACE_TREE_PAGE_SIZE);setChangedLimit(WORKSPACE_CHANGED_PAGE_SIZE);setDiffLimit(WORKSPACE_DIFF_CHUNK_CHARS);refreshTree();refreshDiff();openRequestRef.current++;setFile(null);setEdit(false);setConflict(null);setError("");
-    const editKey=(environmentId||"")+"\n"+projectPath,kept=keptEdits.get(editKey);
+    const kept=keptEdits.get(editKey);
     if(kept){openPathRef.current=kept.file.path;setFile(kept.file);setDraft(kept.draft);setEdit(true);setConflict(kept.conflict)}
     // The cleanup React runs right after the first run in development sees no file yet, so it leaves a kept edit as it is.
     return()=>{const live=liveEditRef.current;if(hasUnsavedEdit(live))keptEdits.set(editKey,live);else if(live.file)keptEdits.delete(editKey)};
@@ -288,14 +289,18 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   }
   // One save at a time: Save is busy until the answer comes, so a second press never sends the version the first one replaced,
   // which the server would refuse as a change on disk. Text typed while it was on its way stays in the editor, unsaved, over the
-  // version saved.
+  // version saved. An answer that comes after the person opened another file or project stays out of the view; an edit kept for
+  // its project is then saved, or holds the version saved under what was typed since.
   async function save(version=file.version){
     if(saving)return;
-    const sent=draft;setError("");setSaving(true);
+    const request=openRequestRef.current,path=file.path,sent=draft;setError("");setSaving(true);
     try{
-      const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path:file.path,content:sent,version,environmentId}});
-      setConflict(null);setFile({...data,kind:previewKind(data.name)});if(liveEditRef.current.draft===sent){setDraft(data.content);setEdit(false)}refreshDiff();
+      const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path,content:sent,version,environmentId}});
+      const saved={...data,kind:previewKind(data.name)};
+      if(request!==openRequestRef.current){const kept=keptEdits.get(editKey);if(kept?.file.path===path){if(kept.draft===sent)keptEdits.delete(editKey);else keptEdits.set(editKey,{...kept,file:saved,conflict:null})}return}
+      setConflict(null);setFile(saved);if(liveEditRef.current.draft===sent){setDraft(data.content);setEdit(false)}refreshDiff();
     }catch(err){
+      if(request!==openRequestRef.current)return;
       if(err.status===409)setConflict({message:err.message,version:err.data?.version??null});
       else setError(actionError("Could not save "+(file?.name||"the file"),err));
     }finally{setSaving(false)}

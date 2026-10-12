@@ -547,6 +547,36 @@ test("text typed while a save is on its way stays in the editor, unsaved, and th
   expect(await readFile(notes,"utf8")).toBe("line one\nfirst second");
 });
 
+test("a save answered after the person opened another project stays out of it, and its own project shows the file saved",async({page,request})=>{
+  test.setTimeout(90_000);
+  const other=await mkdtemp(join(tmpdir(),"trebell-files-"));folders.push(other);await writeFile(join(other,"other.txt"),"other\n");
+  await request.post("/api/projects",{data:{path:other,name:"Workspace save project B"}});
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace save project A",{"notes.txt":"line one\n"});
+  const editor=right.locator("textarea.file-editor"),head=right.locator(".file-head strong"),button=name=>right.locator(".file-head").getByRole("button",{name,exact:true}),notes=join(dir,"notes.txt");
+  const openProject=async name=>{await page.getByRole("button",{name:"Projects",exact:true}).click();await page.locator(".project-card").filter({hasText:name}).locator(".project-open").click();await expect(right).toBeVisible()};
+  const saves=await holdSaves(page);
+  await row("notes.txt").click();
+  await button("Edit").click();await editor.click();await page.keyboard.press("Control+End");await page.keyboard.type("saved text",{delay:20});
+  await button("Save").click();
+  await expect.poll(()=>readFile(notes,"utf8")).toBe("line one\nsaved text");
+  // The person opens project B while the save's answer is still on its way; B's Files view never takes A's file.
+  await openProject("Workspace save project B");
+  await expect(right.locator("[data-workspace-entry]").filter({hasText:/^other\.txt$/})).toBeVisible();
+  const answered=saves.answered();saves.release();await answered;await page.waitForTimeout(300);
+  await expect(head).toHaveCount(0);await expect(editor).toHaveCount(0);
+  await shootBothModes(page,"workspace-save-answered-in-other-project");
+  // Back in A the file is saved: no editor comes back with it, and a later edit saves with no word of a change on disk.
+  await openProject("Workspace save project A");
+  await expect(row("notes.txt")).toBeVisible();
+  await expect(editor).toHaveCount(0);
+  await row("notes.txt").click();
+  await expect(right.locator(".syntax-view")).toContainText("saved text");
+  await button("Edit").click();await editor.click();await page.keyboard.press("Control+End");await page.keyboard.type(" again",{delay:20});
+  await button("Save").click();
+  await expect(editor).toHaveCount(0);
+  await expect(right.getByRole("alert")).toHaveCount(0);
+  expect(await readFile(notes,"utf8")).toBe("line one\nsaved text again");
+});
 
 
 test("a binary file opens as binary, with its size and no Edit, and its bytes stay as they were",async({page,request})=>{
