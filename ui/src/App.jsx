@@ -4229,7 +4229,8 @@ export default function App(){
     if(command==="/palette"){setPaletteOpen(true);return true}
     if(command==="/new"){await newChat();return true}
     if(command==="/clear"){await newChat();return true}
-    if(command==="/plan"){setPrompt("Create a clear execution plan, then carry it out. "+rest.join(" "));return true}
+    // /plan fills the composer with the plan prompt to send, which the composer keeps ("kept").
+    if(command==="/plan"){setPrompt("Create a clear execution plan, then carry it out. "+rest.join(" "));return "kept"}
     return false;
   }
   async function compactContext(){

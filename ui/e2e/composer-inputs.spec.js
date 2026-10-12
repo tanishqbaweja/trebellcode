@@ -233,6 +233,18 @@ test("/goal pause, resume and clear on a Native thread change its goal, as the G
   }finally{await harness.close()}
 });
 
+test("/plan puts the plan prompt with what follows it in the composer, ready to send",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await openComposerApp(page);
+  try{
+    const composer=page.getByTestId("composer");
+    await composer.click();await page.keyboard.type("/plan the release",{delay:15});await page.keyboard.press("Enter");
+    await expect(composer).toHaveValue("Create a clear execution plan, then carry it out. the release");
+    await expect(composer).toBeFocused();
+    await shootBoth(page,"plan-command",()=>expect(composer).toBeInViewport());
+  }finally{await harness.close()}
+});
+
 // The browser's speech recognition, scripted: "blocked" refuses the microphone as a browser does when its permission is denied
 // (an error "not-allowed", then the end), and "listen" keeps listening until stop() is called.
 async function scriptedDictation(page){
