@@ -8,25 +8,35 @@
 
 const CONTAINERS=new Set(["blockquote","list","listItem"]);
 const defines=node=>(node.children||[]).some(child=>child.type==="definition"||child.type==="footnoteDefinition"||(CONTAINERS.has(child.type)&&defines(child)));
+// Whether a child begins or ends with indented code. micromark looks past the blank lines after such code for more of it, so how
+// the line after them reads depends on what came before the code (after a paragraph an ordered list there must start at 1), and a
+// tail parsed on its own reads it afresh: no cut is made next to such code. Fenced code starts at its fence, indented code at its
+// indentation.
+function edgeIsIndentedCode(node,text,edge){
+  while(CONTAINERS.has(node.type)&&node.children?.length)node=edge(node.children);
+  return node.type==="code"&&!/^ {0,3}(?:`{3}|~{3})/.test(text.slice(node.position?.start?.offset??0));
+}
+const nextToIndentedCode=(node,text)=>edgeIsIndentedCode(node,text,list=>list[0])||edgeIsIndentedCode(node,text,list=>list[list.length-1]);
 
-// What the parse of a tail found: its text and the offsets of the root's children; whole when it defines a link or a footnote (or a
-// child has no position).
+// What the parse of a tail found: its text and, for each of the root's children, its offsets and whether it begins or ends with
+// indented code; whole when it defines a link or a footnote (or a child has no position).
 export function rootBlocks(tree,text){
   const children=[];
   for(const child of tree?.children||[]){
     const start=child.position?.start?.offset,end=child.position?.end?.offset;
     if(!Number.isInteger(start)||!Number.isInteger(end))return {text,children:[],whole:true};
-    children.push([start,end]);
+    children.push([start,end,nextToIndentedCode(child,text)]);
   }
   return {text,children,whole:defines(tree||{})};
 }
 
 // Where the finished part of a parsed tail ends and the open part starts: the end of the last finished child and the start of the
-// line that begins the child after it, or null while every child can still change.
+// line that begins the child after it, or null while every child can still change. No cut is made on either side of a child that
+// begins or ends with indented code.
 export function finishedThrough({text,children}){
   for(let index=children.length-1;index>0;index--){
     const start=children[index][0],end=children[index-1][1],line=text.lastIndexOf("\n",start-1)+1;
-    if(line<=end||text.indexOf("\n",start)<0)continue;
+    if(children[index-1][2]||children[index][2]||line<=end||text.indexOf("\n",start)<0)continue;
     const gap=text.slice(end,line);
     if(/^\s*$/.test(gap)&&gap.indexOf("\n")!==gap.lastIndexOf("\n"))return {end,next:line};
   }
@@ -47,7 +57,9 @@ export function markdownStream(){
       if(!whole&&text.includes("\r",from))whole=true;
       if(!whole&&seen&&text.startsWith(seen.text,from)){
         if(seen.whole)whole=true;
-        else{const cut=finishedThrough(seen);if(cut){blocks=[...blocks,{from,text:seen.text.slice(0,cut.end)}];from+=cut.next;prefix=text.slice(0,from)}}
+        // A finished block keeps the line ending after it: micromark reads a list item or a quote whose last line is a lone tag
+        // (<br>) as a paragraph's lazy line before a line ending and as a block of HTML at the very end of a text.
+        else{const cut=finishedThrough(seen);if(cut){blocks=[...blocks,{from,text:seen.text.slice(0,seen.text.indexOf("\n",cut.end)+1)}];from+=cut.next;prefix=text.slice(0,from)}}
       }
       seen=null;
       return {whole,blocks,from};

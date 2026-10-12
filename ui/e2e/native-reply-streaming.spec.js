@@ -178,3 +178,33 @@ test("steering a streaming Native turn withdraws its draft and the steered call 
     await expect(page.getByText("STEER-ONE",{exact:false})).toHaveCount(0);await expect(live(page)).toHaveCount(0);
   }finally{finish.open();await fixture.close()}
 });
+
+// A finished block of a streaming reply renders on its own (markdown-blocks.js), so it must render as one render of the whole text
+// does: a list item whose last line is a lone <br>, and an ordered list from 2 after indented code. The live reply, held open after
+// its last delta, is the finished message element for element; dark and light come from the header's own toggle.
+const BLOCKS_REPLY="## Install\n\nInstall the command line tool first, then sign in with it, so the relay can start the harness for this project without asking again.\n\n- Install the CLI\n<br>\n\nThen sign in with the CLI.\n\nRun this first:\n\n    npm install\n\n2. Start the server.\n3. Open the page.\n\nDone.";
+test("a streaming reply's finished blocks show as the finished reply does: a lone <br> after a list item, a list after indented code",async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:800});
+  const fixture=await startStreamingFixture(page),sent=gate(),finish=gate();
+  // The toggle saves the setting; the fixture's mocked settings are what the page keeps.
+  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...route.request().postDataJSON(),onboardingComplete:true})}):route.fallback());
+  let mode="dark";
+  const toggle=async()=>{mode=mode==="dark"?"light":"dark";await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode);await page.waitForTimeout(300)};
+  const shoot=async name=>{for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.waitForTimeout(250);await page.screenshot({animations:"disabled",path:auditDir+`native-reply-${name}-${mode}-${width}x800.png`});await toggle();await page.screenshot({animations:"disabled",path:auditDir+`native-reply-${name}-${mode}-${width}x800.png`})}await page.setViewportSize({width:1280,height:800})};
+  try{
+    fixture.script.push(async(request,hook)=>{
+      for(let index=0;index*7<BLOCKS_REPLY.length;index++){hook({type:"text",delta:BLOCKS_REPLY.slice(index*7,index*7+7)});await new Promise(resolve=>setTimeout(resolve,40))}
+      sent.open();await finish.promise;return reply(request,BLOCKS_REPLY);
+    });
+    await fixture.open("Native streaming");await fixture.send("Say how to install the CLI. Do not change any files.");await sent.promise;
+    await expect(live(page)).toContainText("Done.");
+    const streamed=await live(page).innerHTML();
+    await shoot("blocks-streaming");
+    finish.open();
+    const finished=page.locator(".history-assistant .assistant-message-text");await expect(finished).toHaveCount(1,{timeout:15_000});await expect(live(page)).toHaveCount(0);
+    await shoot("blocks-finished");
+    expect(streamed,"the last streamed frame is what the finished reply shows").toBe(await finished.innerHTML());
+    await expect(finished.locator("li").first()).toContainText("Install the CLI <br>");await expect(finished.locator("ol")).toHaveCount(0);
+  }finally{finish.open();await fixture.close()}
+});

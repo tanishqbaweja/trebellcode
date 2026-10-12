@@ -44,6 +44,15 @@ const EDGE_CASES={
   "headings and breaks":"# H1\n\n## H2\npara right after\n\nTitle\n=====\n\nSubtitle\n---\n\n***\n\n- - -\n\n### H3 ###\n\n#hash not heading\n\nline one  \nline two\\\nline three",
   inline:"*em\nphasis* and **strong\ntext** and `code\nspan` and ~~struck~~.\n\nA line with trailing spaces   \n\n&amp; &copy; &#35; entities\n\n\\# escaped",
   "blank lines with spaces":"para one\n   \n\t\npara two\n\n \n- item\n  \n- item two\n\n    \nend",
+  // A list item or a quote whose last line is a lone tag: a lazy line of its paragraph before a line ending, a block of HTML at the
+  // very end of a text, so a finished block keeps its line ending.
+  "a lone tag after a list item or a quote":"## Install\n\n- Install the CLI\n<br>\n\nThen sign in with the CLI.\n\n> **Note:** the relay keeps order\n<br>\n\nAfter the note.\n\n- bold <b>\n</b>\n\nDone.",
+  // micromark reads the line after indented code and blank lines by what came before the code, so no cut is made next to it. The
+  // last three are texts a fuzzer found.
+  "lists next to indented code":"Run this first:\n\n    npm install\n\n2. Start the server.\n3. Open the page.\n\nDone.",
+  "an ordered list after indented code after a list":"   \n\n> ==```</pre>\nbeta beta 1.\n\n  -      <div>\n   - alpha+alpha<pre>\n\n    -\n \n3) ",
+  "an ordered list after indented code after a table":"| a | b |\n| - | - |\n| beta > x | x |\n*\n\n\t3. +\n\n4) <!--\n",
+  "indented code after a list with a tab":"- \t *em*\n    - - </pre> <div> ~~~\n\n    1. [link](https://x.io) &amp; x\n    &amp;\n\nend",
 };
 
 test("a streamed reply renders exactly as the whole text at every delta: the perf corpus",()=>{
@@ -94,6 +103,10 @@ test("a child is finished only after a blank line and the next child's complete 
   assert.deepEqual(finishedThrough({text:"a\n\nb\n\nc\n",children:[[0,1],[3,4],[6,7]]}),{end:4,next:6});
   // An indented child starts at its line, so the tail keeps its indentation.
   assert.deepEqual(finishedThrough({text:"a\n\n    code\n",children:[[0,1],[7,11]]}),{end:1,next:3});
+  // No cut on either side of a child that begins or ends with indented code (the third field).
+  const code={text:"a\n\n    code\n\nb\n\nc",children:[[0,1,false],[3,11,true],[13,14,false],[16,17,false]]};
+  assert.equal(finishedThrough(code),null);
+  assert.deepEqual(finishedThrough({...code,text:code.text+"\n"}),{end:14,next:16});
 });
 
 test("StreamingMarkdown's first render of a text is the whole render",()=>{
