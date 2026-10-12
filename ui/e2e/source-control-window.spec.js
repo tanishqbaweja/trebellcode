@@ -566,3 +566,118 @@ test("a repository with no remote says it has none instead of failing to list pu
   await pulls.scrollIntoViewIfNeeded();
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-no-remote-dark-1280x800.png",fullPage:true});
 });
+
+// The desktop app: Electron's renderer throws on window.prompt, so every question is asked in Trebell's own dialog, and a link the
+// panel opens is noted instead of opening a tab.
+async function asInDesktopApp(page){
+  await page.addInitScript(()=>{window.prompt=()=>{throw new Error("prompt() is and will not be supported.")};window.__opened=[];window.open=url=>{window.__opened.push(String(url));return null}});
+}
+// A repository on a scripted code host: /api/git/info answers host.info (changed in place by a test), and every /api/source-control/*
+// read and action answers as a host would, its pull requests changing with the actions. host.calls lists what the panel sent;
+// host.fail[action] fails the next such action with that reason, and host.hold[action] holds it until that promise settles.
+async function scriptCodeHost(page,{boot,prs=[],capabilities={},info={}}){
+  const host={prs,calls:[],fail:{},hold:{},info:{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:"origin/main",status:[],worktrees:[{path:boot.cwd,branch:"main"}],remotes:[{name:"origin",url:"https://github.com/owner/repo.git",kind:"fetch"}],...info},
+    capabilities:{create:true,edit:true,comment:true,editComments:true,review:true,merge:true,autoMerge:true,checkout:true,reviewers:true,publish:true,...capabilities}};
+  const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  const identity=pr=>({provider:"github",host:"github.com",repository:"owner/repo",number:pr.number});
+  await page.route("**/api/git/info?**",route=>json(route,host.info));
+  await page.route(/\/api\/source-control\//,async route=>{
+    const request=route.request(),url=new URL(request.url()),path=url.pathname.replace(/^.*\/api\/source-control\//,"");let body=null;try{body=request.postDataJSON()}catch{}
+    host.calls.push({path,method:request.method(),query:Object.fromEntries(url.searchParams),body});
+    const action=body?.action;if(path==="pr-action"&&host.hold[action])await host.hold[action];
+    if(path==="pr-action"&&host.fail[action]!=null){const reason=host.fail[action];delete host.fail[action];return json(route,{ok:false,error:reason},400)}
+    if(path==="diagnostics")return json(route,{selectedProvider:url.searchParams.get("provider")||"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:host.capabilities}});
+    if(path==="prs")return json(route,{ok:true,provider:"github",capabilities:host.capabilities,items:host.prs.map(pr=>({provider:"github",...pr,identity:identity(pr)}))});
+    if(path==="pr-detail"){const pr=host.prs.find(item=>String(item.number)===url.searchParams.get("number"));return pr?json(route,{ok:true,provider:"github",capabilities:host.capabilities,item:{body:"",comments:[],reviews:[],files:[],statusCheckRollup:[],provider:"github",...pr,identity:identity(pr)}}):json(route,{error:"Pull request not found"},400)}
+    if(path==="pr-viewed")return json(route,{ok:true,provider:"github",store:"host",files:[]});
+    if(path==="thread-link")return json(route,{threads:[],links:[]});
+    if(path==="branch-reviews")return json(route,{items:[]});
+    if(path==="settlements")return json(route,{enabled:false,items:[]});
+    if(path==="pr-action"){
+      const pr=host.prs.find(item=>item.number===body.number);
+      if(action==="edit"){if("title" in body)pr.title=body.title;if("body" in body)pr.body=body.body}
+      if(action==="edit-comment")pr.comments.find(item=>item.id===body.commentId).body=body.body;
+      if(action==="merge"&&body.auto)pr.autoMergeRequest={mergeMethod:String(body.method).toUpperCase(),enabledBy:{login:"me"}};
+      else if(action==="merge")Object.assign(pr,{state:"MERGED",mergedAt:"2026-10-12T10:00:00Z",mergeCommitSha:"abc1234"});
+      if(action==="request-reviewer")(pr.reviewRequests||=[]).push({login:body.reviewer});
+      return json(route,{ok:true,provider:"github"});
+    }
+    if(path==="pr"){const number=100+host.prs.length;host.prs.unshift({number,title:body.title,body:body.body,state:"OPEN",url:"https://example.test/pr/"+number,headRefName:"feature/one",baseRefName:"main"});return json(route,{ok:true,provider:"github",url:"https://example.test/pr/"+number})}
+    if(path==="publish")return json(route,{ok:true,provider:body.provider,url:"https://example.test/"+body.name,pushed:true});
+    return json(route,{error:"The scripted host does not answer "+path},400);
+  });
+  host.actions=()=>host.calls.filter(call=>call.path==="pr-action").map(call=>call.body);
+  return host;
+}
+// Screenshots in both modes at 1280x800 and 900 wide. The mode is switched with the header's toggle, at 1280 where the header shows
+// it, as a person would; a dialog that keeps the header out of reach is closed for the switch and opened again. The page ends in the
+// mode it started in.
+async function shootBothModes(page,name,{close=null,reopen=null}={}){
+  for(let pass=0;pass<2;pass++){
+    const mode=await page.locator("html").getAttribute("data-mode");
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-1280x800.png"});
+    await page.setViewportSize({width:900,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-900x800.png"});
+    await page.setViewportSize({width:1280,height:800});
+    if(close)await close();
+    await page.getByTestId("appearance-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode==="dark"?"light":"dark");
+    if(reopen)await reopen();
+  }
+}
+const samplePr=(number,extra={})=>({number,title:"Scratch PR "+number,state:"OPEN",url:"https://example.test/pr/"+number,headRefName:"feature/"+number,baseRefName:"main",body:"",comments:[],reviews:[],files:[],statusCheckRollup:[],...extra});
+
+test("a description or a comment keeps its line breaks, and a field left as it was is not sent",async({page,request})=>{
+  test.setTimeout(60_000);
+  await asInDesktopApp(page);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const description="First paragraph of the description.\n\n- point one\n- point two",written="## Summary\n- first point\n- second point\n\n## Testing\nRan the scratch checks.";
+  const host=await scriptCodeHost(page,{boot,prs:[samplePr(11,{title:"Feature one",body:description,comments:[{id:"c-mine",body:"My comment\nsecond line",author:{login:"me"},canEdit:true}]})]});
+  await page.route("**/api/git/review-text",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({title:"Add the scratch change",body:written})}));
+  const {pulls}=await openGitPanel(page,request,"Source control multi-line text");
+  const dialog=page.locator("dialog.inspector-text-prompt"),box=dialog.locator("textarea"),detail=pulls.locator(".pr-detail");
+  await pulls.getByRole("button",{name:/#11 Feature one/}).click();
+  await expect(detail.locator("h3")).toHaveText("#11 Feature one");
+  const edit=detail.getByRole("button",{name:"Edit",exact:true});
+  const editTitle=async title=>{await edit.click();await expect(dialog).toContainText("PR title");if(title)await page.keyboard.type(title,{delay:15});await page.keyboard.press("Enter")};
+
+  // A new title, and the description left as it was: only the title is sent.
+  await editTitle("Feature one renamed");
+  await expect(dialog).toContainText("PR description");
+  await expect(box).toBeFocused();
+  await expect(box).toHaveValue(description);
+  await page.keyboard.press("Control+Enter");
+  await expect(detail.locator("h3")).toHaveText("#11 Feature one renamed");
+  expect(host.actions()).toEqual([{action:"edit",number:11,title:"Feature one renamed",cwd:boot.cwd,provider:"github",environmentId:null}]);
+
+  // The description dialog holds every line; Enter adds one, and the title, left as it was, is not sent.
+  await editTitle("");
+  await expect(box).toHaveValue(description);
+  await shootBothModes(page,"source-control-description-dialog",{close:()=>page.keyboard.press("Escape"),reopen:async()=>{await editTitle("");await expect(box).toHaveValue(description)}});
+  await page.keyboard.press("Enter");await page.keyboard.type("- point three",{delay:15});
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(()=>host.actions().length).toBe(2);
+  expect(host.actions()[1]).toEqual({action:"edit",number:11,body:description+"\n- point three",cwd:boot.cwd,provider:"github",environmentId:null});
+  // Nothing changed at all: nothing is sent. OK on an unchanged comment sends nothing either, and an added line is sent with it.
+  await editTitle("");await expect(box).toHaveValue(description+"\n- point three");await page.keyboard.press("Control+Enter");await expect(dialog).toHaveCount(0);
+  const editComment=detail.getByRole("button",{name:"Edit comment"});
+  await editComment.click();await expect(dialog).toContainText("Edit comment");await expect(box).toHaveValue("My comment\nsecond line");
+  await dialog.getByRole("button",{name:"OK"}).click();await expect(dialog).toHaveCount(0);
+  await editComment.click();await expect(box).toHaveValue("My comment\nsecond line");
+  await page.keyboard.press("Enter");await page.keyboard.type("third line",{delay:15});await dialog.getByRole("button",{name:"OK"}).click();
+  await expect.poll(()=>host.actions().length).toBe(3);
+  expect(host.actions()[2]).toEqual({action:"edit-comment",number:11,commentId:"c-mine",body:"My comment\nsecond line\nthird line",cwd:boot.cwd,provider:"github",environmentId:null});
+  // The description and the comment read as written, line by line.
+  await expect(detail.locator(".review-list p").first()).toHaveText("My comment\nsecond line\nthird line",{useInnerText:true});
+  await expect(detail.locator(":scope > p").first()).toHaveText(description+"\n- point three",{useInnerText:true});
+  await detail.locator(".review-list").first().scrollIntoViewIfNeeded();
+  await shootBothModes(page,"source-control-multi-line-detail");
+
+  // A written pull request description is sent as written.
+  await pulls.getByRole("button",{name:"Generate PR",exact:true}).click();
+  await expect(dialog).toContainText("PR title");await page.keyboard.press("Enter");
+  await expect(dialog).toContainText("PR description");await expect(box).toHaveValue(written);await page.keyboard.press("Control+Enter");
+  await expect.poll(()=>host.calls.filter(call=>call.path==="pr").length).toBe(1);
+  expect(host.calls.find(call=>call.path==="pr").body).toMatchObject({title:"Add the scratch change",body:written});
+});

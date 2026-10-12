@@ -2496,7 +2496,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
         const action=String(body.action||""),provider=body.provider||null;
         const result=await tracedSourceControlMutation("pr."+action,{cwd,environmentId,provider,number:body.number,threadId:body.threadId||null},()=>{
-          if(action==="edit")return inSourceControlEnvironment(environmentId,()=>editPullRequest(cwd,body.number,{provider,title:body.title,body:body.body||""}));
+          if(action==="edit")return inSourceControlEnvironment(environmentId,()=>editPullRequest(cwd,body.number,{provider,title:body.title,body:body.body}));
           if(action==="edit-comment")return inSourceControlEnvironment(environmentId,()=>editPullRequestComment(cwd,body.number,body.commentId,body.body||"",{provider}));
           if(action==="approve-workflows")return inSourceControlEnvironment(environmentId,()=>approvePullRequestWorkflows(cwd,body.number,{provider}));
           if(action==="revert")return inSourceControlEnvironment(environmentId,()=>revertPullRequest(cwd,body.number,{provider}));

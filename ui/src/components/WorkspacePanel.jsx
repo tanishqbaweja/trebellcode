@@ -303,7 +303,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     finally{setActionBusy("")}
   }
   async function addReviewComment(path){
-    const comment=await askText("Review comment for "+path);if(!comment?.trim()||!onReviewComment||actionBusy)return;
+    const comment=await askText("Review comment for "+path,"",{multiline:true});if(!comment?.trim()||!onReviewComment||actionBusy)return;
     setActionBusy("comment:"+path);setReviewError("");
     try{await Promise.resolve(onReviewComment(path,comment.trim()))}
     catch(err){setReviewError(actionError("Could not attach review comment",err))}

@@ -4595,8 +4595,9 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
     await expect(alert).toContainText("Could not update reviewed state: Deliberate reviewed metadata failure");
     await expect(row).not.toHaveClass(/reviewed/);
 
-    page.once("dialog",dialog=>dialog.accept("Retry this review note"));
     await row.locator(".review-comment").click();
+    await expect(page.locator("dialog.inspector-text-prompt textarea")).toBeFocused();
+    await page.keyboard.type("Retry this review note",{delay:15});await page.keyboard.press("Control+Enter");
     await expect(alert).toContainText("Could not attach review comment: Deliberate review comment attachment failure");
     await expect(panel.locator(".git-diff")).toContainText("+new");
     await page.setViewportSize({width:1280,height:800});

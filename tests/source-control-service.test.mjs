@@ -583,6 +583,14 @@ test("GitHub PR editing, comment editing and waiting workflow approval use real 
   };
   await withSourceControlExecutor(executor,()=>editPullRequest("/srv/app",7,{provider:"github",title:"Updated title",body:"Updated body"}));
   assert.equal(calls.some(call=>call.command==="gh"&&call.args.join(" ").includes("pr edit 7 --title Updated title --body Updated body")),true);
+  // A field that is not given is left as the host has it: a new title alone must not rewrite the description, and the reverse.
+  const editArgs=()=>calls.filter(call=>call.command==="gh"&&call.args[1]==="edit").at(-1).args;
+  await withSourceControlExecutor(executor,()=>editPullRequest("/srv/app",7,{provider:"github",title:"Only the title"}));
+  assert.deepEqual(editArgs(),["pr","edit","7","--title","Only the title"]);
+  await withSourceControlExecutor(executor,()=>editPullRequest("/srv/app",7,{provider:"github",body:"First line\n\n- second line"}));
+  assert.deepEqual(editArgs(),["pr","edit","7","--body","First line\n\n- second line"]);
+  await assert.rejects(()=>withSourceControlExecutor(executor,()=>editPullRequest("/srv/app",7,{provider:"github"})),/new title or description/);
+  await assert.rejects(()=>withSourceControlExecutor(executor,()=>editPullRequest("/srv/app",7,{provider:"github",title:"  "})),/title is required/);
 
   await withSourceControlExecutor(executor,()=>editPullRequestComment("/srv/app",7,55,"Edited comment",{provider:"github"}));
   assert.equal(stdinCalls.length,1);

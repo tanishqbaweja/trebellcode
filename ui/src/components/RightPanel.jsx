@@ -16,26 +16,30 @@ const TABS=[
 // Electron's renderer throws on window.prompt ("prompt() is not supported"), which left Create branch, Add worktree, Publish,
 // PR edits and review comments doing nothing in the desktop app; there a small in-app dialog asks instead, while browsers keep
 // the native prompt. A click outside the dialog does not cancel it, so a double click on the opening button cannot dismiss it.
-export function askText(message,defaultValue=""){
+// Text that may hold line breaks (`multiline`: a description, a comment) is always asked in the dialog, in a box where Enter adds a
+// line and Ctrl+Enter gives OK: a one-line field drops the breaks, so a description came back as one run-on paragraph.
+export function askText(message,defaultValue="",{multiline=false}={}){
+  if(multiline)return askTextInApp(message,defaultValue,true);
   try{return Promise.resolve(window.prompt(message,defaultValue))}
-  catch{return askTextInApp(message,defaultValue)}
+  catch{return askTextInApp(message,defaultValue,false)}
 }
 
-function askTextInApp(message,defaultValue){
+function askTextInApp(message,defaultValue,multiline){
   return new Promise(resolve=>{
     const opener=document.activeElement;
     const dialog=document.createElement("dialog");
-    dialog.className="inspector-text-prompt";
+    dialog.className="inspector-text-prompt"+(multiline?" multiline":"");
     const form=document.createElement("form");
     const label=document.createElement("label");
     const text=document.createElement("span");text.textContent=message;
     text.id="inspector-text-prompt-"+Math.random().toString(36).slice(2);dialog.setAttribute("aria-labelledby",text.id);
-    const input=document.createElement("input");
-    Object.assign(input,{type:"text",value:defaultValue??"",autocomplete:"off",spellcheck:false});
+    const input=document.createElement(multiline?"textarea":"input");
+    Object.assign(input,{value:defaultValue??"",autocomplete:"off",spellcheck:multiline});if(!multiline)input.type="text";
     label.append(text,input);
     const actions=document.createElement("div");actions.className="inspector-text-prompt-actions";
     const cancel=document.createElement("button");Object.assign(cancel,{type:"button",textContent:"Cancel"});
     const ok=document.createElement("button");Object.assign(ok,{type:"submit",textContent:"OK",className:"primary"});
+    if(multiline){const hint=document.createElement("small");hint.textContent="Ctrl+Enter for OK";actions.append(hint)}
     actions.append(cancel,ok);form.append(label,actions);dialog.append(form);
     let settled=false;
     const finish=value=>{
@@ -44,11 +48,15 @@ function askTextInApp(message,defaultValue){
       try{if(opener?.isConnected)opener.focus()}catch{}
       resolve(value);
     };
-    form.addEventListener("submit",event=>{event.preventDefault();finish(input.value)});
+    // The box reads Windows line ends as "\n": text left as it was comes back exactly as given, so a caller can tell it is unchanged.
+    const original=String(defaultValue??"");
+    form.addEventListener("submit",event=>{event.preventDefault();finish(input.value===original.replace(/\r\n?/g,"\n")?original:input.value)});
+    if(multiline)input.addEventListener("keydown",event=>{if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)){event.preventDefault();form.requestSubmit()}});
     cancel.addEventListener("click",()=>finish(null));
     dialog.addEventListener("cancel",event=>{event.preventDefault();finish(null)});
     document.body.append(dialog);
-    dialog.showModal();input.focus();input.select();
+    // A long text opens with the caret after it, ready to add to; one line opens selected, as window.prompt does.
+    dialog.showModal();input.focus();if(multiline)input.setSelectionRange(input.value.length,input.value.length);else input.select();
   });
 }
 

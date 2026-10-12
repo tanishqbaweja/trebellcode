@@ -271,9 +271,11 @@ test("asking for the commit text while the pull request text is still being writ
     await expect(generate).toBeEnabled();await generate.click();
     await expect(message).toHaveValue("Grok Build fixture commit message");
     releaseReview();
-    // The pull request text still lands: its title and description prompts open with it, and the pull request is created.
+    // The pull request text still lands: the title prompt and the description dialog open with it, and the pull request is created.
+    const description=page.locator("dialog.inspector-text-prompt textarea");
+    await expect(description).toHaveValue("Written by Grok Build.");await expect(description).toBeFocused();await page.keyboard.press("Control+Enter");
     await expect.poll(()=>server.pullRequests.length,{timeout:10_000}).toBe(1);
-    expect(dialogs).toEqual([["prompt","PR title","Grok Build fixture PR title"],["prompt","PR description","Written by Grok Build."]]);
+    expect(dialogs).toEqual([["prompt","PR title","Grok Build fixture PR title"]]);
     expect(server.pullRequests[0]).toMatchObject({cwd:directory.path,title:"Grok Build fixture PR title",body:"Written by Grok Build."});
     await expect(alert).toHaveCount(0);
     expect(server.gitText.map(item=>item.runtime)).toEqual(["grok"]);

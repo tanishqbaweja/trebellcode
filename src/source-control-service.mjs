@@ -728,16 +728,20 @@ export async function createPullRequest(cwd,{provider=null,title,body="",base=nu
   if(ctx.provider==="azure-devops"){const r=await run("az",["repos","pr","create","--only-show-errors","--detect","true","--target-branch",baseBranch,"--source-branch",branch,"--title",title,"--description",body,"--output","json"],{cwd:ctx.info.root,timeout:60000});const data=parseJson(r.stdout,{});return {provider:ctx.provider,url:data._links?.web?.href||data.repository?.webUrl||data.url||""}}
 }
 
-export async function editPullRequest(cwd,number,{provider=null,title,body=""}={}){
-  const ctx=await sourceContext(cwd,provider);const nextTitle=String(title||"").trim();if(!nextTitle)throw new Error("Pull request title is required");
+// A field that is not given (null) is left as the host has it: changing only the title must not rewrite the description.
+export async function editPullRequest(cwd,number,{provider=null,title=null,body=null}={}){
+  const ctx=await sourceContext(cwd,provider);const nextTitle=title==null?null:String(title).trim(),nextBody=body==null?null:String(body);
+  if(nextTitle==="")throw new Error("Pull request title is required");if(nextTitle==null&&nextBody==null)throw new Error("Give a new title or description");
+  const fields=(titleKey,bodyKey)=>({...(nextTitle!=null?{[titleKey]:nextTitle}:{}),...(nextBody!=null?{[bodyKey]:nextBody}:{})});
+  const flags=(titleFlag,bodyFlag)=>[...(nextTitle!=null?[titleFlag,nextTitle]:[]),...(nextBody!=null?[bodyFlag,nextBody]:[])];
   if(ctx.provider==="github"){
-    const result=await run("gh",["pr","edit",String(number),"--title",nextTitle,"--body",String(body||"")],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
+    const result=await run("gh",["pr","edit",String(number),...flags("--title","--body")],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
     if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not edit pull request").trim());return {ok:true,provider:ctx.provider};
   }
-  if(ctx.provider==="gitlab"){await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}`,{method:"PUT",body:{title:nextTitle,description:String(body||"")}});return {ok:true,provider:ctx.provider}}
-  if(ctx.provider==="forgejo"){const target=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${target.repository}/pulls/${Number(number)}`,{method:"PATCH",body:{title:nextTitle,body:String(body||"")}});return {ok:true,provider:ctx.provider}}
-  if(ctx.provider==="bitbucket"){await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}`,{method:"PUT",body:{title:nextTitle,description:String(body||"")}});return {ok:true,provider:ctx.provider}}
-  const result=await run("az",["repos","pr","update","--detect","true","--id",String(number),"--title",nextTitle,"--description",String(body||""),"--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000});
+  if(ctx.provider==="gitlab"){await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}`,{method:"PUT",body:fields("title","description")});return {ok:true,provider:ctx.provider}}
+  if(ctx.provider==="forgejo"){const target=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${target.repository}/pulls/${Number(number)}`,{method:"PATCH",body:fields("title","body")});return {ok:true,provider:ctx.provider}}
+  if(ctx.provider==="bitbucket"){await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}`,{method:"PUT",body:fields("title","description")});return {ok:true,provider:ctx.provider}}
+  const result=await run("az",["repos","pr","update","--detect","true","--id",String(number),...flags("--title","--description"),"--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000});
   if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not edit Azure DevOps pull request").trim());return {ok:true,provider:ctx.provider};
 }
 
