@@ -748,3 +748,29 @@ test("Merge and Auto-merge ask first, naming the pull request, the method and th
   await expect(pulls.locator(".pr-list em")).toHaveText("MERGED");
   await shootBothModes(page,"source-control-merged-notice");
 });
+
+test("auto-merge that is on says so and is not offered again, and requested reviewers are listed",async({page,request})=>{
+  test.setTimeout(60_000);
+  await asInDesktopApp(page);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,prs:[samplePr(11,{title:"Feature one",reviews:[{id:"r1",author:{login:"lead-dev"},state:"COMMENTED",body:"Looks close."}]})]});
+  const {pulls}=await openGitPanel(page,request,"Source control auto-merge state");
+  const dialog=page.locator("dialog.inspector-text-prompt"),detail=pulls.locator(".pr-detail"),actions=detail.locator(".pr-actions");
+  await pulls.getByRole("button",{name:/#11 Feature one/}).click();
+  await expect(detail.locator(".pr-auto-merge")).toHaveCount(0);
+  await actions.getByRole("button",{name:"Auto-merge",exact:true}).click();
+  await dialog.getByRole("button",{name:"Turn on auto-merge"}).click();
+  await expect(detail.locator(".pr-auto-merge")).toHaveText("Auto-merge is on (squash), turned on by me. It merges once its required checks pass.");
+  await expect(actions.getByRole("button",{name:"Auto-merge",exact:true})).toHaveCount(0);
+  await expect(actions.getByRole("button",{name:"Merge",exact:true})).toBeVisible();
+  // A reviewer asked for is listed with the reviews, as requested.
+  await actions.getByRole("button",{name:"Request reviewer"}).click();
+  await expect(dialog).toContainText("Reviewer username");await page.keyboard.type("octocat",{delay:15});await page.keyboard.press("Enter");
+  const reviews=detail.locator(".review-list").last().locator(":scope > div");
+  await expect(reviews).toHaveText([/^lead-dev\s*COMMENTED\s*Looks close\.$/i,/^octocat\s*requested$/i]);
+  expect(host.actions().map(body=>body.action)).toEqual(["merge","request-reviewer"]);
+  await detail.locator(".pr-auto-merge").scrollIntoViewIfNeeded();
+  await shootBothModes(page,"source-control-auto-merge-on");
+  await reviews.last().scrollIntoViewIfNeeded();
+  await shootBothModes(page,"source-control-reviewer-requested");
+});

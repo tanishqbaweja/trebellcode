@@ -648,6 +648,8 @@
 :root:root .context-panel .pr-checks em[data-state="failed"]{border-color:var(--errb);background:var(--errt);color:var(--err)!important}
 :root:root .context-panel .pr-checks em[data-state="pending"]{border-color:var(--warnb);background:var(--warnt);color:var(--warn)!important}
 :root:root .context-panel .pr-detail>.pr-checks-none{margin:0;font-size:12px;color:var(--tx3)!important}
+/* Auto-merge that is on, under the description: the panel no longer offers to turn it on. */
+:root:root .context-panel .pr-detail>.pr-auto-merge{padding:7px 10px;border:1px solid var(--okb)!important;border-radius:9px;background:var(--okt)!important;color:var(--ok)!important;font-size:12px;line-height:1.5}
 :root:root .context-panel .pr-empty-state{
   box-sizing:border-box;min-height:180px;padding:28px 20px;display:grid;place-items:center;align-content:center;gap:6px;text-align:center;
   border:1.5px dashed var(--line2)!important;border-radius:var(--r-l);background:transparent!important;

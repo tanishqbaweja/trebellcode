@@ -881,7 +881,7 @@ export async function publishRepository(cwd,{provider="github",name=null,visibil
 export async function pullRequestDetail(cwd,number,{provider=null}={}){
   const ctx=await sourceContext(cwd,provider);let item;
   if(ctx.provider==="github"){
-    const r=await run("gh",["pr","view",String(number),"--json","number,title,body,state,isDraft,url,headRefName,headRefOid,baseRefName,author,reviewDecision,statusCheckRollup,comments,reviews,files,commits,mergeCommit,mergedAt"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});
+    const r=await run("gh",["pr","view",String(number),"--json","number,title,body,state,isDraft,url,headRefName,headRefOid,baseRefName,author,reviewDecision,statusCheckRollup,comments,reviews,files,commits,mergeCommit,mergedAt,autoMergeRequest,reviewRequests"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});
     if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};const raw=parseJson(r.stdout,{});item={...raw,provider:"github",headSha:raw.headRefOid||null,mergeCommitSha:raw.mergeCommit?.oid||null,files:(raw.files||[]).map(file=>({path:file.path||file.filename||"",additions:Number(file.additions||0),deletions:Number(file.deletions||0),status:file.status||null,patch:file.patch||null}))};
     item.awaitingWorkflowApproval=await githubAwaitingWorkflowRuns(ctx,item.headSha).catch(()=>[]);
     const [rest,apiFiles]=await Promise.all([

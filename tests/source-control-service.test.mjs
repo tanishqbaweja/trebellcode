@@ -599,6 +599,9 @@ test("GitHub PR editing, comment editing and waiting workflow approval use real 
   assert.deepEqual(JSON.parse(stdinCalls[0].input),{body:"Edited comment"});
 
   const detail=await withSourceControlExecutor(executor,()=>pullRequestDetail("/srv/app",7,{provider:"github"}));
+  // The detail reads whether auto-merge is on and who was asked to review, so the panel can show both.
+  const viewFields=calls.find(call=>call.command==="gh"&&call.args[1]==="view"&&call.args[call.args.indexOf("--json")+1]!=="headRefOid").args;
+  assert.deepEqual(viewFields[viewFields.indexOf("--json")+1].split(",").filter(field=>["autoMergeRequest","reviewRequests"].includes(field)),["autoMergeRequest","reviewRequests"]);
   assert.deepEqual(detail.item.awaitingWorkflowApproval.map(run=>run.id),[101]);
   assert.equal(detail.item.comments[0].canEdit,true);
   assert.equal(detail.item.files[0].path,"src/payments.js");
