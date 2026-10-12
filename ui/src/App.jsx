@@ -4513,12 +4513,13 @@ export default function App(){
     });
     return uploadBrowserFiles(files,label);
   }
-  // A file over the size limit is refused by its name before anything is read. With label (what the composer's toast says could not
-  // be done) the refusal shows at once, while the files taken upload, each on the shelf as uploading until the server has it and then
-  // as attached. What failed is thrown at the end: an upload that failed, or else the refusal.
-  async function uploadBrowserFiles(files,label=""){
+  // A file over the size limit is refused by its name before anything is read, together with what the caller could not take (refused:
+  // its reasons, a dropped folder's). With label (what the composer's toast says could not be done) the refusal shows at once, while
+  // the files taken upload, each on the shelf as uploading until the server has it and then as attached. What failed is thrown at the
+  // end: an upload that failed, or else the refusal.
+  async function uploadBrowserFiles(files,label="",refused=[]){
     const picked=files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length)),uploaded=[];
-    const tooLarge=picked.filter(file=>attachmentSizeError(file)),refusal=tooLarge.length?new Error(tooLarge.map(file=>(file.name||"A file")+": "+attachmentSizeError(file).message).join("; ")):null;
+    const reasons=[...refused,...picked.filter(file=>attachmentSizeError(file)).map(file=>(file.name||"A file")+": "+attachmentSizeError(file).message)],refusal=reasons.length?new Error(reasons.join("; ")):null;
     if(refusal&&label)showActionError(refusal,label);
     const taken=picked.filter(file=>!attachmentSizeError(file)).map(file=>({file,id:crypto.randomUUID(),name:file.name||"attachment"}));
     if(taken.length)setUploadingFiles(prev=>[...prev,...taken.map(({id,name})=>({id,name}))]);
@@ -4554,8 +4555,9 @@ export default function App(){
       }
     }
   }
-  // A dropped folder comes as a file the browser cannot read: it is left out and named as a folder, and the files beside it attach.
-  async function onDrop(e){e.preventDefault();const items=[...(e.dataTransfer?.items||[])].filter(item=>item.kind==="file"),isFolder=item=>Boolean(item.webkitGetAsEntry?.()?.isDirectory),folders=items.some(isFolder),files=items.filter(item=>!isFolder(item)).map(item=>item.getAsFile()).filter(Boolean);try{await uploadBrowserFiles(files,"Could not attach dropped files");if(folders)throw new Error("Folders cannot be attached")}catch(error){showActionError(error,"Could not attach dropped files")}}
+  // A dropped folder comes as a file the browser cannot read: it is left out and named as a folder, with any file refused beside it,
+  // and the files beside it attach.
+  async function onDrop(e){e.preventDefault();const items=[...(e.dataTransfer?.items||[])].filter(item=>item.kind==="file"),isFolder=item=>Boolean(item.webkitGetAsEntry?.()?.isDirectory),folders=items.some(isFolder),files=items.filter(item=>!isFolder(item)).map(item=>item.getAsFile()).filter(Boolean);try{await uploadBrowserFiles(files,"Could not attach dropped files",folders?["Folders cannot be attached"]:[])}catch(error){showActionError(error,"Could not attach dropped files")}}
   async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}
   async function citeAssistant(message,excerpt=""){
     const selected=String(excerpt||"").trim();

@@ -116,7 +116,7 @@ test("a file over the attachment limit is refused at once by its name, and an ac
 
 // A drop on the composer as the browser hands it over. A person's drop of a folder from the file manager cannot be made from a test:
 // the page's drop items call "assets" a directory, and reading it fails as Chromium's read of a dropped directory fails. Reading
-// "locked.txt" fails as a file the system no longer lets the browser read.
+// "locked.txt" fails as a file the system no longer lets the browser read, and "capture.mov" is a 51 MB video.
 const UNREADABLE="The requested file could not be read, typically due to permission problems that have occurred after a reference to a file was acquired.";
 async function unreadableDrops(page){
   await page.addInitScript(unreadable=>{
@@ -132,12 +132,13 @@ async function unreadableDrops(page){
 }
 async function dropOnComposer(page,names){
   await page.getByTestId("composer").evaluate((node,names)=>{
-    const data=new DataTransfer();for(const name of names)data.items.add(new File(name==="assets"?[]:["Dropped "+name+"\n"],name,{type:name==="assets"?"":"text/plain"}));
+    const video=name=>name==="capture.mov";
+    const data=new DataTransfer();for(const name of names)data.items.add(new File(name==="assets"?[]:video(name)?[new Uint8Array(51*1024*1024)]:["Dropped "+name+"\n"],name,{type:name==="assets"?"":video(name)?"video/quicktime":"text/plain"}));
     node.dispatchEvent(new DragEvent("drop",{bubbles:true,cancelable:true,dataTransfer:data}));
   },names);
 }
 
-test("a dropped folder is named as a folder, and a dropped file the browser cannot read is named with the reason",async({page})=>{
+test("a dropped folder is named as a folder, also beside a file over the limit, and a dropped file the browser cannot read is named with the reason",async({page})=>{
   test.setTimeout(90_000);
   await unreadableDrops(page);
   const harness=await openComposerApp(page);
@@ -156,6 +157,12 @@ test("a dropped folder is named as a folder, and a dropped file the browser cann
       await expect(alert).toHaveText("Could not attach dropped files: locked.txt: "+UNREADABLE);
       await expect(chips(page).filter({hasText:"locked.txt"})).toHaveCount(0);
       for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(alert).toBeInViewport();await page.screenshot({animations:"disabled",path:auditDir+"dropped-unreadable-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+      // Dropped with a file over the limit, the folder is still named, together with the file's refusal.
+      await dropOnComposer(page,["assets","capture.mov"]);
+      await expect(alert).toHaveText("Could not attach dropped files: Folders cannot be attached; capture.mov: Attachment is larger than 50 MB");
+      await expect(chips(page).filter({hasText:"capture.mov"})).toHaveCount(0);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(alert).toBeInViewport();await page.screenshot({animations:"disabled",path:auditDir+"dropped-folder-and-oversize-"+mode+"-"+width+"x800.png"})}
       await page.setViewportSize({width:1280,height:800});
     }
   }finally{await harness.close()}
