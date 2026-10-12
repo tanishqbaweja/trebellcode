@@ -4183,7 +4183,18 @@ export default function App(){
       }catch(error){setEvents(prev=>[...prev,{id:"feedback-error-"+Date.now(),kind:"error",title:"Feedback upload failed: "+(error.message||String(error)),status:"done",raw:{}}])}
       return true;
     }
-    if(command==="/goal"){if(agentRuntime==="codex")await runCodexGoalCommand(parseCodexGoalCommand(text));else if(activeThread?.id)openRightPanel("goal");return true}
+    if(command==="/goal"){
+      if(agentRuntime==="codex"){await runCodexGoalCommand(parseCodexGoalCommand(text));return true}
+      // Elsewhere /goal opens the thread's goal, and the text after it is the objective it sets. A goal is kept with a thread, so on New
+      // task the draft stays ("kept") and the composer says why.
+      const threadId=activeThread?.id,objective=text.slice(command.length).trim();
+      if(!threadId||!rpc){setComposerAlert({kind:"send",text:"A goal belongs to a thread. Send a first message to start one, then set its goal. Your draft is kept."});return "kept"}
+      if(objective){
+        try{const result=await rpc.request("thread/goal/set",{threadId,objective,status:"active"});if(activeThreadRef.current?.id===threadId)setGoal(result?.goal||null)}
+        catch(error){setComposerAlert({kind:"send",text:"Could not set the goal: "+sentenceText(error?.message||String(error))+" Your draft is kept."});return "kept"}
+      }
+      openRightPanel("goal");return true;
+    }
     if(command==="/palette"){setPaletteOpen(true);return true}
     if(command==="/new"){await newChat();return true}
     if(command==="/clear"){await newChat();return true}
@@ -4206,7 +4217,7 @@ export default function App(){
     const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim();if(!text)return;
     setComposerAlert(null);
     if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
-    if(text.startsWith("/")){const special=await handleSpecial(text);if(special===true){setPrompt("");return}}
+    if(text.startsWith("/")){const special=await handleSpecial(text);if(special){if(special===true)setPrompt("");return}}
     // Nothing new is sent while a harness switch is pending: the server may already run the new harness behind the current transport.
     if(runtimeSwitchRef.current){const label=agentRuntimeName(runtimeSwitchRef.current.to);setEvents(prev=>[...prev.filter(item=>item.id!=="runtime-switching"),{id:"runtime-switching",kind:"error",title:`Trebell is switching to ${label}. Your draft was kept; send it again once ${label} is ready.`,status:"done",raw:{}}]);return}
     // Never route a prompt elsewhere while the harness transport is down: keep the draft until it reconnects.

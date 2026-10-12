@@ -121,3 +121,34 @@ test("a dropped folder is named as a folder, and a dropped file the browser cann
     }
   }finally{await harness.close()}
 });
+
+const GOAL_NEEDS_THREAD="A goal belongs to a thread. Send a first message to start one, then set its goal. Your draft is kept.";
+test("/goal with an objective sets the thread's goal, and /goal on New task keeps the draft and says a thread comes first",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page);
+  try{
+    const composer=page.getByTestId("composer"),panel=page.getByTestId("goal-panel");
+    await composer.click();
+    await page.keyboard.type("/goal Make the login tests pass",{delay:15});
+    await page.keyboard.press("Enter");
+    await expect(panel.getByLabel("Objective",{exact:true})).toHaveValue("Make the login tests pass");
+    await expect(panel.locator(".goal-status")).toHaveText(/active/i);
+    await expect(composer).toHaveValue("");
+    await shootBoth(page,"goal-command-set",()=>expect(panel.getByLabel("Objective",{exact:true})).toBeInViewport());
+    // On New task there is no thread to set a goal on yet.
+    await page.getByRole("button",{name:"Close right panel"}).click();await expect(panel).toHaveCount(0);
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await expect(page.locator(".thread-row.active")).toHaveCount(0);
+    await composer.click();
+    await page.keyboard.type("/goal Ship the release",{delay:15});
+    await page.keyboard.press("Enter");
+    const alert=page.getByTestId("composer-alert");
+    await expect(alert).toHaveText(GOAL_NEEDS_THREAD);
+    await expect(composer).toHaveValue("/goal Ship the release");
+    await expect(page.locator(".thread-row")).toHaveCount(1);
+    await shootBoth(page,"goal-command-new-task",()=>expect(alert).toBeInViewport());
+    // Editing the draft clears the note.
+    await composer.click();await page.keyboard.press("End");await page.keyboard.type("!",{delay:15});
+    await expect(alert).toHaveCount(0);
+  }finally{await harness.close()}
+});
