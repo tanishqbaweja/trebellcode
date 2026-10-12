@@ -1,6 +1,9 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { mkdir,mkdtemp,readFile,rm,writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { dirname,join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 
@@ -226,11 +229,11 @@ test("the Files viewer colours code with its own language's grammar and shows pr
   }
 });
 
-// Opens a project registered under `name` and the inspector beside it.
-async function openProjectInspector(page,request,name){
+// Opens a project registered under `name` (the checkout, or the folder at `path`) and the inspector beside it.
+async function openProjectInspector(page,request,name,path=null){
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});
   const boot=await (await request.get("/api/bootstrap")).json();
-  await request.post("/api/projects",{data:{path:boot.cwd,name}});
+  await request.post("/api/projects",{data:{path:path||boot.cwd,name}});
   await page.goto("/");
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   const project=page.locator(".project-card").filter({hasText:name});
@@ -239,6 +242,38 @@ async function openProjectInspector(page,request,name){
   await page.getByTestId("right-panel-toggle").click();
   const right=page.getByTestId("right-panel");
   return {boot,right,top:right.locator(".context-panel-tab-scroll"),inner:right.locator(".workspace-panel .panel-tabs")};
+}
+
+// A real folder holding `files` (relative path: text or bytes), opened as a project with the Files view beside it, and removed when
+// the test ends. row(name) is the tree row a person clicks to open that file.
+const folders=[];
+test.afterEach(async()=>{for(const dir of folders.splice(0))await rm(dir,{recursive:true,force:true,maxRetries:5})});
+async function openFilesFolder(page,request,name,files){
+  const dir=await mkdtemp(join(tmpdir(),"trebell-files-"));folders.push(dir);
+  for(const [relative,content] of Object.entries(files)){await mkdir(dirname(join(dir,relative)),{recursive:true});await writeFile(join(dir,relative),content)}
+  await page.setViewportSize({width:1280,height:800});
+  const opened=await openProjectInspector(page,request,name,dir);
+  const row=file=>opened.right.locator("[data-workspace-entry]").filter({hasText:new RegExp("^"+file.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"$")});
+  await expect(row(Object.keys(files)[0].split("/").pop())).toBeVisible();
+  return {...opened,dir,row};
+}
+
+// Screenshots in both modes at 1280x800 and 900 wide. The mode is switched with the header's toggle, at 1280 where the header shows
+// it, as a person would; a dialog that keeps the header out of reach is closed for the switch and opened again. The page ends in the
+// mode it started in.
+async function shootBothModes(page,name,{close=null,reopen=null}={}){
+  for(let pass=0;pass<2;pass++){
+    const mode=await page.locator("html").getAttribute("data-mode");
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-1280x800.png"});
+    await page.setViewportSize({width:900,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-900x800.png"});
+    await page.setViewportSize({width:1280,height:800});
+    if(close)await close();
+    await page.getByTestId("appearance-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode==="dark"?"light":"dark");
+    if(reopen)await reopen();
+  }
 }
 
 test("the Diff tab says it is loading until the working tree answers, and the inspector tabs and the Files | Changes switch agree",async({page,request})=>{
@@ -372,6 +407,31 @@ test("a working-tree read that answers after newer reads started still shows, an
   await expect(inner.getByRole("button",{name:/^Changes/})).toHaveText("Changes (3)");
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-stream-newest-light-1280x800.png",fullPage:true});
+});
+
+test("a binary file opens as binary, with its size and no Edit, and its bytes stay as they were",async({page,request})=>{
+  test.setTimeout(60_000);
+  // Every byte value (NUL included), and a Latin-1 text whose "é" is not UTF-8.
+  const blob=Buffer.from(Array.from({length:4096},(_,index)=>(index*37+11)%256)),latin=Buffer.from("café au lait\n","latin1");
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace binary files",{"bin/blob.bin":blob,"latin1.txt":latin,"notes.txt":"plain text\n"});
+  const view=right.locator(".file-view"),button=name=>right.locator(".file-head").getByRole("button",{name,exact:true});
+  for(const [name,path,bytes,size] of [["blob.bin","bin/blob.bin",blob,"4.0 KB"],["latin1.txt","latin1.txt",latin,"13 B"]]){
+    await row(name).click();
+    await expect(right.locator(".file-head strong")).toHaveText(name);
+    await expect(view.locator(".file-empty")).toContainText("Binary file");
+    await expect(view.locator(".file-empty")).toContainText(size);
+    await expect(view).not.toContainText("�");
+    await expect(button("Edit")).toHaveCount(0);await expect(button("Attach")).toBeVisible();
+    // The file's head stays at the top of the view, over its size.
+    const top=locator=>locator.evaluate(node=>Math.round(node.getBoundingClientRect().top));
+    expect(await top(right.locator(".file-head"))).toBe(await top(view));
+    expect((await readFile(join(dir,path))).equals(bytes),name+" keeps its bytes").toBe(true);
+    if(name==="blob.bin")await shootBothModes(page,"workspace-binary-file");
+  }
+  // Text still opens as text, with Edit.
+  await row("notes.txt").click();
+  await expect(right.locator(".syntax-view")).toContainText("plain text");
+  await expect(button("Edit")).toBeVisible();
 });
 
 // A Codex app server holding the given threads: enough for the sidebar to list them and for the app to open them.

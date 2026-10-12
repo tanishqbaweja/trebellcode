@@ -1,6 +1,7 @@
 import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { Check, FileCode2, FileDiff, FileImage, FileText, Folder, LoaderCircle, Music2, Paperclip, RefreshCw, Save, Search, Video, WrapText, X } from "lucide-react";
 import { api } from "../api.js";
+import { formatBytes } from "../format-bytes.js";
 import { actionError, gitStatusBadge, gitStatusEntry } from "../inspector-labels.js";
 import { changedPathPlans, fitGlyphs, glyphRuns } from "../changed-name-fit.js";
 import { highlightSyntax } from "../syntax-language.js";
@@ -234,7 +235,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     }
     try{
       const data=await api("/api/workspace/file?"+params({root:projectPath,path}));
-      setFile({...data,kind});setDraft(data.content);setEdit(false);
+      // Binary content is never text in the viewer, whatever the file's extension says it is.
+      setFile({...data,kind:data.binary?"binary":kind});setDraft(data.content??"");setEdit(false);
     }catch(err){
       if(!file){setFile({path,name,kind:"unsupported",content:null});setDraft("");setEdit(false)}
       // The file head still names the file that stays open, so the error names the one that failed.
@@ -290,6 +292,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     if(file.kind==="html")return <div className="document-preview"><iframe title={file.name} src={rawUrl} sandbox="" referrerPolicy="no-referrer"/></div>;
     if(file.kind==="markdown")return <MarkdownPreview content={file.content}/>;
     if(file.kind==="table")return <div className="table-preview"><table><tbody>{table.map((row,rowIndex)=><tr key={rowIndex}>{row.map((cell,colIndex)=>rowIndex===0?<th key={colIndex}>{cell}</th>:<td key={colIndex}>{cell}</td>)}</tr>)}</tbody></table>{table.length>=300&&<p>Preview limited to 300 rows.</p>}</div>;
+    if(file.kind==="binary")return <div className="file-empty"><strong>Binary file</strong><span>{formatBytes(file.size)} · not shown as text</span></div>;
     if(file.kind==="unsupported")return <div className="file-empty"><strong>Preview unavailable</strong><span>{error||"This file is binary or too large for the text editor."}</span><button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach to chat</button></div>;
     return <pre className="syntax-view">{highlighted==null?<code>{file.content}</code>:<code dangerouslySetInnerHTML={{__html:highlighted}}/>}</pre>;
   }

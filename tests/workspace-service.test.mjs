@@ -1,12 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import {
   environmentWorkspaceDiff,
+  environmentWorkspaceEditorFile,
+  environmentWorkspaceEditorSave,
   environmentWorkspaceFile,
   environmentWorkspaceSearch,
   environmentWorkspaceTree,
@@ -103,3 +107,49 @@ test("remote workspace tree, search, read, diff and write stay inside the select
   await assert.rejects(()=>environmentWorkspaceFile("/etc/passwd",512000,{...options,root:"/srv/app"}),/outside the active workspace/i);
   await assert.rejects(()=>environmentWorkspaceFile("/srv/app/large.txt",512000,{...options,root:"/srv/app"}),/too large/i);
 });
+
+// A remote environment holding `files` (path: bytes), streamed as its cat would stream them.
+function remoteFiles(files){
+  return {
+    get:id=>id==="ssh-a"?{id:"ssh-a",name:"Build box",type:"ssh",cwd:"/srv/app"}:null,
+    attachmentInfo:async(_id,path)=>{if(!files.has(path))throw new Error("Attachment does not exist in Build box");return {path,size:files.get(path).length,environmentId:"ssh-a"}},
+    streamFile:(_id,path)=>{const child=new EventEmitter();child.stdout=Readable.from([files.get(path)]);child.stdout.once("end",()=>setImmediate(()=>child.emit("close",0)));return child},
+    writeTextFile:async(_id,path,bytes)=>{files.set(path,Buffer.from(bytes));return {path,size:bytes.length}},
+  };
+}
+
+test("the Files editor reads bytes that are not UTF-8 text as binary, and never saves text over them",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-binary-"));
+  try{
+    // A PNG header (NUL bytes), and a Latin-1 "é", which is no UTF-8 sequence; and text with a BOM and CRLF lines, which stay.
+    const png=Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,13]),latin=Buffer.from("café\n","latin1"),bom=Buffer.from("﻿naïve “text”\r\nline two\r\n","utf8");
+    for(const [name,bytes] of [["logo.png",png],["latin1.txt",latin],["bom.txt",bom]])await writeFile(join(dir,name),bytes);
+    for(const [name,size] of [["logo.png",12],["latin1.txt",5]]){
+      const file=await environmentWorkspaceEditorFile(join(dir,name),{root:dir});
+      assert.equal(file.binary,true,name);assert.equal(file.size,size,name);assert.equal(file.content,null,name);
+      await assert.rejects(()=>environmentWorkspaceEditorSave(join(dir,name),"text",{root:dir}),{message:name+" is a binary file, so it is not saved as text"});
+    }
+    assert.ok((await readFile(join(dir,"logo.png"))).equals(png));assert.ok((await readFile(join(dir,"latin1.txt"))).equals(latin));
+    const text=await environmentWorkspaceEditorFile(join(dir,"bom.txt"),{root:dir});
+    assert.equal(text.binary,false);assert.equal(text.content,"﻿naïve “text”\r\nline two\r\n");
+    await environmentWorkspaceEditorSave(join(dir,"bom.txt"),text.content,{root:dir});
+    assert.ok((await readFile(join(dir,"bom.txt"))).equals(bom),"saving what was read writes the same bytes back");
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test("a remote file reaches the Files editor byte for byte, binary ones as binary",async()=>{
+  const blob=Buffer.from([0x50,0x4b,0x03,0x04,0,0,0xff]),code=Buffer.from("export const ok=1;\r\n\r\n","utf8");
+  const files=new Map([["/srv/app/dist/app.zip",blob],["/srv/app/src/index.js",code]]);
+  const options={environments:remoteFiles(files),environmentId:"ssh-a",root:"/srv/app"};
+  const binary=await environmentWorkspaceEditorFile("/srv/app/dist/app.zip",options);
+  assert.equal(binary.binary,true);assert.equal(binary.size,7);assert.equal(binary.content,null);assert.equal(binary.environmentId,"ssh-a");
+  await assert.rejects(()=>environmentWorkspaceEditorSave("/srv/app/dist/app.zip","text",options),{message:"app.zip is a binary file, so it is not saved as text"});
+  assert.ok(files.get("/srv/app/dist/app.zip").equals(blob));
+  // Carriage returns and the trailing blank line survive the trip, so saving the text unchanged writes the same bytes.
+  const text=await environmentWorkspaceEditorFile("/srv/app/src/index.js",options);
+  assert.equal(text.content,"export const ok=1;\r\n\r\n");
+  await environmentWorkspaceEditorSave("/srv/app/src/index.js",text.content,options);
+  assert.ok(files.get("/srv/app/src/index.js").equals(code));
+  await assert.rejects(()=>environmentWorkspaceEditorFile("/etc/passwd",options),/outside the active workspace/i);
+});
+

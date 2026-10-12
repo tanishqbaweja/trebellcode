@@ -222,6 +222,8 @@
 :root:root .context-panel .file-head .open-in-error{right:8px;top:calc(100% + 4px);max-width:calc(100% - 16px);white-space:normal;overflow-wrap:anywhere}
 :root:root .context-panel .file-empty{grid-row:1/-1;display:grid;place-items:center;align-content:center;gap:8px;padding:24px;color:var(--tx3)!important;font-size:12.5px;text-align:center}
 :root:root .context-panel .file-view.has-error .file-empty{grid-row:auto}
+/* A file's own empty state (a binary file) sits under its head, which stays at the top. */
+:root:root .context-panel .file-head~.file-empty{grid-row:auto}
 :root:root .context-panel .file-empty strong{font-size:13px;font-weight:600;color:var(--tx1)}
 :root:root .context-panel .file-empty span{max-width:300px;color:var(--tx3);font-size:12px;line-height:1.5}
 :root:root .context-panel :is(.syntax-view,.file-editor){

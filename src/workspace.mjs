@@ -1,7 +1,9 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
-import { basename, join, posix, resolve, sep } from "node:path";
+import { basename, dirname, join, posix, resolve, sep } from "node:path";
 
 const execFileAsync = promisify(execFile);
 const SKIP = new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist"]);
@@ -252,4 +254,45 @@ export function environmentWorkspacePath(root,filePath,{environments=null,enviro
   if(!profile)return {remote:false,root:resolve(root||process.cwd()),path:resolve(filePath||"")};
   const resolved=remotePath(root||profile.cwd||"/",filePath);
   return {remote:true,root:resolved.base,path:resolved.absolute,profile};
+}
+
+// The Files panel's viewer and editor read a file as bytes (a remote one streams from its environment, so no byte is lost to text
+// decoding on the way). It is text only when its bytes are UTF-8 with no NUL byte, so saving what the editor shows writes the same
+// bytes back; anything else (an image, an archive, a UTF-16 or Latin-1 file) is binary, shown with its size and never as text.
+async function editorBytes(filePath,maxBytes,{root=null,environments=null,environmentId=null}={}){
+  const located=environmentWorkspacePath(root,filePath,{environments,environmentId});
+  const name=located.remote?posix.basename(located.path):basename(located.path);
+  let size;
+  if(located.remote)size=(await environments.attachmentInfo(environmentId,located.path)).size;
+  else{const info=await stat(located.path);if(!info.isFile())throw new Error("Not a file");size=info.size}
+  const tooLarge=bytes=>new Error(`File is too large to preview (${Math.ceil(bytes/1024)} KB)`);
+  if(size>maxBytes)throw tooLarge(size);
+  if(!located.remote)return {located,name,bytes:await readFile(located.path)};
+  const child=environments.streamFile(environmentId,located.path),chunks=[];let count=0;
+  const closed=new Promise((resolveClose,reject)=>{child.once("error",reject);child.once("close",code=>code===0?resolveClose():reject(new Error("Could not read remote file")))});
+  try{
+    for await(const chunk of child.stdout){count+=chunk.length;if(count>maxBytes)throw tooLarge(count);chunks.push(chunk)}
+    await closed;
+  }catch(error){child.kill?.();await closed.catch(()=>{});throw error}
+  return {located,name,bytes:Buffer.concat(chunks,count)};
+}
+function editorView({located,name,bytes},environmentId=null){
+  const binary=bytes.includes(0)||!isUtf8(bytes);
+  return {path:located.path,name,size:bytes.length,binary,content:binary?null:bytes.toString("utf8"),...(located.remote?{environmentId}:{})};
+}
+
+export async function environmentWorkspaceEditorFile(filePath,{maxBytes=512_000,root=null,environments=null,environmentId=null}={}){
+  return editorView(await editorBytes(filePath,maxBytes,{root,environments,environmentId}),environmentId);
+}
+
+// Saves the editor's text. A file that is binary on disk is never saved over as text.
+export async function environmentWorkspaceEditorSave(filePath,content,{root=null,environments=null,environmentId=null}={}){
+  const bytes=Buffer.from(String(content??""),"utf8");
+  if(bytes.length>2*1024*1024)throw new Error("File is too large to edit (maximum 2 MB)");
+  const current=await editorBytes(filePath,32*1024*1024,{root,environments,environmentId}).then(read=>editorView(read),error=>{if(error?.code==="ENOENT")return null;throw error});
+  if(current?.binary)throw new Error(current.name+" is a binary file, so it is not saved as text");
+  const located=environmentWorkspacePath(root,filePath,{environments,environmentId});
+  if(located.remote)await environments.writeTextFile(environmentId,located.path,bytes);
+  else{await mkdir(dirname(located.path),{recursive:true});await writeFile(located.path,bytes)}
+  return editorView({located,name:located.remote?posix.basename(located.path):basename(located.path),bytes},environmentId);
 }

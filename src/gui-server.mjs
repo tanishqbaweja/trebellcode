@@ -9,11 +9,12 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { attachCodexRelay, probeCodexReady, waitForCodexReady } from "./codex-relay.mjs";
 import {
   environmentWorkspaceDiff,
+  environmentWorkspaceEditorFile,
+  environmentWorkspaceEditorSave,
   environmentWorkspaceFile,
   environmentWorkspacePath,
   environmentWorkspaceSearch,
   environmentWorkspaceTree,
-  environmentWorkspaceWriteFile,
 } from "./workspace.mjs";
 import { spawn } from "node:child_process";
 import { codexBin, codexHome, packageRoot, trebellHome } from "./paths.mjs";
@@ -2712,12 +2713,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         try{
           const body=await readJsonBody(req,4*1024*1024);
           const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
-          return json(res,200,await environmentWorkspaceWriteFile(body.path,body.content,{root:body.root||null,environments,environmentId}));
+          return json(res,200,await environmentWorkspaceEditorSave(body.path,body.content,{root:body.root||null,environments,environmentId}));
         }catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
       }
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
-        return json(res,200,await environmentWorkspaceFile(url.searchParams.get("path")||"",512_000,{root:url.searchParams.get("root")||null,environments,environmentId}));
+        return json(res,200,await environmentWorkspaceEditorFile(url.searchParams.get("path")||"",{root:url.searchParams.get("root")||null,environments,environmentId}));
       }
       catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
     }
