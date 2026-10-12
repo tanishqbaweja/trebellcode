@@ -64,6 +64,17 @@ export function gitStatusPath(text=""){
   if(index<value.length)parts[parts.length-1]+=value.slice(index);
   return parts.join(" -> ");
 }
+// A pull request's checks as a person reads them: each one's name and whether it passed, failed, is still pending or was skipped,
+// with the host's own word (`detail`, such as TIMED_OUT) kept for its tooltip. GitHub sends check runs (a status, then a conclusion
+// once completed) and commit statuses (a state); GitLab sends its pipeline (a status). Anything not yet finished is pending.
+const CHECK_STATES={SUCCESS:"passed",NEUTRAL:"passed",FAILURE:"failed",FAILED:"failed",ERROR:"failed",TIMED_OUT:"failed",CANCELLED:"failed",CANCELED:"failed",ACTION_REQUIRED:"failed",STARTUP_FAILURE:"failed",SKIPPED:"skipped",STALE:"skipped"};
+export function pullRequestChecks(rollup=[]){
+  return (Array.isArray(rollup)?rollup:[]).filter(Boolean).map(check=>{
+    const status=String(check.status||"").toUpperCase(),detail=String(status&&status!=="COMPLETED"?status:check.conclusion||check.state||status).toUpperCase();
+    return {name:String(check.name||check.context||(check.id!=null?"Pipeline #"+check.id:"Check")),state:CHECK_STATES[detail]||"pending",detail};
+  });
+}
+
 // One line of git status --short: its two-letter code and its path, unquoted.
 export function gitStatusEntry(line=""){
   const text=String(line??"");

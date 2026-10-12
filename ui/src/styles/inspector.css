@@ -85,6 +85,8 @@
 /* The Git error sticks to the top of the scrolled panel (styles.css), so its tint is laid over the panel fill instead of letting
    the commit form show through it, and a ring of that fill covers what scrolls past its rounded corners. */
 :root:root .context-panel .source-control-error{background:linear-gradient(var(--errt),var(--errt)),var(--bg1)!important;box-shadow:0 0 0 6px var(--bg1),var(--sh1)}
+/* What an action did (a merge) shows where an error would, in the success colours. */
+:root:root .context-panel .source-control-notice{padding:9px 12px;border:1px solid var(--okb)!important;border-radius:9px;background:linear-gradient(var(--okt),var(--okt)),var(--bg1)!important;color:var(--ok)!important;font-size:12px;line-height:1.45;overflow-wrap:anywhere;box-shadow:0 0 0 6px var(--bg1),var(--sh1)}
 
 /* Shared inspector controls ------------------------------------------------------------------ */
 /* Standard small button (tb-btn--sm). */
@@ -637,6 +639,15 @@
 :root:root .context-panel .review-list p{margin:6px 0 0;font-size:12px;line-height:1.55;color:var(--tx1)!important;overflow-wrap:anywhere;white-space:pre-line}
 :root:root .context-panel .review-list>p{margin:0;font-size:12px;color:var(--tx3)!important}
 :root:root .context-panel .pr-comment-edit{margin-top:8px;height:24px!important;min-height:24px!important}
+/* Checks: one row per check, its name and whether it passed, failed, is pending or was skipped. */
+:root:root .context-panel .pr-checks{display:grid;gap:4px;margin:0;padding:0;list-style:none}
+:root:root .context-panel .pr-checks>li{min-height:32px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:0 10px 0 12px;border:1px solid var(--line)!important;border-radius:9px;background:var(--bg2)!important}
+:root:root .context-panel .pr-checks strong{min-width:0;font:500 11.5px/1.3 var(--mono);color:var(--tx0)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .pr-checks em{padding:1px 7px;border:1px solid var(--line2);border-radius:99px;color:var(--tx2)!important;font:600 10px/1.3 var(--mono);font-style:normal;letter-spacing:.04em;text-transform:uppercase}
+:root:root .context-panel .pr-checks em[data-state="passed"]{border-color:var(--okb);background:var(--okt);color:var(--ok)!important}
+:root:root .context-panel .pr-checks em[data-state="failed"]{border-color:var(--errb);background:var(--errt);color:var(--err)!important}
+:root:root .context-panel .pr-checks em[data-state="pending"]{border-color:var(--warnb);background:var(--warnt);color:var(--warn)!important}
+:root:root .context-panel .pr-detail>.pr-checks-none{margin:0;font-size:12px;color:var(--tx3)!important}
 :root:root .context-panel .pr-empty-state{
   box-sizing:border-box;min-height:180px;padding:28px 20px;display:grid;place-items:center;align-content:center;gap:6px;text-align:center;
   border:1.5px dashed var(--line2)!important;border-radius:var(--r-l);background:transparent!important;

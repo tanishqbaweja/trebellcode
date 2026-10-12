@@ -1,6 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionError, actionErrorUnlessNamed, asSentence, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusEntry, gitStatusPath, splitPath } from "../ui/src/inspector-labels.js";
+import { actionError, actionErrorUnlessNamed, asSentence, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusEntry, gitStatusPath, pullRequestChecks, splitPath } from "../ui/src/inspector-labels.js";
+
+test("pull request checks read as a name and passed, failed, pending or skipped, whatever the host sends",()=>{
+  assert.deepEqual(pullRequestChecks([
+    {__typename:"CheckRun",name:"unit-tests",status:"COMPLETED",conclusion:"FAILURE"},
+    {__typename:"CheckRun",name:"e2e",status:"COMPLETED",conclusion:"TIMED_OUT"},
+    {__typename:"CheckRun",name:"lint",status:"IN_PROGRESS",conclusion:""},
+    {__typename:"CheckRun",name:"queued",status:"QUEUED"},
+    {__typename:"CheckRun",name:"build",status:"COMPLETED",conclusion:"SUCCESS"},
+    {__typename:"CheckRun",name:"docs",status:"COMPLETED",conclusion:"SKIPPED"},
+    {__typename:"StatusContext",context:"ci/deploy",state:"PENDING"},
+    {__typename:"StatusContext",context:"ci/legacy",state:"ERROR"},
+    {id:55,status:"failed",ref:"main"},
+    {id:56,status:"running"},
+    {id:57,status:"success"},
+    null,
+  ]).map(check=>[check.name,check.state,check.detail]),[
+    ["unit-tests","failed","FAILURE"],["e2e","failed","TIMED_OUT"],["lint","pending","IN_PROGRESS"],["queued","pending","QUEUED"],["build","passed","SUCCESS"],["docs","skipped","SKIPPED"],
+    ["ci/deploy","pending","PENDING"],["ci/legacy","failed","ERROR"],["Pipeline #55","failed","FAILED"],["Pipeline #56","pending","RUNNING"],["Pipeline #57","passed","SUCCESS"],
+  ]);
+  assert.deepEqual(pullRequestChecks(undefined),[]);
+  assert.deepEqual(pullRequestChecks("not a list"),[]);
+});
 
 test("a reason followed by another sentence ends as a sentence",()=>{
   assert.equal(asSentence("Deliberate context refresh failure"),"Deliberate context refresh failure.");

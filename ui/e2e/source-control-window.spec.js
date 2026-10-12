@@ -707,3 +707,44 @@ test("Publish asks public, private or cancel, and Cancel or Escape publishes not
   await expect.poll(publishes).toHaveLength(2);
   expect(publishes().map(body=>[body.name,body.visibility])).toEqual([[name,"private"],[name,"public"]]);
 });
+
+test("Merge and Auto-merge ask first, naming the pull request, the method and the checks that failed or are pending",async({page,request})=>{
+  test.setTimeout(60_000);
+  await asInDesktopApp(page);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const checks=[{__typename:"CheckRun",name:"unit-tests",status:"COMPLETED",conclusion:"FAILURE"},{__typename:"CheckRun",name:"lint",status:"IN_PROGRESS",conclusion:""},{__typename:"CheckRun",name:"build",status:"COMPLETED",conclusion:"SUCCESS"},{__typename:"StatusContext",context:"ci/deploy",state:"PENDING"}];
+  const host=await scriptCodeHost(page,{boot,prs:[samplePr(7,{title:"Checks fixture",statusCheckRollup:checks})]});
+  const {right,pulls}=await openGitPanel(page,request,"Source control merge question");
+  const dialog=page.locator("dialog.inspector-text-prompt"),detail=pulls.locator(".pr-detail"),merges=()=>host.actions().filter(body=>body.action==="merge");
+  await pulls.getByRole("button",{name:/#7 Checks fixture/}).click();
+  // The checks read as a list of names and states, not as the host's JSON.
+  const rows=detail.locator(".pr-checks li");
+  await expect(rows).toHaveText([/^unit-tests\s*failed$/,/^lint\s*pending$/,/^build\s*passed$/,/^ci\/deploy\s*pending$/]);
+  await expect(detail.locator("pre")).toHaveCount(0);
+  await expect(detail.getByText("__typename")).toHaveCount(0);
+  await rows.first().scrollIntoViewIfNeeded();
+  await shootBothModes(page,"source-control-pr-checks");
+
+  const question="Merge #7 “Checks fixture” into main using squash?\n\n1 check failed: unit-tests.\n2 checks are still pending: lint, ci/deploy.";
+  const ask=async(button,text)=>{await detail.getByRole("button",{name:button,exact:true}).click();await expect(dialog.locator("p")).toHaveText(text,{useInnerText:true})};
+  await ask("Merge",question);
+  await expect(dialog.getByRole("button")).toHaveText(["Cancel","Merge"]);
+  await expect(dialog.getByRole("button",{name:"Cancel"})).toBeFocused();
+  await shootBothModes(page,"source-control-merge-question",{close:()=>page.keyboard.press("Escape"),reopen:()=>ask("Merge",question)});
+  // Escape and Cancel merge nothing.
+  await page.keyboard.press("Escape");await expect(dialog).toHaveCount(0);
+  await ask("Merge",question);await dialog.getByRole("button",{name:"Cancel"}).click();await expect(dialog).toHaveCount(0);
+  // Auto-merge asks too, and turns on only when the person says so.
+  await ask("Auto-merge","Turn on auto-merge for #7 “Checks fixture” into main using squash? The host merges it once its required checks pass.\n\n1 check failed: unit-tests.\n2 checks are still pending: lint, ci/deploy.");
+  await dialog.getByRole("button",{name:"Turn on auto-merge"}).click();
+  await expect.poll(()=>merges().length).toBe(1);
+  expect(merges()[0]).toMatchObject({number:7,method:"squash",auto:true});
+  // Merge, said yes to, merges and says so.
+  await ask("Merge",question);await dialog.getByRole("button",{name:"Merge",exact:true}).click();
+  const notice=right.locator(".source-control-notice");
+  await expect(notice).toHaveText("Pull request #7 was merged.");
+  await expect(notice).toHaveAttribute("role","status");
+  expect(merges()[1]).toEqual({action:"merge",number:7,method:"squash",cwd:boot.cwd,provider:"github",environmentId:null});
+  await expect(pulls.locator(".pr-list em")).toHaveText("MERGED");
+  await shootBothModes(page,"source-control-merged-notice");
+});
