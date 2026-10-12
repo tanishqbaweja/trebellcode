@@ -4486,7 +4486,7 @@ export default function App(){
     if(firstError)throw firstError;
     return uploaded;
   }
-  async function blobAttachment(file){const tooLarge=attachmentSizeError(file);if(tooLarge)throw tooLarge;const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");reader.onerror=reject;reader.readAsDataURL(file)});const stored=await api("/api/attachments/blob",{method:"POST",body:{name:file.name,mime:file.type,dataBase64:data}});const [path]=await prepareAttachmentPaths([stored.path]);return {...stored,path}}
+  async function blobAttachment(file){const tooLarge=attachmentSizeError(file);if(tooLarge)throw tooLarge;const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");reader.onerror=()=>reject(new Error((file.name||"The file")+": "+(reader.error?.message||"the browser could not read it")));reader.readAsDataURL(file)});const stored=await api("/api/attachments/blob",{method:"POST",body:{name:file.name,mime:file.type,dataBase64:data}});const [path]=await prepareAttachmentPaths([stored.path]);return {...stored,path}}
   async function captureDesktop(){
     const shot=await window.trebellDesktop?.captureScreen?.();
     if(!shot?.dataUrl)throw new Error("Desktop screenshot is unavailable.");
@@ -4509,7 +4509,8 @@ export default function App(){
       }
     }
   }
-  async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];try{await uploadBrowserFiles(files)}catch(error){showActionError(error,"Could not attach dropped files")}}
+  // A dropped folder comes as a file the browser cannot read: it is left out and named as a folder, and the files beside it attach.
+  async function onDrop(e){e.preventDefault();const items=[...(e.dataTransfer?.items||[])].filter(item=>item.kind==="file"),isFolder=item=>Boolean(item.webkitGetAsEntry?.()?.isDirectory),folders=items.some(isFolder),files=items.filter(item=>!isFolder(item)).map(item=>item.getAsFile()).filter(Boolean);try{await uploadBrowserFiles(files);if(folders)throw new Error("Folders cannot be attached")}catch(error){showActionError(error,"Could not attach dropped files")}}
   async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}
   async function citeAssistant(message,excerpt=""){
     const selected=String(excerpt||"").trim();

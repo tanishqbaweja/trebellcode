@@ -74,3 +74,50 @@ test("a file over the attachment limit is refused at once from its size, and an 
     expect(uploads).toHaveLength(1);
   }finally{await harness.close()}
 });
+
+// A drop on the composer as the browser hands it over. A person's drop of a folder from the file manager cannot be made from a test:
+// the page's drop items call "assets" a directory, and reading it fails as Chromium's read of a dropped directory fails. Reading
+// "locked.txt" fails as a file the system no longer lets the browser read.
+const UNREADABLE="The requested file could not be read, typically due to permission problems that have occurred after a reference to a file was acquired.";
+async function unreadableDrops(page){
+  await page.addInitScript(unreadable=>{
+    const entry=DataTransferItem.prototype.webkitGetAsEntry;
+    DataTransferItem.prototype.webkitGetAsEntry=function(){return this.getAsFile()?.name==="assets"?{isDirectory:true,isFile:false,name:"assets"}:entry.call(this)};
+    const read=FileReader.prototype.readAsDataURL;
+    FileReader.prototype.readAsDataURL=function(file){
+      const failure=file?.name==="assets"?new DOMException("A requested file or directory could not be found at the time an operation was processed.","NotFoundError"):file?.name==="locked.txt"?new DOMException(unreadable,"NotReadableError"):null;
+      if(!failure)return read.call(this,file);
+      Object.defineProperty(this,"error",{configurable:true,value:failure});setTimeout(()=>this.dispatchEvent(new ProgressEvent("error")),20);
+    };
+  },UNREADABLE);
+}
+async function dropOnComposer(page,names){
+  await page.getByTestId("composer").evaluate((node,names)=>{
+    const data=new DataTransfer();for(const name of names)data.items.add(new File(name==="assets"?[]:["Dropped "+name+"\n"],name,{type:name==="assets"?"":"text/plain"}));
+    node.dispatchEvent(new DragEvent("drop",{bubbles:true,cancelable:true,dataTransfer:data}));
+  },names);
+}
+
+test("a dropped folder is named as a folder, and a dropped file the browser cannot read is named with the reason",async({page})=>{
+  test.setTimeout(90_000);
+  await unreadableDrops(page);
+  const harness=await openComposerApp(page);
+  try{
+    const alert=page.getByTestId("app-action-error");
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      // The folder is left out and said to be one; the file dropped with it is attached.
+      await dropOnComposer(page,["assets","notes-"+mode+".txt"]);
+      await expect(alert).toHaveText("Could not attach dropped files: Folders cannot be attached");
+      await expect(chips(page).filter({hasText:"notes-"+mode+".txt"})).toHaveCount(1);
+      await expect(chips(page).filter({hasText:"assets"})).toHaveCount(0);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(alert).toBeInViewport();await page.screenshot({animations:"disabled",path:auditDir+"dropped-folder-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+      await dropOnComposer(page,["locked.txt"]);
+      await expect(alert).toHaveText("Could not attach dropped files: locked.txt: "+UNREADABLE);
+      await expect(chips(page).filter({hasText:"locked.txt"})).toHaveCount(0);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(alert).toBeInViewport();await page.screenshot({animations:"disabled",path:auditDir+"dropped-unreadable-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+    }
+  }finally{await harness.close()}
+});
