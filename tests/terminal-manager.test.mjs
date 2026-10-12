@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { TerminalManager } from "../src/terminal-manager.mjs";
 import { buildRuntimeEnvironment } from "../src/runtime-environment.mjs";
 
@@ -128,4 +129,23 @@ test("shutdown preserves the age of already-stopped terminal history",async()=>{
     const stored=JSON.parse(await import("node:fs/promises").then(fs=>fs.readFile(join(home,"terminal-history.json"),"utf8")));
     assert.equal(stored.sessions.find(item=>item.id==="old").updatedAt,1234);
   }finally{await manager.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true})}
+});
+
+test("a long run of output leaves the terminal manager's event loop free and its history bounded",{timeout:120000},async()=>{
+  const terminals=new TerminalManager({persist:false});
+  try{
+    const session=await terminals.create({cwd:process.cwd(),cols:120,rows:32});
+    const command=process.platform==="win32"?"for /L %i in (1,1,30000) do @echo line %i\r":"i=1; while [ $i -le 30000 ]; do echo line $i; i=$((i+1)); done\n";
+    const delay=monitorEventLoopDelay({resolution:10});delay.enable();
+    await terminals.write(session.id,command);
+    const started=Date.now();
+    while(!/line 30000\s/.test(terminals.snapshot(session.id).buffer.slice(-400))){
+      assert.ok(Date.now()-started<90000,"the 30,000 lines arrive");
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    delay.disable();
+    // Cutting the buffer back on every message held the loop for up to a second at a time (p99 about 600 ms).
+    assert.ok(delay.percentile(99)/1e6<200,"event loop delay p99 "+Math.round(delay.percentile(99)/1e6)+" ms");
+    assert.ok(terminals.snapshot(session.id).buffer.split("\n").length<=5501);
+  }finally{await terminals.shutdown()}
 });

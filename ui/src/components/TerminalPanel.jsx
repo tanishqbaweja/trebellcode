@@ -1,20 +1,9 @@
 import React,{useEffect,useRef,useState} from "react";
 import { Columns2, Plus, Rows2, SquareTerminal, X, Paperclip } from "lucide-react";
 import { api,wsUrl } from "../api.js";
+import { createTerminalScreen,TERMINAL_SCROLLBACK_LINES } from "../terminal-screen.js";
 
 const MAX_SPLIT_PANES=4;
-// The screen is plain text, so terminal control sequences are turned into the text they stand for. Windows' ConPTY moves the
-// cursor to column 1 of a later row instead of writing a newline before each prompt, which glued lines together
-// ("…All rights reserved.H:\repo>"); such a move becomes a line break, a cursor-forward becomes spaces, a lone carriage
-// return (progress redraws) starts a new line, and clearing the screen (cls, clear) drops the output before it.
-const LINE_MOVE="\uffff";
-const stripAnsi=(text)=>{
-  let value=String(text||"").replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g,"");
-  const cleared=Math.max(value.lastIndexOf("\x1b[2J"),value.lastIndexOf("\x1b[3J"));
-  if(cleared>=0)value=value.slice(cleared+4);
-  value=value.replace(/\x1b\[\d*(?:;1)?H/g,LINE_MOVE).replace(/\x1b\[(\d*)C/g,(match,count)=>" ".repeat(Math.min(Number(count)||1,240))).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,"").replace(/\r(?=[^\n])/g,"\n");
-  return value.replace(/\uffff+/g,(match,offset,source)=>offset===0||source[offset-1]==="\n"?"":"\n");
-};
 const nextTerminalName=(taken)=>{
   const used=new Set(taken.map(session=>session?.name));
   let number=1;while(used.has("Terminal "+number))number+=1;
@@ -26,8 +15,11 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   const [activeId,setActiveId]=useState(null);
   const [paneIds,setPaneIds]=useState([]);
   const [splitDirection,setSplitDirection]=useState("horizontal");
-  const [outputs,setOutputs]=useState({});
   const [lines,setLines]=useState({});
+  // Each session's screen (terminal-screen.js) takes its output as it arrives; the panes redraw at most once a frame.
+  const screens=useRef(new Map());const screenFrame=useRef(0);const [screenTick,setScreenTick]=useState(0);
+  const screenOf=id=>{let screen=screens.current.get(id);if(!screen)screens.current.set(id,screen=createTerminalScreen());return screen};
+  const drawScreens=()=>{if(!screenFrame.current)screenFrame.current=requestAnimationFrame(()=>{screenFrame.current=0;setScreenTick(tick=>tick+1)})};
   const [focusTick,setFocusTick]=useState(0);
   const [error,setError]=useState("");
   const [attachBusy,setAttachBusy]=useState("");
@@ -58,9 +50,9 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
 
   useEffect(()=>{
     for(const socket of sockets.current.values())socket.close();
-    sockets.current.clear();setActiveId(null);setPaneIds([]);setOutputs({});setLines({});refresh();
+    sockets.current.clear();setActiveId(null);setPaneIds([]);screens.current.clear();setLines({});refresh();
   },[environmentId]);
-  useEffect(()=>()=>{for(const socket of sockets.current.values())socket.close();sockets.current.clear()},[]);
+  useEffect(()=>()=>{for(const socket of sockets.current.values())socket.close();sockets.current.clear();cancelAnimationFrame(screenFrame.current)},[]);
 
   useEffect(()=>{
     const visible=new Set(paneIds);
@@ -71,11 +63,11 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
       ws.onmessage=(event)=>{
         let msg;try{msg=JSON.parse(event.data)}catch{return}
         if(msg.type==="snapshot"){
-          setOutputs(previous=>({...previous,[id]:stripAnsi(msg.session?.buffer||"")}));
+          screenOf(id).reset(msg.session?.buffer||"");drawScreens();
           // A session that exited while its tab was not shown gets its real state (and exit badge) when it is shown.
           if(typeof msg.session?.running==="boolean")setSessions(previous=>previous.map(session=>session.id===id?{...session,running:msg.session.running,exitCode:msg.session.exitCode??session.exitCode}:session));
         }
-        else if(msg.type==="output")setOutputs(previous=>({...previous,[id]:stripAnsi((previous[id]||"")+msg.data)}));
+        else if(msg.type==="output"){screenOf(id).write(msg.data);drawScreens()}
         else if(msg.type==="exit")setSessions(previous=>previous.map(session=>session.id===id?{...session,running:false,exitCode:msg.exitCode}:session));
       };
       ws.onclose=()=>{if(sockets.current.get(id)===ws)sockets.current.delete(id)};
@@ -84,7 +76,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
 
   useEffect(()=>{
     for(const id of paneIds){const node=outputRefs.current.get(id);if(node)node.scrollTo({top:node.scrollHeight})}
-  },[outputs,paneIds]);
+  },[screenTick,paneIds]);
   // A screen that shows the latest output keeps showing it when the drawer or a split makes it shorter (it used to stay at
   // the top and hide the prompt); one the user scrolled up in stays where it is.
   useEffect(()=>{
@@ -142,7 +134,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     const remainingSessions=sessions.filter(session=>session.id!==id);setSessions(remainingSessions);
     let remainingPanes=paneIds.filter(paneId=>paneId!==id);
     if(!remainingPanes.length&&remainingSessions[0])remainingPanes=[remainingSessions[0].id];
-    setPaneIds(remainingPanes);setOutputs(previous=>{const next={...previous};delete next[id];return next});setLines(previous=>{const next={...previous};delete next[id];return next});
+    setPaneIds(remainingPanes);screens.current.delete(id);setLines(previous=>{const next={...previous};delete next[id];return next});
     if(id===activeId)setActiveId(remainingPanes[0]||remainingSessions[0]?.id||null);
     return true;
   }
@@ -173,7 +165,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   }
   async function attachRecent(session){
     if(!onAttachExcerpt||attachBusy)return;
-    const text=(outputs[session.id]||"").slice(-8000);if(!text.trim())return;
+    const text=(screens.current.get(session.id)?.text()||"").slice(-8000);if(!text.trim())return;
     setAttachBusy(session.id);setError("");
     try{await Promise.resolve(onAttachExcerpt(text))}
     catch(cause){setError(cause?.message||String(cause)||"Could not attach terminal output.")}
@@ -200,6 +192,12 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     };
   },[activeId,paneIds,sessions,projectPath,environmentId]);
 
+  // Each chunk of a screen is its own text node, so new output redraws only the last one. A screen that has dropped its first
+  // lines says so where they were.
+  const screenContent=id=>{
+    const screen=screens.current.get(id);if(!screen?.chunks.length)return "Terminal connected.\n";
+    return <>{screen.dropped>0&&<span className="terminal-dropped">Earlier lines were dropped: the screen keeps the last {TERMINAL_SCROLLBACK_LINES.toLocaleString()} lines.</span>}{screen.chunks.map(chunk=><span key={chunk.id}>{chunk.text}</span>)}</>;
+  };
   const paneSessions=paneIds.map(id=>sessions.find(session=>session.id===id)).filter(Boolean);
   // Stacked panes keep room for a few lines and the command line each; when four do not fit the drawer the stack scrolls
   // instead of squeezing every pane until its input covers the output.
@@ -217,7 +215,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
       {!paneSessions.length?<div className="terminal-empty"><SquareTerminal size={30}/><strong>No terminal session</strong><button onClick={create} data-busy={creating||undefined}>Create terminal</button></div>:<div className={"terminal-panes "+(paneSessions.length>1?"split "+splitDirection:"")} style={paneStyle}>
       {paneSessions.map(session=><section key={session.id} className={"terminal-pane"+(session.id===activeId?" active":"")} onMouseDown={()=>session.id!==activeId&&setActiveId(session.id)}>
         <div className="terminal-pane-head"><span><SquareTerminal size={11}/>{session.name||"Terminal"}</span>{paneSessions.length>1&&<button onClick={()=>close(session.id)} aria-label={"Close "+(session.name||"terminal")}><X size={10}/></button>}</div>
-        <pre ref={node=>node?outputRefs.current.set(session.id,node):outputRefs.current.delete(session.id)} className="terminal-screen" onScroll={event=>{const node=event.currentTarget;node.dataset.stick=String(node.scrollTop+node.clientHeight>=node.scrollHeight-8)}}>{outputs[session.id]||"Terminal connected.\n"}</pre>
+        <pre ref={node=>node?outputRefs.current.set(session.id,node):outputRefs.current.delete(session.id)} className="terminal-screen" onScroll={event=>{const node=event.currentTarget;node.dataset.stick=String(node.scrollTop+node.clientHeight>=node.scrollHeight-8)}}>{screenContent(session.id)}</pre>
         <form className="terminal-command-line" onSubmit={event=>send(session.id,event)}><span>$</span><input ref={node=>node?inputRefs.current.set(session.id,node):inputRefs.current.delete(session.id)} value={lines[session.id]||""} onChange={event=>setLines(previous=>({...previous,[session.id]:event.target.value}))} onPaste={event=>paste(session.id,event)} placeholder={session.running?"Type a command…":"Stopped terminal history"} disabled={!session.running}/><button type="button" onClick={()=>ctrlC(session.id)} disabled={!session.running}>Ctrl+C</button><button disabled={!session.running}>Send</button></form>
         <div className="terminal-foot"><span>{session.restored?"Restored history · ":""}{session.environmentName||environmentName} · {session.cwd||projectPath||"Home"}</span><button onClick={()=>attachRecent(session)} disabled={attachBusy===session.id} title="Attach recent output to the composer"><Paperclip size={12}/> {attachBusy===session.id?"Attaching…":"Attach recent output"}</button></div>
       </section>)}

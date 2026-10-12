@@ -107,3 +107,35 @@ test("a paste of several lines runs each finished line and leaves the last one o
     await expect(input).toHaveValue("");
   }finally{await shell.close()}
 });
+
+test("a long run of output keeps the page responsive and the screen at its last 5,000 lines, with a note that earlier lines were dropped",async({page,request})=>{
+  test.setTimeout(240_000);
+  const shell=await realTerminals(page);
+  try{
+    const {pane,screen,input}=await openTerminal(page,request);
+    await input.click();
+    await run(page,"for /L %i in (1,1,30000) do @echo line %i");
+    // While the lines stream in, a trivial call into the page is timed: it waits only when the page's main thread is busy.
+    const waits=[],started=Date.now();
+    for(;;){
+      const asked=Date.now();const tail=await screen.evaluate(node=>node.textContent.slice(-120));waits.push(Date.now()-asked);
+      if(/line 30000\s[\s\S]*>\s*$/.test(tail))break;
+      expect(Date.now()-started,"the 30,000 lines finish streaming").toBeLessThan(200_000);
+      await page.waitForTimeout(250);
+    }
+    const sorted=[...waits].sort((a,b)=>a-b),median=sorted[Math.floor(sorted.length/2)],worst=sorted[sorted.length-1];
+    console.log(`30,000 lines in ${Date.now()-started} ms; page answered in ${median} ms at the median and ${worst} ms at worst over ${waits.length} samples`);
+    expect(median,"the median wait while output streams").toBeLessThan(500);
+    expect(worst,"the longest wait while output streams").toBeLessThan(3_000);
+    const lines=await screen.evaluate(node=>node.textContent.split("\n").length);
+    expect(lines,"the screen keeps a bounded scrollback").toBeLessThanOrEqual(5_002);
+    await expect(screen).toContainText(/^line 30000$/m);
+    await expect(screen).not.toContainText(/^line 1$/m);
+    await expect(pane.getByText("Earlier lines were dropped",{exact:false})).toBeVisible();
+    // Scrolled back to the top, the screen says where its first lines went.
+    await screen.hover();
+    for(let turn=0;turn<60&&await screen.evaluate(node=>node.scrollTop>0);turn++)await page.mouse.wheel(0,-20_000);
+    await expect.poll(()=>screen.evaluate(node=>node.scrollTop)).toBe(0);
+    await shots(page,"terminal-long-output");
+  }finally{await shell.close()}
+});

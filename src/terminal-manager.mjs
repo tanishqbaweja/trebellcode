@@ -69,7 +69,12 @@ export class TerminalManager extends EventEmitter{
         msg.ok?pending.resolve(msg.result):pending.reject(new Error(msg.error||"Terminal worker failed"));
       }else if(msg.type==="output"){
         const session=this.sessions.get(msg.id); if(!session) return;
-        session.buffer=trimBuffer(session.buffer+msg.data); session.updatedAt=Date.now();
+        // Output is appended as it comes and the buffer cut back to its limits only once it is a tenth over them: cutting on
+        // every message re-split the whole buffer each time, which held the event loop for up to a second on a long run of output.
+        session.bufferLines??=session.buffer.split("\n").length; session.bufferBytes??=Buffer.byteLength(session.buffer,"utf8");
+        session.buffer+=msg.data; session.bufferBytes+=Buffer.byteLength(msg.data,"utf8"); session.updatedAt=Date.now();
+        for(let at=msg.data.indexOf("\n");at>=0;at=msg.data.indexOf("\n",at+1))session.bufferLines++;
+        if(session.bufferLines>MAX_LINES*1.1||session.bufferBytes>MAX_BYTES*1.1){session.buffer=trimBuffer(session.buffer);session.bufferLines=session.buffer.split("\n").length;session.bufferBytes=Buffer.byteLength(session.buffer,"utf8")}
         this.#scheduleSave();
         this.emit("output",msg.id,msg.data);
         for(const ws of this.clients.get(msg.id)||[]) if(ws.readyState===ws.OPEN) ws.send(JSON.stringify({type:"output",data:msg.data}));
