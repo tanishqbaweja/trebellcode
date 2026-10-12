@@ -1,5 +1,5 @@
 import React,{useEffect,useRef,useState} from "react";
-import { ExternalLink, Globe2, RefreshCw, Camera, MousePointer2, Eye, X, Radar, ArrowLeft, ArrowRight, MonitorSmartphone, Circle, Square, RotateCw, History } from "lucide-react";
+import { ExternalLink, Globe2, RefreshCw, Camera, MousePointer2, Eye, X, Radar, ArrowLeft, ArrowRight, MonitorSmartphone, Circle, Square, RotateCw, History, Unplug } from "lucide-react";
 import { api } from "../api.js";
 
 const VIEWPORTS=[
@@ -34,6 +34,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   // Back and Forward step through the addresses this preview has shown, as a browser's do; the agent browser keeps its own
   // history. They used to step the agent browser and show its page, so Back after typing an address went to an older agent page.
   const [shown,setShown]=useState({pages:[],at:-1});
+  const [unanswered,setUnanswered]=useState("");
   const [viewport,setViewport]=useState({width:1280,height:800});
   const [history,setHistory]=useState([]);
   const [recording,setRecording]=useState(false);
@@ -101,13 +102,21 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     window.addEventListener("trebell:preview-command",command);
     return()=>window.removeEventListener("trebell:preview-command",command);
   },[]);
+  // A frame pointed at an address where nothing listens stays blank, so the address is asked for once as the frame loads it and the
+  // preview says when nothing answered. Any answer counts, whatever its status.
+  useEffect(()=>{
+    if(!url)return;let live=true;
+    fetch(url,{method:"HEAD",mode:"no-cors",cache:"no-store"}).then(()=>{if(live)setUnanswered("")},()=>{if(live)setUnanswered(url)});
+    return()=>{live=false};
+  },[url,key]);
 
   // Only a bare address gets the http:// prefix; another scheme ("file:///...") is kept so the check above rejects it.
   function normalized(){let next=draft.trim();if(next&&!/^https?:\/\//i.test(next)&&!/^[a-z][a-z0-9+.-]*:\/\//i.test(next))next="http://"+next;return next}
   // A new address drops the pages after the one shown, as a browser's history does.
   function show(next){setUrl(next);setShown(current=>current.pages[current.at]===next?current:{pages:[...current.pages.slice(0,current.at+1),next],at:current.at+1})}
   function step(by){const at=shown.at+by,next=shown.pages[at];if(!next)return;setShown(current=>({...current,at}));setDraft(next);setUrlError("");setUrl(next)}
-  function go(){const next=normalized();if(next&&!previewableUrl(next)){setUrlError(INVALID_PREVIEW_URL);return}setUrlError("");if(!next){setUrl("");return}show(next);remember(next)}
+  // Preview loads the address shown again, so one that did not answer is asked again once its server is up.
+  function go(){const next=normalized();if(next&&!previewableUrl(next)){setUrlError(INVALID_PREVIEW_URL);return}setUrlError("");if(!next){setUrl("");return}if(next===url)setKey(value=>value+1);show(next);remember(next)}
   async function openAgentUrl(next){
     if(!next)return;setBusy("open");
     try{const state=await window.trebellDesktop?.browser?.navigate?.(next);setBrowserError("");show(next);remember(next,state?.title);setSnapshot(await window.trebellDesktop?.browser?.snapshot?.())}
@@ -221,7 +230,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
 
     {desktopBrowserAvailable?<><div className="agent-browser-toolbar"><button onClick={agentOpen} disabled={!!busy}><Globe2 size={13}/> Open agent browser</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.show?.()).then(()=>setBrowserError("")).catch(error=>setBrowserError(error?.message||String(error)||"Could not show Agent Browser."))}><Eye size={13}/> Show browser</button><button onClick={inspect} disabled={!!busy}><MousePointer2 size={13}/> Inspect elements</button><button onClick={capture} disabled={!!busy}><Camera size={13}/> Attach screenshot</button><button onClick={openProfileImport} disabled={!!busy}>Import profile</button><button onClick={importCookies} disabled={!!busy}>Import cookie JSON</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.close?.()).then(()=>{setBrowserError("");setSnapshot(null);setSelectedRef(null);setAnnotation("");setLastAttached("");setCookieStatus("")}).catch(error=>setBrowserError(error?.message||String(error)||"Could not close Agent Browser."))}><X size={13}/> Close</button>{cookieStatus&&<span className="browser-cookie-status" data-testid="browser-cookie-status">{cookieStatus}</span>}</div>{browserError&&<div className="browser-action-error" role="alert">{browserError}</div>}</>:<div className="agent-browser-unavailable"><strong>Desktop Agent Browser is unavailable here</strong><span>The hosted UI still supports iframe previews, local dev-server detection, and recent-page history.</span></div>}
     {importOpen&&<div className="browser-profile-import" data-testid="browser-profile-import"><div className="browser-profile-import-head"><div><strong>Import signed-in browser session</strong><span>One-time cookie copy into Trebell Agent Browser.</span></div><button aria-label="Close profile import" title="Close profile import" onClick={()=>setImportOpen(false)}><X size={12}/></button></div>{(browserImports?.sources||[]).length?(browserImports.sources||[]).map(source=><section key={source.id}><div><strong>{source.name}</strong><span>{source.running?"Close the browser before importing.":source.installed?`${source.profiles?.length||0} profile${source.profiles?.length===1?"":"s"} found`:"No readable profiles found"}</span></div>{(source.profiles||[]).map(profile=><button key={profile.id} disabled={source.running||!!busy} onClick={()=>importProfile(source,profile)}><span>{profile.name}</span><small>{source.running?"Browser running":"Import"}</small></button>)}</section>):<p>No supported browser profiles were found. On Windows, Firefox and Helium are supported; cookie JSON remains available as a fallback.</p>}</div>}
-    <div className={"preview-layout"+(desktopBrowserAvailable?"":" hosted")}><div className="preview-frame">{url?<iframe key={key} title="Trebell preview" src={url} style={{transform:"scale("+previewZoom+")",transformOrigin:"0 0",width:(100/previewZoom)+"%",height:(100/previewZoom)+"%"}}/>:<div className="preview-empty-state"><Globe2 size={18}/><strong>No preview open</strong><span>Enter a local or web URL above to preview it here.</span></div>}</div>
+    <div className={"preview-layout"+(desktopBrowserAvailable?"":" hosted")}><div className="preview-frame">{!url?<div className="preview-empty-state"><Globe2 size={18}/><strong>No preview open</strong><span>Enter a local or web URL above to preview it here.</span></div>:unanswered===url?<div className="preview-empty-state preview-unanswered" role="alert"><Unplug size={18}/><strong>Nothing answered at {url}</strong><span>Start the server for this address, then press Preview to try again.</span></div>:<iframe key={key} title="Trebell preview" src={url} style={{transform:"scale("+previewZoom+")",transformOrigin:"0 0",width:(100/previewZoom)+"%",height:(100/previewZoom)+"%"}}/>}</div>
       {desktopBrowserAvailable&&<aside className="browser-inspector"><h3>Agent browser</h3>{snapshot?<><p><strong>{snapshot.title||"Untitled"}</strong><span>{snapshot.url}</span></p><div className="browser-elements">{(snapshot.elements||[]).map(el=><button className={selectedRef===el.ref?"active":""} key={el.ref} onClick={()=>{setSelectedRef(el.ref);setLastAttached("")}}><code>{el.ref}</code><span>{el.text||el.tag}</span><small>{el.tag}{el.href?" · link":""}</small></button>)}</div>{selectedElement&&<div className="browser-annotation" data-testid="preview-annotation"><div><strong>Annotate {selectedElement.ref}</strong><span>{selectedElement.text||selectedElement.tag}</span></div><textarea value={annotation} onChange={e=>setAnnotation(e.target.value)} placeholder="Add a note or instruction for the agent about this element…"/><div className="annotation-actions"><button onClick={()=>attachElement(selectedElement)}>Attach context</button><button className="primary" disabled={!annotation.trim()} onClick={async()=>{if(await attachElement(selectedElement,annotation))setAnnotation("")}}>Attach annotation</button>{lastAttached&&<span>{lastAttached}</span>}</div></div>}</>:<div className="empty-inspector">Open the agent browser and inspect the page to see model-addressable elements.</div>}</aside>}
     </div>
     <p className="preview-note">{desktopBrowserAvailable?"Trebell detects common localhost dev servers automatically. The iframe is a visual preview; Agent Browser gives the active coding agent DOM-aware browser control, and desktop Computer Use is available in Full access mode.":"Trebell detects common localhost dev servers automatically. This hosted surface provides iframe previews; Agent Browser and Computer Use are desktop capabilities."}</p>

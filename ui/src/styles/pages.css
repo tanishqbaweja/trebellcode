@@ -801,6 +801,9 @@
 :root:root .preview-page .preview-empty-state>svg{box-sizing:content-box;width:18px;height:18px;margin-bottom:6px;padding:11px;border:1px solid var(--line);border-radius:13px;background:var(--bg3);color:var(--tx2)}
 :root:root .preview-page .preview-empty-state strong{font-size:13.5px!important;font-weight:600;color:var(--tx1)!important}
 :root:root .preview-page .preview-empty-state span{max-width:260px;font-size:12px!important;line-height:1.5!important;color:var(--tx2)!important}
+/* An address where nothing answered: the empty state with a warning mark, and the address wraps anywhere. */
+:root:root .preview-page .preview-unanswered>svg{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
+:root:root .preview-page .preview-unanswered strong{max-width:100%;overflow-wrap:anywhere}
 
 /* Desktop-only Agent Browser controls. */
 :root:root .preview-page .browser-device-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:0;padding:6px 8px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--bg2)!important;color:var(--tx2)!important}

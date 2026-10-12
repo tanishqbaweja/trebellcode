@@ -38,6 +38,7 @@ async function openBrowserPanel(page,request){
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
+  await expect(page.getByTestId("model-picker")).toBeEnabled({timeout:10_000});
   await page.getByTestId("right-panel-toggle").first().click();
   const panel=page.getByTestId("right-panel");
   await panel.getByRole("button",{name:"Browser",exact:true}).click();
@@ -90,5 +91,23 @@ test("Back and Forward step through the pages the preview showed, and leave the 
     await expect(address).toHaveValue(site.url+"/c");
     await expect(forward).toBeDisabled();
     expect(await page.evaluate(()=>window.agentBrowserCalls),"the agent browser was only asked to open its two pages").toEqual(["navigate","navigate"]);
+  }finally{await site.close()}
+});
+
+test("an address where nothing answers says so instead of showing a blank frame, and shows its page once a server is up",async({page,request})=>{
+  // A port that was just let go has nothing listening on it.
+  const gone=await startSite();const port=gone.port;await gone.close();
+  const {panel,address,frame}=await openBrowserPanel(page,request);
+  const where="http://127.0.0.1:"+port+"/",notice=panel.getByRole("alert").filter({hasText:"Nothing answered"});
+  await typeAddress(page,address,where);await page.keyboard.press("Enter");
+  await expect(notice).toContainText("Nothing answered at "+where);
+  await expect(panel.locator('iframe[title="Trebell preview"]')).toHaveCount(0);
+  await shots(page,"preview-nothing-answered");
+  // Once a server listens there, Preview asks again and the page shows.
+  const site=await startSite(port);
+  try{
+    await panel.getByRole("button",{name:"Preview",exact:true}).click();
+    await expect(frame.locator("h1")).toHaveText("Page /");
+    await expect(notice).toHaveCount(0);
   }finally{await site.close()}
 });
