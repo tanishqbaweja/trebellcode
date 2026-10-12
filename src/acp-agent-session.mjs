@@ -306,6 +306,8 @@ export class AcpAgentSession{
   }
 
   get busy(){return Boolean(this.activePrompt||this.wake)}
+  // Whether a new process could take this conversation up again (#resume): the harness offers session/load or session/resume.
+  get resumable(){const caps=this.initializeResult?.agentCapabilities||{};return caps.loadSession===true||caps.sessionCapabilities?.resume!=null}
 
   async start({providerSessionId=null,model=null,reasoningEffort=undefined}={}){
     const client=new AcpClient({command:this.command,args:this.args,cwd:this.processCwd||this.cwd,env:this.env,spawnProcess:this.spawnProcess,runTempRoot:this.runTempRoot,onRequest:(method,params)=>this.#clientRequest(method,params)});

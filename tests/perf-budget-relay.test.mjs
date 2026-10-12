@@ -402,3 +402,22 @@ test("the idle sweep keeps a session while a request on its thread is in flight,
     assert.ok(await eventually(()=>!alive(agent.pid)),"once the fork is answered, the idle session is let go");
   }finally{await relay.close()}
 });
+
+// A harness that offers neither session/load nor session/resume cannot take a conversation up again in a new process, and the next
+// turn refuses to start a new one silently: once the sweep had released such a session, every later turn of its thread failed.
+test("the idle sweep keeps a session its harness could not take up again, so the thread's next turn still runs",async()=>{
+  const relay=await budgetRelay("trebell-budget-noresume-",{env:SWEEP_ENV});
+  try{
+    const thread=relay.threadStore.create({...BUDGET_THREAD,providerSessionId:"",cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:1,agentCapabilities:{loadSession:false}}),"utf8");
+    let completed=relay.notified("turn/completed");
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello"}]});await completed;
+    await new Promise(done=>setTimeout(done,800));
+    completed=relay.notified("turn/completed");
+    const started=await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"And again"}]}).then(result=>({ok:true,result}),error=>({ok:false,error:String(error.message)}));
+    const agents=(await relay.agentProcesses()).map(agent=>agent.methods);
+    assert.ok(started.ok,"the second turn starts: "+JSON.stringify(started)+"; agent requests "+JSON.stringify(agents));
+    assert.ok(await within(completed,6000),"the second turn completes");
+    assert.equal(agents.length,1,"both turns ran in the one harness");
+  }finally{await relay.close()}
+});

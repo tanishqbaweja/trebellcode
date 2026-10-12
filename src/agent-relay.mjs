@@ -709,8 +709,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // TREBELL_AGENT_SESSION_SWEEP_MS shorten both for a test.
   // A session whose harness ran a tool that can outlive its turn (sessionLeftWork, see SETTLED_TOOL_KINDS) is kept until its thread
   // closes, as every session was: closing it stops the harness's whole process tree, and with it what the harness left running, and
-  // nothing in ACP says when that work ends.
-  // threadRequests counts the requests about each thread still being answered (see request).
+  // nothing in ACP says when that work ends. So is one whose harness can neither load nor resume a conversation, whose thread could
+  // not go on in a new one. threadRequests counts the requests about each thread still being answered (see request).
   const sessionEnv=runtimeManager?.env||process.env,sessionUsed=new WeakMap(),sessionLeftWork=new WeakSet(),threadRequests=new Map();
   const SESSION_IDLE_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS):10*60_000;
   const SESSION_SWEEP_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS):60_000;
@@ -905,6 +905,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const now=Date.now();
     for(const [threadId,session] of sessions){
       if(!(session instanceof AcpAgentSession||session instanceof OpenCodeAgentSession)||session.busy||session.activePrompt||sessionLeftWork.has(session)||threadRequests.has(threadId))continue;
+      if(session instanceof AcpAgentSession&&!session.resumable)continue;
       if(now-(sessionUsed.get(session)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
       if([...socketContexts].some(context=>context.waitsOn?.(threadId)))continue;
       sessions.delete(threadId);void session.close().catch(error=>log("Could not close an idle harness session: "+(error?.message||String(error))));
