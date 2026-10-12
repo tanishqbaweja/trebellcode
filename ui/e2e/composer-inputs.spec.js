@@ -189,3 +189,25 @@ test("dictation says when the microphone is blocked, and a second click on the m
     expect(await page.evaluate(()=>window.__dictation)).toEqual({mode:"listen",starts:2,stops:1});
   }finally{await harness.close()}
 });
+
+test("a welcome suggestion puts its prompt in the composer with the caret at its end, so Enter sends it",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page,{newTask:true,replies:[{text:"Found the bug and fixed it."}]});
+  try{
+    const composer=page.getByTestId("composer"),prompt="Find a useful bug, fix it, and run the relevant tests.";
+    for(const mode of ["light","dark"]){
+      await switchMode(page,mode);
+      await page.getByRole("button",{name:"Fix a bug",exact:true}).click();
+      await expect(composer).toHaveValue(prompt);
+      await expect(composer).toBeFocused();
+      expect(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd])).toEqual([prompt.length,prompt.length]);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(composer).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"welcome-suggestion-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+      if(mode==="light"){await page.keyboard.press("Control+A");await page.keyboard.press("Delete");await expect(composer).toHaveValue("")}
+    }
+    // Enter, straight after the suggestion, sends it.
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".user-bubble").last()).toContainText(prompt);
+    await expect(composer).toHaveValue("");
+  }finally{await harness.close()}
+});

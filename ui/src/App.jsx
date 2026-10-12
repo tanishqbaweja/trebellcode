@@ -4980,6 +4980,8 @@ export default function App(){
   const completedEvents=finishedActivitySteps(events);
   // The palette's thread actions are for the thread the header names: none while another one opens (its own are not loaded yet).
   const paletteThread=Boolean(activeThread?.id&&!openingView);
+  // A welcome suggestion fills the composer and gives it the focus with the caret at the end, so Enter sends it and typing carries on.
+  function suggestPrompt(text){setPrompt(text);requestAnimationFrame(()=>{const node=document.querySelector('[data-testid="composer"]');if(!node)return;node.focus();node.setSelectionRange(text.length,text.length)})}
   const paletteActions=paletteOpen?[
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:shortcutHint(commandKey("newChat")),onRun:newChat},
     {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
@@ -5162,7 +5164,7 @@ export default function App(){
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>
                 <p>{projectlessMode?"This is a General chat with no attached project. Files and terminal commands stay inside a Trebell-managed scratch workspace.":<>{!runtimeKnown?"":managedInference?`${providerLabel} supplies inference to ${agentRuntimeLabel}. `:`${agentRuntimeLabel} is the active coding-agent harness. `}Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</>}</p>
-                <div className="suggestions">{projectlessMode?<><button onClick={()=>setPrompt("Help me plan the architecture for this idea before I choose a repository.")}>Plan an idea</button><button onClick={()=>setPrompt("Research this technical question and give me a practical recommendation: ")}>Research a topic</button><button onClick={()=>setPrompt("Turn this rough idea into a clear technical specification: ")}>Draft a spec</button></>:<><button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></>}</div>
+                <div className="suggestions">{projectlessMode?<><button onClick={()=>suggestPrompt("Help me plan the architecture for this idea before I choose a repository.")}>Plan an idea</button><button onClick={()=>suggestPrompt("Research this technical question and give me a practical recommendation: ")}>Research a topic</button><button onClick={()=>suggestPrompt("Turn this rough idea into a clear technical specification: ")}>Draft a spec</button></>:<><button onClick={()=>suggestPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>suggestPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>suggestPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></>}</div>
               </div>}
             </div>
           </div>}
