@@ -85,3 +85,25 @@ test("an empty Enter on the command line reaches the program, so a prompt waitin
     await shots(page,"terminal-empty-enter");
   }finally{await shell.close()}
 });
+
+test("a paste of several lines runs each finished line and leaves the last one on the command line, as a terminal does",async({page,request,context})=>{
+  test.setTimeout(60_000);
+  const shell=await realTerminals(page);
+  try{
+    await context.grantPermissions(["clipboard-read","clipboard-write"]);
+    const {screen,input}=await openTerminal(page,request);
+    await input.click();
+    await page.keyboard.type("echo ",{delay:8});
+    await page.evaluate(()=>navigator.clipboard.writeText("pasted-one\r\necho pasted-two\necho pasted-three"));
+    await page.keyboard.press("Control+V");
+    await expect(screen).toContainText(/^pasted-one$/m);
+    await expect(screen).toContainText(/^pasted-two$/m);
+    await expect(input).toHaveValue("echo pasted-three");
+    await expect(screen).not.toContainText("pasted-three");
+    await shots(page,"terminal-multiline-paste");
+    await input.click();
+    await page.keyboard.press("Enter");
+    await expect(screen).toContainText(/^pasted-three$/m);
+    await expect(input).toHaveValue("");
+  }finally{await shell.close()}
+});

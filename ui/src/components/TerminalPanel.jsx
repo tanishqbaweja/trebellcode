@@ -163,6 +163,14 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   // An empty line is sent too: its Enter is what ends a Python block or takes the default a prompt offers.
   function send(id,event){event?.preventDefault();if(write(id,(lines[id]||"")+"\r"))setLines(previous=>({...previous,[id]:""}))}
   function ctrlC(id){write(id,"\x03")}
+  // A paste of several lines reaches the program as a terminal sends it, each finished line with its Enter, and the text after
+  // the last line break stays on the command line; the single-line input used to join the lines into one command.
+  function paste(id,event){
+    const text=event.clipboardData?.getData("text")||"";if(!/[\r\n]/.test(text))return;
+    event.preventDefault();const input=event.currentTarget;
+    const parts=(input.value.slice(0,input.selectionStart)+text+input.value.slice(input.selectionEnd)).split(/\r\n|\r|\n/),rest=parts.pop();
+    if(write(id,parts.map(line=>line+"\r").join("")))setLines(previous=>({...previous,[id]:rest}));
+  }
   async function attachRecent(session){
     if(!onAttachExcerpt||attachBusy)return;
     const text=(outputs[session.id]||"").slice(-8000);if(!text.trim())return;
@@ -210,7 +218,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
       {paneSessions.map(session=><section key={session.id} className={"terminal-pane"+(session.id===activeId?" active":"")} onMouseDown={()=>session.id!==activeId&&setActiveId(session.id)}>
         <div className="terminal-pane-head"><span><SquareTerminal size={11}/>{session.name||"Terminal"}</span>{paneSessions.length>1&&<button onClick={()=>close(session.id)} aria-label={"Close "+(session.name||"terminal")}><X size={10}/></button>}</div>
         <pre ref={node=>node?outputRefs.current.set(session.id,node):outputRefs.current.delete(session.id)} className="terminal-screen" onScroll={event=>{const node=event.currentTarget;node.dataset.stick=String(node.scrollTop+node.clientHeight>=node.scrollHeight-8)}}>{outputs[session.id]||"Terminal connected.\n"}</pre>
-        <form className="terminal-command-line" onSubmit={event=>send(session.id,event)}><span>$</span><input ref={node=>node?inputRefs.current.set(session.id,node):inputRefs.current.delete(session.id)} value={lines[session.id]||""} onChange={event=>setLines(previous=>({...previous,[session.id]:event.target.value}))} placeholder={session.running?"Type a command…":"Stopped terminal history"} disabled={!session.running}/><button type="button" onClick={()=>ctrlC(session.id)} disabled={!session.running}>Ctrl+C</button><button disabled={!session.running}>Send</button></form>
+        <form className="terminal-command-line" onSubmit={event=>send(session.id,event)}><span>$</span><input ref={node=>node?inputRefs.current.set(session.id,node):inputRefs.current.delete(session.id)} value={lines[session.id]||""} onChange={event=>setLines(previous=>({...previous,[session.id]:event.target.value}))} onPaste={event=>paste(session.id,event)} placeholder={session.running?"Type a command…":"Stopped terminal history"} disabled={!session.running}/><button type="button" onClick={()=>ctrlC(session.id)} disabled={!session.running}>Ctrl+C</button><button disabled={!session.running}>Send</button></form>
         <div className="terminal-foot"><span>{session.restored?"Restored history · ":""}{session.environmentName||environmentName} · {session.cwd||projectPath||"Home"}</span><button onClick={()=>attachRecent(session)} disabled={attachBusy===session.id} title="Attach recent output to the composer"><Paperclip size={12}/> {attachBusy===session.id?"Attaching…":"Attach recent output"}</button></div>
       </section>)}
       </div>}
