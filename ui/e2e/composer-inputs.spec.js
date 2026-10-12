@@ -77,7 +77,15 @@ test("a file over the attachment limit is refused at once from its size, and an 
     await expect(chip).toHaveText(/notes\.txt\s*Uploading…/);
     await expect(chip).toHaveAttribute("aria-busy","true");
     await shootBoth(page,"attachment-uploading",()=>expect(chip).toBeInViewport());
+    // Nothing is sent meanwhile, or the message would go without the file: Send waits, and Enter keeps the draft.
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send");
+    await composer.click();await page.keyboard.type("Here are the notes",{delay:15});
+    await expect(send).toBeDisabled();await expect(send).toHaveAttribute("title","Waiting for attachments to upload");
+    await page.keyboard.press("Enter");
+    await expect(composer).toHaveValue("Here are the notes");
+    await shootBoth(page,"attachment-uploading-send-waits",()=>expect(send).toBeDisabled());
     release();
+    await expect(send).toBeEnabled();
     await expect(chip).not.toHaveAttribute("aria-busy","true");
     await expect(chip).toHaveText("notes.txt");
     await expect(chips(page)).toHaveCount(1);
