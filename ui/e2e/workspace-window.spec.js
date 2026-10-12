@@ -235,6 +235,9 @@ async function openProjectInspector(page,request,name,path=null){
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:path||boot.cwd,name}});
   await page.goto("/");
+  // Trebell has finished starting once the composer lists its models. A project opened before then is replaced by the one the
+  // start-up read as open (a start-up race outside the Files view), so the person waits for the page to settle first.
+  await expect(page.getByTestId("model-picker")).toBeEnabled({timeout:15_000});
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   const project=page.locator(".project-card").filter({hasText:name});
   await expect(project).toBeVisible();
