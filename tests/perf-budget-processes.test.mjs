@@ -189,6 +189,24 @@ test("B6: gitInfo's kept repository part follows switches, new branches and work
   }finally{await rm(linked,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
+// A build, a formatter or a copy that writes tracked files again with the same content changes only their times, and git status
+// reads and hashes each such file until a status that may write the index records them. The warm polls stay off the index lock (an
+// agent's git add or commit fails at once while it is held); the full read, at most 30 s later, takes it.
+test("B6: a file written again with the same content is recorded by the next full read, so later polls do not hash it again",{timeout:60_000},async()=>{
+  const dir=await fixtureRepository("trebell-git-rewrite-"),file=join(dir,"a.txt"),at=Math.floor(Date.now()/1000)-100,now=Date.now;
+  const recorded=async()=>Number(/mtime:\s*(\d+)/.exec((await git(dir,["ls-files","--debug","--","a.txt"])).stdout)?.[1]);
+  const statuses=[],gitFn=(cwd,args,options)=>{if(args[0]==="status")statuses.push(options.env?.GIT_OPTIONAL_LOCKS??"may lock");return git(cwd,args,options)};
+  try{
+    await utimes(file,at,at);await git(dir,["update-index","-q","--refresh"]);assert.equal(await recorded(),at);
+    await gitInfo(dir,{gitFn});
+    await writeFile(file,"hello\n");await utimes(file,at+50,at+50);
+    await gitInfo(dir,{gitFn});assert.equal(await recorded(),at,"a warm poll leaves the index alone");
+    Date.now=()=>now()+30_000;
+    await gitInfo(dir,{gitFn});assert.equal(await recorded(),at+50,"the full read at the 30-s age records the file's new time");
+    assert.deepEqual(statuses,["may lock","0","may lock"]);
+  }finally{Date.now=now;await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
+});
+
 // A checkpoint's tree as create() recorded it before it reused the repository's index: a fresh index read from HEAD, then add -A.
 async function treeFromHead(repo,exclusions=[]){
   const env={...process.env,GIT_INDEX_FILE:repo+"-from-head-index"};

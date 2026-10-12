@@ -49,7 +49,10 @@ function repositorySignature(gitDir,commonDir,base,root){
   for(const folder of foldersBelowRoot(base,root)){add(join(folder,".git"));add(join(folder,"HEAD"))}
   return parts.join("|");
 }
-// Status never takes git's optional index lock here, so a poll does not rewrite the index and wake file watchers.
+// A warm poll's status never takes git's optional index lock, so a poll every 3.5 s does not hold the lock an agent's git add or
+// commit needs (git fails at once when it is held) or rewrite the index and wake file watchers. The full read, at most 30 s apart,
+// lets status take it: a file written again with the same content (a build, a formatter, a copy) differs from its index entry only
+// in its times, and git reads and hashes it on every status until one that may write the index records them.
 const statusOptions=opts=>({...opts,env:{...(opts.env||process.env),GIT_OPTIONAL_LOCKS:"0"},allowFailure:true});
 function gitInfoResult(base,part,statusRes){
   const statusLines=statusRes.stdout.split(/\r?\n/).filter(Boolean);
@@ -78,7 +81,7 @@ export async function gitInfo(cwd,{gitFn=git,fresh=false,...opts}={}){
   const [branchRes,branchesRes,statusRes,remoteRes,worktreeRes,upstreamRes]=await Promise.all([
     gitFn(root,["branch","--show-current"],{...opts,allowFailure:true}),
     gitFn(root,["for-each-ref","--format=%(refname:short)","refs/heads"],{...opts,allowFailure:true}),
-    gitFn(root,STATUS_ARGS,statusOptions(opts)),
+    gitFn(root,STATUS_ARGS,{...opts,allowFailure:true}),
     gitFn(root,["remote","-v"],{...opts,allowFailure:true}),
     gitFn(root,["worktree","list","--porcelain"],{...opts,allowFailure:true}),
     gitFn(root,["rev-parse","--abbrev-ref","--symbolic-full-name","@{u}"],{...opts,allowFailure:true}),
