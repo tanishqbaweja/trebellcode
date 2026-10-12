@@ -102,10 +102,11 @@ test("F4(c): the context packet is asked for while the checkpoint is made, and i
 // B14 (the page half) and B17: what a project thread left open does at idle, over 30 s with the window focused and 30 s without it:
 // the requests the page sends the server (each git/info runs git there) and the page timers that fire, by kind and delay. The test
 // switches the focus the page sees (document.hasFocus and the window's blur and focus events), so the run does not depend on the
-// browser window's own focus. The only timers that fire are the idle polls': git (3.5 s, 15 s for a remote workspace), branch
-// reviews and settlements (30 s).
-const B14_PAGE_REQUESTS_PER_MINUTE={focused:21,unfocused:21};
-const B17_TIMER_FIRES_PER_30S={focused:11,unfocused:11};
+// browser window's own focus. The only timers that fire are the idle polls': git (3.5 s with focus, 15 s for a remote workspace,
+// 30 s without focus), branch reviews and settlements (30 s). Without focus that is git/info twice a minute and the branch reviews'
+// own poll twice.
+const B14_PAGE_REQUESTS_PER_MINUTE={focused:20,unfocused:4};
+const B17_TIMER_FIRES_PER_30S={focused:10,unfocused:2};
 const B17_IDLE_POLL_DELAYS=new Set([3500,15_000,30_000]);
 const idleInstruments=()=>{
   let focused=true;Document.prototype.hasFocus=function(){return focused};
@@ -117,7 +118,7 @@ const idleInstruments=()=>{
   }
 };
 
-test("B14, B17: a project thread left open asks the server and fires timers only for its idle polls, with focus and without",async({page})=>{
+test("B14, B17: a project thread left open polls git every 3.5 s with focus, every 30 s without it, and at once when it comes back",async({page})=>{
   test.setTimeout(150_000);
   await page.addInitScript(idleInstruments);
   const fixture=await startStreamingFixture(page),requests=[];
@@ -138,6 +139,7 @@ test("B14, B17: a project thread left open asks the server and fires timers only
     await expect.poll(()=>requests.some(row=>row.at>=focusAt&&row.path==="GET /api/git/info"),{intervals:[100],timeout:5000}).toBe(true);
     const gitAfterFocusMs=requests.find(row=>row.at>=focusAt&&row.path==="GET /api/git/info").at-focusAt;
     console.log("B14/B17 idle on a project thread:",JSON.stringify({focused,unfocused,gitAfterFocusMs}));
+    expect(gitAfterFocusMs).toBeLessThan(1000);
     for(const [name,row] of Object.entries({focused,unfocused})){
       expect(row.requestsPerMinute,name+" "+JSON.stringify(row.requests)).toBeLessThanOrEqual(B14_PAGE_REQUESTS_PER_MINUTE[name]);
       expect(row.timerFires,name+" "+JSON.stringify(row.timers)).toBeLessThanOrEqual(B17_TIMER_FIRES_PER_30S[name]);

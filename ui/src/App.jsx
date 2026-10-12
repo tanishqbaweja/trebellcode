@@ -55,6 +55,7 @@ import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
 import { movedSectionRanks, orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadsInListOrder, undoOrder } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
+import { startFocusPoll } from "./focus-poll.js";
 import { userVerificationAvailability } from "./mcp-elicitation.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
 import { sharedDynamicToolNamespaces, sharedToolResponseContent } from "../../src/shared-tool-catalog.mjs";
@@ -2256,9 +2257,9 @@ export default function App(){
         if(next&&!disposed)setGitInfo(current=>sameSnapshot(current,next)?current:next);
       }finally{busy=false}
     };
-    poll();const timer=setInterval(poll,workspaceRemote?15_000:3500);
-    const visible=()=>{if(!document.hidden)poll()};document.addEventListener("visibilitychange",visible);
-    return()=>{disposed=true;clearInterval(timer);document.removeEventListener("visibilitychange",visible)};
+    // Every 3.5 s while the window has focus (15 s for a remote workspace), every 30 s without it, and at once when it comes back.
+    const gitPoll=startFocusPoll(poll,{focusedMs:workspaceRemote?15_000:3500});
+    return()=>{disposed=true;gitPoll.dispose()};
   },[section,projectPath,workspaceEnvironmentId,workspaceRemote,projectlessMode]);
   useEffect(()=>{
     const shouldPoll=section==="settings"||(rightPanelOpen&&rightPanelTab==="runtime");
