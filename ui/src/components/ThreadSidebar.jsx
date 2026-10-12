@@ -206,6 +206,10 @@ const ThreadSidebar=memo(function ThreadSidebar({
   // A row React moves (the list reordered while its menu was open) leaves the top layer, as any moved popover does: its menu goes back.
   useLayoutEffect(()=>{for(const menu of sectionsRef.current?.querySelectorAll("details.thread-menu[open]")||[])showRowMenu(menu,true)});
   const bulk=selectedIds.size>0;
+  // An action that changes every selected thread ends the selection, and the bulk bar goes with the button that ran it: focus goes
+  // back to Thread actions, which opened the bar, instead of falling to the page.
+  const bulkToggleRef=useRef(null),wasBulk=useRef(bulk);
+  useLayoutEffect(()=>{if(wasBulk.current&&!bulk&&document.activeElement===document.body)bulkToggleRef.current?.focus();wasBulk.current=bulk},[bulk]);
   const managedInference=Boolean(runtimeCapabilities.managedInference);
   const providerLabel=modelProviderLabel(provider);
   // runtimeStarting: Trebell's first load has not yet said which harness runs, so no harness is named.
@@ -241,7 +245,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
         {/* Clearing removes this button, so focus goes back to the field instead of falling to the page. */}
         {query&&<button onClick={()=>{setQuery("");searchRef.current?.focus()}} aria-label="Clear search">×</button>}
       </div>
-      <button className="sidebar-bulk-toggle" onClick={()=>setSelectedIds(bulk?new Set():new Set(threads.filter(thread=>threadCatalogRuntime(thread,threadMeta[thread.id]||{},agentRuntime)===agentRuntime).slice(0,1).map(t=>t.id)))} title="Thread actions" aria-label="Thread actions">
+      <button ref={bulkToggleRef} className="sidebar-bulk-toggle" onClick={()=>setSelectedIds(bulk?new Set():new Set(threads.filter(thread=>threadCatalogRuntime(thread,threadMeta[thread.id]||{},agentRuntime)===agentRuntime).slice(0,1).map(t=>t.id)))} title="Thread actions" aria-label="Thread actions">
         {bulk?<SlidersHorizontal size={14}/>:<MoreHorizontal size={15}/>}
       </button>
     </div>

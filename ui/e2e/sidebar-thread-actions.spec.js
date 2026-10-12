@@ -279,3 +279,23 @@ test("a bulk Pin that pins one of the threads offers Undo for â€œThread pinnedâ€
     for(const mode of ["dark","light"]){await switchMode(page,mode);await shoot(page,"sidebar-bulk-pin-one-of-two")}
   }finally{await harness.close()}
 });
+
+test("a bulk action that changes every selected thread leaves keyboard focus on Thread actions as the bulk bar goes",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness}=await openSidebarApp(page);
+  try{
+    const toggle=page.getByRole("button",{name:"Thread actions",exact:true});
+    // Two threads pinned in each mode, from the bar's Pin by the keyboard.
+    for(const [mode,pair,after] of [["dark",["Bulk two","Bulk three"],[["Pinned",["Bulk two","Bulk three"]],["Active",["Bulk one","Bulk four"]]]],["light",["Bulk one","Bulk four"],null]]){
+      await switchMode(page,mode);
+      await selectThreads(page,pair);
+      await bulkBar(page).getByRole("button",{name:"Pin",exact:true}).focus();await page.keyboard.press("Enter");
+      if(after)await expect.poll(()=>groups(page)).toEqual(after);else await expect.poll(async()=>(await groups(page)).map(([name])=>name)).toEqual(["Pinned"]);
+      await expect(bulkBar(page)).toHaveCount(0);
+      await expect(toggle).toBeFocused();
+      await shoot(page,"sidebar-bulk-done-focus");
+    }
+    // From there a person carries on from the keyboard: Enter opens bulk mode again.
+    await page.keyboard.press("Enter");await expect(bulkBar(page)).toBeVisible();
+  }finally{await harness.close()}
+});
