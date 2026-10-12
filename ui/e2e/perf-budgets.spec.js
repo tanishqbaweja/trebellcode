@@ -6,7 +6,7 @@ import { startStreamingFixture } from "./native-stream-fixture.js";
 
 // B15: CSS animations still running with an infinite iteration count once a page has settled. Any one of them keeps the
 // compositor drawing a frame every vsync all day (about 4% of a core across the renderer, GPU and browser processes).
-const B15_INFINITE_ANIMATIONS={chat:1,welcome:2,settings:1,projects:1};
+const B15_INFINITE_ANIMATIONS={chat:0,welcome:0,settings:0,projects:0};
 const reply=(request,text)=>({id:"perf-"+Math.random().toString(36).slice(2,8),provider:request.provider,model:request.model,text,toolCalls:[],finishReason:"stop",usage:{inputTokens:12,outputTokens:40,totalTokens:52}});
 
 const infiniteAnimations=page=>page.evaluate(()=>document.getAnimations().filter(animation=>animation.playState==="running"&&animation.effect?.getTiming?.().iterations===Infinity).map(animation=>{const target=animation.effect?.target;return (animation.animationName||animation.constructor.name)+" on "+(target?String(target.className||target.tagName).slice(0,60):"?")}));

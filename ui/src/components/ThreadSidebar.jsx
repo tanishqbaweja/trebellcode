@@ -278,7 +278,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
           <UtilityButton Icon={Server} label="Environments" shortcut={shortcuts.environments} active={section==="environments"} onClick={()=>setSection("environments")}/>
         </div>
       </nav>
-      <button className="sidebar-provider" onClick={()=>managedInference&&onOpenProviderSettings?onOpenProviderSettings():setSection("settings")} title={runtimeStarting?"Trebell is starting its agent harness":[connection.label,"Configure "+runtimeLabel].filter(Boolean).join(" · ")}><span className={"provider-dot tone-"+(connection.tone||"off")} data-testid="sidebar-provider-dot" aria-hidden="true"/><div><strong>{runtimeLabel}</strong><span>{managedInference?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
+      <button className="sidebar-provider" onClick={()=>managedInference&&onOpenProviderSettings?onOpenProviderSettings():setSection("settings")} title={runtimeStarting?"Trebell is starting its agent harness":[connection.label,"Configure "+runtimeLabel].filter(Boolean).join(" · ")}><span className={"provider-dot tone-"+(connection.tone||"off")+(runtimeStarting?" starting":"")} data-testid="sidebar-provider-dot" aria-hidden="true"/><div><strong>{runtimeLabel}</strong><span>{managedInference?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
     </div>
   </aside>;
 });

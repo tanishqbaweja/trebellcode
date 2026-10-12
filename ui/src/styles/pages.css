@@ -745,7 +745,8 @@
 :root:root .agents-page .agent-row:has(.agent-status-dot.working) .agent-live-phase b{color:var(--ac)}
 :root:root .agents-page .agent-row:has(.agent-status-dot.error) .agent-live-phase b{color:var(--err)}
 :root:root .agents-page .agent-status-dot{width:8px;height:8px;margin:0;border-radius:50%;background:var(--tx3)}
-:root:root .agents-page .agent-status-dot.working{background:var(--ac);box-shadow:0 0 0 3px var(--acsoft);animation:tb-pulse 2.6s infinite}
+/* A thread can be left marked working, so the pulse stops after a minute; the dot keeps its colour. */
+:root:root .agents-page .agent-status-dot.working{background:var(--ac);box-shadow:0 0 0 3px var(--acsoft);animation:tb-pulse 2.6s 23}
 :root:root .agents-page .agent-status-dot.idle{background:var(--ok);box-shadow:0 0 0 3px var(--okt)}
 :root:root .agents-page .agent-status-dot.error{background:var(--err);box-shadow:0 0 0 3px var(--errt)}
 :root:root .agents-page .agent-actions{display:flex;gap:6px;padding-right:10px}

@@ -107,8 +107,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .sidebar .sidebar-list-error strong{color:var(--err);font-size:12px;font-weight:600}
 .sidebar .sidebar-list-error span{overflow-wrap:anywhere}
 .sidebar .sidebar-list-error button{justify-self:start;margin-top:6px}
-/* A running thread's row leads its title with the live dot (theme .tb-dot); the label carries the state for screen readers. */
-.sidebar .thread-main .thread-running-dot{margin:0 2px 0 1px}
+/* A running thread's row leads its title with the live dot (theme .tb-dot); the label carries the state for screen readers. A listing
+   can leave a thread marked active, so the pulse stops after a minute and the dot stays. */
+.sidebar .thread-main .thread-running-dot{margin:0 2px 0 1px;animation-iteration-count:23}
 .sidebar .sidebar-empty{padding:26px 14px;color:var(--tx3);font-size:12px;line-height:1.7;text-align:center}
 .sidebar .sidebar-empty::before{content:"";display:block;width:20px;height:20px;margin:0 auto 8px;background:currentColor;opacity:.6;-webkit-mask:var(--tb-empty-icon) center/contain no-repeat;mask:var(--tb-empty-icon) center/contain no-repeat}
 .sidebar{--tb-empty-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3C/svg%3E")}
@@ -154,8 +155,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* Harness / provider card */
 .sidebar .sidebar-provider{width:calc(100% - 20px);height:auto;min-height:0;margin:10px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);color:var(--tx0);text-align:left;transition:border-color .15s,background .15s}
 .sidebar .sidebar-provider:hover{border-color:var(--line2);background:var(--bg3)}
-.sidebar .sidebar-provider .provider-dot{width:7px;height:7px;margin:0 1px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--okt);animation:tb-pulse 2.6s infinite}
-.sidebar .sidebar-provider .provider-dot:is(.tone-warn,.tone-err,.tone-off){animation:none}
+/* The dot holds still in every steady state: an animation that never ends has the compositor draw a frame every vsync all day.
+   It pulses while the harness starts, a few times only, so a start that hangs does not keep it going. */
+.sidebar .sidebar-provider .provider-dot{width:7px;height:7px;margin:0 1px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--okt)}
+.sidebar .sidebar-provider .provider-dot.starting{animation:tb-pulse 2.6s 4}
 .sidebar .sidebar-provider .provider-dot.tone-warn{background:var(--warn);box-shadow:0 0 0 3px var(--warnt)}
 .sidebar .sidebar-provider .provider-dot.tone-err{background:var(--err);box-shadow:0 0 0 3px var(--errt)}
 .sidebar .sidebar-provider .provider-dot.tone-off{background:var(--tx3);box-shadow:0 0 0 3px color-mix(in srgb,var(--tx3) 18%,transparent)}
@@ -342,7 +345,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .timeline .tool-event summary .timeline-marker{width:16px;height:16px;display:grid;place-items:center;border:0;background:none;color:var(--tx2);box-shadow:none}
 .conversation-column .timeline .tool-event summary .timeline-marker svg{width:13.5px;height:13.5px}
 .conversation-column .timeline .tool-event.status-done summary .timeline-marker{color:var(--ok)}
-.conversation-column .timeline .tool-event.status-running summary .timeline-marker{color:var(--ac);animation:tb-pulse 1.4s ease-in-out infinite}
+/* A stored row can stay "running" after its turn was cut off, so the pulse stops after a minute; its pill still says running. */
+.conversation-column .timeline .tool-event.status-running summary .timeline-marker{color:var(--ac);animation:tb-pulse 1.4s ease-in-out 43}
 .conversation-column .timeline .tool-event:is(.status-error,.kind-error) summary .timeline-marker{color:var(--err)}
 .conversation-column .timeline .tool-event.status-warning summary .timeline-marker{color:var(--warn)}
 .conversation-column .timeline .tool-event summary strong{font-size:12.5px;font-weight:500;color:inherit}
@@ -434,7 +438,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .main-frame.terminal-open .conversation-column .welcome-mark{width:44px;height:44px;margin-bottom:14px}
 .main-frame.terminal-open .conversation-column .welcome-mark img{width:44px;height:44px}
 .main-frame.terminal-open .conversation-column .welcome h1{font-size:22px}
-.conversation-column .welcome-mark{width:62px;height:62px;margin:0 auto 22px;position:relative;display:grid;place-items:center;border:0;border-radius:0;background:none;animation:tb-float 5.5s ease-in-out infinite}
+.conversation-column .welcome-mark{width:62px;height:62px;margin:0 auto 22px;position:relative;display:grid;place-items:center;border:0;border-radius:0;background:none;animation:tb-float 5.5s ease-in-out 2}
 .conversation-column .welcome-mark::before{content:"";position:absolute;inset:-16px;border-radius:50%;background:radial-gradient(closest-side,var(--acglow),transparent 72%);filter:blur(6px)}
 .conversation-column .welcome-mark img{position:relative;width:62px;height:62px;filter:drop-shadow(0 6px 22px var(--acglow))}
 .conversation-column .welcome h1{margin:0;font-size:27px;font-weight:650;letter-spacing:-.035em;line-height:1.2;color:var(--tx0)}
