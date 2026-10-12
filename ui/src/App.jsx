@@ -161,6 +161,20 @@ function focusShownView(){
   attempt();
 }
 
+// Focus for a person who opened the terminal from the palette, which would otherwise give it back to where the palette was opened
+// from: the open terminal's command line, else Create terminal (or New, beside a stopped one), once the drawer's content shows and
+// the palette has gone. Focus already in the drawer (the terminal panel's own, as a running terminal comes up) stays.
+function focusTerminalDrawer(){
+  const started=performance.now();
+  const attempt=()=>{
+    const drawer=document.querySelector(".terminal-drawer");
+    const target=document.querySelector('[data-testid="command-palette"]')||!drawer?null:drawer.querySelector(".terminal-pane.active .terminal-command-line input:not(:disabled)")||drawer.querySelector(".terminal-empty button")||drawer.querySelector(".terminal-new");
+    if(target){if(!drawer.contains(document.activeElement))target.focus({preventScroll:true});return}
+    if(performance.now()-started<4000)requestAnimationFrame(attempt);
+  };
+  requestAnimationFrame(attempt);
+}
+
 // In a browser tab the app's pages are entries of the tab's history too (see the navigation history in App). The desktop window
 // (window.trebellDesktop) has no browser Back or Forward and keeps that history in memory only.
 const BROWSER_NAVIGATION=typeof window!=="undefined"&&!window.trebellDesktop&&typeof window.history?.pushState==="function";
@@ -4992,7 +5006,7 @@ export default function App(){
     ...(!projectlessMode?[{id:"context",label:"Trebell context",detail:"Inspect repository context supplied to the latest turn",onRun:()=>openRightPanel("context")}]:[]),
     ...(paletteThread?[{id:"link-pr",label:"Link pull request",detail:"Attach a hosted review to this thread",onRun:async()=>{const url=await askText("Pull request URL");if(url)await linkPullRequestUrl(url,"manual")}}]:[]),
     // Toggle terminal's key opens the terminal only while it is closed (it closes an open one), so this row offers it only then.
-    {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:panel==="terminal"?"":shortcutHint(commandKey("terminal")),onRun:()=>setPanel("terminal")},
+    {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:panel==="terminal"?"":shortcutHint(commandKey("terminal")),onRun:()=>{setPanel("terminal");focusTerminalDrawer()}},
     ...((currentProject?.scripts||[]).map(script=>({id:"project-action:"+script.id,label:"Run "+script.name,detail:script.command,onRun:()=>runProjectAction(script)}))),
     {id:"browser",label:"Browser",detail:window.trebellDesktop?.browser?"Open Trebell Agent Browser":"Open hosted preview and local dev-server tools",onRun:()=>openRightPanel("preview")},
     ...(runtimeCapabilities.delegation?[{id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")}]:[]),

@@ -214,6 +214,32 @@ test.describe("Focus after a palette command",()=>{
     await page.screenshot({animations:"disabled",path:shots+"palette-command-usage-next-tab-light-1280.png"});
   });
 
+  // The terminal opens with none running here (the server's list answered empty), so its Create terminal button takes the focus.
+  test("Terminal moves focus into the terminal it opened instead of back to where the palette was opened from",async({page,request})=>{
+    await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>route.request().method()==="GET"?route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({sessions:[]})}):route.fallback());
+    await open(page,request);
+    const palette=page.getByTestId("command-palette"),drawer=page.getByTestId("drawer");
+    for(const mode of ["dark","light"]){
+      const html=page.locator("html");if(await html.getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").first().click();await expect(html).toHaveAttribute("data-mode",mode)}
+      await page.getByTestId("composer").click();
+      await page.keyboard.press("Control+K");
+      await expect(palette.locator(".command-palette-item").first()).toBeVisible();
+      await page.keyboard.type(">terminal",{delay:25});
+      await page.waitForTimeout(250);
+      await page.keyboard.press("Enter");
+      await expect(palette).toBeHidden();
+      const create=drawer.getByRole("button",{name:"Create terminal"});
+      await expect(create).toBeFocused();
+      // It keeps the focus: nothing hands it back to the composer afterwards.
+      await page.waitForTimeout(400);
+      await expect(create).toBeFocused();
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(create).toBeInViewport();await page.screenshot({animations:"disabled",path:shots+"palette-command-terminal-focus-"+mode+"-"+width+".png"})}
+      await page.setViewportSize({width:1280,height:800});
+      await drawer.getByRole("button",{name:"Close terminal"}).click();
+      await expect(drawer).toHaveCount(0);
+    }
+  });
+
   test("a command that keeps the view gives focus back to where it was",async({page,request})=>{
     await open(page,request);
     const composer=page.getByTestId("composer"),palette=page.getByTestId("command-palette");
