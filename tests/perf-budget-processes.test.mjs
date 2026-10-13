@@ -207,6 +207,23 @@ test("B6: a file written again with the same content is recorded by the next ful
   }finally{Date.now=now;await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
+// New worktree mode gives each thread a linked worktree, where agents add and commit. Its git dir (.git/worktrees/<name>) holds its
+// index, so the full read's status takes and drops the index lock there: that must not make the next poll read everything again.
+test("B6: a warm poll of a linked worktree starts one git process and leaves the index lock alone",{timeout:60_000},async()=>{
+  const dir=await fixtureRepository("trebell-git-linked-"),linked=dir+"-linked";
+  try{
+    await git(dir,["worktree","add","-q","-b","side",linked]);
+    const polls=[];
+    for(let poll=0;poll<4;poll++){
+      const calls=[];
+      await gitInfo(linked,{gitFn:(cwd,args,options)=>{calls.push(args[0]!=="status"?args.join(" "):options.env?.GIT_OPTIONAL_LOCKS==="0"?"status, no lock":"status, may lock");return git(cwd,args,options)}});
+      polls.push(calls);
+    }
+    assert.equal(polls[0].length,7,"the first poll reads everything");assert.ok(polls[0].includes("status, may lock"));
+    assert.deepEqual(polls.slice(1),[["status, no lock"],["status, no lock"],["status, no lock"]]);
+  }finally{await rm(linked,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
+});
+
 // A checkpoint's tree as create() recorded it before it reused the repository's index: a fresh index read from HEAD, then add -A.
 async function treeFromHead(repo,exclusions=[]){
   const env={...process.env,GIT_INDEX_FILE:repo+"-from-head-index"};

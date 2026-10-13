@@ -19,9 +19,11 @@ export async function git(cwd,args,opts={}){ return run("git",args,{cwd,...opts}
 
 // The repository part of a folder's gitInfo (root, branch, branches, upstream, remotes, worktrees) is kept while the files git reads
 // it from are unchanged, for at most 30 s: HEAD from the git dir (so a linked worktree or a submodule reads its own), and config,
-// packed-refs, refs/heads, refs/remotes (the upstream needs its ref) and worktrees from the common dir. git replaces a ref or a
-// worktree's HEAD through a lock file in its own folder, which changes that folder's modification time, so every folder below the
-// refs (a commit on feature/x, a new branch in it) and each worktree's folder count too. A reftable repository (--ref-format=reftable,
+// packed-refs, refs/heads, refs/remotes (the upstream needs its ref) and worktrees from the common dir. git replaces a ref through a
+// lock file in its own folder, which changes that folder's modification time, so every folder below the refs (a commit on
+// feature/x, a new branch in it) counts too. In worktrees, the folder counts (a worktree added or removed) and each worktree's HEAD,
+// but not each worktree's folder: that is a linked worktree's git dir, which holds its index, and every status that may write the
+// index (the full read's, an agent's git add) creates and removes the index lock there. A reftable repository (--ref-format=reftable,
 // the default planned for Git 3) keeps every ref, HEAD among them, in a reftable folder instead, where git replaces tables.list on
 // each update: the common dir's holds the branches and the main worktree's HEAD, and each linked worktree's folder has its own for
 // its HEAD; .git/HEAD and refs/heads are stubs that never change. A warm poll then runs only git status, which is read every time.
@@ -44,7 +46,10 @@ function repositorySignature(gitDir,commonDir,base,root){
     if(depth>0&&info.isDirectory()){let entries=[];try{entries=readdirSync(path,{withFileTypes:true})}catch{}for(const entry of entries)if(entry.isDirectory())add(join(path,entry.name),depth-1)}
   };
   add(join(gitDir,"HEAD"));add(join(gitDir,"config.worktree"));add(join(commonDir,"config"));add(join(commonDir,"packed-refs"));
-  add(join(commonDir,"refs","heads"),16);add(join(commonDir,"refs","remotes"),16);add(join(commonDir,"worktrees"),2);
+  add(join(commonDir,"refs","heads"),16);add(join(commonDir,"refs","remotes"),16);
+  const worktrees=join(commonDir,"worktrees");add(worktrees);
+  let linked=[];try{linked=readdirSync(worktrees,{withFileTypes:true}).filter(entry=>entry.isDirectory())}catch{}
+  for(const entry of linked){parts.push(entry.name);add(join(worktrees,entry.name,"HEAD"));add(join(worktrees,entry.name,"reftable","tables.list"))}
   add(join(gitDir,"reftable","tables.list"));add(join(commonDir,"reftable","tables.list"));
   for(const folder of foldersBelowRoot(base,root)){add(join(folder,".git"));add(join(folder,"HEAD"))}
   return parts.join("|");
