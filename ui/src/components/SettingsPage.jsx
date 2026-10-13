@@ -174,6 +174,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const themeImportRef=useRef(null);
   const [panelAnimationDraft,setPanelAnimationDraft]=useState(null);
   const panelAnimationSaveRef=useRef(null);
+  // The storage retention values still on their way to the server, by field (saveStorageRetention).
+  const retentionSendingRef=useRef(new Map());
   const settingsRef=useRef(settings);settingsRef.current=settings;
   const selected=settings.modelProvider||DEFAULT_MODEL_PROVIDER;
   const providerOptions=providerInfo?.providers?.length
@@ -584,10 +586,16 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     // old value after a failed save, so it never reads "off" while a cleanup is still set.
     const text=String(input.value??"").trim(),days=text?Math.trunc(Number(text)):NaN;
     const value=Number.isFinite(days)&&days>=1?Math.min(3650,days):null;
-    const current=settings.storageCleanup||{};
-    if(value===(current[key]??null)){input.value=value??"";return}
-    const saved=await saveSetting({storageCleanup:{...current,[key]:value}});
-    input.value=(saved?saved.storageCleanup?.[key]:current[key])??"";
+    // The save names only this field (the server keeps the other as saved): one left while the other's save was still on its way sent
+    // the whole setting from the last render, with the other field's old value. A field left again before its own save answers is
+    // compared with the value on its way, not with the last render's.
+    const sending=retentionSendingRef.current,previous=sending.has(key)?sending.get(key).value:(settings.storageCleanup?.[key]??null);
+    if(value===previous){input.value=value??"";return}
+    const token={value};sending.set(key,token);
+    let saved;
+    try{saved=await saveSetting({storageCleanup:{[key]:value}})}
+    finally{if(sending.get(key)===token)sending.delete(key)}
+    input.value=(saved?saved.storageCleanup?.[key]:previous)??"";
     if(saved)await loadStorageInfo();
   }
   async function runStorageCleanup(){

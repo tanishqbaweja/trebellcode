@@ -287,13 +287,27 @@ test("storage cleanup retention treats zero, negative and too-large days like th
   await expect(storageSummary).toContainText(/cached attachments? · \d+(\.\d)? (B|KB|MB|GB)/);
   await page.locator(".storage-settings").screenshot({animations:"disabled",path:auditDir+"settings-storage-retention-zero-is-off.png"});
   expect((await savedSettings(request)).storageCleanup).toEqual({attachmentsAfterDays:null,terminalHistoryAfterDays:null});
-  // Real day counts keep saving, and the server's 3650-day ceiling shows in the field.
+  // Real day counts keep saving, and the server's 3650-day ceiling shows in the field. The person leaves the second field while the
+  // first one's save is still on its way: the server has saved 14, but its answer is held back (a busy disk or a slow link) until
+  // the second save has been sent. Each save names only its own field, so the second does not send the first one's old value back.
+  const posts=[];let releaseFirst=()=>{},firstAnswered=()=>{};
+  const firstHeld=new Promise(resolve=>{releaseFirst=resolve}),firstDelivered=new Promise(resolve=>{firstAnswered=resolve});
+  await page.route(/\/api\/settings$/,async route=>{
+    if(route.request().method()!=="POST")return route.fallback();
+    posts.push(route.request().postDataJSON());
+    if(posts.length===1){const response=await route.fetch();await firstHeld;await route.fulfill({response});firstAnswered();return}
+    releaseFirst();await firstDelivered;return route.fallback();
+  });
   await attachments.fill("14");await attachments.press("Tab");
   await expect.poll(async()=>(await savedSettings(request)).storageCleanup.attachmentsAfterDays).toBe(14);
   await terminals.fill("99999");await terminals.press("Tab");
-  await expect.poll(async()=>(await savedSettings(request)).storageCleanup.terminalHistoryAfterDays).toBe(3650);
+  await expect.poll(()=>posts.length,{message:"the second field's save was sent"}).toBe(2);
+  await expect.poll(async()=>(await savedSettings(request)).storageCleanup,{message:"both fields as saved"}).toEqual({attachmentsAfterDays:14,terminalHistoryAfterDays:3650});
   await expect(terminals).toHaveValue("3650");
   await expect(attachments).toHaveValue("14");
+  expect(posts.map(body=>body.storageCleanup),"each save names only the field that was left").toEqual([{attachmentsAfterDays:14},{terminalHistoryAfterDays:3650}]);
+  await page.locator(".storage-settings").screenshot({animations:"disabled",path:auditDir+"settings-storage-retention-two-fields-saved.png"});
+  await page.unroute(/\/api\/settings$/);
   // A failed save puts the saved 14 back instead of a blank "Off" that is not in effect.
   await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"
     ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate retention save failure"})})

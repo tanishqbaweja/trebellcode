@@ -323,7 +323,8 @@ export class TrebellStateStore {
     if("modelProvider" in patch)patch={...patch,modelProvider:normalizeProviderId(patch.modelProvider)};
     if("worktreeSubmodules" in patch&&!['recursive','top-level','none'].includes(String(patch.worktreeSubmodules)))patch={...patch,worktreeSubmodules:'recursive'};
     if("worktreeCleanup" in patch)patch={...patch,worktreeCleanup:normalizeWorktreeCleanup(patch.worktreeCleanup)};
-    if("storageCleanup" in patch)patch={...patch,storageCleanup:normalizeStorageCleanup(patch.storageCleanup)};
+    // A storage cleanup save may name only the fields it changes (Settings saves each field as it is left): the others stay as saved.
+    if("storageCleanup" in patch){const value=patch.storageCleanup,fields=value&&typeof value==="object"&&!Array.isArray(value);patch={...patch,storageCleanup:normalizeStorageCleanup(fields?{...this.state.settings.storageCleanup,...value}:value)}}
     if("sourceControlMergeMethod" in patch)patch={...patch,sourceControlMergeMethod:normalizeScopedSetting("sourceControlMergeMethod",patch.sourceControlMergeMethod)};
     if("sourceControlTextStyle" in patch)patch={...patch,sourceControlTextStyle:normalizeScopedSetting("sourceControlTextStyle",patch.sourceControlTextStyle)};
     if("sourceControlTextModel" in patch)patch={...patch,sourceControlTextModel:normalizeScopedSetting("sourceControlTextModel",patch.sourceControlTextModel)};

@@ -20,6 +20,19 @@ test("storage cleanup settings are opt-in and normalized",async()=>{
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+// Settings saves each retention field on its own as the person leaves it: a save that names one field keeps the other as saved, so
+// leaving the second field while the first one's save is on its way cannot send the first one's old value back over it.
+test("a storage cleanup save that names one field keeps the other as saved",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-storage-merge-"));
+  try{
+    const state=new TrebellStateStore({...process.env,TREBELL_HOME:home});
+    state.updateSettings({storageCleanup:{attachmentsAfterDays:14}});
+    assert.deepEqual(state.updateSettings({storageCleanup:{terminalHistoryAfterDays:99999}}).storageCleanup,{attachmentsAfterDays:14,terminalHistoryAfterDays:3650});
+    assert.deepEqual(state.updateSettings({storageCleanup:{attachmentsAfterDays:0}}).storageCleanup,{attachmentsAfterDays:null,terminalHistoryAfterDays:3650},"0 turns that field off and leaves the other");
+    assert.deepEqual(new TrebellStateStore({...process.env,TREBELL_HOME:home}).settings().storageCleanup,{attachmentsAfterDays:null,terminalHistoryAfterDays:3650},"as saved for the next start");
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("storage cleanup removes only stale unreferenced Trebell attachment blobs",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-storage-attachments-"));const env={...process.env,TREBELL_HOME:home};
   try{
