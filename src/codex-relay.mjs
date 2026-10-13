@@ -30,6 +30,9 @@ export function attachCodexRelay(httpServer, {
   // Synchronous (message, {targetKey, targetUrl, requestUpstream}) => message: rewrites a Codex notification before the
   // renderer gets it, so notifications keep their order.
   transformServerMessage = null,
+  // Synchronous (message, {requestMethod, requestParams, targetKey}) => message: rewrites the answer to a request the renderer sent
+  // before the renderer gets it.
+  transformServerResponse = null,
   // ({key, url}) => whether requests for that target still go to that URL: a routed connection that closes while they do lost a
   // process that died, not one that was released.
   targetLive = () => false,
@@ -174,6 +177,10 @@ export function attachCodexRelay(httpServer, {
           if(transformServerMessage&&message?.method&&!Object.prototype.hasOwnProperty.call(message,"id")){
             try{message=transformServerMessage(message,{targetKey:record.key,targetUrl:record.url,requestUpstream})||message}
             catch(error){log("Codex notification hook failed: "+error.message)}
+          }
+          if(transformServerResponse&&requestMeta){
+            try{message=transformServerResponse(message,{requestMethod:requestMeta.method,requestParams:requestMeta.params,targetKey:record.key})||message}
+            catch(error){log("Codex answer hook failed: "+error.message)}
           }
           sendBrowser(message);
         });

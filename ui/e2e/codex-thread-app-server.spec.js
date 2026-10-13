@@ -47,6 +47,8 @@ async function fakeAppServer(name){
   });
   const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {url:"ws://127.0.0.1:"+port,requests,
+    // Its connections drop, and it goes on listening.
+    drop(){for(const ws of sockets)try{ws.terminate()}catch{}},
     // A crash: its connections drop without a close frame and its port stops listening.
     kill(){for(const ws of sockets)try{ws.terminate()}catch{}try{wss.close()}catch{}try{http.close()}catch{}},
   };
@@ -78,6 +80,8 @@ async function startFixture(page){
     },
     // A server that died stays in the pool until it is started again (gui-server: codexAppServers.get(key)?.targetUrl===url).
     targetLive:({key,url})=>pool.get(key)?.url===url,
+    // fixture.exit: what gui-server notes of a thread app-server that died (noteCodexAppServerExit), named by each resume of the thread.
+    transformServerResponse:(message,{requestMethod})=>requestMethod==="thread/resume"&&fixture.exit&&message?.result?.thread?{...message,result:{...message.result,trebellAppServerExit:fixture.exit}}:message,
   });
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
@@ -264,5 +268,31 @@ test("when one thread's Codex app-server dies, another thread's running turn kee
     await expect(threadRow(page,"Docs refresh").getByRole("img",{name:"Running"})).toHaveCount(0,{timeout:10_000});
     expect(fixture.restarted.length,"only Release's app-server was started again").toBe(1);
     await page.screenshot({animations:"disabled",path:SHOTS+"R4-other-thread-finished-after-reconnect.png"});
+  }finally{await fixture.close()}
+});
+
+// The thread whose own app-server died says what happened once the app is back: how it ended, and that its turn ended with it, in one
+// row, however often the app reconnects (each resume names the same death until the thread's next turn).
+test("a thread's own Codex app-server that dies is named in the thread once the app reconnects, in one row however often it reconnects",async({page})=>{
+  test.setTimeout(90_000);
+  const fixture=await startFixture(page);
+  try{
+    fixture.exit={id:"exit-1",code:null,signal:"SIGKILL",at:Date.now(),turnRunning:true};
+    await runningTurn(page,fixture);
+    const transport=page.getByTestId("composer-transport");
+    const notice=page.getByText("The Codex app-server running this thread was stopped by SIGKILL, so the turn that was running ended. Trebell started it again.",{exact:true});
+    await expect.poll(()=>fixture.restarted[0]?.requests.filter(message=>message.method==="thread/resume").length||0,{timeout:20_000}).toBe(1);
+    await expect(transport).toHaveCount(0,{timeout:15_000});
+    await expect(notice).toHaveCount(1,{timeout:10_000});
+    await expect(page.getByRole("button",{name:/^Stop/})).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:SHOTS+"R3-app-server-exit-named-after-reconnect.png"});
+    // The app reconnects once more (the catalog's connections drop): the thread is reopened, and the death still reads in one row.
+    const connects=fixture.initializes();fixture.catalog.drop();
+    await expect.poll(()=>fixture.initializes(),{timeout:15_000}).toBeGreaterThan(connects);
+    await expect.poll(()=>fixture.restarted[0].requests.filter(message=>message.method==="thread/resume").length,{timeout:15_000}).toBe(2);
+    await expect(transport).toHaveCount(0,{timeout:15_000});
+    await expect(notice).toHaveCount(1);
+    await page.waitForTimeout(500);await expect(notice).toHaveCount(1);
+    await page.screenshot({animations:"disabled",path:SHOTS+"R3-app-server-exit-once-after-second-reconnect.png"});
   }finally{await fixture.close()}
 });

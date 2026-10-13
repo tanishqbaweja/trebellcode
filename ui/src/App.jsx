@@ -363,6 +363,11 @@ const WORKTREE_CARD_ERRORS=new WeakSet();
 // A send Stop ended before its turn existed (startTurn marks the error trebellSendStopped): its draft goes back with no note.
 const sendStoppedError=()=>Object.assign(new Error("Stopped before the turn started."),{trebellSendStopped:true});
 function upsertEvent(events,event){return events.some(item=>item.id===event.id)?events.map(item=>item.id===event.id?{...item,...event}:item):[...events,event]}
+// What became of a thread's own Codex app-server that died, as the server noted it (trebellAppServerExit).
+function appServerExitText(exit){
+  const how=exit?.signal?"was stopped by "+exit.signal:Number.isInteger(exit?.code)?"exited with code "+exit.code:"exited";
+  return "The Codex app-server running this thread "+how+(exit?.turnRunning?", so the turn that was running ended":"")+". Trebell started it again.";
+}
 function historyFromThread(thread,checkpointByTurn={}){
   return historyFromTurns(thread?.turns||[],checkpointByTurn);
 }
@@ -3565,6 +3570,8 @@ export default function App(){
     // shown opening again (a reconnect) keeps a note about its failed send or about another thread that did not open.
     activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     // A send of this thread that failed while another view was shown gives its draft and its note back here (dispatchSend).
+    // A thread whose own Codex app-server died says so, in one row: its resumes name the death until its next turn, under one id.
+    const appServerExit=resumed?.trebellAppServerExit;if(appServerExit?.id)setEvents(prev=>upsertEvent(prev,{id:"app-server-exit-"+appServerExit.id,kind:"error",title:appServerExitText(appServerExit),status:"done",raw:appServerExit}));
     const failedSend=failedSendsRef.current.get(String(thread.id));if(failedSend){failedSendsRef.current.delete(String(thread.id));restoreFailedDraft(failedSend.draft);if(failedSend.alert)setComposerAlert(failedSend.alert)}
     if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}

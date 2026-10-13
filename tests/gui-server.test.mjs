@@ -728,6 +728,44 @@ test("a thread's own Codex app-server that dies closes the app's socket at once,
   }
 });
 
+// After a thread's own app-server dies, the thread's next resume says what happened (trebellAppServerExit: the exit code or signal, and
+// whether a turn ran on it), and each resume until the thread's next turn says the same one, so a window that reconnects again names
+// it once. The next turn ends it.
+test("a thread's own Codex app-server that dies is named, with its exit, on the thread's resumes until its next turn",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
+  const {home,env,starts}=await fakeCodexHome("trebell-codex-thread-exit-");
+  const originalProbe=AgentRuntimeManager.prototype.probe;AgentRuntimeManager.prototype.probe=availableProbe;
+  let gui=null;const sockets=[];
+  const socket=async()=>{const opened=await codexSocket(gui);sockets.push(opened);await opened.connect();return opened};
+  try{
+    gui=await createGuiServer({port:await freePort(),mock:false,env});
+    const first=await socket();
+    assert.equal((await first.ask("thread/resume",{threadId:"thread-exit"})).result.trebellAppServerExit,undefined,"nothing to say before a death");
+    assert.ok(!(await first.ask("turn/start",{threadId:"thread-exit",input:[{type:"text",text:"one"}]})).error);
+    const [,threadServer]=await starts();assert.ok(threadServer,"the thread runs on an app-server of its own");
+    process.kill(threadServer.pid);
+    assert.ok(await waitFor(()=>first.closed(),3000),"the app's socket closes when the thread's app-server dies");
+    const second=await socket();
+    const notice=(await second.ask("thread/resume",{threadId:"thread-exit"})).result.trebellAppServerExit;
+    assert.ok(notice?.id,"the resume after the death names it: "+JSON.stringify(notice));
+    assert.ok(notice.signal||Number.isInteger(notice.code),"with the exit code or the signal: "+JSON.stringify(notice));
+    assert.equal(notice.turnRunning,true,"and that the turn it ran ended with it");
+    const third=await socket();
+    assert.deepEqual((await third.ask("thread/resume",{threadId:"thread-exit"})).result.trebellAppServerExit,notice,"a reconnect reads the same notice, not another");
+    assert.ok(!(await third.ask("turn/start",{threadId:"thread-exit",input:[{type:"text",text:"two"}]})).error);
+    assert.equal((await third.ask("thread/resume",{threadId:"thread-exit"})).result.trebellAppServerExit,undefined,"the next turn ends the notice");
+    // A thread app-server released on purpose (its thread left) is no death: nothing is named for it.
+    assert.ok(!(await third.ask("thread/resume",{threadId:"thread-left"})).error);
+    assert.ok(!(await third.ask("thread/unsubscribe",{threadId:"thread-left"})).error);
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    assert.equal((await third.ask("thread/resume",{threadId:"thread-left"})).result.trebellAppServerExit,undefined);
+  }finally{
+    for(const opened of sockets)try{opened.ws.terminate()}catch{}
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    if(gui)await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
 // The stand-in above, once the file "broken" exists beside its record: a start records itself and exits with why, as a codex that
 // cannot start does (removed, upgraded half-way, crashing on start).
 const FAKE_CODEX_BREAKABLE_APP_SERVER=FAKE_CODEX_WS_APP_SERVER

@@ -383,6 +383,8 @@ async function waitForAppServer(instance,appPort,timeoutMs=15000){
 }
 
 async function stopAppServer(instance){
+  // Stopped on purpose: its exit is no death (noteCodexAppServerExit).
+  if(instance)instance.stopping=true;
   await stopChildProcess(instance?.child);
   try{await instance?.close?.()}catch{}
   // A local codex can still hold its port a moment after the process Trebell started has ended (on Windows that is codex's shell
@@ -1069,7 +1071,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       const started=await startAppServer({appPort:targetPort,env,mock,environments,environmentId,runtimeInstance:instance,runtimeEnvironmentNames:agentRuntimes.childEnvironmentKeys(instance),command:agentRuntimes.executable(instance,{environmentId})});
       started.poolKey=key;started.ownerKey=ownerKey;started.runtimeInstanceId=instance.id;started.environmentId=environmentId||null;started.continuationKey=agentRuntimes.continuationKey(instance);
       codexAppServers.set(key,started);
-      if(!mock){const ready=await waitForAppServer(started,targetPort,15000).catch(()=>false);if(!ready&&!started.error)started.error=appServerStartError(started,instance.displayName||instance.id)}
+      started.child?.once("exit",(code,signal)=>noteCodexAppServerExit(started,code,signal));
+      if(!mock){const ready=await waitForAppServer(started,targetPort,15000).catch(()=>false);if(!ready&&!started.error)started.error=appServerStartError(started,instance.displayName||instance.id);if(ready)started.readyAt=Date.now()}
       if(started.error)started.failedAt=Date.now();
       return started;
     })();
@@ -1523,8 +1526,23 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   // runs or is starting a turn, a turn start that comes meanwhile is refused (CODEX_TURN_START_METHODS), and one Codex starts by itself
   // meanwhile (a goal's next turn) is noted, so the restore puts the files back as they were.
   const codexRunningTurns=new Map(),restoringThreads=new Map();
+  // A thread's own app-server that died (it had served, nothing stopped or released it): how it ended, and whether a turn ran on it, by
+  // thread. Each resume of the thread names it (trebellAppServerExit) until the thread's next turn starts, so the app can say once, in
+  // the thread, what happened, however often it reconnects.
+  const codexAppServerExits=new Map();
+  function noteCodexAppServerExit(server,code,signal){
+    if(closing||server.stopping||!server.readyAt||codexAppServers.get(server.poolKey)!==server)return;
+    const at=Date.now();
+    for(const [threadId,key] of codexThreadServerKeys){
+      if(key!==server.poolKey)continue;
+      codexAppServerExits.delete(threadId);codexAppServerExits.set(threadId,{id:randomUUID(),code:Number.isInteger(code)?code:null,signal:signal||null,at,turnRunning:codexRunningTurns.has(threadId)});
+      noteCodexTurnEnded(threadId);
+    }
+    while(codexAppServerExits.size>200)codexAppServerExits.delete(codexAppServerExits.keys().next().value);
+  }
   function noteCodexTurnStarted(threadId,turnId){
     const id=String(threadId||"");if(!id)return;
+    codexAppServerExits.delete(id);
     const restoring=restoringThreads.get(id);if(restoring)restoring.turnStarted=true;
     if(!turnId)return;let turns=codexRunningTurns.get(id);if(!turns)codexRunningTurns.set(id,turns=new Set());turns.add(String(turnId));
   }
@@ -3273,6 +3291,12 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     },
     // Codex's goal notifications reach the renderer with Trebell's guidance and budget figures added; a finished turn
     // checks the budgets only Trebell tracks.
+    // A thread whose own app-server died: its resumes name the death until its next turn (noteCodexAppServerExit).
+    transformServerResponse:(message,{requestMethod,requestParams})=>{
+      if(requestMethod!=="thread/resume"||!message?.result?.thread)return message;
+      const exit=codexAppServerExits.get(String(requestParams?.threadId||message.result.thread.id||""));
+      return exit?{...message,result:{...message.result,trebellAppServerExit:exit}}:message;
+    },
     transformServerMessage:(message,{requestUpstream})=>{
       const params=message.params||{},threadId=params.threadId?String(params.threadId):"";if(!threadId)return message;
       if(message.method==="thread/goal/updated"&&params.goal)return {...message,params:{...params,goal:mirrorCodexGoal(threadId,params.goal)}};
@@ -3324,11 +3348,11 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         state.updateThreadMeta(startedThread.id,{cwd:startedThread.cwd||null,runtime:"codex",runtimeInstanceId:routedServer?.runtimeInstanceId||agentRuntimes.activeInstance().id,environmentId:routedServer?.environmentId??state.settings().activeEnvironmentId??null,deletedAt:null,active:false,ephemeral,catalogHidden:ephemeral,...codexPermissionProfilePatch(route?.requestParams||{})});
       }
       if(message?.method==="thread/deleted"&&params.threadId){
-        codexThreadModels.delete(params.threadId);noteCodexTurnEnded(params.threadId);const meta=state.threadMeta(params.threadId);state.removeThreadMeta(params.threadId);
+        codexThreadModels.delete(params.threadId);noteCodexTurnEnded(params.threadId);codexAppServerExits.delete(String(params.threadId));const meta=state.threadMeta(params.threadId);state.removeThreadMeta(params.threadId);
         setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0);
         if(meta?.cwd)worktreeCleanup.sweep({reason:"thread-delete",path:meta.cwd}).catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:safeLogText(error.message+"\n")}));
       }
-      if(message?.method==="thread/archived"&&params.threadId)setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0);
+      if(message?.method==="thread/archived"&&params.threadId){codexAppServerExits.delete(String(params.threadId));setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0)}
       if(route?.requestMethod==="thread/unsubscribe"&&!message?.error&&route.requestParams?.threadId){
         const threadId=String(route.requestParams.threadId);const meta=state.threadMeta(threadId);
         if(!meta.active)setTimeout(()=>releaseCodexThreadServer(threadId).catch(()=>{}),0);
