@@ -14,7 +14,6 @@ import ThreadSidebar from "./components/ThreadSidebar.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
 import ChatMarkdown,{ StreamingMarkdown } from "./components/LazyChatMarkdown.jsx";
 import RightPanel, { askChoice, askConfirm, askText } from "./components/RightPanel.jsx";
-import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx";
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
@@ -102,6 +101,8 @@ const UsagePage=lazy(()=>import("./components/UsagePage.jsx"));
 const LicensesPage=lazy(()=>import("./components/LicensesPage.jsx"));
 const ContextInspector=lazy(()=>import("./components/ContextInspector.jsx"));
 const RuntimeTrace=lazy(()=>import("./components/RuntimeTrace.jsx"));
+// Shown only on the right panel's Runtime tab, so it loads when that tab first shows instead of with the app (B11).
+const AgentBackgroundTerminals=lazy(()=>import("./components/AgentBackgroundTerminals.jsx"));
 const QuestionModal=lazy(()=>import("./components/QuestionModal.jsx"));
 const McpElicitationModal=lazy(()=>import("./components/McpElicitationModal.jsx"));
 const SnoozeDialog=lazy(()=>import("./components/SnoozeDialog.jsx"));
@@ -5128,7 +5129,7 @@ export default function App(){
           ].map(([label,value])=><div key={label} className={value==="runtime"?"available runtime":value?"available":"unavailable"}>{value?<Check size={13} aria-hidden="true"/>:<Minus size={13} aria-hidden="true"/>}<span>{label}</span><strong>{capabilityStatus(value)}</strong></div>)}
         </div>
       </section>
-      {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/>}
+      {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<Suspense fallback={null}><AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/></Suspense>}
       <RuntimeTrace threadId={activeThread?.id||null}/>
       <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
     </div>;
