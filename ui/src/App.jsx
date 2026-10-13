@@ -46,6 +46,7 @@ import { startupRuntimeOutcome } from "./startup-runtime.js";
 import { collaborationModePayload, normalizeCollaborationModes } from "./collaboration-mode.js";
 import { ensureRuntimeProject, sameWorkspacePath } from "./codex-projects.js";
 import { writeClipboardText } from "./clipboard.js";
+import { requestPreview } from "./preview-open.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
 import { EMPTY_ASSISTANT_STREAM, assistantStreamDelta } from "./assistant-stream-sync.js";
 import { createLatestValueBuffer } from "./latest-value-buffer.js";
@@ -4951,10 +4952,7 @@ export default function App(){
     const result=await api("/api/project-script/run",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,scriptId:script.id}});
     setSection("chat");setPanel("terminal");
     setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0);
-    if(script.previewUrl&&script.autoOpenPreview){
-      openRightPanel("preview");
-      setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:script.previewUrl})),0);
-    }
+    if(script.previewUrl&&script.autoOpenPreview){openRightPanel("preview");requestPreview(script.previewUrl)}
     return result;
   }
   async function onProjectOpen(path,environmentId=null){
@@ -5514,7 +5512,7 @@ export default function App(){
             <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title={withKey("Command palette",sidebarShortcuts.commandPalette)}><Command size={15}/></button>
           </div>
         </header>})()}
-        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onOfferUndo={offerPageUndo} isProjectOpen={projectIsOpen} onProjectUpdated={projectsPageUpdated} onProjectRemoved={projectsPageRemoved} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
+        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onOfferUndo={offerPageUndo} isProjectOpen={projectIsOpen} onProjectUpdated={projectsPageUpdated} onProjectRemoved={projectsPageRemoved} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");requestPreview(previewUrl)}}/></DeferredSurface></div>}
         {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} skillsLoad={skillsLoad} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} onSkillsReload={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage onOfferUndo={offerPageUndo}/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}

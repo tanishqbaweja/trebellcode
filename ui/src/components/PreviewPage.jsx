@@ -1,6 +1,7 @@
 import React,{useEffect,useRef,useState} from "react";
 import { ExternalLink, Globe2, RefreshCw, Camera, MousePointer2, Eye, X, Radar, ArrowLeft, ArrowRight, MonitorSmartphone, Circle, Square, RotateCw, History, Unplug } from "lucide-react";
 import { api } from "../api.js";
+import { takeRequestedPreview } from "../preview-open.js";
 
 const VIEWPORTS=[
   {id:"desktop",label:"Desktop",width:1440,height:900},
@@ -78,14 +79,16 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     const tick=()=>setRecordingSeconds(Math.max(0,Math.floor((Date.now()-recordingSince)/1000)));tick();const timer=setInterval(tick,500);return()=>clearInterval(timer);
   },[recording,recordingSince]);
   useEffect(()=>()=>{try{if(recorderRef.current?.state!=="inactive")recorderRef.current.stop()}catch{};for(const track of streamRef.current?.getTracks?.()||[])track.stop()},[]);
+  // An address asked for before the panel was drawn (an action's Open preview opens the panel and asks at once) is shown as it opens.
   useEffect(()=>{
-    const open=event=>{
-      const next=String(event.detail||"").trim();
+    const open=next=>{
       if(!next)return;
       setDraft(next);show(next);setKey(k=>k+1);
     };
-    window.addEventListener("trebell:preview-open",open);
-    return()=>window.removeEventListener("trebell:preview-open",open);
+    const requested=event=>open(takeRequestedPreview()||String(event.detail||"").trim());
+    open(takeRequestedPreview());
+    window.addEventListener("trebell:preview-open",requested);
+    return()=>window.removeEventListener("trebell:preview-open",requested);
   },[]);
   useEffect(()=>{
     const command=event=>{

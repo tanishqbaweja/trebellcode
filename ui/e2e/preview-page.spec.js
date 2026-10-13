@@ -111,3 +111,44 @@ test("an address where nothing answers says so instead of showing a blank frame,
     await expect(notice).toHaveCount(0);
   }finally{await site.close()}
 });
+
+// An action's preview address opens the Browser on its page the first time the panel is drawn, whose part only loads then: from Open
+// preview on the action's card, and from the header button of an action set to open its preview when it runs. The page also tells
+// a frame that loaded the address from the default one, which shows nothing.
+async function openWithPreviewAction(page,request,site,{autoOpenPreview}){
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{},panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const script={id:"dev-server",name:"Dev server",command:"npm run dev",previewUrl:site.url+"/dev",autoOpenPreview,runOnWorktreeCreate:false,waitForSetup:false};
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Preview Workspace",activate:true,scripts:[script],preferredScriptId:script.id}});
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  return boot;
+}
+async function expectActionPreview(page,site){
+  const panel=page.getByTestId("right-panel");
+  await expect(panel.getByRole("textbox",{name:"Page address"})).toHaveValue(site.url+"/dev");
+  await expect(page.frameLocator('iframe[title="Trebell preview"]').locator("h1")).toHaveText("Page /dev");
+  await expect(panel.getByText("No preview open",{exact:true})).toHaveCount(0);
+}
+
+test("Open preview on an action's card opens the Browser on the action's address the first time",async({page,request})=>{
+  const site=await startSite();let boot=null;
+  try{
+    boot=await openWithPreviewAction(page,request,site,{autoOpenPreview:false});
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"Projects",exact:true}).click();
+    await page.locator(".project-action-row").filter({hasText:"Dev server"}).getByTitle("Open preview").click();
+    await expectActionPreview(page,site);
+    await page.screenshot({animations:"disabled",path:auditDir+"preview-action-card-first-open-dark.png"});
+  }finally{if(boot)await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}});await site.close()}
+});
+
+test("an action set to open its preview when it runs opens the Browser on the action's address the first time, from the header",async({page,request})=>{
+  const site=await startSite();let boot=null;
+  try{
+    boot=await openWithPreviewAction(page,request,site,{autoOpenPreview:true});
+    await page.locator(".workspace-header").getByRole("button",{name:"Dev server",exact:true}).click();
+    await expectActionPreview(page,site);
+    await page.screenshot({animations:"disabled",path:auditDir+"preview-action-header-first-open-dark.png"});
+  }finally{if(boot)await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}});await site.close()}
+});
