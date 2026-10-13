@@ -323,3 +323,25 @@ for(const kind of ["native","local"]){
     }finally{finish.open();if(fixture)await fixture.close();if(codex)await codex.close()}
   });
 }
+
+// New task asked for while the new task is what the person left (Settings, another page) or is on keeps its unsent draft.
+test("New task keeps an unsent new-task draft, coming back from Settings and pressed again on the new task",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  await keepSettings(page);
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Older work",preview:"Older"}]});
+  try{
+    await expect(threadRow(page,"Older work")).toBeVisible();
+    await newTask(page).click();await expect(page.locator(".workspace-header")).toContainText("New Trebell task");
+    await typeInComposer(page,"A new task I have not sent yet");
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await expect(composer(page)).toHaveCount(0);
+    await newTask(page).click();
+    await expect(composer(page)).toHaveValue("A new task I have not sent yet");
+    await shoot(page,"new-task-draft-after-settings");
+    await newTask(page).click();
+    await expect(composer(page)).toHaveValue("A new task I have not sent yet");
+    await page.keyboard.press("Control+n");
+    await expect(composer(page)).toHaveValue("A new task I have not sent yet");
+  }finally{await fixture.close()}
+});
