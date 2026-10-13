@@ -5,7 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, gitInfo, commitAll, createBranch, createWorktree, removeWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
 
-test("a commit git refuses fails with git's reason, and a commit with nothing to commit says so",{timeout:20000},async()=>{
+// Each test runs up to two dozen git commands, which take seconds each on a host that benchmarks load: the 20 s and 30 s bounds these
+// tests had ran out there (on one CPU at idle priority every one did), though alone they pass in 3 to 25 s. The bound is a generous
+// one for a stuck test, and git's own 120 s per command (git-service run) still ends a hung command. A folder git has just used can
+// be held a moment longer on Windows, so the removal retries for longer too.
+const UNDER_LOAD={timeout:300_000};
+const RETRY={recursive:true,force:true,maxRetries:30,retryDelay:100};
+
+test("a commit git refuses fails with git's reason, and a commit with nothing to commit says so",UNDER_LOAD,async()=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-commit-"));
   try{
     await git(dir,["init"]);await git(dir,["config","user.email","trebell@example.test"]);await git(dir,["config","user.name","Trebell Test"]);
@@ -21,12 +28,12 @@ test("a commit git refuses fails with git's reason, and a commit with nothing to
     const committed=await commitAll(dir,"Accepted");
     assert.equal(committed.status.length,0);assert.equal((await git(dir,["log","-1","--format=%s"])).stdout.trim(),"Accepted");
     await assert.rejects(()=>commitAll(dir,"Nothing here"),{message:"Nothing to commit: the working tree has no changes."});
-  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:50})}
+  }finally{await rm(dir,RETRY)}
 });
 
 // The Git panel's Commit in a merge stopped on a conflict that the person resolved by keeping this branch's side: the index then
 // matches HEAD, and the commit still concludes the merge, as git commit does.
-test("a commit concludes a merge whose conflicts were resolved by keeping this branch's side",{timeout:20000},async()=>{
+test("a commit concludes a merge whose conflicts were resolved by keeping this branch's side",UNDER_LOAD,async()=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-merge-commit-"));
   try{
     await git(dir,["init","--initial-branch=main"]);await git(dir,["config","user.email","trebell@example.test"]);await git(dir,["config","user.name","Trebell Test"]);
@@ -44,10 +51,10 @@ test("a commit concludes a merge whose conflicts were resolved by keeping this b
     assert.equal((await git(dir,["rev-parse","-q","--verify","MERGE_HEAD"],{allowFailure:true})).ok,false,"the merge is concluded");
     // With the merge concluded, nothing is left to commit, and Commit says so again.
     await assert.rejects(()=>commitAll(dir,"Nothing here"),{message:"Nothing to commit: the working tree has no changes."});
-  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:50})}
+  }finally{await rm(dir,RETRY)}
 });
 
-test("Git service reports status and branch operations",{timeout:20000},async()=>{
+test("Git service reports status and branch operations",UNDER_LOAD,async()=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-git-"));
   try{
     await git(dir,["init"]);
@@ -62,7 +69,7 @@ test("Git service reports status and branch operations",{timeout:20000},async()=
     await createBranch(dir,"feature-test");
     info=await gitInfo(dir);
     assert.equal(info.branch,"feature-test");
-  }finally{await rm(dir,{recursive:true,force:true});}
+  }finally{await rm(dir,RETRY);}
 });
 
 test("worktree submodule policy maps to exact Git commands",()=>{
@@ -72,7 +79,7 @@ test("worktree submodule policy maps to exact Git commands",()=>{
   assert.deepEqual(worktreeSubmoduleArgs("unexpected"),["submodule","update","--init","--recursive"]);
 });
 
-test("worktree creation records the selected submodule policy",{timeout:20000},async()=>{
+test("worktree creation records the selected submodule policy",UNDER_LOAD,async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-worktree-root-"));
   const worktree=root+"-child";
   try{
@@ -80,10 +87,10 @@ test("worktree creation records the selected submodule policy",{timeout:20000},a
     await writeFile(join(root,"file.txt"),"base");await git(root,["add","file.txt"]);await git(root,["commit","-m","base"]);
     const created=await createWorktree(root,{branch:"trebell-test-worktree",path:worktree,submodules:"none"});
     assert.equal(created.worktree,worktree);assert.equal(created.submodules,"none");assert.equal((await gitInfo(worktree)).branch,"trebell-test-worktree");
-  }finally{await rm(worktree,{recursive:true,force:true}).catch(()=>{});await rm(root,{recursive:true,force:true})}
+  }finally{await rm(worktree,RETRY).catch(()=>{});await rm(root,RETRY)}
 });
 
-test("non-forced worktree removal preserves dirty delegated work for inspection",{timeout:20000},async()=>{
+test("non-forced worktree removal preserves dirty delegated work for inspection",UNDER_LOAD,async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-dirty-worktree-root-")),worktree=root+"-child";
   try{
     await git(root,["init"]);await git(root,["config","user.email","trebell@example.test"]);await git(root,["config","user.name","Trebell Test"]);
@@ -93,10 +100,10 @@ test("non-forced worktree removal preserves dirty delegated work for inspection"
     await assert.rejects(()=>removeWorktree(root,worktree),/modified|changes|force/i);
     assert.equal(await readFile(join(worktree,"file.txt"),"utf8"),"setup changed this before failing\n");
     await removeWorktree(root,worktree,{force:true});
-  }finally{await rm(worktree,{recursive:true,force:true}).catch(()=>{});await rm(root,{recursive:true,force:true})}
+  }finally{await rm(worktree,RETRY).catch(()=>{});await rm(root,RETRY)}
 });
 
-test("safe auto-pull updates only a clean default branch with no local commits",{timeout:30000},async()=>{
+test("safe auto-pull updates only a clean default branch with no local commits",UNDER_LOAD,async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-autopull-"));const origin=join(root,"origin.git"),seed=join(root,"seed"),checkout=join(root,"checkout");
   try{
     await mkdir(seed,{recursive:true});
@@ -110,5 +117,5 @@ test("safe auto-pull updates only a clean default branch with no local commits",
     const feature=await safeAutoPull(checkout);assert.equal(feature.ok,false);assert.equal(feature.reason,"not_default_branch");
     await git(checkout,["switch","main"]);await writeFile(join(checkout,"local.txt"),"local\n");await git(checkout,["add","local.txt"]);await git(checkout,["commit","-m","local"]);
     const ahead=await safeAutoPull(checkout);assert.equal(ahead.ok,false);assert.equal(ahead.reason,"local_commits");assert.equal(ahead.ahead,1);
-  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:50})}
+  }finally{await rm(root,RETRY)}
 });

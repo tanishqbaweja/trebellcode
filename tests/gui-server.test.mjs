@@ -16,6 +16,15 @@ import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+// Waits for a condition that a host benchmarks load can take seconds to reach (a Codex app-server process starting and recording its
+// start), checking it every 50 ms, for a generous bound that still ends a wait for one that never comes.
+const UNDER_LOAD_MS=60_000;
+async function until(condition,what,timeoutMs=UNDER_LOAD_MS){
+  for(const deadline=Date.now()+timeoutMs;!await condition();){
+    if(Date.now()>deadline)throw new Error("Timed out waiting until "+what);
+    await new Promise(resolve=>setTimeout(resolve,50));
+  }
+}
 
 test("request cancellation follows client disconnects but ignores a completed response",()=>{
   const request=new EventEmitter(),response=new EventEmitter();response.writableEnded=false;
@@ -373,14 +382,18 @@ test("an environment its runtime cannot run in is not made active, and the one t
   try{
     gui=await createGuiServer({port,appPort,mock:false,env});
     const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    // The local Codex app-server starts at boot without the server waiting for it, which takes seconds on a loaded host: the switch
+    // is made once it runs, as a person makes it, rather than stopping it before it has started.
+    await until(async()=>await localStarts()>=1,"the local Codex app-server has started at boot");
     assert.equal((await post("/api/environments",{id:"dead-host",type:"ssh",name:"Dead host",host:"127.0.0.1",port:deadPort})).status,200);
     const activated=await post("/api/environment/activate",{id:"dead-host"}),answer=await activated.json();
     assert.equal(activated.status,503,"a failed switch answers with an error status");
     assert.ok(answer.error,"and says why");
     const environments=await fetch(gui.url+"/api/environments").then(r=>r.json());
     assert.equal(environments.activeEnvironmentId,null);assert.equal(environments.activeEnvironment,null);
+    await until(async()=>await localStarts()>=2,"the local Codex app-server has started again");
     assert.equal(await localStarts(),2,"the local Codex app-server started at boot and again after the failed switch");
-    assert.equal((await fetch(gui.url+"/api/bootstrap").then(r=>r.json())).appServerReady,true);
+    await until(async()=>(await fetch(gui.url+"/api/bootstrap").then(r=>r.json())).appServerReady===true,"the local Codex app-server is ready again");
     await gui.close();gui=null;
     assert.equal(new TrebellStateStore(env).settings().activeEnvironmentId??null,null,"the next start uses Local machine too");
   }finally{
@@ -546,7 +559,7 @@ test("the catalog Codex app-server takes a free port, so a program on the old fi
     const [boot]=await starts();assert.notEqual(boot.port,23456);
     // The app-server exits: the app's socket closes, and the app connects again, as it does after a close, which starts it again.
     const closed=new Promise(resolve=>first.ws.once("close",resolve));process.kill(boot.pid);await closed;
-    for(const deadline=Date.now()+10_000;Date.now()<deadline;){
+    for(const deadline=Date.now()+UNDER_LOAD_MS;Date.now()<deadline;){
       second=await codexInitialize(gui);if(second.answer.result)break;
       second.ws.terminate();await new Promise(resolve=>setTimeout(resolve,250));
     }
@@ -619,7 +632,7 @@ test("a restart on the configured Codex app-server port waits for the stopped ap
   try{
     gui=await createGuiServer({port:await freePort(),appPort,mock:false,env});
     const ready=async()=>(await fetch(gui.url+"/api/bootstrap").then(response=>response.json())).appServerReady;
-    for(const deadline=Date.now()+15_000;!await ready()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,100));
+    for(const deadline=Date.now()+UNDER_LOAD_MS;!await ready()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,100));
     assert.equal(standIn.listening,true,"the first app-server is up on the configured port");
     const activated=await fetch(gui.url+"/api/environment/activate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:null})});
     assert.equal(activated.status,200);
@@ -649,9 +662,9 @@ test("a catalog Codex app-server that died by a signal is started again by the n
     first=await codexInitialize(gui);assert.match(String(first.answer.result?.userAgent),/^fake-codex\//);
     const [boot]=await starts(),launcher=launches.find(entry=>(entry.args[1]||[]).includes("app-server"))?.child;assert.ok(launcher,"the app-server launch was seen");
     launcher.kill("SIGKILL");
-    assert.ok(await waitFor(()=>launcher.signalCode!==null,5000));assert.equal(launcher.exitCode,null);
+    assert.ok(await waitFor(()=>launcher.signalCode!==null,UNDER_LOAD_MS));assert.equal(launcher.exitCode,null);
     const closed=new Promise(resolve=>first.ws.once("close",resolve));try{process.kill(boot.pid)}catch{}await closed;
-    for(const deadline=Date.now()+10_000;Date.now()<deadline;){
+    for(const deadline=Date.now()+UNDER_LOAD_MS;Date.now()<deadline;){
       second=await codexInitialize(gui);if(second.answer.result)break;
       second.ws.terminate();await new Promise(resolve=>setTimeout(resolve,250));
     }
@@ -671,7 +684,7 @@ async function codexSocket(gui){
   const ws=new WebSocket(gui.url.replace(/^http/,"ws")+"/api/codex/ws"),seen=[];let closed=null,nextId=1;
   ws.on("message",raw=>seen.push(JSON.parse(String(raw))));ws.on("close",code=>{closed={code}});
   await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
-  const ask=async(method,params,timeoutMs=20_000)=>{
+  const ask=async(method,params,timeoutMs=UNDER_LOAD_MS)=>{
     const id=nextId++;ws.send(JSON.stringify({id,method,params}));
     for(const deadline=Date.now()+timeoutMs;Date.now()<deadline;await new Promise(resolve=>setTimeout(resolve,25))){const answer=seen.find(message=>message.id===id&&!message.method);if(answer)return answer;if(closed)throw new Error("socket closed before the answer to "+method)}
     throw new Error(method+" not answered");
@@ -694,7 +707,7 @@ test("a thread's own Codex app-server that dies closes the app's socket at once,
     assert.ok(!(await first.ask("turn/start",{threadId:"thread-died",input:[{type:"text",text:"one"}]})).error);
     const [,threadServer]=await starts();assert.ok(threadServer,"the thread runs on an app-server of its own");
     process.kill(threadServer.pid);
-    assert.ok(await waitFor(()=>first.closed(),3000),"the app's socket closes when the thread's app-server dies");
+    assert.ok(await waitFor(()=>first.closed(),UNDER_LOAD_MS),"the app's socket closes when the thread's app-server dies");
     assert.equal(first.closed().code,1011);
     second=await codexSocket(gui);await second.connect();
     assert.ok(!(await second.ask("thread/resume",{threadId:"thread-died"})).error);
@@ -704,7 +717,7 @@ test("a thread's own Codex app-server that dies closes the app's socket at once,
     // Leaving the thread releases its app-server: that one is stopped on purpose, and the app's socket stays open.
     assert.ok(!(await second.ask("thread/unsubscribe",{threadId:"thread-died"})).error);
     const [,,restarted]=await starts();
-    assert.ok(await waitFor(()=>{try{process.kill(restarted.pid,0);return false}catch{return true}},10_000),"the released app-server is stopped");
+    assert.ok(await waitFor(()=>{try{process.kill(restarted.pid,0);return false}catch{return true}},UNDER_LOAD_MS),"the released app-server is stopped");
     await new Promise(resolve=>setTimeout(resolve,500));
     assert.equal(second.closed(),null,"a released thread app-server does not close the app's socket");
   }finally{
@@ -737,7 +750,7 @@ test("a thread's own Codex app-server that dies and cannot start again is launch
     assert.ok(!(await first.ask("turn/start",{threadId:"thread-broken",input:[{type:"text",text:"one"}]})).error);
     const [,threadServer]=await starts();assert.ok(threadServer,"the thread runs on an app-server of its own");
     await writeFile(join(home,"broken"),"1");process.kill(threadServer.pid);
-    assert.ok(await waitFor(()=>first.closed(),3000),"the app's socket closes when the thread's app-server dies");
+    assert.ok(await waitFor(()=>first.closed(),UNDER_LOAD_MS),"the app's socket closes when the thread's app-server dies");
     assert.equal(first.closed().code,1011);
     const before=(await starts()).length,answers=[];
     // The app's reconnects (0.5 s, 1 s and 2 s apart): each connects and reopens the thread shown.

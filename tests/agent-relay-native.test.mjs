@@ -20,6 +20,11 @@ async function listen(server){
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));return server.address().port;
 }
 
+// How long a test waits for a relay notification it expects when it names no bound of its own. A turn that runs git (Git status) or
+// indexes the project takes seconds on a host that benchmarks load, where the old 5 s ran out though the turn went on to finish (on one
+// CPU at idle priority the Git status turn did); a generous bound still ends a turn that never finishes.
+const NOTIFICATION_BOUND_MS=60_000;
+
 function client(ws){
   let id=0;const pending=new Map(),notifications=[],waiters=[];
   ws.on("message",raw=>{
@@ -31,7 +36,7 @@ function client(ws){
   });
   return {
     request(method,params={}){return new Promise((resolve,reject)=>{const requestId=++id;pending.set(requestId,{resolve,reject});ws.send(JSON.stringify({id:requestId,method,params}))})},
-    waitFor(predicate,timeoutMs=5000){const found=notifications.find(predicate);if(found)return Promise.resolve(found);return new Promise((resolve,reject)=>{const waiter={predicate,resolve,reject,timer:setTimeout(()=>{const index=waiters.indexOf(waiter);if(index>=0)waiters.splice(index,1);reject(new Error("Timed out waiting for relay notification"))},timeoutMs)};waiters.push(waiter)})},
+    waitFor(predicate,timeoutMs=NOTIFICATION_BOUND_MS){const found=notifications.find(predicate);if(found)return Promise.resolve(found);return new Promise((resolve,reject)=>{const waiter={predicate,resolve,reject,timer:setTimeout(()=>{const index=waiters.indexOf(waiter);if(index>=0)waiters.splice(index,1);reject(new Error("Timed out waiting for relay notification"))},timeoutMs)};waiters.push(waiter)})},
   };
 }
 
