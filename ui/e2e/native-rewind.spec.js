@@ -19,8 +19,10 @@ async function freePort(){
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
 
-test("Trebell Native can rewind conversation and files in a managed worktree",async({page})=>{
-  test.setTimeout(40_000);
+// A Native thread with one finished turn in a managed worktree, that turn's file checkpoint, and the page open on the thread.
+// restoreError fails the checkpoint restore with that message, and hold, when given, keeps a new turn running until it resolves.
+// nativeDialogs notes every browser dialog (and dismisses it): the app asks in its own.
+async function rewindFixture(page,{restoreError=null,hold=null}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-rewind-")),home=join(root,"home"),repo=join(root,"managed-worktree");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
   state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
@@ -32,28 +34,64 @@ test("Trebell Native can rewind conversation and files in a managed worktree",as
   const turn=threadStore.addTurn(thread.id,{inputText:"Rewind this Native work"});threadStore.addItem(thread.id,turn.id,{id:"native-rewind-answer",type:"agentMessage",text:"Native work changed files."});threadStore.finishTurn(thread.id,turn.id);
   const checkpoint={id:"native-checkpoint-1",threadId:thread.id,turnId:turn.id,label:"before Native work"};
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
-  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn:async request=>({id:"unused-native-rewind",provider:request.provider,model:request.model,text:"",toolCalls:[],finishReason:"stop",usage:{}}),version:"visual-fixture"});
+  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn:async request=>(hold&&await hold,{id:"unused-native-rewind",provider:request.provider,model:request.model,text:"",toolCalls:[],finishReason:"stop",usage:{}}),version:"visual-fixture"});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const project={id:"native-managed-project",name:"Native Managed Worktree",path:repo,environmentId:null,effectiveSettings:{},managedWorktree:{root,branch:"trebell/native-rewind",baseBranch:"main",submodules:"none",createdAt:Date.now(),cleanedAt:null}};
-  let uiMeta={projectless:false,environmentId:null,cwd:repo,runtime:"native",runtimeInstanceId:"native-default"},restoreBody=null;
+  let uiMeta={projectless:false,environmentId:null,cwd:repo,runtime:"native",runtimeInstanceId:"native-default"};
+  const fixture={thread,threadStore,checkpoint,restoreBody:null,nativeDialogs:[],async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true})}};
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:{[thread.id]:uiMeta}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["gpt-5.6"],metadata:{provider:"agentrouter",models:[{id:"gpt-5.6",name:"GPT-5.6",provider:"agentrouter",agent:"Trebell Native"}]}})}));
+  await page.route(/\/api\/projects(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().method()==="POST"?{project}:{projects:[project]})}));
+  await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+  await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,branch:"trebell/native-rewind",root})}));
+  await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();uiMeta={...uiMeta,...(body?.patch||{})}}await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(uiMeta)})});
+  await page.route(/\/api\/checkpoints\/restore$/,async route=>{fixture.restoreBody=route.request().postDataJSON();await route.fulfill(restoreError?{status:500,contentType:"application/json",body:JSON.stringify({error:restoreError})}:{status:200,contentType:"application/json",body:JSON.stringify({restored:true})})});
+  await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[checkpoint]})}));
+  await page.route(/\/api\/context\/packet$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"rewind-context",skipped:true,budget:{reserveTokens:1024}})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  // The light and dark toggle's saved setting stays in the page, so the shared e2e server keeps its own.
+  const saved={};await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(saved)})});
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  page.on("dialog",dialog=>{fixture.nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
+  await page.goto("/");
+  const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native managed rewind"]')});await expect(row).toBeVisible({timeout:10_000});await row.locator(".thread-main").click();
+  await expect(page.getByText("Rewind this Native work",{exact:true})).toBeVisible({timeout:10_000});await expect(page.getByRole("button",{name:"Edit from here",exact:true})).toBeVisible();
+  return fixture;
+}
+// The header's light and dark toggle, or its row in More actions where the header folded it away.
+async function toggleMode(page){
+  const mode=await page.locator("html").getAttribute("data-mode"),direct=page.locator("[data-testid=appearance-toggle]:visible").first();
+  if(await direct.count())await direct.click();else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByRole("menuitem",{name:/Switch to (light|dark) mode/}).first().click()}
+  await expect(page.locator("html")).not.toHaveAttribute("data-mode",mode||"");
+}
+// Screenshots at 1280x800 and 900 wide in the mode shown; with both, each mode in turn, switched with the header toggle. before(),
+// when given, runs in each mode before its shots (a toggle is an action, so it clears a failure that is shown).
+async function shoot(page,name,{both=true,before=null}={}){
+  for(let pass=0;pass<(both?2:1);pass++){
+    if(pass)await toggleMode(page);
+    if(before)await before();
+    const mode=await page.locator("html").getAttribute("data-mode");
+    for(const [width,height] of [[1280,800],[900,800]]){
+      await page.setViewportSize({width,height});await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      await page.screenshot({animations:"disabled",path:`${auditDir}${name}-${mode}-${width}x${height}.png`});
+    }
+  }
+  if(both)await toggleMode(page);
+  await page.setViewportSize({width:1280,height:800});
+}
+// Edit from here on the first user message, answered in the app's own question with `choice`.
+async function editFromHere(page,choice="Conversation and files"){
+  await page.getByRole("button",{name:"Edit from here",exact:true}).first().click();
+  const question=page.locator("dialog.inspector-text-prompt");await expect(question).toBeVisible();
+  await question.getByRole("button",{name:choice,exact:true}).click();await expect(question).toHaveCount(0);
+}
+
+test("Trebell Native can rewind conversation and files in a managed worktree",async({page})=>{
+  test.setTimeout(40_000);
+  const fixture=await rewindFixture(page);
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
-    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:{[thread.id]:uiMeta}})}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["gpt-5.6"],metadata:{provider:"agentrouter",models:[{id:"gpt-5.6",name:"GPT-5.6",provider:"agentrouter",agent:"Trebell Native"}]}})}));
-    await page.route(/\/api\/projects(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().method()==="POST"?{project}:{projects:[project]})}));
-    await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
-    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,branch:"trebell/native-rewind",root})}));
-    await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();uiMeta={...uiMeta,...(body?.patch||{})}}await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(uiMeta)})});
-    await page.route(/\/api\/checkpoints\/restore$/,async route=>{restoreBody=route.request().postDataJSON();await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({restored:true})})});
-    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[checkpoint]})}));
-    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
-    // The theme button's setting stays in the page; every browser dialog is noted (and dismissed), as the app asks in its own.
-    await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().postDataJSON()||{})}):route.fallback());
-    const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
-    await page.goto("/");
-    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native managed rewind"]')});await expect(row).toBeVisible({timeout:10_000});await row.locator(".thread-main").click();
-    await expect(page.getByText("Rewind this Native work",{exact:true})).toBeVisible({timeout:10_000});const edit=page.getByRole("button",{name:"Edit from here",exact:true});await expect(edit).toBeVisible();
+    const edit=page.getByRole("button",{name:"Edit from here",exact:true});
     await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".workspace-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({animations:"disabled",path:auditDir+"native-managed-rewind-before-1280x800.png",fullPage:true});
     // Edit from here asks whether the files go back too, in the app's own dialog: Escape (Cancel is focused) rewinds nothing.
@@ -66,17 +104,72 @@ test("Trebell Native can rewind conversation and files in a managed worktree",as
       await page.setViewportSize({width:1280,height:800});
       await page.keyboard.press("Escape");await expect(question).toHaveCount(0);await expect(edit).toBeFocused();
     }
-    expect(restoreBody).toBeNull();expect(threadStore.get(thread.id).turns).toHaveLength(1);await expect(page.locator(".user-row")).toHaveCount(1);
+    expect(fixture.restoreBody).toBeNull();expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);await expect(page.locator(".user-row")).toHaveCount(1);
     // From the keyboard: Enter on Edit from here, Tab past Conversation only to Conversation and files, Enter.
     await page.keyboard.press("Enter");await expect(cancel).toBeFocused();
     await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Conversation only",exact:true})).toBeFocused();
     await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Conversation and files",exact:true})).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("composer")).toHaveValue("Rewind this Native work");await expect(page.locator(".user-row")).toHaveCount(0);
-    expect(restoreBody).toEqual({id:checkpoint.id,threadId:thread.id});expect(threadStore.get(thread.id).turns).toHaveLength(0);
-    expect(nativeDialogs).toEqual([]);
+    expect(fixture.restoreBody).toEqual({id:fixture.checkpoint.id,threadId:fixture.thread.id});expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(0);
+    expect(fixture.nativeDialogs).toEqual([]);
     await page.screenshot({animations:"disabled",path:auditDir+"native-managed-rewind-after-1280x800.png",fullPage:true});
-  }finally{
-    await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true});
-  }
+  }finally{await fixture.close()}
+});
+
+// Files and conversation stay in step: a file restore that fails rewinds nothing, and says so beside the conversation it left as it
+// was. A draft already in the composer is kept.
+test("a file restore that fails leaves the conversation as it was and says so, and the draft stays",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const fixture=await rewindFixture(page,{restoreError:"Deliberate checkpoint restore failure"});
+  try{
+    const composer=page.getByTestId("composer");
+    await composer.click();await page.keyboard.type("A draft I am still writing",{delay:8});
+    await editFromHere(page);
+    await expect(page.getByTestId("app-action-error")).toContainText("Could not restore the files, so the conversation was not changed: Deliberate checkpoint restore failure");
+    expect(fixture.restoreBody).toEqual({id:fixture.checkpoint.id,threadId:fixture.thread.id});
+    expect(fixture.nativeDialogs).toEqual([]);
+    await expect(page.locator(".user-row")).toHaveCount(1);await expect(page.getByText("Native work changed files.",{exact:true})).toBeVisible();
+    expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
+    await expect(composer).toHaveValue("A draft I am still writing");
+    // Each mode's shots show the failure again: the toggle, an action itself, clears the one shown.
+    const failure=page.getByTestId("app-action-error");
+    await shoot(page,"native-rewind-restore-failed",{before:async()=>{if(!await failure.isVisible()){await editFromHere(page)}await expect(failure).toContainText("so the conversation was not changed")}});
+    await expect(page.locator(".user-row")).toHaveCount(1);expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
+  }finally{await fixture.close()}
+});
+
+test("Edit from here keeps a draft already in the composer, below the message it brings back",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const fixture=await rewindFixture(page);
+  try{
+    const composer=page.getByTestId("composer");
+    await composer.click();await page.keyboard.type("A draft I am still writing",{delay:8});
+    await editFromHere(page);
+    await expect(page.locator(".user-row")).toHaveCount(0);expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(0);
+    await expect(composer).toHaveValue("Rewind this Native work\n\nA draft I am still writing");
+    await shoot(page,"native-rewind-keeps-draft");
+  }finally{await fixture.close()}
+});
+
+// While a turn runs the harness refuses a rewind, so Edit from here restores no files either: it says so and changes nothing.
+test("Edit from here while a turn runs restores no files and changes nothing",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  let release=()=>{};const hold=new Promise(resolve=>{release=resolve});
+  const fixture=await rewindFixture(page,{hold});
+  try{
+    await page.getByTestId("composer").click();await page.keyboard.type("Keep working on the files",{delay:8});await page.keyboard.press("Enter");
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible({timeout:10_000});
+    await expect.poll(()=>fixture.threadStore.get(fixture.thread.id).turns.length).toBe(2);
+    await page.getByRole("button",{name:"Edit from here",exact:true}).first().click();
+    await expect(page.getByTestId("app-action-error")).toBeVisible();
+    await expect(page.locator("dialog.inspector-text-prompt")).toHaveCount(0);
+    expect({dialogs:fixture.nativeDialogs,restore:fixture.restoreBody,turns:fixture.threadStore.get(fixture.thread.id).turns.length}).toEqual({dialogs:[],restore:null,turns:2});
+    await expect(page.getByTestId("app-action-error")).toContainText("Could not edit from this message: Stop the running turn first.");
+    await expect(page.locator(".user-row")).toHaveCount(2);
+    await shoot(page,"native-rewind-while-running",{before:async()=>{const failure=page.getByTestId("app-action-error");if(!await failure.isVisible())await page.getByRole("button",{name:"Edit from here",exact:true}).first().click();await expect(failure).toContainText("Stop the running turn first.")}});
+  }finally{release();await fixture.close()}
 });

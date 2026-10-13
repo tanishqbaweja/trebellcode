@@ -4527,18 +4527,22 @@ export default function App(){
       message.checkpointId&&currentProject?.managedWorktree&&!currentProject.managedWorktree.cleanedAt
       &&normalizePath(currentProject.path)===normalizePath(activeThread.cwd||projectPath)
     );
+    // Files and conversation go back together or not at all: nothing is restored while a turn runs (the harness refuses that rewind),
+    // and files that could not go back leave the conversation as it is.
+    if(running){showActionError(new Error("Stop the running turn first."),"Could not edit from this message");return}
     // In a worktree of its own the files can go back with the conversation. Cancel rewinds nothing, and files that cannot be put back
     // leave the conversation as it is too, rather than rewinding half of what was asked.
     const restoreFiles=isolatedWorktree?await askChoice("Also restore workspace files to the checkpoint before this turn?\n\nEither way the conversation goes back to before this message.",{choices:[{value:false,label:"Conversation only"},{value:true,label:"Conversation and files",tone:"danger"}]}):false;
     if(restoreFiles==null)return;
     if(restoreFiles){
       try{await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId:activeThread.id}})}
-      catch(error){showActionError(error,"Could not restore the workspace files");return}
+      catch(error){showActionError(error,"Could not restore the files, so the conversation was not changed");return}
     }
     // A rewind the harness refuses (a running turn, a turn it has no checkpoint for) is shown, and the conversation stays as it is.
     try{await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId})}
     catch(error){showActionError(error,"Could not edit from this message");return}
-    setPrompt(message.text);await reloadActiveThread();
+    // A draft already in the composer stays, below the message brought back to edit.
+    setPrompt(current=>String(current||"").trim()&&current!==message.text?message.text+"\n\n"+current:message.text);await reloadActiveThread();
   }
   async function stashPrompt(){
     if(prompt.trim()||attachments.length){await api("/api/stashes",{method:"POST",body:{text:prompt,attachments,contextChips,projectPath}});setPrompt("");setAttachments([]);setContextChips([]);return}
