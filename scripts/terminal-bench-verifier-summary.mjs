@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 function nonnegativeInteger(value){
@@ -80,4 +80,16 @@ export async function readJobVerifierSummary(outputRoot,jobName){
 export async function readTrialVerifierSummary(trialDir){
   const summary=await readVerifierSummary(trialDir);
   return summary?{trials:1,...summary}:null;
+}
+
+export function isSweBenchDataset(dataset){
+  return /(?:^|\/)swe-?bench/i.test(String(dataset||""));
+}
+
+// A SWE-bench grader writes verifier/report.json whenever its log parser runs, even when every test fails. A trial with
+// a reward but no report never finished grading (for example, the parser's dependencies failed to download), so that
+// reward says nothing about the agent.
+export async function sweBenchVerifierReportMissing(trialDir){
+  if(!trialDir)return false;
+  try{await access(join(trialDir,"verifier","report.json"));return false}catch{return true}
 }

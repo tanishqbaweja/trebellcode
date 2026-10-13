@@ -12,6 +12,7 @@ import { windowsHarborEnv } from "../scripts/harbor-process-env.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
 import { benchmarkRunPrefix, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, terminalBenchTaskNoNetworkSectionsFromToml, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
+import { isSweBenchDataset, sweBenchVerifierReportMissing } from "../scripts/terminal-bench-verifier-summary.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -445,6 +446,27 @@ test("Terminal-Bench classifies agent authentication failures as infrastructure 
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
   assert.match(source,/isAgentAuthenticationFailure\(failedTrial\)/);
   assert.match(source,/isAgentAuthenticationFailure\(trial\)\?"agent_authentication_failure"/);
+});
+
+test("SWE-bench lanes with a reward but no verifier report are infrastructure, not quality zeros",async t=>{
+  assert.equal(isSweBenchDataset("swe-bench/swe-bench-verified@latest"),true);
+  assert.equal(isSweBenchDataset("terminal-bench/terminal-bench@4.0.0"),false);
+  assert.equal(isSweBenchDataset(""),false);
+  const trialDir=await mkdtemp(join(tmpdir(),"trebell-swe-ungraded-"));
+  t.after(()=>rm(trialDir,{recursive:true,force:true}));
+  await mkdir(join(trialDir,"verifier"),{recursive:true});
+  await writeFile(join(trialDir,"verifier","reward.txt"),"0\n");
+  assert.equal(await sweBenchVerifierReportMissing(trialDir),true);
+  await writeFile(join(trialDir,"verifier","report.json"),"{}\n");
+  assert.equal(await sweBenchVerifierReportMissing(trialDir),false);
+  assert.equal(await sweBenchVerifierReportMissing(null),false);
+  const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
+  // Checked only once every lane has finished, with the other sealed verifier reads.
+  const sealedReads=source.indexOf("Keep verifier internals sealed while comparison lanes are still running.");
+  const check=source.indexOf("job.infrastructureFailureReason=\"swe_bench_verifier_report_missing\"");
+  assert.ok(sealedReads>0&&check>sealedReads);
+  assert.match(source,/isSweBenchDataset\(DATASET\)&&job\.reward!=null&&!job\.infrastructureFailureReason&&await sweBenchVerifierReportMissing\(job\.regradeTrialDir\|\|await findNativeTrialDir\(outputRoot,job\.jobName\)\)/);
+  assert.match(source,/laneState\.infrastructureFailureReason=job\.infrastructureFailureReason;laneState\.status="infrastructure-failed"/);
 });
 
 test("Terminal-Bench Docker cleanup only removes exited environments from sealed verifier trials",async()=>{

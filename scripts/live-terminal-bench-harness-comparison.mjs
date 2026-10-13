@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { windowsHarborEnv } from "./harbor-process-env.mjs";
 import { waitForJobProcessDrain } from "./terminal-bench-process-drain.mjs";
 import { jobsForPairReport } from "./terminal-bench-pair-report.mjs";
-import { readJobVerifierSummary, readTrialVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
+import { isSweBenchDataset, readJobVerifierSummary, readTrialVerifierSummary, sweBenchVerifierReportMissing } from "./terminal-bench-verifier-summary.mjs";
 import { recoverNativeEventEvidence, selectNativeMetric } from "./terminal-bench-native-evidence.mjs";
 import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs";
 import { auditJobIntegrity, compactIntegrity } from "./benchmark-integrity-audit.mjs";
@@ -447,6 +447,12 @@ try{
   for(const job of jobs.filter(Boolean)){
     try{job.verifierChecks=job.regradeTrialDir?await readTrialVerifierSummary(job.regradeTrialDir):await readJobVerifierSummary(outputRoot,job.jobName)}
     catch(error){const verifierError=`verifier summary recovery failed: ${error?.message||String(error)}`;job.runError=[job.runError,verifierError].filter(Boolean).join("; ");job.verifierChecks=null}
+    // An ungraded SWE-bench lane is infrastructure, not a quality zero.
+    if(isSweBenchDataset(DATASET)&&job.reward!=null&&!job.infrastructureFailureReason&&await sweBenchVerifierReportMissing(job.regradeTrialDir||await findNativeTrialDir(outputRoot,job.jobName))){
+      job.infrastructureFailureReason="swe_bench_verifier_report_missing";
+      const laneState=laneStates.find(lane=>lane.jobName===job.jobName);
+      if(laneState){laneState.infrastructureFailureReason=job.infrastructureFailureReason;laneState.status="infrastructure-failed"}
+    }
     // Audit the lane's saved agent logs: hosted web use invalidates it; network, git history and verifier-path flags need review.
     try{job.integrity=compactIntegrity(await auditJobIntegrity(outputRoot,job.jobName))}
     catch(error){job.integrity={status:"audit-failed",error:error?.message||String(error)}}
