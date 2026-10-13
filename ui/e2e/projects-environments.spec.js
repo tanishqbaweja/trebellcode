@@ -300,7 +300,8 @@ test.describe("Removing a project",()=>{
     let release=()=>{};const held=new Promise(resolve=>{release=resolve});let sent=false,answered=false,readSince=false;
     await page.route(/\/api\/projects$/,async route=>{
       if(route.request().method()!=="POST"||route.request().postDataJSON()?.permissionMode!=="supervised")return route.fallback();
-      sent=true;const response=await route.fetch();await held;await route.fulfill({response});answered=true;
+      // Counted as sent once the server has applied it: a removal that reached the server first had the save put the project back.
+      const response=await route.fetch();sent=true;await held;await route.fulfill({response});answered=true;
     });
     // The page reads the list again once it has the save's answer.
     page.on("request",item=>{if(answered&&item.method()==="GET"&&/\/api\/projects$/.test(item.url()))readSince=true});
