@@ -1546,3 +1546,52 @@ test.describe("A choice made while Trebell is still starting",()=>{
     await expect(drawer.locator(".terminal-foot"),"the terminal's folder").toContainText(folder);
   });
 });
+
+test.describe("A project default changed while the project is open",()=>{
+  // The person is in the project, changes its Permissions and Workspace on Projects, then starts a New task: the new task uses them
+  // at once, as a project opened after the change does, with no reload. Inherit gives the defaults back the same way, and a change
+  // that is not a default (the icon) leaves a mode the person picked in the composer.
+  test("reaches New task at once, and Inherit gives the default back",async({page,request})=>{
+    await page.setViewportSize({width:1280,height:800});
+    await request.post("/api/settings",{data:{...BASE,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"}});
+    const boot=await (await request.get("/api/bootstrap")).json();
+    await request.post("/api/projects",{data:{path:boot.cwd,name:MAIN,activate:true,permissionMode:null,workspaceMode:null}});
+    try{
+      await page.goto("/");
+      await expect(page.getByTestId("composer")).toBeVisible();
+      const permission=page.locator(".composer-wrap select.permission-picker").filter({has:page.locator("option[value='read-only']")}),workspace=page.locator(".composer-wrap select.workspace-mode");
+      await expect(permission).toHaveValue("supervised");
+      await expect(workspace).toHaveValue("current");
+      const card=page.locator(".project-card.active");
+      const saved=()=>page.waitForResponse(response=>response.url().endsWith("/api/projects")&&response.request().method()==="POST");
+      const choose=async(name,value)=>{const answer=saved();await card.getByRole("combobox",{name}).selectOption(value);await answer;await expect(card.getByRole("combobox",{name})).toHaveValue(value)};
+      const model=page.getByTestId("model-picker");
+      await expect(model).toContainText(/coding.fast/i);
+      await openProjects(page);
+      await choose("Permissions","read-only");
+      await choose("Workspace","worktree");
+      await choose("Model","test/coding-large");
+      await nav(page,"New task").click();
+      await expect(permission,"the new task's permissions").toHaveValue("read-only");
+      await expect(workspace,"the new task's workspace").toHaveValue("worktree");
+      await expect(model,"the new task's model").toContainText(/coding.large/i);
+      await shootModes(page,"project-default-reaches-new-task",{show:permission});
+      // A mode picked in the composer stays when the project changes something else.
+      await permission.selectOption("edits");
+      await openProjects(page);
+      await card.getByRole("button",{name:/Project identity/}).click();
+      const iconSaved=saved();await card.getByRole("button",{name:"Automatic",exact:true}).click();await iconSaved;
+      await nav(page,"New task").click();
+      await expect(permission,"a pick in the composer stays after an icon change").toHaveValue("edits");
+      // Inherit takes the overrides away: the defaults come back for the next new task.
+      await openProjects(page);
+      await choose("Permissions","");
+      await choose("Workspace","");
+      await nav(page,"New task").click();
+      await expect(permission).toHaveValue("supervised");
+      await expect(workspace).toHaveValue("current");
+    }finally{
+      await request.post("/api/projects",{data:{path:boot.cwd,permissionMode:null,workspaceMode:null,defaultModel:null}});
+    }
+  });
+});

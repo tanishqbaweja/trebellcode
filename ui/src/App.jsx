@@ -5282,7 +5282,14 @@ export default function App(){
   // opening name what the list holds now. The open project's removal leaves its folder open.
   // A save that answers after its project was removed names a record that is gone (one put back has a new id), so it is let go.
   const removedProjectIdsRef=useRef(new Set());
-  const projectsPageUpdated=useLatestCallback(project=>{if(removedProjectIdsRef.current.has(project?.id))return;if(project?.id){setProjectRecords(previous=>[project,...previous.filter(item=>item.id!==project.id)]);setPaletteProjects(previous=>previous.some(item=>item.id===project.id)?previous.map(item=>item.id===project.id?project:item):[...previous,project])}if(projectIsOpen(project))setCurrentProject(project)});
+  // A default of the open project changed there applies to the composer at once, as opening the project applies them, so a New
+  // task uses it without a reload. Only a default that changed applies: a rename or an icon leaves a mode the person picked.
+  const projectsPageUpdated=useLatestCallback(project=>{if(removedProjectIdsRef.current.has(project?.id))return;if(project?.id){setProjectRecords(previous=>[project,...previous.filter(item=>item.id!==project.id)]);setPaletteProjects(previous=>previous.some(item=>item.id===project.id)?previous.map(item=>item.id===project.id?project:item):[...previous,project])}if(!projectIsOpen(project))return;
+    const before=currentProject?.effectiveSettings||{},after=project.effectiveSettings||{};
+    if(after.defaultPermissionMode&&after.defaultPermissionMode!==before.defaultPermissionMode)setPermissionMode(after.defaultPermissionMode);
+    if(after.defaultWorkspaceMode&&after.defaultWorkspaceMode!==before.defaultWorkspaceMode)setWorkspaceMode(after.defaultWorkspaceMode);
+    if(after.defaultModel&&after.defaultModel!==before.defaultModel&&modelsRef.current.includes(after.defaultModel)){setModel(after.defaultModel);setSelectedModels([after.defaultModel])}
+    setCurrentProject(project)});
   const projectsPageRemoved=useLatestCallback(project=>{removedProjectIdsRef.current.add(project?.id);setProjectRecords(previous=>previous.filter(item=>item.id!==project?.id));setPaletteProjects(previous=>previous.filter(item=>item.id!==project?.id));setCurrentProject(current=>current&&current.id===project?.id?null:current)});
   // Retry's outcome (the list, or the error again) shows in the sidebar itself.
   const sidebarRetryThreads=useLatestCallback(()=>loadThreads(rpcRef.current).then(()=>undefined));
