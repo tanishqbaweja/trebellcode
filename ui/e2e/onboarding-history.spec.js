@@ -10,7 +10,8 @@ const SETTINGS={appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,model
 // through the API while the button is clicked, and opened again after it.
 async function switchModeUnderSetup(page,request,mode){
   if(await page.locator("html").getAttribute("data-mode")===mode)return;
-  await request.post("/api/settings",{data:{onboardingComplete:true}});await page.reload();
+  // Clicked once the app has loaded (the composer shows), as a person would, so the settings it loads cannot land after the click.
+  await request.post("/api/settings",{data:{onboardingComplete:true}});await page.reload();await expect(page.getByTestId("composer")).toBeVisible();
   await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
   await request.post("/api/settings",{data:{onboardingComplete:false}});await page.reload();
   await expect(page.getByTestId("onboarding")).toBeVisible();
@@ -96,6 +97,37 @@ test("onboarding names each conversation it could not import and why",async({pag
       await expect(message).toHaveClass(/error/);
       expect(posts.at(-1)).toEqual(["claude:notes","codex:cli","codex:docs"]);
       await shootSetup(page,"history-import-retry-failed",mode);
+    }
+  }finally{
+    await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:true,agentRuntime:"codex"}});
+  }
+});
+
+// Forty conversations that fail for one reason (the local Codex app-server did not come up): the message says how many and why
+// first and names three of them, so the reason is read without scrolling, at 1280 and 900 wide; it named all forty before it.
+test("onboarding says why forty conversations could not be imported without naming every one",async({page,request})=>{
+  test.setTimeout(60_000);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const title=index=>"Find out why the nightly payments reconciliation job fails at step "+index;
+  const sessions=Array.from({length:40},(_,index)=>["codex:s"+index,"codex",title(index+1)]);
+  await page.route(/\/api\/history-import$/,route=>{
+    if(route.request().method()!=="POST")return route.fulfill({json:{codexImportAvailable:true,sessions:sessions.map(([id,source,title])=>({id,source,providerSessionId:id.split(":")[1],cwd:boot.cwd,title,preview:title,alreadyImported:false}))}});
+    return route.fulfill({json:{ok:false,results:route.request().postDataJSON().sessionIds.map(id=>({id,source:"codex",status:"error",error:"Local Codex app-server is not ready"})),projects:[]}});
+  });
+  try{
+    await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:false,agentRuntime:"codex"}});
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const onboarding=page.getByTestId("onboarding"),step=onboarding.locator(".onboarding-history-step"),message=step.getByRole("status");
+    for(const mode of ["dark","light"]){
+      await switchModeUnderSetup(page,request,mode);
+      await expect(step).toContainText("40 recent conversations can be copied into Trebell.");
+      await step.getByRole("button",{name:"Import history",exact:true}).click();
+      await expect(message).toHaveText(`40 conversations could not be imported: Local Codex app-server is not ready (“${title(1)}”, “${title(2)}”, “${title(3)}” and 37 more).`);
+      await expect(message).toHaveClass(/error/);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(message,`the whole message is in view at ${width}`).toBeInViewport({ratio:1})}
+      await page.setViewportSize({width:1280,height:800});
+      await shootSetup(page,"history-import-forty-failed",mode);
     }
   }finally{
     await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:true,agentRuntime:"codex"}});

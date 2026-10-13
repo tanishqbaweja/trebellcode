@@ -60,11 +60,15 @@ export default function OnboardingModal({open,projectPath,onPickWorkspace,provid
     catch(error){showHistoryMessage(error.message||String(error),true);return false}
     finally{setHistoryBusy("")}
   }
-  // Names each conversation an import could not copy with the reason the server gave, those with the same reason together.
+  // Names each conversation an import could not copy with the reason the server gave, those with the same reason together. More
+  // than three with one reason are counted, with the reason first and three of them named: forty titles before the reason ran
+  // thousands of characters and put it below the window.
   function importFailures(results){
     const titles=new Map(pendingHistory.map(item=>[item.id,item.title||item.preview||item.id])),reasons=new Map();
     for(const item of results)if(item.status==="error"){const reason=String(item.error||"").trim().replace(/\.+$/,"");reasons.set(reason,[...(reasons.get(reason)||[]),`“${titles.get(item.id)||item.id}”`])}
-    return [...reasons].map(([reason,names])=>`${names.length>1?names.slice(0,-1).join(", ")+" and "+names.at(-1):names[0]} could not be imported${reason?": "+reason:""}.`);
+    return [...reasons].map(([reason,names])=>names.length>3
+      ?`${names.length} conversations could not be imported${reason?": "+reason:""} (${names.slice(0,3).join(", ")} and ${names.length-3} more).`
+      :`${names.length>1?names.slice(0,-1).join(", ")+" and "+names.at(-1):names[0]} could not be imported${reason?": "+reason:""}.`);
   }
   async function importHistory(){
     if(!pendingHistory.length)return;
