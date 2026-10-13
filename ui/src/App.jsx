@@ -4238,6 +4238,11 @@ export default function App(){
     }catch{}
     return result;
   }
+  function dropSentDraft(draft){
+    const files=new Set(draft?.attachments||[]),chips=new Set((draft?.contextChips||[]).map(item=>typeof item==="string"?item:JSON.stringify(item)));
+    if(files.size)setAttachments(current=>current.filter(path=>!files.has(path)));
+    if(chips.size)setContextChips(current=>current.filter(item=>!chips.has(typeof item==="string"?item:JSON.stringify(item))));
+  }
   function restoreFailedDraft(draft){
     setPrompt(current=>{
       const next=String(draft?.text||"");if(!next)return current;
@@ -4472,8 +4477,9 @@ export default function App(){
     // A send Stop ended before its turn existed puts the draft back as it was, with no note: nothing went wrong.
     // A send whose thread another thread or a new task replaced on screen, or is replacing (an open on its way), leaves that view
     // alone: its draft and note wait for its own thread (openThread). One that failed before it had a thread puts its draft back
-    // beside the composer's.
-    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{
+    // beside the composer's. One that went through takes its own files and context out of the composer of the view shown instead,
+    // where they stayed when the person left it, so a send from there does not carry them again; what was added there stays.
+    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).then(()=>{if(submittingRef.current!==sendView)dropSentDraft(draft)},e=>{
       const alert=!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e))?{kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."}:null;
       if(e?.trebellSendThreadId&&String(openingThreadRef.current||activeThreadRef.current?.id||"")!==e.trebellSendThreadId){failedSendsRef.current.set(e.trebellSendThreadId,{draft,alert});return}
       restoreFailedDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents([]);if(alert)setComposerAlert(alert);

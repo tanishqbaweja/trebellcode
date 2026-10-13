@@ -578,6 +578,41 @@ for(const held of ["the tool catalog","the new thread's workspace save"])test(`a
   }finally{for(const route of heldRoutes)await route.continue().catch(()=>{});await fixture.close()}
 });
 
+// The files a new task's send took stay in the composer while that send is on its way. When the person opens another thread
+// meanwhile, they leave that thread's composer once the send's turn has started, so the next send there does not carry them again,
+// and a file attached there meanwhile stays.
+test("a new task's file sent while another thread was opened leaves that thread's composer once its turn starts, and a file attached there stays",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const heldRoutes=[];
+  await page.route(/\/assets\/shared-tool-catalog-[^/]*\.js$/,route=>{heldRoutes.push(route)});
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Other work",preview:"Other"}],providerTurn:async request=>reply(request,"The new task answered in its own thread.")});
+  const other=fixture.threads[0],known=new Set(fixture.threads.map(thread=>String(thread.id)));
+  const turn=fixture.threadStore.addTurn(other.id,{inputText:"What does the other thread hold?"});
+  fixture.threadStore.addItem(other.id,turn.id,{id:"other-answer",type:"agentMessage",text:"The other thread's own answer."});fixture.threadStore.finishTurn(other.id,turn.id);
+  const shelf=page.locator(".attachment-shelf > span");
+  const attach=async(name,text)=>{const [chooser]=await Promise.all([page.waitForEvent("filechooser"),page.getByRole("button",{name:"Attach files",exact:true}).click()]);await chooser.setFiles([{name,mimeType:"text/plain",buffer:Buffer.from(text)}])};
+  try{
+    await expect.poll(()=>heldRoutes.length,{message:"the catalog asked for at idle"}).toBe(1);
+    await attach("notes.txt","notes for the new task");await expect(shelf).toHaveCount(1,{timeout:10_000});
+    const before=fixture.threadStore.list("native").length;
+    await fixture.send("A new task with a file");
+    await expect(composer(page)).toHaveValue("");
+    await threadRow(page,"Other work").locator(".thread-main").click();
+    await expect(page.locator(".workspace-header")).toContainText("Other work",{timeout:10_000});
+    await expect(page.getByText("The other thread's own answer.",{exact:true})).toBeVisible({timeout:10_000});
+    await attach("other.txt","a file for the other thread");await expect(shelf).toHaveCount(2,{timeout:10_000});
+    for(const route of heldRoutes.splice(0))await route.continue();
+    await expect.poll(()=>fixture.threadStore.list("native").length,{timeout:15_000}).toBe(before+1);
+    const sent=fixture.threadStore.list("native").find(thread=>!known.has(String(thread.id)));
+    await expect.poll(()=>fixture.threadStore.get(sent.id).turns.at(-1)?.status,{timeout:15_000}).toBe("completed");
+    // The thread opened is still shown, its composer holds the file attached there only.
+    await expect(page.locator(".workspace-header")).toContainText("Other work");
+    await expect(shelf).toHaveCount(1,{timeout:5000});
+    await expect(page.locator(".attachment-shelf")).toContainText("other.txt");await expect(page.locator(".attachment-shelf")).not.toContainText("notes.txt");
+  }finally{for(const route of heldRoutes)await route.continue().catch(()=>{});await fixture.close()}
+});
+
 // A send that fails in a thread left is that thread's: the thread shown, with a turn of its own, stays as it was, and the draft and its
 // note come back in the thread that sent it. The failure comes once the other thread is open, or while it is still opening.
 for(const when of ["once the running thread is open","while the running thread opens"])test(`a send that fails in the thread left leaves the running thread shown as it was, and its draft comes back in its own thread, ${when}`,async({page})=>{
