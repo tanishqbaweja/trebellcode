@@ -1795,7 +1795,9 @@ export default function App(){
       // harness it replaces. A switch still pending applies its own when it lands; one that has landed already applied them.
       const startup=startupRuntimeOutcome({switchSeqAtStart,switchSeq:runtimeSwitchSeqRef.current,appliedSeqAtStart,appliedSeq:runtimeAppliedSeqRef.current});
       const activeEnvironmentId=state.settings?.activeEnvironmentId||null;
-      const projectsForEnvironment=(projectData.projects||state.projects||[]).filter(project=>(project.environmentId||null)===activeEnvironmentId);
+      // A project removed while Trebell was starting stays removed: the lists this load read were read before it went.
+      const listedProjects=(projectData.projects||state.projects||[]).filter(project=>!removedProjectIdsRef.current.has(project.id));
+      const projectsForEnvironment=listedProjects.filter(project=>(project.environmentId||null)===activeEnvironmentId);
       const activeProject=projectsForEnvironment.find(project=>project.id===state.settings?.activeProjectId)||null;
       const firstProject=projectsForEnvironment[0]||null;
       const environmentCwd=boot.activeEnvironment?.cwd||"";
@@ -1808,7 +1810,7 @@ export default function App(){
         // The startup catalog belongs to the runtime these settings resolve to: record its scope so the scope effect keeps it instead of loading it twice.
         setSettings(prev=>{const next={...prev,...(state.settings||{})};if(startup.keepLandedRuntime){next.agentRuntime=prev.agentRuntime;next.agentRuntimeInstanceId=prev.agentRuntimeInstanceId}const runtime=next.agentRuntime||boot.agentRuntime||"codex";if(startup.applyCatalog)modelCatalogScopeRef.current=modelCatalogScope(runtime,next.modelProvider||boot.provider||DEFAULT_MODEL_PROVIDER);return next}); setRuntimeKnown(true); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
         setEnvironmentThemeCatalog(themeCatalog);
-        setProjectRecords(projectData.projects||state.projects||[]);
+        setProjectRecords(listedProjects);
         // A project the person opened (or a General chat they started) while Trebell was starting stays: the state this load read
         // names the project open before it, and replaced theirs once it landed.
         if(projectChoiceSeqRef.current!==projectChoiceAtStart)return;

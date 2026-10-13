@@ -1365,6 +1365,26 @@ test.describe("A choice made while Trebell is still starting",()=>{
     await toggledShots(page,"project-opened-while-starting");
   });
 
+  test("a project removed before the start-up lands stays removed, and the window opens the project left",async({page,request})=>{
+    const {boot,release}=await startHeld(page,request);
+    await request.post("/api/projects",{data:{path:join(boot.cwd,"ui"),name:"Kept Project"}});
+    await page.goto("/");
+    const composer=page.getByTestId("composer"),crumb=crumbOf(page);
+    await expect(composer).toHaveAttribute("placeholder","Starting Trebell Code…");
+    await openProjects(page);
+    await page.getByRole("button",{name:"Remove "+MAIN,exact:true}).click();
+    await expect(projectCard(page,MAIN)).toHaveCount(0);
+    await expect.poll(async()=>(await listedProjects(request)).some(project=>project.name===MAIN),{message:"the server removed it"}).toBe(false);
+    release();
+    await nav(page,"New task").click();
+    await expect(page.getByTestId("model-picker"),"the start-up has landed").toBeEnabled({timeout:15_000});
+    await expect(crumb,"the project the window opens").toHaveText("Kept Project");
+    await nav(page,"Projects").click();
+    await expect(projectCard(page,"Kept Project")).toBeVisible();
+    await expect(projectCard(page,MAIN),"the removed project's card").toHaveCount(0);
+    await toggledShots(page,"project-removed-while-starting");
+  });
+
   test("a General chat started before the start-up lands keeps its own folder",async({page,request})=>{
     const {release}=await startHeld(page,request);
     await page.goto("/");
