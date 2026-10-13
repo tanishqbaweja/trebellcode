@@ -143,3 +143,68 @@ test("a repository search row opens to its hits grouped by file, not to the item
     await page.screenshot({path:join(shotsDir,"tool-activity-search-rows-dark-1280x800.png"),fullPage:true,animations:"disabled"});
   }finally{await harness.close()}
 });
+
+// A Native exact edit made with an edits list: its row is named by the file, and opening it shows the file and the diff Trebell
+// returned for the applied hunks, as any other file change does. A failed edit keeps showing the call, never a change.
+test("a Native edits-list edit opens to its file and the applied diff, and a failed edit claims no change",async({page})=>{
+  test.setTimeout(45_000);
+  const thread={id:"native-edit-diff",name:"Native edit diff fixture",preview:"Greeting",cwd:process.cwd(),model:"fixture-model",runtime:"cursor",status:{type:"idle"},createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[{id:"turn-1",status:"completed",items:[
+    {type:"userMessage",id:"user-1",content:[{type:"text",text:"Where does greet.py build its greeting?"}]},
+    {type:"agentMessage",id:"assistant-1",text:"`Greeter.greet` joins the parts with a space."},
+  ]}]};
+  const harness=await startHarness(thread);
+  const diff=["@@ -11,7 +11,7 @@ def greet(self):","         parts = []","         parts.append(prefix)","         if self.name:","-            parts.append(self.name)","+            parts.append(self.name.title())","         return ' '.join(parts) + suffix"," "," ","@@ -22,4 +22,5 @@"," def main():","     greeter = Greeter('x')","     print(greeter.greet())","-    print(helper(2))","+    print(helper(3))","+    print('done')"].join("\n");
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,thread});
+    await page.getByTestId("composer").fill("Title-case the name and print helper(3).");await page.getByTestId("send").click();
+    await expect(page.locator(".user-bubble").last()).toContainText("Title-case the name");
+    harness.push("turn/started",{turn:{id:"turn-2",status:"inProgress",startedAt:Date.now()/1000}});
+    const start=item=>harness.push("item/started",{turnId:"turn-2",item,startedAtMs:Date.now()});
+    const end=item=>harness.push("item/completed",{turnId:"turn-2",item,completedAtMs:Date.now()});
+    const rows=page.locator(".agent-block .tool-event"),row=title=>rows.filter({has:page.locator("summary strong").getByText(title,{exact:true})});
+    const args={path:"src/greet.py",edits:[{old_text:"            parts.append(self.name)",new_text:"            parts.append(self.name.title())"},{old_text:"    print(helper(2))\n",new_text:"    print(helper(3))\n    print('done')\n"}]};
+    const edit={type:"dynamicToolCall",id:"tool-edit",namespace:"trebell_workspace",tool:"replace_text",arguments:args,status:"inProgress"};
+    start(edit);
+    await expect(row("Edited src/greet.py").locator("summary em")).toHaveText("running");
+    end({...edit,status:"completed",success:true,rawOutput:{path:process.cwd()+"/src/greet.py",size:512,replacements:2,beforeSha256:"a".repeat(64),afterSha256:"b".repeat(64),diff}});
+    const edited=row("Edited src/greet.py");
+    await expect(edited.locator("summary em")).toHaveText("done");
+    const failedEdit={type:"dynamicToolCall",id:"tool-edit-failed",namespace:"trebell_workspace",tool:"replace_text",arguments:{path:"src/other.py",edits:[{old_text:"missing",new_text:"x"}]},status:"inProgress"};
+    start(failedEdit);end({...failedEdit,status:"failed",success:false,rawOutput:{success:false,error:"edits[0]: Expected 1 exact replacement in src/other.py, found 0. No changes were written (edits are all or nothing)."}});
+    const failed=row("Edit src/other.py");
+    await expect(failed.locator("summary em")).toHaveText("failed");
+
+    await edited.locator("summary").click();
+    const change=edited.locator(".tool-event-change");
+    await expect(change).toHaveCount(1);
+    await expect(change.locator(".tool-event-change-head")).toHaveText("src/greet.pyedited");
+    await expect(change.locator(".tool-event-diff>span")).toHaveText(diff.split("\n"));
+    await expect(change.locator(".tool-event-diff .diff-hunk")).toHaveText(["@@ -11,7 +11,7 @@ def greet(self):","@@ -22,4 +22,5 @@"]);
+    await expect(change.locator(".tool-event-diff .diff-del")).toHaveText(["-            parts.append(self.name)","-    print(helper(2))"]);
+    await expect(change.locator(".tool-event-diff .diff-add")).toHaveText(["+            parts.append(self.name.title())","+    print(helper(3))","+    print('done')"]);
+    await expect(edited.locator(".tool-json")).toHaveCount(0);
+    await expect(edited).not.toContainText("a".repeat(64));
+    const colors=await change.evaluate(node=>{const add=node.querySelector(".diff-add"),del=node.querySelector(".diff-del"),ctx=node.querySelector(".diff-ctx");return {add:getComputedStyle(add).color,del:getComputedStyle(del).color,ctx:getComputedStyle(ctx).color}});
+    expect(new Set(Object.values(colors)).size).toBe(3);
+
+    await failed.locator("summary").click();
+    await expect(failed.locator(".tool-event-changes")).toHaveCount(0);
+    await expect(failed.locator(".tool-json")).toContainText("No changes were written");
+
+    const noSideScroll=async()=>{const bounds=await page.locator(".conversation-scroll").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1)};
+    await noSideScroll();
+    await edited.scrollIntoViewIfNeeded();
+    await page.screenshot({path:join(shotsDir,"native-edit-diff-dark-1280x800.png"),fullPage:true,animations:"disabled"});
+    // The appearance switch saves a setting; it is kept in the page, as the server would keep it, so the fixture stays as opened.
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+    await page.route(/\/api\/settings$/,route=>route.request().method()!=="POST"?route.fallback():route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(Object.assign(settings,route.request().postDataJSON()||{}))}));
+    await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
+    await edited.scrollIntoViewIfNeeded();
+    await page.screenshot({path:join(shotsDir,"native-edit-diff-light-1280x800.png"),fullPage:true,animations:"disabled"});
+    await page.setViewportSize({width:390,height:844});
+    await expect(change.locator(".tool-event-diff .diff-add").first()).toBeVisible();await noSideScroll();
+    await edited.scrollIntoViewIfNeeded();
+    await page.screenshot({path:join(shotsDir,"native-edit-diff-light-390x844.png"),fullPage:true,animations:"disabled"});
+  }finally{await harness.close()}
+});

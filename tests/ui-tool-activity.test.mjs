@@ -58,3 +58,9 @@ test("search rows use T3's wording for query, glob and folder",()=>{
   assert.equal(searchToolLabel({cwd:"."}),undefined);
   assert.equal(searchToolLabel({}),undefined);
 });
+
+test("a Native edit sent as an edits list is named by its file like a single replacement",()=>{
+  const edit={namespace:"trebell_workspace",tool:"replace_text",arguments:{path:"src/slug.js",edits:[{old_text:"a",new_text:"b"},{old_text:"c",new_text:"d"}]}};
+  assert.equal(dynamicToolLabel(edit),"Edited src/slug.js");
+  assert.equal(dynamicToolLabel({...edit,status:"failed"}),"Edit src/slug.js");
+});

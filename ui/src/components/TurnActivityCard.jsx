@@ -2,7 +2,7 @@ import React,{memo,useEffect,useId,useLayoutEffect,useMemo,useRef,useState} from
 import { Check, ChevronDown, FileDiff, ListTodo, Sparkles, SquareTerminal, X, Zap } from "lucide-react";
 import ReasoningRow from "./ReasoningRow.jsx";
 import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "../activity-window.js";
-import { commandFacts, commandLine, fileChangeRows, turnDiffLines } from "../activity-details.js";
+import { commandFacts, commandLine, fileChangeRows, nativeEditChanges, turnDiffLines } from "../activity-details.js";
 import { reasoningItemText } from "../reasoning-text.js";
 import { toolEventFailed } from "../tool-event-status.js";
 import { activitySummary } from "../turn-activity.js";
@@ -89,7 +89,10 @@ function ActivityEventBody({event,onInspectChanges}){
   const raw=event.raw&&typeof event.raw==="object"?event.raw:null;
   const command=raw?.command?commandLine(raw):"",facts=command?commandFacts(raw):[];
   // Worked out once per version of the step: an open row re-renders as the turn goes on (a turn diff on every update).
-  const changes=useMemo(()=>Array.isArray(raw?.changes)?fileChangeRows(raw.changes):null,[raw]);
+  const changes=useMemo(()=>{
+    if(Array.isArray(raw?.changes))return fileChangeRows(raw.changes);
+    const nativeEdit=nativeEditChanges(raw);return nativeEdit?fileChangeRows(nativeEdit):null;
+  },[raw]);
   // A turn's diff update carries the diff itself.
   const turnDiff=useMemo(()=>event.kind==="fileChange"&&typeof event.raw==="string"?turnDiffLines(event.raw):[],[event.kind,event.raw]);
   return <div className="tool-event-body">

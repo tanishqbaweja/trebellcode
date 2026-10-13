@@ -111,6 +111,18 @@ export function fileChangeRows(changes){
   }).filter(row=>row.path||row.lines.length);
 }
 
+// A Trebell Native exact edit (trebell_workspace/replace_text, one pair or an edits list) that went through, as a file change: the
+// file it changed and the diff Trebell returned for it. An edit that failed, is still running or carries no diff has none (null),
+// and its row keeps showing the call itself.
+export function nativeEditChanges(item){
+  if(item?.type!=="dynamicToolCall"||item.namespace!=="trebell_workspace"||item.tool!=="replace_text"||item.status==="failed")return null;
+  const output=item.rawOutput&&typeof item.rawOutput==="object"&&!Array.isArray(item.rawOutput)?item.rawOutput:null,diff=text(output?.diff);
+  if(!diff.trim()||output.success===false)return null;
+  let input=item.arguments;if(typeof input==="string"){try{input=JSON.parse(input)}catch{input=null}}
+  const path=text(input?.path).trim()||text(output.path).trim();
+  return [{path,kind:"edit",diff}];
+}
+
 // The Runtime panel's "N/M steps complete": a step is complete once it has an outcome. It succeeded, failed or was declined, or
 // it is a notice (a warning or an error row, or a verification whose checks could not run). A step that runs or waits to run is
 // not, and neither is a planned verification (incomplete) whose checks have not run yet, nor a status this list does not know.

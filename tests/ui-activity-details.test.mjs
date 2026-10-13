@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activityItemStatus, commandFacts, commandLine, diffLines, durationLabel, exitCodeOf, fileChangeRows, finishedActivitySteps, textChangeLines, turnDiffLines } from "../ui/src/activity-details.js";
+import { activityItemStatus, commandFacts, commandLine, diffLines, durationLabel, exitCodeOf, fileChangeRows, finishedActivitySteps, nativeEditChanges, textChangeLines, turnDiffLines } from "../ui/src/activity-details.js";
 
 test("a command prints the line it ran: the relay's rawInput line over a descriptive title",()=>{
   assert.equal(commandLine({command:"test -f missing.txt"}),"test -f missing.txt");
@@ -115,4 +115,18 @@ test("finished steps count every step with an outcome, notice rows included, and
   // A status the timeline does not know is not claimed complete.
   assert.equal(finishedActivitySteps([{status:"queued"},{status:undefined},null]),0);
   assert.equal(finishedActivitySteps(null),0);
+});
+
+test("a Native exact edit that went through reads as a file change with the diff Trebell returned, one pair or an edits list",()=>{
+  const diff="@@ -2,3 +2,3 @@ def greet(self):\n     name = self.name\n-    return 'Hello ' + name\n+    return 'Hi ' + name\n     # end";
+  const edit={type:"dynamicToolCall",id:"edit-1",namespace:"trebell_workspace",tool:"replace_text",status:"completed",arguments:{path:"src/greet.py",edits:[{old_text:"'Hello '",new_text:"'Hi '"}]},rawOutput:{path:"/repo/src/greet.py",size:80,replacements:1,beforeSha256:"a".repeat(64),afterSha256:"b".repeat(64),diff}};
+  assert.deepEqual(nativeEditChanges(edit),[{path:"src/greet.py",kind:"edit",diff}],"the path is the one the call named");
+  const [row]=fileChangeRows(nativeEditChanges(edit));
+  assert.equal(row.path,"src/greet.py");assert.equal(row.kind,"edited");
+  assert.deepEqual(row.lines.map(line=>line.tone),["hunk","ctx","del","add","ctx"]);
+  assert.deepEqual(nativeEditChanges({...edit,arguments:JSON.stringify({path:"src/greet.py",old_text:"'Hello '",new_text:"'Hi '"})}),[{path:"src/greet.py",kind:"edit",diff}],"arguments sent as JSON text");
+  assert.equal(nativeEditChanges({...edit,status:"failed"}),null,"a failed edit claims no change");
+  assert.equal(nativeEditChanges({...edit,status:"inProgress",rawOutput:undefined}),null,"a running edit has no diff yet");
+  assert.equal(nativeEditChanges({...edit,rawOutput:{success:false,error:"Expected 1 exact replacement in src/greet.py, found 0."}}),null);
+  assert.equal(nativeEditChanges({...edit,tool:"write_file"}),null);assert.equal(nativeEditChanges({...edit,namespace:"agent"}),null);
 });
