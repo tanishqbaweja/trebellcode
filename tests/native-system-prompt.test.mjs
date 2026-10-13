@@ -123,6 +123,14 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/untrusted data/i);
 });
 
+test("Native repository guidance scopes searches to a known package and searches the whole repository otherwise",()=>{
+  const prompt=nativeSystemPrompt({permissionMode:"supervised",projectless:false,tools:[{name:"trebell_repo"}]});
+  const guidance=prompt.split("\n").find(line=>line.startsWith("- Use the exposed repository tools"));
+  assert.ok(guidance.includes("Use the exposed repository tools for symbol/file/code search and bounded source reads. When you already know which package holds the code, scope searches to that package; search the whole repository when the location is unknown."),guidance);
+  const without=nativeSystemPrompt({permissionMode:"supervised",projectless:false,tools:[{name:"trebell_workspace"}]});
+  assert.doesNotMatch(without,/scope searches to that package/,"the search guidance belongs to the repository tools");
+});
+
 test("Native post-edit verification guidance is conditional and batches requested checks",()=>{
   const prompt=nativeSystemPrompt({permissionMode:"supervised",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]});
   const postEdit=prompt.split("\n").filter(line=>line.startsWith("- When the user explicitly asks for testing or verification after an edit"));
