@@ -796,6 +796,12 @@ test("code search covers a plain directory without Git through git grep --no-ind
     assert.equal(result.source,"git-grep");
     assert.deepEqual(result.data.map(item=>item.path),["app/main.py","app/config.yaml"]);
     assert.equal(result.complete,true);
+    // A folder named like a glob is searched as written there too (git grep --no-index takes the literal pathspec).
+    await mkdir(join(root,"app","[id]"),{recursive:true});await writeFile(join(root,"app","[id]","page.py"),"PORT = 8080\n","utf8");
+    const scoped=await engine.searchCode({root,query:"8080",path:"app/[id]",limit:10});
+    assert.equal(scoped.source,"git-grep");
+    assert.deepEqual(scoped.data.map(item=>item.path),["app/[id]/page.py"]);
+    assert.equal(scoped.complete,true);
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
