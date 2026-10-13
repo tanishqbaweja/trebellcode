@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { remoteEnvironmentCommand, remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
+import { remoteEnvironmentCommand, remotePathExpression, remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { runtimeEnvironmentKeys } from "./runtime-environment.mjs";
@@ -8,18 +8,12 @@ function quotePosix(value){
   return "'" + String(value).replace(/'/g,"'\\''") + "'";
 }
 
-function shellJoin(parts){
-  return parts.map(quotePosix).join(" ");
+// The command word may be home-relative (a saved ~/.local/bin/codex), which the host's shell expands; the arguments are literal.
+function shellJoin([command,...args]){
+  return [remotePathExpression(command),...args.map(quotePosix)].join(" ");
 }
 
 const REMOTE_CODEX_SHARED_DIRECTORIES=["sessions","archived_sessions","sqlite","shell_snapshots","worktrees","skills","plugins","cache","logs","mcp-oauth-locks"];
-
-function remotePathExpression(value){
-  const raw=String(value||"").trim();
-  if(raw==="~")return '"$HOME"';
-  if(raw.startsWith("~/"))return '"$HOME"/'+quotePosix(raw.slice(2));
-  return quotePosix(raw);
-}
 
 export function remoteCodexProfileSetup({profile={},runtimeInstance=null}={}){
   const instance=runtimeInstance||{};

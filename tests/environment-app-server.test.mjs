@@ -133,6 +133,10 @@ test("an environment's Codex executable is saved and starts its Codex app-server
   const remote=await startRemoteAppServer({environments,environmentId:"ssh-codex",appPort:33460,hostEnvironment:{PATH:"/usr/bin"},spawnProcess:(command,args,options)=>{launch={command,args,options};return child}});
   assert.ok(remote);
   assert.match(String(launch.args.at(-1)),/exec .*'\/opt\/lane\/bin\/codex' 'app-server' '--listen'/);
+  // One typed under the home folder is expanded by the host's shell, not looked up as a file named ~.
+  environments.upsert({id:"ssh-codex",type:"ssh",name:"Build box",host:"build.example.test",user:"dev",port:22,cwd:"/srv/app",codexPath:"~/.local/bin/codex"});
+  await startRemoteAppServer({environments,environmentId:"ssh-codex",appPort:33460,hostEnvironment:{PATH:"/usr/bin"},spawnProcess:(command,args,options)=>{launch={command,args,options};return child}});
+  assert.match(String(launch.args.at(-1)),/exec .*"\$HOME"\/'\.local\/bin\/codex' 'app-server' '--listen'/);
   const blank=environments.upsert({id:"ssh-codex",type:"ssh",name:"Build box",host:"build.example.test",codexPath:""});
   assert.equal(remoteCodexProfileSetup({profile:blank}).command,"codex");
 });

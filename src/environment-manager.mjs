@@ -22,8 +22,17 @@ function quotePosix(value){
   return "'" + String(value).replace(/'/g,"'\\''") + "'";
 }
 
+// A home-relative path (~ or ~/...) is left for the host's shell to expand, as it would typed there: inside quotes it is not.
+export function remotePathExpression(value){
+  const raw=String(value||"").trim();
+  if(raw==="~")return '"$HOME"';
+  if(raw.startsWith("~/"))return '"$HOME"/'+quotePosix(raw.slice(2));
+  return quotePosix(raw);
+}
+
+// The command word may be home-relative (a saved ~/.local/bin/codex); the arguments are passed as they are.
 function shellCommand(command,args=[]){
-  return [command,...args].map(quotePosix).join(" ");
+  return [remotePathExpression(command),...args.map(quotePosix)].join(" ");
 }
 
 function isolatedRemoteEnvironment(command,names=[],environment={}){

@@ -180,11 +180,13 @@ test("terminal specs keep interactive shells inside local, WSL and SSH environme
 });
 
 // The Codex executable saved for a WSL or SSH host is the codex that the harness's checks, its sign-in and its sessions run there;
-// other commands, and a host saved without one, are left as they are.
+// other commands, and a host saved without one, are left as they are. One typed under the home folder (~/.local/bin/codex, where
+// npm installs it for a user) is expanded by the host's shell.
 test("a host's saved Codex executable is the codex its checks, sign-in and sessions run",async()=>{
   const profiles=[
     {id:"ssh",name:"Build box",type:"ssh",host:"build.example.test",port:22,cwd:"/srv/app",codexPath:"/opt/lane/bin/codex",enabled:true},
     {id:"plain",name:"Plain box",type:"ssh",host:"plain.example.test",port:22,cwd:"",enabled:true},
+    {id:"home",name:"Home box",type:"ssh",host:"home.example.test",port:22,cwd:"",codexPath:"~/.local/bin/codex",enabled:true},
   ];
   const manager=new EnvironmentManager({state:stateFor(profiles),platform:"linux"}),ran=[];
   manager.execute=async(id,options)=>{ran.push(options.command);return {exitCode:0,stdout:"",stderr:""}};
@@ -196,6 +198,10 @@ test("a host's saved Codex executable is the codex its checks, sign-in and sessi
   assert.match(manager.terminalArgvSpec("ssh",{command:"codex",args:["login"]}).args.at(-1),/exec '\/opt\/lane\/bin\/codex' 'login'/);
   assert.match(manager.terminalArgvSpec("ssh",{command:"claude",args:["auth","login"]}).args.at(-1),/exec 'claude' 'auth' 'login'/);
   assert.match(manager.terminalArgvSpec("plain",{command:"codex",args:["login"]}).args.at(-1),/exec 'codex' 'login'/);
+  await manager.executeArgv("home",{command:"codex",args:["--version"]});
+  assert.match(ran[2],/"\$HOME"\/'\.local\/bin\/codex' '--version'/);
+  assert.match(manager.terminalArgvSpec("home",{command:"codex",args:["login"]}).args.at(-1),/exec "\$HOME"\/'\.local\/bin\/codex' 'login'/);
+  assert.match(manager.terminalArgvSpec("home",{command:"codex",args:["~/notes"]}).args.at(-1),/ '~\/notes'$/,"an argument is passed as it is");
 });
 
 test("terminal argv specs launch provider auth commands directly and quote remote arguments",()=>{
