@@ -173,7 +173,9 @@ async function nearestExistingRemoteParent(environments,environmentId,candidate,
   }
 }
 
-async function safeWorkspacePath(root,requested,{environments=null,environmentId=null,mustExist=false}={}){
+// Where a workspace tool's path is, placed on disk through '..' and links (on the environment's host for a remote one); a path that
+// leads out of the workspace throws. The relay places a read's path the same way to know it is inside the project.
+export async function safeWorkspacePath(root,requested,{environments=null,environmentId=null,mustExist=false}={}){
   const profile=environmentId&&environments?environments.get(environmentId):null;
   if(!profile||profile.type==="local")return {path:await localSafePath(root,requested,{mustExist}),remote:false,profile};
   let raw=String(requested||".");

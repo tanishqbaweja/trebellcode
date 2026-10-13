@@ -13,7 +13,8 @@ import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
-import { createNativeBuiltins } from "./native-builtins.mjs";
+import { createNativeBuiltins, safeWorkspacePath } from "./native-builtins.mjs";
+import { nativeProjectReadNeedsNoApproval } from "./native-read-approval.mjs";
 import { NativeBackgroundProcessManager, highestProcessHandle } from "./native-background-processes.mjs";
 import { createNativeSourceControl } from "./native-source-control.mjs";
 import { NativeMcpBroker } from "./native-mcp-broker.mjs";
@@ -1129,6 +1130,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         confirm:async({call,authorization})=>{
           // A session grant lives as long as this Native session: a new thread, or a restarted server, asks again.
           const grant=nativeApprovalGrantKey(call,authorization);if(nativeSessionGrants.has(grant))return "accept";
+          // A read, listing or search inside the project runs without asking in Supervised and Auto-accept edits, as in the other
+          // harnesses; its path is placed as the workspace tools place it, so one that leads out of the project still asks.
+          const inside=path=>safeWorkspacePath(runtimeCwd,path,{environments,environmentId,mustExist:false}).then(()=>true);
+          if(await nativeProjectReadNeedsNoApproval(call,authorization,{inside}))return "accept";
           const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:nativeApprovalReason(call,authorization),toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}});
           const decision=result?.decision||"decline";
           if(decision==="acceptForSession"){nativeSessionGrants.add(grant);return "accept"}
