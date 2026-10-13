@@ -1,4 +1,4 @@
-import React,{useEffect,useRef,useState} from "react";
+import React,{useEffect,useLayoutEffect,useRef,useState} from "react";
 import { Columns2, Plus, Rows2, SquareTerminal, X, Paperclip } from "lucide-react";
 import { api,wsUrl } from "../api.js";
 import { createTerminalScreen,TERMINAL_SCROLLBACK_CHARS,TERMINAL_SCROLLBACK_LINES } from "../terminal-screen.js";
@@ -17,7 +17,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   const [splitDirection,setSplitDirection]=useState("horizontal");
   const [lines,setLines]=useState({});
   // Each session's screen (terminal-screen.js) takes its output as it arrives; the panes redraw at most once a frame.
-  const screens=useRef(new Map());const screenFrame=useRef(0);const [screenTick,setScreenTick]=useState(0);
+  const screens=useRef(new Map());const screenFrame=useRef(0);const [,setScreenTick]=useState(0);
   const screenOf=id=>{let screen=screens.current.get(id);if(!screen)screens.current.set(id,screen=createTerminalScreen());return screen};
   const drawScreens=()=>{if(!screenFrame.current)screenFrame.current=requestAnimationFrame(()=>{screenFrame.current=0;setScreenTick(tick=>tick+1)})};
   const [focusTick,setFocusTick]=useState(0);
@@ -74,9 +74,13 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     }
   },[paneIds.join("|")]);
 
-  useEffect(()=>{
-    for(const id of paneIds){const node=outputRefs.current.get(id);if(node)node.scrollTo({top:node.scrollHeight})}
-  },[screenTick,paneIds]);
+  // New output is followed only on a screen that shows the latest output: one the person scrolled up in stays where it is until
+  // they scroll back down or send it something, so earlier output can be read while a program keeps printing. Every redraw
+  // shows the output that has arrived (typing redraws too), so each one moves a following screen to its end before a scroll
+  // event can find it short of the end and take it for the person scrolling up.
+  useLayoutEffect(()=>{
+    for(const id of paneIds){const node=outputRefs.current.get(id);if(node&&node.dataset.stick!=="false")node.scrollTo({top:node.scrollHeight})}
+  });
   // A screen that shows the latest output keeps showing it when the drawer or a split makes it shorter (it used to stay at
   // the top and hide the prompt); one the user scrolled up in stays where it is.
   useEffect(()=>{
@@ -150,7 +154,10 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   function write(id,data){
     const socket=sockets.current.get(id);
     if(socket?.readyState!==WebSocket.OPEN){setError("Terminal is reconnecting. Try again in a moment.");return false}
-    setError("");socket.send(JSON.stringify({type:"input",data}));return true;
+    setError("");socket.send(JSON.stringify({type:"input",data}));
+    // What the person sends takes its screen back to the latest output, as typing in a terminal does, so the answer shows.
+    const node=outputRefs.current.get(id);if(node){node.dataset.stick="true";node.scrollTo({top:node.scrollHeight})}
+    return true;
   }
   // An empty line is sent too: its Enter is what ends a Python block or takes the default a prompt offers.
   function send(id,event){event?.preventDefault();if(write(id,(lines[id]||"")+"\r"))setLines(previous=>({...previous,[id]:""}))}

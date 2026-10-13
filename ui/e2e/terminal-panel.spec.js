@@ -149,6 +149,53 @@ test("a long run of output keeps the page responsive and the screen at its last 
   }finally{await shell.close()}
 });
 
+test("a screen scrolled up stays where it is while output streams, and follows the latest output again once scrolled back down or sent a command",async({page,request})=>{
+  test.setTimeout(120_000);
+  const shell=await realTerminals(page);
+  try{
+    const {screen,input}=await openTerminal(page,request);
+    const latest=()=>screen.evaluate(node=>Number((node.textContent.match(/^late (\d+)$/gm)||["late 0"]).pop().slice(5)));
+    const fromBottom=()=>screen.evaluate(node=>Math.round(node.scrollHeight-node.clientHeight-node.scrollTop));
+    const top=()=>screen.evaluate(node=>Math.round(node.scrollTop));
+    // The person turns the wheel up until the newest lines are well below the view, and the view comes to rest.
+    const scrollUp=async()=>{
+      await screen.hover();
+      for(let turn=0;turn<10&&await fromBottom()<=600;turn++)await page.mouse.wheel(0,-400);
+      await expect.poll(async()=>{const before=await top();await page.waitForTimeout(250);return await top()-before},{message:"the view comes to rest"}).toBe(0);
+    };
+    await input.click();
+    // A fast stream while the person types the next command: each keystroke redraws the screen, and it still ends at the prompt.
+    await run(page,"for /L %i in (1,1,4000) do @echo early %i");
+    await page.keyboard.type("node -e \"let i=0;const t=setInterval(()=>{console.log('late '+(++i));if(i===150)clearInterval(t)},100)\"",{delay:25});
+    await expect(screen).toContainText(/^early 4000$/m,{timeout:60_000});
+    await expect(screen).toHaveText(PROMPT);
+    await expect.poll(fromBottom,{message:"the screen ends at the prompt"}).toBeLessThanOrEqual(8);
+    // The typed program prints a line every 100 ms for about fifteen seconds.
+    await page.keyboard.press("Enter");
+    await expect(screen).toContainText(/^late 3$/m,{timeout:20_000});
+    // The person scrolls up to read the earlier lines: the lines that keep arriving below leave the view where it is.
+    await scrollUp();
+    const held=await top(),seen=await latest();
+    await expect.poll(latest,{timeout:10_000}).toBeGreaterThan(seen+5);
+    expect(await top(),"the view the person scrolled to").toBe(held);
+    expect(await fromBottom(),"the newest lines are below the view").toBeGreaterThan(600);
+    await shots(page,"terminal-scrolled-up-while-streaming");
+    // Scrolled back down to the end, the screen follows the output again.
+    await screen.hover();
+    for(let turn=0;turn<20&&await fromBottom()>8;turn++)await page.mouse.wheel(0,2000);
+    const resumed=await latest();
+    await expect.poll(latest,{timeout:10_000}).toBeGreaterThan(resumed+3);
+    await expect.poll(fromBottom,{message:"following the output"}).toBeLessThanOrEqual(8);
+    // Scrolled up again once the program is done, a command sent from the command line brings the screen back to its answer.
+    await expect(screen).toContainText(/^late 150$/m,{timeout:30_000});
+    await expect(screen).toHaveText(PROMPT);
+    await scrollUp();
+    await input.click();await run(page,"echo answer-shown");
+    await expect(screen).toContainText(/^answer-shown$/m);
+    await expect.poll(fromBottom).toBeLessThanOrEqual(8);
+  }finally{await shell.close()}
+});
+
 test("one very long line of output (a minified file printed) keeps the page responsive and the screen near its character cap",async({page,request})=>{
   test.setTimeout(120_000);
   const shell=await realTerminals(page);
