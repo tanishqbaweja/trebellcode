@@ -223,3 +223,28 @@ test("files attached in a question go with its answer only, and its 100-file cap
     await toggleMode(page);await shoot(page,"composer-after-question-files");
   }finally{await harness.close()}
 });
+
+// A double click whose pointer moves a few pixels between its clicks is two single clicks to the browser (detail 1 each), as Windows
+// makes it when the pointer leaves its double-click rectangle: the second still lands on the next card, which came up under the
+// pointer, and is not taken for it.
+test("a double click on Allow once that moves a few pixels approves only the card it was aimed at",async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const card=reason=>page.locator(".inline-approval .approval-card").filter({hasText:reason});
+    const first=harness.ask("item/commandExecution/requestApproval",{threadId:RELEASE.id,turnId:"turn-release",itemId:"build",command:["npm","run","build"],reason:"Build the release bundle"});
+    await expect(card("Build the release bundle")).toBeVisible();
+    const second=harness.ask("item/commandExecution/requestApproval",{threadId:RELEASE.id,turnId:"turn-release",itemId:"publish",command:["npm","publish"],reason:"Publish the release to npm"});
+    await page.waitForTimeout(300);
+    const box=await card("Build the release bundle").getByRole("button",{name:"Allow once",exact:true}).boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+    await page.mouse.click(x,y);await page.waitForTimeout(90);await page.mouse.click(x+6,y+1);
+    expect(await first.answered).toEqual({decision:"accept"});
+    await expect(card("Publish the release to npm")).toBeVisible();
+    await page.waitForTimeout(600);
+    expect(harness.answersTo(second),"the second click of the double click approved the next, unseen request").toHaveLength(0);
+    await card("Publish the release to npm").getByRole("button",{name:"Allow once",exact:true}).click();
+    expect(await second.answered).toEqual({decision:"accept"});
+  }finally{await harness.close()}
+});

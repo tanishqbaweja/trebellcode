@@ -27,7 +27,7 @@ import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnO
 import { activityRow, isCardItem, mergeLiveRow, restoredRow, settledRow } from "./activity-item.js";
 import { cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeIncompleteTurnIds } from "./turn-activity.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
-import { approvalResponse } from "./approval-utils.js";
+import { answeringClick, approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
 import { isListedThread, prependThread } from "./thread-list-state.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
@@ -565,12 +565,13 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
     :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
 // threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
-// A card answers once, and only to a click aimed at it: the second click of a double click (its click count is 2) was aimed at the
-// card before, which the first click answered, and the next card has come up under the pointer.
+// A card answers once, and only to a click aimed at it: the second click of a double click (its click count is 2, or it lands where
+// the first did, answeringClick) was aimed at the card before, which the first click answered, and the next card has come up under
+// the pointer.
 function ApprovalCard({request,onResolve,threadLabel=""}){
   const answered=useRef(false);
   if(!request)return null;
-  const answer=(event,decision)=>{if(answered.current||event.detail>1)return;answered.current=true;Promise.resolve(onResolve(request,decision)).then(result=>{if(!result)answered.current=false})};
+  const answer=(event,decision)=>{if(answered.current||event.detail>1||!answeringClick(event))return;answered.current=true;Promise.resolve(onResolve(request,decision)).then(result=>{if(!result)answered.current=false})};
   const p=request.params||{};
   const permissions=request.method==="item/permissions/requestApproval";
   const network=permissions?p.permissions?.network:null;const fileSystem=permissions?p.permissions?.fileSystem:null;
