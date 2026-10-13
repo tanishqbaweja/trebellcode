@@ -184,3 +184,42 @@ test("a question's Submit waits until every part of it has an answer",async({pag
     }
   }finally{await harness.close()}
 });
+
+test("files attached in a question go with its answer only, and its 100-file cap counts only its own files",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const shelf=page.locator(".attachment-shelf span");
+    const choose=async(button,files)=>{const [chooser]=await Promise.all([page.waitForEvent("filechooser"),button.click()]);await chooser.setFiles(files)};
+    await choose(page.getByRole("button",{name:"Attach files",exact:true}),[textFile("composer-a.txt","a"),textFile("composer-b.txt","b"),textFile("composer-c.txt","c")]);
+    await expect(shelf).toHaveCount(3);
+    const modal=page.locator(".question-modal");
+    const asked=harness.ask("item/tool/requestUserInput",{threadId:RELEASE.id,turnId:"turn-release",itemId:"q-files",questions:[{id:"evidence",header:"Evidence",question:"Attach the failing logs?",options:[],allowMultiple:false}]});
+    await expect(modal).toContainText("Attach the failing logs?");
+    await choose(modal.getByRole("button",{name:"Attach files"}),[textFile("build.log","build failed"),textFile("test.log","3 tests failed")]);
+    await expect(modal.locator(".question-files span")).toHaveCount(2);
+    await expect(modal).toContainText("2/100 attached");
+    await modal.getByRole("button",{name:"Submit",exact:true}).click();
+    const answer=(await asked.answered).answers.evidence.answers;
+    expect(answer).toHaveLength(1);
+    expect(answer[0]).toMatch(/^Attached files:\n- .*build\.log\n- .*test\.log$/);
+    await expect(modal).toHaveCount(0);
+    // The composer keeps its own three files and nothing else.
+    await expect(shelf).toHaveCount(3);
+    await expect(page.locator(".attachment-shelf")).not.toContainText("build.log");
+    // A later question's pick of 101 files keeps 100: the composer's files are not counted against it.
+    const next=harness.ask("item/tool/requestUserInput",{threadId:RELEASE.id,turnId:"turn-release",itemId:"q-many",questions:[{id:"logs",header:"Logs",question:"Attach every worker log?",options:[],allowMultiple:false}]});
+    await expect(modal).toContainText("Attach every worker log?");
+    await choose(modal.getByRole("button",{name:"Attach files"}),Array.from({length:101},(_,index)=>textFile(`worker-${index+1}.log`,"worker "+(index+1))));
+    await expect(modal).toContainText("100/100 attached",{timeout:30_000});
+    await expect(modal.getByRole("button",{name:"Attach files"})).toBeDisabled();
+    await shoot(page,"question-full-of-files");
+    await modal.getByRole("button",{name:"Submit",exact:true}).click();
+    expect((await next.answered).answers.logs.answers[0].split("\n- ")).toHaveLength(101);
+    await expect(shelf).toHaveCount(3);
+    await shoot(page,"composer-after-question-files");
+    await toggleMode(page);await shoot(page,"composer-after-question-files");
+  }finally{await harness.close()}
+});

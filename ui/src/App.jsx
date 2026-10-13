@@ -4625,9 +4625,11 @@ export default function App(){
     await addContextPath(path,{kind:"file",label:item.name||String(item.path).split(/[\\/]/).pop()||"File",detail:item.relativePath||item.path,sourcePath:item.path});
     return path;
   }
-  async function pickFiles(label){
+  // The files picked go into the composer's draft, as many as it has room for, and label is what its toast says could not be done
+  // (uploadBrowserFiles). A question passes its own room and keep, so what it picks goes with its answer only.
+  async function pickFiles(label="",{room=MAX_COMPOSER_ATTACHMENTS-attachments.length,keep=null}={}){
     const native=window.trebellDesktop?.pickFiles;
-    if(native){const p=await native();if(p?.length){const prepared=await prepareAttachmentPaths(p);await addFiles(prepared);return prepared}return[]}
+    if(native){const p=await native();if(p?.length){const prepared=await prepareAttachmentPaths(p.slice(0,Math.max(0,room)));await (keep||addFiles)(prepared);return prepared}return[]}
     const files=await new Promise(resolve=>{
       const input=document.createElement("input");input.type="file";input.multiple=true;input.hidden=true;document.body.appendChild(input);let settled=false;
       const done=value=>{if(settled)return;settled=true;input.remove();resolve(value)};
@@ -4636,24 +4638,26 @@ export default function App(){
       window.addEventListener("focus",()=>setTimeout(()=>{if(!settled&&!input.files?.length)done([])},250),{once:true});
       input.click();
     });
-    return uploadBrowserFiles(files,label);
+    return uploadBrowserFiles(files,label,[],{room,keep});
   }
   // A file over the size limit is refused by its name before anything is read, together with what the caller could not take (refused:
   // its reasons, a dropped folder's). With label (what the composer's toast says could not be done) the refusal shows at once, while
   // the files taken upload, each on the shelf as uploading until the server has it and then as attached. What failed is thrown at the
-  // end: an upload that failed, or else the refusal.
-  async function uploadBrowserFiles(files,label="",refused=[]){
-    const picked=files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length)),uploaded=[];
+  // end: an upload that failed, or else the refusal. A question's own picks (keep: where they go, room: how many it takes) go to
+  // keep once uploaded, with nothing on the composer's shelf.
+  async function uploadBrowserFiles(files,label="",refused=[],{room=MAX_COMPOSER_ATTACHMENTS-attachments.length,keep=null}={}){
+    const picked=files.slice(0,Math.max(0,room)),uploaded=[];
     const reasons=[...refused,...picked.filter(file=>attachmentSizeError(file)).map(file=>(file.name||"A file")+": "+attachmentSizeError(file).message)],refusal=reasons.length?new Error(reasons.join("; ")):null;
     if(refusal&&label)showActionError(refusal,label);
     const taken=picked.filter(file=>!attachmentSizeError(file)).map(file=>({file,id:crypto.randomUUID(),name:file.name||"attachment"}));
-    if(taken.length)setUploadingFiles(prev=>[...prev,...taken.map(({id,name})=>({id,name}))]);
+    if(taken.length&&!keep)setUploadingFiles(prev=>[...prev,...taken.map(({id,name})=>({id,name}))]);
     let failure=null;
     for(const {file,id} of taken){
-      try{const {path}=await blobAttachment(file);uploaded.push(path);addFiles([path])}
+      try{const {path}=await blobAttachment(file);uploaded.push(path);if(!keep)addFiles([path])}
       catch(error){failure ||= error}
-      finally{setUploadingFiles(prev=>prev.filter(item=>item.id!==id))}
+      finally{if(!keep)setUploadingFiles(prev=>prev.filter(item=>item.id!==id))}
     }
+    if(keep)await keep(uploaded);
     if(failure||refusal)throw failure||refusal;
     return uploaded;
   }
@@ -5375,7 +5379,7 @@ export default function App(){
 
     {window.trebellDesktop?.minimize&&window.trebellDesktop?.maximize&&window.trebellDesktop?.close&&<div className="window-controls window-controls-pinned"><button onClick={()=>window.trebellDesktop.minimize()} title="Minimize">—</button><button onClick={()=>window.trebellDesktop.maximize()} title="Maximize">□</button><button className="window-close" onClick={()=>window.trebellDesktop.close()} title="Close">×</button></div>}
     {elicitations.length>0&&(()=>{const verification=userVerificationAvailability({runtime:agentRuntime,remote:Boolean(workspaceEnvironmentId)});return <LazySlot><McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={verification.available} verificationUnavailableReason={verification.reason}/></LazySlot>})()}
-    {!elicitations.length&&questions[0]&&<LazySlot><QuestionModal request={questions[0]} threadLabel={requestThreadLabel(questions[0])} waiting={questions.length-1} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/></LazySlot>}
+    {!elicitations.length&&questions[0]&&<LazySlot><QuestionModal request={questions[0]} threadLabel={requestThreadLabel(questions[0])} waiting={questions.length-1} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={room=>pickFiles("",{room,keep:()=>{}})}/></LazySlot>}
     {snoozeRequest&&<LazySlot><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)} focusFallback={focusShownView}/></LazySlot>}
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><UndoCountdown expiresAt={threadUndo.expiresAt}/></div>}
     {paletteOpen&&<LazySlot fallback={<CommandPaletteLoading seed={paletteSeedRef} onClose={closePalette}/>}><CommandPalette open seed={paletteSeedRef} focusFallback={focusShownView} onClose={closePalette} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></LazySlot>}

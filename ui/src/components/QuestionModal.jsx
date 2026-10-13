@@ -66,7 +66,7 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
     if(fileCount>=100)return;
     setBusy(questionId);setAttachError("");
     try{
-      const picked=await pickFiles?.();if(!picked?.length)return;
+      const picked=await pickFiles?.(Math.max(0,100-fileCount));if(!picked?.length)return;
       setFilesByQuestion(prev=>{
         const room=Math.max(0,100-Object.values(prev).reduce((sum,items)=>sum+(items?.length||0),0));
         const next=[...new Set([...(prev[questionId]||[]),...picked.slice(0,room)])];
