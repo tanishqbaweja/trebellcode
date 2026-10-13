@@ -127,3 +127,29 @@ test("every agent question waits for its own answer, one at a time, naming the t
     }
   }finally{await harness.close()}
 });
+
+test("a double click on Allow once answers only the approval it was aimed at, and the next waits for its own decision",async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const approval=(itemId,reason)=>harness.ask("item/commandExecution/requestApproval",{threadId:RELEASE.id,turnId:"turn-release",itemId,command:["npm","run",itemId],reason});
+    const card=reason=>page.locator(".inline-approval .approval-card").filter({hasText:reason});
+    const first=approval("build","Build the release bundle");
+    await expect(card("Build the release bundle")).toBeVisible();
+    const second=approval("publish","Publish the release to npm");
+    await page.waitForTimeout(300);
+    await card("Build the release bundle").getByRole("button",{name:"Allow once",exact:true}).dblclick();
+    expect(await first.answered).toEqual({decision:"accept"});
+    // The second card comes up under the pointer and keeps its own decision: the double click's second click is not taken for it.
+    await expect(card("Publish the release to npm")).toBeVisible();
+    await page.waitForTimeout(600);
+    expect(harness.answersTo(first)).toHaveLength(1);
+    expect(harness.answersTo(second)).toHaveLength(0);
+    await card("Publish the release to npm").getByRole("button",{name:"Deny",exact:true}).click();
+    expect(await second.answered).toEqual({decision:"decline"});
+    await expect(page.locator(".inline-approval .approval-card")).toHaveCount(0);
+    expect(harness.answersTo(second)).toHaveLength(1);
+  }finally{await harness.close()}
+});
