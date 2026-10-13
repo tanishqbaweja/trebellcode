@@ -2018,8 +2018,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             if(!reached.ok)return json(res,503,{error:String(reached.stderr||reached.stdout||"").trim()||`${profile.name} did not answer`,activeEnvironmentId:state.settings().activeEnvironmentId||null});
           }
         }
-        // Whether the runtime runs in the chosen environment is known only once it has restarted there. A switch it cannot run in is
-        // undone: the environment that was active is saved and restarted again, and the failure answers with an error status.
+        // Whether the runtime runs in the chosen environment is known only once it has restarted there. A switch to a host it cannot
+        // run in is undone: the environment that was active is saved and restarted again, and the failure answers with an error status.
+        // A switch to Local machine is kept, with the runtime said not ready: it is the way back from a host that stopped answering,
+        // which an undo would make the agent environment again.
         const previousId=state.settings().activeEnvironmentId||null;
         const switchTo=async environmentId=>{state.updateSettings({activeEnvironmentId:environmentId});await agentRelay?.reset?.();await restartAppServer()};
         await switchTo(id);
@@ -2036,7 +2038,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const runtimeError=selectedAgentRuntime==="codex"
           ?(appServer?.error||(!activeAgentStatus?.available?activeAgentStatus?.message:null)||null)
           :(agentRuntimeReady?null:(activeAgentStatus?.message||"Active agent runtime is unavailable"));
-        if(runtimeError){
+        if(runtimeError&&id){
           if(id!==previousId)await switchTo(previousId);
           return json(res,503,{error:runtimeError,activeEnvironmentId:previousId});
         }

@@ -410,6 +410,44 @@ test("a host that does not answer is never made the agent environment, with Treb
   }
 });
 
+// The build box was used for agents while it answered (Codex is installed only there), then it went down. Use for agent on Local
+// machine gets the person off it: Local is kept although its Codex is not ready, and the host that no longer answers is not made
+// the agent environment again.
+test("leaving a host that stopped answering for Local machine is kept, with Local's harness not ready",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-activate-leave-dead-"));
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",onboardingComplete:true}}));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  let hostUp=true;const refused="ssh: connect to host 127.0.0.1 port 9: Connection refused";
+  const originalProbe=AgentRuntimeManager.prototype.probe,originalEnvironmentProbe=EnvironmentManager.prototype.probe;
+  EnvironmentManager.prototype.probe=async function(id){return hostUp?{exitCode:0,stdout:"trebell-environment-ok",stderr:"",timedOut:false,ok:true,profile:{id}}:{exitCode:255,stdout:"",stderr:refused,timedOut:false,ok:false,profile:{id}}};
+  AgentRuntimeManager.prototype.probe=async function(instanceOrKind,{environmentId}={}){
+    const instance=typeof instanceOrKind==="string"?this.instances().find(item=>item.kind===instanceOrKind):instanceOrKind,available=environmentId==="build-box"&&hostUp;
+    return {id:instance?.id,kind:instance?.kind,name:"Codex",available,installed:available,authenticated:available,protocol:"codex",version:available?"fixture":null,message:available?"Ready":environmentId==="build-box"?refused:"Codex is not installed on this machine"};
+  };
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:true,env});
+    const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    const active=async()=>(await fetch(gui.url+"/api/environments").then(r=>r.json())).activeEnvironmentId;
+    assert.equal((await post("/api/environments",{id:"build-box",type:"ssh",name:"Build box",host:"127.0.0.1",port:9})).status,200);
+    assert.equal((await post("/api/environment/activate",{id:"build-box"})).status,200,"the build box answered and became the agent environment");
+    assert.equal(await active(),"build-box");
+    hostUp=false;
+    const back=await post("/api/environment/activate",{id:null}),answer=await back.json();
+    assert.equal(back.status,200,JSON.stringify(answer));
+    assert.equal(answer.activeEnvironmentId,null);
+    assert.equal(answer.agentRuntimeStatus.available,false,"the answer says Local's Codex is not ready");
+    assert.equal(await active(),null,"Local machine is the agent environment");
+    await gui.close();gui=null;
+    assert.equal(new TrebellStateStore(env).settings().activeEnvironmentId??null,null,"the next start uses Local machine too");
+  }finally{
+    AgentRuntimeManager.prototype.probe=originalProbe;EnvironmentManager.prototype.probe=originalEnvironmentProbe;
+    if(gui)await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
 // A "Run when a worktree is created" action runs in the new worktree's setup terminal exactly as written, as a card or header run of
 // the same action does: a command with double quotes reaches the shell as typed (on Windows cmd.exe gets the command line whole).
 test("a worktree's setup action runs as written, in a terminal named for it",{timeout:60_000},async()=>{
