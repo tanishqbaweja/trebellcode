@@ -40,7 +40,7 @@ export function applyReplaceTextHunks(content,hunks,{path="",maxBytes=Infinity}=
   const original=String(content??"");let current=original,replacements=0;
   for(let index=0;index<hunks.length;index++){
     const hunk=hunks[index],offsets=matchOffsets(current,hunk.oldText);
-    if(offsets.length!==hunk.expected)throw new Error(replacementFailure({original,current,hunk,index,offsets,path}));
+    if(offsets.length!==hunk.expected)throw new Error(replacementFailure({original,current,hunks,hunk,index,offsets,path}));
     current=current.split(hunk.oldText).join(hunk.newText);replacements+=offsets.length;
     if(Number.isFinite(maxBytes)&&Buffer.byteLength(current,"utf8")>maxBytes)throw new Error("Edited file exceeds the 2 MB Native edit limit");
   }
@@ -124,28 +124,71 @@ function numberedRegion(lines,start,end,label){
 
 function rangeText(start,end){return start===end?`line ${start}`:`lines ${start}-${end}`}
 
-function replacementFailure({original,current,hunk,index,offsets,path}){
+// "crlf" when old_text has bare \n line breaks and the text uses \r\n, "lf" when old_text has \r\n and the text uses bare \n;
+// otherwise null. A read through trebell_repo/read_source joins lines with \n, so a CRLF file's exact text is not what it shows.
+function lineEndingMismatch(text,needle){
+  const bare=/(?:^|[^\r])\n/,needleCrlf=needle.includes("\r\n"),needleBare=bare.test(needle);
+  if(needleBare&&!needleCrlf&&text.includes("\r\n"))return "crlf";
+  if(needleCrlf&&!needleBare&&bare.test(text)&&!text.includes("\r\n"))return "lf";
+  return null;
+}
+function lineEndingNote(path,ending){
+  return ending==="crlf"
+    ?`${path} uses CRLF (\\r\\n) line endings and old_text uses LF (\\n); send old_text and new_text with \\r\\n line endings.`
+    :`${path} uses LF (\\n) line endings and old_text uses CRLF (\\r\\n); send old_text and new_text with \\n line endings.`;
+}
+
+// The earlier hunk after which needle no longer occurs as often as in the original text (counted by occurrences), or -1.
+function earlierHunkThatChanged(original,hunks,index,occurrences){
+  let text=original,before=occurrences(text);
+  for(let earlier=0;earlier<index;earlier++){
+    text=text.split(hunks[earlier].oldText).join(hunks[earlier].newText);
+    const after=occurrences(text);if(after<before)return earlier;before=after;
+  }
+  return -1;
+}
+
+function replacementFailure({original,current,hunks=[],hunk,index,offsets,path}){
   const count=offsets.length,prefix=hunk.label?hunk.label+": ":"",later=index>0;
   const head=`${prefix}Expected ${hunk.expected} exact replacement${hunk.expected===1?"":"s"} in ${path}, found ${count}. No changes were written${hunk.label?" (edits are all or nothing)":""}.`;
   const lines=current.split("\n"),starts=lineStartsOf(current),mapLine=later?lineNumberMapper(original,current):number=>number;
   let unmapped=false;const label=number=>{const mapped=mapLine(number);if(mapped==null){unmapped=true;return number}return mapped};
   const out=[head];
-  if(count===0){
+  const regionsAt=pairs=>pairs.map(([startOffset,endOffset])=>[lineIndexAt(starts,startOffset),lineIndexAt(starts,endOffset)]);
+  const alsoAt=others=>others.length?` (also at ${others.map(([start,end])=>rangeText(label(start+1),label(end+1))).join(", ")})`:"";
+  // A later hunk written against the file as it is on disk, where an earlier hunk of this call already changed that text.
+  const changedEarlier=(matches,exactly)=>{
+    if(!later||!matches.length)return null;
+    const earlier=earlierHunkThatChanged(original,hunks,index,exactly?text=>matchOffsets(text,hunk.oldText).length:text=>whitespaceInsensitiveMatches(text,hunk.oldText).length);
+    if(earlier<0)return null;
+    const originalStarts=lineStartsOf(original),[startOffset,endOffset]=matches[0];
+    return `old_text matches ${rangeText(lineIndexAt(originalStarts,startOffset)+1,lineIndexAt(originalStarts,endOffset)+1)} of the file${exactly?"":" when whitespace is ignored"}, but ${hunks[earlier].label||"an earlier edit"} already changed that text; put both changes in one hunk, or write this hunk against the text the earlier hunks leave.`;
+  };
+  const noMatch=()=>{
+    const overlapping=changedEarlier(matchOffsets(original,hunk.oldText).map(offset=>[offset,offset+hunk.oldText.length-1]),true);
+    if(overlapping)return [overlapping];
+    // Line endings are checked before whitespace, so a CRLF region is not offered as "exact" text that lost its \r.
+    const ending=lineEndingMismatch(current,hunk.oldText),note=ending?[lineEndingNote(path,ending)]:[];
+    const converted=ending==="crlf"?hunk.oldText.replace(/\r?\n/g,"\r\n"):ending==="lf"?hunk.oldText.replace(/\r\n/g,"\n"):null;
+    const convertedOffsets=converted?matchOffsets(current,converted):[];
+    if(convertedOffsets.length){
+      const [first,...others]=regionsAt(convertedOffsets.map(offset=>[offset,offset+converted.length-1]));
+      return [`old_text matches ${rangeText(label(first[0]+1),label(first[1]+1))}${alsoAt(others)} except for its line endings: ${note[0]}`];
+    }
     const whitespace=whitespaceInsensitiveMatches(current,hunk.oldText);
     if(whitespace.length){
-      const regions=whitespace.map(([startOffset,endOffset])=>[lineIndexAt(starts,startOffset),lineIndexAt(starts,endOffset)]),[first,...others]=regions;
-      const also=others.length?` (also at ${others.map(([start,end])=>rangeText(label(start+1),label(end+1))).join(", ")})`:"";
-      const shown=numberedRegion(lines,first[0],first[1],label);
-      out.push(`old_text matches ${rangeText(label(first[0]+1),label(first[1]+1))} when whitespace is ignored${also}. The exact current text there:`,...shown);
-    }else{
-      const region=lineSimilarityRegion(lines,hunk.oldText)||tokenRegion(lines,hunk.oldText);
-      if(region){
-        const shown=numberedRegion(lines,region.start,region.end,label);
-        const evidence=region.kind==="lines"?`${region.matched} of ${region.total} old_text lines match it when whitespace is ignored`:`${region.matched} of ${region.total} names in old_text appear there`;
-        out.push(`Closest region, ${rangeText(label(region.start+1),label(region.end+1))} (${evidence}):`,...shown);
-      }else out.push("No similar region was found in the file.");
+      const [first,...others]=regionsAt(whitespace),carriageReturns=lines.slice(first[0],first[1]+1).some(line=>line.endsWith("\r"));
+      return [`old_text matches ${rangeText(label(first[0]+1),label(first[1]+1))} when whitespace is ignored${alsoAt(others)}. ${carriageReturns?"The current text there, without the \\r that ends its lines:":"The exact current text there:"}`,...numberedRegion(lines,first[0],first[1],label),...note];
     }
-  }else{
+    const overlappingLoosely=changedEarlier(whitespaceInsensitiveMatches(original,hunk.oldText),false);
+    if(overlappingLoosely)return [overlappingLoosely,...note];
+    const region=lineSimilarityRegion(lines,hunk.oldText)||tokenRegion(lines,hunk.oldText);
+    if(!region)return ["No similar region was found in the file.",...note];
+    const evidence=region.kind==="lines"?`${region.matched} of ${region.total} old_text lines match it when whitespace is ignored`:`${region.matched} of ${region.total} names in old_text appear there`;
+    return [`Closest region, ${rangeText(label(region.start+1),label(region.end+1))} (${evidence}):`,...numberedRegion(lines,region.start,region.end,label),...note];
+  };
+  if(count===0)out.push(...noMatch());
+  else{
     out.push(count>hunk.expected?`Matches (add nearby text to old_text so it matches ${hunk.expected===1?"once":hunk.expected+" times"}, or set expected_replacements to ${count}):`:`Matches (set expected_replacements to ${count}, or correct old_text):`);
     for(const offset of offsets.slice(0,MATCH_LIST_LIMIT)){
       const lineIndex=lineIndexAt(starts,offset),own=lines[lineIndex]??"";

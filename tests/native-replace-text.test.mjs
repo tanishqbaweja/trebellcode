@@ -138,6 +138,37 @@ test("a later hunk that fails names itself, writes nothing, and gives line numbe
   assert.match(between,/\n\(Line numbers count the edits before edits\[2\] as applied\.\)$/,"a region between earlier hunks keeps the as-applied numbering and says so");
 });
 
+test("an old_text that differs from the file only in its line endings is told so, and CRLF text is never called exact",()=>{
+  const crlf="def total(items):\r\n    count = 0\r\n    for item in items:\r\n        count += item\r\n    return count\r\n";
+  const note="greet.py uses CRLF (\\r\\n) line endings and old_text uses LF (\\n); send old_text and new_text with \\r\\n line endings.";
+  const message=fails(crlf,{old_text:"    count = 0\n    for item in items:\n        count += item",new_text:"x"});
+  assert.equal(message,["Expected 1 exact replacement in greet.py, found 0. No changes were written.",`old_text matches lines 2-4 except for its line endings: ${note}`].join("\n"));
+  assert.equal(fails(crlf,{edits:[{old_text:"def total(items):\n    count = 0",new_text:"x"}]}),
+    ["edits[0]: Expected 1 exact replacement in greet.py, found 0. No changes were written (edits are all or nothing).",`old_text matches lines 1-2 except for its line endings: ${note}`].join("\n"));
+  assert.equal(fails("a = 1\nb = 2\n",{old_text:"a = 1\r\nb = 2",new_text:"x"}),
+    ["Expected 1 exact replacement in greet.py, found 0. No changes were written.","old_text matches lines 1-2 except for its line endings: greet.py uses LF (\\n) line endings and old_text uses CRLF (\\r\\n); send old_text and new_text with \\n line endings."].join("\n"));
+  assert.equal(fails(crlf,{old_text:"  count = 0\n  for item in items:",new_text:"x"}),[
+    "Expected 1 exact replacement in greet.py, found 0. No changes were written.",
+    "old_text matches lines 2-3 when whitespace is ignored. The current text there, without the \\r that ends its lines:",
+    "2|     count = 0",
+    "3|     for item in items:",
+    note,
+  ].join("\n"),"a region shown without its \\r is not offered as the exact text");
+  assert.match(fails(crlf,{old_text:"    count = 1\n    for item in items:\n        count += item\n    return count",new_text:"x"}),/^Closest region, lines 2-5 \(3 of 4 old_text lines match it when whitespace is ignored\):\n(?:.*\n){4}greet\.py uses CRLF/m);
+  assert.deepEqual(applyReplaceTextHunks(crlf,replaceTextHunks({old_text:"    count = 0\r\n",new_text:"    count = 1\r\n"}),{path:"greet.py"}),{content:crlf.replace("count = 0","count = 1"),replacements:1});
+});
+
+test("a later hunk written against text an earlier hunk of the same call changed says so, with its line on disk",()=>{
+  assert.equal(fails("alpha\nbeta\ngamma\ndelta\n",{edits:[{old_text:"beta\ngamma",new_text:"BETA\ngamma"},{old_text:"beta",new_text:"b"}]}),[
+    "edits[1]: Expected 1 exact replacement in greet.py, found 0. No changes were written (edits are all or nothing).",
+    "old_text matches line 2 of the file, but edits[0] already changed that text; put both changes in one hunk, or write this hunk against the text the earlier hunks leave.",
+  ].join("\n"));
+  assert.equal(fails("alpha\nbeta  gamma\ndelta\nomega\n",{edits:[{old_text:"omega",new_text:"OMEGA"},{old_text:"beta  gamma",new_text:"BETA gamma"},{old_text:"beta gamma\ndelta",new_text:"b"}]}),[
+    "edits[2]: Expected 1 exact replacement in greet.py, found 0. No changes were written (edits are all or nothing).",
+    "old_text matches lines 2-3 of the file when whitespace is ignored, but edits[1] already changed that text; put both changes in one hunk, or write this hunk against the text the earlier hunks leave.",
+  ].join("\n"));
+});
+
 test("the diff shows a two-line change inside one hunk as two changes, not a block rewrite",()=>{
   const before="start\none\ntwo\nthree\nfour\nfive\nend\n",after="start\nONE\ntwo\nthree\nfour\nFIVE\nend\n";
   assert.equal(compactReplaceDiff(before,after),["@@ -1,7 +1,7 @@"," start","-one","+ONE"," two"," three"," four","-five","+FIVE"," end"].join("\n"));
