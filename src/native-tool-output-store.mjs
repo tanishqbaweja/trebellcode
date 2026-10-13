@@ -54,6 +54,12 @@ function collapsedOutputValue(value){
   }
   return next?{value:next,runs,removedLines}:null;
 }
+// A collapse in hot context adds a pointer to the stored lines (a handle is "out_" and a UUID), so it is used only when the
+// characters it takes out of the model's view, as the model reads it (JSON), outnumber that pointer's.
+function collapseOutweighsPointer(view,collapsed,storedText){
+  const pointer={handle:"out_"+"0".repeat(36),totalBytes:byteLength(storedText),totalLines:storedText.split(/\r?\n/).length,archived:true,note:COLLAPSED_OUTPUT_NOTE};
+  return JSON.stringify(view).length-JSON.stringify(collapsed).length>JSON.stringify({_trebell_output:pointer}).length;
+}
 function importantLines(text,maxChars,{skipRepeats=false}={}){
   const lines=String(text||"").split(/\r?\n/),out=[];let used=0;
   for(let index=0;index<lines.length;index++){
@@ -147,7 +153,8 @@ export class NativeToolOutputStore{
     const text=serialized(safeValue),totalBytes=byteLength(text),view=projectedView(modelView,safeValue);
     const model=view?{value:view,text:serialized(view),metadata:viewMetadata(view)}:{value:safeValue,text,metadata:scalarMetadata(safeValue)};
     const collapsed=collapseRepeatedLines===true?collapsedOutputValue(model.value):null;
-    if(collapsed)return await this.#virtualizeCollapsed(safeValue,text,totalBytes,model,collapsed,{namespace,name});
+    // An output too large for hot context is previewed behind a pointer either way, so its collapse always pays.
+    if(collapsed&&(totalBytes>this.maxHotBytes||collapseOutweighsPointer(model.value,collapsed.value,model.text)))return await this.#virtualizeCollapsed(safeValue,text,totalBytes,model,collapsed,{namespace,name});
     if(totalBytes<=this.maxHotBytes)return view?{value:view,uiValue:safeValue,virtualized:false,totalBytes}:{value:safeValue,virtualized:false,totalBytes};
     const handle=await this.#store(model.text,{namespace,name}),storedBytes=byteLength(model.text);
     try{this.onVirtualized?.({handle,totalBytes:storedBytes,namespace,name})}catch{}

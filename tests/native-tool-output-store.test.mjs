@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NativeToolOutputStore, collapseRepeatedLines } from "../src/native-tool-output-store.mjs";
@@ -134,6 +134,24 @@ test("a large collapsed output previews the collapsed text and indexes raw line 
     assert.equal(rawLines[Number(labelled[1])-1],failure,"important-line numbers point into the stored raw output");
     assert.match(shaped.uiValue.preview,/solver failed to converge/);assert.notEqual(shaped.uiValue.preview,preview,"the person's preview is the raw one");
     assert.equal(shaped.uiValue._trebell_output.handle,shaped.handle);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("a collapse is used only when the lines it removes outweigh the pointer it adds to the model's view",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-output-collapse-small-"));
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:16*1024});
+    const warning="Warning: grid volume is not an integer number of pixels; cell size will be rounded to nearest pixel.";
+    const twice={exitCode:0,stdout:"stage beta=48\n"+warning+"\n"+warning+"\nStarting adjoint run...\n"};
+    const kept=await store.virtualize(twice,{namespace:"trebell_terminal",name:"run",collapseRepeatedLines:true});
+    assert.deepEqual(kept.value,twice,"a one-line repeat costs less than a pointer, so the model reads both lines");
+    assert.equal(kept.handle,undefined);assert.equal(kept.uiValue,undefined);assert.equal(kept.archived,undefined);
+    assert.deepEqual(await readdir(root).catch(()=>[]),[],"nothing is stored for an output left whole");
+    const often={exitCode:0,stdout:"stage beta=48\n"+(warning+"\n").repeat(6)+"Starting adjoint run...\n"};
+    const collapsed=await store.virtualize(often,{namespace:"trebell_terminal",name:"run",collapseRepeatedLines:true});
+    assert.equal(collapsed.value.stdout,"stage beta=48\n"+warning+"\n[Trebell: previous line repeated 5 more times]\nStarting adjoint run...\n");
+    assert.ok(collapsed.value._trebell_output?.handle,"the collapsed lines stay retrievable");
+    assert.ok(JSON.stringify(collapsed.value).length<JSON.stringify(often).length,"a collapse that is used leaves the model's view smaller, pointer included");
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
