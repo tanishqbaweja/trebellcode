@@ -1030,6 +1030,9 @@ export default function App(){
   // The draft and note of a send that failed while its thread was not shown, by thread, until the thread is opened again, and the
   // turns a Stop was sent for (thread-turn-notes.js): each goes with its thread or its turns, and both stay bounded.
   const turnNotesRef=useRef(null);if(!turnNotesRef.current)turnNotesRef.current=createThreadTurnNotes();
+  // The draft of each send on its way, by its composer hold (send()): its files and context leave the composer when another thread
+  // takes the view, and come back when the send's own thread is opened again before its turn starts (openThreadInternal).
+  const sendDraftsRef=useRef(new WeakMap());
   // The Stop on its way (stop()): the turn or send it is for, so a second press sends nothing more, and the thread it stops, whose
   // Stop reads "Stopping…" until the turn has ended. The turn notes keep the turns a Stop was sent for until they end, for a
   // thread left and opened again meanwhile (openThread).
@@ -3566,8 +3569,10 @@ export default function App(){
     const pendingSend=pendingSendsRef.current.get(String(thread.id)),resumedRunning=openedThread.status?.type==="active"||Boolean(pendingSend),resumedTurnId=resumedActiveTurnId(resumed);
     const withPendingSend=history=>pendingSend?.message&&!resumedTurnId?[...history,pendingSend.message]:history;
     // The composer is held only for a send of the thread shown: another thread opened releases it, as a new task does (showNewTask).
-    if(previousThreadId!==thread.id&&submittingRef.current){submittingRef.current=null;setSubmitting(false)}
-    if(pendingSend?.view&&!submittingRef.current){submittingRef.current=pendingSend.view;setSubmitting(true)}
+    // The send's files and context go with its hold: the thread opened does not show them (a send from it would carry them again),
+    // and the send's own thread, opened again before its turn starts, has them back.
+    if(previousThreadId!==thread.id&&submittingRef.current){dropSentDraft(sendDraftsRef.current.get(submittingRef.current));submittingRef.current=null;setSubmitting(false)}
+    if(pendingSend?.view&&!submittingRef.current){submittingRef.current=pendingSend.view;setSubmitting(true);returnSentDraft(sendDraftsRef.current.get(pendingSend.view))}
     // A Stop already sent for the turn that still runs reads Stopping again, and a press sends no second one (stop()).
     const stoppedTurnKey=resumedRunning&&resumedTurnId?String(thread.id)+"\0"+resumedTurnId:null;
     if(pendingSend?.stopped){stopKeyRef.current=pendingSend;setStoppingThreadId(String(thread.id))}
@@ -4284,6 +4289,8 @@ export default function App(){
     if(files.size)setAttachments(current=>current.filter(path=>!files.has(path)));
     if(chips.size)setContextChips(current=>current.filter(item=>!chips.has(typeof item==="string"?item:JSON.stringify(item))));
   }
+  // The files and context of a send still on its way, back beside what the composer holds (its text is in the conversation).
+  function returnSentDraft(draft){if(draft&&(draft.attachments?.length||draft.contextChips?.length))restoreFailedDraft({attachments:draft.attachments,contextChips:draft.contextChips})}
   function restoreFailedDraft(draft){
     setPrompt(current=>{
       const next=String(draft?.text||"");if(!next)return current;
@@ -4496,7 +4503,7 @@ export default function App(){
     try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     if(await sendModelFanout(text))return;
     try{await validateAttachmentPaths(attachments)}catch(e){setEvents(prev=>[...prev,{id:"attachment-error-"+Date.now(),kind:"error",title:e.message,status:"done",raw:{}}]);return}
-    const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};
+    const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};if(sendView)sendDraftsRef.current.set(sendView,draft);
     setPrompt("");setPromptHistoryIndex(-1);setSection("chat");
     if(bootstrap.mock){
       if(draft.attachments.length||draft.contextChips.length){
