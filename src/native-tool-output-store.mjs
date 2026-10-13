@@ -171,7 +171,10 @@ export class NativeToolOutputStore{
     const compactSignalPreview=failureLike(safeValue),pointer={handle,totalBytes:storedBytes,totalLines,note:VIRTUALIZED_OUTPUT_NOTE};
     // The person sees what they would see without the collapse: the whole value, or its preview when it is too large.
     const uiValue=totalBytes<=this.maxHotBytes?safeValue:{...scalarMetadata(safeValue),preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview}),_trebell_output:pointer};
-    if(byteLength(collapsedText)<=this.maxHotBytes){
+    // The raw size decides between the whole value and a preview, as it does without the collapse: an output over the hot bound
+    // gets the bounded preview of its collapsed text even when the collapse alone would bring it under, so the collapse only ever
+    // shortens what the model is shown.
+    if(totalBytes<=this.maxHotBytes){
       try{this.onVirtualized?.({handle,totalBytes:storedBytes,namespace,name,archived:true})}catch{}
       return {
         virtualized:false,archived:true,collapsedLines:collapsed.removedLines,totalBytes,handle,uiValue,

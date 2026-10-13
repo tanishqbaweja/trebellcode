@@ -162,9 +162,31 @@ test("a collapsed output too large for hot context still gives the person the pr
     const value={exitCode:0,stdout:"render done\n",stderr:"Warning: texture cache miss; using CPU sampling for this tile.\n".repeat(400)};
     const before=await store.virtualize(value,{namespace:"trebell_terminal",name:"run"});
     const shaped=await store.virtualize(value,{namespace:"trebell_terminal",name:"run",collapseRepeatedLines:true});
-    assert.equal(shaped.virtualized,false);assert.match(shaped.value.stderr,/previous line repeated 399 more times/);
+    assert.equal(shaped.virtualized,true);assert.match(shaped.value.preview,/previous line repeated 399 more times/,"the collapsed text is short enough to be previewed whole");
     assert.equal(Object.hasOwn(shaped.uiValue,"stderr"),false,"the person is not handed the whole 25 KB output");
     assert.equal(shaped.uiValue.preview,before.value.preview);assert.equal(shaped.uiValue._trebell_output.handle,shaped.handle);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("an output over the hot bound that its collapse would bring under is still previewed, never shown whole",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-output-collapse-band-"));
+  try{
+    const store=new NativeToolOutputStore({directory:root});
+    const distinct=Array.from({length:300},(_,index)=>`step ${String(index).padStart(4,"0")} loss=${(1/(index+1)).toFixed(6)} lr=0.000300 grad=${(index*0.37%1).toFixed(4)}`);
+    const warning="UserWarning: the default value of reduction will change in a future release; pass reduction explicitly";
+    const stdout=[...distinct.slice(0,150),...Array(400).fill(warning),...distinct.slice(150)].join("\n")+"\n";
+    const value={success:true,exitCode:0,stdout,stderr:"",signal:null,timedOut:false,truncated:false,durationMs:900,cwd:"/app",command:"python",args:["train.py"]};
+    assert.ok(Buffer.byteLength(stdout)>16*1024&&Buffer.byteLength(collapseRepeatedLines(stdout).text)<16*1024,"the collapse alone would bring this output under the hot bound");
+    const plain=await store.virtualize(value,{namespace:"trebell_terminal",name:"run"}),shaped=await store.virtualize(value,{namespace:"trebell_terminal",name:"run",collapseRepeatedLines:true});
+    assert.equal(plain.virtualized,true);assert.equal(shaped.virtualized,true);
+    assert.equal(Object.hasOwn(shaped.value,"stdout"),false);assert.ok(shaped.value.preview.length<=3600);assert.ok(shaped.value._trebell_output.handle);
+    assert.ok(JSON.stringify(shaped.value).length<=JSON.stringify(plain.value).length+200,`the model's view (${JSON.stringify(shaped.value).length} characters) is no larger than the preview without the collapse (${JSON.stringify(plain.value).length})`);
+    let repeats=0;
+    for(let start=1;;){
+      const page=await store.read({handle:shaped.handle,start_line:start,end_line:start+199,max_chars:48_000});
+      repeats+=page.content.split("\n").filter(line=>line===warning).length;if(page.endLine>=page.totalLines)break;start=page.endLine+1;
+    }
+    assert.equal(repeats,400,"every raw line stays retrievable");
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
