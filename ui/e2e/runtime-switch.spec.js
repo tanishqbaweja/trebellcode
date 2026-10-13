@@ -244,6 +244,26 @@ test("a harness switch completed while Settings stays open keeps the new catalog
   }finally{await close()}
 });
 
+// New task, the sidebar's way back from Settings, finds the new task's draft as it was after a harness switch, as the switch's note
+// says it will be.
+test("a new-task draft stays through a harness switch and New task back from Settings",async({page})=>{
+  test.setTimeout(45_000);
+  const {relay,close}=await startHarness(page,{runtime:"claude"});
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker"),draft="A draft written before the switch";
+    await expect(picker).toContainText("Claude Fixture Sonnet");
+    await composer.click();await page.keyboard.type(draft,{delay:8});
+    const switched=agentRuntimePost(page);
+    await selectHarness(page,"OpenCode");
+    await switched;
+    await page.getByRole("button",{name:"New task",exact:true}).click();
+    await expect(composer).toHaveValue(draft);
+    await expect(picker).toContainText("OpenCode Fixture Fast",{timeout:15_000});
+    await expect(composer).toHaveValue(draft);
+  }finally{await close()}
+});
+
 test("a rejected harness switch restores the previous harness model and keeps its transport",async({page})=>{
   test.setTimeout(45_000);
   const {server,relay,close}=await startHarness(page,{runtime:"claude",rejectSelect:"OpenCode could not start: fixture launcher failed"});
