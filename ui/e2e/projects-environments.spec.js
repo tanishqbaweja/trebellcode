@@ -690,6 +690,64 @@ test.describe("Clone",()=>{
       try{rmSync(parent,{recursive:true,force:true,maxRetries:50,retryDelay:100})}catch{}
     }
   });
+
+  // The banner over the chat while a project clones takes the mouse as the card's buttons do: the pointer is on Cancel and Retry
+  // clone, not on the conversation area under them, and the conversation's first rows start below the banner, not under it.
+  test("the clone banner's Cancel and Retry clone answer the mouse, and the conversation starts below the banner",async({page,request})=>{
+    test.setTimeout(120_000);
+    const parent=mkdtempSync(join(tmpdir(),"trebell-e2e-clone-banner-"));
+    const sockets=new Set(),remote=createHttpServer(incoming=>{sockets.add(incoming.socket)});
+    await new Promise((resolve,reject)=>remote.listen(0,"127.0.0.1",resolve).once("error",reject));
+    const job=async()=>(await listedProjects(request)).find(project=>/banner-repo$/.test(project.path))?.cloneJob?.status||null;
+    // What the pointer is over at the middle of an element: the button it is in, if any.
+    const under=locator=>locator.evaluate(element=>{const box=element.getBoundingClientRect();const hit=document.elementFromPoint(box.left+box.width/2,box.top+box.height/2);return hit?.closest("button")?.textContent.trim()||hit?.className||hit?.tagName});
+    try{
+      await page.addInitScript(folder=>{window.trebellDesktop={pickDirectory:async()=>folder}},parent);
+      await open(page,request);
+      await nav(page,"Projects").click();
+      const clone=page.locator(".clone-card");
+      await clone.getByRole("textbox",{name:"Clone URL"}).click();
+      await page.keyboard.type(`http://127.0.0.1:${remote.address().port}/team/banner-repo.git`,{delay:10});
+      await clone.getByRole("button",{name:"Clone",exact:true}).click();
+      const banner=page.getByTestId("clone-banner");
+      await expect(banner).toBeVisible({timeout:20_000});
+      await expect.poll(()=>sockets.size,{message:"git reached the remote",timeout:20_000}).toBeGreaterThan(0);
+      // A message sent meanwhile waits for the repository; when the clone is cancelled the conversation says so under the banner.
+      await page.getByTestId("composer").click();
+      await page.keyboard.type("List the scripts once the repository is here.",{delay:5});
+      await page.keyboard.press("Enter");
+      const cancel=banner.getByRole("button",{name:"Cancel"});
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});expect(await under(cancel),`the pointer is on Cancel at ${width}`).toBe("Cancel")}
+      await page.setViewportSize({width:1280,height:800});
+      await cancel.hover();
+      expect(await cancel.evaluate(element=>element.matches(":hover"))).toBe(true);
+      await shootModes(page,"clone-banner-running");
+      await cancel.click();
+      await expect(banner).toContainText("Clone cancelled",{timeout:10_000});
+      const retry=banner.getByRole("button",{name:"Retry clone"});
+      await expect(page.locator(".conversation-scroll")).toContainText("Repository clone cancelled.",{timeout:10_000});
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        expect(await under(retry),`the pointer is on Retry clone at ${width}`).toBe("Retry clone");
+        const first=await page.locator(".conversation-scroll .conversation-column").evaluate(column=>Math.min(...[...column.children].map(child=>child.getBoundingClientRect()).filter(box=>box.height>0).map(box=>box.top)));
+        const bannerBox=await banner.boundingBox();
+        expect(first,`the conversation starts below the banner at ${width}`).toBeGreaterThanOrEqual(bannerBox.y+bannerBox.height);
+      }
+      await page.setViewportSize({width:1280,height:800});
+      await shootModes(page,"clone-banner-cancelled");
+      // Retry clone starts the clone again, and its Cancel ends it again, both with the mouse.
+      await retry.click();
+      await expect(banner).toContainText("You can keep writing",{timeout:10_000});
+      await expect.poll(job,{timeout:10_000}).toBe("running");
+      await cancel.click();
+      await expect(banner).toContainText("Clone cancelled",{timeout:10_000});
+    }finally{
+      for(const socket of sockets)socket.destroy();
+      await new Promise(resolve=>remote.close(resolve));
+      await expect.poll(async()=>["running","cancelling"].includes(await job()),{timeout:20_000}).toBe(false).catch(()=>{});
+      try{rmSync(parent,{recursive:true,force:true,maxRetries:50,retryDelay:100})}catch{}
+    }
+  });
 });
 
 test.describe("Renaming a project",()=>{

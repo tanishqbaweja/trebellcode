@@ -407,8 +407,11 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 
 /* ============ Clone progress banner ============ */
 /* Above the conversation while a project clones (App.jsx .clone-banner): the same type scale and tokens as the rest of the
-   chat, instead of the 7-8px text it had before the redesign. */
-.chat-workspace .clone-banner{margin:10px 16px 0;padding:10px 12px;gap:12px;grid-template-columns:minmax(0,1fr) minmax(90px,180px) auto auto;border:1px solid color-mix(in srgb,var(--ac) 30%,var(--line2));border-radius:var(--r-m);background:color-mix(in srgb,var(--ac) 6%,var(--bg2));box-shadow:var(--sh1)}
+   chat, instead of the 7-8px text it had before the redesign. The conversation is positioned over the whole area under the
+   header, so it was drawn over the banner and took its buttons' hover and clicks: the banner stacks above it, and while it shows
+   the conversation's first rows start below it (its 10px margin, its one-line height and a gap). */
+.chat-workspace .clone-banner{position:relative;z-index:4;margin:10px 16px 0;padding:10px 12px;gap:12px;grid-template-columns:minmax(0,1fr) minmax(90px,180px) auto auto;border:1px solid color-mix(in srgb,var(--ac) 30%,var(--line2));border-radius:var(--r-m);background:color-mix(in srgb,var(--ac) 6%,var(--bg2));box-shadow:var(--sh1)}
+.chat-workspace:has(>.clone-banner) .conversation-scroll{padding-top:max(92px,var(--thread-find-reserve,0px))}
 .chat-workspace .clone-banner>div{gap:3px}
 .chat-workspace .clone-banner strong{font-size:12.5px;font-weight:600;color:var(--tx0)}
 .chat-workspace .clone-banner span{font-size:12px;line-height:1.45;color:var(--tx2)}
