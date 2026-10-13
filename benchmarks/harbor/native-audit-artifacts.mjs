@@ -22,6 +22,16 @@ export function capText(value,limit){
   return text.length>limit?text.slice(0,limit)+`...[${text.length-limit} more chars]`:text;
 }
 
+// A replace_text edits list is recorded hunk by hunk: each hunk's text is capped on its own, so one long hunk cannot push the
+// ones after it out of the record.
+function auditArguments(call,limit){
+  const args=call?.arguments??call?.rawArguments??null;
+  if(call?.namespace!=="trebell_workspace"||call?.name!=="replace_text"||!args||typeof args!=="object"||!Array.isArray(args.edits)||!args.edits.length)return capText(args,limit);
+  const share=Math.max(120,Math.floor((limit-1_000)/(2*args.edits.length)));
+  const edits=args.edits.map(edit=>edit&&typeof edit==="object"&&!Array.isArray(edit)?Object.fromEntries(Object.entries(edit).map(([key,value])=>[key,typeof value==="string"?capText(value,share):value])):edit);
+  return capText({...args,edits},Math.max(limit,args.edits.length*2*(share+80)+1_000));
+}
+
 export function createToolCallLogger({path,environment=process.env,now=()=>Date.now()}={}){
   const redact=secretRedactor(environment);
   let writes=Promise.resolve();
@@ -43,7 +53,7 @@ export function createToolCallLogger({path,environment=process.env,now=()=>Date.
           namespace:call?.namespace??null,
           name:call?.name??null,
           durationMs:now()-startedAt,
-          arguments:capText(call?.arguments??call?.rawArguments??null,16_000),
+          arguments:auditArguments(call,16_000),
           ...(failure?{error:capText(String(failure?.message??failure),4_000)}:{output:capText(output,8_000)}),
         });
       }

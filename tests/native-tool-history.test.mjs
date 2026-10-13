@@ -107,6 +107,16 @@ test("large historical workspace write arguments compact to a valid bounded rece
   assert.equal(args.path,"src/generated.mjs");assert.match(args.content,/compacted prior tool argument/i);assert.match(args.content,/sha256:/i);assert.ok(args.content.length<1000);
 });
 
+test("large historical replace_text hunks inside an edits list compact like a single pair's text",()=>{
+  const original=assistantCall("trebell_workspace","replace_text",{path:"src/a.mjs",edits:[{old_text:"legacy",new_text:"strict"},{old_text:"B".repeat(9_000),new_text:"C".repeat(9_000),expected_replacements:1}]});
+  const result=coolHistoricalToolCallArguments([original,completedTool()]);
+  assert.equal(result.count,2);assert.ok(result.savedChars>16_000);
+  const args=JSON.parse(result.messages[0].toolCalls[0].arguments);
+  assert.deepEqual(Object.keys(args),["path","edits"]);assert.deepEqual(args.edits[0],{old_text:"legacy",new_text:"strict"},"a small hunk stays byte-identical");
+  assert.match(args.edits[1].old_text,/compacted prior tool argument: 9000 chars/i);assert.match(args.edits[1].new_text,/compacted prior tool argument: 9000 chars/i);assert.equal(args.edits[1].expected_replacements,1);
+  assert.deepEqual(JSON.parse(original.toolCalls[0].arguments).edits[1].old_text.length,9_000,"the original message is not changed in place");
+});
+
 test("small workspace edit arguments remain byte-identical",()=>{
   const original=assistantCall("trebell_workspace","replace_text",{path:"src/a.mjs",old_text:"legacy",new_text:"strict"});
   const tool=completedTool(),result=coolHistoricalToolCallArguments([original,tool]);

@@ -36,6 +36,24 @@ test("Native tool-call log records arguments and results, redacts secret environ
   }
 });
 
+test("Native tool-call log keeps every hunk of a long replace_text edits list",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-tool-call-log-edits-")),path=join(root,"calls.jsonl");
+  try{
+    const log=createToolCallLogger({path,environment:{}}),run=log.wrap(async()=>({path:"/repo/src/a.py",size:10,replacements:6,beforeSha256:"a".repeat(64),afterSha256:"b".repeat(64),diff:"@@ -1 +1 @@\n-x\n+y"}));
+    const edits=Array.from({length:6},(_,index)=>({old_text:`hunk-${index}-old `+"o".repeat(5_000),new_text:`hunk-${index}-new `+"n".repeat(5_000)}));
+    await run({toolCall:1,modelTurn:1,namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/a.py",edits}});
+    await run({toolCall:2,modelTurn:1,namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/a.py",old_text:"x".repeat(20_000),new_text:"y"}});
+    await log.flush();
+    const rows=(await readFile(path,"utf8")).trim().split("\n").map(line=>JSON.parse(line));
+    for(let index=0;index<6;index++){assert.match(rows[0].arguments,new RegExp(`hunk-${index}-old`));assert.match(rows[0].arguments,new RegExp(`hunk-${index}-new`))}
+    assert.ok(rows[0].arguments.length<40_000,"each hunk is capped on its own");
+    assert.match(rows[0].output,/"beforeSha256":"a{64}","afterSha256":"b{64}"/,"the audit record keeps the hashes the model no longer reads");
+    assert.ok(rows[1].arguments.length<16_100,"a single pair keeps the ordinary cap");
+  }finally{
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
 test("Native final diff captures tracked edits and untracked files without touching the graded workspace",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-final-diff-")),repo=join(root,"repo"),path=join(root,"final.diff");
   try{

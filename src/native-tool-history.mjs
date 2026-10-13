@@ -262,10 +262,20 @@ function compactToolCall(call={},options={}){
   if(typeof raw==="string"){try{args=JSON.parse(raw||"{}")}catch{return {call,count:0,savedChars:0}}}
   else if(raw&&typeof raw==="object"&&!Array.isArray(raw))args={...raw};else return {call,count:0,savedChars:0};
   let count=0,savedChars=0;
-  for(const key of keys){
-    if(typeof args[key]!=="string")continue;
-    const before=args[key],after=compactArgumentString(before,options);if(after===before)continue;
-    args[key]=after;count++;savedChars+=Math.max(0,before.length-after.length);
+  const compactFields=target=>{
+    let next=target;
+    for(const key of keys){
+      if(typeof target[key]!=="string")continue;
+      const before=target[key],after=compactArgumentString(before,options);if(after===before)continue;
+      if(next===target)next={...target};next[key]=after;count++;savedChars+=Math.max(0,before.length-after.length);
+    }
+    return next;
+  };
+  args=compactFields(args);
+  // A replace_text edits list carries the same old_text/new_text fields per hunk.
+  if(namespace+"/"+name==="trebell_workspace/replace_text"&&Array.isArray(args.edits)){
+    const edits=args.edits.map(edit=>edit&&typeof edit==="object"&&!Array.isArray(edit)?compactFields(edit):edit);
+    if(edits.some((edit,index)=>edit!==args.edits[index]))args={...args,edits};
   }
   if(!count)return {call,count:0,savedChars:0};
   const nextArgs=typeof raw==="string"?JSON.stringify(args):args;
