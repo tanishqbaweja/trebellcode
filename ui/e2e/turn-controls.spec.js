@@ -346,20 +346,27 @@ test("New task keeps an unsent new-task draft, coming back from Settings and pre
   }finally{await fixture.close()}
 });
 
+// The thread "Slow start", whose first send waits on its repository context until releaseContext(); contextCalls() counts the
+// context requests.
+async function slowStartFixture(page){
+  await keepSettings(page);
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Slow start",preview:"Slow"}]});
+  let releaseContext=()=>{},calls=0;const contextHeld=new Promise(resolve=>{releaseContext=resolve});
+  await page.route(/\/api\/context\/packet$/,async route=>{if(!calls++)await contextHeld;await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"held-context",skipped:true,budget:{reserveTokens:1024}})}).catch(()=>{})});
+  answerBy(fixture,[["Slow start task",async request=>reply(request,"The slow start answered in its own thread.")],["Quick task",async request=>reply(request,"The quick task answered at once.")]]);
+  return {fixture,releaseContext,contextCalls:()=>calls};
+}
+
 // A send still on its way in the thread left (here its repository context is slow) is that thread's: the new task opened meanwhile
 // does not wait for it and sends at once, and the first send goes on to run in its own thread.
 test("a new task opened while another thread's send is on its way is idle and sends at once, and the first send runs in its thread",async({page})=>{
   test.setTimeout(90_000);
   await page.setViewportSize({width:1280,height:800});
-  await keepSettings(page);
-  const fixture=await startStreamingFixture(page,{threads:[{name:"Slow start",preview:"Slow"}]});
-  let releaseContext=()=>{},contextCalls=0;const contextHeld=new Promise(resolve=>{releaseContext=resolve});
-  await page.route(/\/api\/context\/packet$/,async route=>{if(!contextCalls++)await contextHeld;await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"held-context",skipped:true,budget:{reserveTokens:1024}})}).catch(()=>{})});
-  answerBy(fixture,[["Slow start task",async request=>reply(request,"The slow start answered in its own thread.")],["Quick task",async request=>reply(request,"The quick task answered at once.")]]);
+  const {fixture,releaseContext,contextCalls}=await slowStartFixture(page);
   try{
     await fixture.open("Slow start");
     await sendTyped(page,"Slow start task.");
-    await expect(composer(page)).toHaveAttribute("placeholder","Sending…");await expect.poll(()=>contextCalls).toBe(1);
+    await expect(composer(page)).toHaveAttribute("placeholder","Sending…");await expect.poll(contextCalls).toBe(1);
     await newTask(page).click();
     await expectIdleNewTask(page);
     await shoot(page,"new-task-while-another-sends");
@@ -374,5 +381,50 @@ test("a new task opened while another thread's send is on its way is idle and se
     await expect(page.getByText("The slow start answered in its own thread.",{exact:true})).toHaveCount(0);
     await threadRow(page,"Slow start").locator(".thread-main").click();
     await expect(page.getByText("The slow start answered in its own thread.",{exact:true})).toBeVisible({timeout:10_000});
+  }finally{releaseContext();await fixture.close()}
+});
+
+// Opened again before that send is through, the thread shows it: its message, Stop, and its composer held as Sending, so nothing more
+// goes to the thread meanwhile; the reply then lands there.
+test("a thread opened again while its send is on its way shows that send, and its reply lands there",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {fixture,releaseContext,contextCalls}=await slowStartFixture(page);
+  try{
+    await fixture.open("Slow start");
+    await sendTyped(page,"Slow start task.");await expect.poll(contextCalls).toBe(1);
+    await newTask(page).click();await expectIdleNewTask(page);
+    await threadRow(page,"Slow start").locator(".thread-main").click();
+    await expect(stop(page)).toBeVisible({timeout:10_000});await expect(page.locator(".user-row")).toHaveText([/^Slow start task\./]);
+    await expect(composer(page)).toHaveAttribute("placeholder","Sending…");await expect(composer(page)).toBeDisabled();
+    await shoot(page,"thread-opened-again-while-sending");
+    releaseContext();
+    await expect(page.getByText("The slow start answered in its own thread.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(stop(page)).toHaveCount(0);await expect(composer(page)).toHaveAttribute("placeholder",IDLE_PLACEHOLDER);await expect(composer(page)).toBeEnabled();
+    await expect(page.locator(".user-row")).toHaveText([/^Slow start task\./]);
+    expect(fixture.threadStore.get(fixture.threads[0].id).turns).toHaveLength(1);
+  }finally{releaseContext();await fixture.close()}
+});
+
+// Stop there ends that send, also once the new task has sent one of its own meanwhile: no turn runs, and the draft is back in the
+// thread's composer.
+test("Stop in a thread opened again while its send waits ends that send, also after a new task sent its own",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {fixture,releaseContext,contextCalls}=await slowStartFixture(page);
+  try{
+    await fixture.open("Slow start");
+    await sendTyped(page,"Slow start task.");await expect.poll(contextCalls).toBe(1);
+    await newTask(page).click();await expectIdleNewTask(page);
+    await sendTyped(page,"Quick task.");
+    await expect(page.getByText("The quick task answered at once.",{exact:true})).toBeVisible({timeout:15_000});await expect(stop(page)).toHaveCount(0);
+    await threadRow(page,"Slow start").locator(".thread-main").click();
+    await expect(stop(page)).toBeVisible({timeout:10_000});
+    await stop(page).click();await expect(stopping(page)).toBeVisible();
+    releaseContext();
+    await expect(stopping(page)).toHaveCount(0,{timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    await expect(composer(page)).toHaveValue("Slow start task.");await expect(page.locator(".user-row")).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect(fixture.threadStore.get(fixture.threads[0].id).turns).toHaveLength(0);
   }finally{releaseContext();await fixture.close()}
 });
