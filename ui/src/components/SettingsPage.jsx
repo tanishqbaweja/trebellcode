@@ -253,7 +253,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       setAgentInfo(result);
       showAgentMessage(`${result.selected?.status?.name||kind} selected.`);
     }catch(error){
-      // The selection falls back to the harness that is still active, so the failure is reported there instead of on the runtime that failed.
+      // The selection falls back to the harness that is still active; the refusal is said on the row of the harness that was clicked.
       setAgentMessageTarget(null);showAgentMessage("");setSwitchRefusal({kind,text:`Could not switch to ${(agentInfo?.definitions||[]).find(item=>item.id===kind)?.name||kind}: ${error.message}`});
     }
     finally{setAgentSelectionOverride(null)}
