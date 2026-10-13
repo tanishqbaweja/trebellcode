@@ -1021,7 +1021,7 @@ export default function App(){
   // them read the state before them, so it leaves them as the person set them.
   const savedSettingKeysRef=useRef(new Set()); const pickedModesRef=useRef({});
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [cloneRefreshError,setCloneRefreshError]=useState(""); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
-  const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
+  const [approvals,setApprovals]=useState([]); const [questions,setQuestions]=useState([]); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
   const [guardianDenials,setGuardianDenials]=useState([]); const [guardianBusy,setGuardianBusy]=useState("");
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [rightPanelMaximized,setRightPanelMaximized]=useState(false); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [runtimeTransportRevision,setRuntimeTransportRevision]=useState(0);
@@ -2494,7 +2494,7 @@ export default function App(){
         running:Boolean(running),
         // The app's own text questions and confirmations (askText, askConfirm) are <dialog>s outside React's state: one open covers
         // the app too, so Ctrl+N does not open New task behind a rename that then lands there.
-        modalOpen:Boolean(paletteOpen||question||elicitations.length||approvals.length||snoozeRequest||settings.onboardingComplete===false||document.querySelector("dialog[open]")),
+        modalOpen:Boolean(paletteOpen||questions.length||elicitations.length||approvals.length||snoozeRequest||settings.onboardingComplete===false||document.querySelector("dialog[open]")),
         rightPanelOpen:Boolean(rightPanelOpen),
         sidebarOpen:Boolean(sidebarOpen),
         undoAvailable:Boolean(threadUndo),
@@ -2570,7 +2570,7 @@ export default function App(){
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,projectlessMode,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject,agentRuntime,opening]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,questions.length,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,projectlessMode,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject,agentRuntime,opening]);
   // An edit of a queued follow-up ends once it is saved or Escape ends it, and when its message leaves the queue: the draft set aside
   // for it comes back, after whatever the composer holds then.
   useEffect(()=>{
@@ -2609,7 +2609,7 @@ export default function App(){
   useEffect(()=>{if(!running){stopKeyRef.current=null;setStoppingThreadId(null)}},[running]);
 
   function handleServerRequest(client,message){
-    if(message.method==="item/tool/requestUserInput"){setQuestion({client,request:message});desktopNotify("Trebell Code needs input","The running agent asked you a question.");return}
+    if(message.method==="item/tool/requestUserInput"){setQuestions(prev=>[...prev,ownedRequest(message,client)]);desktopNotify("Trebell Code needs input","The running agent asked you a question.");return}
     if(message.method==="mcpServer/elicitation/request"){
       setElicitations(prev=>[...prev,{client,request:message}]);
       const meta=message.params?._meta||{};
@@ -2769,7 +2769,7 @@ export default function App(){
       // Request ids restart on every socket: only the request of this id from the socket that resolved it goes.
       const resolved={requestId:p.requestId,threadId:p.threadId||null,client};
       setApprovals(prev=>prev.filter(request=>!requestResolvedBy(request,request.client,resolved)));
-      setQuestion(current=>current&&requestResolvedBy(current.request,current.client,resolved)?null:current);
+      setQuestions(prev=>prev.filter(request=>!requestResolvedBy(request,request.client,resolved)));
       setElicitations(prev=>prev.filter(item=>!requestResolvedBy(item.request,item.client,resolved)));
     }
     else if(message.method==="agentRuntime/models/updated"){
@@ -4739,7 +4739,7 @@ export default function App(){
   // so they leave the screen: only requests from `client` (the live socket, if any) stay answerable.
   function dropServerRequestsExcept(client){
     setApprovals(prev=>liveRequests(prev,client));
-    setQuestion(current=>current&&client&&current.client===client?current:null);
+    setQuestions(prev=>liveRequests(prev,client));
     setElicitations(prev=>liveRequests(prev,client));
   }
   async function approveGuardianDenial(review){
@@ -4756,8 +4756,10 @@ export default function App(){
     }finally{setGuardianBusy("")}
   }
   function dismissGuardianDenial(review){setGuardianDenials(prev=>prev.filter(item=>item.reviewId!==review.reviewId))}
-  async function answerQuestion(answers,filesByQuestion={}){if(!question)return false;await validateAttachmentPaths(Object.values(filesByQuestion).flat());const result={};for(const q of question.request.params?.questions||[]){const values=[...(answers[q.id]||[])];const files=filesByQuestion[q.id]||[];if(files.length)values.push("Attached files:\n"+files.map(path=>"- "+path).join("\n"));result[q.id]={answers:values}}if(!question.client.respond(question.request.id,{answers:result}))throw new Error("Runtime disconnected before the answer could be sent.");setQuestion(null);return true}
-  async function cancelQuestion(){if(!question)return false;if(!question.client.respond(question.request.id,{answers:{}}))throw new Error("Runtime disconnected before the question could be cancelled.");setQuestion(null);return true}
+  // Questions wait in the order they came, one per request and per thread: the modal shows the first, and the next once it is answered
+  // or dismissed. Each answer goes back on the socket that asked.
+  async function answerQuestion(answers,filesByQuestion={}){const current=questions[0];if(!current)return false;await validateAttachmentPaths(Object.values(filesByQuestion).flat());const result={};for(const q of current.params?.questions||[]){const values=[...(answers[q.id]||[])];const files=filesByQuestion[q.id]||[];if(files.length)values.push("Attached files:\n"+files.map(path=>"- "+path).join("\n"));result[q.id]={answers:values}}if(!current.client?.respond(current.id,{answers:result}))throw new Error("Runtime disconnected before the answer could be sent.");setQuestions(prev=>prev.filter(item=>item!==current));return true}
+  async function cancelQuestion(){const current=questions[0];if(!current)return false;if(!current.client?.respond(current.id,{answers:{}}))throw new Error("Runtime disconnected before the question could be cancelled.");setQuestions(prev=>prev.filter(item=>item!==current));return true}
   function resolveElicitation(response){
     const current=elicitations[0];if(!current)return;
     if(!current.client.respond(current.request.id,response))throw new Error("Runtime disconnected before the app response could be sent.");
@@ -4983,9 +4985,9 @@ export default function App(){
   // The approval of the thread the header names comes first; one from another thread says which task is asking, the thread being
   // left included while another opens.
   const shownApproval=approvalToShow(approvals,headerThread?.id);
-  const shownApprovalThreadId=approvalForeignThreadId(shownApproval,headerThread?.id);
-  const shownApprovalOwner=shownApprovalThreadId?threads.find(thread=>String(thread.id)===shownApprovalThreadId)||null:null;
-  const shownApprovalThreadLabel=shownApprovalThreadId?(shownApprovalOwner?titleOf(shownApprovalOwner):"another thread"):"";
+  // The task that asked, named when it is not the open thread.
+  const requestThreadLabel=request=>{const id=approvalForeignThreadId(request,headerThread?.id);if(!id)return "";const owner=threads.find(thread=>String(thread.id)===id);return owner?titleOf(owner):"another thread"};
+  const shownApprovalThreadLabel=requestThreadLabel(shownApproval);
   // The crumb names the project as the sidebar and Projects page do (its record's name); a folder without a record, or one the
   // record does not describe yet, shows the folder name. A thread still opening is named with its own: General chat, the open
   // project when the thread is in it, else its project's record as this window knows it (see projectRecords), else its folder.
@@ -5369,7 +5371,7 @@ export default function App(){
 
     {window.trebellDesktop?.minimize&&window.trebellDesktop?.maximize&&window.trebellDesktop?.close&&<div className="window-controls window-controls-pinned"><button onClick={()=>window.trebellDesktop.minimize()} title="Minimize">—</button><button onClick={()=>window.trebellDesktop.maximize()} title="Maximize">□</button><button className="window-close" onClick={()=>window.trebellDesktop.close()} title="Close">×</button></div>}
     {elicitations.length>0&&(()=>{const verification=userVerificationAvailability({runtime:agentRuntime,remote:Boolean(workspaceEnvironmentId)});return <LazySlot><McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={verification.available} verificationUnavailableReason={verification.reason}/></LazySlot>})()}
-    {!elicitations.length&&question?.request&&<LazySlot><QuestionModal request={question.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/></LazySlot>}
+    {!elicitations.length&&questions[0]&&<LazySlot><QuestionModal request={questions[0]} threadLabel={requestThreadLabel(questions[0])} waiting={questions.length-1} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/></LazySlot>}
     {snoozeRequest&&<LazySlot><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)} focusFallback={focusShownView}/></LazySlot>}
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><UndoCountdown expiresAt={threadUndo.expiresAt}/></div>}
     {paletteOpen&&<LazySlot fallback={<CommandPaletteLoading seed={paletteSeedRef} onClose={closePalette}/>}><CommandPalette open seed={paletteSeedRef} focusFallback={focusShownView} onClose={closePalette} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></LazySlot>}

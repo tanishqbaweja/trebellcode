@@ -35,7 +35,8 @@ function attachmentParts(path){
   return dot>0&&name.length-dot<=10?[name.slice(0,dot),name.slice(dot)]:[name,""];
 }
 
-export default function QuestionModal({request,onSubmit,onCancel,pickFiles}){
+// threadLabel names the task that asked when it is not the open thread; waiting counts the questions after this one.
+export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit,onCancel,pickFiles}){
   const questions=request?.params?.questions||[];
   const initial=useMemo(()=>Object.fromEntries(questions.map(q=>[q.id,[]])),[request]);
   const [answers,setAnswers]=useState(initial);
@@ -93,6 +94,7 @@ export default function QuestionModal({request,onSubmit,onCancel,pickFiles}){
   }
   return <div className="modal-backdrop"><div className="question-modal" role="dialog" aria-modal="true" aria-labelledby="question-modal-title" ref={dialogRef} tabIndex={-1}>
     <div className="modal-head"><div><span className="modal-head-icon"><HelpCircle size={16}/></span><strong id="question-modal-title">Agent needs input</strong></div><button className="modal-close" onClick={cancel} disabled={Boolean(busy)} aria-label="Close question" title="Close question"><X size={16}/></button></div>
+    {threadLabel&&<p className="question-thread" data-testid="question-thread">Waiting in {threadLabel}</p>}
     {questions.map(q=><div className="question-block" key={q.id}><label>{q.header&&<small>{q.header}</small>}<strong>{q.question}</strong></label>
       {q.options?.length>0&&<div className={"question-options"+(q.allowMultiple?" multiple":"")}>{q.options.map(opt=><button className={answers[q.id]?.includes(opt.label)?"active":""} aria-pressed={Boolean(answers[q.id]?.includes(opt.label))} key={opt.label} onClick={()=>chooseOption(q,opt.label)}>{opt.label}{opt.description&&<span>{opt.description}</span>}</button>)}</div>}
       <input className="tb-input" placeholder="Custom answer…" value={answers[q.id]?.find(a=>!q.options?.some(o=>o.label===a))||""} onChange={e=>setCustom(q,e.target.value)}/>
@@ -100,6 +102,6 @@ export default function QuestionModal({request,onSubmit,onCancel,pickFiles}){
     </div>)}
     {attachError&&<div className="inline-error" role="alert">{attachError}</div>}
     {submitError&&<div className="inline-error" role="alert">{submitError}</div>}
-    <div className="modal-actions"><span>{fileCount?`${fileCount}/100 attached`:""}</span><button className="tb-btn" onClick={cancel} disabled={Boolean(busy)}>{busy==="cancel"?"Cancelling…":"Cancel"}</button><button className="tb-btn tb-btn--primary primary" disabled={Boolean(busy)} onClick={async()=>{setAttachError("");setSubmitError("");setBusy("submit");try{await onSubmit(answers,filesByQuestion)}catch(error){setSubmitError(error?.message||String(error))}finally{setBusy("")}}}>{busy==="submit"?"Submitting…":"Submit"}</button></div>
+    <div className="modal-actions"><span>{[fileCount?`${fileCount}/100 attached`:"",waiting>0?`${waiting} more waiting`:""].filter(Boolean).join(" · ")}</span><button className="tb-btn" onClick={cancel} disabled={Boolean(busy)}>{busy==="cancel"?"Cancelling…":"Cancel"}</button><button className="tb-btn tb-btn--primary primary" disabled={Boolean(busy)} onClick={async()=>{setAttachError("");setSubmitError("");setBusy("submit");try{await onSubmit(answers,filesByQuestion)}catch(error){setSubmitError(error?.message||String(error))}finally{setBusy("")}}}>{busy==="submit"?"Submitting…":"Submit"}</button></div>
   </div></div>;
 }
