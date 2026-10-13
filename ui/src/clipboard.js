@@ -9,10 +9,12 @@ export async function writeClipboardText(value,{navigatorObj=globalThis.navigato
   const input=documentObj.createElement("textarea");
   input.value=text;input.setAttribute?.("readonly","");
   if(input.style){input.style.position="fixed";input.style.opacity="0";input.style.pointerEvents="none"}
+  // The copy borrows the keyboard for its hidden field; the control that had it (the Copy button pressed) gets it back.
+  const owner=documentObj.activeElement;
   documentObj.body.appendChild(input);
   try{
     input.focus?.();input.select?.();
     return Boolean(documentObj.execCommand("copy"));
   }catch{return false}
-  finally{input.remove?.()}
+  finally{input.remove?.();if(owner?.isConnected&&owner!==documentObj.body)owner.focus?.({preventScroll:true})}
 }

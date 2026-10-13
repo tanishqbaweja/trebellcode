@@ -212,3 +212,45 @@ test("a streaming reply renders Markdown as it arrives and keeps it once the tur
     await expect(final.locator("li")).toHaveText("3 tests passed");
   }finally{await harness.close()}
 });
+
+// While a reply streams, the text before a code block is finished as more arrives, and the code block is drawn again after it
+// (StreamingMarkdown). The refusal said beside its Copy code stays until the next copy, and the keyboard stays on the button. The
+// copies go to the page's own clipboard, never the machine's.
+test("Copy code on a reply still streaming keeps its refusal and the keyboard as more of the reply streams in",async({page})=>{
+  test.setTimeout(60_000);
+  await pageClipboard(page);
+  const thread=fixtureThread("markdown-stream-copy","Markdown stream copy fixture"),harness=await startHarness(thread);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,thread});
+    await page.getByTestId("composer").fill("Show the change.");await page.getByTestId("send").click();
+    await expect(page.locator(".user-bubble").last()).toContainText("Show the change.");
+    harness.push("turn/started",{turn:{id:"turn-2",status:"inProgress",startedAt:Date.now()/1000}});
+    const item={type:"agentMessage",id:"assistant-live",text:""};
+    harness.push("item/started",{turnId:"turn-2",item,startedAtMs:Date.now()});
+    const live=page.locator(".agent-block .assistant-answer"),block=live.locator(".chat-markdown-code");
+    const head="Here is the change the relay needs, so that each turn is written once, after the call returns, and a reader sees the same history after a reload:\n\n```js\nconst value = 1;\n```\n\n";
+    const more="Then a second paragraph about it, long enough to be a block of its own.\n\n- one\n- two\n\n";
+    harness.push("item/agentMessage/delta",{turnId:"turn-2",itemId:item.id,delta:head});
+    await expect(block).toContainText("const value = 1;");
+    await block.getByRole("button",{name:"Copy code"}).focus();
+    await page.keyboard.press("Enter");
+    await expect(block.getByRole("alert")).toHaveText("Could not copy to clipboard.");
+    await block.evaluate(node=>{node.dataset.drawnBefore="yes"});
+    harness.push("item/agentMessage/delta",{turnId:"turn-2",itemId:item.id,delta:more});
+    await expect(live.locator("li")).toHaveText(["one","two"]);
+    console.log("the code block after more streamed in:",await block.evaluate(node=>node.dataset.drawnBefore?"the same element":"drawn again"));
+    await expect(block.getByRole("alert"),"the refusal as more streams in").toHaveText("Could not copy to clipboard.");
+    await expect(block.getByRole("button",{name:"Copy code"}),"the keyboard on Copy code").toBeFocused();
+    // Allowed now, Enter on the same button copies, and the message goes.
+    await page.evaluate(()=>{window.__clipboard.allowed=true});
+    await page.keyboard.press("Enter");
+    await expect(block.getByRole("button",{name:"Copied"})).toBeVisible();
+    await expect(block.getByRole("alert")).toHaveCount(0);
+    expect(await page.evaluate(()=>window.__clipboard.writes)).toEqual(["const value = 1;"]);
+    const text=head+more+"Done.";
+    harness.push("item/completed",{turnId:"turn-2",item:{...item,text},completedAtMs:Date.now()});
+    harness.push("turn/completed",{turn:{id:"turn-2",status:"completed",completedAt:Date.now()/1000}});
+    await expect(page.locator(".assistant-message-text").last().locator(".chat-markdown-code pre")).toHaveText("const value = 1;");
+  }finally{await harness.close()}
+});

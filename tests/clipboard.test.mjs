@@ -29,3 +29,16 @@ test("clipboard helper reports failure when no copy mechanism exists",async()=>{
   assert.equal(await writeClipboardText("nope",{navigatorObj:{},documentObj:null}),false);
   assert.equal(await writeClipboardText("",{navigatorObj:{},documentObj:null}),false);
 });
+
+test("the execCommand fallback gives the keyboard back to the control that had it",async()=>{
+  const focused=[];
+  const owner={isConnected:true,focus(options){focused.push(["owner",options])}};
+  const input={style:{},setAttribute(){},focus(){focused.push(["field"])},select(){},remove(){}};
+  const documentObj={activeElement:owner,body:{appendChild(){}},createElement:()=>input,execCommand:()=>false};
+  assert.equal(await writeClipboardText("refused",{navigatorObj:{},documentObj}),false);
+  assert.deepEqual(focused,[["field"],["owner",{preventScroll:true}]]);
+  // A control that went away meanwhile is not focused.
+  focused.length=0;owner.isConnected=false;
+  assert.equal(await writeClipboardText("refused",{navigatorObj:{},documentObj}),false);
+  assert.deepEqual(focused,[["field"]]);
+});
