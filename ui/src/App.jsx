@@ -4601,9 +4601,10 @@ export default function App(){
       try{await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId:activeThread.id}})}
       catch(error){showActionError(error,"Could not restore the files, so the conversation was not changed");return}
     }
-    // A rewind the harness refuses (a running turn, a turn it has no checkpoint for) is shown, and the conversation stays as it is.
+    // A rewind the harness refuses (a running turn, a turn it has no checkpoint for) is shown, and the conversation stays as it is;
+    // files already restored for it are said to be, since they stay at the checkpoint.
     try{await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId})}
-    catch(error){showActionError(error,"Could not edit from this message");return}
+    catch(error){showActionError(error,restoreFiles?"Restored the files to the checkpoint, but could not edit from this message":"Could not edit from this message");return}
     // A draft already in the composer stays, below the message brought back to edit.
     setPrompt(current=>String(current||"").trim()&&current!==message.text?message.text+"\n\n"+current:message.text);await reloadActiveThread();
   }

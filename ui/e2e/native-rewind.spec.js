@@ -20,9 +20,10 @@ async function freePort(){
 }
 
 // A Native thread with one finished turn in a managed worktree, that turn's file checkpoint, and the page open on the thread.
-// restoreError fails the checkpoint restore with that message, and hold, when given, keeps a new turn running until it resolves.
-// nativeDialogs notes every browser dialog (and dismisses it): the app asks in its own.
-async function rewindFixture(page,{restoreError=null,hold=null}={}){
+// restoreError fails the checkpoint restore with that message, revertError has the harness refuse the rewind (thread/revert) with
+// that one, and hold, when given, keeps a new turn running until it resolves. nativeDialogs notes every browser dialog (and
+// dismisses it): the app asks in its own.
+async function rewindFixture(page,{restoreError=null,revertError=null,hold=null}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-rewind-")),home=join(root,"home"),repo=join(root,"managed-worktree");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
   state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
@@ -54,6 +55,10 @@ async function rewindFixture(page,{restoreError=null,hold=null}={}){
   const saved={};await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(saved)})});
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   page.on("dialog",dialog=>{fixture.nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
+  if(revertError)await page.routeWebSocket(/\/api\/agent\/ws/,ws=>{
+    const server=ws.connectToServer();
+    ws.onMessage(message=>{let parsed=null;try{parsed=JSON.parse(String(message))}catch{}if(parsed?.method==="thread/revert"){ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:revertError}}));return}server.send(message)});
+  });
   await page.goto("/");
   const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native managed rewind"]')});await expect(row).toBeVisible({timeout:10_000});await row.locator(".thread-main").click();
   await expect(page.getByText("Rewind this Native work",{exact:true})).toBeVisible({timeout:10_000});await expect(page.getByRole("button",{name:"Edit from here",exact:true})).toBeVisible();
@@ -137,6 +142,22 @@ test("a file restore that fails leaves the conversation as it was and says so, a
     const failure=page.getByTestId("app-action-error");
     await shoot(page,"native-rewind-restore-failed",{before:async()=>{if(!await failure.isVisible()){await editFromHere(page)}await expect(failure).toContainText("so the conversation was not changed")}});
     await expect(page.locator(".user-row")).toHaveCount(1);expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
+  }finally{await fixture.close()}
+});
+
+// The files go back before the rewind, so a rewind the harness then refuses leaves them at the checkpoint with the conversation as it
+// was: the failure says the files were restored, not only that the edit failed.
+test("a rewind the harness refuses after the files were restored says the files went back, and the conversation stays",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const fixture=await rewindFixture(page,{revertError:"Native rewind target turn was not found."});
+  try{
+    await editFromHere(page);
+    const failure=page.getByTestId("app-action-error");
+    await expect(failure).toContainText("Restored the files to the checkpoint, but could not edit from this message: Native rewind target turn was not found.");
+    expect(fixture.restoreBody).toEqual({id:fixture.checkpoint.id,threadId:fixture.thread.id});
+    await expect(page.locator(".user-row")).toHaveCount(1);expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
+    await shoot(page,"native-rewind-refused-after-restore",{before:async()=>{if(!await failure.isVisible()){await editFromHere(page)}await expect(failure).toContainText("Restored the files to the checkpoint")}});
   }finally{await fixture.close()}
 });
 
