@@ -1,4 +1,8 @@
 import { test,expect } from "@playwright/test";
+import { createServer } from "node:http";
+import { WebSocketServer } from "ws";
+import { attachCodexRelay } from "../../src/codex-relay.mjs";
+import { keepThreadMeta } from "./test-home.js";
 import { auditDir,gate,startStreamingFixture,stop } from "./native-stream-fixture.js";
 
 // Turn controls as a person uses them: a new task while another thread runs, Stop, the queue, Edit from here and Compact. The real
@@ -21,6 +25,7 @@ const composer=page=>page.getByTestId("composer");
 const threadRow=(page,name)=>page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
 const newTask=page=>page.getByRole("button",{name:"New task",exact:true});
 const IDLE_PLACEHOLDER="Ask Trebell Code anything…";
+async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
 // The settings the header's light and dark toggle saves stay in the page, so the shared e2e server keeps its own.
 async function keepSettings(page){
@@ -125,3 +130,117 @@ for(const action of ["Delete","Archive"]){
     }finally{release.open();await fixture.close()}
   });
 }
+
+// A Codex app-server the test drives, reached through Trebell's Codex relay. Its turn/start is held: the test lets the turn start
+// (turn/started) and lets the answer go, in either order, as Codex sends them. A started turn streams its reply and completes
+// unless turn/interrupt ends it first; one interrupted before it started ends as it starts. interruptDelayMs holds the interrupt's
+// answer (Codex answers once the turn has stopped).
+async function startCodex(page,{name}){
+  const thread={id:"codex-stop-thread",name,preview:name,cwd:process.cwd(),createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,status:{type:"idle"},turns:[]};
+  const codex={thread,turns:[],interrupts:[],interruptDelayMs:0,socket:null};
+  const upstream=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
+  upstream.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  const notify=(method,params)=>{if(codex.socket?.readyState===1)codex.socket.send(JSON.stringify({method,params}))};
+  const end=(turn,status)=>{turn.status=status;clearTimeout(turn.timer);notify("turn/completed",{threadId:thread.id,turn:{id:turn.id,status,items:[]}})};
+  wss.on("connection",ws=>{
+    sockets.add(ws);codex.socket=ws;ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",raw=>{
+      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
+      const params=message.params||{},respond=result=>{if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,result}))};
+      if(message.method==="turn/start"){
+        const turn={id:"codex-turn-"+(codex.turns.length+1),status:"inProgress",started:false,timer:null};codex.turns.push(turn);
+        turn.answer=()=>respond({turn:{id:turn.id,status:"inProgress",items:[]}});
+        turn.start=()=>{
+          turn.started=true;notify("turn/started",{threadId:thread.id,turn:{id:turn.id,status:"inProgress",items:[]}});
+          if(turn.status!=="inProgress")return end(turn,turn.status);
+          const itemId="reply-"+turn.id,words="One two three four five six seven eight nine ten. Counting is done.".split(/(?<= )/);let index=0;
+          notify("item/started",{threadId:thread.id,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:""}});
+          const tick=()=>{
+            if(turn.status!=="inProgress")return;
+            if(index<words.length){notify("item/agentMessage/delta",{threadId:thread.id,turnId:turn.id,itemId,delta:words[index++]});turn.timer=setTimeout(tick,60);return}
+            notify("item/completed",{threadId:thread.id,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:words.join("")}});end(turn,"completed");
+          };
+          turn.timer=setTimeout(tick,60);
+        };
+        return;
+      }
+      if(message.method==="turn/interrupt"){
+        codex.interrupts.push({...params});const turn=codex.turns.find(item=>item.id===params.turnId);
+        setTimeout(()=>{if(turn?.status==="inProgress"){if(turn.started)end(turn,"interrupted");else turn.status="interrupted"}respond({})},codex.interruptDelayMs);return;
+      }
+      let result={};
+      if(message.method==="initialize")result={userAgent:"turn-controls-codex"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null};
+      else if(["thread/turns/list","thread/items/list","thread/queue/list","thread/attachment/list","thread/timeline/list"].includes(message.method))result={data:[],nextCursor:null};
+      else if(["threadSection/list","skills/list","collaborationMode/list"].includes(message.method))result={data:[]};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
+      else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
+      respond(result);
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstream.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await keepThreadMeta(page);await keepSettings(page);
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"turn-controls-codex",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}}));
+  await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  await page.goto("/");
+  await threadRow(page,name).locator(".thread-main").click();await expect(composer(page)).toBeEnabled({timeout:15_000});
+  codex.close=async()=>{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstream.close(resolve))])};
+  return codex;
+}
+const stopping=page=>page.getByRole("button",{name:"Stopping",exact:true});
+
+// Codex names a send's turn only in turn/start's answer or in turn/started, whichever it sends first. A Stop pressed before either is
+// kept: the header says Stopping while the turn runs, the interrupt goes to the turn the moment its id comes, and only once, and the
+// stopped turn ends stopped, without its reply.
+for(const first of ["turn/started","the turn/start answer"]){
+  test(`Stop before Codex names the turn is sent when ${first} names it, and the turn shows stopping until it ends`,async({page})=>{
+    test.setTimeout(60_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Codex count"});
+    try{
+      await sendTyped(page,"Count from one to forty, one number per line.");
+      await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;
+      await stop(page).click();
+      await expect(stopping(page)).toBeVisible();await expect(stopping(page)).toBeDisabled();
+      await page.waitForTimeout(300);
+      expect(codex.interrupts).toEqual([]);await expect(stopping(page)).toBeVisible();
+      if(first==="turn/started")await shoot(page,"stopping-before-turn-id");
+      if(first==="turn/started")turn.start();else turn.answer();
+      await expect.poll(()=>codex.interrupts).toEqual([{threadId:codex.thread.id,turnId:turn.id}]);
+      if(first==="turn/started"){await page.waitForTimeout(200);turn.answer()}else{await expect(stopping(page)).toBeVisible();turn.start()}
+      await expect(stop(page)).toHaveCount(0,{timeout:10_000});await expect(stopping(page)).toHaveCount(0);
+      await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/);
+      await page.waitForTimeout(500);
+      expect(codex.interrupts).toHaveLength(1);
+      await expect(page.getByText("Counting is done.",{exact:false})).toHaveCount(0);
+      await expect(composer(page)).toHaveAttribute("placeholder",IDLE_PLACEHOLDER);
+    }finally{await codex.close()}
+  });
+}
+
+test("a double click on Stop sends one turn/interrupt for the turn",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex double stop"});
+  try{
+    codex.interruptDelayMs=400;
+    await sendTyped(page,"Count from one to forty, one number per line.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(stop(page)).toBeVisible();await expect(page.getByText("One two three",{exact:false})).toBeVisible({timeout:10_000});
+    await stop(page).dblclick();
+    await expect(stop(page)).toHaveCount(0,{timeout:10_000});await expect(stopping(page)).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect(codex.interrupts).toEqual([{threadId:codex.thread.id,turnId:turn.id}]);
+    await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/);
+  }finally{await codex.close()}
+});

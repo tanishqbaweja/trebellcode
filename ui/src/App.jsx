@@ -990,8 +990,11 @@ export default function App(){
   // goal waiting to turn active after its first turn starts.
   const [codexThreadState,setCodexThreadState]=useState(null); const codexGoalActivationRef=useRef(null);
   const submittingRef=useRef(false);
-  // The send whose turn/start has not answered yet (startTurn): {threadId,requested,stopped}. Stop marks it (stop()).
+  // The send whose turn/start has not answered yet (startTurn): {threadId,requested,stopped,interrupted}. Stop marks it (stop()).
   const pendingSendRef=useRef(null);
+  // The Stop on its way (stop()): the turn or send it is for, so a second press sends nothing more, and the thread it stops, whose
+  // Stop reads "Stopping…" until the turn has ended.
+  const stopKeyRef=useRef(null); const [stoppingThreadId,setStoppingThreadId]=useState(null);
   const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
   const [settings,setSettings]=useState(()=>({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:DEFAULT_MODEL_PROVIDER,...cachedAppearanceSettings()}));
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
@@ -2584,6 +2587,7 @@ export default function App(){
     })();
   },[running,queued,queueMode,runtimeCapabilities.nativeQueue]);
   useEffect(()=>{setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null)},[agentRuntime,runtimeCapabilities.nativeQueue,projectlessMode]);
+  useEffect(()=>{if(!running){stopKeyRef.current=null;setStoppingThreadId(null)}},[running]);
 
   function handleServerRequest(client,message){
     if(message.method==="item/tool/requestUserInput"){setQuestion({client,request:message});desktopNotify("Trebell Code needs input","The running agent asked you a question.");return}
@@ -2804,6 +2808,8 @@ export default function App(){
       // A turn that starts again (the relay's restart recovery) is running, not ended: its next completion is recorded whole.
       if(clockKey)setTurnInfo(prev=>{const known=turnStartedAgain(prev[clockKey]);return known===prev[clockKey]?prev:{...prev,[clockKey]:known}});
       updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:receivedAt,lastActivityAt:Date.now()});markThreadTurn(threadId,true);
+      // The turn of a send Stop was pressed for before it had an id: Codex can name it here before turn/start answers.
+      interruptStoppedSend(pendingSendRef.current,threadId,id);
       if(isCurrent){
         // The open thread's turns in order, where one without rows ends (a thread this window started begins its order here).
         if(threadId&&id)setTurnOrder(prev=>prev.threadId===threadId?{...prev,ids:appendTurnOrder(prev.ids,[id])}:{threadId,ids:[String(id)]});
@@ -3995,6 +4001,12 @@ export default function App(){
       setEvents(prev=>[...prev,{id:"goal-start-error-"+Date.now(),kind:"error",title:"The turn started, but Codex could not make the goal active: "+(error.message||String(error)),status:"done",raw:{}}]);
     }finally{if(codexGoalActivationRef.current===activation)codexGoalActivationRef.current=null}
   }
+  // A Stop pressed before its send's turn had an id is sent once to that turn, as soon as the id comes (turn/start's answer or
+  // turn/started); one that fails gives the Stop back.
+  function interruptStoppedSend(send,threadId,turnId){
+    if(!send?.stopped||send.interrupted||!turnId||send.threadId!==String(threadId||""))return;send.interrupted=true;
+    rpcRef.current?.request("turn/interrupt",{threadId,turnId}).catch(error=>{if(String(activeThreadRef.current?.id||"")===send.threadId){stopKeyRef.current=null;setStoppingThreadId(null)}showActionError(error,"Could not stop turn")});
+  }
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false}={}){
     assertTurnModel(modelId);
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
@@ -4008,7 +4020,7 @@ export default function App(){
     // Until turn/start answers the send has no turn for Stop to name, and a harness that has to start first can take a minute: Stop
     // meanwhile marks this send stopped (stop()), so it sends nothing more, and a turn the harness started before the Stop reached it
     // is stopped as soon as it is named.
-    const pendingSend={threadId:thread.id,requested:false,stopped:false};pendingSendRef.current=pendingSend;
+    const pendingSend={threadId:String(thread.id),requested:false,stopped:false,interrupted:false};pendingSendRef.current=pendingSend;
     // The context packet only reads files, so the server builds it while the checkpoint is made and the goal set; reached says the
     // send got to it.
     let reached=()=>{};const contextReady=prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted,ready:new Promise(resolve=>{reached=resolve})});
@@ -4039,7 +4051,7 @@ export default function App(){
       if(pendingSend.stopped)throw sendStoppedError();pendingSend.requested=true;
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
       if(pendingSendRef.current===pendingSend)pendingSendRef.current=null;
-      if(pendingSend.stopped&&turnId&&turnStillRuns(result.turn))void rpc.request("turn/interrupt",{threadId:thread.id,turnId}).catch(()=>{});
+      if(turnStillRuns(result.turn))interruptStoppedSend(pendingSend,thread.id,turnId);
       if(goalActivation)await activateCodexGoal(goalActivation);
       if(turnId){const key=turnInfoKey(thread.id,turnId),mode=permissionModeLabel(permissionModeOverride||permissionMode);if(key&&mode)setTurnInfo(prev=>({...prev,[key]:{...prev[key],mode}}))}
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
@@ -4444,11 +4456,18 @@ export default function App(){
     if(activeThread?.id)await persistLocalQueue(activeThread.id,next);else setQueued(next);
   }
   async function stop(){
+    // A send whose turn/start has not answered stops too. The agent relay ends it where it waits (for the harness to start, or before
+    // its prompt) and the send puts its draft back; Codex names no turn before it answers, so that Stop waits for the turn's id
+    // (interruptStoppedSend), and until then the turn still runs here, as Stopping.
+    const threadId=activeThread?.id?String(activeThread.id):null,pendingSend=threadId&&pendingSendRef.current?.threadId===threadId?pendingSendRef.current:null;
+    // One Stop per turn: pressed again while it is on its way (a double click, the shortcut twice), it sends nothing more.
+    const stopKey=activeTurnId?threadId+"\0"+activeTurnId:pendingSend;
+    if(stopKey&&stopKeyRef.current===stopKey)return;
+    stopKeyRef.current=stopKey;setStoppingThreadId(threadId);
     // Stop pauses an active Codex goal first, so Codex starts no further goal turn, then stops the newest turn (T3 Code,
     // the Codex TUI).
     let turnId=activeTurnId;
-    if(agentRuntime==="codex"&&rpc&&activeThread?.id){
-      const threadId=activeThread.id;
+    if(agentRuntime==="codex"&&rpc&&threadId){
       if(codexGoalActivationRef.current?.threadId===threadId)codexGoalActivationRef.current.stopped=true;
       if(goal?.status==="active"){
         try{const paused=await rpc.request("thread/goal/set",{threadId,status:"paused"});if(activeThreadRef.current?.id===threadId)setGoal(paused?.goal||null)}
@@ -4456,19 +4475,20 @@ export default function App(){
         const latest=threadTelemetryRef.current[threadId];if(latest&&Object.prototype.hasOwnProperty.call(latest,"turnId"))turnId=latest.turnId;
       }
     }
-    // A send whose turn/start has not answered stops too. The agent relay ends it where it waits (for the harness to start, or before
-    // its prompt) and the send puts its draft back; Codex names no turn before it answers, so startTurn stops the turn it names.
-    const pendingSend=pendingSendRef.current?.threadId===activeThread?.id?pendingSendRef.current:null;
     if(pendingSend)pendingSend.stopped=true;
-    if(rpc&&activeThread?.id&&(turnId||pendingSend?.requested&&agentRuntime!=="codex"))await rpc.request("turn/interrupt",{threadId:activeThread.id,...(turnId?{turnId}:{})});
-    if(runtimeCapabilities.nativeQueue&&queueMode==="native"){setRunning(false);setActiveTurnId(null);await loadNativeQueue(rpc,activeThread?.id);return}
+    const interruptNow=Boolean(turnId||pendingSend?.requested&&agentRuntime!=="codex");if(pendingSend&&interruptNow)pendingSend.interrupted=true;
+    try{if(rpc&&threadId&&interruptNow)await rpc.request("turn/interrupt",{threadId,...(turnId?{turnId}:{})})}
+    catch(error){if(stopKeyRef.current===stopKey){stopKeyRef.current=null;setStoppingThreadId(null)}throw error}
+    // A send stopped before its turn had an id runs on until it ends: its turn/completed, or the send ending without a turn.
+    const ended=!pendingSend||Boolean(turnId);
+    if(runtimeCapabilities.nativeQueue&&queueMode==="native"){if(ended){setRunning(false);setActiveTurnId(null)}await loadNativeQueue(rpc,threadId);return}
     // The queue goes back into the composer beside what it holds by then, which may be the draft of the send just stopped.
     const returned=queued;
-    if(activeThread?.id)await persistLocalQueue(activeThread.id,[]);else setQueued([]);
+    if(threadId)await persistLocalQueue(threadId,[]);else setQueued([]);
     setPrompt(current=>restoreQueuedDraft({prompt:current,queued:returned}).prompt);
     setAttachments(current=>restoreQueuedDraft({attachments:current,queued:returned,maxAttachments:MAX_COMPOSER_ATTACHMENTS}).attachments);
     setContextChips(current=>restoreQueuedDraft({contextChips:current,queued:returned,maxAttachments:MAX_COMPOSER_ATTACHMENTS}).contextChips);
-    setRunning(false);
+    if(ended)setRunning(false);
   }
   async function editFromHere(message){
     if(!runtimeCapabilities.rewind||!rpc||!activeThread?.id||!message.turnId)return;
@@ -5047,6 +5067,7 @@ export default function App(){
   const projectsPageRemoved=useLatestCallback(project=>{removedProjectIdsRef.current.add(project?.id);setProjectRecords(previous=>previous.filter(item=>item.id!==project?.id));setPaletteProjects(previous=>previous.filter(item=>item.id!==project?.id));setCurrentProject(current=>current&&current.id===project?.id?null:current)});
   // Retry's outcome (the list, or the error again) shows in the sidebar itself.
   const sidebarRetryThreads=useLatestCallback(()=>loadThreads(rpcRef.current).then(()=>undefined));
+  const stopping=running&&stoppingThreadId!=null&&stoppingThreadId===String(activeThread?.id||"");
   const runningSidebarIds=useMemo(()=>runningThreadIds(displayThreads,{activeThreadId:activeThread?.id,activeRunning:running,turnStates:threadTurnStates}),[displayThreads,activeThread?.id,running,threadTurnStates]);
   const completedEvents=finishedActivitySteps(events);
   // The palette's thread actions are for the thread the header names: none while another one opens (its own are not loaded yet).
@@ -5201,7 +5222,7 @@ export default function App(){
               {headerOpenInShown&&projectControlsShown&&<OpenInControl openIn={headerOpenIn} fold="open-in"/>}
               {headerScript&&projectControlsShown&&<button className="header-control script-control" data-fold="script" onClick={runHeaderScript} aria-label={headerScript.name} title={headerScript.command}><Play size={13}/><span>{headerScript.name}</span></button>}
               {activeThread?.id&&!openingShown&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} disabled={running} aria-label="Review" title={reviewHint}><ShieldCheck size={14}/><span>Review</span></button>}
-              {running&&!openingShown&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label="Stop" title="Stop the running turn"><CircleStop size={14}/><span>Stop</span></button>}
+              {running&&!openingShown&&<button className={"header-control stop-control"+(stopping?" stopping":"")} disabled={stopping} onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label={stopping?"Stopping":"Stop"} title={stopping?"Stopping the running turn…":"Stop the running turn"}><CircleStop size={14}/><span>{stopping?"Stopping…":"Stop"}</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} data-fold="terminal" onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               {activeThread?.id&&!openingShown&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} data-fold="goal" onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
               <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={toggleRightPanel} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
