@@ -4,6 +4,7 @@ import { basename, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { AcpAgentSession } from "./acp-agent-session.mjs";
 import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
+import { withProbeAdvice } from "./agent-runtime-manager.mjs";
 import { fileUri } from "./file-uri.mjs";
 import { isHarnessSessionLost } from "./harness-session-lost.mjs";
 import { threadHistoryHandoff } from "./thread-history-handoff.mjs";
@@ -939,6 +940,27 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     startingSessions.add(runtime);
     try{return await runtime.start(options)}finally{startingSessions.delete(runtime)}
   }
+  // A harness that failed where it runs (its session did not start, or a turn ended in its error) is asked again, once
+  // (AgentRuntimeManager.recheck): the probe answer it started on is kept for a minute and may be one it no longer gives, as after a
+  // `claude auth logout` in the person's own terminal. That check's answer replaces the kept one, so the next poll and the next
+  // session start read it. harness: the runtime profile and environment a session runs in (sessionHarnesses); Trebell Native has
+  // none. A conversation the harness lost is no such failure (the harness ran to say so), nor is one that the relay's close or reset
+  // caused, and closeSessions stops waiting for a check still running (resetWaits).
+  const sessionHarnesses=new WeakMap(),resetWaits=new Set();
+  const failedWhereItRuns=(harness,error,generation)=>Boolean(harness)&&typeof runtimeManager.recheck==="function"&&!isHarnessSessionLost(error)&&!closing&&generation===sessionGeneration;
+  // The message a harness failure shows: the harness's own, and after it the advice of an answer that the harness cannot run or is
+  // not signed in (withProbeAdvice); a check that still finds it ready leaves the message as it was.
+  async function harnessFailureMessage(harness,error){
+    let wake,status=null;const reset=new Promise(resolve=>{wake=resolve});resetWaits.add(wake);
+    try{status=await Promise.race([runtimeManager.recheck(harness.instance,{environmentId:harness.environmentId}),reset])}catch{}
+    finally{resetWaits.delete(wake)}
+    return withProbeAdvice(error?.message,status);
+  }
+  // The same failure with another message: its code and the rest of what it carries go with it.
+  function withMessage(error,message){
+    if(message===error?.message)return error;
+    const next=Object.assign(new Error(message,{cause:error}),error&&typeof error==="object"?error:{});next.message=message;return next;
+  }
   // freshIfLost: a turn is about to run, so a conversation the harness lost continues in a fresh session (see below); opening,
   // forking, compacting and rewinding a thread keep the lost-session error.
   async function startSession(thread,context,{permissionMode=null,model=null,freshIfLost=false}={}){
@@ -1126,6 +1148,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // Antigravity's model list is the one its sessions report (T3), also when the thread's model turns out not to be offered.
     const reportModels=()=>{if(runtime instanceof AcpAgentSession&&instance.kind==="antigravity"&&runtime.sessionSetup)runtimeManager.rememberAcpSessionModels?.(instance,runtime.sessionSetup,{environmentId})};
     const savedSessionId=thread.providerSessionId||null,requestedModel=model||thread.model||null;
+    // A start that failed asks the harness again once (harnessFailureMessage), also after the fresh session a lost conversation
+    // took, and fails with that check's advice beside the harness's own message.
+    const harness={instance,environmentId};
+    const startFailure=async error=>failedWhereItRuns(harness,error,generation)?withMessage(error,await harnessFailureMessage(harness,error)):error;
     try{started=await startTracked(runtime,{providerSessionId:savedSessionId,model:requestedModel},generation)}
     catch(error){
       reportModels();await runtime.close().catch(()=>{});
@@ -1133,13 +1159,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // A harness that no longer has the thread's conversation continues it in one fresh session, whose first prompt hands the
       // earlier messages over (T3's provider resume fallback). A harness that cannot run at all fails as it is, and so does the
       // fresh session's start: a lost conversation never loops.
-      if(!freshIfLost||!savedSessionId||!isHarnessSessionLost(error))throw error;
+      if(!freshIfLost||!savedSessionId||!isHarnessSessionLost(error))throw await startFailure(error);
       lost={previousSessionId:String(savedSessionId),reason:error.message};
       runtime=create();prepare();
       try{started=await startTracked(runtime,{providerSessionId:null,model:requestedModel},generation)}
-      catch(freshError){reportModels();await runtime.close().catch(()=>{});if(generation!==sessionGeneration)throw restartedWhileStarting();recordResumeFallback(thread,{...lost,sessionId:null,error:freshError});throw freshError}
+      catch(freshError){reportModels();await runtime.close().catch(()=>{});if(generation!==sessionGeneration)throw restartedWhileStarting();recordResumeFallback(thread,{...lost,sessionId:null,error:freshError});throw await startFailure(freshError)}
     }
     if(generation!==sessionGeneration){await runtime.close().catch(()=>{});throw restartedWhileStarting()}
+    sessionHarnesses.set(runtime,harness);
     reportModels();sessionModelReports.set(runtime,reportModels);
     const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
     // A resumed session keeps the thread's id; an ACP session reports the model it actually runs (an alias resolves to the real id).
@@ -1230,8 +1257,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   }
 
   // resend: what sends the turn once more when the harness turned out not to have the conversation (claudeLostSessionResend);
-  // that second send settles without one.
-  function settlePrompt({thread,turn,session,promptPromise,model=null,context=null,resend=null}){
+  // that second send settles without one. generation: the relay's sessions the turn began in (a close or reset ends them).
+  function settlePrompt({thread,turn,session,promptPromise,model=null,context=null,resend=null,generation=sessionGeneration}){
     const persistUsage=result=>{
       const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadMetadata(thread.id)||thread;
       state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),model:current.model||model||null,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
@@ -1251,7 +1278,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadMetadata(thread.id)?.status||{type:"idle"}});
       if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
     }).catch(error=>{
-      if(resend&&isHarnessSessionLost(error))return settlePrompt({thread,turn,session,promptPromise:resend(error),model,context});
+      if(resend&&isHarnessSessionLost(error))return settlePrompt({thread,turn,session,promptPromise:resend(error),model,context,generation});
       settleToolWrites(thread.id);endNativeDraft(session,thread.id,turn.id);
       endReasoning(thread.id,turn.id);
       if(error?.code==="CLAUDE_REWIND_REJECTED"){
@@ -1271,7 +1298,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // A Claude Code turn that failed after its prompt reached the transcript keeps its ids, so a later turn can be edited.
       if(error?.providerMessageId||error?.userMessageId)threadStore.updateTurn(thread.id,turn.id,{...(error.providerMessageId?{providerMessageId:error.providerMessageId}:{}),...(error.userMessageId?{providerUserMessageId:error.userMessageId}:{})});
       persistUsage(null);persistModelTurns(error?.nativeModelTurns);
-      const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message:error.message}});emit("error",{threadId:thread.id,turnId:turn.id,message:error.message});emit("turn/completed",{threadId:thread.id,turn:completed});
+      const fail=message=>{const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:turn.id,message});emit("turn/completed",{threadId:thread.id,turn:completed})};
+      // A turn its harness failed asks the harness again before it ends (harnessFailureMessage); one the person stopped did not fail.
+      const harness=sessionHarnesses.get(session);
+      if(stoppedTurns.get(session)===turn.id||!failedWhereItRuns(harness,error,generation))return fail(error.message);
+      return harnessFailureMessage(harness,error).then(fail);
     }).finally(()=>{clearLiveToolOutput(thread.id);recoveryInFlight.delete(thread.id);if(sessions.get(thread.id)===session)sessionUsed.set(session,Date.now())});
     promptSettlements.add(settlement);
     void settlement.finally(()=>promptSettlements.delete(settlement)).catch(error=>log(error?.stack||String(error)));
@@ -1460,6 +1491,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // before it does, and one whose turn exists ends it cancelled, never sending the prompt. A harness start a stopped send leaves goes
   // on, and the thread's next send runs in its session.
   const waitingSends=new Map();
+  // The running turn the person stopped, by the session it runs in: a harness that ends it with an error did not fail (settlePrompt).
+  const stoppedTurns=new WeakMap();
   const stoppedBeforeTurn=()=>new Error("Stopped before the turn started.");
   function waitingSend(threadId){
     let sends=waitingSends.get(threadId);if(!sends)waitingSends.set(threadId,sends=new Set());
@@ -1939,7 +1972,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }
     if(method==="turn/interrupt"){
       for(const send of waitingSends.get(String(params.threadId||""))||[])send.interrupt();
-      const target=sessions.get(params.threadId);target?.cancel();
+      const target=sessions.get(params.threadId),running=target?lastTurnOf(String(params.threadId||"")):null;
+      if(running?.id&&running.status==="inProgress")stoppedTurns.set(target,running.id);
+      target?.cancel();
       // Stop answers a harness's waiting approvals, questions and form requests as cancelled and withdraws their cards, for Claude Code
       // and OpenCode as for the ACP harnesses (T3 cancels every pending runtime request of an interrupted run).
       if(target&&!(target instanceof NativeAgentSession))for(const socket of socketContexts)socket.cancelThreadRequests?.(params.threadId);
@@ -2156,7 +2191,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   };
   server.on("upgrade",upgrade);
   async function closeSessions(){
-    sessionGeneration++;
+    sessionGeneration++;for(const wake of resetWaits)wake();
     for(const runtime of [...startingSessions])await runtime.close().catch(()=>{});
     for(const session of sessions.values())await session.close().catch(()=>{});sessions.clear();
     if(sessionReleases.size)await Promise.allSettled([...sessionReleases]);

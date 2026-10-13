@@ -44,6 +44,13 @@ const PROBE_REUSE_MS=60_000;
 // at the next poll. Codex's null means its model provider needs no OpenAI sign-in, and Antigravity's that a session checks it.
 const SIGN_IN_READ_BY_PROBE=new Set(["cursor","grok","opencode"]);
 const keptProbeAnswer=value=>Boolean(value?.available)&&!(value.authenticated==null&&SIGN_IN_READ_BY_PROBE.has(value.kind));
+// A harness failure's message, with the advice of a probe answer that the harness cannot run or is not signed in after it ('Run
+// `claude auth login` and try again.'): the harness's own words stay. A ready answer, or advice the message already has, adds none.
+export function withProbeAdvice(message,status){
+  const said=String(message||"").trim(),advice=status&&(status.available===false||status.authenticated===false)?String(status.message||"").trim():"";
+  if(!advice||said.includes(advice))return message;
+  return said?`${/[.!?…]$/.test(said)?said:said+"."} ${advice}`:advice;
+}
 // An ACP harness's model list is kept this long once it has models (T3 keeps Cursor's for 30 minutes per version).
 const ACP_MODEL_LIST_REUSE_MS=30*60_000;
 const INSTALLABLE_PACKAGES=Object.freeze({
@@ -607,7 +614,7 @@ export class AgentRuntimeManager{
   async probe(instanceOrKind,{environmentId=undefined,fresh=false}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="native")return this.#probeNow(instance,{environmentId});
-    const key=JSON.stringify([this.activeEnvironment(environmentId)?.id||"local",instance]),cached=this.#probes.get(key);
+    const key=this.#probeKey(instance,environmentId),cached=this.#probes.get(key);
     if(!fresh&&cached?.pending){
       const value=await cached.pending;if(value?.available)return structuredClone(value);
       const next=this.#probes.get(key);if(next?.pending&&next.pending!==cached.pending)return structuredClone(await next.pending);
@@ -624,6 +631,23 @@ export class AgentRuntimeManager{
       if(this.#probes.get(key)?.pending===pending)this.#probes.delete(key);
       throw error;
     }
+  }
+  #probeKey(instance,environmentId=undefined){return JSON.stringify([this.activeEnvironment(environmentId)?.id||"local",instance])}
+  #rechecks=new Map();
+  // A harness that failed where it runs (its session did not start, or a turn ended in its error) is asked again: the ready answer
+  // kept for PROBE_REUSE_MS may be one it no longer gives, as after a `claude auth logout` in the person's own terminal, and the next
+  // poll and session start must not read it. The kept answer goes at once and one fresh probe takes its place, which the failures
+  // of the same profile and environment that arrive while it runs share: a harness that keeps failing is asked at most once per
+  // failure. The relay adds the answer's advice to the harness's error (agent-relay harnessFailureMessage). Trebell Native runs in
+  // this process and has no CLI to ask.
+  recheck(instanceOrKind,{environmentId=undefined}={}){
+    const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
+    if(instance.kind==="native")return Promise.resolve(null);
+    const key=this.#probeKey(instance,environmentId),running=this.#rechecks.get(key);
+    if(running)return running.then(value=>structuredClone(value));
+    const pending=this.probe(instance,{environmentId,fresh:true}),settled=()=>{if(this.#rechecks.get(key)===pending)this.#rechecks.delete(key)};
+    this.#rechecks.set(key,pending);pending.then(settled,settled);
+    return pending;
   }
   #versions=new Map();
   // A local binary's --version answer, kept until the file changes (its path, modification time and size). A launcher script can
