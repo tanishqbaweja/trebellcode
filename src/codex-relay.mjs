@@ -174,7 +174,10 @@ export function attachCodexRelay(httpServer, {
           context.upstreams.delete(record.key);
           for(const pending of record.internalPending.values()){clearTimeout(pending.timer);pending.reject(new Error("Codex app-server disconnected"))}
           record.internalPending.clear();
-          if(record.key===context.primaryKey&&!context.closed)closeClient(code||1011,String(reason||"codex disconnected"));
+          // A connection that died has no close frame (1005, 1006 or 1015), and no close frame may carry those codes: ws throws for them,
+          // which left the browser's socket open with nothing behind it. The browser is told 1011 instead.
+          const sendable=(code>=1000&&code<=1014&&![1004,1005,1006].includes(code))||(code>=3000&&code<=4999);
+          if(record.key===context.primaryKey&&!context.closed)closeClient(sendable?code:1011,String(reason||"codex disconnected"));
         });
         upstream.on("error",error=>{log(`codex websocket error (${record.key}): ${error.message}`)});
         await record.ready;

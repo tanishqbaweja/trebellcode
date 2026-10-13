@@ -323,3 +323,26 @@ test("Codex relay lets the server rewrite Codex notifications in order, with res
     client.close();
   }finally{relay.close();upstreamWss.close();await new Promise(resolve=>relayHttp.close(resolve));await new Promise(resolve=>upstreamHttp.close(resolve))}
 });
+
+test("Codex relay closes the browser socket at once when the app-server's connection dies without a close frame",async()=>{
+  // A Codex app-server that dies leaves its socket closed with 1006, a code no close frame may carry: the relay must still close the
+  // browser's socket, so the app says it is reconnecting instead of sending into a socket nothing answers.
+  const upstreamHttp=createServer(),upstreamWss=new WebSocketServer({noServer:true}),upstreams=new Set();
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>{upstreams.add(ws);ws.on("message",data=>{const message=JSON.parse(String(data));if(message.id!=null)ws.send(JSON.stringify({id:message.id,result:{}}))})});
+  await new Promise(resolve=>upstreamHttp.listen(0,"127.0.0.1",resolve));
+  const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});
+  const relay=attachCodexRelay(relayHttp,{targetUrl:`ws://127.0.0.1:${upstreamHttp.address().port}`});
+  await new Promise(resolve=>relayHttp.listen(0,"127.0.0.1",resolve));
+  let client=null;
+  try{
+    client=new WebSocket(`ws://127.0.0.1:${relayHttp.address().port}/api/codex/ws`);
+    await new Promise((resolve,reject)=>{client.once("open",resolve);client.once("error",reject)});
+    const answered=new Promise(resolve=>client.once("message",resolve));client.send(JSON.stringify({id:1,method:"initialize",params:{}}));await answered;
+    const closed=new Promise(resolve=>client.once("close",code=>resolve(code)));
+    for(const ws of upstreams)ws.terminate();
+    const code=await Promise.race([closed,new Promise(resolve=>setTimeout(()=>resolve("still open"),2000))]);
+    assert.notEqual(code,"still open");
+    assert.equal(code,1011);
+  }finally{client?.terminate();relay.close();upstreamWss.close();await new Promise(resolve=>relayHttp.close(resolve));await new Promise(resolve=>upstreamHttp.close(resolve))}
+});
