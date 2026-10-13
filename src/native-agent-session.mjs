@@ -271,6 +271,10 @@ function replacedWorkspaceContent(before,args={},replacements=0){
   return total===replacements?content:null;
 }
 
+// The background-process tools, and their legacy trebell_terminal names.
+const NATIVE_PROCESS_TOOLS=Object.freeze({trebell_process:new Set(["start","status","stop"]),trebell_terminal:new Set(["start_background","background_status","stop_background"])});
+function nativeProcessTool(call={}){return Boolean(NATIVE_PROCESS_TOOLS[String(call?.namespace||"")]?.has(String(call?.name||"")))}
+
 function exposesTool(tools,namespace,name){
   const entry=(Array.isArray(tools)?tools:[]).find(item=>item?.type==="namespace"&&String(item.name||"")===String(namespace||""));
   return Boolean((Array.isArray(entry?.tools)?entry.tools:[]).some(tool=>String(tool?.name||"")===String(name||"")));
@@ -548,18 +552,22 @@ export class NativeAgentSession{
           }
         }
       }
-      const shaped=this.toolOutputStore?await this.toolOutputStore.virtualize(observed,{namespace:call.namespace||null,name:call.name||null}):{value:observed,virtualized:false};
-      let uiOutput=shaped.value;
       const outputRetrievalVisible=exposesTool(this.tools,"trebell_output","inspect")&&platformToolAllowedByAllowlist("trebell_output","inspect",toolAllowlist);
-      if(this.toolOutputStore&&!preserveCacheHistory&&outputRetrievalVisible&&call.namespace==="trebell_terminal"&&call.name==="run"&&shaped.virtualized!==true&&Number(shaped.totalBytes||0)>=1200&&uiOutput&&typeof uiOutput==="object"&&!Array.isArray(uiOutput)&&!uiOutput._trebell_output){
+      const terminalRun=call.namespace==="trebell_terminal"&&call.name==="run",processTool=nativeProcessTool(call);
+      // Repeated command-output lines collapse only where the model can still fetch the raw output through trebell_output.
+      const collapseRepeatedLines=Boolean(this.toolOutputStore)&&outputRetrievalVisible&&(terminalRun||processTool);
+      const shaped=this.toolOutputStore?await this.toolOutputStore.virtualize(observed,{namespace:call.namespace||null,name:call.name||null,...(collapseRepeatedLines?{collapseRepeatedLines:true}:{})}):{value:observed,virtualized:false};
+      let uiOutput=shaped.uiValue??shaped.value,modelSource=shaped.value;
+      if(this.toolOutputStore&&!preserveCacheHistory&&outputRetrievalVisible&&terminalRun&&shaped.virtualized!==true&&!shaped.handle&&Number(shaped.totalBytes||0)>=1200&&uiOutput&&typeof uiOutput==="object"&&!Array.isArray(uiOutput)&&!uiOutput._trebell_output){
         const archived=await this.toolOutputStore.archive(observed,{namespace:call.namespace,name:call.name,minBytes:1200});
         if(archived?.archived){
-          uiOutput={...uiOutput,_trebell_output:{handle:archived.handle,totalBytes:archived.totalBytes,totalLines:archived.totalLines,archived:true,note:"Full redacted command output is archived by Trebell. Older successful probe output may later be compacted to a preview; inspect this handle only if exact prior evidence is needed."}};
+          uiOutput={...uiOutput,_trebell_output:{handle:archived.handle,totalBytes:archived.totalBytes,totalLines:archived.totalLines,archived:true,note:"Full redacted command output is archived by Trebell. Older successful probe output may later be compacted to a preview; inspect this handle only if exact prior evidence is needed."}};modelSource=uiOutput;
           this.onEvent?.({name:"native.tool.output_archived",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{namespace:call.namespace,name:call.name,handle:archived.handle,totalBytes:archived.totalBytes}});
         }
       }
-      const modelOutput=call.namespace==="trebell_terminal"&&call.name==="run"?compactTerminalModelOutput(uiOutput):call.namespace==="trebell_workspace"&&call.name==="replace_text"?replaceTextModelOutput(uiOutput):uiOutput,failed=uiOutput?.success===false;
-      this.onUpdate({update:{sessionUpdate:"tool_call_update",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,rawOutput:uiOutput,content:contentItems(call.namespace==="trebell_workspace"&&call.name==="replace_text"?modelOutput:uiOutput),status:failed?"failed":"completed"}});
+      const replaceText=call.namespace==="trebell_workspace"&&call.name==="replace_text";
+      const modelOutput=terminalRun?compactTerminalModelOutput(modelSource):replaceText?replaceTextModelOutput(modelSource):modelSource,failed=uiOutput?.success===false;
+      this.onUpdate({update:{sessionUpdate:"tool_call_update",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,rawOutput:uiOutput,content:contentItems(replaceText?modelOutput:uiOutput),status:failed?"failed":"completed"}});
       return modelToolResult(modelOutput);
     };
     let openAiControlGateResponseId="";

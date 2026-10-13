@@ -5,6 +5,8 @@ import { redactSecretValue } from "./secret-redactor.mjs";
 
 const DEFAULT_HOT_BYTES=16*1024,DEFAULT_READ_CHARS=12_000,MAX_READ_CHARS=48_000,DEFAULT_PREVIEW_CHARS=3600,DEFAULT_SIGNAL_PREVIEW_CHARS=2200;
 const SIGNAL_LINE=/\b(?:error|failed|failure|exception|assert(?:ion)?|traceback|panic|fatal|timeout|timed out|cannot|can't|invalid|expected|received|not found|undefined|mismatch)\b/i;
+const VIRTUALIZED_OUTPUT_NOTE="Full redacted output is outside hot model context. Preview contains bounded head/tail plus important failure-like lines when found. Use trebell_output/inspect only when more detail is needed; set query to search, or omit it to read a bounded range.";
+const COLLAPSED_OUTPUT_NOTE="Runs of identical consecutive lines are collapsed here. The full redacted output is stored by Trebell; use trebell_output/inspect with this handle only if the exact repeated lines matter.";
 
 function serialized(value){
   if(typeof value==="string")return value;
@@ -23,10 +25,37 @@ function serialized(value){
   try{return JSON.stringify(value,null,2)}catch{return String(value)}
 }
 function byteLength(value){return Buffer.byteLength(String(value||""),"utf8")}
-function importantLines(text,maxChars){
+function repeatedLineNote(count){return "[Trebell: previous line repeated "+count+" more time"+(count===1?"":"s")+"]"}
+// Command output only: a run of identical consecutive lines becomes its first line and a harness note that counts the rest,
+// when the note is shorter than the lines it replaces. Line endings (LF or CRLF) and a trailing newline are kept.
+export function collapseRepeatedLines(text){
+  const value=String(text??"");if(!value.includes("\n"))return {text:value,runs:0,removedLines:0};
+  const trailing=value.endsWith("\n"),lines=(trailing?value.slice(0,-1):value).split("\n"),out=[];let runs=0,removedLines=0;
+  for(let index=0;index<lines.length;){
+    const line=lines[index];let end=index+1;while(end<lines.length&&lines[end]===line)end++;
+    const repeats=end-index-1,note=repeats?repeatedLineNote(repeats)+(line.endsWith("\r")?"\r":""):"";
+    if(repeats&&repeats*(line.length+1)>note.length+1){out.push(line,note);runs++;removedLines+=repeats}
+    else for(let copy=index;copy<end;copy++)out.push(line);
+    index=end;
+  }
+  if(!runs)return {text:value,runs:0,removedLines:0};
+  return {text:out.join("\n")+(trailing?"\n":""),runs,removedLines};
+}
+const COLLAPSIBLE_OUTPUT_KEYS=["stdout","stderr"];
+function collapsedOutputValue(value){
+  if(!value||typeof value!=="object"||Array.isArray(value))return null;
+  let next=null,runs=0,removedLines=0;
+  for(const key of COLLAPSIBLE_OUTPUT_KEYS){
+    if(typeof value[key]!=="string")continue;
+    const collapsed=collapseRepeatedLines(value[key]);if(!collapsed.runs)continue;
+    if(!next)next={...value};next[key]=collapsed.text;runs+=collapsed.runs;removedLines+=collapsed.removedLines;
+  }
+  return next?{value:next,runs,removedLines}:null;
+}
+function importantLines(text,maxChars,{skipRepeats=false}={}){
   const lines=String(text||"").split(/\r?\n/),out=[];let used=0;
   for(let index=0;index<lines.length;index++){
-    const line=lines[index];if(!SIGNAL_LINE.test(line))continue;
+    const line=lines[index];if(!SIGNAL_LINE.test(line)||(skipRepeats&&index>0&&lines[index-1]===line))continue;
     const value=("line "+(index+1)+": "+line).slice(0,600),cost=value.length+1;
     if(used+cost>maxChars)break;
     out.push(value);used+=cost;
@@ -42,11 +71,13 @@ function failureLike(value){
   const status=Number(value.status);if(Number.isFinite(status)&&status>=400)return true;
   return false;
 }
-function preview(text,maxChars=DEFAULT_PREVIEW_CHARS,{compactSignalPreview=false}={}){
+// signalText: the stored text the important lines are numbered against, when the preview shows a collapsed copy of it.
+function preview(text,maxChars=DEFAULT_PREVIEW_CHARS,{compactSignalPreview=false,signalText=null}={}){
   const value=String(text||"");if(value.length<=maxChars)return value;
-  let signals=importantLines(value,Math.min(2200,Math.floor(maxChars*.36)));
+  const signalSource=signalText==null?value:String(signalText),signalOptions={skipRepeats:signalText!=null};
+  let signals=importantLines(signalSource,Math.min(2200,Math.floor(maxChars*.36)),signalOptions);
   const target=signals&&compactSignalPreview?Math.min(maxChars,DEFAULT_SIGNAL_PREVIEW_CHARS):maxChars;
-  if(signals&&target<maxChars)signals=importantLines(value,Math.min(1100,Math.floor(target*.48)));
+  if(signals&&target<maxChars)signals=importantLines(signalSource,Math.min(1100,Math.floor(target*.48)),signalOptions);
   const marker="\n...[Trebell virtualized "+(value.length-target).toLocaleString()+" omitted characters]...\n";
   const signalBlock=signals?"\n...[important lines from omitted output]...\n"+signals+"\n...[end important lines]...\n":"";
   const remaining=Math.max(512,target-marker.length-signalBlock.length),head=Math.floor(remaining*.62),tail=Math.max(0,remaining-head);
@@ -77,7 +108,17 @@ export class NativeToolOutputStore{
     rows.sort((a,b)=>b.mtime-a.mtime);
     await Promise.all(rows.slice(this.maxEntries).map(row=>unlink(row.path).catch(()=>{})));
   }
-  async virtualize(value,{namespace=null,name=null}={}){
+  async #store(text,{namespace=null,name=null,totalBytes=byteLength(text)}={}){
+    await mkdir(this.directory,{recursive:true});
+    const handle="out_"+randomUUID(),payload={handle,createdAt:Date.now(),namespace,name,totalBytes,text};
+    await writeFile(this.#path(handle),JSON.stringify(payload),"utf8");
+    await this.#prune();
+    return handle;
+  }
+  // collapseRepeatedLines (command output only): the model sees stdout and stderr with runs of identical lines collapsed,
+  // and the raw output is stored behind a handle so trebell_output can still return every line. uiValue is the person's view,
+  // which is not collapsed.
+  async virtualize(value,{namespace=null,name=null,collapseRepeatedLines=false}={}){
     // A text preview would irreversibly discard model-visible image pixels.
     // Redact ordinary metadata and text, but keep image payloads intact in hot context.
     if(Array.isArray(value?.contentItems)&&value.contentItems.some(item=>item?.type==="inputImage"||item?.type==="image")){
@@ -88,11 +129,10 @@ export class NativeToolOutputStore{
     }
     const safeValue=redactSecretValue(value,{environment:this.environment,maxDepth:20,maxArray:5000,maxFields:5000});
     const text=serialized(safeValue),totalBytes=byteLength(text);
+    const collapsed=collapseRepeatedLines===true?collapsedOutputValue(safeValue):null;
+    if(collapsed)return await this.#virtualizeCollapsed(safeValue,text,totalBytes,collapsed,{namespace,name});
     if(totalBytes<=this.maxHotBytes)return {value:safeValue,virtualized:false,totalBytes};
-    await mkdir(this.directory,{recursive:true});
-    const handle="out_"+randomUUID(),payload={handle,createdAt:Date.now(),namespace,name,totalBytes,text};
-    await writeFile(this.#path(handle),JSON.stringify(payload),"utf8");
-    await this.#prune();
+    const handle=await this.#store(text,{namespace,name,totalBytes});
     try{this.onVirtualized?.({handle,totalBytes,namespace,name})}catch{}
     const lines=text.split(/\r?\n/).length;
     return {
@@ -102,9 +142,26 @@ export class NativeToolOutputStore{
         preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview:failureLike(safeValue)}),
         _trebell_output:{
           handle,totalBytes,totalLines:lines,
-          note:"Full redacted output is outside hot model context. Preview contains bounded head/tail plus important failure-like lines when found. Use trebell_output/inspect only when more detail is needed; set query to search, or omit it to read a bounded range.",
+          note:VIRTUALIZED_OUTPUT_NOTE,
         },
       },
+    };
+  }
+  async #virtualizeCollapsed(safeValue,text,totalBytes,collapsed,{namespace=null,name=null}={}){
+    const handle=await this.#store(text,{namespace,name,totalBytes}),totalLines=text.split(/\r?\n/).length,collapsedText=serialized(collapsed.value);
+    if(byteLength(collapsedText)<=this.maxHotBytes){
+      try{this.onVirtualized?.({handle,totalBytes,namespace,name,archived:true})}catch{}
+      return {
+        virtualized:false,archived:true,collapsedLines:collapsed.removedLines,totalBytes,handle,uiValue:safeValue,
+        value:{...collapsed.value,_trebell_output:{handle,totalBytes,totalLines,archived:true,note:COLLAPSED_OUTPUT_NOTE}},
+      };
+    }
+    try{this.onVirtualized?.({handle,totalBytes,namespace,name})}catch{}
+    const compactSignalPreview=failureLike(safeValue),metadata=scalarMetadata(safeValue);
+    return {
+      virtualized:true,collapsedLines:collapsed.removedLines,totalBytes,handle,
+      uiValue:{...metadata,preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview}),_trebell_output:{handle,totalBytes,totalLines,note:VIRTUALIZED_OUTPUT_NOTE}},
+      value:{...metadata,preview:preview(collapsedText,DEFAULT_PREVIEW_CHARS,{compactSignalPreview,signalText:text}),_trebell_output:{handle,totalBytes,totalLines,note:VIRTUALIZED_OUTPUT_NOTE}},
     };
   }
   async archive(value,{namespace=null,name=null,minBytes=0}={}){

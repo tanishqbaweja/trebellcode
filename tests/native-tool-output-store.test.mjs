@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NativeToolOutputStore } from "../src/native-tool-output-store.mjs";
+import { NativeToolOutputStore, collapseRepeatedLines } from "../src/native-tool-output-store.mjs";
 
 test("Native tool output store virtualizes large output, supports targeted retrieval, and never persists configured secrets",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-output-store-")),secret="trebell-output-secret-value";
@@ -83,5 +83,56 @@ test("Native tool output store can archive small hot output without forcing imme
     assert.match(read.content,/row=42/);assert.doesNotMatch(read.content,new RegExp(secret));assert.match(read.content,/\[redacted\]/);
     const skipped=await store.archive({stdout:"tiny"},{namespace:"trebell_terminal",name:"run",minBytes:1200});
     assert.equal(skipped.archived,false);assert.equal(skipped.handle,undefined);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("consecutive identical output lines collapse to the first line and a harness note only when the note is shorter",()=>{
+  const warning="Warning: grid volume is not an integer number of pixels; cell size will be rounded.";
+  const collapsed=collapseRepeatedLines("start\n"+(warning+"\n").repeat(38)+"done\n");
+  assert.equal(collapsed.text,"start\n"+warning+"\n[Trebell: previous line repeated 37 more times]\ndone\n");
+  assert.equal(collapsed.runs,1);assert.equal(collapsed.removedLines,37);
+  assert.equal(collapseRepeatedLines(warning+"\n"+warning).text,warning+"\n[Trebell: previous line repeated 1 more time]","a final line without a newline still collapses");
+  const short="ok\nok\nok\nok\n";assert.deepEqual(collapseRepeatedLines(short),{text:short,runs:0,removedLines:0},"a note longer than the repeats it replaces is not used");
+  assert.equal(collapseRepeatedLines("a\r\n"+(warning+"\r\n").repeat(3)+"b\r\n").text,"a\r\n"+warning+"\r\n[Trebell: previous line repeated 2 more times]\r\nb\r\n","CRLF output keeps its line endings");
+  assert.equal(collapseRepeatedLines("x\ny\n"+warning+"\nz\n"+warning+"\n").text,"x\ny\n"+warning+"\nz\n"+warning+"\n","only consecutive repeats collapse");
+  assert.equal(collapseRepeatedLines("\n".repeat(80)).text,"\n[Trebell: previous line repeated 79 more times]\n","a long run of blank lines collapses and the trailing newline stays");
+});
+
+test("collapsing command output keeps the raw output retrievable and the user-facing value unchanged",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-output-collapse-"));
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:16*1024});
+    const warning="Warning: grid volume is not an integer number of pixels; cell size will be rounded.";
+    const value={exitCode:0,stdout:"result 0.7888\n",stderr:(warning+"\n").repeat(120)};
+    const plain=await store.virtualize(value,{namespace:"trebell_terminal",name:"run"});
+    assert.equal(plain.value.stderr,value.stderr,"collapse is opt-in");assert.equal(plain.handle,undefined);
+    const shaped=await store.virtualize(value,{namespace:"trebell_terminal",name:"run",collapseRepeatedLines:true});
+    assert.equal(shaped.virtualized,false);assert.ok(shaped.handle);
+    assert.equal(shaped.value.stderr,warning+"\n[Trebell: previous line repeated 119 more times]\n");assert.equal(shaped.value.stdout,"result 0.7888\n");
+    assert.equal(shaped.value._trebell_output.handle,shaped.handle);assert.equal(shaped.value._trebell_output.archived,true);assert.match(shaped.value._trebell_output.note,/trebell_output\/inspect/);
+    assert.deepEqual(shaped.uiValue,value,"the person's view of the tool result is not collapsed");
+    const read=await store.read({handle:shaped.handle,start_line:1,max_chars:48_000});
+    assert.equal(read.content.split("\n").filter(line=>line===warning).length,120,"the raw output keeps every repeated line");
+    const unchanged=await store.virtualize({exitCode:0,stdout:"one\ntwo\n"},{namespace:"trebell_terminal",name:"run",collapseRepeatedLines:true});
+    assert.equal(unchanged.handle,undefined);assert.equal(unchanged.uiValue,undefined);assert.deepEqual(unchanged.value,{exitCode:0,stdout:"one\ntwo\n"});
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("a large collapsed output previews the collapsed text and indexes raw line numbers without repeated signal lines",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-output-collapse-large-"));
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});
+    const distinct=Array.from({length:400},(_,index)=>"step "+index+" value "+(index*7)).join("\n");
+    const failure="ERROR: solver failed to converge at cell 12";
+    const stdout=distinct+"\n"+(failure+"\n").repeat(300)+"tail summary line\n";
+    const shaped=await store.virtualize({exitCode:1,stdout},{namespace:"trebell_terminal",name:"run",collapseRepeatedLines:true});
+    assert.equal(shaped.virtualized,true);assert.ok(shaped.handle);
+    const preview=shaped.value.preview;
+    assert.equal((preview.match(/solver failed to converge/g)||[]).length<=2,true,"the preview does not repeat the same failure line");
+    const raw=await store.read({handle:shaped.handle,start_line:1,max_chars:48_000}),rawLines=raw.content.split("\n");
+    const labelled=preview.match(/line (\d+): ERROR: solver failed/);assert.ok(labelled,"the failure is indexed as an important line");
+    assert.equal(rawLines[Number(labelled[1])-1],failure,"important-line numbers point into the stored raw output");
+    assert.match(shaped.uiValue.preview,/solver failed to converge/);assert.notEqual(shaped.uiValue.preview,preview,"the person's preview is the raw one");
+    assert.equal(shaped.uiValue._trebell_output.handle,shaped.handle);
   }finally{await rm(root,{recursive:true,force:true})}
 });

@@ -1686,3 +1686,61 @@ test("the session's prompt holds cover every prompt the loop would reject a text
     const chunks=run.updates.filter(update=>update.sessionUpdate==="agent_message_chunk");assert.equal(chunks.length,1,prompt);
   }
 });
+
+test("Native session collapses repeated command-output lines for the model and keeps the raw output retrievable",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-collapse-")),requests=[],updates=[];let calls=0;
+  const warning="Warning: grid volume is not an integer number of pixels; cell size will be rounded.",repeatedFile=("same line of a data file\n").repeat(50);
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:16*1024});
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",toolOutputStore:store,onUpdate:update=>updates.push(update),
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]},{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]}],
+      providerTurn:async request=>{requests.push(structuredClone(request));calls++;
+        if(calls===1)return {id:"run",text:"",toolCalls:[{id:"sim",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python3","args":["sim.py"]}'}],usage:{}};
+        if(calls===2)return {id:"read",text:"",toolCalls:[{id:"data",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"data.txt"}'}],usage:{}};
+        return {id:"done",text:"done",toolCalls:[],usage:{}};
+      },
+      executeTool:async call=>call.namespace==="trebell_terminal"
+        ?{success:true,exitCode:0,stdout:"transmission 0.7888\n",stderr:(warning+"\n").repeat(200),durationMs:5,cwd:"/app",command:"python3",args:["sim.py"]}
+        :{path:"/app/data.txt",size:repeatedFile.length,content:repeatedFile},
+    });
+    await session.start({providerSessionId:"native-collapse",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Run the simulation, then read the data file."}],{maxModelTurns:3,maxToolCalls:4});
+    const observation=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="sim")?.content||"";
+    assert.match(observation,/\[Trebell: previous line repeated 199 more times\]/);assert.equal(observation.split(warning).length-1,1);assert.match(observation,/transmission 0\.7888/);
+    const handle=/"handle":"(out_[a-zA-Z0-9-]+)"/.exec(observation)?.[1];assert.ok(handle,"the model is given the handle of the raw output");
+    const read=await store.read({handle,start_line:1,max_chars:48_000});assert.equal(read.content.split(warning).length-1,200);
+    const raw=updates.find(entry=>entry.update?.sessionUpdate==="tool_call_update"&&entry.update.toolCallId==="sim")?.update?.rawOutput;
+    assert.equal(raw.stderr,(warning+"\n").repeat(200),"the person sees the command's output as it ran");
+    const fileObservation=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="data")?.content||"";
+    assert.equal(fileObservation.split("same line of a data file").length-1,50,"file reads are never collapsed");assert.doesNotMatch(fileObservation,/previous line repeated/);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native session collapses repeated background-process output lines and leaves them whole when output retrieval is unavailable",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-collapse-process-"));
+  const line="poll: waiting for the solver to finish its current iteration";
+  const run=async({allowlist=null,outputTool=true}={})=>{
+    const requests=[];let calls=0;
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:16*1024});
+    const tools=[{type:"namespace",name:"trebell_process",tools:[{name:"status"}]},...(outputTool?[{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]}]:[])];
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",toolOutputStore:store,tools,
+      providerTurn:async request=>{requests.push(structuredClone(request));calls++;return calls===1
+        ?{id:"status",text:"",toolCalls:[{id:"poll",namespace:"trebell_process",name:"status",arguments:'{"process_id":"p1"}'}],usage:{}}
+        :{id:"done",text:"done",toolCalls:[],usage:{}};},
+      executeTool:async()=>({processId:"2f1c0e6a-9b7d-4c1e-8a55-0d6f3b2a9c10",handle:"p1",threadId:"thread-1",command:"python3 solver.py",cwd:"/app",environmentId:null,environmentType:"local",running:true,exitCode:null,signal:null,createdAt:1,updatedAt:2,osPid:42,stdout:(line+"\n").repeat(60),stderr:"",truncated:false}),
+    });
+    await session.start({providerSessionId:"native-collapse-process",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Check the solver."}],{maxModelTurns:2,maxToolCalls:2,...(allowlist?{toolAllowlist:allowlist}:{})});
+    return requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="poll")?.content||"";
+  };
+  try{
+    const collapsed=await run();
+    assert.equal(collapsed.split(line).length-1,1);assert.match(collapsed,/previous line repeated 59 more times/);assert.match(collapsed,/"_trebell_output"/);
+    const noOutputTool=await run({outputTool:false});
+    assert.equal(noOutputTool.split(line).length-1,60,"without trebell_output the raw lines could not be retrieved, so they stay");assert.doesNotMatch(noOutputTool,/previous line repeated/);
+    const excluded=await run({allowlist:["trebell_process/status"]});
+    assert.equal(excluded.split(line).length-1,60,"an allowlist that excludes trebell_output keeps the lines whole");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
