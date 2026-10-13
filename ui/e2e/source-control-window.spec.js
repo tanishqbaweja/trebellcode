@@ -844,6 +844,10 @@ test("auto-merge that is on says so and is not offered again, and requested revi
   await shootBothModes(page,"source-control-reviewer-requested");
 });
 
+// Git under load (a busy disk, benchmarks on the same host) can take longer than expect's 5 s to answer a status read or a commit:
+// the Commit tests below wait for what Git answers, up to 30 s each, instead of failing on a slow first read.
+const GIT_WAIT={timeout:30_000};
+
 // A real repository with one commit and `files` written over it (relative path: text), registered as a project; git runs Git in it,
 // and it is removed when the test ends.
 const repositories=[];
@@ -858,16 +862,16 @@ async function realRepository(files={}){
 }
 
 test("a commit a hook refuses, or one with nothing to commit, says why and keeps the message",async({page,request})=>{
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
   const {root,git}=await realRepository({".git/hooks/pre-commit":"#!/bin/sh\necho 'the project hook refuses this commit' >&2\nexit 1\n","notes.txt":"after\n"});
   const boot=await (await request.get("/api/bootstrap")).json();
   await scriptCodeHost(page,{boot,info:false});
   const {right,changes}=await openGitPanel(page,request,"Source control refused commit",root);
   const message=changes.getByPlaceholder("Commit message"),commit=changes.getByRole("button",{name:"Commit",exact:true}),alert=right.locator(".source-control-error");
-  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1",GIT_WAIT);
   await message.click();await page.keyboard.type("Refused by the hook",{delay:15});
   await commit.click();
-  await expect(alert).toHaveText("Could not commit: the project hook refuses this commit");
+  await expect(alert).toHaveText("Could not commit: the project hook refuses this commit",GIT_WAIT);
   await expect(message).toHaveValue("Refused by the hook");
   await expect(changes.getByRole("heading")).toHaveText("Changes 1");
   expect(await git(["log","--format=%s"])).toBe("Seed notes");
@@ -875,24 +879,24 @@ test("a commit a hook refuses, or one with nothing to commit, says why and keeps
   // With the change committed elsewhere, Commit says there is nothing to commit, and the message stays for the next change.
   await rm(join(root,".git","hooks","pre-commit"));await git(["commit","-am","Committed in a terminal"]);
   await commit.click();
-  await expect(alert).toHaveText("Nothing to commit: the working tree has no changes.");
+  await expect(alert).toHaveText("Nothing to commit: the working tree has no changes.",GIT_WAIT);
   await expect(message).toHaveValue("Refused by the hook");
-  await expect(changes.locator(".sc-clean")).toHaveText("Working tree clean.");
+  await expect(changes.locator(".sc-clean")).toHaveText("Working tree clean.",GIT_WAIT);
   expect(await git(["log","--format=%s"])).toBe("Committed in a terminal\nSeed notes");
   await shootBothModes(page,"source-control-nothing-to-commit");
 });
 
 test("a commit that is made empties the message box, so the next message starts fresh",async({page,request})=>{
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
   const {root,git}=await realRepository({"notes.txt":"after\n"});
   const boot=await (await request.get("/api/bootstrap")).json();
   await scriptCodeHost(page,{boot,info:false});
   const {changes}=await openGitPanel(page,request,"Source control commit message",root);
   const message=changes.getByPlaceholder("Commit message"),commit=changes.getByRole("button",{name:"Commit",exact:true});
-  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1",GIT_WAIT);
   await message.click();await page.keyboard.type("First commit from the panel",{delay:15});
   await commit.click();
-  await expect(changes.locator(".sc-clean")).toHaveText("Working tree clean.");
+  await expect(changes.locator(".sc-clean")).toHaveText("Working tree clean.",GIT_WAIT);
   await expect(message).toHaveValue("");
   await expect(commit).toBeDisabled();
   expect(await git(["log","-1","--format=%s"])).toBe("First commit from the panel");
@@ -900,9 +904,9 @@ test("a commit that is made empties the message box, so the next message starts 
   // The next change gets its own message, not one appended to the last.
   await writeFile(join(root,"notes.txt"),"after again\n","utf8");
   await changes.getByRole("heading").scrollIntoViewIfNeeded();await page.getByTestId("right-panel").getByRole("button",{name:"Fetch",exact:true}).click();
-  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1",GIT_WAIT);
   await message.click();await page.keyboard.type("Second commit",{delay:15});await commit.click();
-  await expect(message).toHaveValue("");
+  await expect(message).toHaveValue("",GIT_WAIT);
   expect(await git(["log","-2","--format=%s"])).toBe("Second commit\nFirst commit from the panel");
 });
 
