@@ -9,8 +9,9 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // imports, and the CSS), and the chunks loaded later. The build goes to a gitignored folder of the checkout, on the checkout's drive.
 // The Markdown renderer loads after the first paint (LazyChatMarkdown.jsx), so its 159 KB count with the lazy chunks. The lazy
 // limit then grew by what the right-panel and dialog fixes (lane B+C) add to the lazy chunks and by what moved out of the first
-// bundle to keep it at 640 / 200, so its headroom stays 8.8 / 2.2 KB.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:667.4,gzipKB:216.6}};
+// bundle to keep it at 640 / 200, and again by what lane A adds to the lazy chunks and by Trebell's tool catalog, which moved out
+// of the first bundle for the same reason, so its headroom stays 7.4 / 1.6 KB, as on main before lane A.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:682.1,gzipKB:220.6}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
