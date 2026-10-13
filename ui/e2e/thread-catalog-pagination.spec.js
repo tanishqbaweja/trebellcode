@@ -4,7 +4,7 @@ import { WebSocketServer } from "ws";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir+"polish/history",{recursive:true});
 
 function meta(id,name,updatedAt){
   return {__catalogOnly:true,runtime:"claude",runtimeInstanceId:"claude-default",projectless:true,updatedAt,threadSnapshot:{id,name,preview:name+" preview",cwd:process.cwd(),model:"claude-test",updatedAt,createdAt:updatedAt-10,status:{type:"idle"},runtime:"claude",provider:"claude"}};
@@ -51,6 +51,57 @@ test("History pages older Trebell catalog rows even without a connected runtime"
   await expect.poll(()=>catalogReads).toBe(1);await expect(history.getByRole("button",{name:/Older C/})).toBeVisible();await expect(load).toHaveCount(0);
   await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".history-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({animations:"disabled",path:auditDir+"history-catalog-pagination-1280x800.png",fullPage:true});
+});
+
+// A failed Load older threads is said by the button, at the bottom of a long History where the person clicked it; it was said at the
+// top of the page, out of view, and only the button coming back showed anything had happened. Trying again loads the page.
+test("a failed Load older threads says so by the button",async({page})=>{
+  test.setTimeout(45_000);
+  const now=Date.now()/1000;
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const recent=Object.fromEntries(Array.from({length:30},(_,index)=>["recent-"+index,meta("recent-"+index,"Recent thread "+(index+1),now-index)])),older={"older-c":meta("older-c","Older C",now-1000)};
+  let catalogReads=0;
+  const json=body=>({status:200,contentType:"application/json",body:JSON.stringify(body)});
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill(json({mock:true,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"catalog-page-failure-fixture",runtimeCapabilities:{},activeEnvironmentId:null,activeEnvironment:null})));
+  await page.route(/\/api\/state$/,route=>route.fulfill(json({settings,projects:[],threadMeta:recent,threadMetaNextCursor:"older-page-1"})));
+  // The header's mode button saves the mode here, so the page keeps this fixture's settings.
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")settings={...settings,...route.request().postDataJSON()};return route.fulfill(json(settings))});
+  await page.route(/\/api\/models$/,route=>route.fulfill(json({agentRuntime:"claude",ready:true,models:["claude-test"],metadata:{agentRuntime:"claude",models:[{id:"claude-test",name:"Claude Test",agent:"Claude Code"}]}})));
+  await page.route(/\/api\/projects$/,route=>route.fulfill(json({projects:[]})));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill(json({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})));
+  await page.route(/\/api\/recovery$/,route=>route.fulfill(json({enabled:false,items:[]})));
+  await page.route(/\/api\/thread-meta\?/,route=>{catalogReads++;return catalogReads===1?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate catalog page failure"})}):route.fulfill(json({threadMeta:older,nextCursor:null}))});
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByRole("button",{name:"History",exact:true}).click();
+  const history=page.locator(".history-page"),load=page.getByRole("button",{name:"Load older threads"});
+  await expect(history.getByRole("button",{name:/Recent thread 30/})).toHaveCount(1);
+  // The person turns the mouse wheel over the list until the button at its bottom shows.
+  await page.mouse.move(800,400);
+  for(let notch=0;notch<60&&!await load.evaluate(node=>node.getBoundingClientRect().bottom<=innerHeight);notch++){await page.mouse.wheel(0,200);await page.waitForTimeout(40)}
+  await expect(load).toBeInViewport({ratio:1});
+  await load.click();
+  const failure=history.getByRole("alert").filter({hasText:"Deliberate catalog page failure"});
+  await expect(failure).toBeInViewport({ratio:1});
+  await expect(failure).toHaveText("Could not load older threads: Trebell catalog: Deliberate catalog page failure");
+  await expect(load).toBeEnabled();await expect(load).toBeInViewport({ratio:1});
+  await expect(history.getByRole("alert")).toHaveCount(1);
+  for(const mode of ["dark","light"]){
+    await page.setViewportSize({width:1280,height:800});
+    if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await failure.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`polish/history/older-threads-failed-${mode}-${width}.png`})}
+  }
+  await page.setViewportSize({width:1280,height:800});
+  // Leaving History and coming back starts it over: the old failure is not left by the button.
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:"History",exact:true}).click();
+  await expect(load).toBeVisible();await expect(history.getByRole("alert")).toHaveCount(0);
+  // Trying again loads the older page.
+  await load.click();
+  await expect(history.getByRole("button",{name:/Older C/})).toBeVisible();
+  await expect(history.getByRole("alert")).toHaveCount(0);await expect(load).toHaveCount(0);
+  expect(catalogReads).toBe(2);
 });
 
 test("connected runtime history refresh preserves the independent Trebell catalog cursor",async({page})=>{
