@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, dirname, extname, join, posix, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { parse as parseJavaScriptAst } from "@babel/parser";
 import { planVerification } from "./verification-planner.mjs";
 import { assessVerification } from "./verification-assessor.mjs";
 import { nextVerificationAction } from "./verification-loop.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
+import { compileSearchGlob } from "./search-glob.mjs";
 
 const execFileAsync=promisify(execFile);
 const SKIP=new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist","coverage","vendor"]);
@@ -547,17 +548,26 @@ async function gitState(root,{signal=null,environment=process.env}={}){
 // repository). Both skip binary and ignored files, and the SKIP directories are excluded by pathspec so
 // git never reads them (a plain directory has no .gitignore to keep node_modules out).
 const GIT_GREP_SKIP_PATHSPECS=[...SKIP].map(name=>`:(exclude,glob)**/${name}/**`);
-function gitGrepArgs(root,{query,regex=false,caseSensitive=false,noIndex=false}={}){
+// scope: a repository-relative file or folder the search is limited to, passed as a literal pathspec so a folder
+// named like a glob (app/[id]) is searched as written.
+function gitGrepArgs(root,{query,regex=false,caseSensitive=false,noIndex=false,scope=null}={}){
   const args=["-C",root,"grep",...(noIndex?["--no-index"]:[]),"-l","-z","-I",...(noIndex?[]:["--untracked"]),"--exclude-standard"];
-  if(!caseSensitive)args.push("-i");args.push(regex?"-E":"-F","-e",String(query||""),"--",".",...GIT_GREP_SKIP_PATHSPECS);
+  if(!caseSensitive)args.push("-i");args.push(regex?"-E":"-F","-e",String(query||""),"--",scope?":(literal)"+scope:".",...GIT_GREP_SKIP_PATHSPECS);
   return args;
 }
 
-async function localMatchingFiles(root,{query,regex=false,caseSensitive=false,limit=120,environment=process.env}={}){
+// include: a filter (such as a search glob) applied before the listing is cut to its limit, so files it keeps are not
+// crowded out by files it would drop.
+function matchingFileList(stdout,{include=null,limit=120,normalize=path=>path.replace(/\\/g,"/")}={}){
+  return String(stdout||"").split("\0").filter(Boolean).map(normalize).filter(indexablePath)
+    .filter(path=>typeof include!=="function"||include(path)).slice(0,Math.max(1,Math.min(500,Number(limit)||120)));
+}
+
+async function localMatchingFiles(root,{query,regex=false,caseSensitive=false,limit=120,scope=null,include=null,environment=process.env}={}){
   for(const noIndex of [false,true]){
     try{
-      const {stdout}=await execFileAsync("git",gitGrepArgs(root,{query,regex,caseSensitive,noIndex}),{env:environment,windowsHide:true,maxBuffer:4*1024*1024,timeout:20_000});
-      return String(stdout||"").split("\0").filter(Boolean).map(slash).filter(indexablePath).slice(0,Math.max(1,Math.min(500,Number(limit)||120)));
+      const {stdout}=await execFileAsync("git",gitGrepArgs(root,{query,regex,caseSensitive,noIndex,scope}),{env:environment,windowsHide:true,maxBuffer:4*1024*1024,timeout:20_000});
+      return matchingFileList(stdout,{include,limit,normalize:slash});
     }catch(error){
       if(Number(error?.code)===1)return [];
       if(Number(error?.code)===128&&!noIndex)continue;
@@ -762,6 +772,11 @@ function localContextIo(root,{environment=process.env}={}){
       return new Set(String(stdout||"").split("\0").filter(Boolean).map(slash));
     },
     relativeFocus:path=>slash(relative(absolute,resolve(absolute,path))).replace(/^\.\//,""),
+    // A path's place in the workspace: "" for the root, null when it is outside (another drive included).
+    relativeScope:path=>{
+      const rel=relative(absolute,resolve(absolute,String(path??"")));
+      return rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel)?null:slash(rel);
+    },
   };
 }
 
@@ -831,12 +846,12 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     const rawStatus=String(status.stdout||""),changed=new Set(rawStatus.split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replace(/^.* -> /,"").replace(/\\/g,"/")));
     return {isGit:true,...parseGitHead(head.exitCode===0?head.stdout:""),changed,status:rawStatus.slice(0,12_000),statusFingerprint:createHash("sha256").update(rawStatus).digest("hex").slice(0,20),diff:diff.exitCode===0?String(diff.stdout||"").slice(0,16_000):"",...parseGitStatusChanges(rawStatus)};
   };
-  const searchPaths=async({query,regex=false,caseSensitive=false,limit=120}={})=>{
-    let result=await runListing({command:"git",args:gitGrepArgs(absolute,{query,regex,caseSensitive}),cwd:"",timeoutMs:25_000,maxOutput:4*1024*1024});
-    if(result.exitCode===128)result=await runListing({command:"git",args:gitGrepArgs(absolute,{query,regex,caseSensitive,noIndex:true}),cwd:"",timeoutMs:25_000,maxOutput:4*1024*1024});
+  const searchPaths=async({query,regex=false,caseSensitive=false,limit=120,scope=null,include=null}={})=>{
+    let result=await runListing({command:"git",args:gitGrepArgs(absolute,{query,regex,caseSensitive,scope}),cwd:"",timeoutMs:25_000,maxOutput:4*1024*1024});
+    if(result.exitCode===128)result=await runListing({command:"git",args:gitGrepArgs(absolute,{query,regex,caseSensitive,noIndex:true,scope}),cwd:"",timeoutMs:25_000,maxOutput:4*1024*1024});
     if(result.exitCode===1)return [];
     if(result.exitCode!==0)throw new Error(result.stderr||"Could not search remote repository text");
-    return String(result.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/\\/g,"/")).filter(indexablePath).slice(0,Math.max(1,Math.min(500,Number(limit)||120)));
+    return matchingFileList(result.stdout,{include,limit});
   };
   const gitHistory=async({path="",limit=20}={})=>{
     const capped=Math.max(1,Math.min(100,Number(limit)||20)),args=["-C",absolute,"log","--no-decorate","-n"+capped,"--format=%x1e%H%x1f%an%x1f%ae%x1f%at%x1f%s"];
@@ -936,6 +951,11 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     relativeFocus:path=>{
       const raw=String(path||"");const target=raw.startsWith("/")?posix.normalize(raw):posix.normalize(posix.join(absolute,raw));
       const rel=posix.relative(absolute,target);return rel.startsWith("../")||posix.isAbsolute(rel)?"":rel;
+    },
+    // Unlike relativeFocus, which answers "" both for the root and for a path outside it: null means outside.
+    relativeScope:path=>{
+      const raw=String(path??"").replace(/\\/g,"/"),target=raw.startsWith("/")?posix.normalize(raw):posix.normalize(posix.join(absolute,raw));
+      const rel=posix.relative(absolute,target);return rel===".."||rel.startsWith("../")||posix.isAbsolute(rel)?null:rel;
     },
   };
 }
@@ -1094,6 +1114,88 @@ export function planContextBudget({task="",focusPaths=[],tokensUsed=null,context
     reason,
     cappedByCaller:Boolean(!skip&&((requestedTokenCap!=null&&requestedTokenCap<tokenCap)||(requestedFileCap!=null&&requestedFileCap<fileCap))),
   };
+}
+
+// search_code, search_symbols and search_files. The caller's limit bounds the hits shown with their text. Every other hit
+// stays listed by line number under its file, up to SEARCH_OVERFLOW_LINE_NUMBERS numbers in all, so a search the limit
+// cut still points at each place it found. A code search's definition hits (a line defining a symbol the query matched)
+// are never dropped: up to SEARCH_EXTRA_DEFINITION_HITS of them past the limit keep their text, and the rest are listed
+// by line number even after that budget runs out.
+const SEARCH_OVERFLOW_LINE_NUMBERS=600,SEARCH_EXTRA_DEFINITION_HITS=40;
+// A matching line longer than this shows a window around its first match.
+const SEARCH_HIT_TEXT_CHARS=240;
+// Matching files past the bound on files read line by line are named, up to this many (and counted in full).
+const SEARCH_UNREAD_FILE_NAMES=100;
+
+function compiledSearchGlob(glob){
+  return glob==null||!String(glob).trim()?null:compileSearchGlob(glob);
+}
+
+// The repository-relative file or folder a search is limited to, or null for the whole repository. A path outside the
+// workspace, or one naming nothing in it, is an error rather than an empty result.
+async function searchScope(contextIo,index,path){
+  const raw=String(path??"").trim();if(!raw)return null;
+  let rel;
+  if(typeof contextIo.relativeScope==="function")rel=contextIo.relativeScope(raw);
+  else{
+    const focus=String(contextIo.relativeFocus?.(raw)??raw).replace(/\\/g,"/");
+    rel=focus===".."||focus.startsWith("../")||/^(?:[a-zA-Z]:)?\//.test(focus)?null:focus;
+  }
+  if(rel==null)throw new Error(`Search path is outside the repository: ${raw}`);
+  const scope=String(rel).replace(/\\/g,"/").replace(/^(?:\.\/)+/,"").replace(/\/+$/,"");
+  if(!scope||scope===".")return null;
+  const names=paths=>(Array.isArray(paths)?paths:[]).some(item=>item===scope||item.startsWith(scope+"/"));
+  // The path inventory can be reused from an earlier search, so a miss is checked against the live tree.
+  if(!names(index.paths)){
+    let live=[];try{live=await contextIo.discoverFiles()}catch{}
+    if(!names(live))throw new Error(`Search path is not a file or folder in the repository: ${raw}`);
+  }
+  return scope;
+}
+
+function searchFilter({scope=null,glob=null}={}){
+  return path=>(!scope||path===scope||path.startsWith(scope+"/"))&&(!glob||glob.test(path,scope));
+}
+
+function definitionNamesByLine(entry){
+  const byLine=new Map();
+  for(const definition of entry?.parsed?.definitions||[]){
+    const line=Math.trunc(Number(definition?.line)),name=String(definition?.name||"");if(!line||!name)continue;
+    const names=byLine.get(line);if(names)names.push(name);else byLine.set(line,[name]);
+  }
+  return byLine;
+}
+
+// A definition hit: the query matched the name a definition on this line declares (def write(..., class Writer), not
+// another part of the line such as a parameter or a call inside a one-line function.
+function definitionHit(names,line,ranges){
+  for(const name of names||[]){
+    for(let at=line.indexOf(name);at>=0;at=line.indexOf(name,at+1)){
+      const end=at+name.length;
+      if(ranges.some(([from,to])=>from<end&&at<to))return true;
+    }
+  }
+  return false;
+}
+
+function searchHitText(line,ranges){
+  if(line.length<=SEARCH_HIT_TEXT_CHARS)return line;
+  const [from=0,to=0]=ranges[0]||[];
+  const start=to<=SEARCH_HIT_TEXT_CHARS-20?0:Math.max(0,Math.min(from-60,line.length-SEARCH_HIT_TEXT_CHARS)),end=Math.min(line.length,start+SEARCH_HIT_TEXT_CHARS);
+  return (start>0?"…":"")+line.slice(start,end)+(end<line.length?"…":"");
+}
+
+// groups: [{path,hits:[{line,definition}]}] in display order, holding the hits not shown with text.
+function overflowListing(groups){
+  let budget=SEARCH_OVERFLOW_LINE_NUMBERS;
+  return groups.map(({path,hits})=>{
+    const lines=[];
+    for(const hit of hits){
+      if(budget>0){lines.push(hit.line);budget--}
+      else if(hit.definition)lines.push(hit.line);
+    }
+    return {path,count:hits.length,lines:lines.sort((a,b)=>a-b)};
+  });
 }
 
 export class ContextEngine{
@@ -1264,29 +1366,40 @@ export class ContextEngine{
     };
   }
 
-  async searchSymbols({root,query="",limit=40,io=null}={}){
+  // path: a repository file or folder to search within; glob: a file filter such as *.py (see search-glob.mjs). The
+  // definitions the limit leaves out are listed by line number under their files, in rank order.
+  async searchSymbols({root,query="",limit=40,path=null,glob=null,io=null}={}){
     const needle=String(query||"").trim().toLowerCase();if(!needle)throw new Error("Symbol search requires a query");
-    const {index}=await this.#indexed(root,io);const capped=Math.max(1,Math.min(200,Number(limit)||40)),matches=[];
+    const pattern=compiledSearchGlob(glob);
+    const {contextIo,index}=await this.#indexed(root,io),scope=await searchScope(contextIo,index,path),inScope=searchFilter({scope,glob:pattern});
+    const capped=Math.max(1,Math.min(200,Number(limit)||40)),matches=[];
     for(const entry of index.files.values()){
+      if(!inScope(entry.relativePath))continue;
       for(const definition of entry.parsed.definitions||[]){
-        const name=String(definition.name||""),lower=name.toLowerCase(),signature=String(definition.signature||""),path=entry.relativePath.toLowerCase();
-        let score=0;if(lower===needle)score=100;else if(lower.startsWith(needle))score=85;else if(lower.includes(needle))score=70;else if(signature.toLowerCase().includes(needle))score=45;else if(path.includes(needle))score=25;else continue;
+        const name=String(definition.name||""),lower=name.toLowerCase(),signature=String(definition.signature||""),lowerPath=entry.relativePath.toLowerCase();
+        let score=0;if(lower===needle)score=100;else if(lower.startsWith(needle))score=85;else if(lower.includes(needle))score=70;else if(signature.toLowerCase().includes(needle))score=45;else if(lowerPath.includes(needle))score=25;else continue;
         matches.push({path:entry.relativePath,name,kind:definition.kind,line:definition.line,signature,parser:entry.parsed.parser||"regex",score});
       }
     }
-    return {query:String(query),data:matches.sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name)||a.path.localeCompare(b.path)).slice(0,capped),indexedFiles:index.files.size};
+    const ranked=matches.sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name)||a.path.localeCompare(b.path)),left=new Map();
+    for(const item of ranked.slice(capped)){const hits=left.get(item.path);if(hits)hits.push({line:item.line,definition:false});else left.set(item.path,[{line:item.line,definition:false}])}
+    const more=overflowListing([...left].map(([file,hits])=>({path:file,hits})));
+    return {query:String(query),...(scope?{path:scope}:{}),...(pattern?{glob:pattern.glob}:{}),data:ranked.slice(0,capped),...(more.length?{more}:{}),totalMatches:ranked.length,indexedFiles:index.files.size};
   }
 
-  async searchFiles({root,query="",limit=80,io=null}={}){
+  async searchFiles({root,query="",limit=80,path=null,glob=null,io=null}={}){
     const raw=String(query||"").trim(),needle=raw.toLowerCase();if(!needle)throw new Error("File search requires a query");
     if(raw.length>500)throw new Error("File search query is too long");
-    const {index}=await this.#indexed(root,io),capped=Math.max(1,Math.min(200,Number(limit)||80)),matches=[];
-    for(const path of index.paths){
-      const lower=path.toLowerCase(),base=basename(lower);let score=0;
+    const pattern=compiledSearchGlob(glob);
+    const {contextIo,index}=await this.#indexed(root,io),scope=await searchScope(contextIo,index,path),inScope=searchFilter({scope,glob:pattern});
+    const capped=Math.max(1,Math.min(200,Number(limit)||80)),matches=[];
+    for(const candidate of index.paths){
+      if(!inScope(candidate))continue;
+      const lower=candidate.toLowerCase(),base=basename(lower);let score=0;
       if(lower===needle)score=120;else if(base===needle)score=110;else if(base.startsWith(needle))score=95;else if(lower.startsWith(needle))score=85;else if(base.includes(needle))score=75;else if(lower.includes(needle))score=60;else continue;
-      matches.push({path,score,indexedSource:index.files.has(path),extension:extname(path).toLowerCase()||null});
+      matches.push({path:candidate,score,indexedSource:index.files.has(candidate),extension:extname(candidate).toLowerCase()||null});
     }
-    return {query:raw,data:matches.sort((a,b)=>b.score-a.score||a.path.localeCompare(b.path)).slice(0,capped),filesDiscovered:index.paths.length,indexedFiles:index.files.size};
+    return {query:raw,...(scope?{path:scope}:{}),...(pattern?{glob:pattern.glob}:{}),data:matches.sort((a,b)=>b.score-a.score||a.path.localeCompare(b.path)).slice(0,capped),totalMatches:matches.length,filesDiscovered:index.paths.length,indexedFiles:index.files.size};
   }
 
   async repositoryMap({root,query="",limit=60,io=null}={}){
@@ -1570,20 +1683,37 @@ export class ContextEngine{
     return {path:requested,startLine:start,endLine:rows.length?rows.at(-1).line:start-1,data:rows.slice(0,cap),indexedFiles:index.files.size};
   }
 
-  async searchCode({root,query="",regex=false,caseSensitive=false,limit=80,io=null}={}){
+  // path: a repository file or folder to search within; glob: a file filter such as *.py (see search-glob.mjs). Every
+  // matching line of every file read is counted: the first `limit` (and definition hits past it) keep their text, the
+  // rest are listed by line number under their file in `more`, and matching files past the read bound in `unreadFiles`.
+  async searchCode({root,query="",regex=false,caseSensitive=false,limit=80,path=null,glob=null,io=null}={}){
     const needle=String(query||"");if(!needle.trim())throw new Error("Code search requires a query");
     if(needle.length>1000)throw new Error("Code search query is too long");
-    let expression=null;
-    if(regex){try{expression=new RegExp(needle,caseSensitive?"":"i")}catch(error){throw new Error("Invalid code search regular expression: "+error.message)}}
-    const {contextIo,index}=await this.#indexed(root,io),resultLimit=Math.max(1,Math.min(200,Number(limit)||80)),candidateLimit=Math.max(40,Math.min(240,resultLimit*3));
-    const foldedNeedle=caseSensitive?needle:needle.toLowerCase();
-    const matchesLine=line=>regex?expression.test(line):(caseSensitive?line.includes(needle):line.toLowerCase().includes(foldedNeedle));
-    let candidates=[],source="index-sample",complete=false,skippedLargeFiles=0;
+    let expression=null,regexFallback=null;
+    // A pattern the regular-expression engine rejects is searched as literal text, and the result says so.
+    if(regex){try{expression=new RegExp(needle,caseSensitive?"":"i")}catch(error){regexFallback=String(error?.message||error)}}
+    const pattern=compiledSearchGlob(glob);
+    const {contextIo,index}=await this.#indexed(root,io),scope=await searchScope(contextIo,index,path),inScope=searchFilter({scope,glob:pattern});
+    const resultLimit=Math.max(1,Math.min(200,Number(limit)||80)),candidateLimit=Math.max(40,Math.min(240,resultLimit*3));
+    const foldedNeedle=caseSensitive?needle:needle.toLowerCase(),everyMatch=expression?new RegExp(expression.source,expression.flags+"g"):null;
+    const matchesLine=line=>expression?expression.test(line):(caseSensitive?line.includes(needle):line.toLowerCase().includes(foldedNeedle));
+    const matchRanges=line=>{
+      const ranges=[];
+      if(everyMatch){
+        everyMatch.lastIndex=0;
+        for(let match;ranges.length<64&&(match=everyMatch.exec(line));){ranges.push([match.index,match.index+match[0].length]);if(!match[0].length)everyMatch.lastIndex++}
+      }else{
+        const haystack=caseSensitive?line:line.toLowerCase();
+        for(let at=haystack.indexOf(foldedNeedle);at>=0&&ranges.length<64;at=haystack.indexOf(foldedNeedle,at+foldedNeedle.length))ranges.push([at,at+foldedNeedle.length]);
+      }
+      return ranges;
+    };
+    let candidates=[],unread=[],source="index-sample",listingComplete=false,listingCapped=false,skippedLargeFiles=0;
     if(typeof contextIo.searchPaths==="function"){
       try{
         // Indexed source first, then the other matching text files (docs, templates, configuration). Those used
         // to be dropped while the result still claimed to be complete.
-        const requestLimit=Math.min(500,candidateLimit*2),found=await contextIo.searchPaths({query:needle,regex:Boolean(regex),caseSensitive:Boolean(caseSensitive),limit:requestLimit+1});
+        const requestLimit=Math.min(500,candidateLimit*2),found=(await contextIo.searchPaths({query:needle,regex:Boolean(expression),caseSensitive:Boolean(caseSensitive),limit:requestLimit+1,scope,include:inScope})).filter(inScope);
         const listed=found.slice(0,requestLimit),indexed=listed.filter(path=>index.files.has(path)),other=listed.filter(path=>!index.files.has(path));
         const readable=[];
         if(other.length){
@@ -1596,25 +1726,38 @@ export class ContextEngine{
           skippedLargeFiles=other.length-readable.length;
         }
         const ordered=[...indexed,...readable];
-        candidates=ordered.slice(0,candidateLimit);complete=found.length<=requestLimit&&!skippedLargeFiles&&ordered.length<=candidateLimit;source="git-grep";
+        candidates=ordered.slice(0,candidateLimit);unread=ordered.slice(candidateLimit);listingCapped=found.length>requestLimit;
+        listingComplete=!listingCapped&&!skippedLargeFiles&&!unread.length;source="git-grep";
       }catch{}
     }
-    if(source!=="git-grep")candidates=[...index.files.values()].filter(entry=>String(entry.sample||"").split(/\r?\n/).some(matchesLine)).map(entry=>entry.relativePath).slice(0,candidateLimit);
-    const contents=await contextIo.readMany(candidates),data=[];let matchedFiles=0,fileCapped=false;
-    for(const path of candidates){
-      const content=contents.get(path);if(typeof content!=="string")continue;
-      const lines=content.split(/\r?\n/);let fileMatches=0;
-      for(let lineIndex=0;lineIndex<lines.length;lineIndex++){
-        if(!matchesLine(lines[lineIndex]))continue;
-        // A 21st matching line means this file's rows were cut, so the result is not complete.
-        if(fileMatches>=20){fileCapped=true;break}
-        if(fileMatches++===0)matchedFiles++;
-        data.push({path,line:lineIndex+1,text:lines[lineIndex].slice(0,600)});
-        if(data.length>=resultLimit)break;
-      }
-      if(data.length>=resultLimit)break;
+    if(source!=="git-grep"){
+      const sampled=[...index.files.values()].filter(entry=>inScope(entry.relativePath)&&String(entry.sample||"").split(/\r?\n/).some(matchesLine)).map(entry=>entry.relativePath);
+      candidates=sampled.slice(0,candidateLimit);unread=sampled.slice(candidateLimit);
     }
-    return {query:needle,regex:Boolean(regex),caseSensitive:Boolean(caseSensitive),data,indexedFiles:index.files.size,matchedFiles,source,complete:complete&&!fileCapped&&data.length<resultLimit,truncated:!complete||fileCapped||data.length>=resultLimit,...(skippedLargeFiles?{skippedLargeFiles}:{})};
+    const contents=await contextIo.readMany(candidates),data=[],left=[];
+    let textLeft=resultLimit,definitionsLeft=SEARCH_EXTRA_DEFINITION_HITS,matchedFiles=0,totalMatches=0;
+    for(const filePath of candidates){
+      const content=contents.get(filePath);if(typeof content!=="string")continue;
+      const lines=content.split(/\r?\n/),definitions=definitionNamesByLine(index.files.get(filePath)),rest=[];let fileMatches=0;
+      for(let lineIndex=0;lineIndex<lines.length;lineIndex++){
+        const line=lines[lineIndex];if(!matchesLine(line))continue;
+        fileMatches++;
+        let ranges=null;const rangesOf=()=>ranges??=matchRanges(line);
+        const names=definitions.get(lineIndex+1),definition=Boolean(names)&&definitionHit(names,line,rangesOf());
+        if(textLeft>0||(definition&&definitionsLeft>0)){
+          if(textLeft>0)textLeft--;else definitionsLeft--;
+          data.push({path:filePath,line:lineIndex+1,text:searchHitText(line,line.length>SEARCH_HIT_TEXT_CHARS?rangesOf():[]),...(definition?{definition:true}:{})});
+        }else rest.push({line:lineIndex+1,definition});
+      }
+      if(fileMatches){matchedFiles++;totalMatches+=fileMatches}
+      if(rest.length)left.push({path:filePath,hits:rest});
+    }
+    const more=overflowListing(left),complete=source==="git-grep"&&listingComplete&&!more.length;
+    return {
+      query:needle,regex:Boolean(expression),caseSensitive:Boolean(caseSensitive),...(regexFallback?{regexFallback}:{}),...(scope?{path:scope}:{}),...(pattern?{glob:pattern.glob}:{}),
+      data,...(more.length?{more}:{}),totalMatches,matchedFiles,indexedFiles:index.files.size,source,complete,truncated:!complete,
+      ...(skippedLargeFiles?{skippedLargeFiles}:{}),...(unread.length?{unreadFiles:unread.slice(0,SEARCH_UNREAD_FILE_NAMES),unreadFileCount:unread.length}:{}),...(listingCapped?{listingCapped:true}:{}),
+    };
   }
 
   async readSourceRange({root,path,startLine=1,endLine=null,maxLines=200,io=null}={}){

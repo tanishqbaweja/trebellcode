@@ -799,7 +799,7 @@ test("code search covers a plain directory without Git through git grep --no-ind
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
-test("code search reports a file cut at the per-file cap as incomplete, but not a file with exactly the cap",async()=>{
+test("code search lists every matching line of a file, with no per-file cap",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-context-cap-"));
   try{
     await mkdir(join(root,"docs"),{recursive:true});await mkdir(join(root,"node_modules","pkg"),{recursive:true});
@@ -808,17 +808,156 @@ test("code search reports a file cut at the per-file cap as incomplete, but not 
     await writeFile(join(root,"docs","exact.rst"),Array.from({length:20},(_,index)=>`exactly ${index}`).join("\n")+"\n","utf8");
     await writeFile(join(root,"node_modules","pkg","index.js"),"frobnicate(); exactly();\n","utf8");
     const engine=new ContextEngine({env:{...process.env,GIT_CEILING_DIRECTORIES:tmpdir()}});
-    const capped=await engine.searchCode({root,query:"frobnicate",limit:80});
-    assert.equal(capped.source,"git-grep");
-    assert.equal(capped.data.filter(item=>item.path==="docs/api.rst").length,20);
-    assert.equal(capped.complete,false,"rows cut at the per-file cap must not be reported as complete");
-    assert.equal(capped.truncated,true);
-    assert.ok(!capped.data.some(item=>item.path.startsWith("node_modules/")));
-    const exact=await engine.searchCode({root,query:"exactly",limit:80});
+    const all=await engine.searchCode({root,query:"frobnicate",limit:80});
+    assert.equal(all.source,"git-grep");
+    assert.equal(all.data.filter(item=>item.path==="docs/api.rst").length,25,"the 21st and later hits of one file are kept");
+    assert.equal(all.totalMatches,26);
+    assert.equal(all.complete,true);
+    assert.equal(all.truncated,false);
+    assert.ok(!all.data.some(item=>item.path.startsWith("node_modules/")));
+    const exact=await engine.searchCode({root,query:"exactly",limit:20});
     assert.deepEqual([...new Set(exact.data.map(item=>item.path))],["docs/exact.rst"]);
     assert.equal(exact.data.length,20);
-    assert.equal(exact.complete,true,"exactly the cap is not a cut");
+    assert.equal(exact.complete,true,"exactly the limit is not a cut");
+    assert.equal(exact.more,undefined);
   }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("code search lists the hits past the limit as line numbers per file, so no pointer is lost",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-context-more-"));
+  try{
+    await mkdir(join(root,"pkg"),{recursive:true});
+    await writeFile(join(root,"pkg","a.py"),Array.from({length:6},(_,index)=>`value = needle(${index})`).join("\n")+"\n","utf8");
+    await writeFile(join(root,"pkg","b.py"),"x = 1\nneedle()\n\nneedle()\n","utf8");
+    const engine=new ContextEngine({env:{...process.env,GIT_CEILING_DIRECTORIES:tmpdir()}});
+    const result=await engine.searchCode({root,query:"needle",limit:4});
+    assert.deepEqual(result.data.map(item=>[item.path,item.line]),[["pkg/a.py",1],["pkg/a.py",2],["pkg/a.py",3],["pkg/a.py",4]]);
+    assert.deepEqual(result.more,[{path:"pkg/a.py",count:2,lines:[5,6]},{path:"pkg/b.py",count:2,lines:[2,4]}]);
+    assert.equal(result.totalMatches,8);
+    assert.equal(result.matchedFiles,2);
+    assert.equal(result.complete,false);
+    assert.equal(result.truncated,true);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("code search keeps a definition hit past the limit with its text",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-context-definition-"));
+  try{
+    await mkdir(join(root,"pkg"),{recursive:true});
+    await writeFile(join(root,"pkg","core.py"),[
+      "write(1)","write(2)","write(3)","def other(write):","    pass","class Writer:","    def write(self, table):","        return write(table)",
+    ].join("\n")+"\n","utf8");
+    const engine=new ContextEngine({env:{...process.env,GIT_CEILING_DIRECTORIES:tmpdir()}});
+    const result=await engine.searchCode({root,query:"write",limit:2});
+    assert.deepEqual(result.data.map(item=>[item.line,Boolean(item.definition)]),[[1,false],[2,false],[6,true],[7,true]],"Writer and write are defined on lines 6 and 7; line 4 only takes write as an argument");
+    assert.equal(result.data.find(item=>item.line===7).text,"    def write(self, table):");
+    assert.deepEqual(result.more,[{path:"pkg/core.py",count:3,lines:[3,4,8]}]);
+    assert.equal(result.totalMatches,7);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("code search scopes to a folder or a file and filters by glob, and rejects paths outside the repository",async()=>{
+  const root=await fixture();
+  try{
+    await mkdir(join(root,"app","[id]"),{recursive:true});
+    await writeFile(join(root,"app","[id]","page.js"),"export const RefreshSession = 1;\n","utf8");
+    await execFileAsync("git",["add","."],{cwd:root});
+    const engine=new ContextEngine();
+    const everywhere=await engine.searchCode({root,query:"RefreshSession",limit:20});
+    assert.deepEqual([...new Set(everywhere.data.map(item=>item.path))].sort(),["app/[id]/page.js","src/auth/session.js","src/server.js","tests/auth-refresh.test.js"]);
+    const folder=await engine.searchCode({root,query:"RefreshSession",path:"src",limit:20});
+    assert.deepEqual([...new Set(folder.data.map(item=>item.path))].sort(),["src/auth/session.js","src/server.js"]);
+    assert.equal(folder.path,"src");assert.equal(folder.complete,true);
+    const file=await engine.searchCode({root,query:"RefreshSession",path:"src/server.js",limit:20});
+    assert.deepEqual(file.data.map(item=>item.path),["src/server.js","src/server.js"]);
+    const absolute=await engine.searchCode({root,query:"RefreshSession",path:join(root,"src","auth"),limit:20});
+    assert.deepEqual(absolute.data.map(item=>item.path),["src/auth/session.js"]);assert.equal(absolute.path,"src/auth");
+    const bracketed=await engine.searchCode({root,query:"RefreshSession",path:"app/[id]",limit:20});
+    assert.deepEqual(bracketed.data.map(item=>item.path),["app/[id]/page.js"],"a folder name with glob characters is matched literally");
+    const glob=await engine.searchCode({root,query:"RefreshSession",glob:"*.test.js",limit:20});
+    assert.deepEqual([...new Set(glob.data.map(item=>item.path))],["tests/auth-refresh.test.js"]);assert.equal(glob.glob,"*.test.js");
+    const both=await engine.searchCode({root,query:"RefreshSession",path:"src",glob:"auth/*.js",limit:20});
+    assert.deepEqual(both.data.map(item=>item.path),["src/auth/session.js"]);
+    const root2=await engine.searchCode({root,query:"RefreshSession",path:".",limit:20});
+    assert.equal(root2.data.length,everywhere.data.length);assert.equal(root2.path,undefined);
+    await assert.rejects(()=>engine.searchCode({root,query:"RefreshSession",path:"../outside"}),/outside the repository/i);
+    await assert.rejects(()=>engine.searchCode({root,query:"RefreshSession",path:"missing/folder"}),/not a file or folder in the repository/i);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("an invalid code search regex falls back to a literal search and says so",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-context-regex-"));
+  try{
+    await writeFile(join(root,"main.py"),"call(foo\nfoo\n","utf8");
+    const engine=new ContextEngine({env:{...process.env,GIT_CEILING_DIRECTORIES:tmpdir()}});
+    const result=await engine.searchCode({root,query:"call(foo",regex:true,limit:10});
+    assert.equal(result.regex,false);
+    assert.match(result.regexFallback,/Invalid regular expression/i);
+    assert.deepEqual(result.data.map(item=>[item.path,item.line,item.text]),[["main.py",1,"call(foo"]]);
+    const valid=await engine.searchCode({root,query:"^fo+$",regex:true,limit:10});
+    assert.equal(valid.regex,true);assert.equal(valid.regexFallback,undefined);assert.deepEqual(valid.data.map(item=>item.line),[2]);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("symbol and file search take a path and a glob, and list what the limit cuts",async()=>{
+  const root=await fixture();
+  try{
+    const engine=new ContextEngine();
+    const all=await engine.searchSymbols({root,query:"refresh"});
+    assert.ok(all.data.some(item=>item.path==="tests/auth-refresh.test.js"&&item.name==="testRefresh"));
+    assert.ok(all.data.some(item=>item.path==="src/auth/session.js"&&item.name==="RefreshSession"));
+    const tests=await engine.searchSymbols({root,query:"refresh",path:"tests"});
+    assert.deepEqual([...new Set(tests.data.map(item=>item.path))],["tests/auth-refresh.test.js"]);assert.equal(tests.path,"tests");
+    const sessions=await engine.searchSymbols({root,query:"refresh",glob:"session.js"});
+    assert.deepEqual([...new Set(sessions.data.map(item=>item.path))],["src/auth/session.js"]);
+    const one=await engine.searchSymbols({root,query:"refresh",limit:1});
+    assert.equal(one.data.length,1);assert.equal(one.totalMatches,all.data.length);
+    assert.equal(one.more.reduce((sum,item)=>sum+item.count,0),all.data.length-1);
+    assert.ok(one.more.every(item=>item.lines.length===item.count&&item.lines.every(Number.isInteger)));
+    await assert.rejects(()=>engine.searchSymbols({root,query:"refresh",path:"../x"}),/outside the repository/i);
+
+    const files=await engine.searchFiles({root,query:"session",path:"src/auth"});
+    assert.deepEqual(files.data.map(item=>item.path),["src/auth/session.js"]);assert.equal(files.path,"src/auth");
+    const globbed=await engine.searchFiles({root,query:".js",glob:"*.test.js"});
+    assert.deepEqual(globbed.data.map(item=>item.path),["tests/auth-refresh.test.js"]);
+    const limited=await engine.searchFiles({root,query:".js",limit:1});
+    assert.equal(limited.data.length,1);assert.equal(limited.totalMatches,4);
+    await assert.rejects(()=>engine.searchFiles({root,query:"session",path:"nowhere"}),/not a file or folder in the repository/i);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("a scoped remote code search sends the folder to git grep as a literal pathspec",async()=>{
+  const root="/srv/scoped";
+  const files=new Map([["app/main.py","PORT = 8080\n"],["lib/other.py","PORT = 8080\n"]]);
+  const ok=stdout=>({exitCode:0,stdout,stderr:"",timedOut:false}),grepCalls=[];
+  const respond=(command,args)=>{
+    if(command==="git"&&args.includes("ls-files"))return ok([...files.keys()].join("\0")+"\0");
+    if(command==="git"&&args.includes("grep")){
+      grepCalls.push(args);
+      const scope=args.find(arg=>arg.startsWith(":(literal)"))?.slice(":(literal)".length)||"";
+      const matches=[...files.keys()].filter(path=>!scope||path===scope||path.startsWith(scope+"/"));
+      return ok(matches.join("\0")+"\0");
+    }
+    if(command==="git"&&args.includes("status"))return ok("");
+    if(command==="git"&&args.includes("rev-parse"))return ok("abc123\n");
+    if(command==="git")return ok("");
+    return {exitCode:1,stdout:"",stderr:"unexpected "+command,timedOut:false};
+  };
+  const environments={
+    async executeArgv(_id,{command,args=[]}){const result=respond(command,args);return {...result,stdout:String(result.stdout).replace(/\u0000/g,"").replace(/\r/g,"").trimEnd()}},
+    async executeArgvInput(_id,{command,args=[],input=""}){
+      if(command!=="bash")return respond(command,args);
+      const script=String(args[1]||""),paths=String(input).split("\0").filter(Boolean).map(path=>path.replace(/^\.\//,"")).filter(path=>files.has(path));
+      if(script.includes("stat -c"))return ok(paths.map(path=>[Buffer.byteLength(files.get(path),"utf8"),"v1",Buffer.from(path,"utf8").toString("base64")].join("\t")).join("\n")+"\n");
+      return ok(paths.map(path=>[Buffer.from(path,"utf8").toString("base64"),Buffer.from(files.get(path),"utf8").toString("base64")].join("\t")).join("\n")+"\n");
+    },
+  };
+  const io=createRemoteContextIo({environments,environmentId:"ssh-scoped",root});
+  const result=await new ContextEngine().searchCode({root,io,query:"8080",path:"app",limit:10});
+  assert.deepEqual(result.data.map(item=>item.path),["app/main.py"]);
+  assert.ok(grepCalls.at(-1).includes(":(literal)app"),grepCalls.at(-1).join(" "));
+  assert.ok(grepCalls.at(-1).includes(":(exclude,glob)**/node_modules/**"));
+  await assert.rejects(()=>new ContextEngine().searchCode({root,io,query:"8080",path:"/etc"}),/outside the repository/i);
 });
 
 test("read_source reads a file that appeared under an untracked directory after the path inventory was built",async()=>{

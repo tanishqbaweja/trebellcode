@@ -30,8 +30,8 @@ export function repositoryToolHandlers({contextEngine,root,io=null,knowledgeServ
   if(!contextEngine)throw new Error("Repository tools require a Context Engine");
   if(!root)throw new Error("Repository tools require a workspace root");
   return {
-    searchSymbols:({query,limit=40})=>contextEngine.searchSymbols({root,io,query,limit}),
-    searchFiles:({query,limit=80})=>contextEngine.searchFiles({root,io,query,limit}),
+    searchSymbols:({query,limit=40,path=null,glob=null})=>contextEngine.searchSymbols({root,io,query,limit,path,glob}),
+    searchFiles:({query,limit=80,path=null,glob=null})=>contextEngine.searchFiles({root,io,query,limit,path,glob}),
     repositoryMap:({query="",limit=60})=>contextEngine.repositoryMap({root,io,query,limit}),
     projectCommands:({limit=120})=>contextEngine.projectCommands({root,io,limit}),
     verificationPlan:({paths=null,riskHints=[],capabilities={}})=>contextEngine.verificationPlan({root,io,paths,riskHints,capabilities}),
@@ -46,7 +46,7 @@ export function repositoryToolHandlers({contextEngine,root,io=null,knowledgeServ
     organizeImports:({path,limit=200})=>contextEngine.organizeImports({root,io,path,limit}),
     renamePreview:({path,line=1,column=1,newName,limit=200})=>contextEngine.renamePreview({root,io,path,line,column,newName,limit}),
     symbolReferences:({name,path=null,limit=120})=>contextEngine.symbolReferences({root,io,name,path,limit}),
-    searchCode:({query,regex=false,caseSensitive=false,limit=80})=>contextEngine.searchCode({root,io,query,regex,caseSensitive,limit}),
+    searchCode:({query,regex=false,caseSensitive=false,limit=80,path=null,glob=null})=>contextEngine.searchCode({root,io,query,regex,caseSensitive,limit,path,glob}),
     readSource:({path,startLine=1,endLine=null,maxLines=200})=>contextEngine.readSourceRange({root,io,path,startLine,endLine,maxLines}),
     gitContext:()=>contextEngine.gitContext({root,io}),
     gitHistory:({path="",limit=20})=>contextEngine.gitHistory({root,io,path,limit}),
@@ -64,9 +64,14 @@ function definition(name,handler,description,inputSchema,searchHint){
   return Object.freeze({name,handler,description,inputSchema,searchHint,policy:REPOSITORY_READ_POLICY,annotations:REPOSITORY_TOOL_ANNOTATIONS});
 }
 
+// The search tools' optional scope: path, a file or folder inside the repository (one outside it is refused), and glob, a
+// file filter such as *.py or src/**/*.ts. An empty string means no scope. Both stay bare in the schema, like the other
+// arguments, because the schema is resent with every Native request; the Context Engine bounds and checks them.
+const SEARCH_SCOPE_SCHEMA=Object.freeze({path:z.string().optional(),glob:z.string().optional()});
+
 export const REPOSITORY_TOOL_DEFINITIONS=Object.freeze([
-  definition("search_symbols","searchSymbols","Find symbol definitions by name/signature.",{query:z.string().min(1),limit:z.number().int().min(1).max(100).optional()},"repository symbols definitions"),
-  definition("search_files","searchFiles","Find files by path/basename with deterministic ranking.",{query:z.string().min(1).max(500),limit:z.number().int().min(1).max(200).optional()},"repository files paths filenames"),
+  definition("search_symbols","searchSymbols","Find symbol definitions by name/signature.",{query:z.string().min(1),limit:z.number().int().min(1).max(100).optional(),...SEARCH_SCOPE_SCHEMA},"repository symbols definitions"),
+  definition("search_files","searchFiles","Find files by path/basename with deterministic ranking.",{query:z.string().min(1).max(500),limit:z.number().int().min(1).max(200).optional(),...SEARCH_SCOPE_SCHEMA},"repository files paths filenames"),
   definition("repo_map","repositoryMap","Inspect a bounded structural repository map ranked by task relevance and graph centrality.",{query:z.string().max(1000).optional(),limit:z.number().int().min(1).max(120).optional()},"repository map architecture structure modules central files"),
   definition("project_commands","projectCommands","Discover bounded repository-declared build, test, lint, typecheck, format, dev, and start commands plus clearly labeled ecosystem conventions.",{limit:z.number().int().min(1).max(240).optional()},"repository project commands scripts build test lint typecheck package manager make just cargo go pytest maven gradle"),
   definition("verification_plan","verificationPlan","Build a deterministic risk-aware verification plan from changed or explicit paths, related tests, and discovered project commands. This plans evidence only; it does not execute commands or spawn reviewer models.",{paths:z.array(z.string().min(1)).max(200).optional(),riskHints:z.array(z.string().min(1).max(80)).max(20).optional(),capabilities:z.object({diagnostics:z.boolean().optional(),semanticDiagnostics:z.boolean().optional()}).optional()},"verification plan changed files risk tests build browser screenshot integration evidence"),
@@ -81,7 +86,7 @@ export const REPOSITORY_TOOL_DEFINITIONS=Object.freeze([
   definition("organize_imports","organizeImports","Ask the project-local TypeScript language service for bounded non-mutating import-organization edits for one indexed JS/TS file.",{path:z.string().min(1),limit:z.number().int().min(1).max(500).optional()},"typescript organize imports remove unused imports sort imports refactor edits"),
   definition("rename_preview","renamePreview","Ask the project-local TypeScript language service to validate a semantic rename and return the exact bounded edits without changing files.",{path:z.string().min(1),line:z.number().int().min(1),column:z.number().int().min(1).optional(),newName:z.string().min(1).max(256),limit:z.number().int().min(1).max(500).optional()},"typescript semantic rename symbol refactor preview exact edits"),
   definition("symbol_references","symbolReferences","Find bounded repository occurrences of a symbol, marking known definition lines and whether locations are AST- or text-backed.",{name:z.string().min(1).max(256),path:z.string().min(1).optional(),limit:z.number().int().min(1).max(200).optional()},"repository symbol references usages occurrences"),
-  definition("search_code","searchCode","Search repository text, source first, with bounded literal/regex matching.",{query:z.string().min(1).max(1000),regex:z.boolean().optional(),caseSensitive:z.boolean().optional(),limit:z.number().int().min(1).max(200).optional()},"repository code text exact regex search"),
+  definition("search_code","searchCode","Search repository text, source first, with bounded literal/regex matching.",{query:z.string().min(1).max(1000),regex:z.boolean().optional(),caseSensitive:z.boolean().optional(),limit:z.number().int().min(1).max(200).optional(),...SEARCH_SCOPE_SCHEMA},"repository code text exact regex search"),
   definition("read_source","readSource","Read bounded lines from a repository text file.",{path:z.string().min(1),startLine:z.number().int().min(1).optional(),endLine:z.number().int().min(1).optional(),maxLines:z.number().int().min(1).max(400).optional()},"repository source lines range"),
   definition("git_context","gitContext","Read bounded current Git status, changed paths, HEAD, and workspace diff.",{},"repository git diff status changes"),
   definition("git_history","gitHistory","Read bounded repository or file Git history.",{path:z.string().min(1).optional(),limit:z.number().int().min(1).max(100).optional()},"repository git history commits file history"),

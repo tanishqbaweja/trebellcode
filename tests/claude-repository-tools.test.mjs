@@ -50,8 +50,8 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
   assert.deepEqual(await handlers.gitHistory({path:"src/context-engine.mjs",limit:3}),{data:[{commit:"abc"}]});
   assert.deepEqual(await handlers.gitBlame({path:"src/context-engine.mjs",startLine:5,endLine:8,maxLines:9}),{path:"src/context-engine.mjs",data:[{line:5}]});
   assert.deepEqual(calls,[
-    ["symbols",{root:"/srv/app",io,query:"ContextEngine",limit:7}],
-    ["files",{root:"/srv/app",io,query:"context-engine",limit:8}],
+    ["symbols",{root:"/srv/app",io,query:"ContextEngine",limit:7,path:null,glob:null}],
+    ["files",{root:"/srv/app",io,query:"context-engine",limit:8,path:null,glob:null}],
     ["map",{root:"/srv/app",io,query:"context engine",limit:6}],
     ["commands",{root:"/srv/app",io,limit:5}],
     ["verify",{root:"/srv/app",io,paths:["src/context-engine.mjs"],riskHints:["medium"],capabilities:{diagnostics:true}}],
@@ -66,7 +66,7 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
     ["organize",{root:"/srv/app",io,path:"src/context-engine.mjs",limit:15}],
     ["rename",{root:"/srv/app",io,path:"src/context-engine.mjs",line:50,column:3,newName:"ContextGraph",limit:12}],
     ["references",{root:"/srv/app",io,name:"ContextEngine",path:"src/context-engine.mjs",limit:11}],
-    ["code",{root:"/srv/app",io,query:"ContextEngine",regex:false,caseSensitive:true,limit:9}],
+    ["code",{root:"/srv/app",io,query:"ContextEngine",regex:false,caseSensitive:true,limit:9,path:null,glob:null}],
     ["source",{root:"/srv/app",io,path:"src/context-engine.mjs",startLine:5,endLine:12,maxLines:20}],
     ["git",{root:"/srv/app",io}],
     ["history",{root:"/srv/app",io,path:"src/context-engine.mjs",limit:3}],

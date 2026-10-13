@@ -57,6 +57,31 @@ test("repository tool arguments are parsed from the shared Zod shape before invo
   assert.throws(()=>parseRepositoryToolArguments(definition,{query:"Session",limit:1000}),/too big|less than or equal|100/i);
 });
 
+test("the three search tools take an optional path and glob and pass them to the Context Engine",async()=>{
+  for(const name of ["search_code","search_symbols","search_files"]){
+    const definition=REPOSITORY_TOOL_DEFINITIONS.find(item=>item.name===name),schema=repositoryToolInputJsonSchema(definition);
+    assert.equal(schema.properties.path.type,"string",name);assert.equal(schema.properties.glob.type,"string",name);
+    assert.equal(schema.required.includes("path"),false,name);assert.equal(schema.required.includes("glob"),false,name);
+    assert.deepEqual(parseRepositoryToolArguments(definition,{query:"x",path:"src",glob:"*.py"}),{query:"x",path:"src",glob:"*.py"});
+  }
+  const calls=[],contextEngine={
+    searchCode(args){calls.push(["code",args]);return {data:[]}},
+    searchSymbols(args){calls.push(["symbols",args]);return {data:[]}},
+    searchFiles(args){calls.push(["files",args]);return {data:[]}},
+  };
+  const handlers=repositoryToolHandlers({contextEngine,root:"/repo"});
+  await handlers.searchCode({query:"x",path:"pkg",glob:"*.py"});
+  await handlers.searchSymbols({query:"x",path:"pkg/core.py"});
+  await handlers.searchFiles({query:"x",glob:"*.md"});
+  await handlers.searchCode({query:"y"});
+  assert.deepEqual(calls,[
+    ["code",{root:"/repo",io:null,query:"x",regex:false,caseSensitive:false,limit:80,path:"pkg",glob:"*.py"}],
+    ["symbols",{root:"/repo",io:null,query:"x",limit:40,path:"pkg/core.py",glob:null}],
+    ["files",{root:"/repo",io:null,query:"x",limit:80,path:null,glob:"*.md"}],
+    ["code",{root:"/repo",io:null,query:"y",regex:false,caseSensitive:false,limit:80,path:null,glob:null}],
+  ]);
+});
+
 test("repository tool catalog serializes into one Codex dynamic-tool namespace",()=>{
   const [namespace]=repositoryDynamicToolNamespace();
   assert.equal(namespace.type,"namespace");assert.equal(namespace.name,"trebell_repo");
@@ -72,8 +97,9 @@ test("progressive Native repository catalog keeps common tools small and discove
   const [namespace]=repositoryDynamicToolNamespace({progressive:true});
   // 3340 includes the ~1 KB one-hop capability index in the invoke description (2365 bytes before it). The index
   // grew by ~50 bytes when array and nested-object argument shapes became visible, after a model sent an array
-  // where verification_plan expects a capabilities object.
-  assert.ok(JSON.stringify(namespace).length<=3340,"progressive repository gateway should stay within its recurring wire-size budget");
+  // where verification_plan expects a capabilities object. 3480 adds 150 bytes for the optional path and glob of the three
+  // search tools (bare string arguments), which let a search stay inside the package already known to hold the code.
+  assert.ok(JSON.stringify(namespace).length<=3480,"progressive repository gateway should stay within its recurring wire-size budget");
   assert.ok(Buffer.byteLength(REPOSITORY_INVOKE_TOOL.description,"utf8")<=990,"the invoke capability index is sent with every Native request; keep it compact");
   const names=namespace.tools.map(item=>item.name);
   assert.ok(names.includes("discover"));
