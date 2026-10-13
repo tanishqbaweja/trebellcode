@@ -281,7 +281,7 @@ function processLabel(command){const text=String(command??"").replace(/\s+/g," "
 // it can tell the result is the process it asked about. Anything else (a failure) is passed on as it is.
 function processModelReceipt(record,shaped,call){
   if(!record||typeof record!=="object"||Array.isArray(record)||typeof record.handle!=="string"||!record.handle)return shaped;
-  const output=shaped&&typeof shaped==="object"&&!Array.isArray(shaped)?shaped:{},receipt={process:record.handle};
+  const output=shaped&&typeof shaped==="object"&&!Array.isArray(shaped)?shaped:{},receipt={process_id:record.handle};
   let args=call?.arguments;if(typeof args==="string"){try{args=JSON.parse(args)}catch{args={}}}
   const named=String(args?.process_id??"").trim();
   if(named&&named===String(record.processId||""))receipt.processId=record.processId;

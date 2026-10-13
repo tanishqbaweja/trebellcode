@@ -105,8 +105,8 @@ export function coolVirtualizedToolContent(content,{maxPreviewChars=DEFAULT_COLD
   const jsonStart=content.indexOf("{");if(jsonStart<0)return content;
   let parsed;try{parsed=JSON.parse(content.slice(jsonStart))}catch{return content}
   const output=parsed?._trebell_output,handle=String(output?.handle||"");if(!/^out_[a-zA-Z0-9-]{8,80}$/.test(handle))return content;
-  // process and running: a background-process receipt keeps its short handle and state.
-  const keep=["success","process","running","exitCode","signal","timedOut","truncated","durationMs","cwd","command","args","path","size","replacements","error","message","status"],receipt={};
+  // process_id and running: a background-process receipt keeps its short handle and state.
+  const keep=["success","process_id","running","exitCode","signal","timedOut","truncated","durationMs","cwd","command","args","path","size","replacements","error","message","status"],receipt={};
   for(const key of keep)if(Object.prototype.hasOwnProperty.call(parsed,key))receipt[key]=parsed[key];
   const previewChars=Math.max(600,Math.trunc(Number(maxPreviewChars)||DEFAULT_COLD_PREVIEW_CHARS));
   if(includePreview){

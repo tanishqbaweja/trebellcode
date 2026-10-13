@@ -1777,7 +1777,7 @@ test("Native session gives the model a short process receipt with its handle and
     const seen=id=>{const content=requests.at(-1).messages.find(message=>message.role==="tool"&&message.toolCallId===id)?.content||"";return JSON.parse(content.slice(content.indexOf("{")))};
     for(const id of ["start","by-handle","by-id","big","legacy"]){
       const receipt=seen(id);
-      assert.equal(receipt.process,"p1",id);assert.ok(receipt.command.length<=60,id);assert.ok(receipt.command.startsWith("python3 -c import json"),id);assert.ok(receipt.command.endsWith("…"),id);
+      assert.equal(receipt.process_id,"p1",id);assert.ok(receipt.command.length<=60,id);assert.ok(receipt.command.startsWith("python3 -c import json"),id);assert.ok(receipt.command.endsWith("…"),id);
       for(const dropped of ["threadId","osPid","createdAt","updatedAt"])assert.equal(Object.hasOwn(receipt,dropped),false,id+" drops "+dropped);
       assert.equal(typeof receipt.running,"boolean",id);
     }
