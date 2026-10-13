@@ -1,6 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { ContextEngine } from "../src/context-engine.mjs";
+import { NativeToolOutputStore } from "../src/native-tool-output-store.mjs";
 import { formatRepositorySearchResult } from "../src/repository-search-format.mjs";
+
+const execFileAsync=promisify(execFile);
+const utf8Bytes=text=>Buffer.byteLength(text,"utf8");
 
 test("code search results list each file's path once, then line: text",()=>{
   const text=formatRepositorySearchResult("search_code",{
@@ -63,6 +73,61 @@ test("code search results say when line numbers, files or the regex were cut or 
   assert.match(text,/^1 matching file was too large to read\.$/m);
   assert.match(text,/^  \+128 more at 2, 3, 4, …$/m);
   assert.match(text,/^b\.py\n  \+1 more$/m);
+});
+
+test("the line numbers of a broad code search share a byte budget, so the hits shown with text stay in hot context",()=>{
+  const shownFiles=Array.from({length:20},(_,index)=>`src/acme_platform/service_layer/shown_${index}/request_handler_module.py`);
+  const otherFiles=Array.from({length:220},(_,index)=>`src/acme_platform/service_layer/package_${index}/request_handler_module.py`);
+  const data=shownFiles.flatMap(path=>[1,2,3,6].map(line=>({path,line,text:line===6?"    import json":"import os"})));
+  const more=[
+    ...shownFiles.map(path=>({path,count:2,lines:[40,52]})),
+    ...otherFiles.map((path,index)=>({path,count:4,lines:[1,2,3,6],...(index===219?{definitions:[6]}:{})})),
+  ];
+  const text=formatRepositorySearchResult("search_code",{query:"import",source:"git-grep",complete:false,truncated:true,totalMatches:1000,matchedFiles:240,data,more,
+    unreadFiles:Array.from({length:20},(_,index)=>`src/acme_platform/unread/module_${index}.py`),unreadFileCount:60});
+  const lines=text.split("\n");
+  assert.ok(utf8Bytes(text)<=15*1024,`the text has ${utf8Bytes(text)} bytes`);
+  assert.equal(lines[0],"1000 matches in 240 files; 80 shown with text, the rest by line number");
+  for(const path of shownFiles){
+    const at=lines.indexOf(path);assert.ok(at>0,path);
+    assert.deepEqual(lines.slice(at+1,at+6),["  1: import os","  2: import os","  3: import os","  6:     import json","  +2 more at 40, 52"],"every hit shown with text, then its file's other line numbers");
+  }
+  const listedOthers=otherFiles.filter(path=>lines.includes(path));
+  assert.ok(listedOthers.length>0&&listedOthers.length<otherFiles.length,`${listedOthers.length} of the files with no hit shown are listed`);
+  assert.deepEqual(listedOthers.slice(0,-1),otherFiles.slice(0,listedOthers.length-1),"files with only line numbers are listed in order until the budget runs out");
+  const last=otherFiles.at(-1);
+  assert.equal(lines[lines.indexOf(last)+1],"  +4 more at 6, …","a definition's line number is kept past the budget");
+  const omitted=otherFiles.length-listedOthers.length;
+  const summary=lines.find(line=>/more files with \d+ matches by line number, not listed here: /.test(line));
+  assert.ok(summary,text.slice(-1200));
+  assert.ok(summary.startsWith(`${omitted} more files with ${omitted*4} matches by line number, not listed here: ${otherFiles[listedOthers.length-1]}, `),summary);
+  assert.ok(summary.endsWith(`, +${omitted-3} more.`),summary);
+  assert.ok(lines.includes("Not every line number is listed; narrow with path or glob to see them all."));
+  assert.match(text,/^60 more matching files not searched line by line: src\/acme_platform\/unread\/module_0\.py, .*, \+\d+ more\. Narrow with path or glob to see their matches\.$/m);
+});
+
+test("a broad code search of a real repository stays within the hot-context bound and is not previewed",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-search-budget-")),store=join(root,"..",root.split(/[\\/]/).at(-1)+"-store");
+  try{
+    for(let pkg=0;pkg<12;pkg++){
+      const folder=join(root,"src","acme_platform","service_layer","package_"+pkg);await mkdir(folder,{recursive:true});
+      for(let file=0;file<25;file++){
+        await writeFile(join(folder,"request_handler_module_"+file+".py"),["import os","import sys","from typing import Any","","def handler_"+file+"(request: Any) -> Any:","    import json","    return json.dumps({'path': os.getcwd(), 'argv': sys.argv})",""].join("\n"),"utf8");
+      }
+    }
+    await execFileAsync("git",["init","-q"],{cwd:root});await execFileAsync("git",["add","."],{cwd:root});
+    await execFileAsync("git",["-c","user.name=Trebell Test","-c","user.email=trebell@example.test","commit","-qm","fixture"],{cwd:root});
+    const outputs=new NativeToolOutputStore({directory:store});
+    for(const query of ["import","handler"]){
+      const result=await new ContextEngine().searchCode({root,query,limit:80}),text=formatRepositorySearchResult("search_code",result);
+      assert.ok(result.data.length>=80,`${query}: the limit's 80 hits (and definitions past it) are shown with text`);
+      assert.ok(utf8Bytes(text)<=16*1024,`${query}: ${utf8Bytes(text)} bytes`);
+      for(const hit of result.data)assert.ok(text.includes(`  ${hit.line}: ${hit.text.replace(/\s+$/,"")}`),`${query}: ${hit.path}:${hit.line} is shown`);
+      const shaped=await outputs.virtualize(text,{namespace:"trebell_repo",name:"search_code"});
+      assert.equal(shaped.virtualized,false,`${query}: the model reads the whole result`);
+      assert.equal(shaped.value,text);
+    }
+  }finally{await Promise.all([rm(root,{recursive:true,force:true}),rm(store,{recursive:true,force:true})])}
 });
 
 test("code search without git grep says that only indexed source was searched",()=>{

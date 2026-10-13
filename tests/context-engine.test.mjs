@@ -862,6 +862,18 @@ test("code search keeps a definition hit past the limit with its text",async()=>
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("code search marks the definition hits it lists by line number",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-context-definition-more-"));
+  try{
+    await mkdir(join(root,"pkg"),{recursive:true});
+    await writeFile(join(root,"pkg","core.py"),["make_part(0)",...Array.from({length:45},(_,index)=>`def make_part_${index}():\n    return ${index}`)].join("\n")+"\n","utf8");
+    const engine=new ContextEngine({env:{...process.env,GIT_CEILING_DIRECTORIES:tmpdir()}});
+    const result=await engine.searchCode({root,query:"make_part",limit:1});
+    assert.equal(result.data.length,41,"the hit within the limit and 40 definitions past it keep their text");
+    assert.deepEqual(result.more,[{path:"pkg/core.py",count:5,lines:[82,84,86,88,90],definitions:[82,84,86,88,90]}]);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("code search scopes to a folder or a file and filters by glob, and rejects paths outside the repository",async()=>{
   const root=await fixture();
   try{

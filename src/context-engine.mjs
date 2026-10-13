@@ -1185,16 +1185,18 @@ function searchHitText(line,ranges){
   return (start>0?"…":"")+line.slice(start,end)+(end<line.length?"…":"");
 }
 
-// groups: [{path,hits:[{line,definition}]}] in display order, holding the hits not shown with text.
+// groups: [{path,hits:[{line,definition}]}] in display order, holding the hits not shown with text. A file's definition hits
+// are also named in `definitions`, so the model's text can list them before other line numbers when it has to shorten.
 function overflowListing(groups){
   let budget=SEARCH_OVERFLOW_LINE_NUMBERS;
   return groups.map(({path,hits})=>{
-    const lines=[];
+    const lines=[],definitions=[];
     for(const hit of hits){
+      if(hit.definition)definitions.push(hit.line);
       if(budget>0){lines.push(hit.line);budget--}
       else if(hit.definition)lines.push(hit.line);
     }
-    return {path,count:hits.length,lines:lines.sort((a,b)=>a-b)};
+    return {path,count:hits.length,lines:lines.sort((a,b)=>a-b),...(definitions.length?{definitions:definitions.sort((a,b)=>a-b)}:{})};
   });
 }
 
