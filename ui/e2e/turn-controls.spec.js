@@ -528,3 +528,33 @@ test("another thread opened while a send waits for Codex has its own composer, f
     await expect(composer(page)).toHaveAttribute("placeholder",IDLE_PLACEHOLDER);await expect(stop(page)).toHaveCount(0);
   }finally{await codex.close()}
 });
+
+// A send that fails in a thread left is that thread's: the thread shown, with a turn of its own, stays as it was, and the draft and its
+// note come back in the thread that sent it. The failure comes once the other thread is open, or while it is still opening.
+for(const when of ["once the running thread is open","while the running thread opens"])test(`a send that fails in the thread left leaves the running thread shown as it was, and its draft comes back in its own thread, ${when}`,async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{names:["Codex runner","Codex failing send"]});
+  try{
+    codex.holdTurns=true;
+    await sendTyped(page,"Count slowly in the runner.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [running]=codex.turns;running.start();running.answer();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toBeVisible();
+    await threadRow(page,"Codex failing send").locator(".thread-main").click();await expect(page.locator(".workspace-header")).toContainText("Codex failing send");
+    await expect(composer(page)).toBeEnabled({timeout:10_000});
+    await sendTyped(page,"This send will be refused.");
+    await expect.poll(()=>codex.turns.length).toBe(2);const failing=codex.turns[1];
+    await threadRow(page,"Codex runner").locator(".thread-main").click();
+    if(when.startsWith("while"))failing.fail("The model is overloaded right now.");
+    await expect(page.locator(".workspace-header")).toContainText("Codex runner");await expect(composer(page)).toHaveAttribute("placeholder","Queue a follow-up…",{timeout:10_000});
+    if(!when.startsWith("while"))failing.fail("The model is overloaded right now.");
+    await page.waitForTimeout(800);
+    // The runner's turn still runs: its Stop stays, and the other thread's failure and draft are not put on the runner's composer.
+    await expect(stop(page)).toBeVisible();await expect(composer(page)).toHaveAttribute("placeholder","Queue a follow-up…");
+    await expect(page.getByTestId("composer-alert")).toHaveCount(0);await expect(composer(page)).toHaveValue("");
+    await threadRow(page,"Codex failing send").locator(".thread-main").click();await expect(page.locator(".workspace-header")).toContainText("Codex failing send");
+    await expect(composer(page)).toHaveValue("This send will be refused.");
+    await expect(page.getByTestId("composer-alert")).toContainText("Not sent: The model is overloaded right now. Your draft is kept.");
+    if(!when.startsWith("while"))await shoot(page,"failed-send-back-in-its-own-thread");
+  }finally{await codex.close()}
+});

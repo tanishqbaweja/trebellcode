@@ -1009,6 +1009,8 @@ export default function App(){
   // can send while another thread's send waits, so each thread keeps its own, and its view (the composer hold of the send) and
   // message show it again when the thread is opened before it is through (openThread).
   const pendingSendsRef=useRef(new Map());
+  // The draft and note of a send that failed while its thread was not shown, by thread, until the thread is opened again.
+  const failedSendsRef=useRef(new Map());
   // The Stop on its way (stop()): the turn or send it is for, so a second press sends nothing more, and the thread it stops, whose
   // Stop reads "Stopping…" until the turn has ended.
   const stopKeyRef=useRef(null); const [stoppingThreadId,setStoppingThreadId]=useState(null);
@@ -3507,6 +3509,8 @@ export default function App(){
     // The composer's note goes with the view it was about: another thread shown, or this one opening after all, ends it; the thread
     // shown opening again (a reconnect) keeps a note about its failed send or about another thread that did not open.
     activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    // A send of this thread that failed while another view was shown gives its draft and its note back here (dispatchSend).
+    const failedSend=failedSendsRef.current.get(String(thread.id));if(failedSend){failedSendsRef.current.delete(String(thread.id));restoreFailedDraft(failedSend.draft);if(failedSend.alert)setComposerAlert(failedSend.alert)}
     if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(projectError)throw projectError;else if(!openedThread.cwd)setProjectPath(projectPath);
@@ -4111,6 +4115,7 @@ export default function App(){
     }catch(error){
       if(pendingSends.get(pendingSend.threadId)===pendingSend)pendingSends.delete(pendingSend.threadId);
       if(pendingSend.stopped&&error&&typeof error==="object")error.trebellSendStopped=true;
+      if(error&&typeof error==="object")error.trebellSendThreadId=pendingSend.threadId;
       reached(false);setMessages(prev=>prev.filter(message=>message.id!==clientId));
       // A send that ends while another view is shown leaves that view as it is.
       if(activeThreadRef.current?.id===thread.id){setRunning(false);setActiveTurnId(null)}
@@ -4412,9 +4417,14 @@ export default function App(){
     // A turn/start that fails has no turn to show it on: the error goes next to the composer that kept the draft, never onto the
     // last turn's card (a worktree that could not be set up says why in its own card).
     // A send Stop ended before its turn existed puts the draft back as it was, with no note: nothing went wrong.
-    // A send whose thread a new task replaced on screen puts its draft back beside the composer's and leaves the rest of the new
-    // task alone.
-    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents([]);if(!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e)))setComposerAlert({kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."})});
+    // A send whose thread another thread or a new task replaced on screen, or is replacing (an open on its way), leaves that view
+    // alone: its draft and note wait for its own thread (openThread). One that failed before it had a thread puts its draft back
+    // beside the composer's.
+    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{
+      const alert=!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e))?{kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."}:null;
+      if(e?.trebellSendThreadId&&String(openingThreadRef.current||activeThreadRef.current?.id||"")!==e.trebellSendThreadId){failedSendsRef.current.set(e.trebellSendThreadId,{draft,alert});return}
+      restoreFailedDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents([]);if(alert)setComposerAlert(alert);
+    });
   }
   // A send belongs to the thread it was made in: a new task opened from there while it is on its way releases the composer
   // (showNewTask), and the send then ends without touching the new task (dispatchSend, startTurn).
