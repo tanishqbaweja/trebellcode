@@ -189,7 +189,7 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/lanes:laneStates\.map/);
   assert.match(source,/terminal-bench-latest\.json/);
   assert.match(source,/trialProcessDrainNeedles\(outputRoot,jobName\)/);
-  assert.match(source,/waitForJobProcessDrain\(jobName,\{timeoutMs:LANE_DRAIN_TIMEOUT_MS,cwd:root,additionalNeedles\}/);
+  assert.match(source,/waitForJobProcessDrain\(jobName,\{timeoutMs:LANE_DRAIN_TIMEOUT_MS,cwd:root,additionalNeedles,outputRoot\}/);
   assert.match(source,/readJobVerifierSummary/);
   assert.match(source,/jobsForPairReport/);
   assert.match(source,/jobs:jobsForPairReport\(jobs\.filter\(Boolean\),\{complete\}\)/);
@@ -603,6 +603,21 @@ test("Terminal-Bench lane drain ignores observers that merely mention benchmark 
   assert.equal(harborLaneProcessCommand(`node watcher.mjs ${job} ${trial}`,job,{additionalNeedles:[trial]}),false);
   assert.equal(harborLaneProcessCommand(`harbor run -d dataset --job-name ${job}`,job,{additionalNeedles:[trial]}),true);
   assert.equal(harborLaneProcessCommand(`docker compose --project-name ${trial.toLowerCase()}__env exec main bash`,job,{additionalNeedles:[trial]}),true);
+});
+
+test("Terminal-Bench lane drain ignores a same-named Harbor run that another clone started in the same second",async()=>{
+  // 2026-10-13: two clones launched the wdm-design Codex API lane at 19:02:24Z under one job name, and the first lane to
+  // finish waited out its drain on the other clone's Harbor processes and was marked failed.
+  const job="tb4-codex-api-gpt-6-luna-max-wdm-design-20261013T190226Z";
+  const run=root=>`C:\\Users\\me\\.local\\bin\\harbor.exe run -d terminal-bench/terminal-bench@4.0.0 -i terminal-bench/wdm-design -n 1 -o ${root}\\.harbor-jobs --job-name ${job}`;
+  assert.equal(harborLaneProcessCommand(run("H:\\TrebellExp-retry-2"),job,{outputRoot:"H:/TrebellExp-retry-1/.harbor-jobs"}),false);
+  assert.equal(harborLaneProcessCommand(run("H:\\TrebellExp-retry-1"),job,{outputRoot:"H:/TrebellExp-retry-1/.harbor-jobs"}),true);
+  assert.equal(harborLaneProcessCommand(run("H:\\TrebellExp-retry-1"),job,{outputRoot:"H:\\TrebellExp-retry-1\\.harbor-jobs\\"}),true);
+  assert.equal(harborLaneProcessCommand(`"C:\\Program Files\\harbor.exe" run -o "H:\\Github Repositories\\Trebell\\.harbor-jobs" --job-name ${job}`,job,{outputRoot:"H:/Github Repositories/Trebell/.harbor-jobs"}),true);
+  assert.equal(harborLaneProcessCommand(run("H:\\TrebellExp-retry-2"),job),true);
+  assert.deepEqual(parsePsProcesses(`  11 harbor run -o /work/a/.harbor-jobs --job-name ${job}\n  22 harbor run -o /work/b/.harbor-jobs --job-name ${job}`,[job],[],{outputRoot:"/work/a/.harbor-jobs"}),[11]);
+  const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
+  assert.match(source,/waitForJobProcessDrain\(jobName,\{timeoutMs:LANE_DRAIN_TIMEOUT_MS,cwd:root,additionalNeedles,outputRoot\}\)/);
 });
 
 test("detached process launcher records a harmless child result outside the caller",async t=>{

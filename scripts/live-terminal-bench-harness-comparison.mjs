@@ -363,7 +363,7 @@ try{
     let drainError=null;
     try{
       const additionalNeedles=await trialProcessDrainNeedles(outputRoot,jobName);
-      await waitForJobProcessDrain(jobName,{timeoutMs:LANE_DRAIN_TIMEOUT_MS,cwd:root,additionalNeedles});
+      await waitForJobProcessDrain(jobName,{timeoutMs:LANE_DRAIN_TIMEOUT_MS,cwd:root,additionalNeedles,outputRoot});
     }catch(error){drainError=error?.message||String(error);runError=[runError,drainError].filter(Boolean).join("; ")}
     if(retainNativeEnvironment&&runnerError){
       let alreadyGraded=null;try{alreadyGraded=await trialResult(outputRoot,jobName)}catch{}
