@@ -783,6 +783,19 @@ test.describe("Clone",()=>{
       await retry.click();
       await expect(banner).toContainText("You can keep writing",{timeout:10_000});
       await expect.poll(job,{timeout:10_000}).toBe("running");
+      // The clone's progress cannot be read for a while (the server is busy or restarting): the banner says so under its text, and
+      // the conversation still starts below the banner, which has grown by that line (two lines at 900 wide).
+      await page.route(/\/api\/clone-jobs\?id=/,route=>route.request().method()==="GET"?json(route,{error:"Deliberate clone progress failure while the server restarts"},500):route.fallback());
+      await expect(banner).toContainText("Could not refresh clone progress",{timeout:10_000});
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        const first=await page.locator(".conversation-scroll .conversation-column").evaluate(column=>Math.min(...[...column.children].map(child=>child.getBoundingClientRect()).filter(box=>box.height>0).map(box=>box.top)));
+        const bannerBox=await banner.boundingBox();
+        expect(first,`the conversation starts below the banner with its refresh error at ${width}`).toBeGreaterThanOrEqual(bannerBox.y+bannerBox.height);
+      }
+      await page.setViewportSize({width:1280,height:800});
+      await shootModes(page,"clone-banner-refresh-error");
+      await page.unroute(/\/api\/clone-jobs\?id=/);
       await cancel.click();
       await expect(banner).toContainText("Clone cancelled",{timeout:10_000});
     }finally{

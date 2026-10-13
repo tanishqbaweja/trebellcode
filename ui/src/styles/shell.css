@@ -415,7 +415,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .chat-workspace .clone-banner>div{gap:3px}
 .chat-workspace .clone-banner strong{font-size:12.5px;font-weight:600;color:var(--tx0)}
 .chat-workspace .clone-banner span{font-size:12px;line-height:1.45;color:var(--tx2)}
-.chat-workspace .clone-banner .clone-refresh-error{color:var(--err)}
+/* A progress read that failed is said under the banner's text in two lines at most, and the strip kept clear for the banner grows
+   by those two lines while it shows: wrapped freely, it made the banner taller than the strip and drew it over the first row. */
+.chat-workspace .clone-banner .clone-refresh-error{color:var(--err);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.chat-workspace:has(>.clone-banner .clone-refresh-error) .conversation-scroll{padding-top:max(130px,var(--thread-find-reserve,0px))}
 .chat-workspace .clone-banner i{height:6px;background:var(--bg4)}
 .chat-workspace .clone-banner i b{background:var(--ac)}
 .chat-workspace .clone-banner em{min-width:34px;font:500 11.5px/1 var(--mono);color:var(--tx2)}
