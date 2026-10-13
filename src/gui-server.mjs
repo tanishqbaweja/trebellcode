@@ -472,11 +472,11 @@ async function readOptionalJson(path,{jsonc=false}={}){
   }catch{return null}
 }
 
+// The shell and arguments that run a command as written. cmd.exe takes the command line whole, quoted once as Node's own shell option
+// does: passed as one argument, its double quotes would be escaped with backslashes (the MSVCRT rule), which cmd.exe does not undo.
+// On Windows the arguments are that command line as a string, which node-pty uses as is and spawn takes with windowsVerbatimArguments.
 function commandShellSpec(command,env=process.env){
-  if(process.platform==="win32"){
-    const shell=env.COMSPEC||"cmd.exe";
-    return {shell,args:["/d","/s","/c",String(command||"")]};
-  }
+  if(process.platform==="win32")return {shell:env.COMSPEC||"cmd.exe",args:`/d /s /c "${String(command||"")}"`};
   const shell=env.SHELL||"/bin/bash";
   return {shell,args:["-lc",String(command||"")]};
 }
@@ -484,7 +484,7 @@ function commandShellSpec(command,env=process.env){
 async function runLocalHookCommand(command,{cwd=null,env=process.env,timeoutMs=30000}={}){
   const spec=commandShellSpec(command,env),startedAt=Date.now(),limit=Math.max(1000,Math.min(300000,Number(timeoutMs)||30000));
   return new Promise((resolveRun,reject)=>{
-    let settled=false,timedOut=false;const child=spawn(spec.shell,spec.args,{cwd:cwd||undefined,env,windowsHide:true,stdio:["ignore","pipe","pipe"]});
+    let settled=false,timedOut=false;const child=spawn(spec.shell,[spec.args].flat(),{cwd:cwd||undefined,env,windowsHide:true,windowsVerbatimArguments:true,stdio:["ignore","pipe","pipe"]});
     child.stdout?.on("data",()=>{});child.stderr?.on("data",()=>{});
     const timer=setTimeout(()=>{timedOut=true;void stopChildProcess(child)},limit);
     const finish=(error,code=null)=>{if(settled)return;settled=true;clearTimeout(timer);if(error)reject(error);else resolveRun({exitCode:code??1,timedOut,durationMs:Date.now()-startedAt})};

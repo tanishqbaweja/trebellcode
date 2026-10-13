@@ -385,6 +385,40 @@ test("an environment its runtime cannot reach is not made active, and the one th
   }
 });
 
+// A "Run when a worktree is created" action runs in the new worktree's setup terminal exactly as written, as a card or header run of
+// the same action does: a command with double quotes reaches the shell as typed (on Windows cmd.exe gets the command line whole).
+test("a worktree's setup action runs as written, in a terminal named for it",{timeout:60_000},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-worktree-setup-"));
+  const repo=join(home,"lima-app");await mkdir(repo,{recursive:true});
+  await git(repo,["init"]);await git(repo,["config","user.email","setup@example.test"]);await git(repo,["config","user.name","Setup"]);
+  await writeFile(join(repo,"README.md"),"# lima\n");await git(repo,["add","README.md"]);await git(repo,["commit","-m","init"]);
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",onboardingComplete:true}}));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:false,env});
+    const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(r=>r.json());
+    await post("/api/projects",{path:repo,scripts:[{id:"install",name:"Install deps",command:`node -e "console.log('setup ran in ' + process.cwd())"`,runOnWorktreeCreate:true,waitForSetup:false}]});
+    const made=await post("/api/git/action",{action:"worktree-create",cwd:repo,branch:"trebell/setup",path:join(home,"lima-app-setup")});
+    assert.equal(made.ok,true,made.error);
+    const setup=made.result.setup.session;
+    assert.equal(setup.name,"Install deps · setup");
+    let session=setup;
+    for(const started=Date.now();session?.running&&Date.now()-started<30_000;){
+      await new Promise(resolve=>setTimeout(resolve,200));
+      session=(await fetch(gui.url+"/api/terminal/sessions").then(r=>r.json())).sessions.find(item=>item.id===setup.id);
+    }
+    // The terminal's text without its control sequences and line wraps.
+    const output=String(session.buffer||"").replace(/\x1b\][^\x07]*\x07/g,"").replace(/\x1b\[[0-9;?]*[A-Za-z]/g,"").replace(/\s+/g,"");
+    assert.equal(session.exitCode,0,output);
+    assert.ok(output.includes("setupranin"+made.result.worktree.replace(/\s+/g,"")),output);
+  }finally{
+    if(gui)await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
 test("mock GUI server serves the default Native provider catalog and direct replies without provider requests",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-mock-provider-"));
   await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"retired-provider-fixture",onboardingComplete:true}}));
