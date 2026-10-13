@@ -852,6 +852,47 @@ test("Stop ends a Supervised Trebell Native turn whose approval waits, takes the
   }
 });
 
+test("Stop ends a Trebell Native turn whose browser tool call the app has not answered, and no window that opens later is asked to run it",async()=>{
+  // The app runs Native's browser, desktop and delegation tools (item/tool/call). One still waiting held the stopped turn running until
+  // the app answered, and a window that opened later was asked to run it again: a click, a keystroke or a delegated task of a turn that
+  // had been stopped.
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-stop-app-tool-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;
+  const nativeProviderTurn=async request=>{
+    calls++;
+    const reply=(text,toolCalls=[])=>({id:"stop-app-tool-"+calls,provider:request.provider,model:request.model,text,toolCalls,finishReason:toolCalls.length?"tool_calls":"stop",usage:{}});
+    if(request.toolChoice==="none")return reply('{"status":"complete","unresolved":[],"reason":"The page was read."}');
+    if(request.messages.at(-1)?.role==="tool")return reply("Read the page.");
+    return reply("",[{id:"snapshot-"+calls,namespace:"trebell_browser",name:"snapshot",arguments:"{}"}]);
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),url=`ws://127.0.0.1:${port}/api/agent/ws`;
+  const open=async()=>{const ws=new WebSocket(url);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});return ws};
+  let first=null,second=null;
+  try{
+    first=await open();const rpc=client(first);
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"supervised",dynamicTools:[{type:"namespace",name:"trebell_browser"}]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"supervised",input:[{type:"text",text:"Read the open page"}]})).turn;
+    const approval=await rpc.waitFor(message=>message.method==="item/tool/requestApproval",15000);
+    first.send(JSON.stringify({id:approval.id,result:{decision:"accept"}}));
+    const asked=await rpc.waitFor(message=>message.method==="item/tool/call",15000);
+    assert.deepEqual([asked.params.namespace,asked.params.tool],["trebell_browser","snapshot"]);
+    // The app has not answered when Stop is pressed.
+    await rpc.request("turn/interrupt",{threadId:thread.id,turnId:turn.id});
+    const ended=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id,5000);
+    assert.equal(ended.params.turn.status,"cancelled","Stop ends the turn without waiting for the app");
+    // The window reloads.
+    await new Promise(resolve=>{first.once("close",resolve);first.close()});
+    second=await open();const seen=[];second.on("message",raw=>seen.push(JSON.parse(String(raw))));second.send(JSON.stringify({method:"initialized",params:{}}));
+    await new Promise(resolve=>setTimeout(resolve,500));
+    assert.deepEqual(seen.filter(message=>message.method==="item/tool/call").map(message=>message.id),[],"the next window is not asked to run the stopped turn's tool");
+  }finally{
+    for(const ws of [first,second])try{ws?.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
+  }
+});
+
 // Native reply drafts through the relay. The fake provider drives the session's stream hook the way a provider stream does.
 const DRAFT_REPLY="Trebell Native keeps one thread per conversation, and each reply comes from the model that thread names.\n\nThe session builds every request from the stored turns and sends it to the thread's provider, which streams the answer back as it is written.";
 const SECOND_REPLY="The retried call answered on its own.\n\nNothing the first attempt streamed stays on screen: its draft was cleared before the second attempt began, and this text started again from the first character.";

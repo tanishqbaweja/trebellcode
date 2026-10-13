@@ -730,14 +730,17 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // Whether an approval, a question or a form of the thread waits on the person (the idle sweep keeps its session).
   const waitsOn=threadId=>[...pendingServer.values()].some(pending=>pending.threadId===String(threadId||""));
   // Stop, an ACP process that died, or a session the relay closes (closeSession) answers the thread's open approvals, questions and form
-  // requests as cancelled and takes them off the screen, so none is asked again of a window that opens later (T3 settles a session's
-  // pending approvals and user input when its turn is interrupted or the process exits).
+  // requests as cancelled and takes them off the screen, and refuses the app tool calls it waits on (Native's browser, desktop and
+  // delegation tools, which the app runs), so none is asked again of a window that opens later (T3 settles a session's pending
+  // approvals and user input when its turn is interrupted or the process exits).
   function cancelThreadRequests(threadId){
     const owner=String(threadId||""),cancelled={"item/tool/requestApproval":{decision:"cancel"},"item/tool/requestUserInput":{answers:{}},"mcpServer/elicitation/request":{action:"cancel"}};
     if(!owner)return;
     for(const [id,pending] of [...pendingServer]){
-      if(pending.threadId!==owner||!Object.prototype.hasOwnProperty.call(cancelled,pending.method))continue;
-      pendingServer.delete(id);clearTimeout(pending.timer);pending.resolve(cancelled[pending.method]);
+      const answer=Object.prototype.hasOwnProperty.call(cancelled,pending.method)?cancelled[pending.method]:null;
+      if(pending.threadId!==owner||(!answer&&pending.method!=="item/tool/call"))continue;
+      pendingServer.delete(id);clearTimeout(pending.timer);
+      if(answer)pending.resolve(answer);else pending.reject(new Error("The turn ended before the app answered this tool call."));
       if(isOpen(pending.holder))pending.holder.ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:owner}}));
     }
   }
