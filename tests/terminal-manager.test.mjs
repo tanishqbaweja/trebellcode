@@ -150,3 +150,33 @@ test("a long run of output leaves the terminal manager's event loop free and its
     assert.ok(terminals.snapshot(session.id).buffer.split("\n").length<=5501);
   }finally{await terminals.shutdown()}
 });
+
+// A project action's terminal runs its command as its own program, so the session runs exactly while the action does. Stop ends the
+// program and keeps the session as stopped history, as its own exit does; a watch socket (the header's action button) hears only
+// whether it runs, never its output.
+test("stop ends a session's program and keeps its history, and a watch socket hears its state and exit without its output",{timeout:30000},async()=>{
+  const { createServer } = await import("node:http");
+  const { WebSocket } = await import("ws");
+  const terminals=new TerminalManager({persist:false}),server=createServer((_req,res)=>{res.writeHead(404);res.end()});
+  const attached=terminals.attachWebSocket(server);
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  let watch=null;
+  try{
+    const marker="trebell-action-"+Date.now();
+    const shell=process.platform==="win32"?(process.env.COMSPEC||"cmd.exe"):(process.env.SHELL||"/bin/bash");
+    const command=`node -e "console.log('${marker}');setInterval(()=>console.log('tick'),200)"`;
+    const args=process.platform==="win32"?`/d /s /c "${command}"`:["-lc",command];
+    const session=await terminals.create({cwd:process.cwd(),shell,args,name:"Dev server"});
+    const heard=[];watch=new WebSocket(`ws://127.0.0.1:${server.address().port}/api/terminal/ws?watch=1&session=${encodeURIComponent(session.id)}`);
+    const exited=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error("no exit heard")),15000);watch.on("message",raw=>{const message=JSON.parse(String(raw));heard.push(message);if(message.type==="exit"){clearTimeout(timer);resolve(message)}});watch.once("error",reject)});exited.catch(()=>{});
+    await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error("no output")),10000);const listener=(id,data)=>{if(id===session.id&&terminals.snapshot(id).buffer.includes("tick")){clearTimeout(timer);terminals.off("output",listener);resolve()}};terminals.on("output",listener)});
+    const stopped=await terminals.stop(session.id);
+    assert.equal(stopped.running,false,"stopped");
+    assert.match(stopped.buffer,new RegExp(marker),"its output is kept");
+    assert.equal(terminals.list().some(item=>item.id===session.id),true,"the session stays as stopped history");
+    await exited;
+    assert.deepEqual(heard[0],{type:"state",running:true,exitCode:null},"the watch socket starts with the state alone");
+    assert.equal(heard.some(message=>message.type==="output"||message.type==="snapshot"),false,"and hears no output");
+    assert.equal((await terminals.stop(session.id)).running,false,"stopping it again changes nothing");
+  }finally{try{watch?.terminate()}catch{}attached.close();await new Promise(resolve=>server.close(resolve));await terminals.shutdown()}
+});

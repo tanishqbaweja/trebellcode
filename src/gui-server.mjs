@@ -696,6 +696,24 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     },
   });
   const terminals=mock ? null : new TerminalManager({env});
+  // Each project action's terminal while it runs, by environment, project and action: a second run of an action that still runs
+  // shows its terminal instead of starting it twice (a second dev server only fails on its port).
+  const projectActionSessions=new Map();
+  const projectActionKey=(projectPath,environmentId,scriptId)=>[environmentId||"",projectPath,String(scriptId||"")].join("\0");
+  const runningProjectAction=key=>{const session=terminals?.snapshot(projectActionSessions.get(key)||"");if(session?.running)return session;projectActionSessions.delete(key);return null};
+  const actionSessionSummary=session=>{const {buffer,...rest}=session||{};return rest};
+  // An action runs its command as the terminal's own program, as worktree setup does, so its terminal runs exactly while the action
+  // does: it ends with the command (its exit code on the tab) and Stop ends it. A remote environment runs it with sh -lc there.
+  async function createProjectActionSession(projectPath,environmentId,script){
+    const command=String(script.command||""),base=terminalOptions({environmentId,cwd:projectPath,name:script.name||"Project action",cols:120,rows:32});
+    const profile=environmentId?environments.get(environmentId):null;
+    if(profile&&profile.type!=="local"){
+      const remote=environments.terminalArgvSpec(environmentId,{command:"sh",args:["-lc",command],cwd:projectPath});
+      return terminals.create({...base,cwd:remote.cwd,shell:remote.shell,args:remote.args,environmentId:remote.environmentId??base.environmentId,environmentName:remote.environmentName||base.environmentName,environmentType:remote.environmentType||base.environmentType});
+    }
+    const spec=commandShellSpec(command,env);
+    return terminals.create({...base,shell:spec.shell,args:spec.args});
+  }
   function terminalOptions({environmentId=null,cwd=null,name=null,cols=120,rows=32,terminalEnv=null}={}){
     const spec=environments.terminalSpec(environmentId,{cwd});
     const profile=environmentId?environments.get(environmentId):null;
@@ -2324,9 +2342,32 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           const profile=environmentId?environments.get(environmentId):null;
           return json(res,200,{ok:true,script,session:{id:"mock-project-action",name:script.name,cwd:projectPath,environmentId,environmentName:profile?.name||"Local machine",environmentType:profile?.type||"local",running:true},previewUrl:script.previewUrl||null});
         }
-        const session=await createTerminalSession({cwd:projectPath,environmentId,name:script.name||"Project action",cols:120,rows:32});
-        await terminals.write(session.id,String(script.command||"")+"\r");
+        const key=projectActionKey(projectPath,environmentId,script.id),running=runningProjectAction(key);
+        if(running)return json(res,200,{ok:true,script,session:actionSessionSummary(running),alreadyRunning:true,previewUrl:script.previewUrl||null});
+        const session=await createProjectActionSession(projectPath,environmentId,script);
+        projectActionSessions.set(key,session.id);
         return json(res,200,{ok:true,script,session:terminals.snapshot(session.id),previewUrl:script.previewUrl||null});
+      }catch(error){return json(res,400,{ok:false,error:error.message});}
+    }
+    // The actions of a project that run now (the header's action button shows it), and Stop for one, which keeps its terminal as
+    // stopped history.
+    if(url.pathname==="/api/project-script/runs"&&req.method==="GET"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const projectPath=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),runs={};
+        for(const script of state.project(projectPath,environmentId)?.scripts||[]){const running=runningProjectAction(projectActionKey(projectPath,environmentId,script.id));if(running)runs[script.id]=running.id}
+        return json(res,200,{runs});
+      }catch(error){return json(res,400,{runs:{},error:error.message});}
+    }
+    if(url.pathname==="/api/project-script/stop"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+        const projectPath=environmentPath(body.path||process.cwd(),environmentId);
+        if(mock)return json(res,200,{ok:true,session:null});
+        const key=projectActionKey(projectPath,environmentId,body.scriptId),id=projectActionSessions.get(key);
+        const stopped=id?await terminals.stop(id):null;if(!stopped?.running)projectActionSessions.delete(key);
+        return json(res,200,{ok:true,session:stopped?actionSessionSummary(stopped):null});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/preview/servers"&&req.method==="GET"){

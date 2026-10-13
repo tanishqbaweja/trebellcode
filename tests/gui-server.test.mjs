@@ -1422,3 +1422,41 @@ test("a save that names a removed project is refused instead of adding it again,
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
 });
+
+// A project action runs as its terminal's own program, once at a time: running it again while it runs shows the terminal it runs
+// in (a second dev server would only fail on its port), Stop ends it and keeps its terminal as stopped history, and the next run
+// starts it afresh. Its command keeps its double quotes.
+test("a project action runs once at a time in its own terminal, and Stop ends it and keeps its output",{timeout:60000},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-project-action-runs-")),projectPath=join(home,"app");await mkdir(projectPath,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",onboardingComplete:true});state.close?.();
+  const fetchFn=async input=>{throw new Error("Unexpected external request: "+String(input?.url||input))};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const gui=await createGuiServer({port,appPort,mock:false,env,fetchFn});
+  const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(r=>r.json());
+  const runs=()=>fetch(gui.url+"/api/project-script/runs?path="+encodeURIComponent(projectPath)).then(r=>r.json()).then(r=>r.runs);
+  const sessionOf=async id=>(await fetch(gui.url+"/api/terminal/sessions").then(r=>r.json())).sessions.find(session=>session.id===id);
+  try{
+    await post("/api/projects",{path:projectPath,scripts:[{id:"dev",name:"Dev server",command:`node -e "console.log('dev server ready');setInterval(()=>{},1000)"`}]});
+    const first=await post("/api/project-script/run",{path:projectPath,scriptId:"dev"});
+    assert.equal(first.ok,true);assert.equal(first.session.running,true);assert.equal(first.alreadyRunning,undefined);
+    const again=await post("/api/project-script/run",{path:projectPath,scriptId:"dev"});
+    assert.equal(again.alreadyRunning,true,"a second run while it runs starts nothing");
+    assert.equal(again.session.id,first.session.id,"and names the terminal it runs in");
+    assert.equal((await fetch(gui.url+"/api/terminal/sessions").then(r=>r.json())).sessions.length,1,"one terminal");
+    assert.deepEqual(await runs(),{dev:first.session.id});
+    for(let wait=0;wait<100&&!(await sessionOf(first.session.id))?.buffer?.includes("dev server ready");wait++)await new Promise(resolve=>setTimeout(resolve,100));
+    assert.match((await sessionOf(first.session.id)).buffer,/dev server ready/,"the command ran as written, quotes and all");
+    const stopped=await post("/api/project-script/stop",{path:projectPath,scriptId:"dev"});
+    assert.equal(stopped.ok,true);assert.equal(stopped.session.id,first.session.id);assert.equal(stopped.session.running,false);
+    const history=await sessionOf(first.session.id);
+    assert.equal(history.running,false,"its terminal stays, stopped");assert.match(history.buffer,/dev server ready/,"with its output");
+    assert.deepEqual(await runs(),{});
+    const next=await post("/api/project-script/run",{path:projectPath,scriptId:"dev"});
+    assert.equal(next.session.running,true);assert.notEqual(next.session.id,first.session.id,"the next run starts it afresh");
+    assert.equal((await post("/api/project-script/stop",{path:projectPath,scriptId:"dev"})).session.running,false);
+  }finally{
+    await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});

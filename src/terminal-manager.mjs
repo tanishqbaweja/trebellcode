@@ -77,7 +77,7 @@ export class TerminalManager extends EventEmitter{
         if(session.bufferLines>MAX_LINES*1.1||session.bufferBytes>MAX_BYTES*1.1){session.buffer=trimBuffer(session.buffer);session.bufferLines=session.buffer.split("\n").length;session.bufferBytes=Buffer.byteLength(session.buffer,"utf8")}
         this.#scheduleSave();
         this.emit("output",msg.id,msg.data);
-        for(const ws of this.clients.get(msg.id)||[]) if(ws.readyState===ws.OPEN) ws.send(JSON.stringify({type:"output",data:msg.data}));
+        for(const ws of this.clients.get(msg.id)||[]) if(ws.readyState===ws.OPEN&&!ws.watchOnly) ws.send(JSON.stringify({type:"output",data:msg.data}));
       }else if(msg.type==="exit"){
         const session=this.sessions.get(msg.id); if(session){session.running=false;session.exitCode=msg.exitCode;session.updatedAt=Date.now();}
         this.#saveHistory();
@@ -126,6 +126,13 @@ export class TerminalManager extends EventEmitter{
     });
   }
   async close(id){const session=this.sessions.get(id);if(session?.running)await this.#rpc("kill",{id}).catch(()=>{});this.sessions.delete(id);this.#saveHistory();}
+  // Ends a session's program and keeps the session, with its output and exit, as stopped history, as the program's own exit does
+  // (close also forgets it). It answers once the exit has come, or after 5 s with the session as it is then.
+  async stop(id){
+    const session=this.sessions.get(id);if(!session)return null;
+    if(session.running){const exited=this.waitForExit(id,{timeoutMs:5000});await this.#rpc("kill",{id}).catch(()=>{});await exited}
+    return this.snapshot(id);
+  }
   pruneStopped({before=0}={}){
     const cutoff=Math.max(0,Number(before)||0);let removed=0;
     for(const [id,session] of this.sessions.entries()){
@@ -140,12 +147,13 @@ export class TerminalManager extends EventEmitter{
     const wss=new WebSocketServer({noServer:true});
     const upgrade=(req,socket,head)=>{
       const url=new URL(req.url||"/","http://127.0.0.1"); if(url.pathname!==path)return;
-      const id=url.searchParams.get("session"); const session=this.sessions.get(id);
+      const id=url.searchParams.get("session"); const session=this.sessions.get(id),watchOnly=url.searchParams.get("watch")==="1";
       if(!session){socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");socket.destroy();return;}
       wss.handleUpgrade(req,socket,head,ws=>{
         if(!this.clients.has(id))this.clients.set(id,new Set());this.clients.get(id).add(ws);
-        ws.send(JSON.stringify({type:"snapshot",session:this.#public(session)}));
-        ws.on("message",raw=>{let msg;try{msg=JSON.parse(String(raw))}catch{return}
+        ws.watchOnly=watchOnly;
+        ws.send(JSON.stringify(watchOnly?{type:"state",running:session.running,exitCode:session.exitCode}:{type:"snapshot",session:this.#public(session)}));
+        ws.on("message",raw=>{if(watchOnly)return;let msg;try{msg=JSON.parse(String(raw))}catch{return}
           if(msg.type==="input")this.write(id,msg.data||"").catch(()=>{});
           else if(msg.type==="resize")this.resize(id,msg.cols,msg.rows).catch(()=>{});
           else if(msg.type==="close")this.close(id).catch(()=>{});
