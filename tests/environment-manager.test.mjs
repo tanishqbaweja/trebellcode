@@ -179,6 +179,25 @@ test("terminal specs keep interactive shells inside local, WSL and SSH environme
   assert.equal(ssh.args.at(-1).includes("cd '/srv/app'"),true);
 });
 
+// The Codex executable saved for a WSL or SSH host is the codex that the harness's checks, its sign-in and its sessions run there;
+// other commands, and a host saved without one, are left as they are.
+test("a host's saved Codex executable is the codex its checks, sign-in and sessions run",async()=>{
+  const profiles=[
+    {id:"ssh",name:"Build box",type:"ssh",host:"build.example.test",port:22,cwd:"/srv/app",codexPath:"/opt/lane/bin/codex",enabled:true},
+    {id:"plain",name:"Plain box",type:"ssh",host:"plain.example.test",port:22,cwd:"",enabled:true},
+  ];
+  const manager=new EnvironmentManager({state:stateFor(profiles),platform:"linux"}),ran=[];
+  manager.execute=async(id,options)=>{ran.push(options.command);return {exitCode:0,stdout:"",stderr:""}};
+  manager.spawnSession=(id,options)=>{ran.push(options.command);return null};
+  await manager.executeArgv("ssh",{command:"codex",args:["--version"]});
+  manager.spawnArgv("ssh",{command:"codex",args:["app-server"]});
+  assert.match(ran[0],/'\/opt\/lane\/bin\/codex' '--version'/);
+  assert.match(ran[1],/'\/opt\/lane\/bin\/codex' 'app-server'/);
+  assert.match(manager.terminalArgvSpec("ssh",{command:"codex",args:["login"]}).args.at(-1),/exec '\/opt\/lane\/bin\/codex' 'login'/);
+  assert.match(manager.terminalArgvSpec("ssh",{command:"claude",args:["auth","login"]}).args.at(-1),/exec 'claude' 'auth' 'login'/);
+  assert.match(manager.terminalArgvSpec("plain",{command:"codex",args:["login"]}).args.at(-1),/exec 'codex' 'login'/);
+});
+
 test("terminal argv specs launch provider auth commands directly and quote remote arguments",()=>{
   const profiles=[
     {id:"local-profile",name:"Named local",type:"local",cwd:"C:\\code\\app"},

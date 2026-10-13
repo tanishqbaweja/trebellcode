@@ -163,6 +163,12 @@ export function listedWslDistros(stdout){
   return {distros,dockerOnly:listed.length>0&&!distros.length};
 }
 
+// On a WSL or SSH host the Codex executable saved for it stands in for the bare codex command, so the harness checks, signs in
+// and runs the Codex that host was set up with, as its app-server does (environment-app-server.mjs).
+function hostCommand(profile,command){
+  return command==="codex"&&profile?.codexPath?profile.codexPath:command;
+}
+
 function normalizedPort(value){
   const n=Number(value||22);
   return Number.isInteger(n)&&n>0&&n<=65535?n:22;
@@ -411,7 +417,7 @@ export class EnvironmentManager {
       };
     }
     const working=String(cwd??profile.cwd??"").trim();
-    const remoteCommand=REMOTE_TOOL_PATH_SCRIPT+"\n"+(working?("cd "+quotePosix(working)+" && "):"")+"exec "+shellCommand(executable,args);
+    const remoteCommand=REMOTE_TOOL_PATH_SCRIPT+"\n"+(working?("cd "+quotePosix(working)+" && "):"")+"exec "+shellCommand(hostCommand(profile,executable),args);
     if(profile.type==="wsl"){
       if(this.platform!=="win32")throw new Error("WSL environments are available only on Windows");
       const launchArgs=[];if(profile.distro)launchArgs.push("-d",profile.distro);
@@ -437,7 +443,7 @@ export class EnvironmentManager {
     const working=String(cwd??profile.cwd??"").trim();
     // A local argv command goes through cross-spawn, so Windows .cmd/.bat launchers run (through cmd.exe, arguments escaped).
     if(profile.type==="local")return crossSpawn(executable,args,{cwd:working||undefined,env:environment&&typeof environment==="object"?environment:this.env,windowsHide:true,stdio,detached});
-    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(executable,args),environmentNames,environment||{}),cwd:working||null,stdio,detached});
+    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(hostCommand(profile,executable),args),environmentNames,environment||{}),cwd:working||null,stdio,detached});
   }
 
   async execute(id,{command,cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){
@@ -483,7 +489,7 @@ export class EnvironmentManager {
       const result=await runProcess(String(command||""),Array.isArray(args)?args:[],{cwd:String(cwd??profile.cwd??"").trim()||undefined,env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)),maxOutput:Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT))});
       return {...result,profile:{id:profile.id,name:profile.name,type:profile.type},durationMs:Date.now()-startedAt};
     }
-    return this.execute(id,{command:isolatedRemoteEnvironment(shellCommand(String(command||""),Array.isArray(args)?args:[]),environmentNames),cwd,timeoutMs,maxOutput});
+    return this.execute(id,{command:isolatedRemoteEnvironment(shellCommand(hostCommand(profile,String(command||"")),Array.isArray(args)?args:[]),environmentNames),cwd,timeoutMs,maxOutput});
   }
 
   async executeArgvInput(id,{command,args=[],input="",cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT,environmentNames=null,environment=null}={}){
