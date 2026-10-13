@@ -60,17 +60,23 @@ export default function OnboardingModal({open,projectPath,onPickWorkspace,provid
     catch(error){showHistoryMessage(error.message||String(error),true);return false}
     finally{setHistoryBusy("")}
   }
+  // Names each conversation an import could not copy with the reason the server gave, those with the same reason together.
+  function importFailures(results){
+    const titles=new Map(pendingHistory.map(item=>[item.id,item.title||item.preview||item.id])),reasons=new Map();
+    for(const item of results)if(item.status==="error"){const reason=String(item.error||"").trim().replace(/\.+$/,"");reasons.set(reason,[...(reasons.get(reason)||[]),`“${titles.get(item.id)||item.id}”`])}
+    return [...reasons].map(([reason,names])=>`${names.length>1?names.slice(0,-1).join(", ")+" and "+names.at(-1):names[0]} could not be imported${reason?": "+reason:""}.`);
+  }
   async function importHistory(){
     if(!pendingHistory.length)return;
     setHistoryBusy("import");showHistoryMessage("");
     try{
       const result=await api("/api/history-import",{method:"POST",body:{sessionIds:pendingHistory.slice(0,50).map(item=>item.id)}});
       const imported=(result.results||[]).filter(item=>item.status==="imported").length;
-      const failed=(result.results||[]).filter(item=>item.status==="error").length;
-      const summary=imported?`Imported ${imported} conversation${imported===1?"":"s"}${failed?`; ${failed} could not be imported`:""}.`:failed?"Conversation import failed.":"Nothing new to import.";
+      const failures=importFailures(result.results||[]);
+      const summary=[imported?`Imported ${imported} conversation${imported===1?"":"s"}.`:"",...failures].filter(Boolean).join(" ")||"Nothing new to import.";
       // The rescan clears the message when it starts, so show the import summary after it (it used to be wiped
       // immediately, leaving no feedback about what was imported or what failed).
-      if(await scanHistory())showHistoryMessage(summary,!imported&&failed>0);
+      if(await scanHistory())showHistoryMessage(summary,!imported&&failures.length>0);
       else setHistoryMessage(current=>summary+" "+current);
       await onHistoryImported?.(result);
     }catch(error){showHistoryMessage(error.message||String(error),true)}

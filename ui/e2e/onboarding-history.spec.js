@@ -61,6 +61,47 @@ test("onboarding names the real reason Codex history cannot be imported",async({
   }
 });
 
+// An import that copies some conversations and not others names each one it could not copy with the reason the server gave (those
+// with the same reason together), on the import and on the retry; it used to say only how many failed. The scan and the import are
+// answered here, so no real local history is read or copied.
+test("onboarding names each conversation it could not import and why",async({page,request})=>{
+  test.setTimeout(60_000);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const sessions=[["claude:login","claude","Fix the flaky login test"],["claude:notes","claude","Draft the release notes"],["codex:cli","codex","Port the CLI to Rust"],["codex:docs","codex","Write the docs site"]];
+  const reasons={"claude:notes":"Session file is truncated (line 212 is not JSON)","codex:cli":"Local Codex app-server is not available","codex:docs":"Local Codex app-server is not available"};
+  const imported=new Set(),posts=[];
+  await page.route(/\/api\/history-import$/,route=>{
+    if(route.request().method()!=="POST")return route.fulfill({json:{codexImportAvailable:true,sessions:sessions.map(([id,source,title])=>({id,source,providerSessionId:id.split(":")[1],cwd:boot.cwd,title,preview:title,alreadyImported:imported.has(id)}))}});
+    const ids=route.request().postDataJSON().sessionIds;posts.push(ids);
+    const results=ids.map(id=>reasons[id]?{id,source:id.split(":")[0],status:"error",error:reasons[id]}:(imported.add(id),{id,source:id.split(":")[0],status:"imported",threadId:"imported-"+id}));
+    return route.fulfill({json:{ok:false,results,projects:[]}});
+  });
+  try{
+    await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:false,agentRuntime:"codex"}});
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const onboarding=page.getByTestId("onboarding"),step=onboarding.locator(".onboarding-history-step"),message=step.getByRole("status");
+    for(const mode of ["dark","light"]){
+      imported.clear();await switchModeUnderSetup(page,request,mode);
+      await expect(step).toContainText("4 recent conversations can be copied into Trebell.");
+      await step.getByRole("button",{name:"Import history",exact:true}).click();
+      await expect(message).toHaveText("Imported 1 conversation. “Draft the release notes” could not be imported: Session file is truncated (line 212 is not JSON). “Port the CLI to Rust” and “Write the docs site” could not be imported: Local Codex app-server is not available.");
+      await expect(message).not.toHaveClass(/error/);
+      await expect(step).toContainText("3 recent conversations can be copied into Trebell.");
+      expect(posts.at(-1)).toEqual(["claude:login","claude:notes","codex:cli","codex:docs"]);
+      await shootSetup(page,"history-import-partial",mode);
+      // A retry tries only the three that are left, and says again what failed and why.
+      await step.getByRole("button",{name:"Import history",exact:true}).click();
+      await expect(message).toHaveText("“Draft the release notes” could not be imported: Session file is truncated (line 212 is not JSON). “Port the CLI to Rust” and “Write the docs site” could not be imported: Local Codex app-server is not available.");
+      await expect(message).toHaveClass(/error/);
+      expect(posts.at(-1)).toEqual(["claude:notes","codex:cli","codex:docs"]);
+      await shootSetup(page,"history-import-retry-failed",mode);
+    }
+  }finally{
+    await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:true,agentRuntime:"codex"}});
+  }
+});
+
 // Finish setup is disabled while it saves; when the save failed, the keyboard was left on the page body, outside the dialog. It stays
 // on Finish setup, so Enter tries again. The history scan is answered here, so no real local history is read.
 test("a Finish setup that fails leaves the keyboard on Finish setup in the dialog",async({page,request})=>{
