@@ -224,6 +224,31 @@ test("files attached in a question go with its answer only, and its 100-file cap
   }finally{await harness.close()}
 });
 
+// A question's pick where one file is refused for its size (an image over 10 MB) keeps the file it took, as the composer does: that
+// file goes with the answer, the refusal is said in the question, and nothing goes to the composer's shelf.
+test("a question keeps the file it took from a pick where another file is refused for its size, and says what it refused",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const uploads=[];page.on("request",request=>{if(/\/api\/attachments\/blob$/.test(request.url()))uploads.push(request.url())});
+    const modal=page.locator(".question-modal");
+    const asked=harness.ask("item/tool/requestUserInput",{threadId:RELEASE.id,turnId:"turn-release",itemId:"q-refused",questions:[{id:"evidence",header:"Evidence",question:"Attach the failing logs?",options:[],allowMultiple:false}]});
+    await expect(modal).toContainText("Attach the failing logs?");
+    const [chooser]=await Promise.all([page.waitForEvent("filechooser"),modal.getByRole("button",{name:"Attach files"}).click()]);
+    await chooser.setFiles([textFile("build.log","build failed"),{name:"screen.png",mimeType:"image/png",buffer:Buffer.alloc(11*1024*1024,1)}]);
+    await expect(modal.locator(".inline-error")).toHaveText("Could not attach files: screen.png: Image is larger than 10 MB",{timeout:15_000});
+    await expect(modal.locator(".question-files span")).toHaveCount(1);await expect(modal.locator(".question-files")).toContainText("build");
+    await expect(modal).toContainText("1/100 attached");
+    expect(uploads).toHaveLength(1);
+    await expect(page.locator(".attachment-shelf span")).toHaveCount(0);
+    await shoot(page,"question-file-refused-for-size");
+    await modal.getByRole("button",{name:"Submit",exact:true}).click();
+    expect((await asked.answered).answers.evidence.answers[0]).toMatch(/^Attached files:\n- .*build\.log$/);
+  }finally{await harness.close()}
+});
+
 // A double click whose pointer moves a few pixels between its clicks is two single clicks to the browser (detail 1 each), as Windows
 // makes it when the pointer leaves its double-click rectangle: the second still lands on the next card, which came up under the
 // pointer, and is not taken for it.

@@ -56,17 +56,21 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
   // A part is answered by a choice, words of the person's own or a file. Submit waits for every part (one the harness marks optional
   // excepted), since an empty answer would go to the agent as if it were the person's.
   const unanswered=questions.some(q=>q.required!==false&&!(answers[q.id]||[]).some(value=>String(value).trim())&&!(filesByQuestion[q.id]||[]).length);
+  // The files a pick uploads go with this question's answer as they are taken (keep), so one refused from the same pick (too large,
+  // an upload that failed) is said beside the files that did go, as the composer keeps what it took.
   async function attach(questionId){
     if(fileCount>=100)return;
     setBusy(questionId);setAttachError("");
-    try{
-      const picked=await pickFiles?.(Math.max(0,100-fileCount));if(!picked?.length)return;
+    const keep=picked=>{
+      if(!picked?.length)return;
       setFilesByQuestion(prev=>{
         const room=Math.max(0,100-Object.values(prev).reduce((sum,items)=>sum+(items?.length||0),0));
         const next=[...new Set([...(prev[questionId]||[]),...picked.slice(0,room)])];
         return {...prev,[questionId]:next};
       });
-    }catch(error){setAttachError("Could not attach files: "+(error?.message||String(error)))}
+    };
+    try{await pickFiles?.(Math.max(0,100-fileCount),keep)}
+    catch(error){setAttachError("Could not attach files: "+(error?.message||String(error)))}
     finally{setBusy("")}
   }
   async function cancel(event){
