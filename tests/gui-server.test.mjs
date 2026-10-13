@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { WebSocket } from "ws";
 import { codexHistoryImportStatus, createGuiServer, offlineE2eFetch, requestAbortController } from "../src/gui-server.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
@@ -566,6 +567,39 @@ test("a configured Codex app-server port another program holds is refused with w
     AgentRuntimeManager.prototype.probe=originalProbe;
     if(gui)await gui.close();
     await new Promise(resolve=>holder.close(()=>resolve()));
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+const waitFor=async(check,timeoutMs)=>{for(const deadline=Date.now()+timeoutMs;!check()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,25));return check()};
+
+// A crash by SIGSEGV or SIGABRT, or the OOM killer, on macOS and Linux leaves the child with exitCode null and signalCode set; such a
+// catalog app-server is started again by the next connection, not reused. The state is made as there: the launcher is killed by a
+// signal through its ChildProcess (Windows records the signal the same way), and the app-server it started is ended.
+test("a catalog Codex app-server that died by a signal is started again by the next connection",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
+  const {home,env,starts}=await fakeCodexHome("trebell-codex-signal-death-");
+  const originalProbe=AgentRuntimeManager.prototype.probe;AgentRuntimeManager.prototype.probe=availableProbe;
+  const childProcess=createRequire(import.meta.url)("node:child_process"),realSpawn=childProcess.spawn,launches=[];
+  childProcess.spawn=function(...args){const child=realSpawn.apply(this,args);launches.push({args,child});return child};syncBuiltinESMExports();
+  let gui=null,first=null,second=null;
+  try{
+    gui=await createGuiServer({port:await freePort(),mock:false,env});
+    first=await codexInitialize(gui);assert.match(String(first.answer.result?.userAgent),/^fake-codex\//);
+    const [boot]=await starts(),launcher=launches.find(entry=>(entry.args[1]||[]).includes("app-server"))?.child;assert.ok(launcher,"the app-server launch was seen");
+    launcher.kill("SIGKILL");
+    assert.ok(await waitFor(()=>launcher.signalCode!==null,5000));assert.equal(launcher.exitCode,null);
+    const closed=new Promise(resolve=>first.ws.once("close",resolve));try{process.kill(boot.pid)}catch{}await closed;
+    for(const deadline=Date.now()+10_000;Date.now()<deadline;){
+      second=await codexInitialize(gui);if(second.answer.result)break;
+      second.ws.terminate();await new Promise(resolve=>setTimeout(resolve,250));
+    }
+    assert.match(String(second.answer.result?.userAgent),/^fake-codex\//,"the next connection reaches a Codex app-server started again: "+JSON.stringify(second.answer));
+    assert.equal((await starts()).length,2);
+  }finally{
+    childProcess.spawn=realSpawn;syncBuiltinESMExports();
+    for(const socket of [first?.ws,second?.ws])try{socket?.terminate()}catch{}
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    if(gui)await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
 });

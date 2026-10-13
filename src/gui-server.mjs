@@ -213,8 +213,11 @@ function openBrowser(url){
   child.unref();
 }
 
+// A child killed by a signal (a crash by SIGSEGV or SIGABRT, the OOM killer, kill()) has ended with exitCode still null: its
+// signalCode says so.
+function childEnded(child){return Boolean(child&&(child.exitCode!==null||child.signalCode!==null))}
 async function waitForChildExit(child,timeoutMs=3000){
-  if(!child || child.exitCode!==null) return;
+  if(!child || childEnded(child)) return;
   await Promise.race([
     new Promise(resolve=>{
       const done=()=>resolve();
@@ -242,7 +245,7 @@ async function freeTcpPort(){
 }
 
 async function stopChildProcess(child){
-  if(!child || child.exitCode!==null) return;
+  if(!child || childEnded(child)) return;
   const pid=child.pid;
   try{
     if(process.platform==="win32" && pid){
@@ -256,7 +259,7 @@ async function stopChildProcess(child){
     }else{
       child.kill("SIGTERM");
       await waitForChildExit(child,1500);
-      if(child.exitCode===null){
+      if(!childEnded(child)){
         child.kill("SIGKILL");
         await waitForChildExit(child,1500);
       }
@@ -1043,7 +1046,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   async function ensureCodexAppServer(instanceId=null,{environmentId=state.settings().activeEnvironmentId||null,preferredPort=null,ownerKey="catalog"}={}){
     const instance=codexInstance(instanceId);if(!instance)throw new Error("Codex runtime profile was not found");
     const key=codexPoolKey(ownerKey,instance.id,environmentId);const current=codexAppServers.get(key);
-    if(current&&(mock||(!current.error&&current.child?.exitCode===null)))return current;
+    if(current&&(mock||(!current.error&&current.child&&!childEnded(current.child))))return current;
     if(codexAppServerStarts.has(key))return codexAppServerStarts.get(key);
     const starting=(async()=>{
       if(current){await stopAppServer(current);codexAppServers.delete(key)}
@@ -3141,7 +3144,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       server=await ensureCodexAppServer(instance.id,{environmentId,ownerKey:`start:${String(message.id??randomUUID())}`});
     }else if(threadId){
       const existingKey=codexThreadServerKeys.get(threadId);const existing=existingKey?codexAppServers.get(existingKey):null;
-      if(existing&&(mock||(!existing.error&&existing.child?.exitCode===null)))server=existing;
+      if(existing&&(mock||(!existing.error&&existing.child&&!childEnded(existing.child))))server=existing;
       else{
         server=await ensureCodexAppServer(instance.id,{environmentId,ownerKey:`thread:${threadId}`});
         codexThreadServerKeys.set(threadId,server.poolKey);
