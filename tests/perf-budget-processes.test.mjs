@@ -224,6 +224,25 @@ test("B6: a warm poll of a linked worktree starts one git process and leaves the
   }finally{await rm(linked,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
+// git worktree move (and repair) writes the worktree's new path into its gitdir file in place. The Source Control panel lists the
+// worktrees a poll answers and acts on their paths.
+test("B6: a worktree moved outside Trebell is listed at its new path at the next poll",{timeout:60_000},async()=>{
+  const dir=await fixtureRepository("trebell-git-moved-"),linked=dir+"-linked",moved=dir+"-moved";
+  const names=info=>info.worktrees.map(item=>item.path.replace(/\\/g,"/").split("/").pop());
+  try{
+    await git(dir,["worktree","add","-q","-b","side",linked]);
+    await gitInfo(dir);const {calls,gitFn}=countingGit();await gitInfo(dir,{gitFn});assert.equal(calls.length,1,"the poll is warm");
+    // Windows refuses to rename a folder while another process (a virus scan) still has a file in it open.
+    let move;for(let attempt=0;attempt<10;attempt++){move=await git(dir,["worktree","move",linked,moved],{allowFailure:true});if(move.ok)break;await new Promise(resolve=>setTimeout(resolve,200))}
+    assert.ok(move.ok,move.stderr);
+    const polled=await gitInfo(dir);
+    assert.deepEqual(names(polled),[dir,moved].map(path=>path.replace(/\\/g,"/").split("/").pop()));
+    assert.deepEqual(polled,await gitInfo(dir,{fresh:true}));
+  }finally{
+    for(const path of [moved,linked,dir])await rm(path,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
+});
+
 // A checkpoint's tree as create() recorded it before it reused the repository's index: a fresh index read from HEAD, then add -A.
 async function treeFromHead(repo,exclusions=[]){
   const env={...process.env,GIT_INDEX_FILE:repo+"-from-head-index"};
