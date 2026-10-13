@@ -1,6 +1,10 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
+import { WebSocketServer } from "ws";
+import { attachCodexRelay } from "../../src/codex-relay.mjs";
+import { keepThreadMeta } from "./test-home.js";
 
 // Removals that lose what a person set up ask first, in the app's own dialog: Cancel (or Escape) changes nothing, and the dialog's
 // own button removes. Used the way a person uses them: real clicks and keys, with the requests the page sends counted.
@@ -67,4 +71,136 @@ test("Remove on a runtime profile asks first, and Cancel or Escape keeps the pro
   await expect(card).toContainText("Runtime profile removed.");
   expect(deletes).toEqual(["codex-spare"]);
   await shootModes(page,"runtime-profile-removed");
+});
+
+test("Remove on an MCP server asks first, and Cancel keeps the server",async({page})=>{
+  test.setTimeout(45_000);
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",activeEnvironmentId:null,
+    mcpServers:[{id:"mcp-workspace-tools",name:"Workspace tools",runtime:"native",environmentId:null,enabled:true,type:"stdio",command:"workspace-mcp",args:["--stdio"],env:[]}]};
+  const posts=[];
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:true,provider:"openai",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:true,wsUrl:null,cwd:process.cwd(),platform:process.platform,version:"removal-confirmations-fixture",runtimeCapabilities:{mcpInjection:true,dynamicTools:true}}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
+  await page.route(/\/api\/settings$/,route=>{
+    if(route.request().method()==="POST"){const patch=route.request().postDataJSON()||{};posts.push(patch);settings={...settings,...patch}}
+    return json(route,settings);
+  });
+  await page.route(/\/api\/agent-runtimes$/,route=>json(route,{selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native",capabilities:{mcpInjection:true,dynamicTools:true}}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[{id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true,version:"built-in"}]}));
+  await page.route(/\/api\/providers$/,route=>json(route,{ready:true,providers:[{id:"openai",name:"OpenAI API",official:true,ready:true}]}));
+  await page.route(/\/api\/models$/,route=>json(route,{models:["gpt-5.6"],metadata:{provider:"openai",models:[{id:"gpt-5.6",name:"GPT-5.6"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  await page.route(/\/api\/runtime$/,route=>json(route,{agentRuntime:"native",agentRuntimeStatus:{available:true}}));
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.locator(".settings-nav").getByRole("button",{name:/Agents & models/}).click();
+  const card=page.locator('[data-setting-target="agents-mcp"]'),server=card.locator(".custom-model-list>div").filter({hasText:"Workspace tools"});
+  const remove=server.getByRole("button",{name:"Remove",exact:true});
+  await remove.scrollIntoViewIfNeeded();await remove.click();
+  await expect(question(page)).toBeVisible();
+  await expect(question(page).locator("p")).toHaveText("Remove the MCP server “Workspace tools”? This cannot be undone: its command and settings are lost.");
+  await expect(question(page).getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+  await shootModes(page,"mcp-server-remove-question");
+  await question(page).getByRole("button",{name:"Cancel",exact:true}).click();
+  await expect(question(page)).toHaveCount(0);
+  await expect(server).toBeVisible();
+  await expect(remove).toBeFocused();
+  expect(posts,"Cancel saves nothing").toEqual([]);
+  await remove.click();
+  await question(page).getByRole("button",{name:"Remove server",exact:true}).click();
+  await expect(server).toHaveCount(0);
+  await expect(card).toContainText("MCP server removed.");
+  expect(posts).toEqual([{mcpServers:[]}]);
+});
+
+test("Delete on a project action asks first, and Cancel keeps the action",async({page,request})=>{
+  test.setTimeout(45_000);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const action=(id,name,command)=>({id,name,command,previewUrl:null,autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false});
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Confirm Actions Workspace",activate:true,scripts:[action("dev-server","Dev server","npm run dev"),action("unit-tests","Unit tests","npm test")],preferredScriptId:"dev-server"}});
+  const savedActions=async()=>((await (await request.get("/api/projects")).json()).projects||[]).find(project=>project.path===boot.cwd&&!project.environmentId)?.scripts?.map(script=>script.name)||[];
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"Projects",exact:true}).click();
+    const actions=page.locator(".project-card.active .project-actions"),row=actions.locator(".project-action-row").filter({has:page.locator("strong",{hasText:/^Dev server$/})});
+    const trash=row.getByRole("button",{name:"Delete action",exact:true});
+    await trash.scrollIntoViewIfNeeded();await trash.click();
+    await expect(question(page)).toBeVisible();
+    await expect(question(page).locator("p")).toHaveText("Delete the action “Dev server”? This cannot be undone: its command and settings are lost.");
+    await expect(question(page).getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+    await shootModes(page,"project-action-delete-question");
+    await question(page).getByRole("button",{name:"Cancel",exact:true}).click();
+    await expect(question(page)).toHaveCount(0);
+    await expect(row).toBeVisible();
+    expect(await savedActions(),"Cancel deletes nothing").toEqual(["Dev server","Unit tests"]);
+    await trash.click();
+    await question(page).getByRole("button",{name:"Delete action",exact:true}).click();
+    await expect(row).toHaveCount(0);
+    await expect(actions.locator(".project-action-row").filter({hasText:"Unit tests"})).toBeVisible();
+    await expect.poll(savedActions).toEqual(["Unit tests"]);
+  }finally{
+    await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}});
+  }
+});
+
+async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+
+test("Delete share on a shared plugin asks first, and Cancel keeps the share",async({page})=>{
+  test.setTimeout(45_000);
+  const thread={id:"share-fixture",name:"Share fixture",preview:"Shared plugins",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  let shared=[{plugin:{id:"weather@official",name:"weather",remotePluginId:"remote-weather",version:"1.2.3",shareContext:{remotePluginId:"remote-weather",creatorName:"Trebell Labs",discoverability:"PRIVATE",sharePrincipals:[]}},localPluginPath:"C:/plugins/weather"}];
+  const deletes=[];
+  // A Codex app-server stand-in behind the real Codex relay: one thread and one shared plugin; every other list is empty.
+  const upstreamHttp=createServer(),upstreamWss=new WebSocketServer({noServer:true}),sockets=new Set();
+  upstreamHttp.on("upgrade",(req,raw,head)=>upstreamWss.handleUpgrade(req,raw,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;let result={};
+      if(message.method==="initialize")result={userAgent:"share-fixture"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/resume"||message.method==="thread/read")result={thread};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
+      else if(message.method==="plugin/list")result={marketplaces:[],marketplaceLoadErrors:[],featuredPluginIds:[]};
+      else if(message.method==="plugin/share/list")result={data:shared};
+      else if(message.method==="plugin/share/delete"){deletes.push(message.params);shared=shared.filter(item=>item.plugin.remotePluginId!==message.params?.remotePluginId)}
+      else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
+      else if(/\/list$/.test(message.method))result={data:[],nextCursor:null};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  try{
+    await keepThreadMeta(page);
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"share-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}}));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.goto("/");
+    await page.getByRole("button",{name:/Share fixture/}).click();
+    await expect(page.getByRole("heading",{name:"What do you want to think through?"})).toBeVisible();
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"Tools",exact:true}).click();
+    const share=page.locator(".shared-plugin-list>div").filter({has:page.locator("strong",{hasText:/^weather$/})}),remove=share.getByRole("button",{name:"Delete share",exact:true});
+    await remove.scrollIntoViewIfNeeded();await remove.click();
+    await expect(question(page)).toBeVisible();
+    await expect(question(page).locator("p")).toHaveText("Delete the share of “weather”? Everyone it was shared with loses it, and this cannot be undone.");
+    await expect(question(page).getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+    await shootModes(page,"plugin-share-delete-question");
+    await question(page).getByRole("button",{name:"Cancel",exact:true}).click();
+    await expect(question(page)).toHaveCount(0);
+    await expect(share).toBeVisible();
+    expect(deletes,"Cancel deletes nothing").toEqual([]);
+    await remove.click();
+    await question(page).getByRole("button",{name:"Delete share",exact:true}).click();
+    await expect(share).toHaveCount(0);
+    expect(deletes).toEqual([{remotePluginId:"remote-weather"}]);
+  }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

@@ -404,7 +404,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     try{await save({mcpServers:(settings.mcpServers||[]).map(item=>item.id===server.id?{...item,enabled:item.enabled===false}:item)});setMcpMessage(mcpSavedMessage(server.enabled===false?"enabled":"disabled"))}
     catch(error){setMcpMessage(error?.message||String(error))}
   }
+  // A removed server cannot be brought back from here, so Remove asks first, in the app's dialog; Cancel keeps it.
   async function removeMcpServer(server){
+    if(!await askConfirm(`Remove the MCP server “${server.name}”? This cannot be undone: its ${server.type==="http"?"URL":"command"} and settings are lost.`,{confirm:"Remove server"}))return;
     setMcpMessage("");
     try{await save({mcpServers:(settings.mcpServers||[]).filter(item=>item.id!==server.id)});setMcpDraft(current=>current?.id===server.id?null:current);setMcpMessage(mcpSavedMessage("removed"))}
     catch(error){setMcpMessage(error?.message||String(error))}

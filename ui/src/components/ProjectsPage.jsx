@@ -433,9 +433,13 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     if(saved)setEditor(null);
   }
 
+  // A deleted action cannot be brought back, so Delete asks first, in the app's dialog; Cancel keeps it. The list saved without it is
+  // the card's as it is once the person answers.
   async function deleteScript(project,id){
-    const scripts=project.scripts.filter(script=>script.id!==id);
-    const saved=await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId===id?(scripts[0]?.id||null):project.preferredScriptId},"action:"+id);
+    const name=(project.scripts||[]).find(script=>script.id===id)?.name||"Project action";
+    if(!await askConfirm(`Delete the action “${name}”? This cannot be undone: its command and settings are lost.`,{confirm:"Delete action"}))return;
+    const current=latestProject(project),scripts=(current.scripts||[]).filter(script=>script.id!==id);
+    const saved=await saveProject(current,{scripts,preferredScriptId:current.preferredScriptId===id?(scripts[0]?.id||null):current.preferredScriptId},"action:"+id);
     if(saved&&editor?.projectId===project.id&&editor?.id===id)setEditor(null);
   }
 

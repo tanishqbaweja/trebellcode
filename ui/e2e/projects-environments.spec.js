@@ -1061,6 +1061,7 @@ test.describe("A card's failures",()=>{
       await shootModes(page,"card-run-refused-many-actions",{show:refusal});
       await page.route(/\/api\/projects$/,route=>route.request().method()==="POST"&&route.request().postDataJSON()?.scripts?json(route,{error:"Deliberate action delete failure"},500):route.fallback());
       await row.getByRole("button",{name:"Delete action",exact:true}).click();
+      await page.locator("dialog.inspector-text-prompt").getByRole("button",{name:"Delete action",exact:true}).click();
       const deleteFailure=actions.getByRole("alert").filter({hasText:"Deliberate action delete failure"});
       await expect(deleteFailure).toBeInViewport();
       await expect(refusal).toHaveCount(0);

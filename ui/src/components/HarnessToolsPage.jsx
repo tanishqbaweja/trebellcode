@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { agentName, countLabel, failureText, humanizeIdentifier, importFailures, importResultSummary, listCount, mcpAuthLabel } from "../display-labels.js";
 import { formatBytes } from "../format-bytes.js";
 import { allowedWindowsSetupModes, windowsSandboxStatus, worldWritableWarningText } from "../windows-sandbox.js";
+import { askConfirm } from "./RightPanel.jsx";
 
 // What each runtime read on this page loads, so its error line names what could not be loaded before the reason Codex gave.
 const LOAD_FAILURES={
@@ -365,8 +366,12 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     try{await request("plugin/share/checkout",{remotePluginId});await refresh()}
     catch(error){setErrors(prev=>({...prev,"plugin/share/checkout":failureText("Could not check out "+pluginLabel(item.plugin),error)}))}finally{setBusy("")}
   }
+  // A deleted share is gone from the account for everyone it was shared with, so Delete share asks first, in the app's dialog.
   async function deleteSharedPlugin(item){
-    const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("delete-share:"+remotePluginId);
+    const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;
+    const named=pluginLabel(item.plugin)!=="the plugin"?`“${pluginLabel(item.plugin)}”`:"this plugin";
+    if(!await askConfirm(`Delete the share of ${named}? Everyone it was shared with loses it, and this cannot be undone.`,{confirm:"Delete share"}))return;
+    setBusy("delete-share:"+remotePluginId);
     try{await request("plugin/share/delete",{remotePluginId});await refresh()}
     catch(error){setErrors(prev=>({...prev,"plugin/share/delete":failureText("Could not delete the share of "+pluginLabel(item.plugin),error)}))}finally{setBusy("")}
   }
