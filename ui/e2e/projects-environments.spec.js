@@ -528,6 +528,31 @@ test.describe("Using an environment for agents",()=>{
     await expect(dead.getByText("Agent active",{exact:true})).toHaveCount(0);
     expect(await server()).toBe(null);
   });
+  // A host that takes the connection and never answers, where ssh waits 8 s before it gives up: the page says it is checking the
+  // host from the click on, while every button waits, and then that it could not use it.
+  test("Use for agent on a host that never answers says it is checking while the person waits",async({page,request})=>{
+    test.setTimeout(60_000);
+    const held=[],silent=createServer(socket=>{held.push(socket);socket.on("error",()=>{})});
+    await new Promise((resolve,reject)=>silent.listen(0,"127.0.0.1",resolve).once("error",reject));
+    try{
+      await open(page,request);
+      expect((await request.post("/api/environments",{data:{id:"polish-silent-host",type:"ssh",name:"Silent host",host:"127.0.0.1",port:silent.address().port,cwd:"/srv/app"}})).ok()).toBe(true);
+      await nav(page,"Environments").click();
+      const use=page.locator(".environment-list>div").filter({hasText:"Silent host"}).getByRole("button",{name:"Use for agent",exact:true});
+      await use.click();
+      const checking=page.locator(".environments-page").getByRole("status").filter({hasText:"Checking Silent host…"});
+      await expect(checking).toBeVisible();
+      await expect(use).toBeDisabled();
+      await shootModes(page,"environment-checking-host");
+      await expect(checking,"still checking while ssh waits for the host").toBeVisible();
+      await expect(page.locator(".environments-page").getByRole("alert")).toContainText("Could not use Silent host for agents",{timeout:30_000});
+      await expect(checking).toHaveCount(0);
+      expect((await (await request.get("/api/environments")).json()).activeEnvironmentId).toBe(null);
+    }finally{
+      for(const socket of held)socket.destroy();
+      await new Promise(resolve=>silent.close(resolve));
+    }
+  });
 });
 
 test.describe("A project list that failed or is still loading",()=>{

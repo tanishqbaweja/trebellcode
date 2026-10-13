@@ -72,10 +72,11 @@ export default function EnvironmentsPage({onOfferUndo}={}){
     }catch(e){setError(e.message)}finally{setBusy("")}
   }
   // A switch the runtime cannot run in fails with an error status and leaves the active environment as it was, so the message
-  // names the environment that was not used.
+  // names the environment that was not used. A host is checked first, which takes seconds when it does not answer (ssh waits 8 s
+  // for it), so the page says so right away.
   async function activate(id){
-    setBusy("activate:"+(id||"local"));setMessage("");
     const name=id?(data.profiles.find(profile=>profile.id===id)?.name||"this environment"):"Local machine";
+    setBusy("activate:"+(id||"local"));setMessage(id?`Checking ${name}…`:`Switching to ${name}…`);
     try{
       const result=await api("/api/environment/activate",{method:"POST",body:{id:id||null}});
       const labels={native:"Trebell Native",codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"};
