@@ -1,5 +1,6 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { HelpCircle, Paperclip, X } from "lucide-react";
+import { answeringClick } from "../approval-utils.js";
 
 // Modal focus: move focus into the dialog when it opens and keep Tab/Shift+Tab inside it, so keyboard users cannot
 // reach (and activate) controls behind the backdrop. Focus that sits inside another open modal is left alone, the questions the
@@ -45,16 +46,9 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
   const [submitError,setSubmitError]=useState("");
   const [attachError,setAttachError]=useState("");
   const dialogRef=useRef(null);
-  // App swaps in a newer question without remounting this modal. Start it from a clean slate instead of carrying the
-  // previous question's choices and attachments over (they were shown, counted and submitted for the wrong question).
-  const [shownRequest,setShownRequest]=useState(request);
-  if(shownRequest!==request){
-    setShownRequest(request);
-    setAnswers(Object.fromEntries(questions.map(q=>[q.id,[]])));
-    setFilesByQuestion(Object.fromEntries(questions.map(q=>[q.id,[]])));
-    setSubmitError("");setAttachError("");
-  }
-  useEffect(()=>{dialogRef.current?.scrollTo?.(0,0)},[request]);
+  // Each question gets a modal of its own (App keys it by the request), so the next one starts from a clean slate and with the focus
+  // on the dialog, not on the button that answered the one before: a second Enter, or the second click of a double click
+  // (answeringClick), answers nothing.
   useEffect(()=>{if(submitError||attachError)dialogRef.current?.querySelector(".inline-error")?.scrollIntoView?.({block:"nearest"})},[submitError,attachError]);
   useModalFocus(dialogRef,Boolean(request));
   if(!request)return null;
@@ -75,8 +69,8 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
     }catch(error){setAttachError("Could not attach files: "+(error?.message||String(error)))}
     finally{setBusy("")}
   }
-  async function cancel(){
-    if(busy)return;
+  async function cancel(event){
+    if(busy||!answeringClick(event))return;
     setAttachError("");setSubmitError("");setBusy("cancel");
     try{await onCancel?.()}
     catch(error){setSubmitError(error?.message||String(error))}
@@ -105,6 +99,6 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
     </div>)}
     {attachError&&<div className="inline-error" role="alert">{attachError}</div>}
     {submitError&&<div className="inline-error" role="alert">{submitError}</div>}
-    <div className="modal-actions"><span>{[fileCount?`${fileCount}/100 attached`:"",waiting>0?`${waiting} more waiting`:""].filter(Boolean).join(" · ")}</span><button className="tb-btn" onClick={cancel} disabled={Boolean(busy)}>{busy==="cancel"?"Cancelling…":"Cancel"}</button><button className="tb-btn tb-btn--primary primary" disabled={Boolean(busy)||unanswered} title={unanswered?"Answer every question to submit":undefined} onClick={async()=>{setAttachError("");setSubmitError("");setBusy("submit");try{await onSubmit(answers,filesByQuestion)}catch(error){setSubmitError(error?.message||String(error))}finally{setBusy("")}}}>{busy==="submit"?"Submitting…":"Submit"}</button></div>
+    <div className="modal-actions"><span>{[fileCount?`${fileCount}/100 attached`:"",waiting>0?`${waiting} more waiting`:""].filter(Boolean).join(" · ")}</span><button className="tb-btn" onClick={cancel} disabled={Boolean(busy)}>{busy==="cancel"?"Cancelling…":"Cancel"}</button><button className="tb-btn tb-btn--primary primary" disabled={Boolean(busy)||unanswered} title={unanswered?"Answer every question to submit":undefined} onClick={async event=>{if(!answeringClick(event))return;setAttachError("");setSubmitError("");setBusy("submit");try{await onSubmit(answers,filesByQuestion)}catch(error){setSubmitError(error?.message||String(error))}finally{setBusy("")}}}>{busy==="submit"?"Submitting…":"Submit"}</button></div>
   </div></div>;
 }

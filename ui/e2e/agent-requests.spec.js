@@ -248,3 +248,38 @@ test("a double click on Allow once that moves a few pixels approves only the car
     expect(await second.answered).toEqual({decision:"accept"});
   }finally{await harness.close()}
 });
+
+// Each question gets a modal of its own: a double click on Cancel, or Enter pressed twice on it, dismisses the question shown, and the
+// next one, from this thread or another, waits for the person.
+test("a double click or Enter pressed twice on a question's Cancel dismisses only that question, and the next waits for the person",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const modal=page.locator(".question-modal");
+    const question=(threadId,itemId,id,text,labels)=>harness.ask("item/tool/requestUserInput",{threadId,turnId:"turn-"+threadId,itemId,questions:[{id,header:id,question:text,options:labels.map(label=>({label})),allowMultiple:false}]});
+    const first=question(RELEASE.id,"q-env","env","Which environment should I deploy to?",["dev","staging"]);
+    await expect(modal).toContainText("Which environment should I deploy to?");
+    const second=question(RELEASE.id,"q-region","region","Which region should I deploy to?",["eu","us"]);
+    await expect(modal).toContainText("1 more waiting");
+    await modal.getByRole("button",{name:"Cancel",exact:true}).dblclick({delay:20});
+    expect(await first.answered).toEqual({answers:{}});
+    await expect(modal).toContainText("Which region should I deploy to?");
+    await page.waitForTimeout(600);
+    expect(harness.answersTo(second),"the second click of the double click dismissed the next question unseen").toHaveLength(0);
+    // From the keyboard: Tab to Cancel and press Enter twice; the next question, from another thread, keeps waiting.
+    const third=question(DEPLOY.id,"q-port","port","Which port should the server use?",["8080","3000"]);
+    await expect(modal).toContainText("1 more waiting");
+    for(let index=0;index<20&&await page.evaluate(()=>document.activeElement?.textContent?.trim())!=="Cancel";index++)await page.keyboard.press("Tab");
+    expect(await page.evaluate(()=>document.activeElement?.textContent?.trim())).toBe("Cancel");
+    await page.keyboard.press("Enter");await page.waitForTimeout(80);await page.keyboard.press("Enter");
+    expect(await second.answered).toEqual({answers:{}});
+    await expect(modal).toContainText("Which port should the server use?");await expect(modal.getByTestId("question-thread")).toHaveText("Waiting in Deploy notes");
+    await page.waitForTimeout(600);
+    expect(harness.answersTo(third),"the second Enter dismissed the next question, from another thread, unseen").toHaveLength(0);
+    await modal.getByRole("button",{name:"8080",exact:true}).click();await modal.getByRole("button",{name:"Submit",exact:true}).click();
+    expect(await third.answered).toEqual({answers:{port:{answers:["8080"]}}});
+    await expect(modal).toHaveCount(0);
+  }finally{await harness.close()}
+});
