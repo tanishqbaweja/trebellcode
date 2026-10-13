@@ -606,6 +606,23 @@ test("a local harness's version check is kept until its binary changes, and a fr
     assert.deepEqual(calls,["--version","models","models","--version","models","--version","models"]);
   }finally{await rm(home,{recursive:true,force:true})}
 });
+// npm i -g or the harness's own updater replaces the binary; Settings polls /api/runtime every 5 s, which probes without fresh.
+test("a probe answer is asked again once the local binary changes, so a harness upgraded outside Trebell shows its new version",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-probe-upgrade-")),binary=join(home,"grok");
+  try{
+    await writeFile(binary,"build 1");
+    const calls=[];let clock=0,version="grok 1.2.0";
+    const runFn=async(_command,args)=>{calls.push(args[0]);return {ok:true,code:0,error:null,stdout:args[0]==="models"?"You are logged in\n":version+"\n",stderr:""}};
+    const state={settings:()=>({agentRuntimeInstances:[{id:"grok-default",kind:"grok",binaryPath:binary}]})};
+    const manager=new AgentRuntimeManager({state,platform:"linux",env:{PATH:"/usr/bin",HOME:home},now:()=>clock,runFn});
+    assert.equal((await manager.probe("grok")).version,"grok 1.2.0");
+    clock+=5000;await manager.probe("grok");assert.deepEqual(calls,["--version","models"],"an unchanged binary's answer is reused");
+    await writeFile(binary,"build 2, a newer one");version="grok 1.3.0";clock+=5000;
+    assert.equal((await manager.probe("grok")).version,"grok 1.3.0");
+    clock+=5000;await manager.probe("grok");
+    assert.deepEqual(calls,["--version","models","--version","models"],"the new binary's answer is reused in turn");
+  }finally{await rm(home,{recursive:true,force:true})}
+});
 
 // The relay probes before it starts a harness session (ensureSession) and refuses the chat on an answer that cannot run, with the
 // harness's own advice ("Run `claude auth login` and try again"); that answer must not outlive a sign-in the person then makes.

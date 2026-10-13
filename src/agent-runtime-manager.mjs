@@ -153,6 +153,8 @@ export function commandOnPath(command,{env=process.env,platform=process.platform
   for(const folder of String(env?.PATH||"").split(windows?";":":").filter(Boolean))for(const candidate of named(paths.join(folder,value)))if(exists(candidate))return candidate;
   return null;
 }
+// A local binary's files (its path, modification time and size) as a version check or a probe answer saw them; null for none.
+const binarySignature=paths=>paths?.length?JSON.stringify(paths.map(path=>{try{const info=statSync(path);return [path,info.mtimeMs,info.size]}catch{return [path,null]}})):null;
 // Who installed the OpenCode at a real path, judged from the path as T3 Code judges an update (openCodeUpdateFor): OpenCode's own
 // installer keeps it in ~/.opencode/bin and updates it with `opencode upgrade`; npm keeps a global opencode-ai in
 // <prefix>/node_modules/opencode-ai beside its opencode shims on Windows, and in <prefix>/lib/node_modules/opencode-ai elsewhere. Any
@@ -603,11 +605,14 @@ export class AgentRuntimeManager{
     if(!fresh&&cached?.pending){
       const value=await cached.pending;if(value?.available)return structuredClone(value);
       const next=this.#probes.get(key);if(next?.pending&&next.pending!==cached.pending)return structuredClone(await next.pending);
-    }else if(!fresh&&cached&&this.now()-cached.at<PROBE_REUSE_MS)return structuredClone(cached.value);
+    }else if(!fresh&&cached&&this.now()-cached.at<PROBE_REUSE_MS&&binarySignature(cached.binary)===cached.signature)return structuredClone(cached.value);
+    // A local binary replaced since (npm i -g, the harness's own updater) makes its version check due, so its answer is not kept
+    // past that either. Read before the probe runs, so a binary replaced while it runs makes the next caller ask again.
+    const binary=this.#binaryPaths(instance,environmentId),signature=binarySignature(binary);
     const pending=this.#probeNow(instance,{environmentId,fresh});this.#probes.set(key,{pending});
     try{
       const value=await pending;
-      if(this.#probes.get(key)?.pending===pending){if(value?.available)this.#probes.set(key,{at:this.now(),value});else this.#probes.delete(key)}
+      if(this.#probes.get(key)?.pending===pending){if(value?.available)this.#probes.set(key,{at:this.now(),value,binary,signature});else this.#probes.delete(key)}
       return structuredClone(value);
     }catch(error){
       if(this.#probes.get(key)?.pending===pending)this.#probes.delete(key);
@@ -618,11 +623,13 @@ export class AgentRuntimeManager{
   // A local binary's --version answer, kept until the file changes (its path, modification time and size). A launcher script can
   // start a newer build without changing itself (Cursor's starts the newest folder in versions beside it), so its folder and that
   // folder are part of the key. Remote profiles and failed checks are not kept.
-  async #versionCheck(instance,{environmentId=undefined,fresh=false}={}){
+  #binaryPaths(instance,environmentId=undefined){
     const profile=this.activeEnvironment(environmentId),local=!(profile&&profile.type!=="local"&&this.environments);
     const command=local?this.executable(instance):null,found=command?commandOnPath(command,{env:this.childEnv(instance),platform:this.platform}):null;
-    const paths=!found?[]:/\.(?:cmd|bat|ps1)$/i.test(found)?[found,dirname(found),join(dirname(found),"versions")]:[found];
-    const signature=found?JSON.stringify(paths.map(path=>{try{const info=statSync(path);return [path,info.mtimeMs,info.size]}catch{return [path,null]}})):null;
+    return !found?[]:/\.(?:cmd|bat|ps1)$/i.test(found)?[found,dirname(found),join(dirname(found),"versions")]:[found];
+  }
+  async #versionCheck(instance,{environmentId=undefined,fresh=false}={}){
+    const signature=binarySignature(this.#binaryPaths(instance,environmentId));
     const cached=signature?this.#versions.get(instance.id):null;
     if(!fresh&&cached?.signature===signature)return cached.result;
     const result=await this.#run(instance,["--version"],{timeoutMs:6000,environmentId});
