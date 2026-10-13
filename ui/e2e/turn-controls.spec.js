@@ -345,3 +345,34 @@ test("New task keeps an unsent new-task draft, coming back from Settings and pre
     await expect(composer(page)).toHaveValue("A new task I have not sent yet");
   }finally{await fixture.close()}
 });
+
+// A send still on its way in the thread left (here its repository context is slow) is that thread's: the new task opened meanwhile
+// does not wait for it and sends at once, and the first send goes on to run in its own thread.
+test("a new task opened while another thread's send is on its way is idle and sends at once, and the first send runs in its thread",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  await keepSettings(page);
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Slow start",preview:"Slow"}]});
+  let releaseContext=()=>{},contextCalls=0;const contextHeld=new Promise(resolve=>{releaseContext=resolve});
+  await page.route(/\/api\/context\/packet$/,async route=>{if(!contextCalls++)await contextHeld;await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"held-context",skipped:true,budget:{reserveTokens:1024}})}).catch(()=>{})});
+  answerBy(fixture,[["Slow start task",async request=>reply(request,"The slow start answered in its own thread.")],["Quick task",async request=>reply(request,"The quick task answered at once.")]]);
+  try{
+    await fixture.open("Slow start");
+    await sendTyped(page,"Slow start task.");
+    await expect(composer(page)).toHaveAttribute("placeholder","Sending…");await expect.poll(()=>contextCalls).toBe(1);
+    await newTask(page).click();
+    await expectIdleNewTask(page);
+    await shoot(page,"new-task-while-another-sends");
+    await sendTyped(page,"Quick task.");
+    await expect(page.getByText("The quick task answered at once.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(stop(page)).toHaveCount(0);
+    releaseContext();
+    // The first send runs in its own thread, and the thread shown stays as it is.
+    await expect.poll(()=>fixture.threadStore.get(fixture.threads[0].id).turns.at(-1)?.status,{timeout:15_000}).toBe("completed");
+    await page.waitForTimeout(300);
+    await expect(stop(page)).toHaveCount(0);await expect(composer(page)).toHaveAttribute("placeholder",IDLE_PLACEHOLDER);await expect(composer(page)).toHaveValue("");
+    await expect(page.getByText("The slow start answered in its own thread.",{exact:true})).toHaveCount(0);
+    await threadRow(page,"Slow start").locator(".thread-main").click();
+    await expect(page.getByText("The slow start answered in its own thread.",{exact:true})).toBeVisible({timeout:10_000});
+  }finally{releaseContext();await fixture.close()}
+});

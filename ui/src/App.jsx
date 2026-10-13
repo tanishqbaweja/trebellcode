@@ -3359,8 +3359,9 @@ export default function App(){
   }
   // A turn of the thread left goes on behind the new task, which runs nothing itself: that turn shows in the thread's sidebar row,
   // and again once the thread is opened.
-  // A new task asked for from the new task (on it, or back from a page opened from it) keeps its unsent draft.
-  function showNewTask(){const leftNewTask=!activeThreadRef.current;rememberConversationPosition();setComposerAlert(null);releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setQueueEditDraft(null);if(!leftNewTask){setPrompt("");setAttachments([]);setContextChips([])}setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
+  // A new task asked for from the new task (on it, or back from a page opened from it) keeps its unsent draft, and a send still on its
+  // way in the thread left goes on there without holding the new task's composer (send).
+  function showNewTask(){const leftNewTask=!activeThreadRef.current;rememberConversationPosition();setComposerAlert(null);releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setQueueEditDraft(null);if(!leftNewTask){submittingRef.current=null;setSubmitting(false);setPrompt("");setAttachments([]);setContextChips([])}setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -4065,17 +4066,18 @@ export default function App(){
       const turnContext={...repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
       if(pendingSend.stopped)throw sendStoppedError();pendingSend.requested=true;
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null,shown=()=>activeThreadRef.current?.id===thread.id;if(shown())setActiveTurnId(turnId);if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
       if(pendingSendRef.current===pendingSend)pendingSendRef.current=null;
       if(turnStillRuns(result.turn))interruptStoppedSend(pendingSend,thread.id,turnId);
       if(goalActivation)await activateCodexGoal(goalActivation);
       if(turnId){const key=turnInfoKey(thread.id,turnId),mode=permissionModeLabel(permissionModeOverride||permissionMode);if(key&&mode)setTurnInfo(prev=>({...prev,[key]:{...prev[key],mode}}))}
-      setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
+      setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}if(shown()){setAttachments([]);setContextChips([])}return{thread,turnId};
     }catch(error){
       if(pendingSendRef.current===pendingSend)pendingSendRef.current=null;
       if(pendingSend.stopped&&error&&typeof error==="object")error.trebellSendStopped=true;
       reached(false);setMessages(prev=>prev.filter(message=>message.id!==clientId));
-      setRunning(false);setActiveTurnId(null);
+      // A send that ends while another view is shown leaves that view as it is.
+      if(activeThreadRef.current?.id===thread.id){setRunning(false);setActiveTurnId(null)}
       if(codexGoalActivationRef.current?.threadId===thread.id)codexGoalActivationRef.current=null;
       throw error;
     }
@@ -4305,7 +4307,7 @@ export default function App(){
     }
   }
   async function dispatchSend(promptOverride=null){
-    const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim();if(!text)return;
+    const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim(),sendView=submittingRef.current;if(!text)return;
     setComposerAlert(null);
     if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
     if(text.startsWith("/")){const special=await handleSpecial(text);if(special){if(special===true)setPrompt("");return}}
@@ -4374,14 +4376,18 @@ export default function App(){
     // A turn/start that fails has no turn to show it on: the error goes next to the composer that kept the draft, never onto the
     // last turn's card (a worktree that could not be set up says why in its own card).
     // A send Stop ended before its turn existed puts the draft back as it was, with no note: nothing went wrong.
-    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);setRunning(false);setEvents([]);if(!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e)))setComposerAlert({kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."})});
+    // A send whose thread a new task replaced on screen puts its draft back beside the composer's and leaves the rest of the new
+    // task alone.
+    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents([]);if(!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e)))setComposerAlert({kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."})});
   }
+  // A send belongs to the thread it was made in: a new task opened from there while it is on its way releases the composer
+  // (showNewTask), and the send then ends without touching the new task (dispatchSend, startTurn).
   async function send(promptOverride=null){
     if(openingThreadRef.current)return;
     if(submittingRef.current)return;
-    submittingRef.current=true;setSubmitting(true);
+    const token={};submittingRef.current=token;setSubmitting(true);
     try{return await dispatchSend(promptOverride)}
-    finally{submittingRef.current=false;setSubmitting(false)}
+    finally{if(submittingRef.current===token){submittingRef.current=null;setSubmitting(false)}}
   }
   async function sendInBackground(promptOverride=null){
     if(!runtimeCapabilities.detachedTasks){await send(promptOverride);return}
