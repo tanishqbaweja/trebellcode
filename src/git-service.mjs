@@ -21,13 +21,14 @@ export async function git(cwd,args,opts={}){ return run("git",args,{cwd,...opts}
 // it from are unchanged, for at most 30 s: HEAD from the git dir (so a linked worktree or a submodule reads its own), and config,
 // packed-refs, refs/heads, refs/remotes (the upstream needs its ref) and worktrees from the common dir. git replaces a ref through a
 // lock file in its own folder, which changes that folder's modification time, so every folder below the refs (a commit on
-// feature/x, a new branch in it) counts too. In worktrees, the folder counts (a worktree added or removed) and each worktree's HEAD
-// and gitdir (its path, which git worktree move and repair write in place), but not each worktree's folder: that is a linked
-// worktree's git dir, which holds its index, and every status that may write the index (the full read's, an agent's git add)
-// creates and removes the index lock there. A reftable repository (--ref-format=reftable, the default planned for Git 3) keeps
-// every ref, HEAD among them, in a reftable folder instead, where git replaces tables.list on each update: the common dir's holds
-// the branches and the main worktree's HEAD, and each linked worktree's folder has its own for its HEAD; .git/HEAD and refs/heads
-// are stubs that never change. A warm poll then runs only git status, which is read every time.
+// feature/x, a new branch in it) counts too. The worktree list reads the main worktree's HEAD from the common dir, and in worktrees
+// the folder (a worktree added or removed) and each worktree's HEAD and gitdir (its path, which git worktree move and repair write
+// in place), but not each worktree's folder: that is a linked worktree's git dir, which holds its index, and every status that may
+// write the index (the full read's, an agent's git add) creates and removes the index lock there. A reftable repository
+// (--ref-format=reftable, the default planned for Git 3) keeps every ref, HEAD among them, in a reftable folder instead, where git
+// replaces tables.list on each update: the common dir's holds the branches and the main worktree's HEAD, and each linked
+// worktree's folder has its own for its HEAD; .git/HEAD and refs/heads are stubs that never change. A warm poll then runs only git
+// status, which is read every time.
 // A caller's own env (a checkpoint's) can point git elsewhere, so only calls without one are kept.
 const GIT_INFO_REUSE_MS=30_000;
 const STATUS_ARGS=["status","--porcelain=v1","-b"];
@@ -48,7 +49,7 @@ function repositorySignature(gitDir,commonDir,base,root){
   };
   add(join(gitDir,"HEAD"));add(join(gitDir,"config.worktree"));add(join(commonDir,"config"));add(join(commonDir,"packed-refs"));
   add(join(commonDir,"refs","heads"),16);add(join(commonDir,"refs","remotes"),16);
-  const worktrees=join(commonDir,"worktrees");add(worktrees);
+  const worktrees=join(commonDir,"worktrees");add(join(commonDir,"HEAD"));add(worktrees);
   let linked=[];try{linked=readdirSync(worktrees,{withFileTypes:true}).filter(entry=>entry.isDirectory())}catch{}
   for(const entry of linked){
     parts.push(entry.name);add(join(worktrees,entry.name,"HEAD"));add(join(worktrees,entry.name,"gitdir"));add(join(worktrees,entry.name,"reftable","tables.list"));

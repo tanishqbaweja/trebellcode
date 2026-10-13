@@ -145,6 +145,9 @@ test("B6: gitInfo's kept repository part follows checkout, commit, new branches,
     assert.equal((await gitInfo(dir)).worktrees.length,2);await same(dir,"worktree add");
     await gitInfo(linked);await git(linked,["switch","-q","-c","side-two"]);
     assert.equal((await gitInfo(linked)).branch,"side-two");await same(linked,"switch in the linked worktree");
+    // The linked worktree lists the main one, whose HEAD is the common dir's.
+    await git(dir,["switch","-q","topic"]);
+    assert.equal((await gitInfo(linked)).worktrees[0].branch,"topic","the linked worktree lists the main one on its new branch");await same(linked,"switch in the main worktree");
     // A submodule's HEAD lives in the parent's .git/modules.
     await mkdir(library);await git(library,["init","-q","-b","main"]);await git(library,["config","user.email","trebell@example.test"]);await git(library,["config","user.name","Trebell Test"]);
     await writeFile(join(library,"lib.txt"),"lib\n");await git(library,["add","lib.txt"]);await git(library,["commit","-qm","lib"]);
