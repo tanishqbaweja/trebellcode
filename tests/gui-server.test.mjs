@@ -504,12 +504,12 @@ wss.on("connection",ws=>ws.on("message",raw=>{
 server.on("error",error=>{process.stderr.write("Error: "+error.message+"\n");process.exit(1)});
 server.listen(port,"127.0.0.1",()=>appendFileSync(record,JSON.stringify({port,pid:process.pid})+"\n"));
 `;
-async function fakeCodexHome(prefix){
+async function fakeCodexHome(prefix,{script=FAKE_CODEX_WS_APP_SERVER}={}){
   const home=await mkdtemp(join(tmpdir(),prefix));
   await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",onboardingComplete:true}}));
   await mkdir(join(home,"codex"),{recursive:true});
   const fixture=join(home,"fake-codex.mjs"),record=join(home,"codex-starts.jsonl"),launcher=join(home,process.platform==="win32"?"codex.cmd":"codex");
-  await writeFile(fixture,FAKE_CODEX_WS_APP_SERVER,"utf8");
+  await writeFile(fixture,script,"utf8");
   if(process.platform==="win32")await writeFile(launcher,["@echo off",`"${process.execPath}" "${fixture}" "${record}" %*`,""].join("\r\n"),"utf8");
   else{await writeFile(launcher,`#!/bin/sh\nexec "${process.execPath}" "${fixture}" "${record}" "$@"\n`,"utf8");await chmod(launcher,0o755)}
   const env={...process.env,TREBELL_HOME:home,CODEX_HOME:join(home,"codex"),TREBELL_CODEX_BIN:launcher,TREBELL_HISTORY_DISABLE_CLAUDE:"1",TREBELL_APP_SERVER_PORT:"",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
@@ -578,6 +578,59 @@ test("a configured Codex app-server port another program holds is refused with w
 });
 
 const waitFor=async(check,timeoutMs)=>{for(const deadline=Date.now()+timeoutMs;!check()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,25));return check()};
+
+// The stand-in for the first start only leaves its port to the test: it connects to the port named in codex-control and stays up, and
+// the test answers on its port for it, until a while after that process has ended, as codex under its shell wrapper can hold its port
+// on Windows. A later start listens itself.
+const FAKE_CODEX_LINGERING_APP_SERVER=String.raw`
+import { createServer } from "node:http";
+import { connect } from "node:net";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+const [record,...args]=process.argv.slice(2);const listen=args[args.indexOf("--listen")+1]||"";
+if(args[0]!=="app-server"||!listen){process.stdout.write("codex-cli 0.155.1-fixture\n");process.exit(0)}
+const port=Number(new URL(listen).port),first=!existsSync(record);
+if(first){appendFileSync(record,JSON.stringify({port,pid:process.pid})+"\n");connect(Number(readFileSync(join(dirname(record),"codex-control"),"utf8")),"127.0.0.1");setInterval(()=>{},1000)}
+else{
+  const server=createServer((req,res)=>{res.writeHead(req.url==="/readyz"||req.url==="/healthz"?200:404);res.end("ok")});
+  server.on("error",error=>{process.stderr.write("Error: "+error.message+"\n");process.exit(1)});
+  server.listen(port,"127.0.0.1",()=>appendFileSync(record,JSON.stringify({port,pid:process.pid})+"\n"));
+}
+`;
+
+// A restart on the configured port (here the switch to Local machine restarts Codex) stops the app-server there and starts one again:
+// the start waits for the stopped one's port instead of refusing it as held by another program.
+test("a restart on the configured Codex app-server port waits for the stopped app-server's port to be free",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
+  const {home,env,starts}=await fakeCodexHome("trebell-codex-port-lingering-",{script:FAKE_CODEX_LINGERING_APP_SERVER});
+  const originalProbe=AgentRuntimeManager.prototype.probe;AgentRuntimeManager.prototype.probe=availableProbe;
+  const appPort=await freePort();let released=false;
+  // The first app-server's port, held by the test from that app-server's start until 700 ms after its process has ended.
+  const standIn=createServer((req,res)=>{res.writeHead(req.url==="/readyz"?200:404);res.end("ok")}),control=createServer();
+  standIn.on("error",()=>{});
+  control.on("connection",socket=>{
+    standIn.listen(appPort,"127.0.0.1");socket.on("error",()=>{});
+    socket.on("close",()=>setTimeout(()=>{released=true;standIn.close();standIn.closeAllConnections()},700));
+  });
+  await new Promise(resolve=>control.listen(0,"127.0.0.1",resolve));await writeFile(join(home,"codex-control"),String(control.address().port));
+  let gui=null;
+  try{
+    gui=await createGuiServer({port:await freePort(),appPort,mock:false,env});
+    const ready=async()=>(await fetch(gui.url+"/api/bootstrap").then(response=>response.json())).appServerReady;
+    for(const deadline=Date.now()+15_000;!await ready()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,100));
+    assert.equal(standIn.listening,true,"the first app-server is up on the configured port");
+    const activated=await fetch(gui.url+"/api/environment/activate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:null})});
+    assert.equal(activated.status,200);
+    assert.equal(released,true,"the restart waited for the stopped app-server's port");
+    assert.deepEqual((await starts()).map(start=>start.port),[appPort,appPort],"and started the app-server again on it");
+    assert.equal(await ready(),true);
+  }finally{
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    if(gui)await gui.close();
+    if(standIn.listening){standIn.close();standIn.closeAllConnections()}
+    control.closeAllConnections();await new Promise(resolve=>control.close(()=>resolve()));
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
 
 // A crash by SIGSEGV or SIGABRT, or the OOM killer, on macOS and Linux leaves the child with exitCode null and signalCode set; such a
 // catalog app-server is started again by the next connection, not reused. The state is made as there: the launcher is killed by a

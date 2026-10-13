@@ -384,6 +384,11 @@ async function waitForAppServer(instance,appPort,timeoutMs=15000){
 async function stopAppServer(instance){
   await stopChildProcess(instance?.child);
   try{await instance?.close?.()}catch{}
+  // A local codex can still hold its port a moment after the process Trebell started has ended (on Windows that is codex's shell
+  // wrapper, which exits first): the stop ends once the port is free, or after 3 s, so a start on that port (the configured catalog
+  // port, after a restart or an environment switch) is not refused as held by another program.
+  const port=Number(instance?.appPort);
+  if(instance?.child&&!instance.environment&&port>0)for(const started=Date.now();!await tcpPortFree(port)&&Date.now()-started<3000;)await new Promise(resolve=>setTimeout(resolve,25));
 }
 
 function knownModelProvider(providerId){
