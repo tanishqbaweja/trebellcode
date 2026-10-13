@@ -272,8 +272,18 @@ function explicitAcceptanceRequirementClauses(messages=[]){
   return clauses;
 }
 
+// Words inside URLs, markdown link targets, and code spans (inline or fenced) name a location or code, not external state
+// the user asks to change: a docs link ending in /api next to "write()" is not a request to write to an API. A markdown
+// link keeps its visible text, which is the user's own prose.
+function externalPersistenceProse(text=""){
+  return String(text||"")
+    .replace(/(?<!\x60)(\x60+)(?!\x60)[\s\S]*?(?<!\x60)\1(?!\x60)/g," ")
+    .replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g," $1 ")
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>]+|\bwww\.[^\s<>]+/gi," ");
+}
+
 function requestsExternalPersistence(text=""){
-  const source=String(text||"").trim();
+  const source=externalPersistenceProse(text).trim();
   if(!source)return false;
   const externalTarget="(?:api|database|portal|remote\\s+(?:system|service|host|state)|external\\s+(?:system|service)|endpoint|cluster|account|campaign|live\\s+config(?:uration)?|runtime\\s+state)";
   const persistVerb="(?:submit|post|send|persist|commit|publish|upload|apply|update|write|create|delete|remove|change|modify|record)";
@@ -1818,7 +1828,7 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.progress.probe_batch_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,singletonTerminalProbeStreak}});
     }
     const activeBatchEvidenceRepairObservation=batchEvidencePrecommitRepairWindows>0&&batchEvidencePrecommitResolutionPendingRevision===editRevision;
-    if(externalStateMutationRequested&&!activeBatchEvidenceRepairObservation&&externalObservationCheckpointRevision!==externalStateRevision&&externalObservationRounds>=6){
+    if(midTaskProgressEnabled&&externalStateMutationRequested&&!activeBatchEvidenceRepairObservation&&externalObservationCheckpointRevision!==externalStateRevision&&externalObservationRounds>=6){
       conversation.push({role:"developer",content:"Trebell external-state convergence checkpoint: "+externalObservationRounds+" separate read-only evidence rounds have run since the latest persistent external-state change without another state change. Local terminal analysis, repository/source reads, output inspection, and status/API checks all consume a full model decision even when each individual command is internally batched. Stop serial investigation. Use at most the remaining bounded evidence rounds to run one decisive grouped analysis, then stage/perform the next evidence-supported legal mutation, propose completion, or state the concrete blocker. If the only useful action is waiting for an external condition, prefer one consolidated wait-and-check command or a background monitor rather than repeated immediate polls."});
       externalObservationCheckpointRevision=externalStateRevision;
       emit(onEvent,{name:"native.progress.external_observation_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,externalStateRevision,observationRounds:externalObservationRounds}});

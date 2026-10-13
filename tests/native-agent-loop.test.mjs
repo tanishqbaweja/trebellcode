@@ -1946,6 +1946,23 @@ test("task-mutation classifier recognizes code-change imperatives, scoped limits
   assert.equal(requestsWorkspaceMutation([{role:"user",content:"Responses from the server in `/app/sglang` arrive out of order. Please resolve the issue on the server side."}]),true);
 });
 
+test("external-state classifier ignores words inside URLs, markdown link targets, and code spans",()=>{
+  const workspace=text=>requestsWorkspaceMutation([{role:"user",content:text}]);
+  for(const text of [
+    "Fix the HTML writer: the `formats` option to the [`write()`](https://docs.example.org/en/stable/api/io.write.html) method is ignored.",
+    "Update `api.py` so retries stop after three attempts.",
+    "Fix the link checker so it accepts https://example.com/api/v2/update?id=1 without warnings.",
+    "Fix the exporter.\n```python\nclient.post(api_url, data)  # write the record to the API\n```\nIt drops the last record.",
+    "Fix the docs builder so <https://example.com/api/delete> renders as a link.",
+  ])assert.equal(workspace(text),true,text);
+  assert.equal(requestsTaskMutation([{role:"user",content:"Do not modify any files. Explain why https://example.com/api/update returns 404."}]),false,"a URL cannot turn a read-only question into a state change");
+  for(const text of [
+    "Post the reconciled totals to the billing API.",
+    "Submit the batch to the [intake API](https://intake.example.test/v1).",
+    "Update the live configuration through the service endpoint, then wait for the rollout.",
+  ])assert.equal(workspace(text),false,text);
+});
+
 test("native implementation pressure does not treat a build-only request as a workspace mutation",async()=>{
   const requests=[],events=[];let turn=0;
   const result=await runNativeAgentTurn({
@@ -5234,6 +5251,27 @@ test("native external-state convergence bounds repeated quick polling but permit
   const blocked=events.filter(event=>event.name==="native.progress.external_observation_call_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0].data?.callId,"blocked-poll");
   assert.equal(executed.includes("blocked-poll"),false);
   assert.equal(executed.includes("wait-and-check"),true);
+});
+
+test("native defaults leave the external-state convergence checkpoint to the mid-task controller",async()=>{
+  const requests=[],events=[],executed=[];let turns=0;
+  const poll=id=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; print(requests.get('http://localhost:5000/api/status').status_code)"]})});
+  const result=await runNativeAgentTurnImpl({
+    model:"test-model",maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Update the live configuration through the service API, then wait for the rollout to finish."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"write",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/config', json={'mode':'next'})"]})}],usage:{}};
+      if(turns<=11)return {text:"",toolCalls:[poll("poll-"+turns)],usage:{}};
+      return {text:"The rollout finished.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return {success:true,exitCode:0,stdout:"ok"}},
+  });
+  assert.equal(result.text,"The rollout finished.");
+  assert.equal(requests.some(request=>request.messages.some(message=>message.role==="developer"&&/external-state convergence/i.test(String(message.content||"")))),false);
+  assert.equal(events.some(event=>["native.progress.external_observation_checkpoint","native.progress.external_observation_escalation","native.progress.external_observation_call_blocked"].includes(event.name)),false);
+  assert.deepEqual(executed,["write",...Array.from({length:10},(_,index)=>"poll-"+(index+2))]);
 });
 
 test("native external-state observation budget survives reversible workspace staging and resets only after persistent mutation",async()=>{
