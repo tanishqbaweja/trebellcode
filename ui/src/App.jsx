@@ -4969,8 +4969,8 @@ export default function App(){
     let switchedEnvironment=false;
     try{
       if(targetEnvironmentId!==currentEnvironmentId){
-        const switched=await api("/api/environment/activate",{method:"POST",body:{id:targetEnvironmentId}});
-        if(switched.error)throw new Error(switched.error);
+        // A switch that fails answers with an error status, which api() throws: one that answers has gone through.
+        await api("/api/environment/activate",{method:"POST",body:{id:targetEnvironmentId}});
         switchedEnvironment=true;
         const [nextSettings,nextBootstrap]=await Promise.all([api("/api/settings"),api("/api/bootstrap")]);
         setSettings(prev=>({...prev,...nextSettings}));

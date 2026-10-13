@@ -449,11 +449,16 @@ test("leaving a host that stopped answering for Local machine is kept, with Loca
     const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
     const active=async()=>(await fetch(gui.url+"/api/environments").then(r=>r.json())).activeEnvironmentId;
     assert.equal((await post("/api/environments",{id:"build-box",type:"ssh",name:"Build box",host:"127.0.0.1",port:9})).status,200);
-    assert.equal((await post("/api/environment/activate",{id:"build-box"})).status,200,"the build box answered and became the agent environment");
+    const used=await post("/api/environment/activate",{id:"build-box"});
+    assert.equal(used.status,200,"the build box answered and became the agent environment");
+    // A switch that answers 200 has gone through and carries no error: every failure answers with an error status, which the
+    // client's api() throws, so the client never has an error to read from a successful answer.
+    assert.equal(Object.hasOwn(await used.json(),"error"),false);
     assert.equal(await active(),"build-box");
     hostUp=false;
     const back=await post("/api/environment/activate",{id:null}),answer=await back.json();
     assert.equal(back.status,200,JSON.stringify(answer));
+    assert.equal(Object.hasOwn(answer,"error"),false,"a kept switch whose harness is not ready says so in agentRuntimeStatus, not as an error");
     assert.equal(answer.activeEnvironmentId,null);
     assert.equal(answer.agentRuntimeStatus.available,false,"the answer says Local's Codex is not ready");
     assert.equal(await active(),null,"Local machine is the agent environment");
