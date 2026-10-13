@@ -55,7 +55,7 @@ import { sameConversationMessageRowProps } from "./conversation-row.js";
 import { bulkActionFailure, movedSectionRanks, orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadsInListOrder, undoOrder } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { startFocusPoll } from "./focus-poll.js";
-import { userVerificationAvailability } from "./mcp-elicitation.js";
+import { userVerificationAvailability } from "./user-verification.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
 import { sharedDynamicToolNamespaces, sharedToolResponseContent } from "../../src/shared-tool-catalog.mjs";
 import { repositoryFocusPaths } from "./context-focus.js";
