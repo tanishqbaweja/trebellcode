@@ -1366,6 +1366,67 @@ test("an OpenCode approval waiting when an environment switch resets the relay l
   assert.deepEqual(replies,["reject"],"OpenCode is not left waiting for an answer");
 });
 
+test("a Claude Code approval waiting when its thread is deleted leaves the window, and no window that opens later is asked it",async()=>{
+  // Claude Code's delete closes its session and then removes the transcript, outside closeThreadSession.
+  const root=await mkdtemp(join(tmpdir(),"trebell-claude-deleted-approval-")),answers=[];
+  // The SDK's Query as the Claude session drives it: the first message asks to run a command through canUseTool and waits for the
+  // answer, which the query's close ends.
+  const query=({prompt,options})=>{
+    const items=[],waiters=[],stop=new AbortController();let done=false;
+    const push=value=>{const waiter=waiters.shift();if(waiter)waiter({value,done:false});else items.push(value)};
+    const end=()=>{if(done)return;done=true;stop.abort();for(const waiter of waiters.splice(0))waiter({value:undefined,done:true})};
+    void (async()=>{
+      for await(const message of prompt){
+        push({type:"system",subtype:"init",session_id:options.sessionId||options.resume,model:"claude-test",permissionMode:options.permissionMode,tools:[],mcp_servers:[],slash_commands:[],agents:[],capabilities:[]});
+        answers.push(await options.canUseTool("Bash",{command:"npm test"},{toolUseID:"tool-1",signal:stop.signal,suggestions:[]}));
+        push({type:"result",subtype:"success",is_error:false,result:"",user_message_uuid:message.uuid,total_cost_usd:0,usage:{input_tokens:3,output_tokens:1}});
+      }
+    })();
+    return {
+      next:()=>items.length?Promise.resolve({value:items.shift(),done:false}):done?Promise.resolve({value:undefined,done:true}):new Promise(resolve=>waiters.push(resolve)),
+      return:()=>{end();return Promise.resolve({value:undefined,done:true})},[Symbol.asyncIterator](){return this},
+      async interrupt(){},close(){end()},async setPermissionMode(){},initializationResult:async()=>({commands:[],agents:[],models:[]}),
+    };
+  };
+  const claudeSdk={query,getSessionInfo:async()=>undefined,forkSession:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
+  const instance={id:"claude-default",kind:"claude",displayName:"Claude Code",enabled:true};
+  const runtimeManager={
+    instances:()=>[{...instance}],activeInstance:()=>({...instance}),activeRuntime:()=>"claude",compatibleInstanceIds:()=>[instance.id],
+    probe:async()=>({id:instance.id,name:"Claude Code",available:true,authenticated:true,version:"fixture"}),
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),executable:()=>"claude",
+  };
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env),state=memoryThreadState();
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test",claudeSdk});
+  const port=await listen(server),url="ws://127.0.0.1:"+port+"/api/agent/ws";
+  const next=(ws,predicate)=>new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{ws.off("message",onMessage);reject(new Error("timed out waiting for a relay message"))},15_000);
+    const onMessage=raw=>{const message=JSON.parse(String(raw));if(!predicate(message))return;clearTimeout(timer);ws.off("message",onMessage);resolve(message)};
+    ws.on("message",onMessage);
+  });
+  let first=null,second=null;
+  try{
+    first=await connect(url);const rpc=request(first);
+    const started=await rpc("thread/start",{cwd:root,model:"claude-test",permissionProfile:"supervised"}),threadId=started.thread.id;
+    const approval=next(first,message=>message.method==="item/tool/requestApproval");
+    await rpc("turn/start",{threadId,model:"claude-test",input:[{type:"text",text:"run the tests"}],permissionProfile:"supervised"});
+    const asked=await approval;
+    const resolved=next(first,message=>message.method==="serverRequest/resolved");
+    await rpc("thread/delete",{threadId});
+    assert.deepEqual((await resolved).params,{requestId:asked.id,threadId},"the card leaves the window that showed it");
+    // The window reloads.
+    await new Promise(resolve=>{first.once("close",resolve);first.close()});
+    second=await connect(url);const seen=[];second.on("message",raw=>seen.push(JSON.parse(String(raw))));
+    await request(second)("initialize",{clientInfo:{name:"test"}});second.send(JSON.stringify({method:"initialized",params:{}}));
+    await new Promise(resolve=>setTimeout(resolve,500));
+    assert.deepEqual(seen.filter(message=>message.method==="item/tool/requestApproval").map(message=>message.id),[],"the deleted thread's approval is not asked of the next window");
+    assert.equal(answers.length,1,"Claude Code's own wait ended");
+    assert.equal(answers[0].behavior,"deny","nothing the deleted thread asked was allowed");
+  }finally{
+    for(const ws of [first,second])try{ws?.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+  }
+});
+
 test("an attached audio file reaches every harness by its saved path, as T3 Code names the attachments it does not send as content",async()=>{
   const prompt=await contextualAgentPrompt([{type:"text",text:"Transcribe this"},{type:"localAudio",path:"/recordings/memo 1.mp3"}]);
   assert.deepEqual(prompt.map(part=>({type:part.type,text:part.text})),[{type:"text",text:"Transcribe this"},{type:"text",text:'[Attached audio "memo 1.mp3" is saved at: /recordings/memo 1.mp3]'}]);
