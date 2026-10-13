@@ -134,7 +134,7 @@ for(const action of ["Delete","Archive"]){
 // A Codex app-server the test drives, reached through Trebell's Codex relay. Its turn/start is held: the test lets the turn start
 // (turn/started) and lets the answer go, in either order, as Codex sends them. A started turn streams its reply and completes
 // unless turn/interrupt ends it first; one interrupted before it started ends as it starts. interruptDelayMs holds the interrupt's
-// answer (Codex answers once the turn has stopped).
+// answer (Codex answers once the turn has stopped), and compactError fails thread/compact/start with that message.
 async function startCodex(page,{name}){
   const thread={id:"codex-stop-thread",name,preview:name,cwd:process.cwd(),createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,status:{type:"idle"},turns:[]};
   const codex={thread,turns:[],interrupts:[],interruptDelayMs:0,socket:null};
@@ -164,6 +164,7 @@ async function startCodex(page,{name}){
         };
         return;
       }
+      if(message.method==="thread/compact/start"&&codex.compactError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.compactError}}));return}
       if(message.method==="turn/interrupt"){
         codex.interrupts.push({...params});const turn=codex.turns.find(item=>item.id===params.turnId);
         setTimeout(()=>{if(turn?.status==="inProgress"){if(turn.started)end(turn,"interrupted");else turn.status="interrupted"}respond({})},codex.interruptDelayMs);return;
@@ -242,5 +243,25 @@ test("a double click on Stop sends one turn/interrupt for the turn",async({page}
     await page.waitForTimeout(500);
     expect(codex.interrupts).toEqual([{threadId:codex.thread.id,turnId:turn.id}]);
     await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/);
+  }finally{await codex.close()}
+});
+
+// A Compact the harness refuses ends the one compaction row as failed; nothing is left saying it still compacts.
+test("a Compact that fails ends its row as failed, with no compaction left running",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex compact"});
+  try{
+    codex.compactError="Deliberate compaction failure";
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    await page.getByRole("button",{name:"Compact",exact:true}).click();
+    const failed=page.locator(".tool-event").filter({hasText:"Context compaction failed: Deliberate compaction failure"});
+    await expect(failed).toHaveCount(1);
+    await expect(page.locator(".tool-event").filter({hasText:"Compacting context"})).toHaveCount(0);
+    await expect(page.locator(".tool-event.status-running")).toHaveCount(0);
+    await failed.scrollIntoViewIfNeeded();
+    await shoot(page,"compact-failed");
   }finally{await codex.close()}
 });

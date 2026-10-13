@@ -4284,7 +4284,8 @@ export default function App(){
       // Grok compacts in a turn of its own (its /compact command), which takes as long as the model needs.
       await requestThreadCompaction(activeThread.id,agentRuntime==="grok"?{timeoutMs:10*60_000}:undefined);
     }catch(error){
-      setEvents(prev=>[...prev,{id:"compact-error-"+Date.now(),kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done",raw:{}}]);
+      // The failure ends the compaction's own row, which no turn ends: it would say "Compacting context" beside its failure.
+      setEvents(prev=>upsertEvent(prev,{id,kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done",raw:{}}));
     }
   }
   async function dispatchSend(promptOverride=null){
