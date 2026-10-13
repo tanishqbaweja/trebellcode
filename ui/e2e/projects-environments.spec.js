@@ -750,6 +750,43 @@ test.describe("Clone",()=>{
   });
 });
 
+// Files a person might pick for a project's icon: a real png, a text file named like one, and a bitmap the app does not keep.
+async function iconFiles(page){
+  const png=Buffer.from((await page.evaluate(()=>{const canvas=document.createElement("canvas");canvas.width=canvas.height=48;const pen=canvas.getContext("2d");pen.fillStyle="#2fb6a0";pen.fillRect(0,0,48,48);pen.fillStyle="#ffffff";pen.fillRect(14,14,20,20);return canvas.toDataURL("image/png")})).split(",")[1],"base64");
+  const bmp=Buffer.from("Qk06AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABABgAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAD/AA==","base64");
+  return {png:{name:"logo.png",mimeType:"image/png",buffer:png},text:{name:"notes.png",mimeType:"image/png",buffer:Buffer.from("Release notes, not a picture.\n")},bmp:{name:"logo.bmp",mimeType:"image/bmp",buffer:bmp}};
+}
+// The card's Image button opens the file dialog, and the person picks the file in it.
+async function pickIcon(page,card,file){
+  const chooser=page.waitForEvent("filechooser");
+  await card.locator(".project-image-button").click();
+  await (await chooser).setFiles(file);
+}
+
+test.describe("A project's icon",()=>{
+  test("a file that is not a png, jpeg, webp or gif the app can show is refused with a message and the icon stays",async({page,request})=>{
+    const boot=await open(page,request);
+    await openProjects(page);
+    const card=page.locator(".project-card.active");
+    await card.getByRole("button",{name:/Project identity/}).click();
+    const files=await iconFiles(page),savedIcon=async()=>(await listedProjects(request)).find(project=>project.path===boot.cwd)?.icon||null;
+    const tile=card.locator(".project-open .project-icon");
+    await pickIcon(page,card,files.png);
+    await expect.poll(async()=>(await savedIcon())?.kind).toBe("image");
+    const icon=await savedIcon();
+    await expect(tile.locator("img")).toHaveAttribute("src",icon.value);
+    for(const file of [files.text,files.bmp]){
+      await pickIcon(page,card,file);
+      await expect(page.getByRole("alert").filter({hasText:`Could not use ${file.name} as the icon: choose a png, jpeg, webp or gif image.`})).toBeVisible();
+      await page.waitForTimeout(300);
+      expect(await savedIcon()).toEqual(icon);
+      await expect(tile.locator("img")).toHaveAttribute("src",icon.value);
+      expect(await tile.locator("img").evaluate(image=>image.complete&&image.naturalWidth>0),"the icon still shows the picture").toBe(true);
+    }
+    await shootModes(page,"icon-refused",{show:page.getByRole("alert").filter({hasText:"Could not use logo.bmp"})});
+  });
+});
+
 test.describe("Renaming a project",()=>{
   test("Enter in the Name field saves the name, and Escape puts back the saved one",async({page,request})=>{
     const boot=await open(page,request);

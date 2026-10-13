@@ -461,10 +461,14 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     await saveProject(project,{scripts:[...project.scripts,...items],preferredScriptId:project.preferredScriptId||items[0].id});
   }
 
+  // Only a picture the card can show becomes the icon: a file of another type (a .bmp) or one that does not decode (a text file
+  // named .png) is refused with a message, and the icon stays as it was.
   async function importProjectImage(project,file){
     if(!file)return;if(file.size>1_400_000){setError("Project icon images must be under 1.4 MB.");return}
     try{
       const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||""));reader.onerror=()=>reject(reader.error||new Error("Could not read image"));reader.readAsDataURL(file)});
+      const image=new Image();image.src=dataUrl;
+      if(!/^image\/(png|jpeg|webp|gif)$/.test(file.type)||!await image.decode().then(()=>true,()=>false)){setError(`Could not use ${file.name} as the icon: choose a png, jpeg, webp or gif image.`);return}
       await saveProject(project,{icon:{kind:"image",value:dataUrl,color:autoColor(project.name)}});
     }catch(err){setError("Could not import project image: "+(err.message||String(err)))}
   }

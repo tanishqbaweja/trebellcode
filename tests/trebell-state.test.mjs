@@ -152,6 +152,24 @@ test("runtime profile credentials are scrubbed from new and legacy UI state",asy
 });
 
 
+test("an image icon the app cannot show is refused and the project keeps the icon it has",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-icon-"));
+  const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);
+    const projectPath=join(home,"project");
+    const png={kind:"image",value:"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",color:"#123456"};
+    assert.deepEqual(state.touchProject(projectPath,{name:"Icons",icon:png}).icon,png);
+    for(const value of ["data:image/bmp;base64,Qk06AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABABgAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAD/AA==","data:text/plain;base64,bm90ZXM=","data:image/png;base64,"+"A".repeat(2_000_000)]){
+      assert.throws(()=>state.touchProject(projectPath,{name:"Renamed",icon:{kind:"image",value,color:"#123456"}}),/Project icon images must be png, jpeg, webp or gif images under 1\.4 MB\./);
+    }
+    // Nothing of a refused save is kept, here or on disk.
+    const again=new TrebellStateStore(env).projects()[0];
+    assert.deepEqual(again.icon,png);assert.equal(again.name,"Icons");
+    assert.deepEqual(state.projects()[0].icon,png);assert.equal(state.projects()[0].name,"Icons");
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("project actions persist, sanitize, inherit preference, and allow clearing overrides", async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-actions-"));
   const env={...process.env,TREBELL_HOME:home};

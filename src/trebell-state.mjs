@@ -86,6 +86,8 @@ function normalizeCleanupRules(rules={}){
   const rawDays=rules?.worktreeAfterDays;const numeric=rawDays==null?null:Math.trunc(Number(rawDays));const worktreeAfterDays=Number.isFinite(numeric)&&numeric>=1?Math.min(3650,numeric):null;
   return {worktreeAfterDays,worktreeOnMerge:Boolean(rules?.worktreeOnMerge),worktreeOnDelete:Boolean(rules?.worktreeOnDelete),worktreeUnchanged:Boolean(rules?.worktreeUnchanged)};
 }
+// A project icon image as the app shows it: a png, jpeg, webp or gif data URL a 1.4 MB file reads into.
+function acceptedIconImage(value){const text=String(value||"").trim();return /^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(text)&&text.length<=2_000_000}
 function normalizeWorktreeCleanup(value,{allowNull=false}={}){
   if(value==null)return allowNull?null:{mode:"off"};
   if(value?.mode==="custom")return {mode:"custom",rules:normalizeCleanupRules(value.rules)};
@@ -379,6 +381,8 @@ export class TrebellStateStore {
     project.cloneJob=normalizeCloneJob(cloneJob);this.#save();return clone(project);
   }
   touchProject(path,patch={}){
+    // An image icon the app cannot show is refused before anything changes, instead of quietly taking away the icon the project had.
+    if(patch.icon?.kind==="image"&&!acceptedIconImage(patch.icon.value))throw new Error("Project icon images must be png, jpeg, webp or gif images under 1.4 MB.");
     const now=Date.now();
     const name=patch.name??null;
     const environmentId=normalizeEnvironmentId(patch.environmentId);
@@ -419,7 +423,6 @@ export class TrebellStateStore {
         let value=String(raw.value||"").trim();
         if(kind==="emoji")value=value.slice(0,16);
         else if(kind==="monogram")value=value.replace(/[^a-z0-9]/gi,"").slice(0,2).toUpperCase();
-        else if(kind==="image"&&(!/^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(value)||value.length>2_000_000))value="";
         project.icon=kind&&value?{kind,value,color}:null;
       }
     }
