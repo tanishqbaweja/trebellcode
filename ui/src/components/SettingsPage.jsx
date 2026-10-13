@@ -125,9 +125,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [agentMessage,setAgentMessage]=useState("");
   const [agentMessageTarget,setAgentMessageTarget]=useState(null);
   const [agentMessageError,setAgentMessageError]=useState(false);
+  // A refused switch is said on the row that was clicked ({kind,text}); the status line sits under the whole list, out of view.
+  const [switchRefusal,setSwitchRefusal]=useState(null);
   const [providerMessageError,setProviderMessageError]=useState(false);
   const [savingInstance,setSavingInstance]=useState(false);
-  const showAgentMessage=(text,error=false)=>{setAgentMessage(text);setAgentMessageError(Boolean(error))};
+  const showAgentMessage=(text,error=false)=>{setAgentMessage(text);setAgentMessageError(Boolean(error));setSwitchRefusal(null)};
   const showProviderMessage=(text,error=false)=>{setProviderMessage(text);setProviderMessageError(Boolean(error))};
   const [agentSelectionOverride,setAgentSelectionOverride]=useState(null);
   const [installingAgent,setInstallingAgent]=useState(null);
@@ -252,7 +254,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       showAgentMessage(`${result.selected?.status?.name||kind} selected.`);
     }catch(error){
       // The selection falls back to the harness that is still active, so the failure is reported there instead of on the runtime that failed.
-      setAgentMessageTarget(null);showAgentMessage(`Could not switch to ${(agentInfo?.definitions||[]).find(item=>item.id===kind)?.name||kind}: ${error.message}`,true);
+      setAgentMessageTarget(null);showAgentMessage("");setSwitchRefusal({kind,text:`Could not switch to ${(agentInfo?.definitions||[]).find(item=>item.id===kind)?.name||kind}: ${error.message}`});
     }
     finally{setAgentSelectionOverride(null)}
   }
@@ -805,7 +807,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           const actionText=active?(incompatible||unverified?"Needs setup":"Active"):status?.available?(incompatible||unverified?"Needs setup":"Switch"):status?.installed?"Not ready":"Not installed";
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(def.id,status.id)}>
             <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em className={"is-"+String(actionText).toLowerCase().replace(/\s+/g,"-")}>{actionText}</em>
-          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id,status?.installed?"Update":"Install")}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
+          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id,status?.installed?"Update":"Install")}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}{switchRefusal?.kind===def.id&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}</div>;
         })}</div>
         {selectedAgentDefinition?.multipleInstances!==false&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>

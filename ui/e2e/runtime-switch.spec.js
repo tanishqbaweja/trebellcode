@@ -293,6 +293,33 @@ test("a rejected harness switch restores the previous harness model and keeps it
   }finally{await close()}
 });
 
+// The refusal shows on the row that was clicked, in view: the status line under the whole list was below the fold at 1280x800.
+test("a refused harness switch says why on the harness row that was clicked, in view",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {close}=await startHarness(page,{runtime:"claude",rejectSelect:"OpenCode could not start: fixture launcher failed"});
+  // The light and dark toggle saves its setting in the page only.
+  const saved={};
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return json(route,{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...saved})});
+  try{
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    for(const pass of ["dark","light"]){
+      if(pass==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      const rejected=agentRuntimePost(page);
+      await selectHarness(page,"OpenCode");
+      expect((await rejected).status()).toBe(400);
+      const row=page.locator(".agent-runtime-option").filter({hasText:"OpenCode"}),refusal=row.getByRole("alert");
+      await expect(refusal).toHaveText("Could not switch to OpenCode: OpenCode could not start: fixture launcher failed");
+      await expect(refusal).toBeInViewport();
+      await expect(row.locator("button em")).toHaveText("Switch");
+      // Said once: the status line under the list does not repeat it.
+      await expect(page.getByTestId("agent-runtime-message")).toHaveCount(0);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(refusal).toBeInViewport();await page.screenshot({animations:"disabled",path:`${auditDir}harness-switch-refused-on-its-row-${pass}-${width}x800.png`})}
+      await page.setViewportSize({width:1280,height:800});
+    }
+  }finally{await close()}
+});
+
 // A failed switch, or a failed save of the active profile, must not touch the harness that stays active: its socket, the running
 // turn and the approval it waits on carry on (the server rejects an answer that arrives on another socket, and sends the session's
 // next approval to the socket that created it).
