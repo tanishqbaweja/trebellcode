@@ -35,6 +35,18 @@ async function shootModes(page,name,{height=800,show=null}={}){
   }
   await page.setViewportSize({width:1280,height});await switchMode(page,"dark");
 }
+// Replaces what a field holds the way a person does: click into it, select all, type.
+async function typeInto(page,field,text){await field.click();await page.keyboard.press("Control+A");await page.keyboard.type(text,{delay:5})}
+// The person turns the mouse wheel over the settings list, a notch at a time: back up until target is under the bottom of the window
+// (or the page is at its top), then down only until all of it shows.
+async function wheelUntilShown(page,target){
+  const nav=await page.locator(".settings-nav").boundingBox(),height=page.viewportSize().height;
+  await page.mouse.move(nav.x+nav.width/2,nav.y+nav.height-6);
+  const top=async()=>(await target.boundingBox()).y;
+  for(let notch=0,last=null;notch<200;notch++){const y=await top();if(y>=height||y===last)break;last=y;await page.mouse.wheel(0,-40);await page.waitForTimeout(60)}
+  for(let notch=0;notch<200;notch++){const box=await target.boundingBox();if(box.y+box.height<=height)return;await page.mouse.wheel(0,25);await page.waitForTimeout(60)}
+  throw new Error("The wheel never brought the control into view");
+}
 
 // The mock server keeps settings and published themes for the whole run: leave the theme state, and storage cleanup off, as the specs
 // after this one expect them.
@@ -417,6 +429,75 @@ test("dismissing the Settings error alert gives focus back to the control that f
   await page.keyboard.press("Tab");
   expect(await page.evaluate(()=>document.activeElement.outerHTML.slice(0,80))).toBe(after);
   await switchMode(page,"dark");
+});
+
+// The custom model form says what is wrong with a draft under the form, in view there, not in the Agent harness card's status line
+// higher up the page; so does the note that the model was saved. The person has scrolled down only until Save shows.
+test("the custom model form says what is wrong with a draft by the form",async({page,request})=>{
+  try{
+    await openSettings(page,request,"Custom Model Form Workspace",{customModels:[]});
+    await page.setViewportSize({width:1280,height:800});
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    const card=page.locator('[data-setting-target="agents-models"]'),harness=page.locator('[data-setting-target="agents-harness"]');
+    await card.getByRole("button",{name:"Add custom model",exact:true}).click();
+    await typeInto(page,card.getByLabel("Model ID"),"gpt-lane-d-mini");
+    await typeInto(page,card.getByLabel("Input / 1M"),"-2");
+    const save=card.getByRole("button",{name:"Save custom model",exact:true});
+    await wheelUntilShown(page,save);
+    await save.click();
+    const problem=card.getByRole("alert").filter({hasText:"Custom model prices must be numbers of 0 or more."});
+    await expect(problem).toBeInViewport({ratio:1});
+    await expect(save).toBeInViewport({ratio:1});
+    await expect(harness).not.toContainText("Custom model prices");
+    await expect(card.getByLabel("Input / 1M")).toHaveValue("-2");
+    expect((await savedSettings(request)).customModels).toEqual([]);
+    await shootModes(page,"custom-model-price-problem",{show:problem});
+    // Fixed, the draft saves, and the card says so where the form was.
+    await typeInto(page,card.getByLabel("Input / 1M"),"2");
+    await wheelUntilShown(page,save);
+    await save.click();
+    const saved=card.getByRole("status").filter({hasText:"Custom model saved."});
+    await expect(saved).toBeInViewport({ratio:1});
+    await expect(card.locator(".custom-model-list")).toContainText("gpt-lane-d-mini");
+    await expect(problem).toHaveCount(0);
+    await expect(harness).not.toContainText("Custom model saved.");
+    await expect.poll(async()=>(await savedSettings(request)).customModels.map(item=>item.id)).toEqual(["gpt-lane-d-mini"]);
+    await shootModes(page,"custom-model-saved",{show:saved});
+  }finally{
+    await request.post("/api/settings",{data:{customModels:[]}});
+  }
+});
+
+// OpenCode's provider/model check on the same form is said there too. OpenCode is a fixture here: nothing runs it on this host.
+test("the custom model form says by the form that an OpenCode model needs provider/model",async({page})=>{
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",agentRuntimeInstanceId:"opencode-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",customModels:[]};
+  const json=body=>({status:200,contentType:"application/json",body:JSON.stringify(body)});
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill(json({mock:true,provider:"openai",providerReady:true,agentRuntime:"opencode",agentRuntimeInstanceId:"opencode-default",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"custom-model-opencode-fixture",activeEnvironmentId:null,activeEnvironment:null})));
+  await page.route(/\/api\/state$/,route=>route.fulfill(json({settings,projects:[],threadMeta:{}})));
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")settings={...settings,...route.request().postDataJSON()};return route.fulfill(json(settings))});
+  await page.route(/\/api\/models$/,route=>route.fulfill(json({agentRuntime:"opencode",ready:true,models:["openai/fixture-model"],metadata:{agentRuntime:"opencode",models:[{id:"openai/fixture-model",name:"Fixture model",agent:"OpenCode"}]}})));
+  const status={id:"opencode-default",kind:"opencode",name:"OpenCode",available:true,installed:true,authenticated:true,version:"fixture"};
+  await page.route(/\/api\/agent-runtimes$/,route=>route.fulfill(json({selectedRuntime:"opencode",selectedInstanceId:"opencode-default",definitions:[{id:"opencode",name:"OpenCode",protocol:"http",multipleInstances:false}],instances:[{id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true}],statuses:[status]})));
+  await page.route(/\/api\/runtime$/,route=>route.fulfill(json({agentRuntime:"opencode",agentRuntimeInstanceId:"opencode-default",agentRuntimeStatus:status,provider:"openai",providerReady:true,appServerReady:true})));
+  await page.route(/\/api\/projects$/,route=>route.fulfill(json({projects:[]})));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill(json({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})));
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  const card=page.locator('[data-setting-target="agents-models"]'),harness=page.locator('[data-setting-target="agents-harness"]');
+  await expect(harness).toContainText("OpenCode");
+  await card.getByRole("button",{name:"Add custom model",exact:true}).click();
+  await typeInto(page,card.getByLabel("Model ID"),"lane-model");
+  const save=card.getByRole("button",{name:"Save custom model",exact:true});
+  await wheelUntilShown(page,save);
+  await save.click();
+  const problem=card.getByRole("alert").filter({hasText:"OpenCode custom models must use provider/model format."});
+  await expect(problem).toBeInViewport({ratio:1});
+  await expect(harness).not.toContainText("provider/model format");
+  await expect(card.getByLabel("Model ID")).toHaveValue("lane-model");
+  expect(settings.customModels).toEqual([]);
+  await shootModes(page,"custom-model-opencode-format",{show:problem});
 });
 
 test("the panel animation slider follows a drag and saves once with the final value",async({page,request})=>{

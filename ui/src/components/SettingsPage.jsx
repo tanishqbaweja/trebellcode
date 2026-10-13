@@ -132,6 +132,13 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [instanceDraft,setInstanceDraft]=useState(null);
   const [modelDraft,setModelDraft]=useState({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});
   const [customModelEditorOpen,setCustomModelEditorOpen]=useState(false);
+  // What the custom model form has to say (a draft it refuses, or that the model was saved), said in its own card under the form and
+  // scrolled into view there: the harness card's status line, higher up the page, was out of view of it.
+  const [customModelMessage,setCustomModelMessage]=useState({text:"",error:false});
+  const customModelMessageRef=useRef(null);
+  useEffect(()=>{if(customModelMessage.text)customModelMessageRef.current?.scrollIntoView({block:"nearest"})},[customModelMessage]);
+  const showCustomModelMessage=(text,error=false)=>setCustomModelMessage({text,error});
+  function showCustomModelEditor(open){setCustomModelEditorOpen(open);showCustomModelMessage("")}
   const [mcpDraft,setMcpDraft]=useState(null);
   const [mcpMessage,setMcpMessage]=useState("");
   const [snapshotInfo,setSnapshotInfo]=useState({enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false,playSound:true,sound:"soft-pop",flash:true,animations:true,registered:false,pending:0});
@@ -462,8 +469,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     const blob=new Blob([JSON.stringify(theme,null,2)+"\n"],{type:"application/json"});const url=URL.createObjectURL(blob);const anchor=document.createElement("a");anchor.href=url;anchor.download=(theme.name||"trebell-theme").replace(/[^a-z0-9._-]+/gi,"-").replace(/^-|-$/g,"")+".json";anchor.click();setTimeout(()=>URL.revokeObjectURL(url),0);
   }
   async function addCustomModel(){
-    const id=modelDraft.id.trim();if(!id)return;
-    if(selectedAgent==="opencode"&&!id.includes("/")){showAgentMessage("OpenCode custom models must use provider/model format.",true);return}
+    const id=modelDraft.id.trim();if(!id)return;showCustomModelMessage("");
+    if(selectedAgent==="opencode"&&!id.includes("/")){showCustomModelMessage("OpenCode custom models must use provider/model format.",true);return}
     const provider=selectedManagedInference?selected:null;
     const entry={
       id,name:modelDraft.name.trim()||id,runtime:selectedAgent,provider,
@@ -473,11 +480,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       cacheReadPrice:modelDraft.cacheReadPrice===""?null:Number(modelDraft.cacheReadPrice),
       cacheWritePrice:modelDraft.cacheWritePrice===""?null:Number(modelDraft.cacheWritePrice),
     };
-    for(const key of ["inputPrice","outputPrice","cacheReadPrice","cacheWritePrice"])if(entry[key]!=null&&(!Number.isFinite(entry[key])||entry[key]<0)){showAgentMessage("Custom model prices must be numbers of 0 or more.",true);return}
+    for(const key of ["inputPrice","outputPrice","cacheReadPrice","cacheWritePrice"])if(entry[key]!=null&&(!Number.isFinite(entry[key])||entry[key]<0)){showCustomModelMessage("Custom model prices must be numbers of 0 or more.",true);return}
     const current=Array.isArray(settings.customModels)?settings.customModels:[];
     const next=[...current.filter(item=>!(item.id===id&&item.runtime===selectedAgent&&(!selectedManagedInference||item.provider===selected))),entry];
     if(!await saveSetting({customModels:next}))return;
-    setModelDraft({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});setCustomModelEditorOpen(false);showAgentMessage("Custom model saved.");
+    setModelDraft({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});setCustomModelEditorOpen(false);showCustomModelMessage("Custom model saved.");
   }
   async function removeCustomModel(item){
     const current=Array.isArray(settings.customModels)?settings.customModels:[];
@@ -640,7 +647,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   },[settingsEntry?.nonce]);
   useEffect(()=>{
     setInstanceDraft(null);
-    setCustomModelEditorOpen(false);
+    showCustomModelEditor(false);
   },[selectedAgent]);
   useEffect(()=>{
     const unsubscribe=window.trebellDesktop?.updates?.onState?.(setDesktopUpdate);
@@ -835,13 +842,14 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         <h3><Boxes size={14} aria-hidden="true"/> Custom models</h3>
         <p>Add a model that this harness/provider supports even when discovery does not list it. Prices are optional USD estimates per million tokens.</p>
         <div className="custom-model-list">{customModels.map(item=><div key={`${item.runtime}:${item.provider||""}:${item.id}`}><span><strong>{item.name||item.id}</strong><small>{item.id}{item.effort?` · ${item.effort}`:""}{item.serviceTier?` · ${item.serviceTier}`:""}</small></span><button onClick={()=>removeCustomModel(item)}>Remove</button></div>)}</div>
-        {!customModelEditorOpen?<button className="setting-action" onClick={()=>setCustomModelEditorOpen(true)}>Add custom model</button>:<div className="custom-model-editor">
+        {!customModelEditorOpen?<button className="setting-action" onClick={()=>showCustomModelEditor(true)}>Add custom model</button>:<div className="custom-model-editor">
           <label>Model ID<input value={modelDraft.id} onChange={e=>setModelDraft({...modelDraft,id:e.target.value})} placeholder={selectedAgent==="opencode"?"provider/model-id":"model-id"}/></label>
           <label>Display name<input value={modelDraft.name} onChange={e=>setModelDraft({...modelDraft,name:e.target.value})} placeholder="Optional friendly name"/></label>
           {selectedAgent==="codex"&&<div className="environment-two"><label>Reasoning effort<select value={modelDraft.effort} onChange={e=>setModelDraft({...modelDraft,effort:e.target.value})}><option value="">Provider default</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label><label>Service tier<input value={modelDraft.serviceTier} onChange={e=>setModelDraft({...modelDraft,serviceTier:e.target.value})} placeholder="default / priority / flex"/></label></div>}
           <div className="custom-price-grid"><label>Input / 1M<input type="number" step="0.001" min="0" value={modelDraft.inputPrice} onChange={e=>setModelDraft({...modelDraft,inputPrice:e.target.value})}/></label><label>Output / 1M<input type="number" step="0.001" min="0" value={modelDraft.outputPrice} onChange={e=>setModelDraft({...modelDraft,outputPrice:e.target.value})}/></label><label>Cache read / 1M<input type="number" step="0.001" min="0" value={modelDraft.cacheReadPrice} onChange={e=>setModelDraft({...modelDraft,cacheReadPrice:e.target.value})}/></label><label>Cache write / 1M<input type="number" step="0.001" min="0" value={modelDraft.cacheWritePrice} onChange={e=>setModelDraft({...modelDraft,cacheWritePrice:e.target.value})}/></label></div>
-          <div className="provider-key-actions"><button className="setting-action" onClick={addCustomModel} disabled={!modelDraft.id.trim()}>Save custom model</button><button onClick={()=>setCustomModelEditorOpen(false)}>Cancel</button></div>
+          <div className="provider-key-actions"><button className="setting-action" onClick={addCustomModel} disabled={!modelDraft.id.trim()}>Save custom model</button><button onClick={()=>showCustomModelEditor(false)}>Cancel</button></div>
         </div>}
+        {customModelMessage.text&&<p ref={customModelMessageRef} className={customModelMessage.error?"provider-status-error":"provider-note"} role={customModelMessage.error?"alert":"status"}>{customModelMessage.text}</p>}
       </div>}
       {settingsSection==="agents"&&["native","claude","cursor","grok","antigravity"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-mcp")}>
         <h3><PlugZap size={14}/> MCP servers</h3>
