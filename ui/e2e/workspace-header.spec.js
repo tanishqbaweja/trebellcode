@@ -194,6 +194,30 @@ test("Escape in the question a palette command asks closes that question alone, 
   }finally{await harness.close()}
 });
 
+test("Tab and Shift+Tab move between the field and the buttons of the question a palette command asks",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,nativeDialogs}=await openHeaderApp(page);
+  const palette=page.getByTestId("command-palette"),question=dialog(page),composer=page.getByTestId("composer");
+  const field=question.getByRole("textbox",{name:"Pull request URL"}),cancel=question.getByRole("button",{name:"Cancel",exact:true}),ok=question.getByRole("button",{name:"OK",exact:true});
+  try{
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      await composer.click();await page.keyboard.press("Control+K");await expect(palette).toBeVisible();
+      await page.keyboard.type("Link pull request",{delay:20});await page.keyboard.press("Enter");
+      await expect(field).toBeFocused();
+      await page.keyboard.press("Tab");await expect(cancel).toBeFocused();
+      await page.keyboard.press("Tab");await expect(ok).toBeFocused();
+      await shoot(page,"palette-link-pr-question-tab");
+      await page.keyboard.press("Shift+Tab");await expect(cancel).toBeFocused();
+      await page.keyboard.press("Shift+Tab");await expect(field).toBeFocused();
+      // Cancel, reached with Tab and pressed with Enter, ends the command as Escape does.
+      await page.keyboard.press("Tab");await page.keyboard.press("Enter");
+      await expect(question).toHaveCount(0);await expect(palette).toHaveCount(0);await expect(composer).toBeFocused();
+    }
+    expect(nativeDialogs).toEqual([]);
+  }finally{await harness.close()}
+});
+
 test("switching the theme with the header's button leaves an action's error on screen to be read",async({page})=>{
   test.setTimeout(60_000);
   const {harness,proxy,header}=await openHeaderApp(page);

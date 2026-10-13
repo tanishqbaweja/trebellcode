@@ -11,14 +11,15 @@ const ACTION_ICONS={
 const GROUP_LABELS={command:"Commands",project:"Projects",thread:"Threads"};
 
 // Modal focus: keep Tab/Shift+Tab inside the palette so keyboard users cannot reach (and activate) controls behind
-// the backdrop. Focus that sits inside another open modal is left alone.
+// the backdrop. Focus that sits inside another open modal is left alone, the question a command asks in the app's own <dialog>
+// (Link pull request) among them.
 function useModalFocus(ref,active,focusOnOpen=true){
   useEffect(()=>{
     const node=ref.current;if(!active||!node)return;
     if(focusOnOpen&&!node.contains(document.activeElement))node.focus({preventScroll:true});
     const onKey=event=>{
       if(event.key!=="Tab"||event.defaultPrevented)return;
-      const current=document.activeElement,owner=current?.closest?.('[aria-modal="true"]');
+      const current=document.activeElement,owner=current?.closest?.('[aria-modal="true"],dialog[open]');
       if(owner&&owner!==node)return;
       const items=[...node.querySelectorAll("button,input,select,textarea,a[href],[tabindex]")].filter(item=>item.tabIndex>=0&&!item.disabled&&item.getClientRects().length);
       if(!items.length){event.preventDefault();node.focus();return}
