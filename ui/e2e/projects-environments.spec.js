@@ -845,6 +845,35 @@ test.describe("A card's failures",()=>{
       await request.post("/api/projects",{data:{path:boot.cwd,scripts:[]}});
     }
   });
+  // Many actions (a package.json's scripts brought in with Import all): a refused Run of the first one is said under its row, in
+  // view with the Run, not after the whole list; so is a delete of that action that fails. At 900 wide the first Run sits at the
+  // bottom of the window, so its refusal is brought into view.
+  test("a refused Run or delete of the first of many actions is said under that action",async({page,request})=>{
+    const boot=await open(page,request,{width:900});
+    const scripts=Array.from({length:20},(_,index)=>({id:"task-"+index,name:"Task "+(index+1),command:"npm run task-"+(index+1),previewUrl:null,autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false}));
+    try{
+      await request.post("/api/projects",{data:{path:boot.cwd,scripts,preferredScriptId:"task-0"}});
+      await page.route(/\/api\/project-script\/run$/,route=>json(route,{error:"Deliberate run refusal"},400));
+      await openProjects(page);
+      const actions=page.locator(".project-card.active .project-actions"),row=actions.locator(".project-action-row").filter({has:page.locator("strong",{hasText:/^Task 1$/})}),run=row.locator(".project-action-run");
+      await run.scrollIntoViewIfNeeded();await run.click();
+      const refusal=actions.getByRole("alert").filter({hasText:"Deliberate run refusal"});
+      await expect(refusal).toHaveCount(1);
+      await expect(run).toBeInViewport({ratio:1});
+      await expect(refusal).toBeInViewport({ratio:1});
+      const [rowBox,refusalBox]=[await row.boundingBox(),await refusal.boundingBox()];
+      expect(Math.round(refusalBox.y-(rowBox.y+rowBox.height)),"the refusal is right under the row (px)").toBeLessThanOrEqual(12);
+      await shootModes(page,"card-run-refused-many-actions",{show:refusal});
+      await page.route(/\/api\/projects$/,route=>route.request().method()==="POST"&&route.request().postDataJSON()?.scripts?json(route,{error:"Deliberate action delete failure"},500):route.fallback());
+      await row.getByRole("button",{name:"Delete action",exact:true}).click();
+      const deleteFailure=actions.getByRole("alert").filter({hasText:"Deliberate action delete failure"});
+      await expect(deleteFailure).toBeInViewport();
+      await expect(refusal).toHaveCount(0);
+      await expect(row).toHaveCount(1);
+    }finally{
+      await request.post("/api/projects",{data:{path:boot.cwd,scripts:[]}});
+    }
+  });
 });
 
 test.describe("Renaming a project",()=>{

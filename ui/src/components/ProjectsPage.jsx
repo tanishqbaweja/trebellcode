@@ -187,16 +187,20 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   const cloning=projects.some(project=>["running","cancelling"].includes(project.cloneJob?.status));
   useEffect(()=>{if(!cloning)return;const poll=startVisibilityPoll(()=>refresh(),{intervalMs:750});return()=>poll.dispose()},[cloning]);
 
-  // The part of a card a save's failure is said in: the one whose control sent it.
+  // The part of a card a save's failure is said in: the one whose control sent it. A run or delete of one action is said under
+  // that action's row ("action:" and its id): at the end of a long action list it was out of view of the row.
   function cardArea(patch){return patch.scripts?"actions":patch.hooks?"hooks":"worktreeCleanup" in patch?"cleanup":"name" in patch||"icon" in patch?"identity":"overrides"}
   function failInCard(project,area,text){setError("");setCardError({id:project.id,area,text})}
-  const cardAlert=(project,area)=>cardError?.id===project.id&&cardError.area===area&&<p className="provider-status-error project-card-error" role="alert">{cardError.text}</p>;
-  async function saveProject(project,patch){
+  // It is brought into view when it shows: under a control at the bottom of the window it would start below it.
+  const cardErrorRef=useRef(null);
+  useEffect(()=>{if(cardError)cardErrorRef.current?.scrollIntoView({block:"nearest"})},[cardError]);
+  const cardAlert=(project,area)=>cardError?.id===project.id&&cardError.area===area&&<p ref={cardErrorRef} className="provider-status-error project-card-error" role="alert">{cardError.text}</p>;
+  async function saveProject(project,patch,area=cardArea(patch)){
     setError("");setCardError(null);
     let result;
     try{
       result=await api("/api/projects",{method:"POST",body:{path:project.path,environmentId:project.environmentId||null,...patch}});
-    }catch(err){failInCard(project,cardArea(patch),err.message||String(err));return null}
+    }catch(err){failInCard(project,area,err.message||String(err));return null}
     const issues=[];
     try{onProjectUpdated?.(result.project)}catch(err){issues.push("the local project view could not apply the saved update: "+(err.message||String(err))+".")}
     const refreshed=await freshRefresh({reportErrors:true});if(!refreshed)issues.push("the project list could not refresh. The last valid project data is still shown.");
@@ -410,7 +414,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
 
   async function deleteScript(project,id){
     const scripts=project.scripts.filter(script=>script.id!==id);
-    const saved=await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId===id?(scripts[0]?.id||null):project.preferredScriptId});
+    const saved=await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId===id?(scripts[0]?.id||null):project.preferredScriptId},"action:"+id);
     if(saved&&editor?.projectId===project.id&&editor?.id===id)setEditor(null);
   }
 
@@ -432,7 +436,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
       const result=await api("/api/project-script/run",{method:"POST",body:{path:project.path,environmentId:project.environmentId||null,scriptId:script.id}});
       onRunScript?.(result);
       if(script.previewUrl&&script.autoOpenPreview)onOpenPreview?.(script.previewUrl);
-    }catch(err){failInCard(project,"actions",err.message||String(err))}
+    }catch(err){failInCard(project,"action:"+script.id,err.message||String(err))}
     finally{setBusy(false)}
   }
 
@@ -532,12 +536,12 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
             <div className="project-import-head"><span>Discovered actions</span><button onClick={()=>importAll(p)}>Import all</button></div>
             {importableScripts(p).map(script=><div key={script.source+":"+script.id}><span><strong>{script.name}</strong><small>{script.command}</small></span><em>{script.source}</em><button onClick={()=>importScript(p,script)}><Download size={11}/> Import</button></div>)}
           </div>}
-          {p.scripts.length?<div className="project-action-list">{p.scripts.map(script=><div className="project-action-row" key={script.id}>
+          {p.scripts.length?<div className="project-action-list">{p.scripts.map(script=><React.Fragment key={script.id}><div className="project-action-row">
             <button className="project-action-run" disabled={busy} onClick={()=>runScript(p,script)}><Play size={12}/><span><strong>{script.name}</strong><small>{script.command}</small></span>{script.runOnWorktreeCreate&&<em>setup</em>}</button>
             {script.previewUrl&&<button title="Open preview" onClick={()=>onOpenPreview?.(script.previewUrl)}><ExternalLink size={12}/></button>}
             <button title="Edit action" onClick={()=>editScript(p,script)}><Pencil size={12}/></button>
             <button className="danger" title="Delete action" onClick={()=>deleteScript(p,script.id)}><Trash2 size={12}/></button>
-          </div>)}</div>:<p className="project-actions-empty">Save repeatable commands here—dev server, tests, setup, migrations, whatever you run constantly.</p>}
+          </div>{cardAlert(p,"action:"+script.id)}</React.Fragment>)}</div>:<p className="project-actions-empty">Save repeatable commands here—dev server, tests, setup, migrations, whatever you run constantly.</p>}
           {editor?.projectId===p.id&&<div className="project-action-editor">
             <input value={editor.name} onChange={e=>setEditor({...editor,name:e.target.value})} placeholder="Action name (e.g. Dev server)"/>
             <input value={editor.command} onChange={e=>setEditor({...editor,command:e.target.value})} placeholder="Command (e.g. npm run dev)"/>
