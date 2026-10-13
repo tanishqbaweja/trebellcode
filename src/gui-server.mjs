@@ -1048,10 +1048,15 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     const active=agentRuntimes.activeInstance();if(active?.kind==="codex")return active;
     return instances.find(item=>item.kind==="codex")||null;
   }
+  // A thread's own app-server that could not start is not launched again by every request about the thread: an app that connects
+  // again reopens the thread with several requests, and again at each retry. For CODEX_THREAD_START_RETRY_MS its failure answers
+  // them, and the first request after that launches Codex once more.
+  const CODEX_THREAD_START_RETRY_MS=10_000;
   async function ensureCodexAppServer(instanceId=null,{environmentId=state.settings().activeEnvironmentId||null,preferredPort=null,ownerKey="catalog"}={}){
     const instance=codexInstance(instanceId);if(!instance)throw new Error("Codex runtime profile was not found");
     const key=codexPoolKey(ownerKey,instance.id,environmentId);const current=codexAppServers.get(key);
     if(current&&(mock||(!current.error&&current.child&&!childEnded(current.child))))return current;
+    if(current?.error&&current.failedAt&&String(ownerKey).startsWith("thread:")&&Date.now()-current.failedAt<CODEX_THREAD_START_RETRY_MS)return current;
     if(codexAppServerStarts.has(key))return codexAppServerStarts.get(key);
     const starting=(async()=>{
       if(current){await stopAppServer(current);codexAppServers.delete(key)}
@@ -1061,6 +1066,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       started.poolKey=key;started.ownerKey=ownerKey;started.runtimeInstanceId=instance.id;started.environmentId=environmentId||null;started.continuationKey=agentRuntimes.continuationKey(instance);
       codexAppServers.set(key,started);
       if(!mock){const ready=await waitForAppServer(started,targetPort,15000).catch(()=>false);if(!ready&&!started.error)started.error=appServerStartError(started,instance.displayName||instance.id)}
+      if(started.error)started.failedAt=Date.now();
       return started;
     })();
     codexAppServerStarts.set(key,starting);

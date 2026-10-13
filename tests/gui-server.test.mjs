@@ -712,6 +712,50 @@ test("a thread's own Codex app-server that dies closes the app's socket at once,
   }
 });
 
+// The stand-in above, once the file "broken" exists beside its record: a start records itself and exits with why, as a codex that
+// cannot start does (removed, upgraded half-way, crashing on start).
+const FAKE_CODEX_BREAKABLE_APP_SERVER=FAKE_CODEX_WS_APP_SERVER
+  .replace('import { appendFileSync } from "node:fs";',String.raw`import { appendFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";`)
+  .replace("const port=Number(new URL(listen).port);",String.raw`const port=Number(new URL(listen).port);
+if(existsSync(join(dirname(record),"broken"))){appendFileSync(record,JSON.stringify({port,pid:process.pid,broken:true})+"\n");process.stderr.write("Error: the codex binary could not start\n");process.exit(1)}`);
+
+// A thread's own app-server that dies and cannot start again: the app's socket closes with 1011, and the app connects again and
+// reopens the thread shown, each time with several requests about it, and again at every failed reopen. Codex is launched again once
+// for all of them; the others are answered with that start's failure, so a codex that cannot start is not launched over and over.
+test("a thread's own Codex app-server that dies and cannot start again is launched again once across the app's reconnects",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
+  const {home,env,starts}=await fakeCodexHome("trebell-codex-thread-broken-",{script:FAKE_CODEX_BREAKABLE_APP_SERVER});
+  const originalProbe=AgentRuntimeManager.prototype.probe;AgentRuntimeManager.prototype.probe=availableProbe;
+  let gui=null;const sockets=[];
+  try{
+    gui=await createGuiServer({port:await freePort(),mock:false,env});
+    const first=await codexSocket(gui);sockets.push(first);await first.connect();
+    assert.ok(!(await first.ask("thread/resume",{threadId:"thread-broken"})).error);
+    assert.ok(!(await first.ask("turn/start",{threadId:"thread-broken",input:[{type:"text",text:"one"}]})).error);
+    const [,threadServer]=await starts();assert.ok(threadServer,"the thread runs on an app-server of its own");
+    await writeFile(join(home,"broken"),"1");process.kill(threadServer.pid);
+    assert.ok(await waitFor(()=>first.closed(),3000),"the app's socket closes when the thread's app-server dies");
+    assert.equal(first.closed().code,1011);
+    const before=(await starts()).length,answers=[];
+    // The app's reconnects (0.5 s, 1 s and 2 s apart): each connects and reopens the thread shown.
+    for(const pause of [500,1000,2000]){
+      await new Promise(resolve=>setTimeout(resolve,pause));
+      const next=await codexSocket(gui);sockets.push(next);await next.connect();
+      answers.push((await next.ask("thread/resume",{threadId:"thread-broken"})).error?.message||"resumed");
+      answers.push((await next.ask("thread/goal/get",{threadId:"thread-broken"})).error?.message||"answered");
+      next.ws.close();
+    }
+    const relaunched=(await starts()).slice(before);
+    assert.equal(relaunched.length,1,"codex is launched again once, not at every request: "+JSON.stringify(relaunched));
+    assert.ok(answers.filter((_answer,index)=>index%2===0).every(answer=>/exited before it was ready/.test(answer)),"each reopen is told why: "+JSON.stringify(answers));
+  }finally{
+    for(const socket of sockets)try{socket.ws.terminate()}catch{}
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    if(gui)await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
 test("linking a URL that is not a pull request is refused plainly",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-not-a-pr-"));
   const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
