@@ -155,6 +155,14 @@ async function runProcess(command,args=[],{
   });
 }
 
+// The WSL distros `wsl --list --quiet` names that agents can run in. Docker Desktop's own (docker-desktop, and docker-desktop-data
+// in older versions) run its engine, so they are never offered; dockerOnly says a host has no other.
+const DOCKER_DESKTOP_DISTRO=/^docker-desktop(?:-data)?$/i;
+export function listedWslDistros(stdout){
+  const listed=cleanText(stdout).split("\n").map(name=>name.trim()).filter(Boolean),distros=listed.filter(name=>!DOCKER_DESKTOP_DISTRO.test(name));
+  return {distros,dockerOnly:listed.length>0&&!distros.length};
+}
+
 function normalizedPort(value){
   const n=Number(value||22);
   return Number.isInteger(n)&&n>0&&n<=65535?n:22;
@@ -235,8 +243,8 @@ export class EnvironmentManager {
     if(this.platform==="win32"){
       try{
         const result=await runProcess("wsl.exe",["--list","--quiet"],{env:this.#transportEnv(),timeoutMs:8000});
-        const distros=cleanText(result.stdout).split("\n").map(x=>x.trim()).filter(Boolean);
-        wsl={available:result.exitCode===0,distros,error:result.exitCode===0?null:(result.stderr||"WSL is unavailable")};
+        const {distros,dockerOnly}=listedWslDistros(result.stdout);
+        wsl={available:result.exitCode===0&&distros.length>0,distros,error:result.exitCode!==0?(result.stderr||"WSL is unavailable"):dockerOnly?"Only Docker Desktop's own distro, which agents do not use":null};
       }catch(error){wsl={available:false,distros:[],error:error.message};}
     }
     return {local:{available:true,platform:this.platform},ssh,wsl};

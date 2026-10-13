@@ -5,7 +5,7 @@ import { PassThrough, Writable } from "node:stream";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { EnvironmentManager, remoteEnvironmentCommand, remoteTransportEnvironment } from "../src/environment-manager.mjs";
+import { EnvironmentManager, listedWslDistros, remoteEnvironmentCommand, remoteTransportEnvironment } from "../src/environment-manager.mjs";
 
 function stateFor(profiles){
   return {
@@ -34,6 +34,16 @@ test("local environment capabilities report the actual host platform",async()=>{
   const capabilities=await manager.capabilities();
   assert.equal(capabilities.local.available,true);
   assert.equal(capabilities.local.platform,"linux");
+});
+
+// `wsl --list --quiet` writes UTF-16, read here as UTF-8 with a NUL after each character. Docker Desktop's own distros run its engine,
+// so they are never offered for agents, and a host with only those has no WSL distro to offer.
+test("WSL discovery leaves out Docker Desktop's own distros",()=>{
+  const utf16=text=>[...text].map(char=>char+"\u0000").join("");
+  assert.deepEqual(listedWslDistros(utf16("docker-desktop\r\nUbuntu-24.04\r\ndocker-desktop-data\r\n")),{distros:["Ubuntu-24.04"],dockerOnly:false});
+  assert.deepEqual(listedWslDistros(utf16("docker-desktop\r\n")),{distros:[],dockerOnly:true});
+  assert.deepEqual(listedWslDistros(""),{distros:[],dockerOnly:false});
+  assert.deepEqual(listedWslDistros("Debian\nmy-docker-desktop-tools\n"),{distros:["Debian","my-docker-desktop-tools"],dockerOnly:false});
 });
 
 test("remote transport helpers keep OS and SSH-agent essentials without unrelated host secrets",()=>{

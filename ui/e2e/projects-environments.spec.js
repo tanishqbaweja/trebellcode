@@ -62,6 +62,10 @@ async function shootModes(page,name,{height=800,show=null}={}){
   }
   await page.setViewportSize({width:1280,height});await switchMode(page,"dark");
 }
+// Host discovery has answered once the Host capabilities card says whether WSL and SSH are ready.
+async function hostDiscovered(page){
+  for(const name of ["WSL","SSH"])await expect(page.locator(".capability-list>div").filter({has:page.locator("strong",{hasText:new RegExp("^"+name+"$")})}).locator("em")).toHaveText(/^(Ready|Unavailable)$/,{timeout:20_000});
+}
 // A loopback port with nothing listening on it.
 async function deadPort(){
   const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
@@ -452,7 +456,7 @@ test.describe("Adding an environment",()=>{
     await open(page,request);
     await nav(page,"Environments").click();
     const form=page.locator(".environment-create"),field=label=>form.locator("label").filter({hasText:new RegExp("^"+label)}).locator("input, select").first();
-    await expect(page.getByTestId("host-discovery-pending")).toHaveCount(0,{timeout:20_000});
+    await hostDiscovered(page);
     await field("Type").selectOption("ssh");
     const codex=field("Codex executable");
     await codex.click();await page.keyboard.press("End");
@@ -473,6 +477,24 @@ test.describe("Adding an environment",()=>{
     await expect(codex).toHaveValue("");
     await expect(codex).toHaveAttribute("placeholder","Default codex on the host's PATH");
     await shootModes(page,"environment-codex-executable-empty",{show:codex});
+  });
+
+  // Docker Desktop's own WSL distro runs its engine. Host discovery here is real (wsl --list only names the distros), and on a host
+  // that has Docker Desktop its distro is neither listed as a WSL target nor offered in the Distribution picker.
+  test("Docker Desktop's own WSL distro is not offered for agents",async({page,request})=>{
+    await open(page,request);
+    await nav(page,"Environments").click();
+    await hostDiscovered(page);
+    const wsl=page.locator(".capability-list>div").filter({has:page.locator("strong",{hasText:/^WSL$/})});
+    await expect(wsl).toBeVisible();
+    await expect(wsl).not.toContainText("docker-desktop");
+    const form=page.locator(".environment-create"),type=form.locator("label").filter({hasText:/^Type/}).locator("select");
+    if(await type.locator("option[value=wsl]").isEnabled()){
+      await type.selectOption("wsl");
+      expect(await form.locator("label").filter({hasText:/^Distribution/}).locator("option").allTextContents()).not.toContain("docker-desktop");
+      await type.selectOption("local");
+    }
+    await shootModes(page,"environment-wsl-without-docker-desktop",{show:wsl});
   });
 });
 
