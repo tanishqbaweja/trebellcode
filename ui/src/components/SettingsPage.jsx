@@ -105,9 +105,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [providerMessage,setProviderMessage]=useState("");
   const [settingsError,setSettingsError]=useState("");
   // The control that had the keyboard when the alert came up (the one whose save failed): dismissing the alert gives focus back to
-  // it, or to the next control after the alert once it is gone, instead of dropping it on the page body.
-  const failedControlRef=useRef(null);
-  useEffect(()=>{if(!settingsError)return;const active=document.activeElement;failedControlRef.current=active&&active!==document.body&&!active.closest(".settings-action-error")?active:null},[settingsError]);
+  // it, or to the next control after the alert once it is gone, instead of dropping it on the page body. A control disabled while it
+  // works (Refresh published themes) has let go of the keyboard by then, so the last control the keyboard was on stands for it.
+  const failedControlRef=useRef(null),lastFocusedRef=useRef(null);
+  useEffect(()=>{if(!settingsError)return;const active=document.activeElement;failedControlRef.current=active&&active!==document.body&&!active.closest(".settings-action-error")?active:lastFocusedRef.current},[settingsError]);
   function dismissSettingsError(event){
     const alert=event.currentTarget.closest(".settings-action-error"),failed=failedControlRef.current;
     const next=failed?.isConnected&&!failed.disabled?failed:[...alert.parentElement.querySelectorAll("button,input,select,textarea,a[href]")].find(item=>alert.compareDocumentPosition(item)&Node.DOCUMENT_POSITION_FOLLOWING&&!alert.contains(item)&&item.tabIndex>=0&&!item.disabled&&item.getClientRects().length);
@@ -158,10 +159,13 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [storageMessage,setStorageMessage]=useState({text:"",error:false});
   const [storageBusy,setStorageBusy]=useState(false);
   const [themeDraft,setThemeDraft]=useState(null);
-  const [themeMessage,setThemeMessage]=useState("");
+  // A theme note is a status, or the error of a failed save or import, said as an alert: its text, which can hold a theme's name,
+  // does not decide which.
+  const [themeNote,setThemeNote]=useState({text:"",error:false});
+  const themeMessage=themeNote.text,themeMessageError=themeNote.error,setThemeMessage=(text,error=false)=>setThemeNote({text:String(text||""),error});
   // The theme note shows under the theme actions, by Import JSON, and is scrolled into view when it changes: under the theme editor,
   // which an import opens, it was out of view of the button.
-  const themeMessageRef=useRef(null),themeMessageError=/failed|error/i.test(themeMessage);
+  const themeMessageRef=useRef(null);
   useEffect(()=>{if(themeMessage)themeMessageRef.current?.scrollIntoView({block:"nearest"})},[themeMessage]);
   const themeImportRef=useRef(null);
   const [panelAnimationDraft,setPanelAnimationDraft]=useState(null);
@@ -448,7 +452,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     try{
       const theme=normalizeCustomTheme(themeDraft,{id:themeDraft.id});const current=Array.isArray(settings.customThemes)?settings.customThemes:[];
       await save({customThemes:[...current.filter(item=>item.id!==theme.id),theme],appearance:theme.id});setThemeDraft(theme);setThemeMessage("Theme saved and applied.");
-    }catch(error){setThemeMessage(error.message||String(error))}
+    }catch(error){setThemeMessage(error.message||String(error),true)}
   }
   async function removeTheme(theme){
     const current=Array.isArray(settings.customThemes)?settings.customThemes:[];const patch={customThemes:current.filter(item=>item.id!==theme.id)};
@@ -468,7 +472,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     try{
       const parsed=parseThemeJson(await file.text());const source=Array.isArray(parsed)?parsed[0]:parsed;const theme=normalizeCustomTheme(source,{id:`custom-${crypto.randomUUID()}`});const current=Array.isArray(settings.customThemes)?settings.customThemes:[];
       await save({customThemes:[...current,theme],appearance:theme.id});setThemeDraft(theme);setThemeMessage(`Imported ${theme.name}.`);
-    }catch(error){setThemeMessage("Import failed: "+(error.message||String(error)))}
+    }catch(error){setThemeMessage("Import failed: "+(error.message||String(error)),true)}
   }
   function exportTheme(theme){
     const blob=new Blob([JSON.stringify(theme,null,2)+"\n"],{type:"application/json"});const url=URL.createObjectURL(blob);const anchor=document.createElement("a");anchor.href=url;anchor.download=(theme.name||"trebell-theme").replace(/[^a-z0-9._-]+/gi,"-").replace(/^-|-$/g,"")+".json";anchor.click();setTimeout(()=>URL.revokeObjectURL(url),0);
@@ -764,7 +768,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         </button>)}
       </nav>}
     </aside>
-    <section className="settings-stage">
+    <section className="settings-stage" onFocus={event=>{if(!event.target.closest(".settings-action-error"))lastFocusedRef.current=event.target}}>
       <div className="settings-section-head"><div><h2>{activeSettingsSection[2]}</h2><p>{activeSettingsSection[3]}</p></div><span>{settingsSections.findIndex(item=>item[0]===settingsSection)+1} / {settingsSections.length}</span></div>
       {/* The alert stays in view while the page scrolls, so it can be dismissed instead of covering rows until the next action succeeds. */}
       {settingsError&&<p className="settings-action-error" role="alert"><span>{settingsError}</span><button type="button" className="settings-action-error-dismiss" aria-label="Dismiss settings error" onClick={dismissSettingsError}><X size={13}/></button></p>}

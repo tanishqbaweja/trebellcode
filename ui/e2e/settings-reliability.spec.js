@@ -431,6 +431,25 @@ test("dismissing the Settings error alert gives focus back to the control that f
   await switchMode(page,"dark");
 });
 
+// Refresh published themes is disabled while it refreshes, so the keyboard has left it by the time its failure shows; dismissing
+// the alert still gives focus back to it, not to the first control under the alert at the top of the section (Mode's system).
+test("dismissing the alert of a failed Refresh published themes gives focus back to that button",async({page,request})=>{
+  await openSettings(page,request,"Refresh Focus Workspace");
+  await page.getByRole("button",{name:/Appearance/}).click();
+  const refresh=page.getByRole("button",{name:"Refresh published themes"});
+  await expect(refresh).toBeEnabled();
+  await page.route(/\/api\/environment\/themes$/,async route=>{await new Promise(resolve=>setTimeout(resolve,150));return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate published themes failure"})})});
+  // The person has tabbed down to the button; Enter presses it.
+  await refresh.scrollIntoViewIfNeeded();await refresh.focus();
+  await page.keyboard.press("Enter");
+  const alert=page.locator(".settings-action-error");
+  await expect(alert).toContainText("Deliberate published themes failure");
+  await expect(refresh).toBeEnabled();
+  await page.getByRole("button",{name:"Dismiss settings error"}).click();
+  await expect(alert).toHaveCount(0);
+  await expect(refresh).toBeFocused();
+});
+
 // The custom model form says what is wrong with a draft under the form, in view there, not in the Agent harness card's status line
 // higher up the page; so does the note that the model was saved. The person has scrolled down only until Save shows.
 test("the custom model form says what is wrong with a draft by the form",async({page,request})=>{
@@ -533,6 +552,14 @@ test("a theme import says how it went by Import JSON and reads VS Code's JSONC t
   await expect(name).toHaveValue("Fixture Dark Modern");
   expect((await savedSettings(request)).customThemes).toHaveLength(2);
   await shootModes(page,"theme-import-refused",{show:refused});
+  // A theme whose name holds the word error (or failed) imported like any other, and is said as a status, not as a failure.
+  await importFile("terror-night.json",JSON.stringify({name:"Terror Night",appearance:"dark",canvas:"#140f12",accent:"#e0457b"}));
+  const terror=card.getByText("Imported Terror Night.",{exact:true});
+  await expect(terror).toBeInViewport({ratio:1});
+  await expect(terror).toHaveAttribute("role","status");
+  await expect(terror).not.toHaveClass(/provider-status-error/);
+  await expect(card.getByRole("button",{name:"Terror Night",exact:true})).toHaveAttribute("aria-pressed","true");
+  await shootModes(page,"theme-import-error-in-name",{show:terror});
 });
 
 test("the panel animation slider follows a drag and saves once with the final value",async({page,request})=>{
