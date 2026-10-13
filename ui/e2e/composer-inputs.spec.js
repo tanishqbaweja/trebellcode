@@ -260,6 +260,33 @@ test("the Goal panel's Clear asks in the app's own dialog, never the browser's: 
   }finally{await harness.close()}
 });
 
+test("removing an attachment chip from the keyboard moves focus to the next chip's remove button, then the one before, then the composer",async({page},testInfo)=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page);
+  try{
+    const composer=page.getByTestId("composer"),remove=name=>chips(page).getByRole("button",{name:"Remove "+name,exact:true});
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      const files=["notes","tool","todo"].map(name=>name+"-"+mode+".txt");
+      for(const name of files)await writeFile(testInfo.outputPath(name),"contents of "+name);
+      await chooseFiles(page,files.map(name=>testInfo.outputPath(name)));
+      await expect(page.locator(".attachment-shelf > span:not(.uploading)")).toHaveCount(3);await expect(chips(page)).toHaveCount(3);
+      // The chips stand in the order the files were stored.
+      const shown=await chips(page).allTextContents();expect([...shown].sort()).toEqual([...files].sort());
+      // Shift+Tab from the composer reaches the last chip's remove button, and once more the middle one.
+      await composer.click();await page.keyboard.press("Shift+Tab");await expect(remove(shown[2])).toBeFocused();
+      await page.keyboard.press("Shift+Tab");await expect(remove(shown[1])).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(chips(page)).toHaveText([shown[0],shown[2]]);await expect(remove(shown[2])).toBeFocused();
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(remove(shown[2])).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"attachment-removed-focus-next-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+      // The last chip goes: the one before takes focus. The last one left goes: the composer takes it.
+      await page.keyboard.press("Enter");await expect(chips(page)).toHaveText([shown[0]]);await expect(remove(shown[0])).toBeFocused();
+      await page.keyboard.press(" ");await expect(chips(page)).toHaveCount(0);await expect(composer).toBeFocused();
+    }
+  }finally{await harness.close()}
+});
+
 test("/plan puts the plan prompt with what follows it in the composer, ready to send",async({page})=>{
   test.setTimeout(60_000);
   const harness=await openComposerApp(page);
