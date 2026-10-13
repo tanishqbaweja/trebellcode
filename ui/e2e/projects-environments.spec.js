@@ -336,6 +336,105 @@ test.describe("Removing a project",()=>{
     }finally{release();await page.unrouteAll({behavior:"ignoreErrors"})}
   });
 
+  // The person types a new name and goes straight to Remove (leaving the field saves the name, so the save and the removal are on
+  // their way together), then chooses Undo: the project comes back under the name they gave it, whichever reached the server first.
+  test("Undo of a removal keeps the name typed just before Remove",async({page,request})=>{
+    const boot=await open(page,request);
+    const path=join(boot.cwd,"ui");
+    await request.post("/api/projects",{data:{path,name:"Project A"}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const saves=[];page.on("requestfinished",item=>{if(item.method()==="POST"&&/\/api\/projects$/.test(item.url()))saves.push(item.postDataJSON()?.name??null)});
+    await openProjects(page);
+    const card=projectCard(page,"Project A");
+    await card.getByRole("button",{name:/Project identity/}).click();
+    await card.getByRole("textbox",{name:"Name"}).fill("Project B");
+    await card.getByRole("button",{name:"Remove Project A",exact:true}).click();
+    const toast=page.getByTestId("thread-undo-toast");
+    await expect(toast).toContainText("Project “Project B” removed");
+    await expect.poll(()=>saves.includes("Project B"),{message:"the name was sent"}).toBe(true);
+    await toast.getByRole("button",{name:"Undo",exact:true}).click();
+    await expect(toast).toHaveCount(0);
+    await expect(projectCard(page,"Project B")).toBeVisible();
+    await expect.poll(async()=>(await listedProjects(request)).filter(project=>project.path===path).map(project=>project.name).join(",")||"missing",{message:"the restored project's name on the server"}).toBe("Project B");
+    await expect(projectCard(page,"Project A")).toHaveCount(0);
+  });
+
+  // The server has applied a Permissions change whose answer is slow when the person removes the project, then changes their mind:
+  // Undo puts the project back as the server had it when it was removed, with that permission.
+  test("Undo of a removal keeps a setting the server saved just before it",async({page,request})=>{
+    const boot=await open(page,request);
+    const path=join(boot.cwd,"ui");
+    await request.post("/api/projects",{data:{path,name:"Project A",permissionMode:"edits"}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    let release=()=>{};const held=new Promise(resolve=>{release=resolve});let applied=false;
+    await page.route(/\/api\/projects$/,async route=>{
+      if(route.request().method()!=="POST"||route.request().postDataJSON()?.permissionMode!=="supervised")return route.fallback();
+      const response=await route.fetch();applied=true;await held;await route.fulfill({response});
+    });
+    try{
+      await nav(page,"Projects").click();
+      const card=projectCard(page,"Project A");
+      await card.getByRole("combobox",{name:"Permissions"}).selectOption("supervised");
+      await expect.poll(()=>applied).toBe(true);
+      await card.getByRole("button",{name:"Remove Project A",exact:true}).click();
+      const toast=page.getByTestId("thread-undo-toast");
+      await expect(toast).toContainText("Project “Project A” removed");
+      release();
+      await toast.getByRole("button",{name:"Undo",exact:true}).click();
+      await expect(toast).toHaveCount(0);
+      await expect(projectCard(page,"Project A")).toBeVisible();
+      await expect.poll(async()=>(await listedProjects(request)).find(project=>project.path===path)?.permissionMode??"missing",{message:"the restored project's permission"}).toBe("supervised");
+      await expect(projectCard(page,"Project A").getByRole("combobox",{name:"Permissions"})).toHaveValue("supervised");
+    }finally{release();await page.unrouteAll({behavior:"ignoreErrors"})}
+  });
+
+  // A Permissions change is still on its way, not yet at the server (a slow connection), when the person removes the project. The
+  // save that arrives after the removal is refused, so the project stays removed instead of coming back as a bare record named
+  // after its folder; Undo then brings it back with the permission the person chose.
+  test("a save still on its way when its project is removed leaves it removed, and Undo brings it back with that save",async({page,request})=>{
+    const boot=await open(page,request);
+    const path=join(boot.cwd,"ui");
+    await request.post("/api/projects",{data:{path,name:"Project A",permissionMode:"edits",scripts:[{id:"a-tests",name:"A tests",command:"npm test"}]}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    let release=()=>{};const held=new Promise(resolve=>{release=resolve});let caught=false,answered=null,deletes=0;
+    await page.route(/\/api\/projects$/,async route=>{
+      if(route.request().method()!=="POST"||route.request().postDataJSON()?.permissionMode!=="supervised")return route.fallback();
+      caught=true;await held;await route.fallback();
+    });
+    page.on("requestfinished",async item=>{
+      if(item.method()==="DELETE"&&/\/api\/projects\?id=/.test(item.url()))deletes++;
+      if(item.method()==="POST"&&/\/api\/projects$/.test(item.url())&&item.postDataJSON()?.permissionMode==="supervised")answered=(await item.response())?.status()??null;
+    });
+    try{
+      await nav(page,"Projects").click();
+      const card=projectCard(page,"Project A");
+      await card.getByRole("combobox",{name:"Permissions"}).selectOption("supervised");
+      await expect.poll(()=>caught).toBe(true);
+      await card.getByRole("button",{name:"Remove Project A",exact:true}).click();
+      const toast=page.getByTestId("thread-undo-toast");
+      await expect(toast).toContainText("Project “Project A” removed");
+      await expect.poll(()=>deletes).toBe(1);
+      expect(await listedProjects(request).then(list=>list.filter(project=>project.path===path)),"removed on the server").toEqual([]);
+      release();
+      await expect.poll(()=>answered,{message:"the late save's answer"}).toBe(404);
+      expect(await listedProjects(request).then(list=>list.filter(project=>project.path===path)),"the late save brought the project back").toEqual([]);
+      await expect(projectCard(page,"ui")).toHaveCount(0);
+      await expect(page.locator(".projects-page").getByRole("alert"),"the refused late save is not reported as a failure").toHaveCount(0);
+      await toast.getByRole("button",{name:"Undo",exact:true}).click();
+      await expect(toast).toHaveCount(0);
+      await expect(projectCard(page,"Project A")).toBeVisible();
+      await expect.poll(async()=>{const restored=(await listedProjects(request)).filter(project=>project.path===path);return restored.map(project=>[project.name,project.permissionMode,project.scripts.length].join(" ")).join(",")||"missing"},{message:"the restored project"}).toBe("Project A supervised 1");
+      await page.reload();
+      await expect(page.getByTestId("composer")).toBeVisible();
+      await nav(page,"Projects").click();
+      await expect(projectCard(page,"Project A").getByRole("combobox",{name:"Permissions"})).toHaveValue("supervised");
+      await expect(projectCard(page,"ui")).toHaveCount(0);
+    }finally{release();await page.unrouteAll({behavior:"ignoreErrors"})}
+  });
+
   // The palette shows the project list it read when it was last open until it has read the list again. A project removed on
   // Projects is not offered there meanwhile (opening it would add it back), and its Undo puts it back there at once.
   for(const mode of MODES)test(`the palette offers a removed project no more, and a restored one again, before it reads the list again (${mode})`,async({page,request})=>{

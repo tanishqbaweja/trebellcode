@@ -1026,3 +1026,39 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
 });
+
+// A Projects card's save names its project. One still on its way when the person removes the project reaches the server after the
+// removal: it is refused, instead of creating the project again as a bare record named after its folder. The removal answers with
+// the record as it removed it, for Undo to put back with every save that reached the server first.
+test("a save that names a removed project is refused instead of adding it again, and a removal answers with the record it removed",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-gui-projects-"));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const gui=await createGuiServer({port,appPort,mock:true,env});
+  const post=body=>fetch(gui.url+"/api/projects",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+  const listed=async path=>(await fetch(gui.url+"/api/projects").then(response=>response.json())).projects.filter(project=>project.path===path);
+  try{
+    const path=join(home,"work","app");
+    const created=(await post({path,name:"App",permissionMode:"edits"}).then(response=>response.json())).project;
+    const saved=await post({id:created.id,path,permissionMode:"supervised"});
+    assert.equal(saved.status,200);assert.equal((await saved.json()).project.permissionMode,"supervised");
+    const removal=await fetch(gui.url+"/api/projects?id="+encodeURIComponent(created.id),{method:"DELETE"}).then(response=>response.json());
+    assert.equal(removal.ok,true);assert.equal(removal.project.id,created.id);
+    assert.equal(removal.project.name,"App");assert.equal(removal.project.permissionMode,"supervised","the record removed has the save that came first");
+    const late=await post({id:created.id,path,permissionMode:"auto"});
+    assert.equal(late.status,404);assert.deepEqual(await late.json(),{error:"Project was not found"});
+    assert.deepEqual(await listed(path),[],"the late save did not add the project again");
+    // A save that names another folder's project changes neither.
+    const other=(await post({path:join(home,"work","other"),name:"Other"}).then(response=>response.json())).project;
+    assert.equal((await post({id:other.id,path,name:"Wrong folder"})).status,404);
+    assert.deepEqual(await listed(path),[]);
+    // A save without an id (a folder opened, Undo putting a project back) adds the project as before.
+    const added=await post({path,name:"App"});
+    assert.equal(added.status,200);const again=(await added.json()).project;assert.notEqual(again.id,created.id);
+    assert.deepEqual((await listed(path)).map(project=>project.name),["App"]);
+    assert.deepEqual(await fetch(gui.url+"/api/projects?id=no-such-project",{method:"DELETE"}).then(response=>response.json()),{ok:true,project:null});
+  }finally{
+    await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});

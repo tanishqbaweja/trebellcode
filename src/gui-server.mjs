@@ -2102,14 +2102,19 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
             ?requestedEnvironmentId(body.environmentId,{fallback:false})
             :requestedEnvironmentId(null);
-          const project=state.touchProject(environmentPath(body.path,environmentId),{...body,environmentId});
+          const path=environmentPath(body.path,environmentId);
+          // A save that names its project (a Projects card's) changes that project only. One removed meanwhile, which a save still on
+          // its way when the person pressed Remove reaches after the removal, is not created again under its folder's name.
+          if(body.id!=null){const named=state.projectById(String(body.id));if(!named||named.path!==path||(named.environmentId||null)!==(environmentId||null))return json(res,404,{error:"Project was not found"})}
+          const project=state.touchProject(path,{...body,environmentId});
           if(body.activate)state.updateSettings({activeProjectId:project.id});
           return json(res,200,{project:projectWithEnvironment(project)});
         }catch(error){return json(res,400,{error:error.message});}
       }
       if(req.method==="DELETE"){
-        const id=url.searchParams.get("id"); if(id) state.removeProject(id);
-        return json(res,200,{ok:true});
+        // The answer is the record as it was removed, with every save that reached the server first, for an Undo to put back.
+        const id=url.searchParams.get("id"),removed=id?state.removeProject(id):null;
+        return json(res,200,{ok:true,project:removed?projectWithEnvironment(removed):null});
       }
     }
     if(url.pathname==="/api/project-recipe/resolve"&&req.method==="POST"){

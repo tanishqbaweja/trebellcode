@@ -196,12 +196,23 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   const cardErrorRef=useRef(null);
   useEffect(()=>{if(cardError)cardErrorRef.current?.scrollIntoView({block:"nearest"})},[cardError]);
   const cardAlert=(project,area)=>cardError?.id===project.id&&cardError.area===area&&<p ref={cardErrorRef} className="provider-status-error project-card-error" role="alert">{cardError.text}</p>;
+  // A card's save names its project (id), so the server applies it to that project only: one still on its way when the person
+  // removes the project reaches the server after the removal and is refused, instead of creating the project again under its
+  // folder's name. Each save is kept here per project until it is answered, and one refused because this page removed the project
+  // (removingRef) stays: Undo waits for the first and puts the second back with the project, so a setting changed or a name typed
+  // just before Remove is not lost.
+  const savesRef=useRef(new Map()),removingRef=useRef(new Set());
   async function saveProject(project,patch,area=cardArea(patch)){
     setError("");setCardError(null);
+    const saves=savesRef.current.get(project.id)||new Set(),entry={patch,gone:false};let settle=()=>{};entry.settled=new Promise(resolve=>{settle=resolve});
+    savesRef.current.set(project.id,saves);saves.add(entry);
     let result;
     try{
-      result=await api("/api/projects",{method:"POST",body:{path:project.path,environmentId:project.environmentId||null,...patch}});
-    }catch(err){failInCard(project,area,err.message||String(err));return null}
+      result=await api("/api/projects",{method:"POST",body:{id:project.id,path:project.path,environmentId:project.environmentId||null,...patch}});
+    }catch(err){
+      if(err?.status===404&&removingRef.current.has(project.id)){entry.gone=true;return null}
+      failInCard(project,area,err.message||String(err));return null;
+    }finally{if(!entry.gone)saves.delete(entry);settle()}
     const issues=[];
     try{onProjectUpdated?.(result.project)}catch(err){issues.push("the local project view could not apply the saved update: "+(err.message||String(err))+".")}
     const refreshed=await freshRefresh({reportErrors:true});if(!refreshed)issues.push("the project list could not refresh. The last valid project data is still shown.");
@@ -338,29 +349,38 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   // A removal is undone from the app's toast when the listed record can put the project back as it was; when it cannot
   // (projectRestoreBlocker), the page asks first and says what goes with it.
   async function removeProject(project){
-    const removed=latestProject(project),blocker=projectRestoreBlocker(removed),undoable=Boolean(onOfferUndo)&&!blocker;
-    if(!undoable&&!await askConfirm(projectRemovalQuestion(removed,blocker),{confirm:"Remove project"}))return;
-    const index=projectsRef.current.findIndex(item=>item.id===removed.id);
+    const shown=latestProject(project),blocker=projectRestoreBlocker(shown),undoable=Boolean(onOfferUndo)&&!blocker;
+    if(!undoable&&!await askConfirm(projectRemovalQuestion(shown,blocker),{confirm:"Remove project"}))return;
+    const index=projectsRef.current.findIndex(item=>item.id===shown.id),name=savedProjectName(shown);
     setBusy(true);setError("");setCardError(null);
+    removingRef.current.add(shown.id);
+    let answer;
+    try{answer=await api("/api/projects?id="+encodeURIComponent(shown.id),{method:"DELETE"})}
+    catch(err){removingRef.current.delete(shown.id);failInCard(shown,"remove","Could not remove project: "+(err.message||String(err)));setBusy(false);return}
     try{
-      await api("/api/projects?id="+encodeURIComponent(removed.id),{method:"DELETE"});
+      // The server answers with the record as it removed it, with every save that reached it first: this page's copy has a save's
+      // change only once the list is read again after its answer.
+      const removed=answer?.project||shown;
       try{onProjectRemoved?.(removed)}catch{}
-      if(undoable)onOfferUndo(`Project “${removed.name}” removed`,()=>restoreProject(removed,{index}));
+      if(undoable)onOfferUndo(`Project “${name}” removed`,()=>restoreProject(removed,{index,shown}));
       await refreshAfterSuccess("Project was removed");
-    }catch(err){failInCard(removed,"remove","Could not remove project: "+(err.message||String(err)))}
-    finally{setBusy(false)}
+    }finally{setBusy(false)}
   }
-  // Undo of a removal: the listed record goes back (the server gives it a new id), and the page on screen shows the card where
-  // it was. A project still open when Undo runs is the active one again; one the person left meanwhile (they opened another
-  // project) stays in the list only, so Undo does not take them out of where they are.
-  async function restoreProject(removed,{index}){
-    const activate=Boolean(isProjectOpen?.(removed));
+  // Undo of a removal: the removed record goes back (the server gives it a new id), with the card saves the server refused because
+  // they reached it after the removal, once those still on their way are answered; the page on screen shows the card where it
+  // was. A project still open when Undo runs is the active one again; one the person left meanwhile (they opened another project)
+  // stays in the list only, so Undo does not take them out of where they are.
+  async function restoreProject(removed,{index,shown=removed}){
+    const activate=Boolean(isProjectOpen?.(removed)),saves=[...(savesRef.current.get(removed.id)||[])];
+    await Promise.all(saves.map(entry=>entry.settled));
+    savesRef.current.delete(removed.id);
+    const record=Object.assign({},removed,...saves.filter(entry=>entry.gone).map(entry=>entry.patch));
     let restored;
-    try{restored=(await api("/api/projects",{method:"POST",body:{...projectRestoreBody(removed),...(activate?{activate:true}:{})}}))?.project||null}
+    try{restored=(await api("/api/projects",{method:"POST",body:{...projectRestoreBody(record),...(activate?{activate:true}:{})}}))?.project||null}
     catch(err){const page=projectsOnScreen?.current;if(!page)throw err;page.showError("Could not restore project: "+(err.message||String(err)));return}
     const page=projectsOnScreen?.current;
     try{(page?.onProjectUpdated||onProjectUpdated)?.(restored)}catch{}
-    await page?.placeRestored(restored,removed,index);
+    await page?.placeRestored(restored,shown,index);
   }
   // The restored card takes the removed one's place (with its new id it would lead the list as a new project) and keeps
   // the removed card's Git state until the refresh reads it again. It is placed again once a refresh that began before the

@@ -446,9 +446,13 @@ export class TrebellStateStore {
     this.#save();
     return clone(project);
   }
+  projectById(id){ return clone(this.state.projects.find(project=>project.id===id)||null); }
+  // The removed record, or null when no project has the id.
   removeProject(id){
+    const removed=this.state.projects.find(p=>p.id===id)||null;
     this.state.projects=this.state.projects.filter(p=>p.id!==id);
     this.#save();
+    return removed?clone(removed):null;
   }
   // The thread's stored meta, or null when it has none. From sqlite it is a fresh parse the caller may change; from the legacy file it
   // is the live entry, which callers copy.
