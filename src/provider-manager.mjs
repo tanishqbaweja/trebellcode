@@ -883,10 +883,14 @@ export class ProviderManager {
     const requestedServiceTierRaw=String(request.serviceTier||request.service_tier||"").trim().toLowerCase(),requestedServiceTier=requestedServiceTierRaw==="priority"?"fast":requestedServiceTierRaw||null;
     const started=performance.now(),requestDeadlineAt=started+this.requestTimeoutMs;let wire={endpoint:null,wireApi:null,requestBytes:0},wireRequestBytes=0,wireAttempts=0;
     const onWire=value=>{wire=value||wire;wireRequestBytes+=Number(value?.requestBytes||0);wireAttempts++};
-    let fullResponsesBody=null,openAiContinuation=null,responsesBody=null,openAiParentId="",compactedResend=null;
-    // When the continuation cannot be used and the server had compacted this chain, the request is resent as the compaction item
-    // and what followed it (the server's own context) instead of the whole local transcript; a resend the API refuses is sent whole.
+    let fullResponsesBody=null,openAiContinuation=null,responsesBody=null,openAiParentId="",compactedResend=null,openAiWebSocketLane=false;
+    // When a WebSocket session falls back (a replaced connection, a refused continuation, an HTTPS retry, or a completion judge
+    // without a usable socket) and the server had compacted this chain, the request is resent as the compaction item and what
+    // followed it (the server's own context) instead of the whole local transcript; a resend the API refuses is sent whole.
+    // Anything else that cannot continue its parent (an expired parent, another model or prefix, a session without the
+    // WebSocket lane) is sent whole, as before.
     const compactedOrFull=(full,parentId)=>{
+      if(!openAiWebSocketLane)return full;
       if(!compactedResend){const resend=this.openAiResponseContinuations.compactedResend(full,parentId);if(resend)compactedResend={...resend,rejected:false}}
       return compactedResend&&!compactedResend.rejected?compactedResend.body:full;
     };
@@ -909,9 +913,7 @@ export class ProviderManager {
         if(!responsesBody){
           fullResponsesBody=this.#officialOpenAiResponsesBody({...request,model});
           openAiContinuation=this.openAiResponseContinuations.prepare(fullResponsesBody,parentId,{messageRefs,identityToken});
-          // A parent that cannot be continued (too old, or another model or prefix) may still hold a server compaction, which the
-          // request is then resent from.
-          responsesBody=openAiContinuation?.used?openAiContinuation.body:compactedOrFull(fullResponsesBody,parentId);
+          responsesBody=openAiContinuation?.body||fullResponsesBody;
         }
       }else{
         fullResponsesBody=providerTurnToResponses({...request,model});
@@ -932,7 +934,9 @@ export class ProviderManager {
     if(this.reusePreSerializedToolJson&&chatBody&&chatManifest?.toolsJson&&chatBody.tools===chatManifest.tools)attachPreSerializedTopLevel(chatBody,"tools",chatBody.tools,chatManifest.toolsJson);
     let openAiWebSocketFallback=null,continuationFallback=false,continuationFallbackReason=null;
     const openAiWebSocketStreamId=provider.id==="openai"&&streamResponses===true?openAiResponsesWebSocketStreamId(request?.metadata?.sessionId):null;
-    const openAiWebSocketEnabled=request?.openAiDisableWebSocket!==true&&Boolean(openAiWebSocketStreamId)&&String(this.env.TREBELL_OPENAI_RESPONSES_WEBSOCKET||"1").trim()!=="0"&&!this.#openAiWebSocketCircuitOpen();
+    // The session runs on the WebSocket lane, so a request this turn sends over HTTPS is a fallback from it.
+    openAiWebSocketLane=request?.openAiDisableWebSocket!==true&&Boolean(openAiWebSocketStreamId)&&String(this.env.TREBELL_OPENAI_RESPONSES_WEBSOCKET||"1").trim()!=="0";
+    const openAiWebSocketEnabled=openAiWebSocketLane&&!this.#openAiWebSocketCircuitOpen();
     const openAiWebSocketTransport=openAiWebSocketEnabled?this.#openAiWebSocketTransport():null;
     if(provider.id==="openai"&&provider.wireApi==="responses"&&request?.metadata?.completionGate===true&&request.openAiDisableWebSocket!==true&&!openAiWebSocketTransport){
       // A WebSocket-only parent cannot be relied upon when the audit must fall back to HTTP.
@@ -986,8 +990,8 @@ export class ProviderManager {
           if(continuationRejected||invalidToolOutputRequest){
             const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
             // The socket refused the compacted resend itself: the HTTPS retry sends the whole transcript.
-            if(sentCompacted())compactedResend.rejected=true;
-            fullResponsesBody=fallbackBody;responsesBody=compactedOrFull(fallbackBody,openAiParentId);continuationFallback=true;continuationFallbackReason=continuationRejected?(openAiContinuation?.used?"previous_response_unavailable":"compacted_resend_rejected"):"invalid_tool_output_state";
+            const refusedCompacted=sentCompacted();if(refusedCompacted)compactedResend.rejected=true;
+            fullResponsesBody=fallbackBody;responsesBody=compactedOrFull(fallbackBody,openAiParentId);continuationFallback=true;continuationFallbackReason=continuationRejected?(refusedCompacted?"compacted_resend_rejected":"previous_response_unavailable"):"invalid_tool_output_state";
           }
         }
     }
@@ -1002,7 +1006,7 @@ export class ProviderManager {
       if(refusedResend)compactedResend.rejected=true;
       responsesBody=compactedOrFull(fullResponsesBody,openAiParentId);
       sink?.restart();
-      upstream=await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;if(!continuationFallbackReason)continuationFallbackReason=openAiContinuation?.used?"previous_response_unavailable":"compacted_resend_rejected";
+      upstream=await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;if(!continuationFallbackReason)continuationFallbackReason=refusedResend?"compacted_resend_rejected":"previous_response_unavailable";
       if(sentCompacted()&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
         try{await upstream.body?.cancel?.()}catch{}
         compactedResend.rejected=true;responsesBody=fullResponsesBody;sink?.restart();
