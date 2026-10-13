@@ -514,7 +514,9 @@ test.describe("Using an environment for agents",()=>{
     await expect(alert).toContainText("Connection refused",{timeout:30_000});
     const server=async()=>(await (await request.get("/api/environments")).json()).activeEnvironmentId;
     expect(await server(),"the server keeps Local machine").toBe(null);
-    await expect(alert).toHaveText(`Could not use Dead host for agents: ssh: connect to host 127.0.0.1 port ${port}: Connection refused`);
+    // The reason is the ssh client's own words, which differ between OpenSSH builds: Windows' own says "banner exchange: Connection
+    // to UNKNOWN port -1: Connection refused", Git for Windows' "ssh: connect to host 127.0.0.1 port N: Connection refused".
+    await expect(alert).toHaveText(/^Could not use Dead host for agents: .*Connection refused\.?$/);
     await expect(local.getByText("Active",{exact:true})).toBeVisible();
     await expect(dead.getByRole("button",{name:"Use for agent",exact:true})).toBeEnabled();
     await shootModes(page,"environment-unreachable-not-used");
