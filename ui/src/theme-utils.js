@@ -32,6 +32,24 @@ const TEXT_CONTRAST={foreground:7,muted:4.5,muted2:3.8,accent:3,status:4.5};
 
 function colorFrom(source,...keys){for(const key of keys){const value=expandHex(source?.[key]);if(value)return value}return null}
 
+// VS Code writes its color themes as JSONC: // and /* */ comments and trailing commas. Those are dropped outside strings before the
+// text is read as JSON, so a theme file VS Code reads imports as it is; anything else that is not JSON is still refused.
+export function parseThemeJson(text){
+  const source=String(text??"");let clean="",comma=false;
+  for(let i=0;i<source.length;i++){
+    const ch=source[i],next=source[i+1];
+    if(ch==="/"&&next==="/"){const end=source.indexOf("\n",i);i=end<0?source.length:end-1;continue}
+    if(ch==="/"&&next==="*"){const end=source.indexOf("*/",i+2);i=end<0?source.length:end+1;continue}
+    if(ch===" "||ch==="\n"||ch==="\r"||ch==="\t"){clean+=ch;continue}
+    // A comma is written once the next token shows it is not a trailing one.
+    if(comma&&ch!=="}"&&ch!=="]")clean+=",";
+    comma=ch===",";if(comma)continue;
+    if(ch==='"'){let end=i+1;while(end<source.length&&source[end]!=='"')end+=source[end]==="\\"?2:1;clean+=source.slice(i,end+1);i=end;continue}
+    clean+=ch;
+  }
+  return JSON.parse(comma?clean+",":clean);
+}
+
 export function normalizeCustomTheme(input,{id=null}={}){
   if(!input||typeof input!=="object"||Array.isArray(input))throw new Error("Theme JSON must be an object");
   const colors=input.colors&&typeof input.colors==="object"&&!Array.isArray(input.colors)?input.colors:{};

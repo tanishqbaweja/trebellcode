@@ -500,6 +500,41 @@ test("the custom model form says by the form that an OpenCode model needs provid
   await shootModes(page,"custom-model-opencode-format",{show:problem});
 });
 
+// A theme import says how it went right under Import JSON, in view, not under the theme editor the import opens further down the
+// card; and VS Code's own theme files, JSONC with comments and trailing commas, import as they are.
+test("a theme import says how it went by Import JSON and reads VS Code's JSONC theme files",async({page,request})=>{
+  await openSettings(page,request,"Theme Import Workspace");
+  await page.setViewportSize({width:1280,height:800});
+  await page.getByRole("button",{name:/Appearance/}).click();
+  const card=page.locator('[data-setting-target="appearance-theme"]'),importButton=card.getByRole("button",{name:"Import JSON",exact:true}),name=card.getByLabel("Name",{exact:true});
+  // The person picks the file in the file chooser Import JSON opens.
+  async function importFile(file,text){const chooser=page.waitForEvent("filechooser");await importButton.click();await (await chooser).setFiles({name:file,mimeType:"application/json",buffer:Buffer.from(text)})}
+  await importFile("lane-d-good.json",JSON.stringify({name:"Lane D Good",appearance:"dark",canvas:"#101814",accent:"#3ddc97"}));
+  const imported=card.getByText("Imported Lane D Good.",{exact:true});
+  await expect(imported).toBeInViewport({ratio:1});
+  await expect(importButton).toBeInViewport({ratio:1});
+  await expect(name).toHaveValue("Lane D Good");
+  // The shape VS Code ships its color themes in: // and /* */ comments, a // inside a string, trailing commas.
+  const darkModern=`{\n\t// Fixture in the shape of VS Code's Dark Modern.\n\t"$schema": "vscode://schemas/color-theme",\n\t"name": "Fixture Dark Modern",\n\t"type": "dark",\n\t/* Workbench colors */\n\t"colors": {\n\t\t"editor.background": "#1f1f1f",\n\t\t"editor.foreground": "#cccccc",\n\t\t"focusBorder": "#0078d4", // the accent\n\t},\n\t"tokenColors": [],\n}\n`;
+  await importFile("dark_modern.json",darkModern);
+  const modern=card.getByText("Imported Fixture Dark Modern.",{exact:true});
+  await expect(modern).toBeInViewport({ratio:1});
+  await expect(modern).toHaveAttribute("role","status");
+  await expect(name).toHaveValue("Fixture Dark Modern");
+  await expect(card.getByRole("button",{name:"Fixture Dark Modern",exact:true})).toHaveAttribute("aria-pressed","true");
+  await expect.poll(async()=>(await savedSettings(request)).customThemes.map(theme=>[theme.name,theme.canvas,theme.accent])).toEqual([["Lane D Good","#101814","#3ddc97"],["Fixture Dark Modern","#1f1f1f","#0078d4"]]);
+  await shootModes(page,"theme-import-jsonc",{show:modern});
+  // A file that is not a theme is refused in the same place, and the open editor keeps the theme it had.
+  await importFile("notes.json",JSON.stringify({name:"Notes",colors:{}}));
+  const refused=card.getByText("Import failed: Theme must define canvas or colors.editor.background",{exact:true});
+  await expect(refused).toBeInViewport({ratio:1});
+  await expect(refused).toHaveAttribute("role","alert");
+  await expect(modern).toHaveCount(0);
+  await expect(name).toHaveValue("Fixture Dark Modern");
+  expect((await savedSettings(request)).customThemes).toHaveLength(2);
+  await shootModes(page,"theme-import-refused",{show:refused});
+});
+
 test("the panel animation slider follows a drag and saves once with the final value",async({page,request})=>{
   await openSettings(page,request,"Slider Workspace",{panelAnimationMs:0});
   await page.getByRole("button",{name:/Appearance/}).click();

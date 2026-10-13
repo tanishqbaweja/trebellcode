@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { contrastRatio, inkOn, luminance, normalizeCustomTheme, themeCssVariables } from "../ui/src/theme-utils.js";
+import { contrastRatio, inkOn, luminance, normalizeCustomTheme, parseThemeJson, themeCssVariables } from "../ui/src/theme-utils.js";
 
 const fills=variables=>[variables["--bg"],variables["--panel"],variables["--panel2"]];
 const minContrast=(variables,name)=>Math.min(...fills(variables).map(fill=>contrastRatio(variables[name],fill)));
@@ -17,6 +17,14 @@ test("normalizes compact Trebell themes",()=>{
 test("imports VS Code color-theme JSON into Trebell palette fields",()=>{
   const theme=normalizeCustomTheme({name:"Fixture Code",type:"dark",colors:{"editor.background":"#101218","editor.foreground":"#d8dee9","focusBorder":"#88c0d0","editorError.foreground":"#bf616a","testing.iconPassed":"#a3be8c"}},{id:"fixture"});
   assert.equal(theme.canvas,"#101218");assert.equal(theme.accent,"#88c0d0");assert.equal(theme.colors.foreground,"#d8dee9");assert.equal(theme.colors.error,"#bf616a");assert.equal(theme.colors.success,"#a3be8c");
+});
+
+test("reads VS Code's JSONC theme files: comments and trailing commas outside strings are dropped, the rest must be JSON",()=>{
+  const jsonc='{\n\t// Dark Modern\n\t"$schema": "vscode://schemas/color-theme",\n\t/* block */ "name": "a,} /* kept */ // kept",\n\t"colors": {"editor.background": "#1f1f1f", // trailing\n\t},\n\t"tokenColors": [1, 2,],\n}\n';
+  assert.deepEqual(parseThemeJson(jsonc),{$schema:"vscode://schemas/color-theme",name:"a,} /* kept */ // kept",colors:{"editor.background":"#1f1f1f"},tokenColors:[1,2]});
+  assert.deepEqual(parseThemeJson('{"a":"say \\"hi\\", // still text","b":"\\\\"}'),{a:'say "hi", // still text',b:"\\"});
+  assert.deepEqual(parseThemeJson('{"a":1}'),{a:1});
+  for(const broken of ['{"a": }',"[1,,2]","[1,","{\"a\":\"open}",""])assert.throws(()=>parseThemeJson(broken),SyntaxError,broken);
 });
 
 test("custom theme variables derive usable light and dark counterparts",()=>{
