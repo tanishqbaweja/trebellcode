@@ -3,7 +3,23 @@ import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+const shots=fileURLToPath(new URL("../../visual-audit/polish/onboarding/",import.meta.url));mkdirSync(shots,{recursive:true});
 const SETTINGS={appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,modelProvider:"openai"};
+
+// The header's mode button, clicked as a person switches between dark and light. Setup covers the header, so setup is marked done
+// through the API while the button is clicked, and opened again after it.
+async function switchModeUnderSetup(page,request,mode){
+  if(await page.locator("html").getAttribute("data-mode")===mode)return;
+  await request.post("/api/settings",{data:{onboardingComplete:true}});await page.reload();
+  await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+  await request.post("/api/settings",{data:{onboardingComplete:false}});await page.reload();
+  await expect(page.getByTestId("onboarding")).toBeVisible();
+}
+// Screenshots of the setup dialog as it is, at 1280 and 900 wide; the page is left at 1280.
+async function shootSetup(page,name,mode){
+  for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:shots+`${name}-${mode}-${width}.png`})}
+  await page.setViewportSize({width:1280,height:800});
+}
 
 // Pending Codex history for the onboarding workspace, laid over the server's own answer on whether Codex imports can run.
 async function routeCodexHistory(page,cwd){
@@ -40,6 +56,47 @@ test("onboarding names the real reason Codex history cannot be imported",async({
     await expect(step).toContainText("Codex imports need the Codex harness on Local machine.");
     await expect(step).not.toContainText("app-server");
     await page.screenshot({animations:"disabled",path:auditDir+"onboarding-codex-harness-1280x800.png"});
+  }finally{
+    await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:true,agentRuntime:"codex"}});
+  }
+});
+
+// Finish setup is disabled while it saves; when the save failed, the keyboard was left on the page body, outside the dialog. It stays
+// on Finish setup, so Enter tries again. The history scan is answered here, so no real local history is read.
+test("a Finish setup that fails leaves the keyboard on Finish setup in the dialog",async({page,request})=>{
+  test.setTimeout(60_000);
+  let failFinish=false;
+  await page.route(/\/api\/history-import$/,route=>route.fulfill({json:{codexImportAvailable:true,sessions:[]}}));
+  await page.route(/\/api\/settings$/,route=>{
+    if(route.request().method()!=="POST"||!failFinish)return route.fallback();
+    failFinish=false;return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Could not save settings: EPERM: operation not permitted, rename 'state.json.tmp'"})});
+  });
+  try{
+    await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:false,agentRuntime:"codex"}});
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const onboarding=page.getByTestId("onboarding"),dialog=onboarding.getByRole("dialog",{name:"Set up Trebell Code"}),finish=onboarding.getByRole("button",{name:"Finish setup",exact:true});
+    for(const mode of ["dark","light"]){
+      await switchModeUnderSetup(page,request,mode);
+      await expect(onboarding.getByRole("button",{name:"Rescan",exact:true})).toBeEnabled();
+      // The person tabs to Finish setup and presses Enter; the save fails once.
+      for(let presses=0;presses<6&&!await finish.evaluate(node=>node===document.activeElement);presses++)await page.keyboard.press("Tab");
+      await expect(finish).toBeFocused();
+      failFinish=true;await page.keyboard.press("Enter");
+      await expect(onboarding.getByRole("alert")).toContainText("EPERM: operation not permitted");
+      await expect(finish).toBeEnabled();
+      await expect(finish).toBeFocused();
+      await shootSetup(page,"finish-failed-focus",mode);
+      // Tab and Shift+Tab go on inside the dialog.
+      await page.keyboard.press("Tab");
+      expect(await dialog.evaluate(node=>node.contains(document.activeElement))).toBe(true);
+      await page.keyboard.press("Shift+Tab");
+      await expect(finish).toBeFocused();
+    }
+    // Enter, where the keyboard is, finishes setup.
+    await page.keyboard.press("Enter");
+    await expect(onboarding).toBeHidden();
+    expect((await (await request.get("/api/state")).json()).settings.onboardingComplete).toBe(true);
   }finally{
     await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:true,agentRuntime:"codex"}});
   }

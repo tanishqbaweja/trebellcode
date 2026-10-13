@@ -4,10 +4,15 @@ import { api } from "../api.js";
 
 // Modal focus: move focus into the dialog when it opens and keep Tab/Shift+Tab inside it, so keyboard users cannot
 // reach (and activate) controls behind the backdrop. Focus that sits inside another open modal is left alone.
+// A button disabled while it works (Finish setup, Import history) drops the keyboard to the page body; once it can be used
+// again focus goes back to it, so a failed Finish setup leaves the keyboard on it, inside the dialog.
 function useModalFocus(ref,active,focusOnOpen=true){
+  const lastFocusRef=useRef(null);
+  useEffect(()=>{const last=lastFocusRef.current;if(active&&document.activeElement===document.body&&last?.isConnected&&!last.disabled)last.focus({preventScroll:true})});
   useEffect(()=>{
     const node=ref.current;if(!active||!node)return;
     if(focusOnOpen&&!node.contains(document.activeElement))node.focus({preventScroll:true});
+    const onFocus=event=>{lastFocusRef.current=event.target};
     const onKey=event=>{
       if(event.key!=="Tab"||event.defaultPrevented)return;
       const current=document.activeElement,owner=current?.closest?.('[aria-modal="true"]');
@@ -19,8 +24,8 @@ function useModalFocus(ref,active,focusOnOpen=true){
       else if(event.shiftKey&&current===first){event.preventDefault();last.focus()}
       else if(!event.shiftKey&&current===last){event.preventDefault();first.focus()}
     };
-    document.addEventListener("keydown",onKey,true);
-    return()=>document.removeEventListener("keydown",onKey,true);
+    node.addEventListener("focusin",onFocus);document.addEventListener("keydown",onKey,true);
+    return()=>{node.removeEventListener("focusin",onFocus);document.removeEventListener("keydown",onKey,true)};
   },[ref,active,focusOnOpen]);
 }
 
