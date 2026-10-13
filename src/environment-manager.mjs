@@ -201,6 +201,20 @@ function normalizedPort(value){
   const n=Number(value||22);
   return Number.isInteger(n)&&n>0&&n<=65535?n:22;
 }
+
+// What an ssh client says when nothing accepts the connection differs between OpenSSH builds: OpenSSH (Linux, macOS, Git for Windows)
+// says "ssh: connect to host H port P: Connection refused"; Windows' own OpenSSH, whose connect does not wait, meets the refusal in the
+// banner exchange, when it no longer knows the address ("banner exchange: Connection to UNKNOWN port -1: Connection refused"); and the
+// Windows socket layer's words for WSAECONNREFUSED are "No connection could be made because the target machine actively refused it."
+// It is said one way, with the host and port the client named, or the profile's where it did not know them. null for any other failure.
+const SSH_REFUSED=/connection refused|actively refused it|WSAECONNREFUSED/i;
+export function sshRefusedConnectionMessage(stderr,{host="",port=22}={}){
+  const text=String(stderr||"");if(!SSH_REFUSED.test(text))return null;
+  const named=/\bconnect(?:ion)? to (?:host )?(\S+) port (-?\d+)/i.exec(text);
+  const known=named&&named[1].toUpperCase()!=="UNKNOWN"&&Number(named[2])>0;
+  const target=known?`${named[1]} port ${named[2]}`:host?`${host} port ${normalizedPort(port)}`:"";
+  return target?`ssh could not connect to ${target}: Connection refused.`:"ssh could not connect: Connection refused.";
+}
 // A saved SSH profile's port: blank means 22; anything else must be a whole number from 1 to 65535.
 export function validatedSshPort(value){
   if(value==null||String(value).trim()==="")return 22;
@@ -562,7 +576,10 @@ export class EnvironmentManager {
       ?"echo trebell-environment-ok && cd"
       :"printf 'trebell-environment-ok\\n'; pwd; uname -s";
     const result=await this.execute(id,{command,timeoutMs:12000});
-    return {...result,ok:result.exitCode===0&&!result.timedOut&&result.stdout.includes("trebell-environment-ok")};
+    const ok=result.exitCode===0&&!result.timedOut&&result.stdout.includes("trebell-environment-ok");
+    // ssh exits 255 for its own failures; a host that refuses the connection is said the same way whichever client said it.
+    const refused=!ok&&profile.type==="ssh"&&result.exitCode===255?sshRefusedConnectionMessage(result.stderr,{host:profile.host,port:profile.port}):null;
+    return refused?{...result,stderr:refused,clientStderr:result.stderr,ok}:{...result,ok};
   }
 
   async prepareAttachment(id,localPath){

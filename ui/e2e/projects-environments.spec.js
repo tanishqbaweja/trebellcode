@@ -624,12 +624,17 @@ test.describe("Using an environment for agents",()=>{
     await expect(alert).toContainText("Connection refused",{timeout:30_000});
     const server=async()=>(await (await request.get("/api/environments")).json()).activeEnvironmentId;
     expect(await server(),"the server keeps Local machine").toBe(null);
-    // The reason is the ssh client's own words, which differ between OpenSSH builds: Windows' own says "banner exchange: Connection
-    // to UNKNOWN port -1: Connection refused", Git for Windows' "ssh: connect to host 127.0.0.1 port N: Connection refused".
-    await expect(alert).toHaveText(/^Could not use Dead host for agents: .*Connection refused\.?$/);
+    // The ssh client's words differ between OpenSSH builds (Windows' own says "banner exchange: Connection to UNKNOWN port -1:
+    // Connection refused", Git for Windows' "ssh: connect to host 127.0.0.1 port N: Connection refused"); the reason is said one way,
+    // with the host and port.
+    await expect(alert).toHaveText(`Could not use Dead host for agents: ssh could not connect to 127.0.0.1 port ${port}: Connection refused.`);
     await expect(local.getByText("Active",{exact:true})).toBeVisible();
     await expect(dead.getByRole("button",{name:"Use for agent",exact:true})).toBeEnabled();
     await shootModes(page,"environment-unreachable-not-used");
+    // Its Test button says it the same way.
+    await dead.getByRole("button",{name:"Test",exact:true}).click();
+    await expect(alert).toHaveText(`Probe failed · ssh could not connect to 127.0.0.1 port ${port}: Connection refused.`,{timeout:30_000});
+    await shootModes(page,"environment-unreachable-test");
     await page.reload();
     await expect(page.getByTestId("composer").or(page.locator(".environments-page")).first()).toBeVisible();
     if(!await page.locator(".environments-page").count())await nav(page,"Environments").click();

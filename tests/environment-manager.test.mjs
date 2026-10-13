@@ -245,6 +245,32 @@ test("a host's Codex executable under a named user's home is expanded by the hos
   }
 });
 
+// What an ssh client says when nothing accepts the connection differs between OpenSSH builds: OpenSSH (Linux, macOS, Git for Windows)
+// names the host and port it tried; Windows' own OpenSSH meets the refusal in the banner exchange, when it no longer knows the address;
+// and the Windows socket layer has its own words for WSAECONNREFUSED. The environment's check (its Test button, and Use for agent)
+// says it one way, naming the host and port, and any other failure keeps the client's own words.
+test("an SSH host that refuses the connection is reported the same way whichever OpenSSH client says it",async()=>{
+  const profiles=[{id:"dead",name:"Dead host",type:"ssh",host:"127.0.0.1",port:56183,cwd:"",enabled:true}];
+  const manager=new EnvironmentManager({state:stateFor(profiles),platform:"win32"});
+  const probe=async stderr=>{manager.execute=async()=>({exitCode:255,stdout:"",stderr,timedOut:false});return manager.probe("dead")};
+  const refused="ssh could not connect to 127.0.0.1 port 56183: Connection refused.";
+  for(const said of [
+    "banner exchange: Connection to UNKNOWN port -1: Connection refused\r\n",
+    "ssh: connect to host 127.0.0.1 port 56183: Connection refused\r\n",
+    "ssh: connect to host 127.0.0.1 port 56183: No connection could be made because the target machine actively refused it.\r\n",
+    "banner exchange: Connection to UNKNOWN port -1: No connection could be made because the target machine actively refused it.\r\n",
+    "Warning: Permanently added '[127.0.0.1]:56183' (ED25519) to the list of known hosts.\r\nssh: connect to host 127.0.0.1 port 56183: Connection refused\r\n",
+  ]){
+    const result=await probe(said);
+    assert.equal(result.ok,false);assert.equal(result.stderr,refused,"said as: "+JSON.stringify(said));
+  }
+  assert.equal((await probe("ssh: connect to host ::1 port 2222: Connection refused\n")).stderr,"ssh could not connect to ::1 port 2222: Connection refused.","the client's own host and port, where it named them");
+  for(const other of ["dev@127.0.0.1: Permission denied (publickey).\r\n","ssh: connect to host 127.0.0.1 port 56183: Connection timed out\r\n"])assert.equal((await probe(other)).stderr,other,"another failure keeps its own words");
+  // A command that ran on the host and printed a refusal of its own is not the ssh client's.
+  manager.execute=async()=>({exitCode:7,stdout:"",stderr:"curl: (7) Failed to connect to localhost port 8080: Connection refused\n",timedOut:false});
+  assert.match((await manager.probe("dead")).stderr,/^curl:/);
+});
+
 test("terminal argv specs launch provider auth commands directly and quote remote arguments",()=>{
   const profiles=[
     {id:"local-profile",name:"Named local",type:"local",cwd:"C:\\code\\app"},

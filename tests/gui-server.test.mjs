@@ -402,9 +402,12 @@ test("a host that does not answer is never made the agent environment, with Treb
     gui=await createGuiServer({port,appPort,mock:true,env});
     const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
     assert.equal((await post("/api/environments",{id:"dead-host",type:"ssh",name:"Dead host",host:"127.0.0.1",port:deadPort})).status,200);
-    const activated=await post("/api/environment/activate",{id:"dead-host"});
+    const activated=await post("/api/environment/activate",{id:"dead-host"}),answer=await activated.json();
     assert.equal(activated.status,503);
-    assert.ok((await activated.json()).error);
+    assert.ok(answer.error);
+    // Whichever OpenSSH client is first on PATH (Windows' own words a refusal "banner exchange: Connection to UNKNOWN port -1: ..."),
+    // the refusal is said one way, with the host and port.
+    if(/refused/i.test(answer.error))assert.equal(answer.error,`ssh could not connect to 127.0.0.1 port ${deadPort}: Connection refused.`);
     assert.equal((await fetch(gui.url+"/api/environments").then(r=>r.json())).activeEnvironmentId,null);
   }finally{
     if(gui)await gui.close();
