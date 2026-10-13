@@ -273,12 +273,17 @@ async function insideLocalRoot({root,path}){
   const rel=relative(top,place);
   if(rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel))throw new Error("File is outside the active workspace");
 }
+// The system's error for a local file the Files view reads, in plain words rather than its code and the file's full path: one that
+// is not there says so by its name (the save still sees ENOENT), and one the system will not let Trebell read says that.
+function plainFileError(path){
+  return error=>{throw error?.code==="ENOENT"?Object.assign(new Error(basename(path)+" was not found"),{code:"ENOENT"}):error?.code==="EPERM"||error?.code==="EACCES"?Object.assign(new Error("Trebell is not allowed to read this file"),{code:error.code}):error};
+}
 // A local file the Files view reads, as text in the editor or from its raw address (a picture, video, sound or PDF): placed inside
-// the project's folder first, so nothing outside it is read by either. One that is not there says so by its name, not by the
-// system's error with its full path; the save still sees ENOENT.
+// the project's folder first, so nothing outside it is read by either.
 export async function localWorkspaceFileInfo(located){
-  await insideLocalRoot(located);
-  const info=await stat(located.path).catch(error=>{throw error?.code==="ENOENT"?Object.assign(new Error(basename(located.path)+" was not found"),{code:"ENOENT"}):error});
+  const plain=plainFileError(located.path);
+  await insideLocalRoot(located).catch(plain);
+  const info=await stat(located.path).catch(plain);
   if(!info.isFile())throw new Error("Not a file");
   return info;
 }
@@ -296,7 +301,7 @@ async function editorBytes(filePath,maxBytes,{root=null,environments=null,enviro
   else size=(await localWorkspaceFileInfo(located)).size;
   const tooLarge=bytes=>new Error(`File is too large to preview (${Math.ceil(bytes/1024)} KB)`);
   if(size>maxBytes)throw tooLarge(size);
-  if(!located.remote)return {located,name,bytes:await readFile(located.path)};
+  if(!located.remote)return {located,name,bytes:await readFile(located.path).catch(plainFileError(located.path))};
   const child=environments.streamFile(environmentId,located.path),chunks=[];let count=0;
   // The read's end is awaited once the bytes are in; a failure that comes first is held for that await, never left unhandled.
   const closed=new Promise((resolveClose,reject)=>{child.once("error",reject);child.once("close",code=>code===0?resolveClose():reject(new Error("Could not read remote file")))});

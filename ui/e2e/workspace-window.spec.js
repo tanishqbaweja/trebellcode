@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync,symlinkSync } from "node:fs";
 import { mkdir,mkdtemp,readFile,rm,writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { tmpdir,userInfo } from "node:os";
 import { dirname,join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
@@ -734,6 +734,21 @@ test("a picture or text file reached through a link out of the project is refuse
   await expect(view.getByRole("alert")).toHaveText("Could not open secret.png: File is outside the active workspace");
   await expect(view.locator(".media-preview")).toHaveCount(0);await expect(view.getByRole("button",{name:/^Attach/})).toHaveCount(0);
   await shootBothModes(page,"workspace-linked-picture-refused");
+});
+
+test("a file the system will not let Trebell read says so plainly, without the system's error or the folder's full path",async({page,request})=>{
+  test.skip(process.platform!=="win32","icacls denies the read here");
+  test.setTimeout(60_000);
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace locked file",{"notes.txt":"notes\n","locked.txt":"private\n"});
+  const locked=join(dir,"locked.txt"),user=userInfo().username,view=right.locator(".file-view");
+  execFileSync("icacls",[locked,"/deny",user+":(R)"],{windowsHide:true});
+  try{
+    await row("locked.txt").click();
+    await expect(right.locator(".file-head strong")).toHaveText("locked.txt");
+    await expect(view.getByRole("alert")).toHaveText("Could not open locked.txt: Trebell is not allowed to read this file");
+    await expect(view.getByRole("button",{name:/^Attach/})).toHaveCount(0);
+    await shootBothModes(page,"workspace-locked-file");
+  }finally{execFileSync("icacls",[locked,"/remove:d",user],{windowsHide:true})}
 });
 
 test("Edit pressed while Refresh still reads the open file keeps the editor and what is typed",async({page,request})=>{
