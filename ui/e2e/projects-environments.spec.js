@@ -1553,6 +1553,38 @@ test.describe("A choice made while Trebell is still starting",()=>{
     await toggledShots(page,"project-opened-while-starting");
   });
 
+  test("a project whose open is still on its way when the start-up lands is the one left open",async({page,request})=>{
+    const {boot,release}=await startHeld(page,request);
+    await request.post("/api/projects",{data:{path:join(boot.cwd,"ui"),name:"Picked Project"}});
+    // The open's own request is held as well, before it reaches Trebell: the start-up lands first, with the project its state names,
+    // and the person's open answers after it.
+    let answer;const answered=new Promise(resolve=>{answer=resolve});const opens=[];
+    await page.route(/\/api\/projects$/,async route=>{
+      if(route.request().method()!=="POST"||opens.length)return route.fallback();
+      opens.push(route.request().postDataJSON());await answered;return route.fallback();
+    });
+    await page.goto("/");
+    const composer=page.getByTestId("composer"),crumb=crumbOf(page);
+    await expect(composer).toHaveAttribute("placeholder","Starting Trebell Code…");
+    await openProjects(page);
+    await projectCard(page,"Picked Project").locator(".project-open").click();
+    await expect.poll(()=>opens.length,{message:"the open was sent"}).toBe(1);
+    expect(opens[0]).toMatchObject({path:join(boot.cwd,"ui"),activate:true});
+    release();
+    await expect(projectCard(page,MAIN),"the start-up landed with the project its state names").toHaveClass(/\bactive\b/);
+    answer();
+    await expect(crumb,"the project the person opened").toHaveText("Picked Project");
+    await expect(page.getByTestId("model-picker"),"the start-up has landed").toBeEnabled({timeout:15_000});
+    await page.waitForTimeout(300);
+    await expect(crumb,"still the project the person opened").toHaveText("Picked Project");
+    await nav(page,"Projects").click();
+    await expect(projectCard(page,"Picked Project"),"the open project's card").toHaveClass(/\bactive\b/);
+    await expect(projectCard(page,MAIN)).not.toHaveClass(/\bactive\b/);
+    expect(await nextStartProject(request),"the project the next start opens").toBe("Picked Project");
+    await nav(page,"New task").click();
+    await toggledShots(page,"project-open-answered-after-start-up");
+  });
+
   test("a project removed before the start-up lands stays removed, and the window opens the project left",async({page,request})=>{
     const {boot,release}=await startHeld(page,request);
     await request.post("/api/projects",{data:{path:join(boot.cwd,"ui"),name:"Kept Project"}});
