@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { attachCodexRelay } from "../../src/codex-relay.mjs";
 import { keepThreadMeta } from "./test-home.js";
-import { startStreamingFixture } from "./native-stream-fixture.js";
+import { auditDir,startStreamingFixture } from "./native-stream-fixture.js";
 
 // The parts of the app whose code loads after the first paint (lazy chunks), when that code cannot load: the UI was rebuilt or
 // updated under an open page, or the link to a remote Trebell server dropped. The browser keeps such a module as failed, so the
@@ -139,4 +139,45 @@ test("a page whose code cannot load says so, and the way back to the chat stays"
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
   await nav("New task").click();
   await expect(page.getByTestId("composer")).toBeVisible();
+});
+
+// Trebell's own tool catalog loads at idle after the first paint (B11). A new task sent before it has come waits for it and starts
+// once it is there.
+test("a new task sent before the tool catalog has loaded waits for it and starts",async({page})=>{
+  test.setTimeout(60_000);
+  const held=[];
+  await page.route(/\/assets\/shared-tool-catalog-[^/]*\.js$/,route=>{held.push(route)});
+  const fixture=await startStreamingFixture(page,{providerTurn:async request=>({id:"catalog-late",provider:request.provider,model:request.model,text:"Started once the catalog came.",toolCalls:[],finishReason:"stop",usage:{}})});
+  try{
+    await expect.poll(()=>held.length,{message:"the catalog asked for at idle"}).toBe(1);
+    const before=fixture.threadStore.list("native").length;
+    await fixture.send("Start while the catalog is still on its way");
+    // The send is under way and waits for the catalog: no thread starts until it comes.
+    await expect(page.getByTestId("composer")).toHaveValue("");
+    await page.waitForTimeout(500);expect(fixture.threadStore.list("native")).toHaveLength(before);
+    for(const route of held.splice(0))await route.continue();
+    await expect(page.locator(".user-row").filter({hasText:"Start while the catalog is still on its way"})).toBeVisible({timeout:10_000});
+    await expect(page.getByText("Started once the catalog came.",{exact:true})).toBeVisible({timeout:10_000});
+    expect(fixture.threadStore.list("native")).toHaveLength(before+1);
+    await appStays(page);
+  }finally{for(const route of held)await route.continue().catch(()=>{});await fixture.close()}
+});
+
+// When the catalog cannot load, a new task fails and says so instead of waiting for it, and what was typed is not lost.
+test("a new task whose tool catalog cannot load says so instead of waiting, and keeps the message",async({page})=>{
+  test.setTimeout(60_000);
+  let refused=0;
+  await page.route(/\/assets\/shared-tool-catalog-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const fixture=await startStreamingFixture(page,{providerTurn:async request=>({id:"catalog-refused",provider:request.provider,model:request.model,text:"This should not start.",toolCalls:[],finishReason:"stop",usage:{}})});
+  try{
+    await expect.poll(()=>refused,{message:"the catalog asked for at idle"}).toBeGreaterThan(0);
+    const before=fixture.threadStore.list("native").length;
+    await fixture.send("Start when the catalog cannot load");
+    await expect(page.getByRole("alert").filter({hasText:"Not sent"})).toHaveText("Not sent: Part of Trebell could not load. Reload Trebell to get it back. Your draft is kept.",{timeout:5000});
+    await expect(page.getByTestId("composer")).toHaveValue("Start when the catalog cannot load");
+    expect(fixture.threadStore.list("native")).toHaveLength(before);
+    await appStays(page);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+"tool-catalog-cannot-load-dark-1280x800.png"});
+  }finally{await fixture.close()}
 });

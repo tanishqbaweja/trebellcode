@@ -56,7 +56,6 @@ import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { startFocusPoll } from "./focus-poll.js";
 import { userVerificationAvailability } from "./user-verification.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
-import { sharedDynamicToolNamespaces, sharedToolResponseContent } from "../../src/shared-tool-catalog.mjs";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { repositoryContextDeliveryPacket, repositoryContextEntries } from "./context-provenance.js";
 import { desktopBridgeToolAvailability } from "./desktop-tool-availability.js";
@@ -112,6 +111,15 @@ const McpElicitationModal=lazy(()=>import("./components/McpElicitationModal.jsx"
 const SnoozeDialog=lazy(()=>import("./components/SnoozeDialog.jsx"));
 const CommandPalette=lazy(()=>import("./components/CommandPalette.jsx"));
 const OnboardingModal=lazy(()=>import("./components/OnboardingModal.jsx"));
+// Trebell's own tool catalog (the dynamic tools a new thread gets, and how a tool's results are put) is not needed for the first
+// paint, so it loads at idle after it instead of with the app (B11). An action that needs it before then waits for that load. A load
+// that fails rejects, so the action fails and says so rather than waiting; the browser keeps a module that failed, so a reload brings
+// it back.
+let sharedToolCatalogLoad=null;
+const loadSharedToolCatalog=()=>sharedToolCatalogLoad||=import("../../src/shared-tool-catalog.mjs").catch(error=>{
+  sharedToolCatalogLoad=null;throw Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+});
+if(typeof window!=="undefined")requestAnimationFrame(()=>setTimeout(()=>(window.requestIdleCallback||(callback=>setTimeout(callback,200)))(()=>loadSharedToolCatalog().catch(()=>{}),{timeout:2000})));
 
 // The command palette as it first appears while its code loads (on the first open only): its search box takes focus and the keys
 // typed straight after Ctrl+K, which would otherwise go into the composer it was opened from. seed hands the palette what was typed,
@@ -2640,6 +2648,7 @@ export default function App(){
         (async()=>{
           try{
             if(!window.trebellDesktop?.browser)throw new Error("Agent browser is only available in the desktop app.");
+            const {sharedToolResponseContent}=await loadSharedToolCatalog();
             let result;
             if(p.tool==="open")result=await window.trebellDesktop.browser.navigate(p.arguments?.url);
             else if(p.tool==="back")result=await window.trebellDesktop.browser.back();
@@ -2671,6 +2680,7 @@ export default function App(){
             if(!desktopBridgeToolAvailability(window.trebellDesktop).computer)throw new Error("Computer use is only available in the Windows desktop app.");
             const args=p.arguments||{};
             if(p.tool!=="screenshot"&&permissionMode!=="full")throw new Error("Desktop mouse and keyboard control requires Full access mode.");
+            const {sharedToolResponseContent}=await loadSharedToolCatalog();
             if(p.tool==="screenshot"){
               const shot=await window.trebellDesktop.computer.screenshot();
               client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_computer",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({width:shot.width,height:shot.height,displayId:shot.displayId,originX:shot.originX,originY:shot.originY,scaleFactor:shot.scaleFactor})}]),success:true});
@@ -3929,6 +3939,7 @@ export default function App(){
   async function createThreadFor(modelId,cwd,{projectless=projectlessMode,taskText=""}={}){
     const p=presetFor(permissionMode);
     const specializedTools=specializedToolSelection(taskText,specializedToolAvailability({projectless}));
+    const {sharedDynamicToolNamespaces}=await loadSharedToolCatalog();
     const dynamicTools=sharedDynamicToolNamespaces(specializedTools);
     const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task."+(specializedTools.browser?" Use trebell_browser for interactive pages.":"")+(runtimeCapabilities.dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"")+(specializedTools.delegation?" Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.":"");
     const developerInstructions=projectless
