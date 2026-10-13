@@ -910,16 +910,23 @@ test("Initialize Git that fails says why in the not-a-repository view",async({pa
   await shootBothModes(page,"source-control-init-failed");
 });
 
-test("after Initialize Git the branch picker shows the new branch, before its first commit and after",async({page,request})=>{
+test("after Initialize Git the branch picker and the header show the new branch, before its first commit and after",async({page,request})=>{
   test.setTimeout(60_000);
   const root=await mkdtemp(join(tmpdir(),"trebell-git-unborn-"));repositories.push(root);await writeFile(join(root,"hello.txt"),"hello\n","utf8");
   const git=async args=>(await execFileAsync("git",args,{cwd:root,windowsHide:true,encoding:"utf8"})).stdout.trim();
   const boot=await (await request.get("/api/bootstrap")).json();
   await scriptCodeHost(page,{boot,info:false});
+  // The header's own reads of the folder's Git state (every 3.5 s; the panel's name an environment) are held, as on a slow disk:
+  // what the header shows after the init is then what the panel read the moment the init was done.
+  await page.route(/\/api\/git\/info\?/,route=>{if(new URL(route.request().url()).searchParams.has("environmentId"))return route.fallback()});
   const {right,changes}=await openGitPanel(page,request,"Source control unborn branch",root);
+  const chip=page.locator("header.workspace-header .branch-control");
+  await expect(right.locator(".source-control .empty-state")).toContainText("Not a Git repository");
+  await expect(chip,"no branch before the init").toHaveCount(0);
   await right.locator(".source-control .empty-state").getByRole("button",{name:"Initialize Git"}).click();
   await expect(changes.getByRole("heading")).toHaveText("Changes 1");
   const branch=await git(["symbolic-ref","--short","HEAD"]);await git(["config","user.email","trebell-test@example.invalid"]);await git(["config","user.name","Trebell Test"]);
+  await expect(chip,"the header's branch, right after the init").toHaveText(branch);
   const picker=right.getByRole("combobox",{name:"Current branch"});
   await expect(picker).toHaveValue(branch);
   await expect(picker.locator("option")).toHaveText([branch]);

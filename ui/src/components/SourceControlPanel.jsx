@@ -32,7 +32,7 @@ function copyAsWritten(event){
   event.clipboardData.setData("text/plain",parts.join(" "));event.preventDefault();
 }
 
-export default function SourceControlPanel({projectPath,environmentId=null,remote=false,environmentName="Local machine",model,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="native",agentRuntimeInstanceId=null,agentRuntimeLabel="",threadId=null,sourceControlSettings={},onProjectChange,onAttachPr,onLinkPr,onLinkPrUrl,onOpenLinkedThread,onSelectedPrChange,onLinkedPullRequestsChanged,linkedPullRequests=[]}){
+export default function SourceControlPanel({projectPath,environmentId=null,remote=false,environmentName="Local machine",model,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="native",agentRuntimeInstanceId=null,agentRuntimeLabel="",threadId=null,sourceControlSettings={},onProjectChange,onAttachPr,onLinkPr,onLinkPrUrl,onOpenLinkedThread,onSelectedPrChange,onLinkedPullRequestsChanged,onGitInfo,linkedPullRequests=[]}){
   const [info,setInfo]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [sourceProvider,setSourceProvider]=useState("");
@@ -111,8 +111,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       return false;
     }
     if(!stillShown(started))return false;
-    // The repository shows as soon as it answers; Git and the code host are checked after it.
-    setInfo(i);settle("info",{ok:true});
+    // The repository shows as soon as it answers; Git and the code host are checked after it. The header shows it too, so a branch
+    // made or switched here (Initialize Git, a switch) is named there at once instead of at the header's next read.
+    setInfo(i);settle("info",{ok:true});onGitInfo?.(i);
     let d=null;
     try{d=await api("/api/source-control/diagnostics?"+query({path:projectPath,...(providerOverride?{provider:providerOverride}:{})}))}
     catch(error){
