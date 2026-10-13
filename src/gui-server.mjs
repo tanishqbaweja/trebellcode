@@ -2671,7 +2671,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(located.remote)info=await environments.attachmentInfo(environmentId,requested);
         else{
           if(requested!==root&&!requested.startsWith(root+sep))return json(res,403,{error:"File is outside the active workspace"});
-          const localInfo=await stat(requested);
+          const localInfo=await stat(requested).catch(error=>{throw error?.code==="ENOENT"?new Error(basename(requested)+" was not found"):error});
           if(!localInfo.isFile())return json(res,404,{error:"Not a file"});
           info={size:localInfo.size};
         }

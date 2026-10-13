@@ -618,22 +618,29 @@ test("a file that fails to open takes the place of the one in view, and Refresh 
   test.setTimeout(60_000);
   const {right,row,dir}=await openFilesFolder(page,request,"Workspace failed opens",{"notes.txt":"first version\n","app.js":"console.log(1);\n","style.css":"body{}\n","big.txt":"x".repeat(600*1024)});
   const head=right.locator(".file-head strong"),view=right.locator(".file-view"),edit=right.locator(".file-head").getByRole("button",{name:"Edit",exact:true});
+  const attach=right.locator(".file-head").getByRole("button",{name:"Attach",exact:true}),attachToChat=view.getByRole("button",{name:"Attach to chat",exact:true});
   const refresh=()=>right.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
-  // A file deleted on disk while the tree still lists it: the view names it and why it did not open, and shows nothing else.
+  // A file deleted on disk while the tree still lists it: the view names it and says plainly that it was not found, without the
+  // folder it was in, and offers nothing for it: no Edit and nothing to attach.
   await row("notes.txt").click();
   await expect(view.locator(".syntax-view")).toContainText("first version");
+  await expect(attach).toBeVisible();
   await rm(join(dir,"style.css"));
   await row("style.css").click();
   await expect(head).toHaveText("style.css");
-  await expect(view.getByRole("alert")).toContainText("Could not open style.css");
+  await expect(view.getByRole("alert")).toHaveText("style.css was not found");
   await expect(view.locator(".syntax-view")).toHaveCount(0);await expect(edit).toHaveCount(0);
+  await expect(attach,"Attach for a file that is not there").toHaveCount(0);await expect(attachToChat,"Attach to chat for a file that is not there").toHaveCount(0);
+  await expect(right.getByRole("button",{name:"Attach style.css to chat",exact:true}),"the tree row's Attach for it").toHaveCount(0);
+  await expect(right.getByRole("button",{name:"Attach notes.txt to chat",exact:true}),"the tree row's Attach for a file that is there").toHaveCount(1);
   await shootBothModes(page,"workspace-open-failed-deleted");
-  // A file too large to preview, opened over another file, likewise.
+  // A file too large to preview, opened over another file, likewise, but it is there, so it can still be attached.
   await row("notes.txt").click();await expect(edit).toBeVisible();
   await row("big.txt").click();
   await expect(head).toHaveText("big.txt");
   await expect(view.getByRole("alert")).toContainText("File is too large to preview (600 KB)");
   await expect(view.locator(".syntax-view")).toHaveCount(0);await expect(edit).toHaveCount(0);
+  await expect(attach).toBeVisible();await expect(attachToChat).toBeVisible();
   // Refresh reads the open file again: a change on disk shows, and a file deleted on disk shows that it could not be read.
   await row("notes.txt").click();
   await writeFile(join(dir,"notes.txt"),"second version\n");
@@ -643,8 +650,8 @@ test("a file that fails to open takes the place of the one in view, and Refresh 
   await rm(join(dir,"app.js"));
   await refresh();
   await expect(head).toHaveText("app.js");
-  await expect(view.getByRole("alert")).toContainText("Could not open app.js");
-  await expect(view.locator(".syntax-view")).toHaveCount(0);await expect(edit).toHaveCount(0);
+  await expect(view.getByRole("alert")).toHaveText("app.js was not found");
+  await expect(view.locator(".syntax-view")).toHaveCount(0);await expect(edit).toHaveCount(0);await expect(attach).toHaveCount(0);await expect(attachToChat).toHaveCount(0);
   await expect(row("app.js")).toHaveCount(0);
   await shootBothModes(page,"workspace-open-file-deleted-refresh");
 });
@@ -653,13 +660,13 @@ test("an image deleted on disk says it could not be opened, from the tree and on
   test.setTimeout(60_000);
   const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==","base64");
   const {right,row,dir}=await openFilesFolder(page,request,"Workspace deleted image",{"logo.png":png,"icon.png":png,"notes.txt":"notes\n"});
-  const head=right.locator(".file-head strong"),view=right.locator(".file-view");
-  // Deleted while the tree still lists it, then opened.
+  const head=right.locator(".file-head strong"),view=right.locator(".file-view"),attach=right.locator(".file-view").getByRole("button",{name:/^Attach/});
+  // Deleted while the tree still lists it, then opened: it was not found, and there is nothing to attach.
   await rm(join(dir,"icon.png"));
   await row("icon.png").click();
   await expect(head).toHaveText("icon.png");
-  await expect(view.getByRole("alert")).toContainText("Could not open icon.png");
-  await expect(view.locator(".media-preview")).toHaveCount(0);
+  await expect(view.getByRole("alert")).toHaveText("icon.png was not found");
+  await expect(view.locator(".media-preview")).toHaveCount(0);await expect(attach).toHaveCount(0);
   // Open, then deleted: Refresh says so in place of the picture.
   await row("logo.png").click();
   await expect(view.locator(".media-preview img")).toBeVisible();
@@ -667,8 +674,8 @@ test("an image deleted on disk says it could not be opened, from the tree and on
   await right.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
   await expect(row("logo.png")).toHaveCount(0);
   await expect(head).toHaveText("logo.png");
-  await expect(view.getByRole("alert")).toContainText("Could not open logo.png");
-  await expect(view.locator(".media-preview")).toHaveCount(0);
+  await expect(view.getByRole("alert")).toHaveText("logo.png was not found");
+  await expect(view.locator(".media-preview")).toHaveCount(0);await expect(attach).toHaveCount(0);
   await shootBothModes(page,"workspace-open-image-deleted-refresh");
 });
 

@@ -284,7 +284,11 @@ async function editorBytes(filePath,maxBytes,{root=null,environments=null,enviro
   const name=located.remote?posix.basename(located.path):basename(located.path);
   let size;
   if(located.remote)size=(await environments.attachmentInfo(environmentId,located.path)).size;
-  else{await insideLocalRoot(located);const info=await stat(located.path);if(!info.isFile())throw new Error("Not a file");size=info.size}
+  else{
+    // A file that is not there says so by its name, not by the system's error with its full path; the save still sees ENOENT.
+    await insideLocalRoot(located);const info=await stat(located.path).catch(error=>{throw error?.code==="ENOENT"?Object.assign(new Error(name+" was not found"),{code:"ENOENT"}):error});
+    if(!info.isFile())throw new Error("Not a file");size=info.size;
+  }
   const tooLarge=bytes=>new Error(`File is too large to preview (${Math.ceil(bytes/1024)} KB)`);
   if(size>maxBytes)throw tooLarge(size);
   if(!located.remote)return {located,name,bytes:await readFile(located.path)};
