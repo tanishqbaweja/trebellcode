@@ -3625,6 +3625,28 @@ test("native agent synthesizes an explicit post-verifier summary without another
   assert.ok(events.some(event=>event.name==="native.verification.summary_synthesized"));
 });
 
+test("native agent records each hunk of a replace_text edits list as its own verified edit",async()=>{
+  let turns=0;const events=[];
+  const tools=[
+    {type:"namespace",name:"trebell_terminal",tools:[{name:"run",inputSchema:{type:"object",properties:{command:{type:"string"},args:{type:"array"}}}}]},
+    {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text",inputSchema:{type:"object",properties:{path:{type:"string"}}}}]},
+  ];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs, fix the failure, then run it again. After the passing verifier, answer with a concise summary."}],tools,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["verify.mjs"]})}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"src/a.mjs",edits:[{old_text:"bad",new_text:"good"},{old_text:"slow",new_text:"fast",expected_replacements:2}]})}],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["verify.mjs"]})}],usage:{}};
+      throw new Error("A fourth provider turn should not be needed for an explicit verification summary.");
+    },
+    executeTool:async call=>call.id==="verify-1"?{exitCode:1,stdout:"FAIL"}:call.id==="verify-2"?{exitCode:0,stdout:"PASS"}:{path:"src/a.mjs",replacements:3},
+  });
+  assert.equal(result.modelTurns,3);
+  assert.match(result.text,/src\/a\.mjs: replaced "bad" with "good"\./);assert.match(result.text,/src\/a\.mjs: replaced "slow" with "fast" \(2 occurrences\)\./);
+  assert.ok(events.some(event=>event.name==="native.verification.summary_synthesized"));
+});
+
 test("native explicit concise summary falls back to the provider when edit details are sensitive",async()=>{
   let turns=0;const events=[];
   const tools=[
@@ -5957,6 +5979,46 @@ test("native restores an ordinary semantic-recovery incumbent after a multi-edit
   assert.ok(internalRecoveryCalls.some(id=>id.startsWith("native-recovery-snapshot-")));
   assert.ok(internalRecoveryCalls.some(id=>id.startsWith("native-recovery-restore-")));
   const exhausted=events.find(event=>event.name==="native.completion.recovery_exhausted");assert.equal(exhausted?.data?.incumbentWorkspaceAligned,true);
+  assert.match(result.text,/strongest evidence-backed workspace state has been preserved or restored/i);
+});
+
+test("native semantic recovery snapshots a replace_text edits candidate from every hunk and restores the incumbent after it regresses",async()=>{
+  let turns=0,fileContent="old";const events=[],internalRecoveryCalls=[];
+  const rawTool=async call=>{
+    if(call.namespace==="trebell_workspace"&&call.name==="read_file")return {path:"src/router.mjs",content:fileContent,size:fileContent.length};
+    if(call.namespace==="trebell_workspace"&&call.name==="replace_text"){
+      const hunks=Array.isArray(call.arguments?.edits)?call.arguments.edits:[{old_text:call.arguments?.old_text,new_text:call.arguments?.new_text}];
+      for(const hunk of hunks){assert.ok(fileContent.includes(hunk.old_text),`${fileContent} does not include ${hunk.old_text}`);fileContent=fileContent.split(hunk.old_text).join(hunk.new_text)}
+      return {path:"src/router.mjs",replacements:hunks.length};
+    }
+    return {exitCode:0,stdout:"focused evidence"};
+  };
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/router.mjs and preserve the strongest verified routing candidate while improving the remaining acceptance gap."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/router.mjs","old_text":"old","new_text":"incumbent"}'}],usage:{}};
+      if(turns===2)return {text:"The current candidate has one localized acceptance issue.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"uncertain","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["one localized acceptance issue remains"],"reason":"The current workspace is the strongest candidate so far; one focused discriminator can support a repair."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"evidence",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["inspect.mjs"]}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"repair-1",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"src/router.mjs",edits:[{old_text:"incumbent",new_text:"candidate"},{old_text:"candidate",new_text:"candidate1"}]})}],usage:{}};
+      if(turns===6)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-1.mjs"]}'}],usage:{}};
+      if(turns===7)return {text:"",toolCalls:[{id:"repair-2",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"src/router.mjs",edits:[{old_text:"candidate1",new_text:"wor"},{old_text:"wor",new_text:"worse"}]})}],usage:{}};
+      if(turns===8)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify-2.mjs"]}'}],usage:{}};
+      if(turns===9)return {text:"The new candidate is worse than the earlier one.",toolCalls:[],usage:{}};
+      if(turns===10)return {text:'{"status":"incomplete","progress":"regressed","edit_support":"uncertain","mutation_safety":"allowed","recovery_mode":"evidence_then_edit","unresolved":["the localized acceptance issue remains"],"reason":"The latest candidate materially regressed relative to the recovery incumbent."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:rawTool,
+    executeInternalTool:async call=>{internalRecoveryCalls.push(String(call.id||""));return rawTool(call)},
+  });
+  assert.equal(turns,10);
+  assert.equal(fileContent,"incumbent");
+  const snapshots=events.filter(event=>event.name==="native.completion.recovery_candidate_snapshot");assert.equal(snapshots.length,2);assert.ok(snapshots.every(event=>event.data?.restorable===true));
+  const restored=events.filter(event=>event.name==="native.completion.recovery_incumbent_restored");assert.equal(restored.length,1);assert.equal(restored[0].data?.pathCount,1);
+  assert.ok(!internalRecoveryCalls.some(id=>id.startsWith("native-recovery-snapshot-seal-")),"the candidate is known from the hunks themselves, so no sealing read is needed: "+internalRecoveryCalls.join(", "));
   assert.match(result.text,/strongest evidence-backed workspace state has been preserved or restored/i);
 });
 

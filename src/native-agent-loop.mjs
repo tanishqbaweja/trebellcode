@@ -7,6 +7,7 @@ import { redactSecretText } from "./secret-redactor.mjs";
 import { coolHistoricalReadToolResults, coolVirtualizedToolContent } from "./native-tool-history.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "./openai-response-continuation.mjs";
 import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "./provider-turn.mjs";
+import { replaceTextHunks } from "./native-replace-text.mjs";
 
 const NATIVE_TOOL_OBSERVATION_OUTPUT=Symbol("trebell.native.tool-observation-output");
 const DIRECT_EXACT_READ_MAX_BYTES=12*1024;
@@ -987,6 +988,18 @@ function conciseReplacementSummary(oldText,newText){
   return oldValue&&newValue?{oldValue,newValue}:null;
 }
 
+// The verified-edit records one successful workspace edit call adds: one for a write, and one per hunk for a replace_text, so an
+// edits list is tracked hunk by hunk like the same edits made in separate calls. A hunk that applied matched exactly its expected
+// count, so that is its replacement count; the single-pair form keeps the count the tool reported.
+function workspaceEditRecords(name,args={},output={},{path,supportOnly=false}){
+  const hashes={beforeSha256:String(output?.beforeSha256||"")||null,afterSha256:String(output?.afterSha256||"")||null};
+  const record=(replacements,summary,hunk=null)=>({path,kind:name,replacements:supportOnly?0:replacements,summary:supportOnly?null:summary,supportOnly,...hashes,...(hunk||{})});
+  if(name!=="replace_text")return [record(0,null)];
+  let hunks=null;try{hunks=replaceTextHunks(args)}catch{}
+  if(!Array.isArray(args?.edits)||!hunks)return [record(Math.max(0,Math.trunc(Number(output?.replacements)||0)),conciseReplacementSummary(args?.old_text,args?.new_text))];
+  return hunks.map((hunk,index)=>record(hunk.expected,conciseReplacementSummary(hunk.oldText,hunk.newText),{hunk:index+1,hunks:hunks.length}));
+}
+
 function verifiedSummaryText(edits=[]){
   const unique=[],seen=new Set();
   for(const edit of Array.isArray(edits)?edits:[]){
@@ -1442,8 +1455,9 @@ export async function runNativeAgentTurn({
       let candidateContent=null;
       if(kind==="write_file")candidateContent=String(args.content??"");
       else if(kind==="replace_text"){
-        const oldText=String(args.old_text??""),newText=String(args.new_text??"");
-        if(oldText)candidateContent=content.split(oldText).join(newText);
+        // Every hunk, in order, as the tool applies them.
+        let hunks=null;try{hunks=replaceTextHunks(args)}catch{}
+        if(hunks)candidateContent=hunks.reduce((text,hunk)=>text.split(hunk.oldText).join(hunk.newText),content);
       }
       return {path:resolvedPath,restorable:true,content,beforeSha256,candidateSha256:candidateContent==null?null:sha256Text(candidateContent)};
     }catch(error){return {path,restorable:false,reason:String(error?.message||error||"workspace snapshot failed").slice(0,240)}}
@@ -1575,7 +1589,7 @@ export async function runNativeAgentTurn({
         const supportAllowanceAvailable=completionRecoverySupportWritesRemaining>0;
         if(supportAllowanceAvailable)completionRecoverySupportWritesRemaining=Math.max(0,completionRecoverySupportWritesRemaining-1);
         if(supportAllowanceAvailable&&completionRecoveryEvidenceRoundsRemaining<=0)completionRecoverySupportVerificationRemaining=Math.max(completionRecoverySupportVerificationRemaining,1);
-        if(path)verifiedEdits.push({path,kind:name,replacements:0,summary:null,supportOnly:true,beforeSha256:String(output?.beforeSha256||"")||null,afterSha256:String(output?.afterSha256||"")||null});
+        if(path)verifiedEdits.push(...workspaceEditRecords(name,args,output,{path,supportOnly:true}));
         emit(onEvent,{name:"native.completion.recovery_support_write",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,path:redactSecretText(path,{trim:true}).slice(0,240),allowanceUsed:supportAllowanceAvailable,supportVerificationAllowed:supportAllowanceAvailable&&completionRecoverySupportVerificationRemaining>0}});
       }else{
         editRevision++;
@@ -1583,7 +1597,7 @@ export async function runNativeAgentTurn({
           abstractionRepairRevision=editRevision;pendingAbstractionRepair=false;abstractionRepairVerificationPending=true;abstractionRepairVerificationPromptRevision=0;postEditResidualStructureRevision=0;
           emit(onEvent,{name:"native.progress.abstraction_repair_applied",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,path:redactSecretText(path,{trim:true}).slice(0,240),verificationPending:true}});
         }
-        if(normalizedPath){completionRecoverySupportPaths.delete(normalizedPath);completionRecoveryImplementationPaths.add(normalizedPath)}if(path)verifiedEdits.push({path,kind:name,replacements:name==="replace_text"?Math.max(0,Math.trunc(Number(output?.replacements)||0)):0,summary:name==="replace_text"?conciseReplacementSummary(args.old_text,args.new_text):null,supportOnly:false,beforeSha256:String(output?.beforeSha256||"")||null,afterSha256:String(output?.afterSha256||"")||null});
+        if(normalizedPath){completionRecoverySupportPaths.delete(normalizedPath);completionRecoveryImplementationPaths.add(normalizedPath)}if(path)verifiedEdits.push(...workspaceEditRecords(name,args,output,{path}));
       }
     }
     if(success&&output?.success!==false&&output?.uncertain!==true&&batchEvidenceRepairWorkspaceEdit&&editRevision>editRevisionBeforeTool){
