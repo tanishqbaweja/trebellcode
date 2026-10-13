@@ -317,3 +317,77 @@ test("file rewind refuses ordinary shared project directories and checkpoint cro
     await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),/isolated Trebell worktree/i);
   }finally{await rm(root,{recursive:true,force:true})}
 });
+
+// A managed worktree owned by one thread, its checkpoint, and then work done after it: a tracked file changed, one deleted, one
+// staged, and an untracked file added. snapshot() reads what a person would check: each file's bytes, git status and the staged diff.
+async function rewindWorktree(prefix){
+  const root=await mkdtemp(join(tmpdir(),prefix));
+  const home=join(root,"home"),repo=join(root,"repo"),worktree=join(root,"worktree");
+  await mkdir(repo,{recursive:true});
+  await git(repo,["init"]);await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);
+  await git(repo,["checkout","-b","main"]);
+  for(const [name,text] of [["kept.txt","base\n"],["edited.txt","base\n"],["deleted.txt","base\n"],["staged.txt","base\n"]])await writeFile(join(repo,name),text);
+  await git(repo,["add","."]);await git(repo,["commit","-m","Base"]);
+  await git(repo,["branch","feature"]);await git(repo,["worktree","add",worktree,"feature"]);
+  const env={...process.env,TREBELL_HOME:home};const state=new TrebellStateStore(env);
+  state.touchProject(worktree,{managedWorktree:{root:repo,branch:"feature",baseBranch:"main",submodules:"none",createdAt:Date.now()}});
+  state.updateThreadMeta("thread-owner",{cwd:worktree,archived:false});
+  await writeFile(join(worktree,"edited.txt"),"checkpoint\n");
+  const checkpointState={state,env,worktree,root};
+  checkpointState.later=async()=>{
+    await writeFile(join(worktree,"edited.txt"),"later work\n");await rm(join(worktree,"deleted.txt"));
+    await writeFile(join(worktree,"staged.txt"),"staged work\n");await git(worktree,["add","staged.txt"]);
+    await writeFile(join(worktree,"untracked.txt"),"new file\n");
+  };
+  checkpointState.snapshot=async()=>{
+    const files={};
+    for(const name of ["kept.txt","edited.txt","deleted.txt","staged.txt","untracked.txt"])files[name]=await readFile(join(worktree,name),"utf8").catch(()=>null);
+    const status=(await git(worktree,["status","--porcelain=v1","--untracked-files=all"])).stdout;
+    const staged=(await git(worktree,["diff","--cached","--name-status"])).stdout;
+    return {files,status,staged};
+  };
+  return checkpointState;
+}
+
+// A restore that fails part-way (git restore wrote some files and then stopped, as on a file another program holds open) puts every
+// file back as it was before the attempt, untracked and staged ones too, and says so.
+test("a file restore that fails part-way puts every file back as it was before the attempt",async()=>{
+  const fixture=await rewindWorktree("trebell-checkpoint-partial-");
+  try{
+    const plain=new CheckpointService({state:fixture.state,env:fixture.env});
+    const checkpoint=await plain.create({cwd:fixture.worktree,threadId:"thread-owner",label:"Before change"});
+    await fixture.later();const before=await fixture.snapshot();
+    let failed=false;
+    const gitFn=async(cwd,args,options)=>{
+      const result=await git(cwd,args,options);
+      if(!failed&&gitCommand(args)==="restore"&&args.includes(checkpoint.commit)){failed=true;throw new Error("error: unable to unlink old 'edited.txt': Permission denied")}
+      return result;
+    };
+    const service=new CheckpointService({state:fixture.state,env:fixture.env,gitFn});
+    const error=await service.restore(checkpoint.id,{threadId:"thread-owner"}).then(()=>null,caught=>caught);
+    assert.equal(failed,true,"the restore wrote the files before it failed");
+    assert.deepEqual(await fixture.snapshot(),before,"the files, git status and the staged changes are as they were");
+    assert.match(String(error?.message),/unable to unlink old 'edited\.txt'/);assert.equal(error.filesPutBack,true,"the failure says the files were put back");
+  }finally{await rm(fixture.root,{recursive:true,force:true})}
+});
+
+// Edit from here restores the files and then rewinds the conversation. A rewind the harness refuses takes the restore back
+// (undoRestore): every file is as it was before Edit from here, untracked and staged ones too, and the undo is used up.
+test("a file restore taken back puts every file back as it was before it, and only once",async()=>{
+  const fixture=await rewindWorktree("trebell-checkpoint-undo-");
+  try{
+    const service=new CheckpointService({state:fixture.state,env:fixture.env});
+    const checkpoint=await service.create({cwd:fixture.worktree,threadId:"thread-owner",label:"Before change"});
+    await fixture.later();const before=await fixture.snapshot();
+    const restored=await service.restore(checkpoint.id,{threadId:"thread-owner"});
+    assert.equal(restored.ok,true);assert.ok(restored.undoId,"the restore can be taken back");
+    assert.equal(await readFile(join(fixture.worktree,"edited.txt"),"utf8"),"checkpoint\n");
+    assert.equal(await readFile(join(fixture.worktree,"untracked.txt"),"utf8").catch(()=>null),null);
+    await assert.rejects(()=>service.undoRestore(restored.undoId,{threadId:"thread-other"}),/no longer|thread/i);
+    const undone=await service.undoRestore(restored.undoId,{threadId:"thread-owner"});
+    assert.equal(undone.ok,true);
+    assert.deepEqual(await fixture.snapshot(),before,"the files, git status and the staged changes are as they were");
+    await assert.rejects(()=>service.undoRestore(restored.undoId,{threadId:"thread-owner"}),/no longer/i);
+    assert.deepEqual(await fixture.snapshot(),before);
+  }finally{await rm(fixture.root,{recursive:true,force:true})}
+});

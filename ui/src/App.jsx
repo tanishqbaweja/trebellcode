@@ -4665,16 +4665,29 @@ export default function App(){
     // restore under a running turn too).
     if(turnRunsNow()){refuseWhileRunning();return}
     const client=rpcRef.current||rpc;
+    let undoId=null;
     if(isolatedWorktree){
       const current=await client.request("thread/read",{threadId,includeTurns:false}).catch(()=>null);
       if(current?.thread?.status?.type==="active"||turnRunsNow()){refuseWhileRunning();return}
-      try{await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId}})}
-      catch(error){showActionError(error,"Could not restore the files, so the conversation was not changed");return}
+      // A restore that fails part-way leaves the files as they were before it, and says whether it could (filesPutBack).
+      try{undoId=(await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId}}))?.undoId||null}
+      catch(error){
+        const putBack=error?.data?.filesPutBack;
+        showActionError(error,putBack===true?"Could not restore the files, so they and the conversation were left as they were":putBack===false?"Could not restore the files, and some may not be as they were; the conversation was not changed":"Could not restore the files, so the conversation was not changed");
+        return;
+      }
     }
-    // A rewind the harness refuses (a running turn, a turn it has no checkpoint for) is shown, and the conversation stays as it is;
-    // files already restored for it are said to be, since they stay at the checkpoint.
+    // A rewind the harness refuses (a running turn, a turn it has no checkpoint for) is shown, and the conversation stays as it is. The
+    // files it restored go back to how they were before Edit from here, so files and conversation stay in step; a server that cannot
+    // take the restore back (no undoId) leaves them at the checkpoint, and says so.
     try{await client.request("thread/revert",{threadId,beforeTurnId:message.turnId})}
-    catch(error){showActionError(error,isolatedWorktree?"Restored the files to the checkpoint, but could not edit from this message":"Could not edit from this message");return}
+    catch(error){
+      if(!isolatedWorktree){showActionError(error,"Could not edit from this message");return}
+      if(!undoId){showActionError(error,"Restored the files to the checkpoint, but could not edit from this message");return}
+      const undone=await api("/api/checkpoints/undo",{method:"POST",body:{undoId,threadId}}).then(()=>null,undoError=>undoError);
+      showActionError(error,undone?"Could not edit from this message, and the files stay at the checkpoint ("+(undone.message||String(undone))+")":"Could not edit from this message, so the files were put back as they were");
+      return;
+    }
     // A draft already in the composer stays, below the message brought back to edit.
     setPrompt(current=>String(current||"").trim()&&current!==message.text?message.text+"\n\n"+current:message.text);await reloadActiveThread();
     // The message is the composer's to edit now, so the focus goes there, at its end: the button that had it left with the message.

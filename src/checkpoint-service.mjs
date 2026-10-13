@@ -9,6 +9,8 @@ const CHECKPOINT_NESTED_REPO_MAX_CANDIDATES=64;
 const NESTED_GIT_ENV_KEYS=["GIT_DIR","GIT_WORK_TREE","GIT_COMMON_DIR","GIT_INDEX_FILE","GIT_OBJECT_DIRECTORY","GIT_ALTERNATE_OBJECT_DIRECTORIES"];
 const CHECKPOINT_GIT_ENV_KEYS=["EMAIL","GIT_AUTHOR_NAME","GIT_AUTHOR_EMAIL","GIT_COMMITTER_NAME","GIT_COMMITTER_EMAIL","GIT_CONFIG_GLOBAL","GIT_CONFIG_SYSTEM","GIT_CONFIG_NOSYSTEM","GIT_CEILING_DIRECTORIES","GIT_DISCOVERY_ACROSS_FILESYSTEM"];
 const CHECKPOINT_DURABLE_WRITE=["-c","core.fsync=objects,reference","-c","core.fsyncMethod=fsync"];
+// The restores that can still be taken back (undoRestore), and for how long: Edit from here takes one back within seconds.
+const RESTORE_UNDO_KEEP_COUNT=8,RESTORE_UNDO_KEEP_MS=30*60_000;
 
 export function isTransientCheckpointGitError(error){
   const message=String(error?.message||error||"");
@@ -45,6 +47,7 @@ function reusableIndex(buffer){
 }
 
 export class CheckpointService{
+  #undos=new Map();
   constructor({state,env=process.env,gitFn=git,gitInfoFn=gitInfo,environments=null,sleepFn=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}){
     this.state=state;this.env=env;this.gitFn=gitFn;this.gitInfoFn=gitInfoFn;this.environments=environments;this.sleepFn=sleepFn;
   }
@@ -145,10 +148,20 @@ export class CheckpointService{
   async create({cwd,threadId=null,label=null,environmentId=null}){
     if(environmentId&&!this.#remoteProfile(environmentId))throw new Error("Checkpoint environment is unavailable");
     if(this.#usesRemoteIo(environmentId))return this.#createRemote({cwd,threadId,label,environmentId});
+    const baseEnv=this.#localGitEnv(),captured=await this.#captureLocal(cwd,label,baseEnv);
+    if(!captured)return {supported:false,reason:"not_git"};
+    const {id,root,commit}=captured,ref=`refs/trebell/checkpoints/${id}`;
+    await this.#captureGit(root,this.#durable(["update-ref",ref,commit]),{env:baseEnv});
+    const item=this.state.addCheckpoint({id,threadId,root,commit,ref,label:label||null,environmentId:environmentId||null});
+    return {supported:true,...item};
+  }
+  // The worktree as it is, as a commit of every file add -A takes (tracked and untracked ones, not ignored ones), with the root and the
+  // path of the repository's own index; null outside a git repository. Nothing records it: create() gives it a ref and a checkpoint.
+  async #captureLocal(cwd,label,baseEnv){
     // One rev-parse gives the root, the repository's own index and HEAD; an unborn branch prints the first two and exits 1.
-    const baseEnv=this.#localGitEnv(),found=await this.gitFn(cwd,["rev-parse","--show-toplevel","--git-path","index","--verify","-q","HEAD"],{allowFailure:true,env:baseEnv});
+    const found=await this.gitFn(cwd,["rev-parse","--show-toplevel","--git-path","index","--verify","-q","HEAD"],{allowFailure:true,env:baseEnv});
     const [root="",repositoryIndex="",headLine=""]=String(found.stdout||"").split(/\r?\n/).map(line=>line.trim());
-    if(!root||!repositoryIndex||(!found.ok&&found.code!==1)) return {supported:false,reason:"not_git"};
+    if(!root||!repositoryIndex||(!found.ok&&found.code!==1)) return null;
     const info={root},head={ok:found.ok&&Boolean(headLine),stdout:headLine};
     const id=randomUUID();
     const tmpDir=join(trebellHome(this.env),"checkpoints");
@@ -171,10 +184,7 @@ export class CheckpointService{
       const args=["commit-tree",tree,"-m",label||"Trebell Code checkpoint"];
       if(head.ok) args.push("-p",head.stdout.trim());
       const commit=(await this.#captureGit(info.root,this.#durable(args),{env:childEnv})).stdout.trim();
-      const ref=`refs/trebell/checkpoints/${id}`;
-      await this.#captureGit(info.root,this.#durable(["update-ref",ref,commit]),{env:baseEnv});
-      const item=this.state.addCheckpoint({id,threadId,root:info.root,commit,ref,label:label||null,environmentId:environmentId||null});
-      return {supported:true,...item};
+      return {id,root:info.root,commit,repositoryIndex:source};
     }finally{
       await rm(indexPath,{force:true}).catch(()=>{});
       await rm(indexPath+".lock",{force:true}).catch(()=>{});
@@ -274,6 +284,35 @@ export class CheckpointService{
     for(const rel of untracked){if(trackedAtCheckpoint.has(rel))continue;await this.#remoteExec(environmentId,{command:"rm",args:["-rf","--",rel],cwd:root,allowFailure:true,timeoutMs:30000,maxOutput:64*1024})}
     return {ok:true,checkpoint:cp,info:await this.#remoteGitInfo(environmentId,root)};
   }
+  // The worktree and the index made to match a commit for every path git does not ignore: each file the commit holds is written as it
+  // holds it, and a tracked or untracked file it lacks is removed. A file that could not be removed fails the restore.
+  async #restoreLocalTree(root,commit,baseEnv){
+    await this.gitFn(root,["restore","--source",commit,"--staged","--worktree","--","."],{env:baseEnv});
+    const paths=value=>String(value||"").split("\0").filter(Boolean);
+    const tracked=new Set(paths((await this.gitFn(root,["ls-tree","-r","--name-only","-z",commit],{env:baseEnv})).stdout));
+    const untracked=paths((await this.gitFn(root,["ls-files","--others","--exclude-standard","-z"],{env:baseEnv})).stdout),failed=[];
+    for(const rel of untracked)if(!tracked.has(rel))await rm(join(root,rel),{recursive:true,force:true}).catch(error=>failed.push(rel+" ("+(error?.code||error?.message||error)+")"));
+    if(failed.length)throw new Error("Could not remove "+failed.slice(0,3).join(", ")+(failed.length>3?` and ${failed.length-3} more`:"")+".");
+  }
+  // What a restore changes, kept before it so that it can be put back exactly: the worktree as a commit (#captureLocal) and the index's
+  // own bytes. A few are kept, for a while: Edit from here takes one back only when the rewind that follows the restore is refused.
+  async #keepLocal(root,threadId,baseEnv){
+    const captured=await this.#captureLocal(root,"Before the files were restored",baseEnv);
+    if(!captured)throw new Error("Checkpoint repository is unavailable");
+    const index=await readFile(captured.repositoryIndex).catch(error=>{if(error?.code==="ENOENT")return null;throw error});
+    const now=Date.now(),kept={id:captured.id,threadId,root,commit:captured.commit,indexPath:captured.repositoryIndex,index,keptAt:now};
+    for(const [key,entry] of this.#undos)if(now-entry.keptAt>RESTORE_UNDO_KEEP_MS)this.#undos.delete(key);
+    this.#undos.set(kept.id,kept);
+    while(this.#undos.size>RESTORE_UNDO_KEEP_COUNT)this.#undos.delete(this.#undos.keys().next().value);
+    return kept;
+  }
+  async #putBack(kept,baseEnv){
+    await this.#restoreLocalTree(kept.root,kept.commit,baseEnv);
+    if(kept.index)await writeFile(kept.indexPath,kept.index);else await rm(kept.indexPath,{force:true});
+  }
+  // The files go back to the checkpoint, or stay exactly as they were: a restore that fails part-way (git restore wrote some files
+  // and stopped, a file could not be removed) puts back what it changed, and the error says whether that worked (filesPutBack). The
+  // answer's undoId takes the restore back (undoRestore).
   async restore(id,{threadId=null}={}){
     const cp=this.state.checkpoints().find(item=>item.id===id);
     if(!cp) throw new Error("Checkpoint not found");
@@ -281,10 +320,24 @@ export class CheckpointService{
     await this.#assertRestoreIsolation(cp,threadId);
     const baseEnv=this.#localGitEnv(),info=await this.gitInfoFn(cp.root,{env:baseEnv});
     if(!info.isGit) throw new Error("Checkpoint repository is unavailable");
-    await this.gitFn(cp.root,["restore","--source",cp.commit,"--staged","--worktree","--","."],{env:baseEnv});
-    const trackedAtCheckpoint=new Set((await this.gitFn(cp.root,["ls-tree","-r","--name-only",cp.commit],{env:baseEnv})).stdout.split(/\r?\n/).filter(Boolean));
-    const untracked=(await this.gitFn(cp.root,["ls-files","--others","--exclude-standard"],{env:baseEnv})).stdout.split(/\r?\n/).filter(Boolean);
-    for(const rel of untracked){if(!trackedAtCheckpoint.has(rel))await rm(join(cp.root,rel),{recursive:true,force:true}).catch(()=>{});}
-    return {ok:true,checkpoint:cp,info:await this.gitInfoFn(cp.root,{env:baseEnv})};
+    const kept=await this.#keepLocal(cp.root,threadId,baseEnv);
+    try{await this.#restoreLocalTree(cp.root,cp.commit,baseEnv)}
+    catch(error){
+      this.#undos.delete(kept.id);const message=error?.message||String(error);
+      try{await this.#putBack(kept,baseEnv)}
+      catch(putBackError){throw Object.assign(new Error(message+" Putting the files back as they were failed too: "+(putBackError?.message||putBackError),{cause:error}),{filesPutBack:false})}
+      throw Object.assign(new Error(message,{cause:error}),{filesPutBack:true});
+    }
+    return {ok:true,checkpoint:cp,undoId:kept.id,info:await this.gitInfoFn(cp.root,{env:baseEnv})};
+  }
+  // Takes a restore back, once: every file as it was before it, the index too. Edit from here does so when the harness refuses the
+  // rewind that follows the restore, so the files never stay at the checkpoint with the conversation as it was.
+  async undoRestore(undoId,{threadId=null}={}){
+    const kept=this.#undos.get(String(undoId||""));
+    if(!kept)throw new Error("The files from before this restore are no longer kept.");
+    if(!threadId||kept.threadId!==threadId)throw new Error("A restore can be taken back only from the thread that made it.");
+    await this.#putBack(kept,this.#localGitEnv());
+    this.#undos.delete(kept.id);
+    return {ok:true};
   }
 }

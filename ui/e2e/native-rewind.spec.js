@@ -1,6 +1,6 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
-import { mkdir,mkdtemp,rm } from "node:fs/promises";
+import { mkdir,mkdtemp,readFile,rm,writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,11 +8,16 @@ import { fileURLToPath } from "node:url";
 import { attachAgentRelay } from "../../src/agent-relay.mjs";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
+import { CheckpointService } from "../../src/checkpoint-service.mjs";
 import { ContextEngine } from "../../src/context-engine.mjs";
+import { git } from "../../src/git-service.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 mkdirSync(auditDir,{recursive:true});
+// The proof shots of this round's fixes, when the run names a folder for them.
+const SHOTS=process.env.TREBELL_PROOF_SHOTS?String(process.env.TREBELL_PROOF_SHOTS).replace(/[\\/]*$/,"/"):auditDir+"proof-";
+if(process.env.TREBELL_PROOF_SHOTS)mkdirSync(SHOTS,{recursive:true});
 
 async function freePort(){
   const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
@@ -24,8 +29,10 @@ async function freePort(){
 // with that message, revertError has the harness refuse the rewind (thread/revert) with that one, and hold, when given, keeps a new
 // turn running until it resolves. nativeDialogs notes every browser dialog (and dismisses it): the app asks in its own.
 // openWindow(other) opens the same thread in another window of the app, on the same relay. holdNotices ({on,held}) slows the first
-// window's link: while on, the relay's notices to it wait in held (each a function that delivers it).
-async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,worktree=true,holdNotices=null}={}){
+// window's link: while on, the relay's notices to it wait in held (each a function that delivers it). realFiles makes the worktree a
+// git repository whose checkpoint is real and restored as the server restores it (CheckpointService), with the turn's work on its files
+// after it; files() reads them. failRestoreMidway has git restore write the files and then fail, as on a file another program holds.
+async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,worktree=true,holdNotices=null,realFiles=false,failRestoreMidway=false}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-rewind-")),home=join(root,"home"),repo=join(root,worktree?"managed-worktree":"native-project");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
   state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
@@ -35,7 +42,21 @@ async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,
     providerMeta:{runtimeInstanceId:"native-default",modelProvider:"agentrouter",permissionProfile:"supervised",projectless:false,environmentId:null},
   });
   const turn=threadStore.addTurn(thread.id,{inputText:"Rewind this Native work"});threadStore.addItem(thread.id,turn.id,{id:"native-rewind-answer",type:"agentMessage",text:"Native work changed files."});threadStore.finishTurn(thread.id,turn.id);
-  const checkpoint={id:"native-checkpoint-1",threadId:thread.id,turnId:turn.id,label:"before Native work"};
+  let checkpoint={id:"native-checkpoint-1",threadId:thread.id,turnId:turn.id,label:"before Native work"},checkpoints=null;
+  if(realFiles){
+    await git(repo,["init"]);await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);
+    await writeFile(join(repo,"notes.txt"),"before the turn\n");await git(repo,["add","."]);await git(repo,["commit","-m","Base"]);
+    state.touchProject(repo,{managedWorktree:{root,branch:"trebell/native-rewind",baseBranch:"main",submodules:"none",createdAt:Date.now(),cleanedAt:null}});
+    state.updateThreadMeta(thread.id,{cwd:repo,runtime:"native"});
+    let failed=false;
+    const gitFn=async(cwd,args,options)=>{const result=await git(cwd,args,options);if(failRestoreMidway&&!failed&&args[0]==="restore"&&args.includes(checkpoint.commit)){failed=true;throw new Error("error: unable to unlink old 'notes.txt': Permission denied")}return result};
+    checkpoints=new CheckpointService({state,env,gitFn});
+    const created=await checkpoints.create({cwd:repo,threadId:thread.id,label:"before Native work"});
+    checkpoint=state.updateCheckpoint(created.id,{turnId:turn.id});
+    // The turn's work after its checkpoint: one file changed, one added.
+    await writeFile(join(repo,"notes.txt"),"the turn's work\n");await writeFile(join(repo,"added.txt"),"added by the turn\n");
+  }
+  const files=async()=>({notes:await readFile(join(repo,"notes.txt"),"utf8").catch(()=>null),added:await readFile(join(repo,"added.txt"),"utf8").catch(()=>null),status:(await git(repo,["status","--porcelain=v1","--untracked-files=all"])).stdout});
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
   const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn:async request=>(hold&&await hold,{id:"unused-native-rewind",provider:request.provider,model:request.model,text:"",toolCalls:[],finishReason:"stop",usage:{}}),version:"visual-fixture"});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
@@ -45,7 +66,7 @@ async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,
   let uiMeta={projectless:false,environmentId:null,cwd:repo,runtime:"native",runtimeInstanceId:"native-default"};
   // The light and dark toggle's saved setting stays in the fixture, so the shared e2e server keeps its own.
   const saved={};
-  const fixture={thread,threadStore,checkpoint,restoreBody:null,nativeDialogs:[],openWindow,async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true})}};
+  const fixture={thread,threadStore,checkpoint,restoreBody:null,undoBody:null,nativeDialogs:[],openWindow,files,async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true})}};
   async function openWindow(page,{holdNotices=null}={}){
     await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:{[thread.id]:uiMeta}})}));
@@ -54,7 +75,18 @@ async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,
     await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
     await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,branch:"trebell/native-rewind",root})}));
     await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();uiMeta={...uiMeta,...(body?.patch||{})}}await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(uiMeta)})});
-    await page.route(/\/api\/checkpoints\/restore$/,async route=>{fixture.restoreBody=route.request().postDataJSON();await route.fulfill(restoreError?{status:500,contentType:"application/json",body:JSON.stringify({error:restoreError})}:{status:200,contentType:"application/json",body:JSON.stringify({restored:true})})});
+    await page.route(/\/api\/checkpoints\/restore$/,async route=>{
+      fixture.restoreBody=route.request().postDataJSON();
+      if(!checkpoints)return route.fulfill(restoreError?{status:500,contentType:"application/json",body:JSON.stringify({error:restoreError})}:{status:200,contentType:"application/json",body:JSON.stringify({restored:true})});
+      // As the server answers: the restore, or why not and whether the files were put back.
+      const answer=await checkpoints.restore(fixture.restoreBody.id,{threadId:fixture.restoreBody.threadId}).then(result=>({status:200,body:result}),error=>({status:400,body:{error:error.message,...(typeof error.filesPutBack==="boolean"?{filesPutBack:error.filesPutBack}:{})}}));
+      await route.fulfill({status:answer.status,contentType:"application/json",body:JSON.stringify(answer.body)});
+    });
+    await page.route(/\/api\/checkpoints\/undo$/,async route=>{
+      fixture.undoBody=route.request().postDataJSON();
+      const answer=checkpoints?await checkpoints.undoRestore(fixture.undoBody.undoId,{threadId:fixture.undoBody.threadId}).then(result=>({status:200,body:result}),error=>({status:400,body:{error:error.message}})):{status:404,body:{error:"Not found"}};
+      await route.fulfill({status:answer.status,contentType:"application/json",body:JSON.stringify(answer.body)});
+    });
     await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[checkpoint]})}));
     await page.route(/\/api\/context\/packet$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"rewind-context",skipped:true,budget:{reserveTokens:1024}})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
@@ -295,6 +327,46 @@ test("a rewind the harness refuses after the files were restored says the files 
     expect(fixture.restoreBody).toEqual({id:fixture.checkpoint.id,threadId:fixture.thread.id});
     await expect(page.locator(".user-row")).toHaveCount(1);expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
     await shoot(page,"native-rewind-refused-after-restore",{before:async()=>{if(!await failure.isVisible()){await editFromHere(page)}await expect(failure).toContainText("Restored the files to the checkpoint")}});
+  }finally{await fixture.close()}
+});
+
+// With the files really restored: a rewind the harness refuses takes the restore back, so every file is as it was before Edit from
+// here (the turn's work is still there), the conversation stays, and the failure says the files were put back.
+test("a rewind the harness refuses puts the files back as they were before Edit from here, and says so",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const fixture=await rewindFixture(page,{revertError:"Native rewind target turn was not found.",realFiles:true});
+  try{
+    const before=await fixture.files();
+    expect(before).toEqual({notes:"the turn's work\n",added:"added by the turn\n",status:" M notes.txt\n?? added.txt\n"});
+    await editFromHere(page);
+    const failure=page.getByTestId("app-action-error");
+    await expect(failure).toContainText("Could not edit from this message, so the files were put back as they were: Native rewind target turn was not found.",{timeout:20_000});
+    expect(await fixture.files(),"every file is as it was before Edit from here").toEqual(before);
+    expect(fixture.restoreBody).toEqual({id:fixture.checkpoint.id,threadId:fixture.thread.id});
+    await expect(page.locator(".user-row")).toHaveCount(1);await expect(page.getByText("Native work changed files.",{exact:true})).toBeVisible();
+    expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
+    await page.screenshot({animations:"disabled",path:SHOTS+"R1-refused-rewind-files-put-back.png"});
+    await shoot(page,"native-rewind-refused-files-put-back",{before:async()=>{if(!await failure.isVisible()){await editFromHere(page)}await expect(failure).toContainText("so the files were put back as they were",{timeout:20_000})}});
+    expect(await fixture.files()).toEqual(before);
+  }finally{await fixture.close()}
+});
+
+// A restore that fails part-way (git wrote some files, then stopped) leaves every file as it was before the attempt, and says so; the
+// conversation stays as it was.
+test("a file restore that fails part-way leaves every file and the conversation as they were, and says so",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const fixture=await rewindFixture(page,{realFiles:true,failRestoreMidway:true});
+  try{
+    const before=await fixture.files();
+    await editFromHere(page);
+    const failure=page.getByTestId("app-action-error");
+    await expect(failure).toContainText("Could not restore the files, so they and the conversation were left as they were: error: unable to unlink old 'notes.txt': Permission denied",{timeout:20_000});
+    expect(await fixture.files(),"every file is as it was before Edit from here").toEqual(before);
+    await expect(page.locator(".user-row")).toHaveCount(1);expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
+    expect(fixture.undoBody).toBeNull();
+    await page.screenshot({animations:"disabled",path:SHOTS+"R1-restore-failed-part-way-files-as-they-were.png"});
   }finally{await fixture.close()}
 });
 

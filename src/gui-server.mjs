@@ -2626,6 +2626,19 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         return json(res,200,result);
       }catch(error){
         recordCheckpointTrace("checkpoint.restore_failed","error",null,{checkpointId:body?.id||null,threadId:body?.threadId||null,message:error.message});
+        // A restore that failed part-way says whether the files were put back as they were before it (CheckpointService.restore).
+        return json(res,400,{error:error.message,...(typeof error?.filesPutBack==="boolean"?{filesPutBack:error.filesPutBack}:{})});
+      }
+    }
+    // Takes a restore back (Edit from here whose rewind the harness refused): every file as it was before the restore.
+    if(url.pathname==="/api/checkpoints/undo" && req.method==="POST"){
+      let body=null;
+      try{
+        body=await readJsonBody(req);const threadId=body.threadId?String(body.threadId):null;
+        const result=await checkpoints.undoRestore(body.undoId,{threadId});recordCheckpointTrace("checkpoint.restore_undone","completed",null,{threadId});
+        return json(res,200,result);
+      }catch(error){
+        recordCheckpointTrace("checkpoint.restore_undo_failed","error",null,{threadId:body?.threadId||null,message:error.message});
         return json(res,400,{error:error.message});
       }
     }
