@@ -32,7 +32,8 @@ async function freePort(){
 // window's link: while on, the relay's notices to it wait in held (each a function that delivers it). realFiles makes the worktree a
 // git repository whose checkpoint is real and restored as the server restores it (CheckpointService), with the turn's work on its files
 // after it; files() reads them. failRestoreMidway has git restore write the files and then fail, as on a file another program holds.
-async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,worktree=true,holdNotices=null,realFiles=false,failRestoreMidway=false}={}){
+// restoreRefusal answers the restore with the server's 409 for a turn that started after the app read the thread.
+async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,worktree=true,holdNotices=null,realFiles=false,failRestoreMidway=false,restoreRefusal=null}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-rewind-")),home=join(root,"home"),repo=join(root,worktree?"managed-worktree":"native-project");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
   state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
@@ -77,6 +78,7 @@ async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,
     await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();uiMeta={...uiMeta,...(body?.patch||{})}}await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(uiMeta)})});
     await page.route(/\/api\/checkpoints\/restore$/,async route=>{
       fixture.restoreBody=route.request().postDataJSON();
+      if(restoreRefusal)return route.fulfill({status:409,contentType:"application/json",body:JSON.stringify({error:restoreRefusal})});
       if(!checkpoints)return route.fulfill(restoreError?{status:500,contentType:"application/json",body:JSON.stringify({error:restoreError})}:{status:200,contentType:"application/json",body:JSON.stringify({restored:true})});
       // As the server answers: the restore, or why not and whether the files were put back.
       const answer=await checkpoints.restore(fixture.restoreBody.id,{threadId:fixture.restoreBody.threadId}).then(result=>({status:200,body:result}),error=>({status:400,body:{error:error.message,...(typeof error.filesPutBack==="boolean"?{filesPutBack:error.filesPutBack}:{})}}));
@@ -367,6 +369,26 @@ test("a file restore that fails part-way leaves every file and the conversation 
     await expect(page.locator(".user-row")).toHaveCount(1);expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
     expect(fixture.undoBody).toBeNull();
     await page.screenshot({animations:"disabled",path:SHOTS+"R1-restore-failed-part-way-files-as-they-were.png"});
+  }finally{await fixture.close()}
+});
+
+// A turn that starts after the app asked the harness whether the thread runs, before the restore (another window's Codex turn, P4),
+// is refused by the server's restore (409): the app says to stop the turn, and no file and nothing in the conversation changes.
+test("a restore the server refuses for a turn that started after the app's read changes nothing and says to stop the turn",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const fixture=await rewindFixture(page,{realFiles:true,restoreRefusal:"Stop the running turn first."});
+  try{
+    const before=await fixture.files(),composer=page.getByTestId("composer");
+    await composer.click();await page.keyboard.type("A draft I am still writing",{delay:8});
+    await editFromHere(page);
+    const failure=page.getByTestId("app-action-error");
+    await expect(failure).toHaveText("Could not edit from this message: Stop the running turn first.");
+    expect(await fixture.files()).toEqual(before);
+    expect(fixture.restoreBody).toEqual({id:fixture.checkpoint.id,threadId:fixture.thread.id});
+    await expect(page.locator(".user-row")).toHaveCount(1);expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
+    await expect(composer).toHaveValue("A draft I am still writing");
+    await page.screenshot({animations:"disabled",path:SHOTS+"R2-restore-refused-turn-started-after-read.png"});
   }finally{await fixture.close()}
 });
 

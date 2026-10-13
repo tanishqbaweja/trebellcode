@@ -4669,9 +4669,11 @@ export default function App(){
     if(isolatedWorktree){
       const current=await client.request("thread/read",{threadId,includeTurns:false}).catch(()=>null);
       if(current?.thread?.status?.type==="active"||turnRunsNow()){refuseWhileRunning();return}
-      // A restore that fails part-way leaves the files as they were before it, and says whether it could (filesPutBack).
+      // The server refuses (409) a thread whose turn started after that read, in any window, and puts back the files of one that
+      // started while they went back. A restore that fails part-way leaves the files as they were before it (filesPutBack).
       try{undoId=(await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId}}))?.undoId||null}
       catch(error){
+        if(error?.status===409&&error?.data?.filesPutBack!==false){refuseWhileRunning();return}
         const putBack=error?.data?.filesPutBack;
         showActionError(error,putBack===true?"Could not restore the files, so they and the conversation were left as they were":putBack===false?"Could not restore the files, and some may not be as they were; the conversation was not changed":"Could not restore the files, so the conversation was not changed");
         return;

@@ -74,11 +74,15 @@ export function attachCodexRelay(httpServer, {
         primaryKey:null,
         nextServerRequestId:1,
         clientChain:Promise.resolve(),
+        // The browser's requests not answered yet, by id ({method, params}): from the moment the relay reads one until its answer goes
+        // back, or the connection that carried it closes (requestsInProgress).
+        inProgress:new Map(),
         closed:false,
       };
       clients.add(context);
 
       const sendBrowser=(value,{binary=false}={})=>{
+        if(value&&typeof value==="object"&&!Buffer.isBuffer(value)&&Object.prototype.hasOwnProperty.call(value,"id")&&!value.method)context.inProgress.delete(value.id);
         if(browserSocket.readyState!==WebSocket.OPEN)return;
         browserSocket.send(typeof value==="string"||Buffer.isBuffer(value)?value:JSON.stringify(value),{binary});
       };
@@ -175,6 +179,7 @@ export function attachCodexRelay(httpServer, {
         });
         upstream.on("close",(code,reason)=>{
           context.upstreams.delete(record.key);
+          for(const id of record.forwardedRequests.keys())context.inProgress.delete(id);
           for(const pending of record.internalPending.values()){clearTimeout(pending.timer);pending.reject(new Error("Codex app-server disconnected"))}
           record.internalPending.clear();
           // A connection that died has no close frame (1005, 1006 or 1015), and no close frame may carry those codes: ws throws for them,
@@ -249,6 +254,7 @@ export function attachCodexRelay(httpServer, {
 
       browserSocket.on("message",(data,isBinary)=>{
         const raw=isBinary?data:String(data);let message=null;if(!isBinary)try{message=JSON.parse(raw)}catch{}
+        if(message?.method&&Object.prototype.hasOwnProperty.call(message,"id"))context.inProgress.set(message.id,{method:String(message.method),params:message.params&&typeof message.params==="object"?message.params:{}});
         context.clientChain=context.clientChain.then(()=>forward(message,raw,isBinary)).catch(error=>{
           log(`renderer websocket routing error: ${error.message}`);
           if(message&&Object.prototype.hasOwnProperty.call(message,"id")&&message.method)sendBrowser({id:message.id,error:errorPayload(error)});
@@ -264,6 +270,12 @@ export function attachCodexRelay(httpServer, {
   });
 
   return {
+    // How many requests of the open windows that match (({method, params}) => boolean) are on their way: read, not answered yet.
+    requestsInProgress(match){
+      let count=0;
+      for(const context of clients)for(const request of context.inProgress.values())if(match(request))count++;
+      return count;
+    },
     broadcast(method,params={}){
       const payload=JSON.stringify({method,params});
       for(const context of clients){

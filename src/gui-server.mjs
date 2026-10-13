@@ -396,6 +396,10 @@ function knownModelProvider(providerId){
   return Object.prototype.hasOwnProperty.call(MODEL_PROVIDERS,String(providerId||"").trim().toLowerCase());
 }
 
+// The Codex requests that start a turn in their thread: a restore of the thread's files waits for none of them, and refuses while one
+// is on its way.
+const CODEX_TURN_START_METHODS=new Set(["turn/start","review/start","thread/compact/start","thread/queue/start"]);
+
 const MOCK_DEFAULT_MODEL="test/coding-fast";
 function fakeModels(provider=DEFAULT_MODEL_PROVIDER){
   if(provider==="agentrouter") return ["gpt-5.6-sol","gpt-6-astra","claude-opus-4-8","claude-opus-5","deepseek-v4-flash"];
@@ -1514,6 +1518,28 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   async function transformCodexClientMessage(message){
     return withCodexGoalContext(withCodexRepositoryTools(message));
   }
+  // The Codex turns each thread runs, as the relay sees them pass (turn/started, or a turn-start's answer, until turn/completed, or a
+  // read of the thread that finds it idle), and the threads whose files Edit from here is restoring: the restore refuses a thread that
+  // runs or is starting a turn, a turn start that comes meanwhile is refused (CODEX_TURN_START_METHODS), and one Codex starts by itself
+  // meanwhile (a goal's next turn) is noted, so the restore puts the files back as they were.
+  const codexRunningTurns=new Map(),restoringThreads=new Map();
+  function noteCodexTurnStarted(threadId,turnId){
+    const id=String(threadId||"");if(!id)return;
+    const restoring=restoringThreads.get(id);if(restoring)restoring.turnStarted=true;
+    if(!turnId)return;let turns=codexRunningTurns.get(id);if(!turns)codexRunningTurns.set(id,turns=new Set());turns.add(String(turnId));
+  }
+  function noteCodexTurnEnded(threadId,turnId=null){
+    const id=String(threadId||""),turns=codexRunningTurns.get(id);if(!turns)return;
+    if(turnId)turns.delete(String(turnId));else turns.clear();
+    if(!turns.size)codexRunningTurns.delete(id);
+  }
+  // A turn runs in the thread now, in any window: a relay harness's (Trebell Native, Claude Code, the ACP harnesses) or a Codex turn
+  // that runs or whose start is on its way.
+  function threadTurnRuns(threadId){
+    const id=String(threadId||"");if(!id)return false;
+    if(agentThreads.getMetadata(id)?.status?.type==="active"||codexRunningTurns.has(id))return true;
+    return relay.requestsInProgress(({method,params})=>CODEX_TURN_START_METHODS.has(method)&&String(params?.threadId||"")===id)>0;
+  }
   function markCodexTurnActive(threadId,turnId){
     if(!threadId||!turnId)return;
     state.updateThreadMeta(threadId,{active:true,restartRecovery:{runtime:"codex",bootId,threadId,turnId,status:"active",startedAt:Date.now(),uncertainTools:[]}});
@@ -2616,19 +2642,28 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/checkpoints/restore" && req.method==="POST"){
-      let body=null;
+      let body=null,threadId=null,restoring=null;
       try{
-        body=await readJsonBody(req);
-        // The files of a thread whose turn runs (in any window) stay as they are: the turn is working on them, and its conversation
-        // could not be rewound with them (Edit from here restores the files first).
-        if(body.threadId&&agentThreads.getMetadata(String(body.threadId))?.status?.type==="active")return json(res,409,{error:"Stop the running turn first."});
-        const result=await checkpoints.restore(body.id,{threadId:body.threadId||null});recordCheckpointTrace("checkpoint.restored","completed",result.checkpoint,{checkpointId:body.id,threadId:body.threadId||null});
+        body=await readJsonBody(req);threadId=body.threadId?String(body.threadId):null;
+        // The files of a thread whose turn runs (in any window, a Codex turn whose start is on its way too) stay as they are: the turn
+        // is working on them, and its conversation could not be rewound with them (Edit from here restores the files first).
+        if(threadId&&(threadTurnRuns(threadId)||restoringThreads.has(threadId)))return json(res,409,{error:"Stop the running turn first."});
+        // While the files go back, no turn of the thread starts through Trebell; one that starts all the same (Codex starts a goal's next
+        // turn by itself) has every file put back as it was, and the restore is refused like one under a running turn.
+        if(threadId)restoringThreads.set(threadId,restoring={turnStarted:false});
+        const result=await checkpoints.restore(body.id,{threadId});
+        if(threadId&&(restoring.turnStarted||threadTurnRuns(threadId))){
+          let filesPutBack=false;
+          if(result.undoId)filesPutBack=await checkpoints.undoRestore(result.undoId,{threadId}).then(()=>true,error=>{recordCheckpointTrace("checkpoint.restore_failed","error",result.checkpoint,{checkpointId:body.id,threadId,message:error.message});return false});
+          return json(res,409,{error:"Stop the running turn first.",filesPutBack});
+        }
+        recordCheckpointTrace("checkpoint.restored","completed",result.checkpoint,{checkpointId:body.id,threadId});
         return json(res,200,result);
       }catch(error){
-        recordCheckpointTrace("checkpoint.restore_failed","error",null,{checkpointId:body?.id||null,threadId:body?.threadId||null,message:error.message});
+        recordCheckpointTrace("checkpoint.restore_failed","error",null,{checkpointId:body?.id||null,threadId,message:error.message});
         // A restore that failed part-way says whether the files were put back as they were before it (CheckpointService.restore).
         return json(res,400,{error:error.message,...(typeof error?.filesPutBack==="boolean"?{filesPutBack:error.filesPutBack}:{})});
-      }
+      }finally{if(threadId&&restoringThreads.get(threadId)===restoring)restoringThreads.delete(threadId)}
     }
     // Takes a restore back (Edit from here whose rewind the harness refused): every file as it was before the restore.
     if(url.pathname==="/api/checkpoints/undo" && req.method==="POST"){
@@ -3230,6 +3265,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         return {handled:true,result:await continueCodexVerification(threadId,params,requestUpstream)};
       }
       if(message.method==="thread/delegate")return {handled:true,result:await delegateCodexThread(params,requestUpstream)};
+      if(threadId&&CODEX_TURN_START_METHODS.has(message.method)&&restoringThreads.has(threadId))throw Object.assign(new Error("This thread's files are going back for Edit from here. Send again once that is done."),{code:-32001});
       if(((message.method==="turn/start"&&params.turnTrigger!=="trebell-restart-continuation")||message.method==="thread/queue/start")&&threadId)assertCodexGoalBudget(threadId);
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:await codexThreadProfiles(message.params?.threadId)};
       if(message.method==="thread/runtimeInstance/set")return {handled:true,result:await setCodexThreadProfile(message.params?.threadId,message.params?.instanceId)};
@@ -3288,7 +3324,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         state.updateThreadMeta(startedThread.id,{cwd:startedThread.cwd||null,runtime:"codex",runtimeInstanceId:routedServer?.runtimeInstanceId||agentRuntimes.activeInstance().id,environmentId:routedServer?.environmentId??state.settings().activeEnvironmentId??null,deletedAt:null,active:false,ephemeral,catalogHidden:ephemeral,...codexPermissionProfilePatch(route?.requestParams||{})});
       }
       if(message?.method==="thread/deleted"&&params.threadId){
-        codexThreadModels.delete(params.threadId);const meta=state.threadMeta(params.threadId);state.removeThreadMeta(params.threadId);
+        codexThreadModels.delete(params.threadId);noteCodexTurnEnded(params.threadId);const meta=state.threadMeta(params.threadId);state.removeThreadMeta(params.threadId);
         setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0);
         if(meta?.cwd)worktreeCleanup.sweep({reason:"thread-delete",path:meta.cwd}).catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:safeLogText(error.message+"\n")}));
       }
@@ -3297,8 +3333,14 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         const threadId=String(route.requestParams.threadId);const meta=state.threadMeta(threadId);
         if(!meta.active)setTimeout(()=>releaseCodexThreadServer(threadId).catch(()=>{}),0);
       }
-      if(message?.method==="turn/started")markCodexTurnActive(params.threadId,params.turn?.id||params.turnId);
-      if(message?.method==="turn/completed")clearCodexRecovery(params.threadId,"completed");
+      if(message?.method==="turn/started"){markCodexTurnActive(params.threadId,params.turn?.id||params.turnId);noteCodexTurnStarted(params.threadId,params.turn?.id||params.turnId)}
+      if(message?.method==="turn/completed"){clearCodexRecovery(params.threadId,"completed");noteCodexTurnEnded(params.threadId,params.turn?.id||params.turnId||null)}
+      // A turn-start's answer names a turn that runs; a read of the thread says whether one still does (one whose end the relay never
+      // saw, its window having closed, no longer counts).
+      const answeredThreadId=String(route?.requestParams?.threadId||"");
+      if(answeredThreadId&&CODEX_TURN_START_METHODS.has(route?.requestMethod)&&!message?.error){const turn=message?.result?.turn;if(turn?.id&&(!turn.status||turn.status==="inProgress"))noteCodexTurnStarted(answeredThreadId,turn.id)}
+      if(answeredThreadId&&(route?.requestMethod==="thread/read"||route?.requestMethod==="thread/resume")&&message?.result?.thread&&message.result.thread.status?.type!=="active")noteCodexTurnEnded(answeredThreadId);
+      if(message?.method==="thread/status/changed"&&params.threadId&&params.status&&params.status.type!=="active")noteCodexTurnEnded(params.threadId);
       if(message?.method==="thread/tokenUsage/updated"&&params.threadId&&params.turnId){
         const meta=state.threadMeta(params.threadId);
         state.recordUsage({runtime:"codex",provider:codexRuntimeProvider(params.threadId),model:codexThreadModels.get(params.threadId)||null,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId:params.threadId,turnId:params.turnId,usage:params.tokenUsage?.last||params.tokenUsage?.total||{},cost:params.tokenUsage?.cost||null,at:Date.now()});

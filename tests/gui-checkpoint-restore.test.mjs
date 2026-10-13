@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
 import { git } from "../src/git-service.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
@@ -31,6 +31,18 @@ async function fakeCodex(port){
   await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {requests,startTurn:start,hold(on){holdStarts=on},release(){for(const send of held.splice(0))send()},
     async close(){for(const client of wss.clients)try{client.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
+}
+
+// The app's Codex socket: requests by id, and the notices it is sent.
+async function codexSocket(gui){
+  const ws=new WebSocket(gui.url.replace(/^http/,"ws")+"/api/codex/ws"),seen=[];let nextId=1;
+  ws.on("message",raw=>seen.push(JSON.parse(String(raw))));
+  await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
+  const send=(method,params)=>{const id=nextId++;ws.send(JSON.stringify({id,method,params}));return id};
+  const answer=async(id,timeoutMs=20_000)=>{for(const deadline=Date.now()+timeoutMs;Date.now()<deadline;await new Promise(resolve=>setTimeout(resolve,20))){const found=seen.find(message=>message.id===id&&!message.method);if(found)return found}throw new Error("no answer to request "+id)};
+  const ask=async(method,params)=>answer(send(method,params));
+  await ask("initialize",{clientInfo:{name:"test",version:"0"}});ws.send(JSON.stringify({method:"initialized",params:{}}));
+  return {ws,seen,send,answer,ask};
 }
 
 // A Codex thread in a managed worktree of its own with a checkpoint, then the turn's work on the files: one changed, one deleted, one
@@ -76,4 +88,57 @@ test("a file restore Edit from here takes back leaves every file as it was befor
     assert.deepEqual(await fixture.files(),before);
     assert.equal((await fixture.post("/api/checkpoints/undo",{undoId:restored.body.undoId,threadId:THREAD})).status,400,"a restore is taken back once");
   }finally{await fixture.close()}
+});
+
+// The app reads the Codex thread (thread/read) before it restores any file. A turn that starts after that read, from another window,
+// is refused by the restore itself: no file changes.
+test("a Codex turn another window started after the app's thread/read gets no files restored under it",async()=>{
+  const fixture=await restoreFixture("trebell-gui-restore-codex-started-");
+  let shown=null,other=null;
+  try{
+    shown=await codexSocket(fixture.gui);other=await codexSocket(fixture.gui);
+    const read=await shown.ask("thread/read",{threadId:THREAD,includeTurns:false});
+    assert.equal(read.result.thread.status.type,"idle");
+    const started=await other.ask("turn/start",{threadId:THREAD,input:[{type:"text",text:"Keep working on the files"}]});
+    assert.ok(!started.error,JSON.stringify(started.error));
+    const before=await fixture.files();
+    const restored=await fixture.post("/api/checkpoints/restore",{id:fixture.checkpoint.id,threadId:THREAD});
+    assert.deepEqual(await fixture.files(),before,"no file is restored under the running turn");
+    assert.equal(restored.status,409,JSON.stringify(restored.body));assert.equal(restored.body.error,"Stop the running turn first.");
+  }finally{for(const socket of [shown,other])try{socket?.ws.terminate()}catch{}await fixture.close()}
+});
+
+// The same for a turn whose start is still on its way to Codex (sent, not answered yet).
+test("a Codex turn start still on its way when the restore comes gets no files restored under it",async()=>{
+  const fixture=await restoreFixture("trebell-gui-restore-codex-starting-");
+  let shown=null,other=null;
+  try{
+    shown=await codexSocket(fixture.gui);other=await codexSocket(fixture.gui);
+    assert.equal((await shown.ask("thread/read",{threadId:THREAD,includeTurns:false})).result.thread.status.type,"idle");
+    fixture.codex.hold(true);
+    const pending=other.send("turn/start",{threadId:THREAD,input:[{type:"text",text:"Keep working on the files"}]});
+    for(const deadline=Date.now()+10_000;!fixture.codex.requests.some(message=>message.method==="turn/start")&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,20));
+    const before=await fixture.files();
+    const restored=await fixture.post("/api/checkpoints/restore",{id:fixture.checkpoint.id,threadId:THREAD});
+    assert.deepEqual(await fixture.files(),before,"no file is restored under the turn that is starting");
+    assert.equal(restored.status,409,JSON.stringify(restored.body));assert.equal(restored.body.error,"Stop the running turn first.");
+    fixture.codex.release();assert.ok(!(await other.answer(pending)).error);
+  }finally{for(const socket of [shown,other])try{socket?.ws.terminate()}catch{}await fixture.close()}
+});
+
+// A turn Codex starts by itself (a goal's next turn) while the files go back: once the restore sees it, it puts every file back as it
+// was and refuses. Whether the turn starts before the restore begins or while it runs, no file stays changed under it.
+test("a Codex turn that starts while the files are being restored leaves every file as it was",async()=>{
+  const fixture=await restoreFixture("trebell-gui-restore-codex-during-");
+  let shown=null;
+  try{
+    shown=await codexSocket(fixture.gui);
+    assert.equal((await shown.ask("thread/read",{threadId:THREAD,includeTurns:false})).result.thread.status.type,"idle");
+    const before=await fixture.files();
+    const restoring=fixture.post("/api/checkpoints/restore",{id:fixture.checkpoint.id,threadId:THREAD});
+    await new Promise(resolve=>setTimeout(resolve,40));fixture.codex.startTurn();
+    const restored=await restoring;
+    assert.deepEqual(await fixture.files(),before,"every file is as it was");
+    assert.equal(restored.status,409,JSON.stringify(restored.body));assert.equal(restored.body.error,"Stop the running turn first.");
+  }finally{try{shown?.ws.terminate()}catch{}await fixture.close()}
 });
