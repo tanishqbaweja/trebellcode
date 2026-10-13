@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { remoteCodexArgs, remoteCodexProfileSetup, sshRemotePorts, startRemoteAppServer } from "../src/environment-app-server.mjs";
 import { EnvironmentManager, remoteToolPathPrelude } from "../src/environment-manager.mjs";
@@ -123,6 +127,30 @@ test("SSH native Codex transport omits Trebell provider reverse tunnels and over
 
 // The Codex executable typed for an SSH or WSL environment is saved with it, and it is the command that environment's Codex
 // app-server starts; left blank, the host's codex on PATH is used.
+// A Codex home or executable under a named user's home (~bob/...) is placed by the host's shell in that user's home; one under a user
+// the host does not know is refused before anything is made, rather than a folder named ~bob being made where the server starts.
+test("remote Codex homes and executables under a named user's home are expanded by the host, and an unknown user is refused before anything is made",async()=>{
+  const named=remoteCodexProfileSetup({profile:{codexPath:"~bob/.local/bin/codex"},runtimeInstance:{homePath:"~bob/.codex-shared",shadowHomePath:"~bob/.codex-work"}});
+  assert.match(named.prelude,/^trebell_codex_shared=~bob\/'\.codex-shared'$/m);
+  assert.match(named.prelude,/^trebell_codex_effective=~bob\/'\.codex-work'$/m);
+  assert.match(named.prelude,/case "\$trebell_codex_shared" in "~"\*\) printf '%s\\n' 'Trebell could not find the home folder of the user bob on this host, so it cannot use ~bob\/\.codex-shared\.' >&2; exit 127;; esac/);
+  assert.ok(named.prelude.indexOf("exit 127")<named.prelude.indexOf("mkdir -p"),"the guard comes before anything is made");
+  const environments=new EnvironmentManager({state:{environments:()=>[{id:"ssh-named",type:"ssh",name:"Named box",host:"named.example.test",user:"dev",port:22,cwd:"/srv/app",codexPath:"~bob/.local/bin/codex",enabled:true}]}});
+  const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();let launch=null;
+  await startRemoteAppServer({environments,environmentId:"ssh-named",appPort:33460,hostEnvironment:{PATH:"/usr/bin"},spawnProcess:(command,args,options)=>{launch={command,args,options};return child}});
+  assert.match(String(launch.args.at(-1)),/exec env -i .*'sh' '-c' 'trebell_command=~bob\/[\s\S]*' 'trebell' 'app-server' '--listen'/,"the app-server runs from bob's home");
+  const shell=await new Promise(resolve=>execFile("sh",["-c","printf ok"],{windowsHide:true},(error,stdout)=>resolve(!error&&stdout==="ok")));
+  if(!shell)return;
+  const work=await mkdtemp(join(tmpdir(),"trebell-named-home-"));
+  try{
+    const unknown=remoteCodexProfileSetup({profile:{},runtimeInstance:{homePath:"~trebell_no_such_user/.codex"}});
+    const ran=await new Promise(resolve=>execFile("sh",["-c",unknown.prelude],{cwd:work,windowsHide:true,timeout:20_000},(error,stdout,stderr)=>resolve({code:error?error.code:0,stderr:String(stderr)})));
+    assert.equal(ran.code,127);
+    assert.match(ran.stderr,/^Trebell could not find the home folder of the user trebell_no_such_user on this host, so it cannot use ~trebell_no_such_user\/\.codex\.\r?\n?$/);
+    assert.deepEqual(await readdir(work),[],"nothing was made where the shell ran");
+  }finally{await rm(work,{recursive:true,force:true})}
+});
+
 test("an environment's Codex executable is saved and starts its Codex app-server",async()=>{
   const saved=[],state={environments:()=>saved,upsertEnvironment:value=>{const index=saved.findIndex(item=>item.id===value.id);if(index>=0)saved[index]=value;else saved.push(value);return value}};
   const environments=new EnvironmentManager({state});

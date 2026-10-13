@@ -22,18 +22,37 @@ function quotePosix(value){
   return "'" + String(value).replace(/'/g,"'\\''") + "'";
 }
 
-// A home-relative path (~ or ~/...) is left for the host's shell to expand, as it would typed there: inside quotes it is not.
+// A home-relative path (~ or ~/...) is left for the host's shell to expand, as it would typed there: inside quotes it is not. So is
+// one under a named user's home (~bob or ~bob/...), which the host's shell looks up in its own users; anything else after the tilde
+// is quoted as it is. A user the host does not know is left unexpanded by its shell, which remoteHomeGuard refuses.
+const NAMED_HOME=/^~([A-Za-z0-9._][A-Za-z0-9._-]*)(?:\/([\s\S]*))?$/;
 export function remotePathExpression(value){
   const raw=String(value||"").trim();
   if(raw==="~")return '"$HOME"';
   if(raw.startsWith("~/"))return '"$HOME"/'+quotePosix(raw.slice(2));
+  const named=NAMED_HOME.exec(raw);
+  if(named)return "~"+named[1]+(named[2]==null?"":"/"+(named[2]?quotePosix(named[2]):""));
   return quotePosix(raw);
 }
+// The statement that refuses a path under a named user's home, held in a shell variable, when the host's shell left it unexpanded (no
+// such user there), with a message that says so; nothing for any other path.
+export function remoteHomeGuard(variable,value){
+  const raw=String(value||"").trim(),named=NAMED_HOME.exec(raw);if(!named)return "";
+  const message=`Trebell could not find the home folder of the user ${named[1]} on this host, so it cannot use ${raw}.`;
+  return 'case "$'+variable+'" in "~"*) printf \'%s\\n\' '+quotePosix(message)+' >&2; exit 127;; esac';
+}
 
-// The command word may be home-relative (a saved ~/.local/bin/codex); the arguments are passed as they are.
-function shellCommand(command,args=[]){
+// The command word may be home-relative (a saved ~/.local/bin/codex); the arguments are passed as they are. One under a named user's
+// home runs through sh, which expands it and refuses a user the host does not know before anything runs.
+export function remoteCommandWords(command,args=[]){
+  const raw=String(command||"").trim();
+  if(NAMED_HOME.test(raw)){
+    const script=["trebell_command="+remotePathExpression(raw),remoteHomeGuard("trebell_command",raw),'exec "$trebell_command" "$@"'].join("\n");
+    return ["sh","-c",script,"trebell",...args].map(quotePosix).join(" ");
+  }
   return [remotePathExpression(command),...args.map(quotePosix)].join(" ");
 }
+function shellCommand(command,args=[]){return remoteCommandWords(command,args)}
 
 function isolatedRemoteEnvironment(command,names=[],environment={}){
   const approved=[...new Set((Array.isArray(names)?names:[]).map(value=>String(value||"").trim()).filter(name=>/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))];

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { remoteEnvironmentCommand, remotePathExpression, remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
+import { remoteCommandWords, remoteEnvironmentCommand, remoteHomeGuard, remotePathExpression, remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { runtimeEnvironmentKeys } from "./runtime-environment.mjs";
@@ -8,9 +8,14 @@ function quotePosix(value){
   return "'" + String(value).replace(/'/g,"'\\''") + "'";
 }
 
-// The command word may be home-relative (a saved ~/.local/bin/codex), which the host's shell expands; the arguments are literal.
+// The command word may be home-relative (a saved ~/.local/bin/codex or ~bob/.local/bin/codex), which the host's shell expands; the
+// arguments are literal.
 function shellJoin([command,...args]){
-  return [remotePathExpression(command),...args.map(quotePosix)].join(" ");
+  return remoteCommandWords(command,args);
+}
+// A shell variable set to a Codex home, which may be home-relative; one under a named user's home the host does not know is refused.
+function homeAssignment(variable,path){
+  return ["trebell_codex_"+variable+"="+remotePathExpression(path),remoteHomeGuard("trebell_codex_"+variable,path)].filter(Boolean);
 }
 
 const REMOTE_CODEX_SHARED_DIRECTORIES=["sessions","archived_sessions","sqlite","shell_snapshots","worktrees","skills","plugins","cache","logs","mcp-oauth-locks"];
@@ -26,8 +31,8 @@ export function remoteCodexProfileSetup({profile={},runtimeInstance=null}={}){
   const shared=String(instance.homePath||"").trim();
   const shadow=String(instance.shadowHomePath||"").trim();
   if(shadow){
-    lines.push("trebell_codex_shared="+remotePathExpression(shared||"~/.codex"));
-    lines.push("trebell_codex_effective="+remotePathExpression(shadow));
+    lines.push(...homeAssignment("shared",shared||"~/.codex"));
+    lines.push(...homeAssignment("effective",shadow));
     lines.push('mkdir -p "$trebell_codex_shared" "$trebell_codex_effective"');
     lines.push("for trebell_codex_entry in "+REMOTE_CODEX_SHARED_DIRECTORIES.map(quotePosix).join(" ")+"; do");
     lines.push('  mkdir -p "$trebell_codex_shared/$trebell_codex_entry"');
@@ -37,7 +42,7 @@ export function remoteCodexProfileSetup({profile={},runtimeInstance=null}={}){
     lines.push("done");
     lines.push('export CODEX_HOME="$trebell_codex_effective"');
   }else if(shared){
-    lines.push("trebell_codex_effective="+remotePathExpression(shared));
+    lines.push(...homeAssignment("effective",shared));
     lines.push('mkdir -p "$trebell_codex_effective"');
     lines.push('export CODEX_HOME="$trebell_codex_effective"');
   }

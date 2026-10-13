@@ -2,10 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { EnvironmentManager, listedWslDistros, remoteEnvironmentCommand, remoteTransportEnvironment } from "../src/environment-manager.mjs";
+import * as remotePaths from "../src/environment-manager.mjs";
+
+// A POSIX shell, as a WSL or SSH host has, where this machine has one (Git for Windows' sh, or the system's).
+function sh(script){return new Promise(resolve=>execFile("sh",["-c",script],{windowsHide:true,timeout:20_000},(error,stdout,stderr)=>resolve({code:error?(typeof error.code==="number"?error.code:-1):0,stdout:String(stdout),stderr:String(stderr)})))}
+const posixShell=(await sh("printf ok")).stdout==="ok";
 
 function stateFor(profiles){
   return {
@@ -202,6 +208,41 @@ test("a host's saved Codex executable is the codex its checks, sign-in and sessi
   assert.match(ran[2],/"\$HOME"\/'\.local\/bin\/codex' '--version'/);
   assert.match(manager.terminalArgvSpec("home",{command:"codex",args:["login"]}).args.at(-1),/exec "\$HOME"\/'\.local\/bin\/codex' 'login'/);
   assert.match(manager.terminalArgvSpec("home",{command:"codex",args:["~/notes"]}).args.at(-1),/ '~\/notes'$/,"an argument is passed as it is");
+});
+
+// A path under a named user's home (~bob/.local/bin/codex) is that user's home on the host, as the host's shell expands it typed
+// there; a user the host does not know is refused with a clear message instead of a file named ~bob being run or written.
+test("a host's Codex executable under a named user's home is expanded by the host, and an unknown user is refused before anything runs",async()=>{
+  const profiles=[
+    {id:"named",name:"Named box",type:"ssh",host:"named.example.test",port:22,cwd:"",codexPath:"~bob/.local/bin/codex",enabled:true},
+    {id:"unknown",name:"Unknown box",type:"ssh",host:"unknown.example.test",port:22,cwd:"",codexPath:"~trebell_no_such_user/.local/bin/codex",enabled:true},
+  ];
+  const manager=new EnvironmentManager({state:stateFor(profiles),platform:"linux"}),ran=[];
+  manager.execute=async(id,options)=>{ran.push(options.command);return {exitCode:0,stdout:"",stderr:""}};
+  await manager.executeArgv("named",{command:"codex",args:["--version"]});
+  const signIn=manager.terminalArgvSpec("named",{command:"codex",args:["login"]}).args.at(-1);
+  for(const command of [ran[0],signIn]){
+    assert.doesNotMatch(command,/'~bob\/\.local\/bin\/codex'/,"the named home is not quoted into a file named ~bob");
+    assert.match(command,/trebell_command=~bob\//,"the host's shell expands ~bob");
+  }
+  assert.match(ran[0],/ '--version'$/);assert.match(signIn,/ 'login'$/,"the arguments are passed as they are");
+  assert.equal(remotePaths.remotePathExpression("~bob"),"~bob");
+  assert.equal(remotePaths.remotePathExpression("~bob/.codex"),"~bob/'.codex'");
+  assert.equal(remotePaths.remotePathExpression("~bob;rm -rf ~/x"),"'~bob;rm -rf ~/x'","anything but a user name after the tilde stays quoted");
+  assert.equal(remotePaths.remoteHomeGuard("trebell_x","/opt/codex"),"","a path with no named home needs no guard");
+  if(!posixShell)return;
+  // The host's shell: an unknown user is refused with Trebell's message and nothing is run.
+  await manager.executeArgv("unknown",{command:"codex",args:["--version"]});
+  const refused=await sh(ran.at(-1));
+  assert.equal(refused.code,127);
+  assert.match(refused.stderr,/^Trebell could not find the home folder of the user trebell_no_such_user on this host, so it cannot use ~trebell_no_such_user\/\.local\/bin\/codex\.\r?\n?$/);
+  // A user the host knows is placed in that user's home.
+  const me=userInfo().username;
+  if(/^[A-Za-z0-9._][A-Za-z0-9._-]*$/.test(me)){
+    const home=(await sh(`printf '%s' ~${me}`)).stdout;assert.doesNotMatch(home,/^~/);
+    const placed=await sh(["trebell_x="+remotePaths.remotePathExpression(`~${me}/.codex-shared`),remotePaths.remoteHomeGuard("trebell_x",`~${me}/.codex-shared`),`printf '%s' "$trebell_x"`].join("\n"));
+    assert.equal(placed.code,0,placed.stderr);assert.equal(placed.stdout,home+"/.codex-shared");
+  }
 });
 
 test("terminal argv specs launch provider auth commands directly and quote remote arguments",()=>{
