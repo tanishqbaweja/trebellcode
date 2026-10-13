@@ -52,18 +52,27 @@ function totalBreakdown(parts){
   return {...out,totalUsd};
 }
 
-export function estimateGpt6LunaCostFromRecords(records=[],{serviceTier="standard"}={}){
+// The ChatGPT backend behind Codex OAuth reports cache_write_input_tokens as 0 on every request, while the API reports
+// nearly all non-cached input as cache writes, billed at 1.25x input. With cacheWritesUnreported, a request that reports
+// no write has its non-cached input priced as a cache write, so an OAuth lane costs what the same token flow costs the
+// API lanes. The as-reported price is kept beside it, and token totals stay as reported.
+function withUnreportedCacheWrites(usage){
+  return usage.cacheWriteInputTokens>0||usage.uncachedInputTokens<=0?usage:{...usage,cacheWriteInputTokens:usage.uncachedInputTokens,uncachedInputTokens:0};
+}
+
+export function estimateGpt6LunaCostFromRecords(records=[],{serviceTier="standard",cacheWritesUnreported=false}={}){
   const pricing=gpt6LunaPricingForServiceTier(serviceTier);
   const normalized=(Array.isArray(records)?records:[]).map(normalizeOpenAIUsage);
-  const parts=normalized.map(usage=>costForUsage(
+  const price=usages=>totalBreakdown(usages.map(usage=>costForUsage(
     usage,
     usage.inputTokens>pricing.longContextThresholdInputTokens?pricing.longContext:pricing.shortContext,
     pricing,
-  ));
+  )));
   const usageTotals=normalized.reduce((acc,usage)=>{
     for(const key of Object.keys(acc))acc[key]+=Number(usage[key]||0);
     return acc;
   },{inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,uncachedInputTokens:0,outputTokens:0});
+  const imputed=cacheWritesUnreported?normalized.map(withUnreportedCacheWrites):null;
   return {
     model:pricing.model,
     pricing,
@@ -71,16 +80,18 @@ export function estimateGpt6LunaCostFromRecords(records=[],{serviceTier="standar
     requestCount:normalized.length,
     longContextRequestCount:normalized.filter(usage=>usage.inputTokens>pricing.longContextThresholdInputTokens).length,
     contextPricingExact:true,
-    ...totalBreakdown(parts),
+    ...price(imputed||normalized),
+    ...(imputed?{cacheWritesUnreported:true,imputedCacheWriteInputTokens:imputed.reduce((sum,usage,index)=>sum+usage.cacheWriteInputTokens-normalized[index].cacheWriteInputTokens,0),asReported:price(normalized)}:{}),
   };
 }
 
-export function estimateGpt6LunaCostFromAggregate(record={}, {maxObservedInputTokens=null,serviceTier="standard"}={}){
+export function estimateGpt6LunaCostFromAggregate(record={}, {maxObservedInputTokens=null,serviceTier="standard",cacheWritesUnreported=false}={}){
   const pricing=gpt6LunaPricingForServiceTier(serviceTier);
   const usage=normalizeOpenAIUsage(record);
   const knownShortContext=maxObservedInputTokens!=null&&Number(maxObservedInputTokens)<=pricing.longContextThresholdInputTokens;
   const knownLongContext=maxObservedInputTokens!=null&&Number(maxObservedInputTokens)>pricing.longContextThresholdInputTokens;
   const rates=knownLongContext?pricing.longContext:pricing.shortContext;
+  const imputed=cacheWritesUnreported?withUnreportedCacheWrites(usage):null;
   return {
     model:pricing.model,
     pricing,
@@ -89,7 +100,8 @@ export function estimateGpt6LunaCostFromAggregate(record={}, {maxObservedInputTo
     longContextRequestCount:knownLongContext?null:knownShortContext?0:null,
     contextPricingExact:knownShortContext,
     contextPricingAssumption:knownShortContext?null:knownLongContext?"aggregate priced at long-context rates; per-request split unavailable":"short-context rates assumed because per-request context lengths are unavailable",
-    ...totalBreakdown([costForUsage(usage,rates,pricing)]),
+    ...totalBreakdown([costForUsage(imputed||usage,rates,pricing)]),
+    ...(imputed?{cacheWritesUnreported:true,imputedCacheWriteInputTokens:imputed.cacheWriteInputTokens-usage.cacheWriteInputTokens,asReported:totalBreakdown([costForUsage(usage,rates,pricing)])}:{}),
   };
 }
 

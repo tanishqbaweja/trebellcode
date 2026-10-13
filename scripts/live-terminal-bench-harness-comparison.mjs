@@ -384,7 +384,7 @@ try{
       const infrastructureFailureReason=isDockerExecTransportFailure(trial)?"docker_exec_transport_failure":harness==="native"&&isNativeAgentExternalTermination(trial)?"native_agent_external_termination":isAgentAuthenticationFailure(trial)?"agent_authentication_failure":isPreAgentDockerSubnetExhaustion(trial)?"docker_subnet_exhaustion":isDockerImagePullFailure(trial)?"docker_image_pull_failure":laneState.infrastructureFailureReason;
       laneState.infrastructureFailureReason=infrastructureFailureReason||null;
       const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName,{serviceTier:SERVICE_TIER}):null;
-      const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName,{serviceTier:SERVICE_TIER}):null;
+      const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName,{serviceTier:SERVICE_TIER,cacheWritesUnreported:authMode==="oauth"}):null;
       const recoveredEvidence=recoveredNative||recoveredCodex;
       const inputMetric=selectNativeMetric(result?.stats?.n_input_tokens,trial?.agent_result?.n_input_tokens,recoveredEvidence?.inputTokens);
       const cachedMetric=selectNativeMetric(result?.stats?.n_cache_tokens,trial?.agent_result?.n_cache_tokens,recoveredEvidence?.cachedTokens);
@@ -397,7 +397,7 @@ try{
       let apiEquivalentCostBreakdown=MODEL==="gpt-6-luna"&&recoveredEvidence?.apiEquivalentCostBreakdown
         ?recoveredEvidence.apiEquivalentCostBreakdown
         :MODEL==="gpt-6-luna"&&inputTokens!=null&&cachedTokens!=null
-          ?estimateGpt6LunaCostFromAggregate({inputTokens,cachedInputTokens:cachedTokens,cacheWriteInputTokens:trebellNative?.cache_write_input_tokens??recoveredEvidence?.cacheWriteInputTokens??0,outputTokens:outputMetric.value??0},{maxObservedInputTokens:recoveredEvidence?.maxObservedInputTokens??null,serviceTier:SERVICE_TIER})
+          ?estimateGpt6LunaCostFromAggregate({inputTokens,cachedInputTokens:cachedTokens,cacheWriteInputTokens:trebellNative?.cache_write_input_tokens??recoveredEvidence?.cacheWriteInputTokens??0,outputTokens:outputMetric.value??0},{maxObservedInputTokens:recoveredEvidence?.maxObservedInputTokens??null,serviceTier:SERVICE_TIER,cacheWritesUnreported:harness==="codex"&&authMode==="oauth"})
           :null;
       if(apiEquivalentCostBreakdown&&recoveredNative)apiEquivalentCostBreakdown={...apiEquivalentCostBreakdown,usageAccountingComplete:recoveredNative.usageAccountingComplete!==false,unaccountedProviderRequests:Number(recoveredNative.unaccountedProviderRequests||0),totalUsdIsLowerBound:recoveredNative.apiEquivalentCostIsLowerBound===true};
       jobs[laneIndex]={
@@ -406,8 +406,10 @@ try{
         completed:regradeRecovery?.ok?1:Number(result?.stats?.n_completed_trials||0),errors:regradeRecovery?.ok?0:Number(result?.stats?.n_errored_trials||0),
         inputTokens,cachedTokens,uncachedInputTokens,cacheHitPercent,
         outputTokens:outputMetric.value,
+        // costUsd is Harbor's own estimate, at Standard rates whatever the tier; every comparison uses apiEquivalentCostUsd.
         costUsd:result?.stats?.cost_usd??trial?.agent_result?.cost_usd??null,
         apiEquivalentCostUsd:apiEquivalentCostBreakdown?.totalUsd??null,
+        apiEquivalentCostAsReportedUsd:apiEquivalentCostBreakdown?.asReported?.totalUsd??apiEquivalentCostBreakdown?.totalUsd??null,
         apiEquivalentCostBreakdown,
         usageAccountingComplete:harness==="native"?recoveredNative?.usageAccountingComplete!==false:true,
         unaccountedProviderRequests:harness==="native"?Number(recoveredNative?.unaccountedProviderRequests||0):0,

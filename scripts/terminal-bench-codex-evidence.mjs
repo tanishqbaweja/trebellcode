@@ -22,10 +22,10 @@ function tokenUsageRows(text){
   return out;
 }
 
-export function summarizeCodexSessionEvidence(texts=[],{serviceTier="standard"}={}){
+export function summarizeCodexSessionEvidence(texts=[],{serviceTier="standard",cacheWritesUnreported=false}={}){
   const rows=(Array.isArray(texts)?texts:[texts]).flatMap(tokenUsageRows);
   if(!rows.length)return null;
-  const requestUsage=rows.map(row=>row.payload.usage),cost=estimateGpt6LunaCostFromRecords(requestUsage,{serviceTier});
+  const requestUsage=rows.map(row=>row.payload.usage),cost=estimateGpt6LunaCostFromRecords(requestUsage,{serviceTier,cacheWritesUnreported});
   const requestMetricRows=requestUsage.map((usage,index)=>({
     request:index+1,
     inputTokens:Number(usage?.input_tokens||usage?.inputTokens||0),
@@ -53,11 +53,12 @@ export function summarizeCodexSessionEvidence(texts=[],{serviceTier="standard"}=
     topOutputRequests:topRequests("outputTokens"),
     topReasoningRequests:topRequests("reasoningOutputTokens"),
     apiEquivalentCostUsd:cost.totalUsd,
+    apiEquivalentCostAsReportedUsd:cost.asReported?.totalUsd??cost.totalUsd,
     apiEquivalentCostBreakdown:cost,
   };
 }
 
-export async function recoverCodexSessionEvidence(outputRoot,jobName,{serviceTier="standard"}={}){
+export async function recoverCodexSessionEvidence(outputRoot,jobName,{serviceTier="standard",cacheWritesUnreported=false}={}){
   let trials=[];try{trials=await readdir(join(outputRoot,jobName),{withFileTypes:true})}catch{return null}
   const texts=[];
   for(const trial of trials){
@@ -65,7 +66,7 @@ export async function recoverCodexSessionEvidence(outputRoot,jobName,{serviceTie
     const files=await walkJsonl(join(outputRoot,jobName,trial.name,"agent","codex-sessions"));
     for(const file of files)try{texts.push(await readFile(file,"utf8"))}catch{}
   }
-  return summarizeCodexSessionEvidence(texts,{serviceTier});
+  return summarizeCodexSessionEvidence(texts,{serviceTier,cacheWritesUnreported});
 }
 
 async function main(){

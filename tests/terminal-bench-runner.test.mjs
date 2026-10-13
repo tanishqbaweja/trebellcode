@@ -159,6 +159,9 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/readTrialVerifierSummary/);
   assert.match(source,/recoveredEvidence\?\.inputTokens/);
   assert.match(source,/recoverCodexSessionEvidence/);
+  // The ChatGPT backend reports no cache writes, so the OAuth lane is priced like the API lanes for the same token flow.
+  assert.match(source,/recoverCodexSessionEvidence\(outputRoot,jobName,\{serviceTier:SERVICE_TIER,cacheWritesUnreported:authMode==="oauth"\}\)/);
+  assert.match(source,/apiEquivalentCostAsReportedUsd:/);
   assert.match(source,/recoveredFromCodexSessions/);
   assert.match(source,/comparisonLanes:selectedLanes\.map/);
   assert.match(source,/configuredComparisonLanes:lanes\.map/);
