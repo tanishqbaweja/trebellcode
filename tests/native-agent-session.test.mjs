@@ -1744,3 +1744,58 @@ test("Native session collapses repeated background-process output lines and leav
     assert.equal(excluded.split(line).length-1,60,"an allowlist that excludes trebell_output keeps the lines whole");
   }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test("Native session gives the model a short process receipt with its handle and keeps the full record for the person",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-process-receipt-")),requests=[],updates=[];let calls=0;
+  const processId="2f1c0e6a-9b7d-4c1e-8a55-0d6f3b2a9c10",longCommand="python3 -c "+"import json,sys; print(json.dumps({'k':1}))".repeat(6);
+  const record=(extra={})=>({processId,handle:"p1",threadId:"trebell-harbor",command:longCommand,cwd:"/app",environmentId:null,environmentType:"local",running:true,exitCode:null,signal:null,createdAt:1791317470236,updatedAt:1791317477991,osPid:4242,stdout:"listening on 8000\n",stderr:"",truncated:false,...extra});
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",toolOutputStore:store,onUpdate:update=>updates.push(update),
+      tools:[{type:"namespace",name:"trebell_process",tools:[{name:"start"},{name:"status"},{name:"stop"}]}],
+      providerTurn:async request=>{requests.push(structuredClone(request));calls++;
+        const step=[
+          [{id:"start",namespace:"trebell_process",name:"start",arguments:JSON.stringify({command:"python3",args:["-c","..."]})}],
+          [{id:"by-handle",namespace:"trebell_process",name:"status",arguments:'{"process_id":"p1"}'}],
+          [{id:"by-id",namespace:"trebell_process",name:"status",arguments:JSON.stringify({process_id:processId})}],
+          [{id:"missing",namespace:"trebell_process",name:"status",arguments:'{"process_id":"p9"}'}],
+          [{id:"big",namespace:"trebell_process",name:"status",arguments:'{"process_id":"p1"}'}],
+          [{id:"legacy",namespace:"trebell_terminal",name:"stop_background",arguments:'{"process_id":"p1"}'}],
+        ][calls-1];
+        return step?{id:"r"+calls,text:"",toolCalls:step,usage:{}}:{id:"done",text:"done",toolCalls:[],usage:{}};
+      },
+      executeTool:async call=>{
+        if(call.id==="missing")return {success:false,error:"Native background process not found"};
+        if(call.id==="big")return record({stdout:Array.from({length:900},(_,index)=>"frame "+index+" rendered").join("\n")});
+        if(call.id==="legacy")return record({running:false,exitCode:0,signal:"SIGTERM"});
+        return record();
+      },
+    });
+    await session.start({providerSessionId:"native-process-receipt",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Start the server and watch it."}],{maxModelTurns:8,maxToolCalls:10});
+    const seen=id=>{const content=requests.at(-1).messages.find(message=>message.role==="tool"&&message.toolCallId===id)?.content||"";return JSON.parse(content.slice(content.indexOf("{")))};
+    for(const id of ["start","by-handle","by-id","big","legacy"]){
+      const receipt=seen(id);
+      assert.equal(receipt.process,"p1",id);assert.ok(receipt.command.length<=60,id);assert.ok(receipt.command.startsWith("python3 -c import json"),id);assert.ok(receipt.command.endsWith("…"),id);
+      for(const dropped of ["threadId","osPid","createdAt","updatedAt"])assert.equal(Object.hasOwn(receipt,dropped),false,id+" drops "+dropped);
+      assert.equal(typeof receipt.running,"boolean",id);
+    }
+    assert.equal(Object.hasOwn(seen("start"),"processId"),false,"the model is given the handle, not the full id");
+    assert.equal(Object.hasOwn(seen("by-handle"),"processId"),false);
+    assert.equal(seen("by-id").processId,processId,"a call that named the full id gets it back");
+    assert.equal(seen("start").stdout,"listening on 8000\n");assert.equal(seen("start").cwd,"/app");
+    assert.match(seen("big").preview,/frame 0 rendered/);assert.match(seen("big")._trebell_output.handle,/^out_/);assert.equal(seen("big").running,true);
+    assert.deepEqual({running:seen("legacy").running,exitCode:seen("legacy").exitCode,signal:seen("legacy").signal},{running:false,exitCode:0,signal:"SIGTERM"});
+    assert.deepEqual(seen("missing"),{success:false,error:"Native background process not found"});
+    const raw=updates.find(entry=>entry.update?.sessionUpdate==="tool_call_update"&&entry.update.toolCallId==="start")?.update?.rawOutput;
+    assert.equal(raw.processId,processId);assert.equal(raw.osPid,4242);assert.equal(raw.command,longCommand);assert.equal(raw.handle,"p1");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native session still answers a running-state question about a full process id directly",async()=>{
+  const processId="123e4567-e89b-12d3-a456-426614174000";let providerCalls=0;const updates=[];
+  const session=new NativeAgentSession({provider:"fixture",model:"model-a",tools:[{type:"namespace",name:"trebell_process",tools:[{name:"status"}]}],onUpdate:update=>updates.push(update),providerTurn:async()=>{providerCalls++;throw new Error("Exact process status should bypass provider inference.")},executeTool:async()=>({processId,handle:"p3",threadId:"thread-1",command:"node server.mjs",cwd:"/repo",running:true,exitCode:null,signal:null,createdAt:1,updatedAt:2,osPid:9,stdout:"",stderr:"",truncated:false})});
+  await session.start({providerSessionId:"process-status-handle",model:"model-a"});await session.prompt([{type:"text",text:`Is background process \`${processId}\` still running?`}]);
+  assert.equal(providerCalls,0);assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,`Background process ${processId} is running.`);
+});

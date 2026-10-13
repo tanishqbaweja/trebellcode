@@ -40,10 +40,20 @@ function signalLocalProcessTree(child,{platform=process.platform,force=false}={}
 export class NativeBackgroundProcessManager{
   constructor({environments=null,environment=process.env,platform=process.platform,onEvent=null,maxOutputBytes=DEFAULT_OUTPUT_BYTES}={}){
     this.environments=environments;this.environment=environment;this.platform=platform;this.onEvent=onEvent;this.maxOutputBytes=boundedBytes(maxOutputBytes);this.processes=new Map();
+    // Short handles (p1, p2, ...) count per thread and are never reused, so a handle the model kept never names a later process.
+    this.handleCounts=new Map();this.handles=new Map();
+  }
+  #nextHandle(threadId){const next=(this.handleCounts.get(threadId)||0)+1;this.handleCounts.set(threadId,next);return "p"+next}
+  // A process by its full id or by its short handle, within one thread.
+  #record(threadId,processId){
+    const thread=String(threadId||""),key=String(processId||"").trim();
+    const record=this.processes.get(key)||this.processes.get(this.handles.get(thread+"\u0000"+key.toLowerCase())||"");
+    if(!record||record.threadId!==thread)throw Object.assign(new Error("Native background process not found"),{code:-32002});
+    return record;
   }
   #public(record,{includeOutput=false}={}){
     const base={
-      processId:record.id,threadId:record.threadId,command:redactSecretText(record.label,{environment:this.environment}),cwd:record.cwd,environmentId:record.environmentId||null,environmentType:record.environmentType,
+      processId:record.id,handle:record.handle,threadId:record.threadId,command:redactSecretText(record.label,{environment:this.environment}),cwd:record.cwd,environmentId:record.environmentId||null,environmentType:record.environmentType,
       running:record.running,exitCode:record.exitCode,signal:record.signal,createdAt:record.createdAt,updatedAt:record.updatedAt,
       ...(record.remote?{}:{osPid:record.child?.pid??record.osPid??null}),
     };
@@ -70,15 +80,14 @@ export class NativeBackgroundProcessManager{
       // harness launchers do; on other platforms it is child_process.spawn.
       child=crossSpawn(executable,commandArgs,{cwd,env:buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}),windowsHide:true,stdio:["ignore","pipe","pipe"],detached:this.platform!=="win32"});
     }
-    const id=randomUUID(),record={id,threadId:String(threadId),command:executable,args:commandArgs,label:processLabel(executable,commandArgs),cwd:String(cwd||""),environmentId:profile?.id||null,environmentType:profile?.type||"local",remote,child,osPid:child.pid??null,running:true,exitCode:null,signal:null,stdout:"",stderr:"",truncated:false,maxOutputBytes:boundedBytes(maxOutputBytes,this.maxOutputBytes),createdAt:Date.now(),updatedAt:Date.now()};
-    this.processes.set(id,record);child.stdout?.on("data",chunk=>this.#append(record,"stdout",chunk));child.stderr?.on("data",chunk=>this.#append(record,"stderr",chunk));
+    const id=randomUUID(),handle=this.#nextHandle(String(threadId)),record={id,handle,threadId:String(threadId),command:executable,args:commandArgs,label:processLabel(executable,commandArgs),cwd:String(cwd||""),environmentId:profile?.id||null,environmentType:profile?.type||"local",remote,child,osPid:child.pid??null,running:true,exitCode:null,signal:null,stdout:"",stderr:"",truncated:false,maxOutputBytes:boundedBytes(maxOutputBytes,this.maxOutputBytes),createdAt:Date.now(),updatedAt:Date.now()};
+    this.processes.set(id,record);this.handles.set(record.threadId+"\u0000"+handle,id);child.stdout?.on("data",chunk=>this.#append(record,"stdout",chunk));child.stderr?.on("data",chunk=>this.#append(record,"stderr",chunk));
     child.once("error",error=>{record.running=false;record.stderr=trimTail(record.stderr+(record.stderr?"\n":"")+String(error?.message||error),record.maxOutputBytes);record.updatedAt=Date.now();this.#emit(record,"native.background.failed","error",{message:String(error?.message||error).slice(0,500)})});
     child.once("close",(code,signal)=>{record.running=false;record.exitCode=code==null?null:Number(code);record.signal=signal||null;record.updatedAt=Date.now();this.#emit(record,"native.background.exited","completed",{exitCode:record.exitCode,signal:record.signal})});
     this.#emit(record,"native.background.started","running",{remote});return this.#public(record,{includeOutput:true});
   }
   status(threadId,processId){
-    const record=this.processes.get(String(processId||""));if(!record||record.threadId!==String(threadId||""))throw Object.assign(new Error("Native background process not found"),{code:-32002});
-    return this.#public(record,{includeOutput:true});
+    return this.#public(this.#record(threadId,processId),{includeOutput:true});
   }
   list(threadId,{cursor=null,limit=50}={}){
     const offset=cursorOffset(cursor),pageSize=Math.max(1,Math.min(200,Number(limit)||50));
@@ -86,7 +95,7 @@ export class NativeBackgroundProcessManager{
     const next=offset+data.length;return {data,nextCursor:next<entries.length?`native-bg-v1:${next}`:null};
   }
   async terminate(threadId,processId){
-    const record=this.processes.get(String(processId||""));if(!record||record.threadId!==String(threadId||""))throw Object.assign(new Error("Native background process not found"),{code:-32002});
+    const record=this.#record(threadId,processId);
     if(!record.running)return this.#public(record,{includeOutput:true});
     const child=record.child;
     await new Promise(resolve=>{
@@ -104,6 +113,6 @@ export class NativeBackgroundProcessManager{
     const owned=[...this.processes.values()].filter(record=>record.threadId===String(threadId||"")&&record.running);for(const record of owned)await this.terminate(threadId,record.id).catch(()=>{});return {stopped:owned.length};
   }
   async closeAll(){
-    const running=[...this.processes.values()].filter(record=>record.running);for(const record of running)await this.terminate(record.threadId,record.id).catch(()=>{});this.processes.clear();
+    const running=[...this.processes.values()].filter(record=>record.running);for(const record of running)await this.terminate(record.threadId,record.id).catch(()=>{});this.processes.clear();this.handles.clear();this.handleCounts.clear();
   }
 }

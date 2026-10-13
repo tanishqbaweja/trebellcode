@@ -274,6 +274,22 @@ function replacedWorkspaceContent(before,args={},replacements=0){
 // The background-process tools, and their legacy trebell_terminal names.
 const NATIVE_PROCESS_TOOLS=Object.freeze({trebell_process:new Set(["start","status","stop"]),trebell_terminal:new Set(["start_background","background_status","stop_background"])});
 function nativeProcessTool(call={}){return Boolean(NATIVE_PROCESS_TOOLS[String(call?.namespace||"")]?.has(String(call?.name||"")))}
+const PROCESS_LABEL_CHARS=60;
+function processLabel(command){const text=String(command??"").replace(/\s+/g," ").trim();return text.length>PROCESS_LABEL_CHARS?text.slice(0,PROCESS_LABEL_CHARS-1)+"…":text}
+// What the model sees of a background process: its short handle, a command label and its state, then the (shaped) output. The
+// full id, thread, pid, timestamps and full command stay in the person's view. A call that named the full id gets it back, so
+// it can tell the result is the process it asked about. Anything else (a failure) is passed on as it is.
+function processModelReceipt(record,shaped,call){
+  if(!record||typeof record!=="object"||Array.isArray(record)||typeof record.handle!=="string"||!record.handle)return shaped;
+  const output=shaped&&typeof shaped==="object"&&!Array.isArray(shaped)?shaped:{},receipt={process:record.handle};
+  let args=call?.arguments;if(typeof args==="string"){try{args=JSON.parse(args)}catch{args={}}}
+  const named=String(args?.process_id??"").trim();
+  if(named&&named===String(record.processId||""))receipt.processId=record.processId;
+  receipt.command=processLabel(record.command);
+  for(const key of ["cwd","environmentId","environmentType","running","exitCode","signal"])if(Object.prototype.hasOwnProperty.call(record,key))receipt[key]=record[key];
+  for(const key of ["stdout","stderr","truncated","preview","_trebell_output"])if(Object.prototype.hasOwnProperty.call(output,key))receipt[key]=output[key];
+  return receipt;
+}
 
 function exposesTool(tools,namespace,name){
   const entry=(Array.isArray(tools)?tools:[]).find(item=>item?.type==="namespace"&&String(item.name||"")===String(namespace||""));
@@ -566,7 +582,7 @@ export class NativeAgentSession{
         }
       }
       const replaceText=call.namespace==="trebell_workspace"&&call.name==="replace_text";
-      const modelOutput=terminalRun?compactTerminalModelOutput(modelSource):replaceText?replaceTextModelOutput(modelSource):modelSource,failed=uiOutput?.success===false;
+      const modelOutput=terminalRun?compactTerminalModelOutput(modelSource):processTool?processModelReceipt(observed,modelSource,call):replaceText?replaceTextModelOutput(modelSource):modelSource,failed=uiOutput?.success===false;
       this.onUpdate({update:{sessionUpdate:"tool_call_update",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,rawOutput:uiOutput,content:contentItems(replaceText?modelOutput:uiOutput),status:failed?"failed":"completed"}});
       return modelToolResult(modelOutput);
     };
