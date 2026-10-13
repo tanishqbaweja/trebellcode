@@ -193,10 +193,10 @@ export function requestAbortController(req,res){
 }
 
 function parseArgs(argv){
-  const out={port:Number(process.env.PORT||process.env.TREBELL_GUI_PORT||3210),appPort:Number(process.env.TREBELL_APP_SERVER_PORT||23456),host:process.env.TREBELL_GUI_HOST||"127.0.0.1",open:false,mock:process.env.TREBELL_GUI_MOCK==="1"};
+  const out={port:Number(process.env.PORT||process.env.TREBELL_GUI_PORT||3210),appPort:Number(process.env.TREBELL_APP_SERVER_PORT)||null,host:process.env.TREBELL_GUI_HOST||"127.0.0.1",open:false,mock:process.env.TREBELL_GUI_MOCK==="1"};
   for(let i=0;i<argv.length;i++){
     if(argv[i]==="--port") out.port=Number(argv[++i]);
-    else if(argv[i]==="--app-port") out.appPort=Number(argv[++i]);
+    else if(argv[i]==="--app-port") out.appPort=Number(argv[++i])||null;
     else if(argv[i]==="--open") out.open=true;
     else if(argv[i]==="--mock") out.mock=true;
   }
@@ -225,6 +225,13 @@ async function waitForChildExit(child,timeoutMs=3000){
   ]);
 }
 
+// Whether a local port is free to listen on. An explicitly configured app-server port another program holds would only reach that program.
+async function tcpPortFree(port){
+  const server=createTcpServer();
+  const free=await new Promise(resolve=>server.once("error",()=>resolve(false)).listen(port,"127.0.0.1",()=>resolve(true)));
+  if(free)await new Promise(resolve=>server.close(resolve));
+  return free;
+}
 async function freeTcpPort(){
   const server=createTcpServer();
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
@@ -338,6 +345,15 @@ async function startAppServer({appPort,env=process.env,mock=false,environments=n
   child.on("error",error=>pushLog(error.stack||error.message,"stderr"));
   child.on("exit",(code,signal)=>pushLog(`app-server exited code=${code} signal=${signal}\n`,"stderr"));
   return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome,sharedRuntimeHome:homeLayout.sharedHomePath,continuationKey:homeLayout.continuationKey };
+}
+
+// Why a local app-server did not become ready: once it has exited, the last thing it wrote (codex says why it could not listen).
+function appServerStartError(server,name){
+  const child=server?.child,exited=Boolean(child&&(child.exitCode!==null||child.signalCode!==null));
+  if(!exited)return `Codex app-server profile '${name}' did not become ready`;
+  const lines=(server.logs||[]).filter(entry=>entry.stream==="stderr").map(entry=>String(entry.text||"")).join("").split(/\r?\n/).map(line=>line.trim()).filter(line=>line&&!/^app-server exited /.test(line)&&!/^WARNING:/.test(line));
+  const said=String(lines.at(-1)||"").replace(/^Error:\s*/,"").slice(0,300);
+  return `Codex app-server profile '${name}' exited before it was ready`+(said?": "+said:"");
 }
 
 async function appServerReady(instance,appPort){
@@ -533,7 +549,9 @@ async function projectActionSuggestions(projectPath){
   };
 }
 
-export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env,fetchFn=globalThis.fetch,harnessTextGenerator=generateTextWithHarness}={}){
+// appPort: the catalog Codex app-server's port, when one is configured (TREBELL_APP_SERVER_PORT or --app-port). By default every start
+// takes a free port, so a program on a fixed one (another Trebell, an app-server a crash left behind) never keeps Codex from starting.
+export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",mock=false,env=process.env,fetchFn=globalThis.fetch,harnessTextGenerator=generateTextWithHarness}={}){
   const offlineE2E=env.TREBELL_E2E_OFFLINE==="1"||process.env.TREBELL_E2E_OFFLINE==="1";
   if(offlineE2E&&!mock)throw new Error("Offline browser E2E forbids starting a real Trebell provider or Codex app-server.");
   const fetchImpl=offlineE2E?offlineE2eFetch(fetchFn):fetchFn;
@@ -1027,11 +1045,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(codexAppServerStarts.has(key))return codexAppServerStarts.get(key);
     const starting=(async()=>{
       if(current){await stopAppServer(current);codexAppServers.delete(key)}
+      if(preferredPort&&!mock&&!await tcpPortFree(preferredPort))throw new Error(`The Codex app-server port ${preferredPort} (TREBELL_APP_SERVER_PORT or --app-port) is in use by another program`);
       const targetPort=preferredPort||await freeTcpPort();
       const started=await startAppServer({appPort:targetPort,env,mock,environments,environmentId,runtimeInstance:instance,runtimeEnvironmentNames:agentRuntimes.childEnvironmentKeys(instance),command:agentRuntimes.executable(instance,{environmentId})});
       started.poolKey=key;started.ownerKey=ownerKey;started.runtimeInstanceId=instance.id;started.environmentId=environmentId||null;started.continuationKey=agentRuntimes.continuationKey(instance);
       codexAppServers.set(key,started);
-      if(!mock){const ready=await waitForAppServer(started,targetPort,15000).catch(()=>false);if(!ready&&!started.error)started.error=`Codex app-server profile '${instance.displayName||instance.id}' did not become ready`}
+      if(!mock){const ready=await waitForAppServer(started,targetPort,15000).catch(()=>false);if(!ready&&!started.error)started.error=appServerStartError(started,instance.displayName||instance.id)}
       return started;
     })();
     codexAppServerStarts.set(key,starting);
@@ -1075,7 +1094,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const catalogInstanceId=()=>agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null;
   function catalogAppServer(){
     if(closing)return Promise.reject(new Error("Trebell is shutting down"));
-    if(appServerStart)return appServerStart;
+    // One that has exited, or could not start, starts again with the next request that needs it, as T3 starts Codex again once its
+    // process has exited.
+    const child=appServer.child;
+    if(appServerStart&&!appServer.error&&!(child&&(child.exitCode!==null||child.signalCode!==null)))return appServerStart;
     // A start that throws (no Codex profile, a Codex home it cannot prepare) leaves a server that says why, as one that never became
     // ready does. A restart replaces the start, and one it replaced does not overwrite what replaced it.
     const start=appServerStart=ensureCodexAppServer(catalogInstanceId(),{preferredPort:appPort,ownerKey:"catalog"})
@@ -1573,7 +1595,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   async function codexNativeModelCatalog(){
     const instance=agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance():codexInstance();
     if(!instance)throw new Error("Codex runtime profile was not found");
-    const server=await ensureCodexAppServer(instance.id,{ownerKey:"catalog",preferredPort:appPort});
+    const server=await catalogAppServer();
     if(!server?.targetUrl||server.error)throw new Error(server?.error||"Codex app-server is unavailable");
     if(!mock&&!await waitForAppServer(server,server.appPort||appPort,15_000))throw new Error("Codex app-server is not ready");
     const client=new CodexAppServerClient(server.targetUrl,{clientVersion:TREBELL_VERSION});
@@ -3124,7 +3146,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
 
   const terminalWs=terminals?.attachWebSocket(server);
   const relay=attachCodexRelay(server,{
-    targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
+    targetUrl:()=>appServer?.targetUrl||null,
     resolveTarget:message=>codexRelayTarget(message),
     transformClientMessage:message=>transformCodexClientMessage(message),
     handleServerRequest:async message=>resolveCodexServerRequest(message),
@@ -3180,7 +3202,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       return message;
     },
     // A catalog not started yet starts with the transport's first request (codexRelayTarget).
-    enabled:()=>mock || appServer.idle || Boolean(appServer?.child && appServer.child.exitCode===null),
+    // A catalog app-server that has exited or could not start is started again by the connection's first request, which says why if it
+    // cannot (catalogAppServer), instead of every handshake being refused while nothing starts it.
+    enabled:()=>!closing,
       log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:safeLogText(message)}),
     // The journal drops noisy methods (token deltas, listings, reads), so the trace looks up the thread's meta and the settings only
     // for a method it keeps. A reply streams one delta per token, and each lookup was a sqlite read of the whole meta.

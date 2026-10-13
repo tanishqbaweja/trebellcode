@@ -732,7 +732,7 @@ async function computerType(text){
 function guiServerOptions(){
   return {
     port:Number(process.env.TREBELL_GUI_PORT || 3210),
-    appPort:Number(process.env.TREBELL_APP_SERVER_PORT || 23456),
+    appPort:Number(process.env.TREBELL_APP_SERVER_PORT) || null,
     mock:process.env.TREBELL_GUI_MOCK==="1",
     env:process.env,
   };

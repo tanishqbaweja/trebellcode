@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
+import { WebSocket } from "ws";
 import { codexHistoryImportStatus, createGuiServer, offlineE2eFetch, requestAbortController } from "../src/gui-server.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { EnvironmentManager } from "../src/environment-manager.mjs";
@@ -478,6 +479,93 @@ test("a worktree's setup action runs as written, in a terminal named for it",{ti
     assert.ok(output.includes("setupranin"+made.result.worktree.replace(/\s+/g,"")),output);
   }finally{
     if(gui)await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+// The same stand-in answering the Codex protocol on its socket (initialize names the process), and saying why when it cannot listen,
+// as codex does.
+const FAKE_CODEX_WS_APP_SERVER=String.raw`
+import { createServer } from "node:http";
+import { appendFileSync } from "node:fs";
+import { WebSocketServer } from ${JSON.stringify(new URL("../node_modules/ws/wrapper.mjs",import.meta.url).href)};
+const [record,...args]=process.argv.slice(2);const listen=args[args.indexOf("--listen")+1]||"";
+if(args[0]!=="app-server"||!listen){process.stdout.write("codex-cli 0.155.1-fixture\n");process.exit(0)}
+const port=Number(new URL(listen).port);
+const server=createServer((req,res)=>{res.writeHead(req.url==="/readyz"||req.url==="/healthz"?200:404);res.end("ok")}),wss=new WebSocketServer({server});
+wss.on("connection",ws=>ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;ws.send(JSON.stringify({id:message.id,result:message.method==="initialize"?{userAgent:"fake-codex/"+process.pid}:{data:[],nextCursor:null}}))}));
+server.on("error",error=>{process.stderr.write("Error: "+error.message+"\n");process.exit(1)});
+server.listen(port,"127.0.0.1",()=>appendFileSync(record,JSON.stringify({port,pid:process.pid})+"\n"));
+`;
+async function fakeCodexHome(prefix){
+  const home=await mkdtemp(join(tmpdir(),prefix));
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",onboardingComplete:true}}));
+  await mkdir(join(home,"codex"),{recursive:true});
+  const fixture=join(home,"fake-codex.mjs"),record=join(home,"codex-starts.jsonl"),launcher=join(home,process.platform==="win32"?"codex.cmd":"codex");
+  await writeFile(fixture,FAKE_CODEX_WS_APP_SERVER,"utf8");
+  if(process.platform==="win32")await writeFile(launcher,["@echo off",`"${process.execPath}" "${fixture}" "${record}" %*`,""].join("\r\n"),"utf8");
+  else{await writeFile(launcher,`#!/bin/sh\nexec "${process.execPath}" "${fixture}" "${record}" "$@"\n`,"utf8");await chmod(launcher,0o755)}
+  const env={...process.env,TREBELL_HOME:home,CODEX_HOME:join(home,"codex"),TREBELL_CODEX_BIN:launcher,TREBELL_HISTORY_DISABLE_CLAUDE:"1",TREBELL_APP_SERVER_PORT:"",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const starts=async()=>(await readFile(record,"utf8").catch(()=>"")).trim().split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line));
+  return {home,env,starts};
+}
+// The app's Codex socket as the browser opens it: initialize, and the answer or the error to it.
+async function codexInitialize(gui){
+  const ws=new WebSocket(gui.url.replace(/^http/,"ws")+"/api/codex/ws");
+  await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
+  const answered=new Promise(resolve=>ws.once("message",raw=>resolve(JSON.parse(String(raw)))));
+  ws.send(JSON.stringify({id:1,method:"initialize",params:{clientInfo:{name:"test",version:"0"}}}));
+  return {ws,answer:await answered};
+}
+const availableProbe=async function(instanceOrKind){
+  const instance=typeof instanceOrKind==="string"?this.instances().find(item=>item.kind===instanceOrKind):instanceOrKind;
+  return {id:instance?.id,kind:instance?.kind,name:instance?.kind,available:true,installed:true,authenticated:true,version:"fixture"};
+};
+
+test("the catalog Codex app-server takes a free port, so a program on the old fixed one leaves Codex working, and it starts again once it has exited",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
+  const {home,env,starts}=await fakeCodexHome("trebell-codex-port-");
+  const originalProbe=AgentRuntimeManager.prototype.probe;AgentRuntimeManager.prototype.probe=availableProbe;
+  // Another program on 23456 that answers like a Codex app-server (another Trebell's, or one a crash left behind).
+  const holder=createServer((req,res)=>{res.writeHead(req.url==="/readyz"?200:404);res.end("ok")});
+  await new Promise(resolve=>holder.once("error",resolve).listen(23456,"127.0.0.1",resolve));
+  let gui=null,first=null,second=null;
+  try{
+    gui=await createGuiServer({port:await freePort(),mock:false,env});
+    first=await codexInitialize(gui);
+    assert.match(String(first.answer.result?.userAgent),/^fake-codex\//,"the app reaches its own Codex app-server");
+    const [boot]=await starts();assert.notEqual(boot.port,23456);
+    // The app-server exits: the app's socket closes, and the app connects again, as it does after a close, which starts it again.
+    const closed=new Promise(resolve=>first.ws.once("close",resolve));process.kill(boot.pid);await closed;
+    for(const deadline=Date.now()+10_000;Date.now()<deadline;){
+      second=await codexInitialize(gui);if(second.answer.result)break;
+      second.ws.terminate();await new Promise(resolve=>setTimeout(resolve,250));
+    }
+    assert.match(String(second.answer.result?.userAgent),/^fake-codex\//);
+    const all=await starts();assert.equal(all.length,2);assert.notEqual(String(second.answer.result.userAgent),"fake-codex/"+boot.pid);
+  }finally{
+    for(const socket of [first?.ws,second?.ws])try{socket?.terminate()}catch{}
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    if(gui)await gui.close();
+    await new Promise(resolve=>holder.close(()=>resolve()));
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+test("a configured Codex app-server port another program holds is refused with why, on the app's socket",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
+  const {home,env,starts}=await fakeCodexHome("trebell-codex-port-held-");
+  const originalProbe=AgentRuntimeManager.prototype.probe;AgentRuntimeManager.prototype.probe=availableProbe;
+  const holder=createServer((_req,res)=>{res.writeHead(404);res.end()});await new Promise(resolve=>holder.listen(0,"127.0.0.1",resolve));
+  const held=holder.address().port;let gui=null,socket=null;
+  try{
+    gui=await createGuiServer({port:await freePort(),appPort:held,mock:false,env});
+    const {ws,answer}=await codexInitialize(gui);socket=ws;
+    assert.match(String(answer.error?.message),new RegExp(`port ${held} \\(TREBELL_APP_SERVER_PORT or --app-port\\) is in use by another program`));
+    assert.deepEqual(await starts(),[],"no app-server is started on a port it cannot have");
+  }finally{
+    try{socket?.terminate()}catch{}
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    if(gui)await gui.close();
+    await new Promise(resolve=>holder.close(()=>resolve()));
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
 });

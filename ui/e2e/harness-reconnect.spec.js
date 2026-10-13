@@ -13,14 +13,16 @@ async function freePort(){
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
 
-// A Codex-protocol harness whose transport can drop and refuse new connections for a while, like an app-server restart.
+// A Codex-protocol harness whose transport can drop and refuse new connections for a while, like an app-server restart, or whose
+// server answers initialize with why it cannot reach the harness (refuse).
 async function startHarness(){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set(),requests=[];let accepting=true,connections=0;
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set(),requests=[];let accepting=true,connections=0,refusal=null;
   http.on("upgrade",(req,socket,head)=>{if(!accepting){socket.destroy();return}wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req))});
   wss.on("connection",ws=>{
     connections++;sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
     ws.on("message",raw=>{
       const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;requests.push(message);
+      if(message.method==="initialize"&&refusal){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:refusal}}));return}
       let result={};
       if(message.method==="initialize")result={userAgent:"harness-reconnect-fixture"};
       else if(message.method==="thread/list")result={data:[],nextCursor:null};
@@ -36,6 +38,8 @@ async function startHarness(){
     wsUrl:"ws://127.0.0.1:"+port,requests,connections:()=>connections,
     drop(){accepting=false;for(const ws of sockets)ws.terminate()},
     accept(){accepting=true},
+    refuse(message){refusal=message},
+    allow(){refusal=null},
     async close(){accepting=false;for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))},
   };
 }
@@ -94,22 +98,41 @@ test("a send while the harness transport is down keeps the draft, never falls ba
   }finally{await harness.close()}
 });
 
+// The page routes a fixture with its own settings (which the header's light and dark toggle saves into), on the harness at wsUrl.
+async function routeCodexFixture(page,wsUrl){
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await keepThreadMeta(page);
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd:process.cwd(),platform:process.platform,version:"harness-reconnect-fixture"}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(settings,route.request().postDataJSON()||{});return json(route,settings)});
+  await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+}
+// Dark and light screenshots at 1280x800 and 900 wide, each mode switched with the header toggle, ending where it began.
+async function shootModes(page,name){
+  for(const width of [1280,900]){
+    await page.setViewportSize({width,height:800});
+    for(let pass=0;pass<2;pass++){
+      const mode=await page.locator("html").getAttribute("data-mode");
+      await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${width}x800.png`});
+      const direct=page.locator("[data-testid=appearance-toggle]:visible").first();
+      if(await direct.count())await direct.click();else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByRole("menuitem",{name:/Switch to (light|dark) mode/}).first().click()}
+      await expect(page.locator("html")).not.toHaveAttribute("data-mode",mode||"");
+    }
+  }
+  await page.setViewportSize({width:1280,height:800});
+}
+
 test("when the Codex app-server dies behind the relay the composer says so at once, keeps the draft and is ready again once it is back",async({page})=>{
   test.setTimeout(45_000);
   // The real Codex relay between the app and the harness: an app-server that dies leaves the relay's connection closed with 1006.
   const harness=await startHarness(),relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachCodexRelay(relayHttp,{targetUrl:harness.wsUrl});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
-  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   try{
-    await keepThreadMeta(page);
-    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"harness-reconnect-fixture"}));
-    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
-    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(settings,route.request().postDataJSON()||{});return json(route,settings)});
-    await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}}));
-    await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
-    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
-    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await routeCodexFixture(page,"ws://127.0.0.1:"+relayPort+"/api/codex/ws");
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");
     const composer=page.getByTestId("composer"),send=page.getByTestId("send"),transport=page.getByTestId("composer-transport");
@@ -120,21 +143,36 @@ test("when the Codex app-server dies behind the relay the composer says so at on
     await expect(transport).toContainText("Reconnecting to Codex",{timeout:3000});
     await expect(send).toBeDisabled();
     await expect(composer).toHaveValue("Keep this while Codex restarts.");
-    for(const width of [1280,900]){
-      await page.setViewportSize({width,height:800});
-      for(let pass=0;pass<2;pass++){
-        const mode=await page.locator("html").getAttribute("data-mode");
-        await page.screenshot({animations:"disabled",path:auditDir+`harness-relay-app-server-died-${mode}-${width}x800.png`});
-        const before=mode,direct=page.locator("[data-testid=appearance-toggle]:visible").first();
-        if(await direct.count())await direct.click();else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByRole("menuitem",{name:/Switch to (light|dark) mode/}).first().click()}
-        await expect(page.locator("html")).not.toHaveAttribute("data-mode",before||"");
-      }
-    }
+    await shootModes(page,"harness-relay-app-server-died");
     harness.accept();
     await expect(transport).toHaveCount(0,{timeout:15_000});
     await expect(send).toBeEnabled();
     await expect(composer).toHaveValue("Keep this while Codex restarts.");
   }finally{relay.close();await harness.close();await new Promise(resolve=>relayHttp.close(resolve))}
+});
+
+test("a server that cannot reach Codex says why in the composer instead of connecting forever, and Retry connects once it can",async({page})=>{
+  test.setTimeout(45_000);
+  const harness=await startHarness(),reason="The Codex app-server port 23456 (TREBELL_APP_SERVER_PORT or --app-port) is in use by another program";
+  harness.refuse(reason);
+  try{
+    await routeCodexFixture(page,harness.wsUrl);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send"),transport=page.getByTestId("composer-transport");
+    await composer.click();await page.keyboard.type("Start the release checklist.",{delay:8});
+    await expect(transport).toContainText("Could not connect to Codex: "+reason+". Your draft is kept.",{timeout:10_000});
+    await expect(send).toBeDisabled();
+    const tries=harness.requests.filter(message=>message.method==="initialize").length;
+    await page.waitForTimeout(1500);
+    expect(harness.requests.filter(message=>message.method==="initialize").length,"it stops asking once it has said why").toBe(tries);
+    await shootModes(page,"harness-refused-says-why");
+    harness.allow();
+    await transport.getByRole("button",{name:"Retry",exact:true}).click();
+    await expect(transport).toHaveCount(0,{timeout:15_000});
+    await expect(send).toBeEnabled();
+    await expect(composer).toHaveValue("Start the release checklist.");
+  }finally{await harness.close()}
 });
 
 test("before the harness has ever connected the thread list says it is waiting for it, not that there are no threads",async({page})=>{
