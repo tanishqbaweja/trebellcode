@@ -315,6 +315,31 @@ test("an attachment chip removed with the mouse leaves focus in the composer, so
   }finally{await harness.close()}
 });
 
+test("removing a context chip from the keyboard moves focus to the chip before it, then to the composer",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page);
+  try{
+    const composer=page.getByTestId("composer"),context=page.getByTestId("context-chip"),reply=page.locator(".assistant-message-text").last();
+    const cite=page.getByRole("button",{name:"Cite selected assistant text"});
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      // The person drags across the reply, then double-clicks its first word, and cites each: two excerpt chips stand over the composer.
+      const box=await reply.evaluate(node=>{const range=document.createRange();range.selectNodeContents(node);const {left,right,top,bottom}=range.getBoundingClientRect();return {left,right,y:(top+bottom)/2}});
+      await page.mouse.move(box.left+1,box.y);await page.mouse.down();await page.mouse.move(box.right-1,box.y,{steps:6});await page.mouse.up();
+      await cite.click();await expect(context).toHaveCount(1);
+      await page.mouse.dblclick(box.left+6,box.y);await cite.click();await expect(context).toHaveCount(2);
+      const remove=context.getByRole("button",{name:"Remove context"});
+      await composer.click();await page.keyboard.press("Shift+Tab");await expect(remove.nth(1)).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(context).toHaveCount(1);await expect(remove.first()).toBeFocused();
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(remove.first()).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"context-chip-removed-focus-before-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+      await page.keyboard.press(" ");
+      await expect(context).toHaveCount(0);await expect(composer).toBeFocused();
+    }
+  }finally{await harness.close()}
+});
+
 test("/plan puts the plan prompt with what follows it in the composer, ready to send",async({page})=>{
   test.setTimeout(60_000);
   const harness=await openComposerApp(page);
