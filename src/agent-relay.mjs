@@ -717,6 +717,29 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const SESSION_IDLE_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS):10*60_000;
   const SESSION_SWEEP_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS):60_000;
   const socketContexts=new Set();
+  // The approvals, questions, forms and app tool calls a harness asked of the person, until they are answered. They wait here, not with
+  // the socket that showed them: a window that reloads or loses its socket leaves them waiting, and they are asked again, under the same
+  // id, of another window still open or of the next one to connect (T3 keeps a pending approval in its thread for the next client).
+  const pendingServer=new Map();let nextServerId=1;
+  const isOpen=context=>Boolean(context)&&context.ws.readyState===context.ws.OPEN;
+  const openContext=preferred=>isOpen(preferred)?preferred:[...socketContexts].reverse().find(isOpen)||null;
+  function askAgain(context){
+    if(!context)return;
+    for(const [id,pending] of pendingServer)if(!pending.holder){pending.holder=context;context.ws.send(JSON.stringify({id,method:pending.method,params:pending.params}))}
+  }
+  // Whether an approval, a question or a form of the thread waits on the person (the idle sweep keeps its session).
+  const waitsOn=threadId=>[...pendingServer.values()].some(pending=>pending.threadId===String(threadId||""));
+  // Stop, or an ACP process that died, answers the thread's open approvals, questions and form requests as cancelled and takes them off
+  // the screen (T3 settles a session's pending approvals and user input when its turn is interrupted or the process exits).
+  function cancelThreadRequests(threadId){
+    const owner=String(threadId||""),cancelled={"item/tool/requestApproval":{decision:"cancel"},"item/tool/requestUserInput":{answers:{}},"mcpServer/elicitation/request":{action:"cancel"}};
+    if(!owner)return;
+    for(const [id,pending] of [...pendingServer]){
+      if(pending.threadId!==owner||!Object.prototype.hasOwnProperty.call(cancelled,pending.method))continue;
+      pendingServer.delete(id);clearTimeout(pending.timer);pending.resolve(cancelled[pending.method]);
+      if(isOpen(pending.holder))pending.holder.ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:owner}}));
+    }
+  }
   const recoveryInFlight=new Set();
   const liveToolOutput=new Map();
   // A running tool's latest item waiting to be stored, per thread and tool call: {turnId,at,item,timer}.
@@ -917,7 +940,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(!(session instanceof AcpAgentSession||session instanceof OpenCodeAgentSession)||session.busy||session.activePrompt||sessionLeftWork.has(session)||threadRequests.has(threadId))continue;
       if(session instanceof AcpAgentSession&&!session.resumable)continue;
       if(now-(sessionUsed.get(session)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
-      if([...socketContexts].some(context=>context.waitsOn?.(threadId)))continue;
+      if(waitsOn(threadId))continue;
       sessions.delete(threadId);releaseSession(session,error=>log("Could not close an idle harness session: "+(error?.message||String(error))));
     }
   }
@@ -1477,7 +1500,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // A dead ACP process leaves the thread: the next turn starts the harness again and resumes the conversation (T3 releases
       // an errored session), and its open approval or question cards are withdrawn.
       const runtimeSession=sessions.get(threadId);
-      if(runtimeSession instanceof AcpAgentSession&&runtimeSession.dead){sessions.delete(threadId);releaseSession(runtimeSession);for(const context of socketContexts)context.cancelThreadRequests?.(threadId)}
+      if(runtimeSession instanceof AcpAgentSession&&runtimeSession.dead){sessions.delete(threadId);releaseSession(runtimeSession);cancelThreadRequests(threadId)}
       emit("error",{threadId,turnId,message:update.message||"Agent runtime stopped"});
     }
   }
@@ -2000,7 +2023,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       target?.cancel();
       // Stop answers a harness's waiting approvals, questions and form requests as cancelled and withdraws their cards, for Claude Code
       // and OpenCode as for the ACP harnesses (T3 cancels every pending runtime request of an interrupted run).
-      if(target&&!(target instanceof NativeAgentSession))for(const socket of socketContexts)socket.cancelThreadRequests?.(params.threadId);
+      if(target&&!(target instanceof NativeAgentSession))cancelThreadRequests(params.threadId);
       return {ok:true};
     }
     if(method==="turn/steer"){
@@ -2119,24 +2142,16 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const upgrade=(req,socket,head)=>{
     const url=new URL(req.url||"/","http://127.0.0.1");if(url.pathname!==path)return;
     wss.handleUpgrade(req,socket,head,ws=>{
-      const pendingServer=new Map();let nextServerId=1;
       const context={
         ws,
+        // Asked of this window, or of the newest one open once this one has gone (pendingServer).
         serverRequest(method,params,owner=params?.threadId){
-          const id=`agent-${nextServerId++}`;ws.send(JSON.stringify({id,method,params}));return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{pendingServer.delete(id);reject(new Error(`${method} user response timed out`))},5*60_000);pendingServer.set(id,{resolve,reject,timer,method,threadId:owner?String(owner):null})});
-        },
-        // Whether an approval, a question or a form of the thread waits on this window's person (the idle sweep keeps its session).
-        waitsOn(threadId){const owner=String(threadId||"");for(const pending of pendingServer.values())if(pending.threadId===owner)return true;return false},
-        // Stop, or an ACP process that died, answers the thread's open approvals, questions and form requests as cancelled and takes
-        // them off the screen (T3 settles a session's pending approvals and user input when its turn is interrupted or the process exits).
-        cancelThreadRequests(threadId){
-          const owner=String(threadId||""),cancelled={"item/tool/requestApproval":{decision:"cancel"},"item/tool/requestUserInput":{answers:{}},"mcpServer/elicitation/request":{action:"cancel"}};
-          if(!owner)return;
-          for(const [id,pending] of [...pendingServer]){
-            if(pending.threadId!==owner||!Object.prototype.hasOwnProperty.call(cancelled,pending.method))continue;
-            pendingServer.delete(id);clearTimeout(pending.timer);pending.resolve(cancelled[pending.method]);
-            if(ws.readyState===ws.OPEN)ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:owner}}));
-          }
+          const id=`agent-${nextServerId++}`,holder=openContext(context);
+          return new Promise((resolve,reject)=>{
+            const timer=setTimeout(()=>{pendingServer.delete(id);reject(new Error(`${method} user response timed out`))},5*60_000);
+            pendingServer.set(id,{resolve,reject,timer,method,params,threadId:owner?String(owner):null,holder});
+            holder?.ws.send(JSON.stringify({id,method,params}));
+          });
         },
         async permission(thread,{params,options,askUser=false,approvalOptions=null}){
           const current=threadStore.get(thread.id)||thread,turnId=current?.turns?.at(-1)?.id||null,traceData=agentPermissionTraceData({toolCall:params.toolCall,options});
@@ -2196,11 +2211,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       ws.on("message",async raw=>{
         let message;try{message=JSON.parse(String(raw))}catch{return}
         if(Object.prototype.hasOwnProperty.call(message,"id")&&!message.method&&typeof message.id==="string"&&pendingServer.has(message.id)){
-          const pending=pendingServer.get(message.id);pendingServer.delete(message.id);clearTimeout(pending.timer);message.error?pending.reject(new Error(message.error.message||"Request declined")):pending.resolve(message.result);return;
+          const pending=pendingServer.get(message.id);if(pending.holder!==context)return;pendingServer.delete(message.id);clearTimeout(pending.timer);message.error?pending.reject(new Error(message.error.message||"Request declined")):pending.resolve(message.result);return;
         }
         if(!message.method)return;
         if(!Object.prototype.hasOwnProperty.call(message,"id")){
-          if(message.method==="initialized")recoverPending(context).catch(error=>log(error?.stack||String(error)));
+          if(message.method==="initialized"){askAgain(context);recoverPending(context).catch(error=>log(error?.stack||String(error)))}
           return;
         }
         try{
@@ -2209,7 +2224,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           const result=await request(context,message.method,message.params||{});ws.send(JSON.stringify({id:message.id,result}))}
         catch(error){log(error?.stack||String(error));ws.send(JSON.stringify({id:message.id,error:{code:Number(error?.code)||-32000,message:error instanceof Error?error.message:String(error)}}))}
       });
-      ws.on("close",()=>{socketContexts.delete(context);for(const pending of pendingServer.values()){clearTimeout(pending.timer);pending.reject(new Error("Agent client disconnected"))}pendingServer.clear()});
+      ws.on("close",()=>{socketContexts.delete(context);for(const pending of pendingServer.values())if(pending.holder===context)pending.holder=null;askAgain(openContext(null))});
     });
   };
   server.on("upgrade",upgrade);
@@ -2226,6 +2241,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     server.off("upgrade",upgrade);
     for(const context of socketContexts){try{context.ws.terminate()}catch{}}
     socketContexts.clear();
+    for(const pending of pendingServer.values()){clearTimeout(pending.timer);pending.reject(new Error("The relay closed"))}pendingServer.clear();
     for(const client of wss.clients){try{client.terminate()}catch{}}
     await closeSessions();await nativeBackgroundProcesses.closeAll();
     try{wss.close()}catch{}

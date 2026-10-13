@@ -1257,6 +1257,46 @@ test("Stop withdraws an OpenCode thread's waiting approval card and answers Open
   }
 });
 
+test("an OpenCode approval waiting when the page reloads stays waiting and is asked again of the next window, which answers it",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-opencode-reload-")),fixture=await fakeOpenCodeServe({askPermission:true});
+  const instance={id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,serverUrl:fixture.url};
+  const runtimeManager={
+    instances:()=>[{...instance}],activeInstance:()=>({...instance}),activeRuntime:()=>"opencode",compatibleInstanceIds:()=>[instance.id],
+    probe:async()=>({id:instance.id,name:"OpenCode",available:true,authenticated:true,version:"1.18.32"}),
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),executable:()=>"opencode",
+  };
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env),state=memoryThreadState();
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
+  const port=await listen(server),url="ws://127.0.0.1:"+port+"/api/agent/ws",model="anthropic/claude-sonnet-4-5";
+  const next=(ws,predicate)=>new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{ws.off("message",onMessage);reject(new Error("timed out waiting for a relay message"))},15_000);
+    const onMessage=raw=>{const message=JSON.parse(String(raw));if(!predicate(message))return;clearTimeout(timer);ws.off("message",onMessage);resolve(message)};
+    ws.on("message",onMessage);
+  });
+  let first=null,second=null;
+  try{
+    first=await connect(url);const rpc=request(first);
+    const started=await rpc("thread/start",{cwd:root,model,permissionProfile:"supervised"}),threadId=started.thread.id;
+    const approval=next(first,message=>message.method==="item/tool/requestApproval");
+    await rpc("turn/start",{threadId,model,input:[{type:"text",text:"run the tests"}],permissionProfile:"supervised"});
+    const asked=await approval;
+    // The window reloads: its socket closes while the card waits.
+    await new Promise(resolve=>{first.once("close",resolve);first.close()});
+    await new Promise(resolve=>setTimeout(resolve,200));
+    assert.deepEqual(fixture.called("POST /permission/per_fixture/reply"),[],"OpenCode is not answered for the person");
+    second=await connect(url);const again=next(second,message=>message.method==="item/tool/requestApproval");
+    await request(second)("initialize",{clientInfo:{name:"test"}});second.send(JSON.stringify({method:"initialized",params:{}}));
+    const shown=await again;
+    assert.deepEqual({id:shown.id,params:shown.params},{id:asked.id,params:asked.params},"the next window is asked the same request");
+    second.send(JSON.stringify({id:shown.id,result:{decision:"accept"}}));
+    const deadline=Date.now()+5000;while(!fixture.called("POST /permission/per_fixture/reply").length&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+    assert.deepEqual(fixture.called("POST /permission/per_fixture/reply").map(call=>call.body.reply),["once"],"the person's answer reaches OpenCode");
+  }finally{
+    for(const ws of [first,second])try{ws?.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true});
+  }
+});
+
 test("an attached audio file reaches every harness by its saved path, as T3 Code names the attachments it does not send as content",async()=>{
   const prompt=await contextualAgentPrompt([{type:"text",text:"Transcribe this"},{type:"localAudio",path:"/recordings/memo 1.mp3"}]);
   assert.deepEqual(prompt.map(part=>({type:part.type,text:part.text})),[{type:"text",text:"Transcribe this"},{type:"text",text:'[Attached audio "memo 1.mp3" is saved at: /recordings/memo 1.mp3]'}]);

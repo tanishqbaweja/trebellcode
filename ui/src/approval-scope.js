@@ -1,6 +1,7 @@
-// Approvals (like questions and app elicitations) are server requests, answered on the socket that asked. The relays keep a socket's
-// open requests with that socket, fail them all when it closes ("Agent client disconnected"), and number them per socket, so the
-// next socket reuses the same ids (agent-1, agent-2, ...). Each request therefore keeps the client it arrived on:
+// Approvals (like questions and app elicitations) are server requests, answered on the socket that asked. The Codex relay keeps a
+// socket's open requests with that socket, fails them when it closes and numbers them per socket, so the next socket reuses the same
+// ids (trebell-server-1, ...); the agent relay asks its waiting requests again of the next socket. Each request therefore keeps the
+// client it arrived on:
 // - its answer goes back on that client, never on a newer socket where the same id can name a different request;
 // - once a newer socket is connected, or the transport is torn down, requests from older sockets can no longer be answered and
 //   leave the screen (live: an Antigravity "git log -n 5" approval stayed on screen in the next harness's thread).
