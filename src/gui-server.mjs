@@ -3159,6 +3159,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   const relay=attachCodexRelay(server,{
     targetUrl:()=>appServer?.targetUrl||null,
     resolveTarget:message=>codexRelayTarget(message),
+    // A thread's app-server that is released leaves the pool before it is stopped, and one started in its place has another URL; one
+    // that died is still there.
+    targetLive:({key,url})=>codexAppServers.get(key)?.targetUrl===url,
     transformClientMessage:message=>transformCodexClientMessage(message),
     handleServerRequest:async message=>resolveCodexServerRequest(message),
     handleRequest:async (message,{requestUpstream})=>{

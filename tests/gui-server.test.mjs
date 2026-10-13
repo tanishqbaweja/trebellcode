@@ -485,7 +485,7 @@ test("a worktree's setup action runs as written, in a terminal named for it",{ti
 });
 
 // The same stand-in answering the Codex protocol on its socket (initialize names the process), and saying why when it cannot listen,
-// as codex does.
+// as codex does. Like Codex, it knows only the threads resumed on its own process: a turn for any other is refused "thread not found".
 const FAKE_CODEX_WS_APP_SERVER=String.raw`
 import { createServer } from "node:http";
 import { appendFileSync } from "node:fs";
@@ -494,7 +494,13 @@ const [record,...args]=process.argv.slice(2);const listen=args[args.indexOf("--l
 if(args[0]!=="app-server"||!listen){process.stdout.write("codex-cli 0.155.1-fixture\n");process.exit(0)}
 const port=Number(new URL(listen).port);
 const server=createServer((req,res)=>{res.writeHead(req.url==="/readyz"||req.url==="/healthz"?200:404);res.end("ok")}),wss=new WebSocketServer({server});
-wss.on("connection",ws=>ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;ws.send(JSON.stringify({id:message.id,result:message.method==="initialize"?{userAgent:"fake-codex/"+process.pid}:{data:[],nextCursor:null}}))}));
+const loaded=new Set();
+wss.on("connection",ws=>ws.on("message",raw=>{
+  const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;const threadId=message.params?.threadId;
+  if(message.method==="thread/resume")loaded.add(threadId);
+  if(["turn/start","turn/interrupt"].includes(message.method)&&!loaded.has(threadId)){ws.send(JSON.stringify({id:message.id,error:{code:-32600,message:"thread not found: "+threadId}}));return}
+  ws.send(JSON.stringify({id:message.id,result:message.method==="initialize"?{userAgent:"fake-codex/"+process.pid}:message.method==="thread/resume"?{thread:{id:threadId,status:{type:"idle"},turns:[]}}:message.method==="turn/start"?{turn:{id:"turn-"+process.pid,status:"inProgress",items:[]}}:{data:[],nextCursor:null}}));
+}));
 server.on("error",error=>{process.stderr.write("Error: "+error.message+"\n");process.exit(1)});
 server.listen(port,"127.0.0.1",()=>appendFileSync(record,JSON.stringify({port,pid:process.pid})+"\n"));
 `;
@@ -598,6 +604,55 @@ test("a catalog Codex app-server that died by a signal is started again by the n
   }finally{
     childProcess.spawn=realSpawn;syncBuiltinESMExports();
     for(const socket of [first?.ws,second?.ws])try{socket?.terminate()}catch{}
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    if(gui)await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+// The app's Codex socket as the browser keeps it: every message it is sent, whether it closed, and requests by id.
+async function codexSocket(gui){
+  const ws=new WebSocket(gui.url.replace(/^http/,"ws")+"/api/codex/ws"),seen=[];let closed=null,nextId=1;
+  ws.on("message",raw=>seen.push(JSON.parse(String(raw))));ws.on("close",code=>{closed={code}});
+  await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
+  const ask=async(method,params,timeoutMs=20_000)=>{
+    const id=nextId++;ws.send(JSON.stringify({id,method,params}));
+    for(const deadline=Date.now()+timeoutMs;Date.now()<deadline;await new Promise(resolve=>setTimeout(resolve,25))){const answer=seen.find(message=>message.id===id&&!message.method);if(answer)return answer;if(closed)throw new Error("socket closed before the answer to "+method)}
+    throw new Error(method+" not answered");
+  };
+  const connect=async()=>{await ask("initialize",{clientInfo:{name:"test",version:"0"}});ws.send(JSON.stringify({method:"initialized",params:{}}))};
+  return {ws,ask,connect,closed:()=>closed};
+}
+
+// Each thread runs on an app-server of its own. One that dies is told to the browser at once, as the catalog's death is: the app connects
+// again and resumes the thread shown, which reaches a new app-server with the thread loaded, so its next turn starts instead of being
+// refused "thread not found". One released when the browser leaves its thread closes nothing.
+test("a thread's own Codex app-server that dies closes the app's socket at once, and the thread resumed again takes its next turn",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
+  const {home,env,starts}=await fakeCodexHome("trebell-codex-thread-death-");
+  const originalProbe=AgentRuntimeManager.prototype.probe;AgentRuntimeManager.prototype.probe=availableProbe;
+  let gui=null,first=null,second=null;
+  try{
+    gui=await createGuiServer({port:await freePort(),mock:false,env});
+    first=await codexSocket(gui);await first.connect();
+    assert.ok(!(await first.ask("thread/resume",{threadId:"thread-died"})).error);
+    assert.ok(!(await first.ask("turn/start",{threadId:"thread-died",input:[{type:"text",text:"one"}]})).error);
+    const [,threadServer]=await starts();assert.ok(threadServer,"the thread runs on an app-server of its own");
+    process.kill(threadServer.pid);
+    assert.ok(await waitFor(()=>first.closed(),3000),"the app's socket closes when the thread's app-server dies");
+    assert.equal(first.closed().code,1011);
+    second=await codexSocket(gui);await second.connect();
+    assert.ok(!(await second.ask("thread/resume",{threadId:"thread-died"})).error);
+    const next=await second.ask("turn/start",{threadId:"thread-died",input:[{type:"text",text:"two"}]});
+    assert.ok(!next.error,"the next turn reaches the thread: "+JSON.stringify(next.error));
+    assert.equal((await starts()).length,3,"the thread's app-server was started again");
+    // Leaving the thread releases its app-server: that one is stopped on purpose, and the app's socket stays open.
+    assert.ok(!(await second.ask("thread/unsubscribe",{threadId:"thread-died"})).error);
+    const [,,restarted]=await starts();
+    assert.ok(await waitFor(()=>{try{process.kill(restarted.pid,0);return false}catch{return true}},10_000),"the released app-server is stopped");
+    await new Promise(resolve=>setTimeout(resolve,500));
+    assert.equal(second.closed(),null,"a released thread app-server does not close the app's socket");
+  }finally{
+    for(const socket of [first,second])try{socket?.ws.terminate()}catch{}
     AgentRuntimeManager.prototype.probe=originalProbe;
     if(gui)await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});

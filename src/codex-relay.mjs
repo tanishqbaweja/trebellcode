@@ -30,6 +30,9 @@ export function attachCodexRelay(httpServer, {
   // Synchronous (message, {targetKey, targetUrl, requestUpstream}) => message: rewrites a Codex notification before the
   // renderer gets it, so notifications keep their order.
   transformServerMessage = null,
+  // ({key, url}) => whether requests for that target still go to that URL: a routed connection that closes while they do lost a
+  // process that died, not one that was released.
+  targetLive = () => false,
   path = "/api/codex/ws",
   enabled = () => true,
   authorize = () => true,
@@ -123,7 +126,7 @@ export function attachCodexRelay(httpServer, {
         context.upstreams.set(route.key,record);
         record.ready=new Promise((resolve,reject)=>{
           const timer=setTimeout(()=>reject(new Error("Timed out connecting to routed Codex app-server")),12000);
-          upstream.once("open",()=>{clearTimeout(timer);resolve()});
+          upstream.once("open",()=>{clearTimeout(timer);record.opened=true;resolve()});
           upstream.once("error",error=>{clearTimeout(timer);reject(error)});
         });
         upstream.on("message",async(data,isBinary)=>{
@@ -177,7 +180,11 @@ export function attachCodexRelay(httpServer, {
           // A connection that died has no close frame (1005, 1006 or 1015), and no close frame may carry those codes: ws throws for them,
           // which left the browser's socket open with nothing behind it. The browser is told 1011 instead.
           const sendable=(code>=1000&&code<=1014&&![1004,1005,1006].includes(code))||(code>=3000&&code<=4999);
-          if(record.key===context.primaryKey&&!context.closed)closeClient(sendable?code:1011,String(reason||"codex disconnected"));
+          // A thread's own app-server that died (its target is still where the thread's requests go, so nothing released it) is told
+          // the same way: the browser connects again and resumes the thread shown, which starts that app-server again and loads the
+          // thread on it, as T3 resumes a thread on the next app-server after one exits. A connection that never opened fails only
+          // the request it was made for.
+          if((record.key===context.primaryKey||record.opened&&targetLive(record))&&!context.closed)closeClient(sendable?code:1011,String(reason||"codex disconnected"));
         });
         upstream.on("error",error=>{log(`codex websocket error (${record.key}): ${error.message}`)});
         await record.ready;
