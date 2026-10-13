@@ -405,6 +405,28 @@ test("Trebell Native verification repair reuses the same thread and persisted fa
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
 
+test("a verification repair's checkpoint is journaled under the selected runtime when the thread names none",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-relay-runtime-fallback-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),store=new AgentThreadStore(env),records=[];
+  // The thread's metadata as a store that kept no runtime would give it.
+  const threadStore=new Proxy(store,{get(target,key){if(key==="getMetadata")return id=>{const thread=target.getMetadata(id);if(thread)delete thread.runtime;return thread};const value=target[key];return typeof value==="function"?value.bind(target):value}});
+  const checkpoints={create:async({cwd,label})=>({id:"checkpoint-1",root:cwd,label}),link:(id,{turnId})=>({id,turnId})};
+  const nativeProviderTurn=async request=>request.metadata?.completionGate
+    ?{id:"gate",provider:request.provider,model:request.model,text:'{"status":"complete","unresolved":[],"reason":"Supported."}',toolCalls:[],finishReason:"stop",usage:{}}
+    :{id:"answer",provider:request.provider,model:request.model,text:"Repaired.",toolCalls:[],finishReason:"stop",usage:{}};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,journal:{record:event=>records.push(event)},checkpoints,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const plan={risk:"medium",steps:[{id:"tests",kind:"tests",scope:"affected",required:true,cost:"low",reason:"Changed code has related tests."}]};
+    state.recordVerification({id:"fallback-record",threadId:thread.id,projectPath:repo,plan,evidence:[{stepId:"tests",exitCode:1,status:"failed",reason:"Parser regression failed"}]});
+    const repaired=await rpc.request("thread/verification/repair",{threadId:thread.id});assert.ok(repaired.turn?.id);
+    const created=records.find(event=>event.name==="checkpoint.created"),linked=records.find(event=>event.name==="checkpoint.linked");
+    assert.equal(created?.runtime,"native");assert.equal(linked?.runtime,"native");assert.equal(linked?.turnId,repaired.turn.id);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});
+
 test("Trebell Native verification continuation reuses the same thread and only the next missing check",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-verify-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
