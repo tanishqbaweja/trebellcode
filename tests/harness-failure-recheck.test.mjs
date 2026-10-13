@@ -100,27 +100,29 @@ function fakeClaudeSdk(){
 
 // A Claude Code profile whose probes answer from auth (`claude auth status`), on an SSH environment (its executeArgv stubbed) or on
 // this machine (the manager's runFn stubbed, with the profile's binary a file of the test's own). launches: each probe launch, as
-// "<command> <args>". hold: a promise the sign-in check waits on before it answers.
+// "<command> <args>". hold: a promise the sign-in check waits on before it answers; timedOut: the sign-in check prints nothing
+// within its 8 s.
 async function claudeFixture(t,where){
   const root=await mkdtemp(join(tmpdir(),`trebell-recheck-claude-${where}-`));onCleanup(t,()=>rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100}));
-  const auth={loggedIn:true,hold:null},launches=[],binary=join(root,"claude");
+  const auth={loggedIn:true,hold:null,timedOut:false},launches=[],binary=join(root,"claude");
   const answer=async args=>{
     launches.push("claude "+args.join(" "));
     if(args[0]!=="auth")return {stdout:"2.1.0 (Claude Code)\n"};
-    const loggedIn=auth.loggedIn;await auth.hold;return {stdout:JSON.stringify({loggedIn})};
+    const loggedIn=auth.loggedIn;await auth.hold;return auth.timedOut?{stdout:"",timedOut:true}:{stdout:JSON.stringify({loggedIn})};
   };
   let environments=null,runFn=undefined,settings;
   if(where==="ssh"){
     const profile={id:"ssh-recheck",type:"ssh",cwd:"/srv/app"};
     environments={
       get:id=>id===profile.id?profile:null,
-      executeArgv:async(_id,{args})=>({exitCode:0,stderr:"",...await answer(args)}),
+      executeArgv:async(_id,{args})=>{const {stdout,timedOut=false}=await answer(args);return {exitCode:timedOut?null:0,timedOut,stdout,stderr:""}},
       spawnArgv:()=>{throw new Error("the scripted Claude SDK starts no process")},
     };
     settings={activeEnvironmentId:profile.id,agentRuntime:"claude"};
   }else{
     await writeFile(binary,"claude build 1");
-    runFn=async(_command,args)=>({ok:true,code:0,error:null,stderr:"",...await answer(args)});
+    // What the manager's run() returns, also for a check it stopped at its timeout.
+    runFn=async(_command,args)=>{const {stdout,timedOut=false}=await answer(args);return {ok:!timedOut,code:timedOut?null:0,error:timedOut?"probe timed out":null,stdout,stderr:""}};
     settings={activeEnvironmentId:null,agentRuntime:"claude",agentRuntimeInstances:[{id:"claude-default",kind:"claude",binaryPath:binary}]};
   }
   const state=memoryState(settings),env={PATH:"/usr/bin",HOME:join(root,"home")};
@@ -412,3 +414,22 @@ test("after the Claude Code profile is saved in Settings, a turn its thread fail
   assert.deepEqual([poll.available,poll.authenticated],[false,false],"the next poll asks again");
   assert.deepEqual(fx.launches.slice(asked),["claude --version","claude auth status","claude auth status"],"the recheck, then the poll's own sign-in check");
 });
+
+for(const where of ["ssh","local"]){
+  test(`a failed Claude Code turn whose recheck's sign-in check did not answer (${where}) keeps the harness's own message`,async t=>{
+    const fx=await claudeFixture(t,where);
+    await fx.poll();
+    const {thread}=await fx.relay.rpc("thread/start",{cwd:fx.root});
+    const overloaded='API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
+    // The turn fails for another reason, and `claude auth status` prints nothing within its 8 s (load, a slow link).
+    fx.claude.failing=new Error(overloaded);fx.auth.timedOut=true;
+    const {turn,shown}=await fx.relay.turn(thread.id);
+    assert.deepEqual([turn.status,turn.error.message,shown],["failed",overloaded,overloaded],"nothing tells a signed-in person to sign in");
+    const poll=await fx.poll();
+    assert.deepEqual([poll.available,poll.authenticated,poll.message],[true,null,"Claude Code is installed, but Trebell could not verify its authentication status."],"Settings says the sign-in could not be read");
+    // That answer is not kept: once the check answers again, the next poll reads it.
+    fx.auth.timedOut=false;
+    const next=await fx.poll();
+    assert.deepEqual([next.available,next.authenticated],[true,true]);
+  });
+}

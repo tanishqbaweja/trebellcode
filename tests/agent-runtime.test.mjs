@@ -706,11 +706,13 @@ test("remote runtime probes use provider-native auth status without treating unk
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-auth-"));const env={...process.env,TREBELL_HOME:home};
   try{
     const state=new TrebellStateStore(env);state.updateSettings({activeEnvironmentId:"ssh-auth"});
-    let cursorLoggedIn=false,grokLoggedIn=false;
+    let cursorLoggedIn=false,grokLoggedIn=false,claudeAuth=null;
     const environments={
       get:id=>id==="ssh-auth"?{id,name:"Auth SSH",type:"ssh",cwd:"/srv/app"}:null,
       executeArgv:async(_id,{command,args})=>{
         if(args[0]==="--version")return {exitCode:0,stdout:"1.20.0\n",stderr:""};
+        // claudeAuth null: `claude auth status` printed nothing before its 8 s ran out (load, a slow link).
+        if(command==="claude"&&args[0]==="auth")return claudeAuth?{exitCode:claudeAuth.loggedIn?0:1,stdout:JSON.stringify(claudeAuth),stderr:""}:{exitCode:null,timedOut:true,stdout:"",stderr:""};
         if(command==="cursor-agent"&&args[0]==="about")return {exitCode:0,stdout:JSON.stringify({userEmail:cursorLoggedIn?"dev@example.test":null}),stderr:""};
         if(command==="grok"&&args[0]==="models")return {exitCode:0,stdout:grokLoggedIn?"You are logged in\n- grok-4.6\n":"Not logged in\n",stderr:""};
         if(command==="opencode"&&args[0]==="auth")return {exitCode:0,stdout:"— 0 credentials\n— 0 environment variables\n",stderr:""};
@@ -724,6 +726,12 @@ test("remote runtime probes use provider-native auth status without treating unk
     const grokSignedOut=await manager.probe("grok");assert.equal(grokSignedOut.authenticated,false);assert.equal(grokSignedOut.available,false);
     grokLoggedIn=true;assert.equal((await manager.probe("grok",{fresh:true})).authenticated,true);
     const openCode=await manager.probe("opencode");assert.equal(openCode.authenticated,null);assert.equal(openCode.available,true);assert.equal(openCode.account.connectedProviders,0);
+    // A Claude Code sign-in check that did not answer is unknown, never a sign-out, and is not kept: the next probe reads the answer.
+    const claudeUnknown=await manager.probe("claude");
+    assert.deepEqual([claudeUnknown.available,claudeUnknown.authenticated,claudeUnknown.message],[true,null,"Claude Code is installed, but Trebell could not verify its authentication status."]);
+    claudeAuth={loggedIn:false};const claudeSignedOut=await manager.probe("claude");
+    assert.deepEqual([claudeSignedOut.available,claudeSignedOut.authenticated,claudeSignedOut.message],[false,false,"Claude Code is not authenticated. Run `claude auth login` and try again."]);
+    claudeAuth={loggedIn:true};assert.equal((await manager.probe("claude")).authenticated,true);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 

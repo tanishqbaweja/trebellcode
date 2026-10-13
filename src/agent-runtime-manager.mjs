@@ -40,9 +40,10 @@ const CODEX_ACCOUNT_REUSE_MS=60_000;
 // sign-in made outside Trebell lets the next chat start; a sign-out shows at the latest a minute later.
 const PROBE_REUSE_MS=60_000;
 // So is an answer that found no sign-in where the harness still runs (authenticated null) and the person signs in with the
-// harness's own CLI: OpenCode with no provider connected, a Cursor or Grok sign-in Trebell could not read. Such a sign-in then shows
-// at the next poll. Codex's null means its model provider needs no OpenAI sign-in, and Antigravity's that a session checks it.
-const SIGN_IN_READ_BY_PROBE=new Set(["cursor","grok","opencode"]);
+// harness's own CLI: OpenCode with no provider connected, a Cursor, Grok or Claude Code sign-in Trebell could not read (Claude
+// Code's `auth status` did not answer). Such a sign-in then shows at the next poll. Codex's null means its model provider needs no
+// OpenAI sign-in, and Antigravity's that a session checks it.
+const SIGN_IN_READ_BY_PROBE=new Set(["claude","cursor","grok","opencode"]);
 const keptProbeAnswer=value=>Boolean(value?.available)&&!(value.authenticated==null&&SIGN_IN_READ_BY_PROBE.has(value.kind));
 // A harness failure's message, with the advice of a probe answer that the harness cannot run or is not signed in after it ('Run
 // `claude auth login` and try again.'): the harness's own words stay. A ready answer, or advice the message already has, adds none.
@@ -709,9 +710,17 @@ export class AgentRuntimeManager{
     if(!versionResult.ok)return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:Boolean(def.managed),binary:command,message:runtimeProbeFailure(def,versionResult)};
     let authenticated=true,account=null,message="Ready";
     if(instance.kind==="claude"){
-      const auth=await this.#run(instance,["auth","status"],{timeoutMs:8000,environmentId});
-      try{account=JSON.parse(auth.stdout||"{}");authenticated=Boolean(account.loggedIn)}catch{authenticated=auth.ok}
-      if(!authenticated)message="Claude Code is not authenticated. Run `claude auth login` and try again.";
+      // `claude auth status` prints {"loggedIn":…} (exiting 1 when signed out). A check that printed nothing, or was cut off before it
+      // printed that (it timed out under load or over a slow link, did not launch, or was killed), leaves the sign-in unknown, as an
+      // unread Cursor or Grok sign-in is: it never tells a signed-in person to sign in, and the answer is not kept.
+      const auth=await this.#run(instance,["auth","status"],{timeoutMs:8000,environmentId}),said=String(auth.stdout||"").trim();
+      let answer=null;try{answer=JSON.parse(said)}catch{}
+      if(answer&&typeof answer==="object"){account=answer;authenticated=Boolean(answer.loggedIn)}
+      else if(!said||auth.error||auth.code===null)authenticated=null;
+      // A CLI that answers in words: its exit code says.
+      else authenticated=auth.ok;
+      if(authenticated===false)message="Claude Code is not authenticated. Run `claude auth login` and try again.";
+      else if(authenticated==null)message="Claude Code is installed, but Trebell could not verify its authentication status.";
     }else if(instance.kind==="cursor"){
       let about=await this.#run(instance,["about","--format","json"],{timeoutMs:8000,environmentId});
       const unsupported=/unknown (?:option|argument)|unexpected argument|unrecognized (?:option|argument)/i.test(String(about.stdout||"")+"\n"+String(about.stderr||""));
