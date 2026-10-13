@@ -137,7 +137,8 @@ async function claudeFixture(t,where){
 // A Grok Build ACP agent as a remote environment's spawnArgv starts it, over the same JSON lines a real one speaks. It refuses
 // session/new while signedIn is false (ACP auth_required, as a signed-out Grok does) and with newError when that is set, answers
 // session/load with a missing session while lostLoad is set, and, while holdPrompts is set, answers a prompt only once it is
-// cancelled, with an error.
+// cancelled, with an error. While holdStart (a promise) is set, session/new and session/load wait for it, as a harness that takes a
+// while to start; startsAsked counts them and prompts the prompts it got.
 function fakeGrokAgent(grok){
   const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.exitCode=null;
   // A process answers after the request is written, never inside the write.
@@ -151,13 +152,17 @@ function fakeGrokAgent(grok){
       if(message.id===undefined||!message.method)continue;
       const reply=result=>send({jsonrpc:"2.0",id:message.id,result}),fail=error=>send({jsonrpc:"2.0",id:message.id,error});
       if(message.method==="initialize")reply({protocolVersion:1,agentInfo:{name:"fixture",version:"1"},agentCapabilities:{loadSession:true}});
-      else if(message.method==="session/load")grok.lostLoad?fail({code:-32603,message:"Internal error",data:{message:"Session not found"}}):reply({});
-      else if(message.method==="session/new"){
-        if(grok.newError)fail(grok.newError);
-        else if(!grok.signedIn)fail({code:-32000,message:"Authentication required"});
-        else reply({sessionId:"grok-session-"+(++grok.sessions),models:{currentModelId:"grok-4.6",availableModels:[{modelId:"grok-4.6",name:"Grok 4.6"}]}});
+      else if(message.method==="session/load"||message.method==="session/new"){
+        grok.startsAsked++;
+        const answer=()=>{
+          if(message.method==="session/load")grok.lostLoad?fail({code:-32603,message:"Internal error",data:{message:"Session not found"}}):reply({});
+          else if(grok.newError)fail(grok.newError);
+          else if(!grok.signedIn)fail({code:-32000,message:"Authentication required"});
+          else reply({sessionId:"grok-session-"+(++grok.sessions),models:{currentModelId:"grok-4.6",availableModels:[{modelId:"grok-4.6",name:"Grok 4.6"}]}});
+        };
+        if(grok.holdStart)grok.holdStart.then(answer);else answer();
       }
-      else if(message.method==="session/prompt"){
+      else if(message.method==="session/prompt"){grok.prompts++;
         if(grok.holdPrompts){held=()=>fail({code:-32603,message:"Internal error",data:{message:"The prompt was aborted"}});continue}
         send({jsonrpc:"2.0",method:"session/update",params:{sessionId:message.params.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:"PELICAN"}}}});
         reply({stopReason:"end_turn"});
@@ -169,10 +174,10 @@ function fakeGrokAgent(grok){
   return child;
 }
 // A Grok Build profile on an SSH environment: probes run `grok --version` and `grok models` through executeArgv (launches), and
-// each session start launches the scripted agent through spawnArgv (harnessLaunches).
+// each session start launches the scripted agent through spawnArgv (harnessLaunches; children holds the processes).
 async function grokFixture(t){
   const root=await mkdtemp(join(tmpdir(),"trebell-recheck-grok-"));onCleanup(t,()=>rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100}));
-  const grok={signedIn:true,newError:null,lostLoad:false,holdPrompts:false,sessions:0,harnessLaunches:0},launches=[];
+  const grok={signedIn:true,newError:null,lostLoad:false,holdPrompts:false,holdStart:null,sessions:0,harnessLaunches:0,startsAsked:0,prompts:0,children:[]},launches=[];
   const profile={id:"ssh-recheck-grok",type:"ssh",cwd:"/srv/app"};
   const environments={
     get:id=>id===profile.id?profile:null,
@@ -182,7 +187,7 @@ async function grokFixture(t){
       if(args[0]==="models")return {exitCode:0,stdout:grok.signedIn?"You are logged in\n- grok-4.6\n":"Not logged in\n",stderr:""};
       return {exitCode:1,stdout:"",stderr:"unexpected command"};
     },
-    spawnArgv:()=>{grok.harnessLaunches++;return fakeGrokAgent(grok)},
+    spawnArgv:()=>{grok.harnessLaunches++;const child=fakeGrokAgent(grok);grok.children.push(child);return child},
   };
   const state=memoryState({activeEnvironmentId:profile.id,agentRuntime:"grok"});
   const manager=new AgentRuntimeManager({state,environments,platform:"linux",env:{PATH:"/usr/bin",HOME:join(root,"home")}});
@@ -431,5 +436,32 @@ for(const where of ["ssh","local"]){
     fx.auth.timedOut=false;
     const next=await fx.poll();
     assert.deepEqual([next.available,next.authenticated],[true,true]);
+  });
+}
+
+// A send waits for its thread's harness to start (here the harness process had exited, so the send starts it again and resumes the
+// conversation, which takes a while). An archive or a delete of the thread meanwhile ends the send where it waits, as Stop does: no
+// turn starts and no prompt reaches the harness for a thread the person put away, and the harness started for it is closed once up.
+for(const method of ["thread/archive","thread/delete"]){
+  test(`${method} while a send waits for the harness to start ends the send, and no prompt reaches the harness`,async t=>{
+    const fx=await grokFixture(t);
+    await fx.poll();
+    const {thread}=await fx.relay.rpc("thread/start",{cwd:"/srv/app"});
+    let release;fx.grok.holdStart=new Promise(resolve=>{release=resolve});onCleanup(t,()=>release());
+    fx.grok.children.at(-1).kill();await sleep(50);
+    const asked=fx.grok.startsAsked;
+    const sent=fx.relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Refactor the billing module"}]}).then(result=>({result}),error=>({error:error.message}));
+    for(const deadline=Date.now()+10_000;fx.grok.startsAsked===asked&&Date.now()<deadline;)await sleep(5);
+    assert.equal(fx.grok.startsAsked,asked+1,"the send waits for the harness to resume the conversation");
+    await fx.relay.rpc(method,{threadId:thread.id});
+    release();
+    assert.deepEqual(await sent,{error:"Stopped before the turn started."},"the send ends where it waited");
+    const harness=fx.grok.children.at(-1);
+    for(const deadline=Date.now()+8000;harness.exitCode===null&&Date.now()<deadline;)await sleep(20);
+    assert.notEqual(harness.exitCode,null,"the harness started for the thread put away is closed once it is up");
+    assert.equal(fx.grok.prompts,0,"no prompt reaches the harness");
+    assert.deepEqual(fx.relay.seen.filter(message=>message.method==="turn/started"&&message.params.threadId===thread.id),[],"no turn starts");
+    if(method==="thread/archive")assert.deepEqual(fx.threadStore.get(thread.id).turns,[],"the archived thread has no turn");
+    else assert.equal(fx.threadStore.get(thread.id),null);
   });
 }

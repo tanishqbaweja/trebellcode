@@ -1551,6 +1551,16 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     send.done=()=>{sends.delete(send);if(!sends.size&&waitingSends.get(threadId)===sends)waitingSends.delete(threadId)};
     sends.add(send);return send;
   }
+  // An archive or a delete ends the thread's sends still waiting for its harness, as Stop does: no turn starts in a thread the person
+  // put away. A harness start still running for it is closed once it is done, since no turn of that thread will run in it.
+  function endWaitingSends(threadId){
+    const id=String(threadId||"");if(!id)return;
+    for(const send of waitingSends.get(id)||[])send.interrupt();
+    sessionStarts.get(id)?.then(session=>{
+      const current=threadStore.get(id);
+      if(session&&sessions.get(id)===session&&(!current||current.archived)){sessions.delete(id);releaseSession(session,error=>log("Could not close the harness session of a thread put away: "+(error?.message||String(error))))}
+    },()=>{});
+  }
   async function sessionUnlessStopped(send,starting){
     if(!send)return starting;
     const session=await Promise.race([starting,send.stop.then(()=>null)]);
@@ -1689,6 +1699,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }
     if(method==="thread/delete"){
       const deletedThread=threadStore.get(params.threadId);
+      endWaitingSends(params.threadId);
       if(deletedThread?.runtime==="native")await nativeBackgroundProcesses.clean(params.threadId).catch(()=>{});
       endFailureWait(params.threadId);
       // Claude Code's delete closes its session, then removes the transcript: the relay closed that session too (closedSessions).
@@ -1934,7 +1945,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       return await nativeBackgroundProcesses.clean(thread.id);
     }
     // Archiving is not activity: the thread keeps its last-update time, so one brought back (an undo) takes its old place by recent activity.
-    if(method==="thread/archive"){endFailureWait(params.threadId);const live=sessions.get(params.threadId);if(live)await closeThreadSession(live,params.threadId).catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
+    if(method==="thread/archive"){endWaitingSends(params.threadId);endFailureWait(params.threadId);const live=sessions.get(params.threadId);if(live)await closeThreadSession(live,params.threadId).catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
     if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/unarchived",{threadId:params.threadId});return {thread}}
     if(method==="thread/fork"){
       const source=threadStore.get(params.threadId);if(!source)throw new Error("Thread not found");
@@ -2021,7 +2032,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const promptOptions={messageId:randomUUID(),agent:selectedAgent,...handoffDelivery(thread.id,turn.id,pending)};
       if(session instanceof NativeAgentSession&&Array.isArray(params.toolAllowlist)&&params.toolAllowlist.length)promptOptions.toolAllowlist=params.toolAllowlist.map(item=>String(item||"").trim()).filter(Boolean).slice(0,100);
       if(session instanceof NativeAgentSession)Object.assign(promptOptions,nativeGoalPromptOptions(turnGoal));
-      if(send?.stopped)return {turn:endStoppedTurn(thread.id,turn.id)};
+      // A thread deleted meanwhile has no turn left to end.
+      if(send?.stopped){if(!threadStore.get(thread.id))throw stoppedBeforeTurn();return {turn:endStoppedTurn(thread.id,turn.id)}}
       settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null,context,resend:claudeLostSessionResend({thread,turn,session,input,durable,promptOptions,excludeTurnId:turn.id})});
       return {turn};
     }
