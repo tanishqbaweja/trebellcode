@@ -97,3 +97,49 @@ test("tool rows name what each call did, and a write that failed is renamed in p
     await page.screenshot({path:join(shotsDir,"tool-activity-failed-write-dark-1280x800.png"),fullPage:true,animations:"disabled"});
   }finally{await harness.close()}
 });
+
+// A Native repository search answers with its hits grouped by file, as text: the opened row shows those lines as written.
+test("a repository search row opens to its hits grouped by file, not to the item's JSON",async({page})=>{
+  test.setTimeout(45_000);
+  const thread={id:"tool-search",name:"Search rows fixture",preview:"Where is the refresh",cwd:process.cwd(),model:"fixture-model",runtime:"cursor",status:{type:"idle"},createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[{id:"turn-1",status:"completed",items:[
+    {type:"userMessage",id:"user-1",content:[{type:"text",text:"Where is the refresh token rotated?"}]},
+    {type:"agentMessage",id:"assistant-1",text:"In `src/auth/token.js`."},
+  ]}]};
+  const harness=await startHarness(thread);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,thread});
+    await page.getByTestId("composer").fill("Who calls rotateRefreshToken in src?");await page.getByTestId("send").click();
+    await expect(page.locator(".user-bubble").last()).toContainText("Who calls rotateRefreshToken");
+    harness.push("turn/started",{turn:{id:"turn-2",status:"inProgress",startedAt:Date.now()/1000}});
+    const text=[
+      "3 matches in 2 files (path: src, glob: *.js); 2 shown with text, the rest by line number",
+      "src/auth/session.js",
+      "  1: import { rotateRefreshToken } from \"./token.js\";",
+      "  3:   refresh(token) { return rotateRefreshToken(token); }",
+      "src/auth/token.js",
+      "  +1 more at 1",
+    ].join("\n");
+    const search={type:"dynamicToolCall",id:"tool-search-1",namespace:"trebell_repo",tool:"search_code",arguments:{query:"rotateRefreshToken",path:"src",glob:"*.js"},status:"inProgress"};
+    harness.push("item/started",{turnId:"turn-2",item:search,startedAtMs:Date.now()});
+    harness.push("item/completed",{turnId:"turn-2",item:{...search,status:"completed",success:true,contentItems:[{type:"inputText",text}],rawOutput:text},completedAtMs:Date.now()});
+    const row=page.locator(".agent-block .tool-event").filter({has:page.locator("summary strong").getByText("Searched rotateRefreshToken in src",{exact:true})});
+    await expect(row.locator("summary em")).toHaveText("done");
+    await row.locator("summary").click();
+    const output=row.locator(".tool-event-body pre");
+    await expect(output).toHaveCount(1);
+    await expect.poll(()=>output.textContent()).toBe(text);
+    await expect(row.locator(".tool-json")).toHaveCount(0);
+    const reply={type:"agentMessage",id:"assistant-live",text:"`SessionManager.refresh` in src/auth/session.js calls it."};
+    harness.push("item/started",{turnId:"turn-2",item:reply,startedAtMs:Date.now()});
+    harness.push("item/completed",{turnId:"turn-2",item:{...reply,status:"completed"},completedAtMs:Date.now()});
+    harness.push("turn/completed",{turn:{id:"turn-2",status:"completed",completedAt:Date.now()/1000}});
+    await expect(page.locator(".assistant-message-text").last()).toContainText("calls it");
+    // The ended turn keeps the row, open or opened again, with the same lines.
+    await expect(row.locator("summary em")).toHaveText("done");
+    if(!(await row.evaluate(element=>element.open)))await row.locator("summary").click();
+    await expect.poll(()=>row.locator(".tool-event-body pre").textContent()).toBe(text);
+    await expect(row.locator(".tool-json")).toHaveCount(0);
+    await page.screenshot({path:join(shotsDir,"tool-activity-search-rows-dark-1280x800.png"),fullPage:true,animations:"disabled"});
+  }finally{await harness.close()}
+});

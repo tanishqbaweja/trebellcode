@@ -99,6 +99,23 @@ test("a kept row holds bounded text: a command's output its end, other text its 
   assert.equal(restoredRow(small),small);
 });
 
+test("a Trebell tool that answered with text shows that text as its output, and a kept row keeps the text's start",()=>{
+  const text="2 matches in 1 file (path: src, glob: *.js)\nsrc/auth/session.js\n  1: import { rotateRefreshToken } from \"./token.js\";\n  3:   refresh(token) { return rotateRefreshToken(token); }";
+  const search={id:"native-search",type:"dynamicToolCall",namespace:"trebell_repo",tool:"search_code",arguments:{query:"rotateRefreshToken",path:"src",glob:"*.js"},status:"completed",success:true,contentItems:[{type:"inputText",text}],rawOutput:text};
+  const row=activityRow(search,{turnId:"t1"});
+  assert.equal(row.title,"Searched rotateRefreshToken in src");
+  assert.equal(row.output,text,"the expanded row shows the grouped lines as written, not inside the item's JSON");
+  assert.equal(restoredRow(row),row);
+  // A result object keeps the JSON view, and another harness's tool keeps its own rendering.
+  assert.equal(activityRow({...search,rawOutput:{query:"x",data:[]}}).output,"");
+  assert.equal(activityRow({...search,namespace:"agent",tool:"Grep"}).output,"");
+  // Text that is not a command's output keeps its start when the row is kept, where a search's counts and first hits are.
+  const long=activityRow({...search,rawOutput:"HEAD"+"y".repeat(RESTORED_TEXT_LIMIT)+"TAIL"});
+  const kept=restoredRow(long);
+  assert.ok(kept.output.startsWith("HEAD"));assert.ok(kept.output.endsWith("\n… 8 more characters"));
+  assert.equal(kept.output.split("\n")[0].length,RESTORED_TEXT_LIMIT);
+});
+
 test("live rows merge the same way in the list and in the record a card is sealed from",()=>{
   const started=activityRow({id:"c",type:"commandExecution",command:"npm test",status:"inProgress"},{turnId:"t1"});
   assert.equal(mergeLiveRow(null,started,{phase:"started"}),started);

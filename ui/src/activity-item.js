@@ -34,7 +34,10 @@ export function activityRow(item={},{turnId=null}={}){
   if(type==="contextCompaction")title="Compacting context";
   if(type==="enteredReviewMode")title="Reviewing changes";
   if(type==="exitedReviewMode")title="Finished review";
-  const output=type==="commandExecution"?String(item.aggregatedOutput??item.output??""):"";
+  // A command's output, or the text a Trebell tool answered with (Native's repository searches answer with their hits
+  // grouped by file), which the expanded row shows as written instead of inside the item's JSON.
+  const output=type==="commandExecution"?String(item.aggregatedOutput??item.output??"")
+    :type==="dynamicToolCall"&&String(item.namespace||"").startsWith("trebell_")&&typeof item.rawOutput==="string"?item.rawOutput:"";
   // Codex and the relay mark a running item "inProgress"; the timeline calls it running, as plan steps already do. A command
   // that exited non-zero reads as failed whichever harness ran it.
   const status=activityItemStatus(item);
@@ -68,7 +71,9 @@ function cappedValue(value,depth=0){
 export function restoredRow(row){
   if(!row||typeof row!=="object")return row;
   const text=typeof row.output==="string"?row.output:"";
-  const output=text.length>RESTORED_TEXT_LIMIT?"… "+(text.length-RESTORED_TEXT_LIMIT).toLocaleString("en-US")+" earlier characters not shown\n"+text.slice(-RESTORED_TEXT_LIMIT):row.output;
+  const output=text.length<=RESTORED_TEXT_LIMIT?row.output
+    :row.kind==="commandExecution"?"… "+(text.length-RESTORED_TEXT_LIMIT).toLocaleString("en-US")+" earlier characters not shown\n"+text.slice(-RESTORED_TEXT_LIMIT)
+    :cappedText(text);
   const raw=cappedValue(row.raw);
   return output===row.output&&raw===row.raw?row:{...row,output,raw};
 }
