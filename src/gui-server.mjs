@@ -2619,6 +2619,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       let body=null;
       try{
         body=await readJsonBody(req);
+        // The files of a thread whose turn runs (in any window) stay as they are: the turn is working on them, and its conversation
+        // could not be rewound with them (Edit from here restores the files first).
+        if(body.threadId&&agentThreads.getMetadata(String(body.threadId))?.status?.type==="active")return json(res,409,{error:"Stop the running turn first."});
         const result=await checkpoints.restore(body.id,{threadId:body.threadId||null});recordCheckpointTrace("checkpoint.restored","completed",result.checkpoint,{checkpointId:body.id,threadId:body.threadId||null});
         return json(res,200,result);
       }catch(error){

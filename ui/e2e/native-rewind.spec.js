@@ -23,8 +23,9 @@ async function freePort(){
 // the files never go back), that turn's file checkpoint, and the page open on the thread. restoreError fails the checkpoint restore
 // with that message, revertError has the harness refuse the rewind (thread/revert) with that one, and hold, when given, keeps a new
 // turn running until it resolves. nativeDialogs notes every browser dialog (and dismisses it): the app asks in its own.
-// openWindow(other) opens the same thread in another window of the app, on the same relay.
-async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,worktree=true}={}){
+// openWindow(other) opens the same thread in another window of the app, on the same relay. holdNotices ({on,held}) slows the first
+// window's link: while on, the relay's notices to it wait in held (each a function that delivers it).
+async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,worktree=true,holdNotices=null}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-rewind-")),home=join(root,"home"),repo=join(root,worktree?"managed-worktree":"native-project");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
   state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
@@ -45,7 +46,7 @@ async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,
   // The light and dark toggle's saved setting stays in the fixture, so the shared e2e server keeps its own.
   const saved={};
   const fixture={thread,threadStore,checkpoint,restoreBody:null,nativeDialogs:[],openWindow,async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true})}};
-  async function openWindow(page){
+  async function openWindow(page,{holdNotices=null}={}){
     await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:{[thread.id]:uiMeta}})}));
     await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["gpt-5.6"],metadata:{provider:"agentrouter",models:[{id:"gpt-5.6",name:"GPT-5.6",provider:"agentrouter",agent:"Trebell Native"}]}})}));
@@ -62,15 +63,16 @@ async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,
     // How many of the app's questions this window has shown, so asking twice can be told from asking once.
     await page.addInitScript(()=>{window.__questionsShown=0;new MutationObserver(records=>{for(const record of records)for(const node of record.addedNodes)if(node.matches?.("dialog.inspector-text-prompt"))window.__questionsShown++}).observe(document,{childList:true,subtree:true})});
     page.on("dialog",dialog=>{fixture.nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
-    if(revertError)await page.routeWebSocket(/\/api\/agent\/ws/,ws=>{
+    if(revertError||holdNotices)await page.routeWebSocket(/\/api\/agent\/ws/,ws=>{
       const server=ws.connectToServer();
-      ws.onMessage(message=>{let parsed=null;try{parsed=JSON.parse(String(message))}catch{}if(parsed?.method==="thread/revert"){ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:revertError}}));return}server.send(message)});
+      ws.onMessage(message=>{let parsed=null;try{parsed=JSON.parse(String(message))}catch{}if(revertError&&parsed?.method==="thread/revert"){ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:revertError}}));return}server.send(message)});
+      if(holdNotices)server.onMessage(message=>{let parsed=null;try{parsed=JSON.parse(String(message))}catch{}if(holdNotices.on&&parsed?.method&&parsed.id==null){holdNotices.held.push(()=>ws.send(message));return}ws.send(message)});
     });
     await page.goto("/");
     const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native managed rewind"]')});await expect(row).toBeVisible({timeout:10_000});await row.locator(".thread-main").click();
     await expect(page.getByText("Rewind this Native work",{exact:true})).toBeVisible({timeout:10_000});await expect(messageEdit(page)).toBeVisible();
   }
-  await openWindow(page);
+  await openWindow(page,{holdNotices});
   return fixture;
 }
 // The light and dark toggle in the header, or its row in More actions where the header folded it away.
@@ -211,6 +213,31 @@ test("a turn started while Edit from here asks is refused once confirmed, and no
     await expect(page.locator(".user-row").first()).toContainText("Rewind this Native work");await expect(page.getByText("Native work changed files.",{exact:true})).toBeVisible();
     await shoot(page,"native-rewind-turn-started-while-asking",{before:async()=>{if(!await failure.isVisible())await messageEdit(page).click();await expect(failure).toContainText("Stop the running turn first.")}});
   }finally{release();await other.close().catch(()=>{});await fixture.close()}
+});
+
+// The same when this window has not heard of the other window's turn yet (a slow link): the harness is asked before any file goes
+// back, so no file is restored under the turn that runs, and the conversation stays as it was.
+test("a turn another window started, whose notice has not reached this window yet, gets no files restored under it when Edit from here is confirmed",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  let release=()=>{};const hold=new Promise(resolve=>{release=resolve});
+  const holdNotices={on:false,held:[]};
+  const fixture=await rewindFixture(page,{hold,holdNotices});
+  const other=await page.context().newPage();
+  try{
+    const ask=question(page),failure=page.getByTestId("app-action-error");
+    await messageEdit(page).click();await expect(ask.locator("p")).toHaveText(WORKTREE_QUESTION);
+    // From here this window hears nothing more from the relay until the held notices are let through.
+    holdNotices.on=true;
+    await other.setViewportSize({width:1280,height:800});await fixture.openWindow(other);
+    await other.getByTestId("composer").click();await other.keyboard.type("Keep working on the files",{delay:8});await other.keyboard.press("Enter");
+    await expect.poll(()=>fixture.threadStore.get(fixture.thread.id).status?.type,{timeout:10_000}).toBe("active");
+    await expect(page.locator(".stop-control")).toHaveCount(0);
+    await ask.getByRole("button",{name:"Edit from here",exact:true}).click();await expect(ask).toHaveCount(0);
+    await expect(failure).toContainText("Could not edit from this message: Stop the running turn first.");
+    expect({restore:fixture.restoreBody,turns:fixture.threadStore.get(fixture.thread.id).turns.length}).toEqual({restore:null,turns:2});
+    await expect(page.locator(".user-row").first()).toContainText("Rewind this Native work");await expect(page.getByText("Native work changed files.",{exact:true})).toBeVisible();
+  }finally{holdNotices.on=false;for(const send of holdNotices.held.splice(0))try{send()}catch{}release();await other.close().catch(()=>{});await fixture.close()}
 });
 
 // Files and conversation stay in step: a file restore that fails rewinds nothing, and says so beside the conversation it left as it

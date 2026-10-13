@@ -4654,10 +4654,14 @@ export default function App(){
         :", and this message comes back to the composer to edit."),{confirm:"Edit from here"});
     }finally{editFromHereAskingRef.current=false}
     if(!confirmed||String(activeThreadRef.current?.id||"")!==String(threadId))return;
-    // A turn that started while the question was open, in this window or another, is refused the same way.
+    // A turn that started while the question was open, in this window or another, is refused the same way. Another window's turn may
+    // not have reached this one yet, so before any file goes back the harness is asked whether the thread runs (the server refuses a
+    // restore under a running turn too).
     if(turnRunsNow()){refuseWhileRunning();return}
     const client=rpcRef.current||rpc;
     if(isolatedWorktree){
+      const current=await client.request("thread/read",{threadId,includeTurns:false}).catch(()=>null);
+      if(current?.thread?.status?.type==="active"||turnRunsNow()){refuseWhileRunning();return}
       try{await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId}})}
       catch(error){showActionError(error,"Could not restore the files, so the conversation was not changed");return}
     }
