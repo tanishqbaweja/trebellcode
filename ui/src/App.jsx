@@ -992,6 +992,8 @@ export default function App(){
   // projectRecords: the projects this window knows (the list at startup, then each project as it opens, changes or goes), so a thread still
   // opening is named by its project's record before that project opens.
   const [projectRecords,setProjectRecords]=useState([]);
+  // Counts the project choices applied (a project opened, a General chat started), so the start-up knows one came before it landed.
+  const projectChoiceSeqRef=useRef(0);
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [cloneRefreshError,setCloneRefreshError]=useState(""); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
   const [guardianDenials,setGuardianDenials]=useState([]); const [guardianBusy,setGuardianBusy]=useState("");
@@ -1699,7 +1701,7 @@ export default function App(){
     setProjectRecords(previous=>[project,...previous.filter(item=>item.id!==project.id)]);
     if(owns&&!owns())return project;
     if(String(previousProjectPath||"")!==String(path||"")||String(previousEnvironmentId||"")!==String(resolvedEnvironmentId||""))setGitInfo(null);
-    setProjectlessMode(false);setGeneralEnvironmentId(null);setProjectPath(path);
+    projectChoiceSeqRef.current++;setProjectlessMode(false);setGeneralEnvironmentId(null);setProjectPath(path);
     setCurrentProject(project);
     if(project&&activate)setSettings(prev=>({...prev,activeProjectId:project.id}));
     const scoped=project?.effectiveSettings||{};
@@ -1767,7 +1769,7 @@ export default function App(){
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
-      const switchSeqAtStart=runtimeSwitchSeqRef.current,appliedSeqAtStart=runtimeAppliedSeqRef.current,modelSeqAtStart=modelRefreshSeqRef.current;
+      const switchSeqAtStart=runtimeSwitchSeqRef.current,appliedSeqAtStart=runtimeAppliedSeqRef.current,modelSeqAtStart=modelRefreshSeqRef.current,projectChoiceAtStart=projectChoiceSeqRef.current;
       // The startup catalog is this load's to show while no harness switch or other model refresh has begun since it was asked for.
       const ownsModels=()=>runtimeSwitchSeqRef.current===switchSeqAtStart&&modelRefreshSeqRef.current===modelSeqAtStart;
       const settleModels=()=>{if(ownsModels()){modelsLoadingRef.current=false;setModelsLoading(false)}};
@@ -1802,10 +1804,13 @@ export default function App(){
       flushSync(()=>{
         setBootstrap(previous=>startup.keepLandedRuntime&&previous?.agentRuntime?previous:boot);
         // The startup catalog belongs to the runtime these settings resolve to: record its scope so the scope effect keeps it instead of loading it twice.
-        setSettings(prev=>{const next={...prev,...(state.settings||{})};if(startup.keepLandedRuntime){next.agentRuntime=prev.agentRuntime;next.agentRuntimeInstanceId=prev.agentRuntimeInstanceId}const runtime=next.agentRuntime||boot.agentRuntime||"codex";if(startup.applyCatalog)modelCatalogScopeRef.current=modelCatalogScope(runtime,next.modelProvider||boot.provider||DEFAULT_MODEL_PROVIDER);return next}); setRuntimeKnown(true); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
+        setSettings(prev=>{const next={...prev,...(state.settings||{})};if(startup.keepLandedRuntime){next.agentRuntime=prev.agentRuntime;next.agentRuntimeInstanceId=prev.agentRuntimeInstanceId}const runtime=next.agentRuntime||boot.agentRuntime||"codex";if(startup.applyCatalog)modelCatalogScopeRef.current=modelCatalogScope(runtime,next.modelProvider||boot.provider||DEFAULT_MODEL_PROVIDER);return next}); setRuntimeKnown(true); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
         setEnvironmentThemeCatalog(themeCatalog);
-        setProjectRecords(projectData.projects||state.projects||[]);setCurrentProject(initialProject);
-        setProjectPath(initialPath);
+        setProjectRecords(projectData.projects||state.projects||[]);
+        // A project the person opened (or a General chat they started) while Trebell was starting stays: the state this load read
+        // names the project open before it, and replaced theirs once it landed.
+        if(projectChoiceSeqRef.current!==projectChoiceAtStart)return;
+        setCurrentProject(initialProject);setProjectPath(initialPath);
         setPermissionMode(initialScoped.defaultPermissionMode||state.settings?.defaultPermissionMode||"supervised");
         setWorkspaceMode(initialScoped.defaultWorkspaceMode||state.settings?.defaultWorkspaceMode||"current");
         if(initialProject?.permissionMode)setPermissionMode(initialProject.permissionMode);
@@ -3320,7 +3325,7 @@ export default function App(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
     await newChat();
-    setProjectlessMode(true);setGeneralEnvironmentId(scratch.environmentId||null);setCurrentProject(null);setProjectPath(scratch.path);setGitInfo(null);setWorkspaceMode("current");
+    projectChoiceSeqRef.current++;setProjectlessMode(true);setGeneralEnvironmentId(scratch.environmentId||null);setCurrentProject(null);setProjectPath(scratch.path);setGitInfo(null);setWorkspaceMode("current");
     if(["files","diff","source"].includes(rightPanelTab)){setRightPanelTab("runtime");setRightPanelOpen(false);setRightPanelMaximized(false)}
     return scratch;
   }

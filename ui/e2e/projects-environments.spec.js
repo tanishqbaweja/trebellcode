@@ -1320,3 +1320,73 @@ test.describe("The General chat card",()=>{
     await expect(page.locator(".projects-page")).toHaveCount(0);
   });
 });
+
+test.describe("A choice made while Trebell is still starting",()=>{
+  // Trebell's first read of its saved state is held back, as on a slow start, while the person makes a choice: that read names
+  // the project open before, and once it lands the choice the person made stays.
+  async function startHeld(page,request){
+    await page.setViewportSize({width:1280,height:800});
+    await request.post("/api/settings",{data:BASE});
+    const boot=await (await request.get("/api/bootstrap")).json();
+    await request.post("/api/projects",{data:{path:boot.cwd,name:MAIN,activate:true}});
+    let release;const held=new Promise(resolve=>{release=resolve});
+    await page.route(/\/api\/state$/,async route=>{const response=await route.fetch();await held;return route.fulfill({response})},{times:1});
+    return {boot,release};
+  }
+  const crumbOf=page=>page.locator("header.workspace-header").first().locator(".project-crumb:not(.sidebar-reopen) span");
+  // Dark and light at 1280 and 900 wide, switched with the header's appearance toggle as a person switches them.
+  async function toggledShots(page,name){
+    for(const width of [1280,900]){
+      await page.setViewportSize({width,height:800});
+      for(const mode of MODES){
+        if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+        await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+        await page.screenshot({animations:"disabled",path:shots+`${name}-${mode}-${width}.png`});
+      }
+    }
+    await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
+    await page.setViewportSize({width:1280,height:800});
+  }
+
+  test("a project opened before the start-up lands stays open",async({page,request})=>{
+    const {boot,release}=await startHeld(page,request);
+    await request.post("/api/projects",{data:{path:join(boot.cwd,"ui"),name:"Picked Project"}});
+    await page.goto("/");
+    const composer=page.getByTestId("composer"),crumb=crumbOf(page);
+    await expect(composer).toHaveAttribute("placeholder","Starting Trebell Code…");
+    await openProjects(page);
+    await projectCard(page,"Picked Project").locator(".project-open").click();
+    await expect(crumb).toHaveText("Picked Project");
+    await expect(composer,"Trebell is still starting").toHaveAttribute("placeholder","Starting Trebell Code…");
+    release();
+    await expect(page.getByTestId("model-picker"),"the start-up has landed").toBeEnabled({timeout:15_000});
+    await expect(crumb,"the project the person opened").toHaveText("Picked Project");
+    expect(await nextStartProject(request),"the project the next start opens").toBe("Picked Project");
+    await toggledShots(page,"project-opened-while-starting");
+  });
+
+  test("a General chat started before the start-up lands keeps its own folder",async({page,request})=>{
+    const {release}=await startHeld(page,request);
+    await page.goto("/");
+    const composer=page.getByTestId("composer"),crumb=crumbOf(page);
+    await expect(composer).toHaveAttribute("placeholder","Starting Trebell Code…");
+    await openProjects(page);
+    const started=page.waitForResponse(response=>response.url().endsWith("/api/general-workspace")&&response.request().method()==="POST");
+    await page.locator(".general-chat-card").click();
+    const folder=(await (await started).json()).path;
+    await expect(crumb).toHaveText("No project");
+    release();
+    await expect(page.getByTestId("model-picker"),"the start-up has landed").toBeEnabled({timeout:15_000});
+    await expect(crumb).toHaveText("No project");
+    // A terminal opened now starts in the General chat's folder (the mock server has none, so the page's requests are answered here).
+    await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>{
+      if(route.request().method()!=="POST")return json(route,{sessions:[]});
+      const {cwd}=route.request().postDataJSON()||{};
+      return json(route,{session:{id:"general-terminal",name:"Terminal 1",cwd,running:true,createdAt:Date.now()}});
+    });
+    await page.getByTestId("terminal-toggle").click();
+    const drawer=page.getByTestId("drawer");
+    await drawer.getByRole("button",{name:"Create terminal"}).click();
+    await expect(drawer.locator(".terminal-foot"),"the terminal's folder").toContainText(folder);
+  });
+});
