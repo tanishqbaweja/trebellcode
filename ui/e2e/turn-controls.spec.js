@@ -558,3 +558,26 @@ for(const when of ["once the running thread is open","while the running thread o
     if(!when.startsWith("while"))await shoot(page,"failed-send-back-in-its-own-thread");
   }finally{await codex.close()}
 });
+
+// A Stop Codex is still carrying out (it answers the interrupt once the turn has stopped) has not ended the turn: the thread left and
+// opened again meanwhile still says Stopping, and the Stop pressed again there sends no second interrupt.
+test("a Stop still on its way reads Stopping after the thread is left and opened again, and a second press sends no second interrupt",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex slow stop",settings:{keybindingRules:[{command:"threadStop",key:"Ctrl+Alt+X"}]}});
+  try{
+    codex.holdTurns=true;codex.interruptDelayMs=20_000;
+    await sendTyped(page,"Count from one to forty, one number per line.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.start();turn.answer();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});
+    await stop(page).click();
+    await expect(stopping(page)).toBeVisible();await expect.poll(()=>codex.interrupts.length).toBe(1);
+    await newTask(page).click();await expectIdleNewTask(page);
+    await threadRow(page,"Codex slow stop").locator(".thread-main").click();
+    await expect(page.locator(".workspace-header")).toContainText("Codex slow stop");
+    await expect(stopping(page)).toBeVisible({timeout:10_000});await expect(stopping(page)).toBeDisabled();await expect(stop(page)).toHaveCount(0);
+    await shoot(page,"stopping-after-the-thread-is-opened-again");
+    await page.keyboard.press("Control+Alt+X");await page.waitForTimeout(500);
+    expect(codex.interrupts).toEqual([{threadId:codex.thread.id,turnId:turn.id}]);
+  }finally{await codex.close()}
+});

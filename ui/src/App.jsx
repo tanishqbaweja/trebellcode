@@ -1012,8 +1012,9 @@ export default function App(){
   // The draft and note of a send that failed while its thread was not shown, by thread, until the thread is opened again.
   const failedSendsRef=useRef(new Map());
   // The Stop on its way (stop()): the turn or send it is for, so a second press sends nothing more, and the thread it stops, whose
-  // Stop reads "Stopping…" until the turn has ended.
-  const stopKeyRef=useRef(null); const [stoppingThreadId,setStoppingThreadId]=useState(null);
+  // Stop reads "Stopping…" until the turn has ended. stopsSentRef keeps the turns a Stop was sent for until they end, for a thread
+  // left and opened again meanwhile (openThread).
+  const stopKeyRef=useRef(null); const [stoppingThreadId,setStoppingThreadId]=useState(null); const stopsSentRef=useRef(new Set());
   const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
   const [settings,setSettings]=useState(()=>({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:DEFAULT_MODEL_PROVIDER,...cachedAppearanceSettings()}));
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
@@ -2879,6 +2880,7 @@ export default function App(){
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});markThreadTurn(threadId,false);
       // A queued turn that ends without having started takes its send with it.
       if(completedTurnId&&pendingSendsRef.current.get(String(threadId||""))?.turnId===String(completedTurnId))pendingSendsRef.current.delete(String(threadId||""));
+      if(completedTurnId)stopsSentRef.current.delete(String(threadId||"")+"\0"+completedTurnId);
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
       // A failed Codex turn ends with its error (T3 Code); an active Codex goal goes on with a turn Codex starts itself.
       const codexFailure=agentRuntime==="codex"?codexTurnFailure(p.turn):null,codexGoalContinues=agentRuntime==="codex"&&isCurrent&&goal?.status==="active";
@@ -3505,7 +3507,10 @@ export default function App(){
     // The composer is held only for a send of the thread shown: another thread opened releases it, as a new task does (showNewTask).
     if(previousThreadId!==thread.id&&submittingRef.current){submittingRef.current=null;setSubmitting(false)}
     if(pendingSend?.view&&!submittingRef.current){submittingRef.current=pendingSend.view;setSubmitting(true)}
+    // A Stop already sent for the turn that still runs reads Stopping again, and a press sends no second one (stop()).
+    const stoppedTurnKey=resumedRunning&&resumedTurnId?String(thread.id)+"\0"+resumedTurnId:null;
     if(pendingSend?.stopped){stopKeyRef.current=pendingSend;setStoppingThreadId(String(thread.id))}
+    else if(stoppedTurnKey&&stopsSentRef.current.has(stoppedTurnKey)){stopKeyRef.current=stoppedTurnKey;setStoppingThreadId(String(thread.id))}
     // The composer's note goes with the view it was about: another thread shown, or this one opening after all, ends it; the thread
     // shown opening again (a reconnect) keeps a note about its failed send or about another thread that did not open.
     activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
@@ -4059,7 +4064,8 @@ export default function App(){
   function interruptStoppedSend(send,threadId,turnId){
     if(!send?.stopped||send.interrupted||!turnId||send.threadId!==String(threadId||""))return;send.interrupted=true;
     if(stopKeyRef.current===send)stopKeyRef.current=send.threadId+"\0"+turnId;
-    rpcRef.current?.request("turn/interrupt",{threadId,turnId}).catch(error=>{if(String(activeThreadRef.current?.id||"")===send.threadId){stopKeyRef.current=null;setStoppingThreadId(null)}showActionError(error,"Could not stop turn")});
+    const sentKey=send.threadId+"\0"+turnId;stopsSentRef.current.add(sentKey);
+    rpcRef.current?.request("turn/interrupt",{threadId,turnId}).catch(error=>{stopsSentRef.current.delete(sentKey);if(String(activeThreadRef.current?.id||"")===send.threadId){stopKeyRef.current=null;setStoppingThreadId(null)}showActionError(error,"Could not stop turn")});
   }
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false}={}){
     assertTurnModel(modelId);
@@ -4557,8 +4563,9 @@ export default function App(){
     }
     if(pendingSend)pendingSend.stopped=true;
     const interruptNow=Boolean(turnId&&(!pendingSend||pendingSend.startedTurnId===String(turnId))||pendingSend?.requested&&agentRuntime!=="codex");if(pendingSend&&interruptNow)pendingSend.interrupted=true;
+    const sentKey=rpc&&threadId&&interruptNow&&turnId?threadId+"\0"+turnId:null;if(sentKey)stopsSentRef.current.add(sentKey);
     try{if(rpc&&threadId&&interruptNow)await rpc.request("turn/interrupt",{threadId,...(turnId?{turnId}:{})})}
-    catch(error){if(stopKeyRef.current===stopKey){stopKeyRef.current=null;setStoppingThreadId(null)}throw error}
+    catch(error){if(sentKey)stopsSentRef.current.delete(sentKey);if(stopKeyRef.current===stopKey){stopKeyRef.current=null;setStoppingThreadId(null)}throw error}
     // A send stopped before its turn started runs on until it ends: its turn/completed, or the send ending without a turn.
     const ended=!pendingSend;
     if(runtimeCapabilities.nativeQueue&&queueMode==="native"){if(ended){setRunning(false);setActiveTurnId(null)}await loadNativeQueue(rpc,threadId);return}
