@@ -357,3 +357,19 @@ test("a turn's session handoff row comes before its steps: the card follows it, 
   const failed=[...messages,user("u3","t3"),handoff("h3","t3")];
   assert.deepEqual(trailers(failed,{turnInfo,cardTurnIds:["t3"],turnOrder:["t1","t2","t3"]}),{before:{},after:{h3:["card:t3","end:t3"]}});
 });
+
+test("a turn's heading names the model this window sent it with, between the harness and the mode",()=>{
+  const turnInfo={
+    [turnInfoKey("th","t1")]:{model:"Vision Mini",mode:permissionModeLabel("supervised"),status:"completed",durationMs:900},
+    [turnInfoKey("th","t2")]:{model:"Kestrel Deep",mode:permissionModeLabel("supervised"),status:"failed",durationMs:1200,error:"Boom"},
+  };
+  const messages=[user("u1","t1"),reply("a1","t1"),user("u2","t2")];
+  assert.equal(assistantRowDecorations(messages,{harnessLabel:"Codex",turnInfo,threadId:"th"}).get("a1").heading,"Codex · Vision Mini · Supervised");
+  // A turn that ended without a reply has the heading its reply would have had.
+  assert.equal(turnEndRows(messages,{harnessLabel:"Codex",turnInfo,threadId:"th"}).get("u2")[0].heading,"Codex · Kestrel Deep · Supervised");
+  // A history page keeps what this window sent the turn with; a window that did not send it knows the harness alone.
+  const merged=mergeTurnOutcomes(turnInfo,"th",[{id:"t1",status:"completed",durationMs:900,completedAt:100}]);
+  assert.equal(merged[turnInfoKey("th","t1")].model,"Vision Mini");
+  const reloaded=mergeTurnOutcomes({},"th",[{id:"t1",status:"completed",durationMs:900,completedAt:100}]);
+  assert.equal(assistantRowDecorations(messages,{harnessLabel:"Codex",turnInfo:reloaded,threadId:"th"}).get("a1").heading,"Codex");
+});

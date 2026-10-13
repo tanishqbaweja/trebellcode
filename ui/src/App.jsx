@@ -4104,7 +4104,7 @@ export default function App(){
       if(queued){pendingSend.turnId=String(turnId);pendingSend.view=null;pendingSend.message=null}
       else{if(pendingSends.get(pendingSend.threadId)===pendingSend)pendingSends.delete(pendingSend.threadId);if(turnStillRuns(result.turn))interruptStoppedSend(pendingSend,thread.id,turnId)}
       if(goalActivation)await activateCodexGoal(goalActivation);
-      if(turnId){const key=turnInfoKey(thread.id,turnId),mode=permissionModeLabel(permissionModeOverride||permissionMode);if(key&&mode)setTurnInfo(prev=>({...prev,[key]:{...prev[key],mode}}))}
+      if(turnId){const key=turnInfoKey(thread.id,turnId),mode=permissionModeLabel(permissionModeOverride||permissionMode),sentModel=modelMeta?.[modelId]?.name||compactModelLabel(modelId);if(key&&(mode||sentModel))setTurnInfo(prev=>({...prev,[key]:{...prev[key],...(sentModel?{model:sentModel}:{}),...(mode?{mode}:{})}}))}
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}if(shown()){setAttachments([]);setContextChips([])}return{thread,turnId};
     }catch(error){
       if(pendingSends.get(pendingSend.threadId)===pendingSend)pendingSends.delete(pendingSend.threadId);

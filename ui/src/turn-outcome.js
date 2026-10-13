@@ -140,6 +140,10 @@ export function turnOutcomePill(info){
   return {label:time?word+" · "+time:word,tone:status==="interrupted"?"warn":"err"};
 }
 
+// The heading over a turn's replies: the harness, then the model and the permission mode the turn was sent with, which only the
+// window that sent it knows (a reload names the harness alone).
+function turnHeading(harnessLabel,info){return harnessLabel?[harnessLabel,info?.model,info?.mode].filter(Boolean).join(" · "):""}
+
 // Per assistant message id: the heading its row shows (first reply of a turn) and the outcome pill (last reply of a
 // finished turn). Consecutive replies of one turn form a group; a user message in between starts a new group, a thought does not.
 export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=null,threadId=null}={}){
@@ -150,7 +154,7 @@ export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=nu
     const sameGroup=other=>other?.role==="assistant"&&(other.turnId||null)===turnId;
     const first=!sameGroup(list[index-1]),last=!sameGroup(list[index+1]);
     const info=turnId?(turnInfo?.[turnInfoKey(threadId,turnId)]||null):null;
-    const heading=first&&harnessLabel?[harnessLabel,info?.mode].filter(Boolean).join(" · "):"";
+    const heading=first?turnHeading(harnessLabel,info):"";
     const pill=last?turnOutcomePill(info):null;
     if(!heading&&!pill)continue;
     out.set(String(message.id),{heading,outcomeLabel:pill?.label||"",outcomeTone:pill?.tone||""});
@@ -192,7 +196,7 @@ function turnEndPlacement(messages=[],{harnessLabel="",turnInfo=null,threadId=nu
   const add=(key,turnId,{info,pill,note=""},index)=>{
     const row={
       turnId,
-      heading:harnessLabel?[harnessLabel,info.mode].filter(Boolean).join(" · "):"",
+      heading:turnHeading(harnessLabel,info),
       outcomeLabel:pill.label,outcomeTone:pill.tone,
       message:String(info.error||note||""),
       latest:Boolean(reorder)&&index>=lastUser&&(!card||card===turnId),

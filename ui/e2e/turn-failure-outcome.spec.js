@@ -105,7 +105,7 @@ test("a relay turn that failed without a reply says how it ended once the next t
     // The failed turn now ends with its outcome row: the heading its reply would have had, the pill, the failure's message.
     await expect(rows).toHaveCount(1);
     const row=rows.first();
-    await expect(row.getByTestId("assistant-heading")).toHaveText("Trebell Native · Supervised");
+    await expect(row.getByTestId("assistant-heading")).toHaveText("Trebell Native · GPT-5.6 · Supervised");
     await expect(row.getByTestId("turn-outcome")).toHaveText(/^failed · \d/);
     await expect(row.locator(".turn-outcome-message")).toHaveText(USAGE_LIMIT);
     // It sits between the failed turn's message and the next one, and the good turn keeps its pill under its reply.
@@ -176,7 +176,7 @@ test("Codex turns that failed or were stopped without a reply keep their outcome
     const failed=rows.filter({has:page.locator(".turn-outcome.tone-err")}),stopped=rows.filter({has:page.locator(".turn-outcome.tone-warn")});
     // Live, the time is the one this window measured; after a reload it is the harness's own.
     await expect(failed.getByTestId("turn-outcome")).toHaveText(/^failed · \d/);await expect(failed.locator(".turn-outcome-message")).toHaveText(shown);
-    await expect(failed.getByTestId("assistant-heading")).toHaveText("Codex · Supervised");
+    await expect(failed.getByTestId("assistant-heading")).toHaveText("Codex · Coding Fast · Supervised");
     await expect(stopped.getByTestId("turn-outcome")).toHaveText(/^stopped/);await expect(stopped.locator(".turn-outcome-message")).toHaveCount(0);
     const card=page.locator(".agent-block");const [cardBox,stoppedBox]=[await box(card),await box(stopped)];
     expect(stoppedBox.y).toBeGreaterThanOrEqual(cardBox.y+cardBox.height-1);
@@ -422,4 +422,41 @@ test("a relay wake turn that failed before any item keeps its row after a reload
     await expectBelow(userRow("What happened?"),rows.first());
     await page.screenshot({animations:"disabled",path:auditDir+"turn-failure-wake-first-dark-1600x980.png"});
   }finally{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+test("each reply's heading names the model its turn was sent with, through a model switch mid-thread",async({page})=>{
+  test.setTimeout(60_000);
+  const thread={id:"codex-model-heading",name:"Codex model heading",preview:"Two models",cwd:process.cwd(),status:{type:"idle"},model:"test/vision-mini",createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
+  const answer=text=>(turn,{emit,threadId,finish})=>{
+    emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});
+    const item={id:"agent-"+turn.id,type:"agentMessage",text};turn.items.push(item);
+    emit({method:"item/completed",params:{threadId,turnId:turn.id,item}});finish("completed");
+  };
+  const harness=await startCodexHarness(thread,[answer("Answer from the first model."),answer("Answer from the second model.")]);
+  try{
+    await routeCodexApp(page,harness,thread);
+    const models=[{id:"test/vision-mini",name:"Vision Mini",provider:"openai",agent:"Codex"},{id:"test/kestrel-deep",name:"Kestrel Deep",provider:"openai",agent:"Codex"}];
+    await page.route(/\/api\/models$/,route=>json(route,{models:models.map(model=>model.id),metadata:{provider:"openai",models}}));
+    // The light and dark toggle saves its setting in the page only.
+    const saved={};
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return json(route,saved)});
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await openThreadRow(page,"Codex model heading");
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker");
+    const choose=async name=>{await picker.click();await page.locator(".model-picker-menu").getByRole("button",{name:new RegExp(name)}).click();await expect(picker).toContainText(name)};
+    const send=async text=>{await composer.click();await page.keyboard.type(text,{delay:5});await page.keyboard.press("Enter")};
+    const heading=text=>page.locator(".history-assistant").filter({hasText:text}).getByTestId("assistant-heading");
+    await choose("Vision Mini");await send("First request");
+    await expect(heading("Answer from the first model.")).toHaveText("Codex · Vision Mini · Supervised",{timeout:10_000});
+    await choose("Kestrel Deep");await send("Second request");
+    await expect(heading("Answer from the second model.")).toHaveText("Codex · Kestrel Deep · Supervised",{timeout:10_000});
+    await expect(heading("Answer from the first model.")).toHaveText("Codex · Vision Mini · Supervised");
+    // The headings name what the turns were sent with.
+    expect(harness.calls.filter(call=>call.method==="turn/start").map(call=>call.params.model)).toEqual(["test/vision-mini","test/kestrel-deep"]);
+    for(const pass of ["dark","light"]){
+      if(pass==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await frames(page,3);await page.screenshot({animations:"disabled",path:`${auditDir}reply-heading-names-model-${pass}-${width}x800.png`})}
+      await page.setViewportSize({width:1280,height:800});
+    }
+  }finally{await harness.close()}
 });
