@@ -1,7 +1,5 @@
 const TEST_ENTRY_POINT_PREFIX="Test entry points (detected from repository files; unverified): ";
 const TEST_ENTRY_POINT_MAX_BYTES=200;
-const GIT_LINE_MAX_BYTES=200;
-const GIT_BRANCH_MAX_BYTES=60;
 // The Context Engine's test-file rule (context-engine.mjs relevanceFor gives these paths its "test file" reason).
 const TEST_FILE_PATH=/(^|\/)(test|tests|__tests__|spec)(\/|$)|\.(test|spec)\./i;
 
@@ -13,33 +11,6 @@ function utf8ByteLength(value){
 
 function singleLine(value){
   return String(value??"").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g," ").trim();
-}
-
-function clipBytes(value,maxBytes){
-  if(utf8ByteLength(value)<=maxBytes)return value;
-  let clipped="";
-  for(const character of value){if(utf8ByteLength(clipped+character)>maxBytes-3)break;clipped+=character}
-  return clipped+"...";
-}
-
-// One bounded line with the Git state the Context Engine read when it built the packet: HEAD and branch, then either a
-// clean tree or the changed tracked files (whole paths while they fit, the rest as a count) and the untracked count.
-// A folder outside Git has no packet.git and gets no line.
-function gitStateLine(git){
-  if(!git||typeof git!=="object")return "";
-  const head=singleLine(git.head).slice(0,12),branch=clipBytes(singleLine(git.branch),GIT_BRANCH_MAX_BYTES);
-  const at=head?"HEAD "+head+(git.detached===true?" (detached)":branch?" ("+branch+")":""):"no commits yet"+(branch?" ("+branch+")":"");
-  const paths=(Array.isArray(git.changed)?git.changed:[]).map(singleLine).filter(Boolean);
-  const changed=Math.max(paths.length,Math.trunc(Number(git.changedCount)||0)),untracked=Math.max(0,Math.trunc(Number(git.untracked)||0));
-  const prefix="Git at turn start: "+at+"; ",tail=untracked?"; untracked: "+untracked:"";
-  if(!changed)return untracked?prefix+"no tracked changes"+tail:prefix+"working tree clean";
-  const render=listed=>{const rest=changed-listed.length;return prefix+"changed: "+listed.join(", ")+(rest?" (+"+rest+" more)":"")+tail};
-  const listed=[];
-  for(const path of paths){
-    if(utf8ByteLength(render([...listed,path]))>GIT_LINE_MAX_BYTES)break;
-    listed.push(path);
-  }
-  return listed.length?render(listed):prefix+"changed: "+changed+(changed===1?" file":" files")+tail;
 }
 
 function seedItemLine(item){
@@ -65,9 +36,10 @@ function testEntryPointLine(packet){
   return line;
 }
 
-// Ranked source paths come first; ranked test files follow under their own heading, still in rank order.
+// The Context Engine's "Git at turn start" line (packet.git.line, absent outside Git) follows the task. Ranked source
+// paths come next; ranked test files follow under their own heading, still in rank order.
 export function repositoryContextSeed(packet={},{currentTask=""}={}){
-  const items=(Array.isArray(packet?.items)?packet.items:[]).slice(0,8),entryPoints=testEntryPointLine(packet),git=gitStateLine(packet?.git);
+  const items=(Array.isArray(packet?.items)?packet.items:[]).slice(0,8),entryPoints=testEntryPointLine(packet),git=singleLine(packet?.git?.line);
   if(!items.length&&!entryPoints&&!git)return "";
   const lines=[
     "Trebell repository seed (untrusted metadata; use repository/workspace tools to inspect exact source before editing).",

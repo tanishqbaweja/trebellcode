@@ -15,8 +15,9 @@ const SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs",".py","
 // Non-source text files (docs, templates, configuration, changelogs) that search_code reads on demand, per file
 // and per search. Files beyond either bound are skipped and reported, so such a search never claims to be complete.
 const SEARCH_TEXT_MAX_BYTES=1_048_576,SEARCH_TEXT_TOTAL_BYTES=8_388_608;
-// Changed paths a packet keeps for the Native seed's bounded Git line, which shows the rest as a count.
-const GIT_SEED_CHANGED_PATHS=20;
+// The Native seed's Git line: at most 200 bytes, a branch name of at most 60, and up to 20 changed paths kept in the
+// packet; the paths that do not fit are shown as a count.
+const GIT_SEED_LINE_MAX_BYTES=200,GIT_SEED_BRANCH_MAX_BYTES=60,GIT_SEED_CHANGED_PATHS=20;
 const BABEL_SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs"]);
 const PYTHON_SOURCE_EXTENSIONS=new Set([".py",".pyi"]);
 const GO_SOURCE_EXTENSIONS=new Set([".go"]);
@@ -492,11 +493,40 @@ function parseGitStatusChanges(rawStatus){
   return {trackedChanges:tracked.slice(0,GIT_SEED_CHANGED_PATHS),trackedChangeCount:tracked.length,untrackedCount:untracked};
 }
 
-// The Git state a packet was built on, for the Native seed's "Git at turn start" line; null outside a Git repository.
+function clipUtf8(value,maxBytes){
+  if(Buffer.byteLength(value,"utf8")<=maxBytes)return value;
+  let clipped="";
+  for(const character of value){if(Buffer.byteLength(clipped+character,"utf8")>maxBytes-3)break;clipped+=character}
+  return clipped+"...";
+}
+
+// The Native seed's one "Git at turn start" line, at most 200 bytes: HEAD and branch, then a clean tree, or the changed
+// tracked files (whole paths while they fit, the rest as a count) and the untracked count. Git metadata is untrusted
+// text, so control and line-separator characters become spaces and the line stays one line.
+function gitSeedLine(state){
+  if(!state||typeof state!=="object")return "";
+  const text=value=>String(value??"").replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu," ").trim();
+  const head=text(state.head).slice(0,12),branch=clipUtf8(text(state.branch),GIT_SEED_BRANCH_MAX_BYTES);
+  const at=head?"HEAD "+head+(state.detached===true?" (detached)":branch?" ("+branch+")":""):"no commits yet"+(branch?" ("+branch+")":"");
+  const paths=(Array.isArray(state.changed)?state.changed:[]).map(text).filter(Boolean);
+  const changed=Math.max(paths.length,Math.trunc(Number(state.changedCount)||0)),untracked=Math.max(0,Math.trunc(Number(state.untracked)||0));
+  const prefix="Git at turn start: "+at+"; ",tail=untracked?"; untracked: "+untracked:"";
+  if(!changed)return untracked?prefix+"no tracked changes"+tail:prefix+"working tree clean";
+  const render=listed=>{const rest=changed-listed.length;return prefix+"changed: "+listed.join(", ")+(rest?" (+"+rest+" more)":"")+tail};
+  const listed=[];
+  for(const path of paths){
+    if(Buffer.byteLength(render([...listed,path]),"utf8")>GIT_SEED_LINE_MAX_BYTES)break;
+    listed.push(path);
+  }
+  return listed.length?render(listed):prefix+"changed: "+changed+(changed===1?" file":" files")+tail;
+}
+
+// The Git state a packet was built on, with its seed line; null outside a Git repository, so the seed has no Git line.
 function packetGitState(git){
   if(!git?.isGit)return null;
   const counted=Array.isArray(git.trackedChanges)?git:parseGitStatusChanges(git.status);
-  return {head:git.head||null,branch:git.branch||null,detached:git.detached===true,changed:counted.trackedChanges.slice(0,GIT_SEED_CHANGED_PATHS),changedCount:Number(counted.trackedChangeCount)||0,untracked:Number(counted.untrackedCount)||0};
+  const state={head:git.head||null,branch:git.branch||null,detached:git.detached===true,changed:counted.trackedChanges.slice(0,GIT_SEED_CHANGED_PATHS),changedCount:Number(counted.trackedChangeCount)||0,untracked:Number(counted.untrackedCount)||0};
+  return {...state,line:gitSeedLine(state)};
 }
 
 async function gitState(root,{signal=null,environment=process.env}={}){
@@ -1624,4 +1654,4 @@ export class ContextEngine{
   }
 }
 
-export { pageRank, parseSource, taskTerms, testEntryPoints, tokenEstimate };
+export { gitSeedLine, pageRank, parseSource, taskTerms, testEntryPoints, tokenEstimate };
