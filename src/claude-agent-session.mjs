@@ -5,6 +5,7 @@ import { fileUriPath } from "./file-uri.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
+import { SessionRefusalError } from "./session-refusal.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
 // One long-lived streaming-input Claude Code query per thread, as T3 Code's ClaudeAdapterV2 runs it: every prompt is an SDK
@@ -290,9 +291,10 @@ export class ClaudeAgentSession{
   // onDelivered: told once Claude Code has the prompt: queued to a process whose session started, or that process reporting its
   // session (init) after taking the prompt in.
   async prompt(parts,{messageId=null,agent=null,onDelivered=null}={}){
-    if(this.closed)throw new Error("Claude session is closed");
+    // Trebell's own refusals (SessionRefusalError): Claude Code is not asked, so it did not fail.
+    if(this.closed)throw new SessionRefusalError("Claude session is closed");
     // A prompt still opening its query counts as running, so two prompts never share one turn.
-    if(this.promptOpening||(this.turn&&!this.turn.settled))throw new Error("Claude Code is still running a turn. Stop it or wait for it to finish first.");
+    if(this.promptOpening||(this.turn&&!this.turn.settled))throw new SessionRefusalError("Claude Code is still running a turn. Stop it or wait for it to finish first.");
     const content=claudeUserContent(parts);
     this.promptOpening=true;
     try{
@@ -407,7 +409,7 @@ export class ClaudeAgentSession{
       catch{await this.#closeLive(live)}
     }else if(live&&!live.closed){
       // Background agents and shells run inside the CLI process: a new launch policy would end them.
-      if(live.backgroundTasks.size)throw new Error(CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE);
+      if(live.backgroundTasks.size)throw new SessionRefusalError(CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE);
       await this.#closeLive(live);
     }
     return this.#openLive(this.#queryKey());

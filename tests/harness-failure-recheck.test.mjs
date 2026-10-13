@@ -1,9 +1,9 @@
 // A harness probe answer is kept for a minute (PROBE_REUSE_MS), and the 5-s poll and the relay's session start read it. A harness
 // that fails where it runs in that minute is asked again at once, so a sign-out made outside Trebell (`claude auth logout` in the
-// person's own terminal) shows at the next poll and the failure carries the probe's advice beside the harness's own message. A turn
-// the person or Trebell ends first (a Stop, the thread's next turn, an archive or a delete) does not wait for that check. Stubbed
-// probes (a remote environment's executeArgv, a local runFn) and scripted harnesses only: no real harness is started, signed in or
-// signed out.
+// person's own terminal) shows at the next poll and the failure carries the probe's advice beside the harness's own message. Only an
+// error from the harness asks, and a turn the person or Trebell ends first (a Stop, the thread's next turn, an archive or a delete)
+// does not wait for that check. Stubbed probes (a remote environment's executeArgv, a local runFn) and scripted harnesses only: no
+// real harness is started, signed in or signed out.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -31,10 +31,10 @@ function onCleanup(t,step){
   if(!stack){stack=[];cleanups.set(t,stack);t.after(async()=>{let failure=null;for(const next of stack.reverse()){try{await next()}catch(error){failure??=error}}if(failure)throw failure})}
   stack.push(step);
 }
-// The settings both the runtime manager and the relay read, and the thread metadata the relay keeps.
+// The settings both the runtime manager and the relay read, and the thread metadata the relay keeps (and a delete removes).
 function memoryState(settings){
   const meta=new Map();
-  return {settings:()=>({...settings}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
+  return {settings:()=>({...settings}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},removeThreadMeta:id=>meta.delete(id)};
 }
 async function startRelay(t,options){
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{version:"test",...options});
@@ -362,4 +362,36 @@ test("a turn a second window starts while an earlier failed turn waits on its re
   const failed=(await fx.relay.next(message=>message.method==="turn/completed"&&message.params.turn?.id===second)).params.turn;
   assert.equal(failed.error.message,`${CLAUDE_EXIT}. ${CLAUDE_ADVICE}`,"the new turn's failure carries the check's advice");
   assert.equal(fx.launches.length,asked+2,"the two failures shared one check");
+});
+
+// Closing a thread's session is the relay's doing: an ACP prompt that the close ends rejects, but the harness did not fail.
+for(const method of ["thread/archive","thread/delete"]){
+  test(`${method} of a thread whose ACP turn runs asks the harness nothing`,async t=>{
+    const fx=await grokFixture(t);
+    await fx.poll();
+    const thread=(await fx.relay.rpc("thread/start",{cwd:"/srv/app"})).thread;
+    fx.grok.holdPrompts=true;
+    const turnId=(await fx.relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello"}]})).turn.id;
+    await sleep(100);
+    const asked=fx.launches.length;
+    await fx.relay.rpc(method,{threadId:thread.id});
+    if(method==="thread/archive")assert.ok((await fx.relay.next(message=>message.method==="turn/completed"&&message.params.turn?.id===turnId)).params.turn.completedAt,"the archive ended the turn at once");
+    await sleep(200);
+    assert.deepEqual(fx.launches.slice(asked),[],`${method} asked Grok nothing`);
+  });
+}
+
+test("a send that Trebell's own Claude Code session refuses while a turn runs asks Claude Code nothing",async t=>{
+  const fx=await claudeFixture(t,"local");
+  await fx.poll();
+  const {thread}=await fx.relay.rpc("thread/start",{cwd:fx.root});
+  let answer;fx.claude.replyHold=new Promise(resolve=>{answer=resolve});onCleanup(t,()=>answer());
+  const running=(await fx.relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello"}]})).turn.id;
+  await sleep(50);
+  // A second window sends on the running thread (or restart recovery races a send): Trebell's session refuses it itself.
+  const asked=fx.launches.length,{turn,shown}=await fx.relay.turn(thread.id,"From another window");
+  assert.deepEqual([turn.status,turn.error.message,shown],["failed","Claude Code is still running a turn. Stop it or wait for it to finish first.",turn.error.message]);
+  assert.deepEqual(fx.launches.slice(asked),[],"Trebell's own refusal is no failure of Claude Code");
+  answer();
+  assert.equal((await fx.relay.next(message=>message.method==="turn/completed"&&message.params.turn?.id===running)).params.turn.status,"completed");
 });

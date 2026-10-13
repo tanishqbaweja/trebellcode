@@ -15,6 +15,7 @@ import {
 } from "../src/claude-agent-session.mjs";
 import { createClaudeRepositoryMcp } from "../src/claude-repository-tools.mjs";
 import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
+import { isSessionRefusal } from "../src/session-refusal.mjs";
 
 const SOURCE="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -109,7 +110,8 @@ test("Claude refuses a second prompt while one is opening or running, so two pro
   const {sdk,calls}=fakeClaude();
   const claude=session(sdk);await claude.start();
   const first=claude.prompt([{type:"text",text:"one"}]);
-  await assert.rejects(()=>claude.prompt([{type:"text",text:"two"}]),/still running a turn/);
+  // Trebell's own refusal (SessionRefusalError): Claude Code was not asked, so the relay asks it nothing.
+  await assert.rejects(()=>claude.prompt([{type:"text",text:"two"}]),error=>isSessionRefusal(error)&&/still running a turn/.test(error.message));
   assert.equal((await first).stopReason,"end_turn");
   assert.equal(calls[0].inputs.length,1);
   assert.equal((await claude.prompt([{type:"text",text:"three"}])).stopReason,"end_turn");
@@ -572,7 +574,7 @@ test("Claude refuses a launch-policy change that would end running background wo
   calls[0].out.push({type:"system",subtype:"background_tasks_changed",tasks:[{task_id:"bg-1",description:"npm run watch"}]});
   await tick();
   claude.setModel("opus");
-  await assert.rejects(()=>claude.prompt([{type:"text",text:"switch"}]),error=>error.message===CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE);
+  await assert.rejects(()=>claude.prompt([{type:"text",text:"switch"}]),error=>isSessionRefusal(error)&&error.message===CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE);
   assert.equal(calls.length,1);
 });
 

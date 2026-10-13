@@ -7,6 +7,7 @@ import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { withProbeAdvice } from "./agent-runtime-manager.mjs";
 import { fileUri } from "./file-uri.mjs";
 import { isHarnessSessionLost } from "./harness-session-lost.mjs";
+import { isSessionRefusal } from "./session-refusal.mjs";
 import { threadHistoryHandoff } from "./thread-history-handoff.mjs";
 import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
@@ -944,10 +945,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // (AgentRuntimeManager.recheck): the probe answer it started on is kept for a minute and may be one it no longer gives, as after a
   // `claude auth logout` in the person's own terminal. That check's answer replaces the kept one, so the next poll and the next
   // session start read it. harness: the runtime profile and environment a session runs in (sessionHarnesses); Trebell Native has
-  // none. A conversation the harness lost is no such failure (the harness ran to say so), nor is one that the relay's close or reset
-  // caused, and closeSessions stops waiting for a check still running (resetWaits).
-  const sessionHarnesses=new WeakMap(),resetWaits=new Set();
-  const failedWhereItRuns=(harness,error,generation)=>Boolean(harness)&&typeof runtimeManager.recheck==="function"&&!isHarnessSessionLost(error)&&!closing&&generation===sessionGeneration;
+  // none. Only an error from the harness counts: a conversation the harness lost is no such failure (the harness ran to say so), nor
+  // is a prompt that Trebell's own session refused (SessionRefusalError), nor a turn that the relay ended by closing its session
+  // (closeThreadSession) or by a close or reset of the relay, and closeSessions stops waiting for a check still running (resetWaits).
+  const sessionHarnesses=new WeakMap(),resetWaits=new Set(),closedSessions=new WeakSet();
+  const failedWhereItRuns=(harness,error,generation,session=null)=>Boolean(harness)&&typeof runtimeManager.recheck==="function"&&!isHarnessSessionLost(error)&&!isSessionRefusal(error)&&!(session&&closedSessions.has(session))&&!closing&&generation===sessionGeneration;
+  // The relay closes a thread's session whose turn may still run (an archive, a delete, a profile switch): whatever error the harness
+  // ends that prompt with, the relay caused it.
+  function closeThreadSession(session){closedSessions.add(session);return session.close()}
   // The message a harness failure shows: the harness's own, and after it the advice of an answer that the harness cannot run or is
   // not signed in (withProbeAdvice); a check that still finds it ready leaves the message as it was.
   async function harnessFailureMessage(harness,error){
@@ -1301,7 +1306,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const fail=message=>{const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:turn.id,message});emit("turn/completed",{threadId:thread.id,turn:completed})};
       // A turn its harness failed asks the harness again before it ends (harnessFailureMessage); one the person stopped did not fail.
       const harness=sessionHarnesses.get(session);
-      if(stoppedTurns.get(session)===turn.id||!failedWhereItRuns(harness,error,generation))return fail(error.message);
+      if(stoppedTurns.get(session)===turn.id||!failedWhereItRuns(harness,error,generation,session))return fail(error.message);
       // Stop, the thread's next turn, an archive or a delete ends that wait at once with the harness's own message (failureWaits), so
       // no turn of the thread ends under a later one; the check goes on, and the next poll and session start read what it finds.
       const threadId=String(thread.id);let settle,refuse;const ended=new Promise((resolve,reject)=>{settle=resolve;refuse=reject});
@@ -1588,7 +1593,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
       const status=await runtimeManager.probe(target,{environmentId});if(!status.available)throw new Error(status.message||"The selected Claude profile is unavailable");
       if(status.authenticated===false)throw new Error("Sign in to the selected Claude profile before switching this thread.");
-      const existing=sessions.get(thread.id);if(existing){await existing.close().catch(()=>{});sessions.delete(thread.id)}
+      const existing=sessions.get(thread.id);if(existing){await closeThreadSession(existing).catch(()=>{});sessions.delete(thread.id)}
       const providerMeta={...(thread.providerMeta||{}),runtimeInstanceId:target.id};
       const updated=threadStore.update(thread.id,{runtimeInstanceId:target.id,providerMeta});
       emit("thread/runtimeInstance/updated",{threadId:thread.id,runtimeInstanceId:target.id,thread:updated});
@@ -1652,7 +1657,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const deletedThread=threadStore.get(params.threadId);
       if(deletedThread?.runtime==="native")await nativeBackgroundProcesses.clean(params.threadId).catch(()=>{});
       endFailureWait(params.threadId);
-      const runtimeSession=sessions.get(params.threadId);if(runtimeSession instanceof ClaudeAgentSession)await runtimeSession.delete().catch(()=>{});else await runtimeSession?.close().catch(()=>{});
+      // Claude Code's delete closes its session, then removes the transcript: the relay closed that session too (closedSessions).
+      const runtimeSession=sessions.get(params.threadId);
+      if(runtimeSession instanceof ClaudeAgentSession){closedSessions.add(runtimeSession);await runtimeSession.delete().catch(()=>{})}else if(runtimeSession)await closeThreadSession(runtimeSession).catch(()=>{});
       sessions.delete(params.threadId);settleToolWrites(params.threadId,{write:false});threadStore.delete(params.threadId);if(state?.removeThreadMeta)state.removeThreadMeta(params.threadId);else state?.updateThreadMeta?.(params.threadId,{deletedAt:Date.now(),archived:true});emit("thread/deleted",{threadId:params.threadId});if(onThreadDeleted)try{await onThreadDeleted(deletedThread)}catch{}return {ok:true}
     }
     if(method==="thread/section/move"){
@@ -1893,7 +1900,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       return await nativeBackgroundProcesses.clean(thread.id);
     }
     // Archiving is not activity: the thread keeps its last-update time, so one brought back (an undo) takes its old place by recent activity.
-    if(method==="thread/archive"){endFailureWait(params.threadId);await sessions.get(params.threadId)?.close().catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
+    if(method==="thread/archive"){endFailureWait(params.threadId);const live=sessions.get(params.threadId);if(live)await closeThreadSession(live).catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
     if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/unarchived",{threadId:params.threadId});return {thread}}
     if(method==="thread/fork"){
       const source=threadStore.get(params.threadId);if(!source)throw new Error("Thread not found");

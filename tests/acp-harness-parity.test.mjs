@@ -12,6 +12,7 @@ import { WebSocket } from "ws";
 import { AcpAgentSession, acpApprovalOptions, acpClientCapabilities, acpCommandsFromAvailable, acpDecisionOption, acpFileSlice, acpModeAgents, acpPermissionChoice, acpSlashCommandPrompt, grokCompletionFailure, grokPromptError, grokQuestionResponse, GROK_PLAN_FEEDBACK, GROK_USAGE_LIMIT_MESSAGE } from "../src/acp-agent-session.mjs";
 import { acpRequestError } from "../src/acp-client.mjs";
 import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
+import { isSessionRefusal } from "../src/session-refusal.mjs";
 import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "../src/acp-session-config.mjs";
 import { acpToolFrame, mergeAcpToolUpdate } from "../src/acp-tool-state.mjs";
 import { acpRuntimeTempRoot, createRunTemp, sweepRunTemps } from "../src/acp-runtime-temp.mjs";
@@ -319,7 +320,8 @@ test("Read only runs in the harness's read-only mode, and a harness without one 
   const plain=await scenario(t,{sessionNew:{sessionId:"oc",configOptions:[select("mode","mode","build",["build"])]}});
   const other=harness(t,plain,{runtime:"opencode",permissionMode:"read-only"});
   await other.session.start();
-  await assert.rejects(other.session.prompt([{type:"text",text:"look"}]),/does not offer a read-only mode, so the turn was not sent/);
+  // Trebell's own refusal (SessionRefusalError): the harness ran nothing, so the relay asks it nothing.
+  await assert.rejects(other.session.prompt([{type:"text",text:"look"}]),error=>isSessionRefusal(error)&&/does not offer a read-only mode, so the turn was not sent/.test(error.message));
   assert.equal(requested(await plain.log(),"session/prompt").length,0);
 });
 
@@ -882,7 +884,7 @@ test("Cursor runs a Plan turn in its plan mode and any other turn in its agent m
   const planless=await scenario(t,{...CURSOR,sessionNew:{...CURSOR_SETUP,configOptions:[select("mode","mode","agent",["agent","ask"]),CURSOR_SETUP.configOptions[1]]}});
   const other=harness(t,planless,{runtime:"cursor"});
   await other.session.start();other.session.setCollaborationMode("plan");
-  await assert.rejects(other.session.prompt([{type:"text",text:"plan it"}]),/does not offer a plan mode, so the turn was not sent/);
+  await assert.rejects(other.session.prompt([{type:"text",text:"plan it"}]),error=>isSessionRefusal(error)&&/does not offer a plan mode, so the turn was not sent/.test(error.message));
   assert.equal(requested(await planless.log(),"session/prompt").length,0);
 });
 

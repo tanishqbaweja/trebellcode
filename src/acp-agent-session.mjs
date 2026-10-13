@@ -13,6 +13,7 @@ import { normalizeModelOptionValues } from "./model-options.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeHarnessLabel, runtimeInstructions } from "./runtime-instructions.mjs";
+import { SessionRefusalError } from "./session-refusal.mjs";
 
 // Generic ACP session used for Cursor, Grok Build, Antigravity and remote-environment OpenCode,
 // aligned with T3 Code's AcpSessionRuntime and its Cursor/Grok/Antigravity flavors.
@@ -380,7 +381,7 @@ export class AcpAgentSession{
   // first update the prompt brings (a reply, a thought, a tool call) or with the harness's answer. A request the harness refuses
   // outright (a rate or plan limit) never reached the conversation, and a slash command goes without that context, so neither tells.
   async prompt(content,{messageId=null,agent=undefined,onDelivered=null}={}){
-    if(!this.client||!this.sessionId)throw new Error("ACP session is not started");
+    if(!this.client||!this.sessionId)throw new SessionRefusalError("ACP session is not started");
     if(this.dead)throw this.deadError||new Error(`${this.label} stopped`);
     this.#finishWake("end_turn");
     await this.#applyMode(agent);
@@ -584,13 +585,13 @@ export class AcpAgentSession{
     if(this.runtime==="antigravity")return offered(this.permissionMode==="full"?"yolo":this.permissionMode==="edits"?"auto_edit":"default");
     if(this.permissionMode==="read-only"){
       const readOnly=acpReadOnlyMode(this.runtime,this.sessionSetup);
-      if(!readOnly)throw new Error(`${this.label} does not offer a read-only mode, so the turn was not sent.`);
+      if(!readOnly)throw new SessionRefusalError(`${this.label} does not offer a read-only mode, so the turn was not sent.`);
       return readOnly;
     }
     if(this.runtime==="cursor"){
       if(this.collaborationMode!=="plan")return offered("agent")||this.defaultMode;
       const plan=offered("plan");
-      if(!plan)throw new Error(`${this.label} does not offer a plan mode, so the turn was not sent.`);
+      if(!plan)throw new SessionRefusalError(`${this.label} does not offer a plan mode, so the turn was not sent.`);
       return plan;
     }
     const chosen=agent?offered(agent):null;
