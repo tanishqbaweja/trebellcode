@@ -672,6 +672,37 @@ test("Trebell Native background processes outlive the turn and stay thread-owned
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
 
+test("a Native thread restored after a restart gives its new background processes handles its history has not used",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-background-restart-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),receipts=[];
+  const nativeProviderTurn=async request=>{
+    const last=request.messages.at(-1);
+    if(last.role==="tool"){receipts.push(String(last.content));return{id:"started-"+receipts.length,provider:request.provider,model:request.model,text:"Started in the background.",toolCalls:[],finishReason:"stop",usage:{}}}
+    return{id:"start-"+receipts.length,provider:request.provider,model:request.model,text:"",toolCalls:[{id:"start-call-"+receipts.length,namespace:"trebell_process",name:"start",arguments:JSON.stringify({command:process.execPath,args:["-e","setInterval(()=>{},1000)"],cwd:"."})}],finishReason:"tool_calls",usage:{}};
+  };
+  // One app run: a relay (and its background-process manager) over the same stored threads.
+  const appRun=async()=>{
+    const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+    const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
+    return {rpc:client(ws),close:async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()))}};
+  };
+  const startProcess=async(rpc,threadId)=>{
+    const turn=(await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",dynamicToolNamespaces:["trebell_process"],input:[{type:"text",text:"Start the dev server in the background"}]})).turn;
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);
+  };
+  try{
+    let run=await appRun();
+    const thread=(await run.rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    await startProcess(run.rpc,thread.id);await run.close();
+    run=await appRun();
+    try{await startProcess(run.rpc,thread.id)}finally{await run.close()}
+    assert.equal(receipts.length,2);
+    assert.match(receipts[0],/"process_id":"p1"/);
+    assert.match(receipts[1],/"process_id":"p2"/,"the restored thread's history already names p1, so the new process is p2");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("Trebell Native exposes first-class Git status directly to the model loop",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-source-control-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   await execFileAsync("git",["init"],{cwd:repo,windowsHide:true});

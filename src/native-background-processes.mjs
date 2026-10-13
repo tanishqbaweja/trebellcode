@@ -24,6 +24,26 @@ function cursorOffset(cursor){
 
 function processLabel(command,args=[]){return [String(command||""),...(args||[]).map(String)].join(" ").trim().slice(0,1000)}
 
+const PROCESS_TOOLS=Object.freeze({trebell_process:new Set(["start","status","stop","list"]),trebell_terminal:new Set(["start_background","background_status","stop_background"])});
+const HANDLE_FIELD=/"(?:handle|process_id)"\s*:\s*"p(\d{1,9})"/gi;
+
+// The highest short handle (pN) a thread's history names in its process tool calls and results, or 0. A thread outlives the
+// app, while its processes and the manager's counters do not, so a new manager starts the thread's handles above it.
+export function highestProcessHandle(thread={}){
+  let highest=0;
+  for(const turn of Array.isArray(thread?.turns)?thread.turns:[]){
+    for(const item of Array.isArray(turn?.items)?turn.items:[]){
+      if(item?.type!=="dynamicToolCall"||!PROCESS_TOOLS[String(item.namespace||"")]?.has(String(item.tool||"")))continue;
+      for(const value of [item.arguments,item.rawOutput,...(Array.isArray(item.contentItems)?item.contentItems.map(part=>part?.text):[])]){
+        if(value==null)continue;
+        let text;try{text=typeof value==="string"?value:JSON.stringify(value)}catch{continue}
+        for(const match of String(text).matchAll(HANDLE_FIELD))highest=Math.max(highest,Number(match[1]));
+      }
+    }
+  }
+  return highest;
+}
+
 function signalLocalProcessTree(child,{platform=process.platform,force=false}={}){
   const pid=Number(child?.pid);if(!Number.isInteger(pid)||pid<=0){try{child?.kill?.(force?"SIGKILL":"SIGTERM")}catch{};return}
   if(platform==="win32"){
@@ -41,9 +61,15 @@ export class NativeBackgroundProcessManager{
   constructor({environments=null,environment=process.env,platform=process.platform,onEvent=null,maxOutputBytes=DEFAULT_OUTPUT_BYTES}={}){
     this.environments=environments;this.environment=environment;this.platform=platform;this.onEvent=onEvent;this.maxOutputBytes=boundedBytes(maxOutputBytes);this.processes=new Map();
     // Short handles (p1, p2, ...) count per thread and are never reused, so a handle the model kept never names a later process.
+    // A thread restored after a restart reserves the handles its history already names (reserveHandles), so they stay unused.
     this.handleCounts=new Map();this.handles=new Map();
   }
   #nextHandle(threadId){const next=(this.handleCounts.get(threadId)||0)+1;this.handleCounts.set(threadId,next);return "p"+next}
+  // Raises a thread's handle count to at least `used`: the next process it starts gets p(used+1) or later.
+  reserveHandles(threadId,used=0){
+    const thread=String(threadId||""),count=Math.max(0,Math.trunc(Number(used)||0));if(!thread)return;
+    if(count>(this.handleCounts.get(thread)||0))this.handleCounts.set(thread,count);
+  }
   // A process by its full id or by its short handle, within one thread.
   #record(threadId,processId){
     const thread=String(threadId||""),key=String(processId||"").trim();

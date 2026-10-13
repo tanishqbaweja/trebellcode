@@ -14,7 +14,7 @@ import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-sessi
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
 import { createNativeBuiltins } from "./native-builtins.mjs";
-import { NativeBackgroundProcessManager } from "./native-background-processes.mjs";
+import { NativeBackgroundProcessManager, highestProcessHandle } from "./native-background-processes.mjs";
 import { createNativeSourceControl } from "./native-source-control.mjs";
 import { NativeMcpBroker } from "./native-mcp-broker.mjs";
 import { createNativeToolExecutor } from "./native-tool-executor.mjs";
@@ -1080,6 +1080,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       });
       const mcpTools=await mcpBroker.connect();
       const mcpDiscovery=mcpBroker.discoveryNamespace();if(mcpDiscovery)tools.push(mcpDiscovery);
+      // The thread's history may name process handles from before a restart; the processes it starts now get later ones.
+      nativeBackgroundProcesses.reserveHandles(thread.id,highestProcessHandle(thread));
       const nativeBuiltins=createNativeBuiltins({
         root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform,
         backgroundProcesses:nativeBackgroundProcesses,threadId:thread.id,environmentNames:runtimeManager.childEnvironmentKeys(instance),

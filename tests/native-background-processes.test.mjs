@@ -90,6 +90,28 @@ test("Native background processes get short per-thread handles that resolve alon
   }finally{await manager.closeAll()}
 });
 
+test("a thread's history sets where a new manager starts its handles, so a handle from before a restart never names a new process",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-bg-restart-")),first=new NativeBackgroundProcessManager(),second=new NativeBackgroundProcessManager();
+  const idle=["-e","setInterval(()=>{},1000)"],{highestProcessHandle}=await import("../src/native-background-processes.mjs");
+  try{
+    const dev=first.start({threadId:"thread-1",command:process.execPath,args:idle,cwd:root});assert.equal(dev.handle,"p1");
+    await first.closeAll();
+    const thread={id:"thread-1",turns:[
+      {items:[{type:"userMessage",content:[{type:"text",text:"Start p9 for me"}]},{type:"dynamicToolCall",namespace:"trebell_process",tool:"start",arguments:{command:"npm",args:["run","dev"]},rawOutput:dev}]},
+      {items:[{type:"dynamicToolCall",namespace:"trebell_terminal",tool:"background_status",arguments:'{"process_id":"p1"}',rawOutput:'{"process_id":"p1","running":false}'},{type:"dynamicToolCall",namespace:"trebell_workspace",tool:"read_file",rawOutput:{handle:"p40"}}]},
+    ]};
+    assert.equal(highestProcessHandle(thread),1,"only process tools' calls and results are read");
+    assert.equal(highestProcessHandle({turns:[{items:[{type:"dynamicToolCall",namespace:"trebell_process",tool:"list",rawOutput:{data:[{handle:"p3"},{handle:"p12"}]}}]}]}),12);
+    assert.equal(highestProcessHandle({}),0);
+    second.reserveHandles("thread-1",highestProcessHandle(thread));second.reserveHandles("thread-1",0);
+    const watcher=second.start({threadId:"thread-1",command:process.execPath,args:idle,cwd:root});
+    assert.equal(watcher.handle,"p2");
+    assert.throws(()=>second.status("thread-1","p1"),/not found/,"the dev server's old handle does not reach the watcher");
+    assert.equal(second.status("thread-1","p2").processId,watcher.processId);
+    assert.equal(second.start({threadId:"thread-2",command:process.execPath,args:idle,cwd:root}).handle,"p1","other threads keep their own count");
+  }finally{await first.closeAll();await second.closeAll();await rm(root,{recursive:true,force:true})}
+});
+
 test("Native process tools accept a short handle for status and stop",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-bg-handle-")),manager=new NativeBackgroundProcessManager();
   try{
