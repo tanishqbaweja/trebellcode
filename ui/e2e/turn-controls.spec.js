@@ -1,4 +1,5 @@
 import { test,expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
 import { mkdtemp,rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -7,6 +8,8 @@ import { WebSocketServer } from "ws";
 import { attachCodexRelay } from "../../src/codex-relay.mjs";
 import { keepThreadMeta } from "./test-home.js";
 import { auditDir,gate,startStreamingFixture,stop } from "./native-stream-fixture.js";
+const SHOTS=process.env.TREBELL_PROOF_SHOTS?String(process.env.TREBELL_PROOF_SHOTS).replace(/[\\/]*$/,"/"):auditDir+"proof-";
+if(process.env.TREBELL_PROOF_SHOTS)mkdirSync(SHOTS,{recursive:true});
 
 // Turn controls as a person uses them: a new task while another thread runs, Stop, the queue, Edit from here and Compact. The real
 // agent relay runs the real Native session with a scripted provider (native-stream-fixture.js); a Codex app-server is faked where
@@ -158,6 +161,8 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
   upstream.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   const notify=(method,params)=>{if(codex.socket?.readyState===1)codex.socket.send(JSON.stringify({method,params}))};
   const end=(turn,status)=>{turn.status=status;clearTimeout(turn.timer);notify("turn/completed",{threadId:turn.threadId,turn:{id:turn.id,status,items:[]}})};
+  // Codex closes a thread's session once no window follows it, and says so.
+  codex.closeThread=threadId=>notify("thread/closed",{threadId});
   wss.on("connection",ws=>{
     sockets.add(ws);codex.socket=ws;ws.on("close",()=>sockets.delete(ws));
     ws.on("message",raw=>{
@@ -640,6 +645,34 @@ for(const when of ["once the running thread is open","while the running thread o
     await expect(composer(page)).toHaveValue("This send will be refused.");
     await expect(page.getByTestId("composer-alert")).toContainText("Not sent: The model is overloaded right now. Your draft is kept.");
     if(!when.startsWith("while"))await shoot(page,"failed-send-back-in-its-own-thread");
+  }finally{await codex.close()}
+});
+
+// Codex closes a thread's session once no window follows it (thread/closed), as the agent relay's idle sweep lets a harness go: the
+// window lets go of what it kept of the thread's turns (thread-turn-notes.js), and a send that failed there is still the person's
+// text, given back when the thread opens again.
+test("a send that fails in the thread left still comes back there after Codex closes that thread's session",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{names:["Codex runner","Codex closed send"]});
+  try{
+    codex.holdTurns=true;
+    await sendTyped(page,"Count slowly in the runner.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [running]=codex.turns;running.start();running.answer();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toBeVisible();
+    await threadRow(page,"Codex closed send").locator(".thread-main").click();await expect(page.locator(".workspace-header")).toContainText("Codex closed send");
+    await expect(composer(page)).toBeEnabled({timeout:10_000});
+    await sendTyped(page,"This send will be refused.");
+    await expect.poll(()=>codex.turns.length).toBe(2);const failing=codex.turns[1];
+    await threadRow(page,"Codex runner").locator(".thread-main").click();
+    await expect(page.locator(".workspace-header")).toContainText("Codex runner");await expect(composer(page)).toHaveAttribute("placeholder","Queue a follow-up…",{timeout:10_000});
+    failing.fail("The model is overloaded right now.");await page.waitForTimeout(400);
+    codex.closeThread(failing.threadId);await page.waitForTimeout(400);
+    await expect(stop(page)).toBeVisible();await expect(composer(page)).toHaveValue("");await expect(page.getByTestId("composer-alert")).toHaveCount(0);
+    await threadRow(page,"Codex closed send").locator(".thread-main").click();await expect(page.locator(".workspace-header")).toContainText("Codex closed send");
+    await expect(composer(page)).toHaveValue("This send will be refused.");
+    await expect(page.getByTestId("composer-alert")).toContainText("Not sent: The model is overloaded right now. Your draft is kept.");
+    await page.screenshot({animations:"disabled",path:SHOTS+"R5-failed-send-kept-after-codex-closed-the-thread.png"});
   }finally{await codex.close()}
 });
 

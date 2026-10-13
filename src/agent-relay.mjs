@@ -948,6 +948,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(now-(sessionUsed.get(session)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
       if(waitsOn(threadId))continue;
       sessions.delete(threadId);releaseSession(session,error=>log("Could not close an idle harness session: "+(error?.message||String(error))));
+      // The windows hear it as Codex tells them of a thread it unloads: what they keep of the thread's turns (the Stops they sent,
+      // thread-turn-notes.js) goes.
+      emit("thread/closed",{threadId});
     }
   }
   const sessionSweep=setInterval(sweepIdleSessions,SESSION_SWEEP_MS);sessionSweep.unref?.();

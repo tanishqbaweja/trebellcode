@@ -35,6 +35,7 @@ import { matchingMessageExcerpt, matchingPullRequestExcerpt, sidebarSearchMatche
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
 import { THREAD_SCROLL_END_THRESHOLD, captureHistoryPrependAnchor, captureThreadScrollPosition, historyAnchorDisturbed, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
 import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
+import { createThreadTurnNotes } from "./thread-turn-notes.js";
 import { latestTurnRowsStart } from "./conversation-order.js";
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
 import { loadThreadListPages, nativeThreadSearchMatches, rankSearchHits, rankThreadSections, threadListParams, threadSectionOrderParams } from "./thread-list-query.js";
@@ -1025,12 +1026,13 @@ export default function App(){
   // can send while another thread's send waits, so each thread keeps its own, and its view (the composer hold of the send) and
   // message show it again when the thread is opened before it is through (openThread).
   const pendingSendsRef=useRef(new Map());
-  // The draft and note of a send that failed while its thread was not shown, by thread, until the thread is opened again.
-  const failedSendsRef=useRef(new Map());
+  // The draft and note of a send that failed while its thread was not shown, by thread, until the thread is opened again, and the
+  // turns a Stop was sent for (thread-turn-notes.js): each goes with its thread or its turns, and both stay bounded.
+  const turnNotesRef=useRef(null);if(!turnNotesRef.current)turnNotesRef.current=createThreadTurnNotes();
   // The Stop on its way (stop()): the turn or send it is for, so a second press sends nothing more, and the thread it stops, whose
-  // Stop reads "Stopping…" until the turn has ended. stopsSentRef keeps the turns a Stop was sent for until they end, for a thread
-  // left and opened again meanwhile (openThread).
-  const stopKeyRef=useRef(null); const [stoppingThreadId,setStoppingThreadId]=useState(null); const stopsSentRef=useRef(new Set());
+  // Stop reads "Stopping…" until the turn has ended. The turn notes keep the turns a Stop was sent for until they end, for a
+  // thread left and opened again meanwhile (openThread).
+  const stopKeyRef=useRef(null); const [stoppingThreadId,setStoppingThreadId]=useState(null);
   const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
   const [settings,setSettings]=useState(()=>({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:DEFAULT_MODEL_PROVIDER,...cachedAppearanceSettings()}));
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
@@ -2833,6 +2835,7 @@ export default function App(){
     const p=message.params||{};
     const threadId=p.threadId||null;
     if(threadId&&heldNotificationsRef.current?.threadId===String(threadId)){heldNotificationsRef.current.messages.push([message,client,receivedAt]);return}
+    turnNotesRef.current.notify(message);
     const isCurrent=notificationIsActive(threadId);
     if(message.method==="serverRequest/resolved"){
       // Request ids restart on every socket: only the request of this id from the socket that resolved it goes.
@@ -2934,7 +2937,6 @@ export default function App(){
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});markThreadTurn(threadId,false);
       // A queued turn that ends without having started takes its send with it.
       if(completedTurnId&&pendingSendsRef.current.get(String(threadId||""))?.turnId===String(completedTurnId))pendingSendsRef.current.delete(String(threadId||""));
-      if(completedTurnId)stopsSentRef.current.delete(String(threadId||"")+"\0"+completedTurnId);
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
       // A failed Codex turn ends with its error (T3 Code); an active Codex goal goes on with a turn Codex starts itself.
       const codexFailure=agentRuntime==="codex"?codexTurnFailure(p.turn):null,codexGoalContinues=agentRuntime==="codex"&&isCurrent&&goal?.status==="active";
@@ -3433,6 +3435,7 @@ export default function App(){
   // After the thread shown is archived or deleted: a new task, as newChat; under another thread still opening, only the view under
   // that open becomes the new task, and the open goes on (one that fails then comes back to the new task, not to a thread gone).
   async function leaveRemovedThread(threadId){
+    turnNotesRef.current.threadEnded(threadId);
     if(String(activeThreadRef.current?.id||"")!==String(threadId))return;
     if(openingThreadRef.current&&openingThreadRef.current!==String(threadId))showNewTask();else await newChat();
   }
@@ -3565,14 +3568,17 @@ export default function App(){
     // A Stop already sent for the turn that still runs reads Stopping again, and a press sends no second one (stop()).
     const stoppedTurnKey=resumedRunning&&resumedTurnId?String(thread.id)+"\0"+resumedTurnId:null;
     if(pendingSend?.stopped){stopKeyRef.current=pendingSend;setStoppingThreadId(String(thread.id))}
-    else if(stoppedTurnKey&&stopsSentRef.current.has(stoppedTurnKey)){stopKeyRef.current=stoppedTurnKey;setStoppingThreadId(String(thread.id))}
+    else if(stoppedTurnKey&&turnNotesRef.current.stopWasSent(thread.id,resumedTurnId)){stopKeyRef.current=stoppedTurnKey;setStoppingThreadId(String(thread.id))}
+    // A thread that runs no turn has no Stop on its way, and one that runs the turn resumed has none for the turns before it (their
+    // ends may have come while the window did not follow the thread).
+    if(openedThread.status?.type!=="active")turnNotesRef.current.turnsEnded(thread.id);else if(resumedTurnId)turnNotesRef.current.turnsEnded(thread.id,resumedTurnId);
     // The composer's note goes with the view it was about: another thread shown, or this one opening after all, ends it; the thread
     // shown opening again (a reconnect) keeps a note about its failed send or about another thread that did not open.
     activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     // A send of this thread that failed while another view was shown gives its draft and its note back here (dispatchSend).
     // A thread whose own Codex app-server died says so, in one row: its resumes name the death until its next turn, under one id.
     const appServerExit=resumed?.trebellAppServerExit;if(appServerExit?.id)setEvents(prev=>upsertEvent(prev,{id:"app-server-exit-"+appServerExit.id,kind:"error",title:appServerExitText(appServerExit),status:"done",raw:appServerExit}));
-    const failedSend=failedSendsRef.current.get(String(thread.id));if(failedSend){failedSendsRef.current.delete(String(thread.id));restoreFailedDraft(failedSend.draft);if(failedSend.alert)setComposerAlert(failedSend.alert)}
+    const failedSend=turnNotesRef.current.takeFailedSend(thread.id);if(failedSend){restoreFailedDraft(failedSend.draft);if(failedSend.alert)setComposerAlert(failedSend.alert)}
     if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(projectError)throw projectError;else if(!openedThread.cwd)setProjectPath(projectPath);
@@ -4124,8 +4130,8 @@ export default function App(){
   function interruptStoppedSend(send,threadId,turnId){
     if(!send?.stopped||send.interrupted||!turnId||send.threadId!==String(threadId||""))return;send.interrupted=true;
     if(stopKeyRef.current===send)stopKeyRef.current=send.threadId+"\0"+turnId;
-    const sentKey=send.threadId+"\0"+turnId;stopsSentRef.current.add(sentKey);
-    rpcRef.current?.request("turn/interrupt",{threadId,turnId}).catch(error=>{stopsSentRef.current.delete(sentKey);if(String(activeThreadRef.current?.id||"")===send.threadId){stopKeyRef.current=null;setStoppingThreadId(null)}showActionError(error,"Could not stop turn")});
+    turnNotesRef.current.stopSent(send.threadId,turnId);
+    rpcRef.current?.request("turn/interrupt",{threadId,turnId}).catch(error=>{turnNotesRef.current.stopFailed(send.threadId,turnId);if(String(activeThreadRef.current?.id||"")===send.threadId){stopKeyRef.current=null;setStoppingThreadId(null)}showActionError(error,"Could not stop turn")});
   }
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false}={}){
     // The view the send was made from: its composer's hold (send()) and the open count (openThread, newChat). A new task's send keeps
@@ -4513,7 +4519,7 @@ export default function App(){
     // where they stayed when the person left it, so a send from there does not carry them again; what was added there stays.
     await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).then(()=>{if(submittingRef.current!==sendView)dropSentDraft(draft)},e=>{
       const alert=!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e))?{kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."}:null;
-      if(e?.trebellSendThreadId&&String(openingThreadRef.current||activeThreadRef.current?.id||"")!==e.trebellSendThreadId){failedSendsRef.current.set(e.trebellSendThreadId,{draft,alert});return}
+      if(e?.trebellSendThreadId&&String(openingThreadRef.current||activeThreadRef.current?.id||"")!==e.trebellSendThreadId){turnNotesRef.current.failSend(e.trebellSendThreadId,{draft,alert});return}
       restoreFailedDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents([]);if(alert)setComposerAlert(alert);
     });
   }
@@ -4650,9 +4656,9 @@ export default function App(){
     }
     if(pendingSend)pendingSend.stopped=true;
     const interruptNow=Boolean(turnId&&(!pendingSend||pendingSend.startedTurnId===String(turnId))||pendingSend?.requested&&agentRuntime!=="codex");if(pendingSend&&interruptNow)pendingSend.interrupted=true;
-    const sentKey=rpc&&threadId&&interruptNow&&turnId?threadId+"\0"+turnId:null;if(sentKey)stopsSentRef.current.add(sentKey);
+    const sentKey=rpc&&threadId&&interruptNow&&turnId?threadId+"\0"+turnId:null;if(sentKey)turnNotesRef.current.stopSent(threadId,turnId);
     try{if(rpc&&threadId&&interruptNow)await rpc.request("turn/interrupt",{threadId,...(turnId?{turnId}:{})})}
-    catch(error){if(sentKey)stopsSentRef.current.delete(sentKey);if(stopKeyRef.current===stopKey){stopKeyRef.current=null;setStoppingThreadId(null)}throw error}
+    catch(error){if(sentKey)turnNotesRef.current.stopFailed(threadId,turnId);if(stopKeyRef.current===stopKey){stopKeyRef.current=null;setStoppingThreadId(null)}throw error}
     // A send stopped before its turn started runs on until it ends: its turn/completed, or the send ending without a turn.
     const ended=!pendingSend;
     if(runtimeCapabilities.nativeQueue&&queueMode==="native"){if(ended){setRunning(false);setActiveTurnId(null)}await loadNativeQueue(rpc,threadId);return}

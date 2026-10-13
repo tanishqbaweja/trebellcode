@@ -149,8 +149,9 @@ async function budgetRelay(prefix,{instances=[BUDGET_INSTANCE],env:extra={}}={})
     const id=++requestId,onMessage=raw=>{const message=parseJson(String(raw));if(message.id!==id)return;ws.off("message",onMessage);message.error?reject(new Error(message.error.message)):resolve(message.result)};
     ws.on("message",onMessage);ws.send(JSON.stringify({id,method,params}));
   });
-  // Resolves once count notifications of method have arrived, matched in their text so that waiting parses nothing.
-  const notified=(method,count=1)=>new Promise(resolve=>{let seen=0;const needle='"method":"'+method+'"',onMessage=raw=>{if(String(raw).includes(needle)&&++seen>=count){ws.off("message",onMessage);resolve(true)}};ws.on("message",onMessage)});
+  // Resolves once count notifications of method have arrived (those whose text also holds text, when given), matched in their text so
+  // that waiting parses nothing.
+  const notified=(method,count=1,text="")=>new Promise(resolve=>{let seen=0;const needle='"method":"'+method+'"',onMessage=raw=>{const message=String(raw);if(message.includes(needle)&&message.includes(text)&&++seen>=count){ws.off("message",onMessage);resolve(true)}};ws.on("message",onMessage)});
   // shutdown stops the relay and its server; close also removes the home, once.
   let shut=null;const shutdown=()=>shut||=(async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()))})();
   const close=async()=>{await shutdown();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})};
@@ -385,6 +386,31 @@ test("B9: an idle harness session is released, one with a running turn is kept, 
 // that can outlive its turn: what that tool left running went on until the thread closed before the sweep, and nothing says when it
 // ends. SWEEP_ENV shortens the idle time to 300 ms, against the default ten minutes.
 const SWEEP_ENV=Object.freeze({TREBELL_AGENT_SESSION_IDLE_MS:"300",TREBELL_AGENT_SESSION_SWEEP_MS:"50"});
+
+// A window keeps a note of each turn of a thread it sent a Stop for until it hears the turn end (ui/src/thread-turn-notes.js), and
+// heard nothing when the sweep let a thread's session go. The sweep says so as Codex does of a thread it unloads (thread/closed), for
+// that thread alone: one whose turn runs keeps its session until the turn ends.
+test("the idle sweep tells the windows which thread's session it let go, with thread/closed, and not a thread whose turn runs",async()=>{
+  const relay=await budgetRelay("trebell-budget-closed-",{env:SWEEP_ENV});
+  try{
+    const idle=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root}),working=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:1,tools:[{kind:"read",title:"Read README.md"}]}),"utf8");
+    let completed=relay.notified("turn/completed");
+    await relay.rpc("turn/start",{threadId:idle.id,input:[{type:"text",text:"What does the README say?"}]});await completed;
+    const closedIdle=relay.notified("thread/closed",1,'"threadId":"'+idle.id+'"'),closed=relay.counter("thread/closed");
+    await writeFile(relay.plan,JSON.stringify({chunks:1,endFile:relay.file("end")}),"utf8");
+    await relay.rpc("turn/start",{threadId:working.id,input:[{type:"text",text:"Keep working"}]});
+    const [first]=await relay.agentProcesses();
+    assert.ok(await within(closedIdle,6000),"the windows hear that the idle thread's session closed");
+    assert.ok(await eventually(()=>!alive(first.pid)),"and its harness exits");
+    await new Promise(done=>setTimeout(done,800));
+    assert.equal(closed.n,1,"the thread whose turn runs keeps its session, and nothing says it closed");
+    const closedWorking=relay.notified("thread/closed",1,'"threadId":"'+working.id+'"');
+    completed=relay.notified("turn/completed");await writeFile(relay.file("end"),"done","utf8");await completed;
+    assert.ok(await within(closedWorking,6000),"once its turn ends, its session is let go and the windows hear it");
+    assert.equal(closed.n,2);
+  }finally{await relay.close()}
+});
 
 // Grok runs a long command in the background (its tool call answers BackgroundTaskStarted while the command runs) and answers once it
 // ends in a task-completed-* turn of its own, with no prompt running in between. Closing the idle session stopped Grok and its task.
