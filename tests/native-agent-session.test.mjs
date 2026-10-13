@@ -1038,6 +1038,38 @@ test("Native session compacts a verified post-edit reread when it byte-matches t
   const event=events.find(item=>item.name==="native.tool.post_edit_read_compacted");assert.ok(event);assert.ok(event.data.savedBytes>5000);assert.equal(event.data.editTool,"trebell_workspace/replace_text");
 });
 
+test("Native session shows the model a replace_text diff without its hashes and tracks an edits list for post-edit rereads",async()=>{
+  const requests=[],events=[],updates=[];let providerCalls=0,content=("prefix line\n".repeat(700))+"mode=legacy\nlevel=1\n"+("suffix line\n".repeat(120));
+  const resolvedPath="C:/repo/src/config.txt",before="a".repeat(64),after="b".repeat(64),diff="@@ -701,2 +701,2 @@\n-mode=legacy\n-level=1\n+mode=strict\n+level=2";
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",semanticCompletionGate:false,tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),onUpdate:update=>updates.push(update),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"read-before",text:"",toolCalls:[{id:"read-before",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
+      if(providerCalls===2)return {id:"edit",text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"src/config.txt",edits:[{old_text:"mode=legacy",new_text:"mode=strict"},{old_text:"level=1",new_text:"level=2"}]})}],usage:{}};
+      if(providerCalls===3)return {id:"read-after",text:"",toolCalls:[{id:"read-after",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.name==="read_file")return {path:resolvedPath,name:"config.txt",size:Buffer.byteLength(content,"utf8"),content};
+      if(call.name==="replace_text"){
+        for(const edit of call.arguments.edits)content=content.split(edit.old_text).join(edit.new_text);
+        return {path:resolvedPath,size:Buffer.byteLength(content,"utf8"),replacements:2,beforeSha256:before,afterSha256:after,diff};
+      }
+      throw new Error("unexpected tool");
+    },
+  });
+  await session.start({providerSessionId:"native-edit-diff",model:"model-a"});await session.prompt([{type:"text",text:"read edit reread"}]);
+  const edited=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="edit-1");assert.ok(edited);
+  assert.ok(edited.content.includes(JSON.stringify(diff)),"the model reads the applied diff");assert.match(edited.content,/"replacements":2/);
+  assert.ok(!edited.content.includes(before)&&!edited.content.includes(after)&&!/Sha256/.test(edited.content),"the before/after hashes are not model-visible");
+  const update=updates.find(item=>item.update?.toolCallId==="edit-1"&&item.update?.rawOutput);assert.equal(update.update.rawOutput.beforeSha256,before);assert.equal(update.update.rawOutput.afterSha256,after);
+  assert.ok(!JSON.stringify(update.update.content).includes(before),"a thread rebuilt from its saved items reads what the model read");
+  const fresh=requests[3].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-after");assert.ok(fresh);
+  assert.match(fresh.content,/byte-match the exact successful edit/i,"the edits list is tracked hunk by hunk, so the reread is recognised");
+  const event=events.find(item=>item.name==="native.tool.post_edit_read_compacted");assert.ok(event);assert.equal(event.data.editTool,"trebell_workspace/replace_text");
+});
+
 test("Native session does not let provider-supplied recovery-like ids bypass post-edit output shaping",async()=>{
   const requests=[],events=[];let providerCalls=0,content=("prefix line\n".repeat(700))+"mode=legacy\n"+("suffix line\n".repeat(120));
   const resolvedPath="C:/repo/src/config.txt";
