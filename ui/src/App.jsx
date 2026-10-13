@@ -994,9 +994,11 @@ export default function App(){
   // goal waiting to turn active after its first turn starts.
   const [codexThreadState,setCodexThreadState]=useState(null); const codexGoalActivationRef=useRef(null);
   const submittingRef=useRef(false);
-  // The sends whose turn/start has not answered yet (startTurn), by thread: {threadId,requested,stopped,interrupted,view,message}.
-  // Stop marks the shown thread's (stop()). A new task can send while another thread's send waits, so each thread keeps its own, and
-  // its view (the composer hold of the send) and message show it again when the thread is opened before it is through (openThread).
+  // The sends whose turn has not started yet, by thread: {threadId,requested,stopped,interrupted,view,message,turnId,startedTurnId}.
+  // turn/start's answer ends one (startTurn), unless it names the turn queued (turnId), which then waits for its turn/started or
+  // turn/completed; startedTurnId is a turn/started that came before the answer. Stop marks the shown thread's (stop()). A new task
+  // can send while another thread's send waits, so each thread keeps its own, and its view (the composer hold of the send) and
+  // message show it again when the thread is opened before it is through (openThread).
   const pendingSendsRef=useRef(new Map());
   // The Stop on its way (stop()): the turn or send it is for, so a second press sends nothing more, and the thread it stops, whose
   // Stop reads "Stopping…" until the turn has ended.
@@ -2825,8 +2827,11 @@ export default function App(){
       // A turn that starts again (the relay's restart recovery) is running, not ended: its next completion is recorded whole.
       if(clockKey)setTurnInfo(prev=>{const known=turnStartedAgain(prev[clockKey]);return known===prev[clockKey]?prev:{...prev,[clockKey]:known}});
       updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:receivedAt,lastActivityAt:Date.now()});markThreadTurn(threadId,true);
-      // The turn of a send Stop was pressed for before it had an id: Codex can name it here before turn/start answers.
-      interruptStoppedSend(pendingSendsRef.current.get(String(threadId||"")),threadId,id);
+      // The turn of a send Stop was pressed for before its turn started: from here Codex can interrupt it, whether turn/start has
+      // answered (a queued turn, which is through now) or not yet.
+      const starting=pendingSendsRef.current.get(String(threadId||""));
+      if(starting&&(!starting.turnId||starting.turnId===String(id||""))){if(!starting.turnId)starting.startedTurnId=String(id||"");interruptStoppedSend(starting,threadId,id)}
+      if(starting?.turnId)pendingSendsRef.current.delete(String(threadId||""));
       if(isCurrent){
         // The open thread's turns in order, where one without rows ends (a thread this window started begins its order here).
         if(threadId&&id)setTurnOrder(prev=>prev.threadId===threadId?{...prev,ids:appendTurnOrder(prev.ids,[id])}:{threadId,ids:[String(id)]});
@@ -2858,6 +2863,8 @@ export default function App(){
         if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:recordTurnCompletion(prev[outcomeKey],{status:outcomeStatus,durationMs,completedAt:completedAtMs/1000,error})}));
       }
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});markThreadTurn(threadId,false);
+      // A queued turn that ends without having started takes its send with it.
+      if(completedTurnId&&pendingSendsRef.current.get(String(threadId||""))?.turnId===String(completedTurnId))pendingSendsRef.current.delete(String(threadId||""));
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
       // A failed Codex turn ends with its error (T3 Code); an active Codex goal goes on with a turn Codex starts itself.
       const codexFailure=agentRuntime==="codex"?codexTurnFailure(p.turn):null,codexGoalContinues=agentRuntime==="codex"&&isCurrent&&goal?.status==="active";
@@ -3476,7 +3483,9 @@ export default function App(){
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
     // A send of this thread still on its way (left for a new task meanwhile) shows again as when it was sent: its message below the
     // history until the harness has its turn (the history holds it then), the turn running with its Stop, and the composer held as
-    // Sending until the send is through.
+    // Sending until the send is through. A send whose turn Codex has queued counts while Codex runs the thread: one it no longer runs
+    // missed its turn/started or turn/completed (a reconnect), and would keep the thread running with a Stop that waits for nothing.
+    if(pendingSendsRef.current.get(String(thread.id))?.turnId&&openedThread.status?.type!=="active")pendingSendsRef.current.delete(String(thread.id));
     const pendingSend=pendingSendsRef.current.get(String(thread.id)),resumedRunning=openedThread.status?.type==="active"||Boolean(pendingSend),resumedTurnId=resumedActiveTurnId(resumed);
     const withPendingSend=history=>pendingSend?.message&&!resumedTurnId?[...history,pendingSend.message]:history;
     if(pendingSend?.view&&!submittingRef.current){submittingRef.current=pendingSend.view;setSubmitting(true)}
@@ -4026,8 +4035,9 @@ export default function App(){
       setEvents(prev=>[...prev,{id:"goal-start-error-"+Date.now(),kind:"error",title:"The turn started, but Codex could not make the goal active: "+(error.message||String(error)),status:"done",raw:{}}]);
     }finally{if(codexGoalActivationRef.current===activation)codexGoalActivationRef.current=null}
   }
-  // A Stop pressed before its send's turn had an id is sent once to that turn, as soon as the id comes (turn/start's answer or
-  // turn/started); one that fails gives the Stop back. The Stop is then the turn's, so a press for the turn sends nothing more.
+  // A Stop pressed before its send's turn started is sent once to that turn, as soon as the harness can take it: turn/started, or
+  // turn/start's answer for a turn it has not queued; one that fails gives the Stop back. The Stop is then the turn's, so a press for
+  // the turn sends nothing more.
   function interruptStoppedSend(send,threadId,turnId){
     if(!send?.stopped||send.interrupted||!turnId||send.threadId!==String(threadId||""))return;send.interrupted=true;
     if(stopKeyRef.current===send)stopKeyRef.current=send.threadId+"\0"+turnId;
@@ -4076,8 +4086,11 @@ export default function App(){
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
       if(pendingSend.stopped)throw sendStoppedError();pendingSend.requested=true;
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null,shown=()=>activeThreadRef.current?.id===thread.id;if(shown())setActiveTurnId(turnId);if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
-      if(pendingSends.get(pendingSend.threadId)===pendingSend)pendingSends.delete(pendingSend.threadId);
-      if(turnStillRuns(result.turn))interruptStoppedSend(pendingSend,thread.id,turnId);
+      // An answer with no start time names a turn Codex has queued, which it can interrupt only once it has started it (turn/started;
+      // T3 Code waits for that too): the send stays until then, through as far as the composer goes. Any other answer ends it.
+      const queued=Boolean(turnId)&&result.turn.startedAt===null&&!pendingSend.startedTurnId&&turnStillRuns(result.turn)&&pendingSends.get(pendingSend.threadId)===pendingSend;
+      if(queued){pendingSend.turnId=String(turnId);pendingSend.view=null;pendingSend.message=null}
+      else{if(pendingSends.get(pendingSend.threadId)===pendingSend)pendingSends.delete(pendingSend.threadId);if(turnStillRuns(result.turn))interruptStoppedSend(pendingSend,thread.id,turnId)}
       if(goalActivation)await activateCodexGoal(goalActivation);
       if(turnId){const key=turnInfoKey(thread.id,turnId),mode=permissionModeLabel(permissionModeOverride||permissionMode);if(key&&mode)setTurnInfo(prev=>({...prev,[key]:{...prev[key],mode}}))}
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}if(shown()){setAttachments([]);setContextChips([])}return{thread,turnId};
@@ -4499,9 +4512,9 @@ export default function App(){
     if(activeThread?.id)await persistLocalQueue(activeThread.id,next);else setQueued(next);
   }
   async function stop(){
-    // A send whose turn/start has not answered stops too. The agent relay ends it where it waits (for the harness to start, or before
-    // its prompt) and the send puts its draft back; Codex names no turn before it answers, so that Stop waits for the turn's id
-    // (interruptStoppedSend), and until then the turn still runs here, as Stopping.
+    // A send whose turn has not started stops too. The agent relay ends it where it waits (for the harness to start, or before its
+    // prompt) and the send puts its draft back; Codex can interrupt a turn only once it has started it (turn/started), so that Stop
+    // waits for the turn to start (interruptStoppedSend), and until then the turn still runs here, as Stopping.
     const threadId=activeThread?.id?String(activeThread.id):null,pendingSend=threadId?pendingSendsRef.current.get(threadId)||null:null;
     // One Stop per turn: pressed again while it is on its way (a double click, the shortcut twice), it sends nothing more.
     const stopKey=activeTurnId?threadId+"\0"+activeTurnId:pendingSend;
@@ -4519,11 +4532,11 @@ export default function App(){
       }
     }
     if(pendingSend)pendingSend.stopped=true;
-    const interruptNow=Boolean(turnId||pendingSend?.requested&&agentRuntime!=="codex");if(pendingSend&&interruptNow)pendingSend.interrupted=true;
+    const interruptNow=Boolean(turnId&&(!pendingSend||pendingSend.startedTurnId===String(turnId))||pendingSend?.requested&&agentRuntime!=="codex");if(pendingSend&&interruptNow)pendingSend.interrupted=true;
     try{if(rpc&&threadId&&interruptNow)await rpc.request("turn/interrupt",{threadId,...(turnId?{turnId}:{})})}
     catch(error){if(stopKeyRef.current===stopKey){stopKeyRef.current=null;setStoppingThreadId(null)}throw error}
-    // A send stopped before its turn had an id runs on until it ends: its turn/completed, or the send ending without a turn.
-    const ended=!pendingSend||Boolean(turnId);
+    // A send stopped before its turn started runs on until it ends: its turn/completed, or the send ending without a turn.
+    const ended=!pendingSend;
     if(runtimeCapabilities.nativeQueue&&queueMode==="native"){if(ended){setRunning(false);setActiveTurnId(null)}await loadNativeQueue(rpc,threadId);return}
     // The queue goes back into the composer beside what it holds by then, which may be the draft of the send just stopped; an edit of
     // one of its messages ends first, so that message goes back as it was queued.

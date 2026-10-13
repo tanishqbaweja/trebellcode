@@ -135,8 +135,9 @@ for(const action of ["Delete","Archive"]){
 }
 
 // A Codex app-server the test drives, reached through Trebell's Codex relay. Its turn/start is held: the test lets the turn start
-// (turn/started) and lets the answer go, in either order, as Codex sends them. A started turn streams its reply and completes
-// unless turn/interrupt ends it first; one interrupted before it started ends as it starts. interruptDelayMs holds the interrupt's
+// (turn/started) and lets the answer go, in either order, as Codex sends them; an answer before the turn started names it queued
+// (startedAt null). A started turn streams its reply and completes unless turn/interrupt ends it first, and as codex-cli 0.162
+// does, an interrupt for a turn not started yet is refused ("no active turn to interrupt"). interruptDelayMs holds the interrupt's
 // answer (Codex answers once the turn has stopped), compactError fails thread/compact/start with that message, and holdTurns keeps
 // a turn running after its reply until it is set false. project makes the thread a project thread, whose follow-ups wait in
 // Trebell's own queue (Codex's queue holds only General chats'); settings adds to the app's settings.
@@ -155,7 +156,7 @@ async function startCodex(page,{name,project=false,settings={}}){
       const params=message.params||{},respond=result=>{if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,result}))};
       if(message.method==="turn/start"){
         const turn={id:"codex-turn-"+(codex.turns.length+1),status:"inProgress",started:false,timer:null};codex.turns.push(turn);
-        turn.answer=()=>respond({turn:{id:turn.id,status:"inProgress",items:[]}});
+        turn.answer=()=>respond({turn:{id:turn.id,status:"inProgress",items:[],startedAt:turn.started?Math.floor(Date.now()/1000):null}});
         turn.start=()=>{
           turn.started=true;notify("turn/started",{threadId:thread.id,turn:{id:turn.id,status:"inProgress",items:[]}});
           if(turn.status!=="inProgress")return end(turn,turn.status);
@@ -174,7 +175,8 @@ async function startCodex(page,{name,project=false,settings={}}){
       if(message.method==="thread/compact/start"&&codex.compactError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.compactError}}));return}
       if(message.method==="turn/interrupt"){
         codex.interrupts.push({...params});const turn=codex.turns.find(item=>item.id===params.turnId);
-        setTimeout(()=>{if(turn?.status==="inProgress"){if(turn.started)end(turn,"interrupted");else turn.status="interrupted"}respond({})},codex.interruptDelayMs);return;
+        if(turn&&!turn.started){ws.send(JSON.stringify({id:message.id,error:{code:-32600,message:"no active turn to interrupt"}}));return}
+        setTimeout(()=>{if(turn?.status==="inProgress")end(turn,"interrupted");respond({})},codex.interruptDelayMs);return;
       }
       let result={};
       if(message.method==="initialize")result={userAgent:"turn-controls-codex"};
@@ -215,11 +217,12 @@ async function startCodex(page,{name,project=false,settings={}}){
 }
 const stopping=page=>page.getByRole("button",{name:"Stopping",exact:true});
 
-// Codex names a send's turn only in turn/start's answer or in turn/started, whichever it sends first. A Stop pressed before either is
-// kept: the header says Stopping while the turn runs, the interrupt goes to the turn the moment its id comes, and only once, and the
-// stopped turn ends stopped, without its reply.
+// Codex names a send's turn in turn/start's answer or in turn/started, whichever it sends first, and can interrupt it only once it has
+// started it: an answer that comes first names the turn queued (startedAt null). A Stop pressed before then is kept: the header says
+// Stopping while the turn runs, the interrupt goes to the turn as soon as Codex has started it, and only once, and the stopped turn
+// ends stopped, without its reply.
 for(const first of ["turn/started","the turn/start answer"]){
-  test(`Stop before Codex names the turn is sent when ${first} names it, and the turn shows stopping until it ends`,async({page})=>{
+  test(`Stop before Codex names the turn goes to it once Codex has started it, ${first} first, and the turn shows stopping until it ends`,async({page})=>{
     test.setTimeout(60_000);
     await page.setViewportSize({width:1280,height:800});
     const codex=await startCodex(page,{name:"Codex count"});
@@ -231,9 +234,11 @@ for(const first of ["turn/started","the turn/start answer"]){
       await page.waitForTimeout(300);
       expect(codex.interrupts).toEqual([]);await expect(stopping(page)).toBeVisible();
       if(first==="turn/started")await shoot(page,"stopping-before-turn-id");
-      if(first==="turn/started")turn.start();else turn.answer();
+      // The answer names the turn queued: nothing goes to it until Codex has started it.
+      if(first!=="turn/started"){turn.answer();await page.waitForTimeout(400);expect(codex.interrupts).toEqual([]);await expect(stopping(page)).toBeVisible()}
+      turn.start();
       await expect.poll(()=>codex.interrupts).toEqual([{threadId:codex.thread.id,turnId:turn.id}]);
-      if(first==="turn/started"){await page.waitForTimeout(200);turn.answer()}else{await expect(stopping(page)).toBeVisible();turn.start()}
+      if(first==="turn/started"){await page.waitForTimeout(200);turn.answer()}
       await expect(stop(page)).toHaveCount(0,{timeout:10_000});await expect(stopping(page)).toHaveCount(0);
       await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/);
       await page.waitForTimeout(500);
@@ -243,6 +248,49 @@ for(const first of ["turn/started","the turn/start answer"]){
     }finally{await codex.close()}
   });
 }
+
+// The case live Codex showed: its answer came at once and named the turn queued, and Stop, pressed before turn/started, sent an
+// interrupt Codex refused ("no active turn to interrupt"), so the turn ran to its end. The Stop now waits for turn/started.
+test("Stop on a turn Codex has queued but not started waits for turn/started, and the turn ends stopped",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex queued turn"});
+  try{
+    await sendTyped(page,"Count from one to forty, one number per line.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;
+    turn.answer();await expect(composer(page)).toHaveAttribute("placeholder","Queue a follow-up…");
+    await stop(page).click();
+    await expect(stopping(page)).toBeVisible();await page.waitForTimeout(400);
+    expect(codex.interrupts).toEqual([]);await expect(stopping(page)).toBeVisible();
+    await shoot(page,"stopping-queued-turn");
+    turn.start();
+    await expect.poll(()=>codex.interrupts).toEqual([{threadId:codex.thread.id,turnId:turn.id}]);
+    await expect(stopping(page)).toHaveCount(0,{timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/);
+    await page.waitForTimeout(500);
+    expect(codex.interrupts).toHaveLength(1);await expect(page.getByText("Counting is done.",{exact:false})).toHaveCount(0);
+    await expect(page.getByTestId("app-action-error")).toHaveCount(0);
+  }finally{await codex.close()}
+});
+
+// That send counts as running only while Codex runs the thread: when its turn/started and turn/completed never reach the window (a
+// reconnect drops them), the thread opens again idle, not running with a Stop that waits for nothing.
+test("a thread whose queued turn Codex no longer runs opens again idle",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex lost start"});
+  try{
+    await sendTyped(page,"Count from one to forty, one number per line.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;
+    turn.answer();await expect(composer(page)).toHaveAttribute("placeholder","Queue a follow-up…");
+    // Codex runs the turn to its end, and neither notification reaches the window.
+    turn.started=true;turn.status="completed";
+    await newTask(page).click();await expectIdleNewTask(page);
+    await threadRow(page,"Codex lost start").locator(".thread-main").click();
+    await expect(composer(page)).toHaveAttribute("placeholder",IDLE_PLACEHOLDER,{timeout:10_000});
+    await expect(stop(page)).toHaveCount(0);await expect(stopping(page)).toHaveCount(0);
+  }finally{await codex.close()}
+});
 
 test("a double click on Stop sends one turn/interrupt for the turn",async({page})=>{
   test.setTimeout(60_000);
