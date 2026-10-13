@@ -19,7 +19,7 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/exact paths, commands, URLs/i);
   assert.match(prompt,/preserve existing externally visible contracts/i);
   assert.match(prompt,/public function\/class\/module names/i);
-  assert.match(prompt,/keep compatibility shims/i);
+  assert.doesNotMatch(prompt,/keep compatibility shims|inventory likely public entry points/i);
   assert.match(prompt,/Do not add or run tests unless the user asks you to test or verify implementation/i);
   assert.match(prompt,/Testing, smoke-check, benchmark, and verification guidance below applies only when the user explicitly asks/i);
   assert.match(prompt,/comments inside suspect implementation code as hypotheses/i);
@@ -61,9 +61,9 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/passing browser, mock, or in-memory path is not evidence/i);
   assert.match(prompt,/one Node launcher is not evidence that a transformed\/test-runner Node surface behaves identically/i);
   assert.match(prompt,/baseline parity check/i);
-  assert.match(prompt,/multiple routes, workflows, components, or acceptance surfaces/i);
-  assert.match(prompt,/cover them breadth-first/i);
-  assert.match(prompt,/account for every explicitly named surface/i);
+  assert.doesNotMatch(prompt,/multiple routes, workflows, components, or acceptance surfaces/i);
+  assert.doesNotMatch(prompt,/cover them breadth-first/i);
+  assert.doesNotMatch(prompt,/account for every explicitly named surface/i);
   assert.match(prompt,/prove live state is preserved while ineligible/i);
   assert.match(prompt,/one-item reproducer is not sufficient evidence/i);
   assert.match(prompt,/two-item partial-progress\/interleaving check/i);
@@ -162,12 +162,27 @@ test("Native does not add or run repository tests unless asked",()=>{
   assert.ok(prompt.indexOf(rule[0])<prompt.indexOf("- When the user explicitly asks for testing or verification after an edit"));
 });
 
-test("Native keeps every reported symptom and same-cause variant in scope",()=>{
+test("Native keeps every named symptom or surface in scope and accounts for each before finishing",()=>{
+  const prompt=nativeSystemPrompt({permissionMode:"full",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]}),lines=prompt.split("\n");
+  const rule=lines.filter(line=>line.startsWith("- Every symptom"));
+  assert.deepEqual(rule,["- Every symptom or surface named in the user's report or reproduction is in scope unless the user excludes it; before finishing, make sure each is addressed or say why it needs no change."]);
+  assert.doesNotMatch(prompt,/sibling entry point|another operand, argument position/i,"same-cause sibling hunting is not a standing rule");
+  assert.equal(lines.some(line=>/^- When the request explicitly names multiple routes/.test(line)),false,"the named-surfaces rule is folded into the scope rule");
+  assert.ok(prompt.indexOf("- Testing, smoke-check, benchmark, and verification guidance below applies only")<prompt.indexOf(rule[0]),"the scope rule keeps its place after the testing scope line");
+});
+
+test("Native inspects state before edits and points at the Git status the working context lists",()=>{
+  const prompt=nativeSystemPrompt({permissionMode:"full",projectless:false,tools:[{name:"trebell_repo"},{name:"trebell_workspace"}]});
+  assert.deepEqual(prompt.split("\n").filter(line=>line.startsWith("- Inspect relevant state")),[
+    "- Inspect relevant state before non-trivial edits (the working context lists Git status at turn start). Use tools for facts; do not invent file contents, command/browser/Git state, or verification results.",
+  ]);
+});
+
+test("Native preserves public contracts, imports included, without a standing inventory step",()=>{
   const prompt=nativeSystemPrompt({permissionMode:"full",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]});
-  const rule=prompt.split("\n").filter(line=>line.startsWith("- Every symptom shown in the user's report or reproduction is in scope"));
-  assert.equal(rule.length,1);
-  assert.match(rule[0],/unless the user excludes it/);
-  assert.match(rule[0],/same cause in another operand, argument position, or sibling entry point, fix that too; it is part of the requested fix, not speculative hardening/);
+  assert.deepEqual(prompt.split("\n").filter(line=>line.startsWith("- For bug fixes, repairs, and refactors of existing code")),[
+    "- For bug fixes, repairs, and refactors of existing code, preserve existing externally visible contracts by default: public function/class/module names, call signatures, imports, CLI entry points/options/exit semantics, configuration/schema/data formats, and documented behavior. Do not rename, remove, or reshape these merely to make internals cleaner unless the user/task explicitly asks for the contract change or all known consumers are deliberately migrated.",
+  ]);
 });
 
 test("Native uses existing covering tests only when testing was explicitly requested",()=>{
