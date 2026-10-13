@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
@@ -193,3 +193,36 @@ test("a Files editor save names the version it edited, and a file that changed o
   assert.equal(files.has("/srv/app/notes.txt"),false);
 });
 
+
+test("the Files editor reads and saves a local file only inside the project's folder, once '..' and links are resolved",async()=>{
+  const base=await mkdtemp(join(tmpdir(),"trebell-workspace-inside-"));
+  try{
+    const dir=join(base,"project"),away=join(base,"away"),outside={message:"File is outside the active workspace"};
+    await mkdir(join(dir,"src"),{recursive:true});await mkdir(away);await mkdir(join(base,"project-other"));
+    await writeFile(join(away,"secret.txt"),"secret\n");await writeFile(join(dir,"src","a.js"),"a\n");await writeFile(join(base,"project-other","b.txt"),"b\n");
+    // Folder links (junctions on Windows, which need no special rights): out of the project, into it, and to a folder not there.
+    await symlink(away,join(dir,"linked-away"),"junction");await symlink(join(dir,"src"),join(dir,"linked-src"),"junction");
+    await symlink(join(away,"not-made"),join(dir,"dangling"),"junction");
+    // A file link needs those rights on Windows, so it is checked where it can be made.
+    const fileLink=await symlink(join(away,"secret.txt"),join(dir,"secret-link.txt"),"file").then(()=>true,error=>{if(error.code==="EPERM")return false;throw error});
+    // Outside by its path, by '..', through a link, or in a sibling folder whose name starts with the project's: neither read nor written.
+    const outsidePaths=[join(away,"secret.txt"),join(dir,"src","..","..","away","secret.txt"),join(dir,"linked-away","secret.txt"),join(base,"project-other","b.txt"),...(fileLink?[join(dir,"secret-link.txt")]:[])];
+    for(const path of outsidePaths){
+      await assert.rejects(()=>environmentWorkspaceEditorFile(path,{root:dir}),outside,path);
+      await assert.rejects(()=>environmentWorkspaceEditorSave(path,"mine\n",{root:dir}),outside,path);
+    }
+    assert.equal(await readFile(join(away,"secret.txt"),"utf8"),"secret\n");assert.equal(await readFile(join(base,"project-other","b.txt"),"utf8"),"b\n");
+    // A new file outside is not made, through a link or through a link to a folder that is not there.
+    for(const path of [join(dir,"linked-away","new.txt"),join(dir,"dangling","new.txt"),join(dir,"..","new.txt")])await assert.rejects(()=>environmentWorkspaceEditorSave(path,"mine\n",{root:dir,version:null}),outside,path);
+    await assert.rejects(()=>stat(join(away,"new.txt")),{code:"ENOENT"});await assert.rejects(()=>stat(join(away,"not-made")),{code:"ENOENT"});await assert.rejects(()=>stat(join(base,"new.txt")),{code:"ENOENT"});
+    // Inside, everything works as before: a file, the same file through a link that stays inside, a new file in new folders,
+    // and the project opened by a link to its folder.
+    const opened=await environmentWorkspaceEditorFile(join(dir,"src","a.js"),{root:dir});assert.equal(opened.content,"a\n");
+    assert.equal((await environmentWorkspaceEditorFile(join(dir,"linked-src","a.js"),{root:dir})).content,"a\n");
+    assert.equal((await environmentWorkspaceEditorSave(join(dir,"src","a.js"),"b\n",{root:dir,version:opened.version})).content,"b\n");
+    await environmentWorkspaceEditorSave(join(dir,"docs","new","notes.md"),"new\n",{root:dir,version:null});
+    assert.equal(await readFile(join(dir,"docs","new","notes.md"),"utf8"),"new\n");
+    await symlink(dir,join(base,"project-link"),"junction");
+    assert.equal((await environmentWorkspaceEditorFile(join(base,"project-link","src","a.js"),{root:join(base,"project-link")})).content,"b\n");
+  }finally{await rm(base,{recursive:true,force:true})}
+});

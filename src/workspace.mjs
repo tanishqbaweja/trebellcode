@@ -1,9 +1,9 @@
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
-import { basename, dirname, join, posix, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 
 const execFileAsync = promisify(execFile);
 const SKIP = new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist"]);
@@ -256,6 +256,24 @@ export function environmentWorkspacePath(root,filePath,{environments=null,enviro
   return {remote:true,root:resolved.base,path:resolved.absolute,profile};
 }
 
+// Where a local path is on disk, through '..' and links, its last part included. A path not made yet is placed by its nearest
+// folder that is there; a link that leads nowhere is refused, as writing through it would make its target wherever it points.
+async function realPlace(path){
+  try{return await realpath(path)}
+  catch(error){
+    if(error?.code!=="ENOENT"||dirname(path)===path)throw error;
+    if(await lstat(path).then(()=>true,()=>false))throw new Error("File is outside the active workspace");
+    return join(await realPlace(dirname(path)),basename(path));
+  }
+}
+// A local file the Files editor reads or writes is one inside the project's own folder once both are placed on disk, as a remote
+// one must stay inside its workspace: a path out of it by '..' or through a link is refused, so nothing outside is read or written.
+async function insideLocalRoot({root,path}){
+  const [top,place]=await Promise.all([realPlace(root),realPlace(path)]);
+  const rel=relative(top,place);
+  if(rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel))throw new Error("File is outside the active workspace");
+}
+
 // The Files panel's viewer and editor read a file as bytes (a remote one streams from its environment, so no byte is lost to text
 // decoding on the way). It is text only when its bytes are UTF-8 with no NUL byte, so saving what the editor shows writes the same
 // bytes back; anything else (an image, an archive, a UTF-16 or Latin-1 file) is binary, shown with its size and never as text.
@@ -266,7 +284,7 @@ async function editorBytes(filePath,maxBytes,{root=null,environments=null,enviro
   const name=located.remote?posix.basename(located.path):basename(located.path);
   let size;
   if(located.remote)size=(await environments.attachmentInfo(environmentId,located.path)).size;
-  else{const info=await stat(located.path);if(!info.isFile())throw new Error("Not a file");size=info.size}
+  else{await insideLocalRoot(located);const info=await stat(located.path);if(!info.isFile())throw new Error("Not a file");size=info.size}
   const tooLarge=bytes=>new Error(`File is too large to preview (${Math.ceil(bytes/1024)} KB)`);
   if(size>maxBytes)throw tooLarge(size);
   if(!located.remote)return {located,name,bytes:await readFile(located.path)};
@@ -297,6 +315,7 @@ export async function environmentWorkspaceEditorSave(filePath,content,{version=n
   const bytes=Buffer.from(String(content??""),"utf8");
   if(bytes.length>2*1024*1024)throw new Error("File is too large to edit (maximum 2 MB)");
   const located=environmentWorkspacePath(root,filePath,{environments,environmentId});
+  // The read refuses a local path outside the project (that error is never taken for a missing file), so nothing is written there.
   const current=await editorBytes(filePath,32*1024*1024,{root,environments,environmentId}).then(read=>editorView(read),error=>{if(error?.code==="ENOENT"||located.remote)return null;throw error});
   if(current?.binary)throw new Error(current.name+" is a binary file, so it is not saved as text");
   const name=located.remote?posix.basename(located.path):basename(located.path);
