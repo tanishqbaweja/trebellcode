@@ -2079,3 +2079,41 @@ test("a completion judge without a usable WebSocket is sent the server-compacted
     assert.equal(verdict.telemetry.responseContinuation.fallbackReason,"control_gate_websocket_unavailable");assert.equal(verdict.telemetry.responseContinuation.compactedResend.omittedInputCount,1);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
+
+test("a compacted chain whose parent is too old to continue is resent from its server compaction, not as the whole transcript",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-compacted-expired-")),socketBodies=[];
+  try{
+    const manager=compactedChainManager({root,
+      fetchFn:async()=>{throw new Error("HTTP should not be needed")},
+      webSocket:()=>({request:async body=>{socketBodies.push(structuredClone(body));
+        return socketBodies.length===1?compactedResponse(body):{requestBytes:30,response:{id:"resp-after-wait",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"after the long build"}]}]},telemetry:{responseBytes:20,totalLatencyMs:1,timeToFirstTokenMs:1}};
+      }}),
+    });
+    const {firstRequest,next}=compactedChainRequests({sessionId:"native_compacted_expired",token:{}});
+    const first=await manager.turn("openai",firstRequest,{streamResponses:true});
+    const started=Date.now();manager.openAiResponseContinuations.now=()=>started+300_000;
+    const second=await manager.turn("openai",next(first),{streamResponses:true});
+    assert.equal(second.text,"after the long build");assert.equal(socketBodies.length,2);assertCompactedInput(socketBodies[1]);
+    assert.equal(second.telemetry.responseContinuation.parentExpired,true);
+    assert.deepEqual(second.telemetry.responseContinuation.compactedResend,{compactionResponseId:"resp-compacted",omittedInputCount:1,inputCount:3,rejected:false});
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a compacted resend the socket refuses is sent once more over HTTPS as the whole transcript",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-compacted-socket-refused-")),socketBodies=[],httpBodies=[];
+  try{
+    const manager=compactedChainManager({root,
+      webSocket:()=>({request:async body=>{socketBodies.push(structuredClone(body));if(socketBodies.length===1)return compactedResponse(body);
+        const error=new Error("Invalid value for 'input[0]'.");error.webSocketFailureKind="api_error";error.replaySafe=false;error.retryable=false;error.webSocketEvent={type:"error",status:400,error:{type:"invalid_request_error",message:error.message}};error.webSocketTelemetry={requestBytes:75,responseBytes:40,timeToFirstTokenMs:null};throw error;
+      }}),
+      fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");httpBodies.push(body);return httpReply(body,"whole")},
+    });
+    const {firstRequest,next}=compactedChainRequests({sessionId:"native_compacted_socket_refused",token:{}});
+    const first=await manager.turn("openai",firstRequest,{streamResponses:true});
+    const started=Date.now();manager.openAiResponseContinuations.now=()=>started+300_000;
+    const second=await manager.turn("openai",next(first),{streamResponses:true});
+    assert.equal(second.text,"whole");assertCompactedInput(socketBodies[1]);
+    assert.equal(httpBodies.length,1);assert.equal(Object.hasOwn(httpBodies[0],"previous_response_id"),false);assert.equal(httpBodies[0].input.length,3);assert.equal(httpBodies[0].input[0].role,"user");
+    assert.equal(second.telemetry.responseContinuation.compactedResend.rejected,true);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});

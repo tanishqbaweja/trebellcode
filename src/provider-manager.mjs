@@ -909,7 +909,9 @@ export class ProviderManager {
         if(!responsesBody){
           fullResponsesBody=this.#officialOpenAiResponsesBody({...request,model});
           openAiContinuation=this.openAiResponseContinuations.prepare(fullResponsesBody,parentId,{messageRefs,identityToken});
-          responsesBody=openAiContinuation?.body||fullResponsesBody;
+          // A parent that cannot be continued (too old, or another model or prefix) may still hold a server compaction, which the
+          // request is then resent from.
+          responsesBody=openAiContinuation?.used?openAiContinuation.body:compactedOrFull(fullResponsesBody,parentId);
         }
       }else{
         fullResponsesBody=providerTurnToResponses({...request,model});
@@ -961,7 +963,7 @@ export class ProviderManager {
         }catch(error){
           if(signal?.aborted||error?.name==="AbortError")throw error;
           const failedWire=Number(error?.webSocketTelemetry?.requestBytes||0);if(failedWire>0)wireRequestBytes+=failedWire;wireAttempts++;
-          const responseStatus=Number(error?.webSocketEvent?.status||error?.status||error?.statusCode||0),responseMessage=String(error?.webSocketEvent?.error?.message||error?.message||""),failureKind=String(error?.webSocketFailureKind||((error?.name==="TimeoutError")?"timeout":error?.protocolFailure?"protocol":error?.transportFailure?"transport":"unknown")),continuationRejected=Boolean(openAiContinuation?.used)&&[400,404,409].includes(responseStatus),invalidToolOutputRequest=responseStatus===400&&/no tool output found for function call/i.test(responseMessage),replaySafe=error?.replaySafe===true||continuationRejected||invalidToolOutputRequest;
+          const responseStatus=Number(error?.webSocketEvent?.status||error?.status||error?.statusCode||0),responseMessage=String(error?.webSocketEvent?.error?.message||error?.message||""),failureKind=String(error?.webSocketFailureKind||((error?.name==="TimeoutError")?"timeout":error?.protocolFailure?"protocol":error?.transportFailure?"transport":"unknown")),continuationRejected=(Boolean(openAiContinuation?.used)||sentCompacted())&&[400,404,409].includes(responseStatus),invalidToolOutputRequest=responseStatus===400&&/no tool output found for function call/i.test(responseMessage),replaySafe=error?.replaySafe===true||continuationRejected||invalidToolOutputRequest;
           openAiWebSocketFallback={transportFailure:Boolean(error?.transportFailure),protocolFailure:Boolean(error?.protocolFailure),failureKind,name:error?.name||null,code:error?.code??null,replaySafe,retried:false,requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null};
           if(this.openAiResponsesWebSocket===transport){
             if(error?.transportFailure)this.#resetOpenAiWebSocket("transport_failure");
@@ -985,7 +987,7 @@ export class ProviderManager {
             const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
             // The socket refused the compacted resend itself: the HTTPS retry sends the whole transcript.
             if(sentCompacted())compactedResend.rejected=true;
-            fullResponsesBody=fallbackBody;responsesBody=compactedOrFull(fallbackBody,openAiParentId);continuationFallback=true;continuationFallbackReason=continuationRejected?"previous_response_unavailable":"invalid_tool_output_state";
+            fullResponsesBody=fallbackBody;responsesBody=compactedOrFull(fallbackBody,openAiParentId);continuationFallback=true;continuationFallbackReason=continuationRejected?(openAiContinuation?.used?"previous_response_unavailable":"compacted_resend_rejected"):"invalid_tool_output_state";
           }
         }
     }
@@ -1000,7 +1002,7 @@ export class ProviderManager {
       if(refusedResend)compactedResend.rejected=true;
       responsesBody=compactedOrFull(fullResponsesBody,openAiParentId);
       sink?.restart();
-      upstream=await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;if(!continuationFallbackReason)continuationFallbackReason="previous_response_unavailable";
+      upstream=await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;if(!continuationFallbackReason)continuationFallbackReason=openAiContinuation?.used?"previous_response_unavailable":"compacted_resend_rejected";
       if(sentCompacted()&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
         try{await upstream.body?.cancel?.()}catch{}
         compactedResend.rejected=true;responsesBody=fullResponsesBody;sink?.restart();
