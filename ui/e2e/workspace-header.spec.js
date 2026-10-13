@@ -219,6 +219,33 @@ test("Tab and Shift+Tab move between the field and the buttons of the question a
   }finally{await harness.close()}
 });
 
+test("an agent's question that comes while the rename question is open leaves Tab to the rename question, then keeps it in its own",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,proxy,nativeDialogs,header}=await openHeaderApp(page);
+  const title=header.locator(".thread-title-button"),question=dialog(page),agent=page.locator(".question-modal");
+  const field=question.getByRole("textbox",{name:"Rename thread"}),cancel=question.getByRole("button",{name:"Cancel",exact:true});
+  try{
+    for(const [index,mode] of ["dark","light"].entries()){
+      await switchMode(page,mode);
+      await title.click();await expect(field).toBeFocused();
+      await page.keyboard.press("Tab");await expect(cancel,"Tab before the agent asks").toBeFocused();
+      await page.keyboard.press("Shift+Tab");await expect(field).toBeFocused();
+      // The running agent asks something meanwhile: its question waits behind the rename question, which keeps focus.
+      proxy.sockets.at(-1).send(JSON.stringify({id:9100+index,method:"item/tool/requestUserInput",params:{threadId:harness.threads[0].id,questions:[{id:"pick",header:"Pick one",question:"Which branch should I use?",options:[],allowMultiple:false}]}}));
+      await expect(agent).toHaveCount(1);await expect(field).toBeFocused();
+      await page.keyboard.press("Tab");await expect(cancel,"Tab once the agent's question is there").toBeFocused();
+      await page.keyboard.press("Shift+Tab");await expect(field).toBeFocused();
+      await shoot(page,"header-rename-over-agent-question");
+      // Escape closes the rename question alone; Tab then goes into the agent's question, which keeps it there.
+      await page.keyboard.press("Escape");await expect(question).toHaveCount(0);await expect(agent).toHaveCount(1);
+      await page.keyboard.press("Tab");
+      expect(await page.evaluate(()=>Boolean(document.activeElement?.closest?.(".question-modal"))),"focus after Tab").toBe(true);
+      await agent.getByRole("button",{name:"Cancel",exact:true}).click();await expect(agent).toHaveCount(0);
+    }
+    expect(nativeDialogs).toEqual([]);
+  }finally{await harness.close()}
+});
+
 test("switching the theme with the header's button leaves an action's error on screen to be read",async({page})=>{
   test.setTimeout(60_000);
   const {harness,proxy,header}=await openHeaderApp(page);

@@ -3,7 +3,8 @@ import { Check, FolderCode, History, KeyRound, ShieldCheck } from "lucide-react"
 import { api } from "../api.js";
 
 // Modal focus: move focus into the dialog when it opens and keep Tab/Shift+Tab inside it, so keyboard users cannot
-// reach (and activate) controls behind the backdrop. Focus that sits inside another open modal is left alone.
+// reach (and activate) controls behind the backdrop. Focus that sits inside another open modal is left alone, the questions the
+// app asks in its own <dialog> (Rename, Link pull request) among them.
 // A button disabled while it works (Finish setup, Import history) drops the keyboard to the page body; once it can be used
 // again focus goes back to it, so a failed Finish setup leaves the keyboard on it, inside the dialog.
 function useModalFocus(ref,active,focusOnOpen=true){
@@ -15,7 +16,7 @@ function useModalFocus(ref,active,focusOnOpen=true){
     const onFocus=event=>{lastFocusRef.current=event.target};
     const onKey=event=>{
       if(event.key!=="Tab"||event.defaultPrevented)return;
-      const current=document.activeElement,owner=current?.closest?.('[aria-modal="true"]');
+      const current=document.activeElement,owner=current?.closest?.('[aria-modal="true"],dialog[open]');
       if(owner&&owner!==node)return;
       const items=[...node.querySelectorAll("button,input,select,textarea,a[href],[tabindex]")].filter(item=>item.tabIndex>=0&&!item.disabled&&item.getClientRects().length);
       if(!items.length){event.preventDefault();node.focus();return}

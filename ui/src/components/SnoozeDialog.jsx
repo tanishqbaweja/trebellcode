@@ -3,14 +3,15 @@ import { Clock3, X } from "lucide-react";
 import { formatSnoozeUntil, localDateTimeValue, snoozeUntilFromDuration, timestampFromLocalDateTime } from "../thread-snooze.js";
 
 // Modal focus: move focus into the dialog when it opens and keep Tab/Shift+Tab inside it, so keyboard users cannot
-// reach (and activate) controls behind the backdrop. Focus that sits inside another open modal is left alone.
+// reach (and activate) controls behind the backdrop. Focus that sits inside another open modal is left alone, the questions the
+// app asks in its own <dialog> (Rename, Link pull request) among them.
 function useModalFocus(ref,active,focusOnOpen=true){
   useEffect(()=>{
     const node=ref.current;if(!active||!node)return;
     if(focusOnOpen&&!node.contains(document.activeElement))node.focus({preventScroll:true});
     const onKey=event=>{
       if(event.key!=="Tab"||event.defaultPrevented)return;
-      const current=document.activeElement,owner=current?.closest?.('[aria-modal="true"]');
+      const current=document.activeElement,owner=current?.closest?.('[aria-modal="true"],dialog[open]');
       if(owner&&owner!==node)return;
       const items=[...node.querySelectorAll("button,input,select,textarea,a[href],[tabindex]")].filter(item=>item.tabIndex>=0&&!item.disabled&&item.getClientRects().length);
       if(!items.length){event.preventDefault();node.focus();return}
