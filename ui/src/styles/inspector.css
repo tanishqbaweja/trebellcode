@@ -1103,7 +1103,7 @@
 :root:root .context-panel .open-in-error{position:absolute;right:0;top:calc(100% + 6px);z-index:30;width:max-content;max-width:min(280px,70vw);padding:7px 10px;border:1px solid var(--errb)!important;border-radius:9px;background:var(--panel)!important;color:var(--err)!important;font-size:11.5px;line-height:1.4;box-shadow:var(--shadow)}
 
 /* ------------------------------------------- Text question (askText in RightPanel.jsx) */
-/* Shown where window.prompt is unavailable (the Electron app), and for text with line breaks: one field, Cancel and OK. Enter
+/* Every text question and confirmation in the app, in place of the browser's prompt and confirm: one field, Cancel and OK. Enter
    submits (Ctrl+Enter in a multi-line box), Escape and Cancel cancel. It lives in <body>, so it is styled from the theme tokens directly. */
 :root:root .inspector-text-prompt{
   box-sizing:border-box;width:min(440px,calc(100vw - 32px));max-width:none;margin:auto;padding:0;border:1px solid var(--line2)!important;border-radius:var(--r-l);

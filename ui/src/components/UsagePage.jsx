@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { failureText } from "../display-labels.js";
 import { codexRateLimitEntries,formatRateReset,microsToCurrency,rateLimitReachedLabel,rateLimitRemainingPercent } from "../usage-account.js";
 import { estimateUsageCost } from "../usage-pricing.js";
+import { askConfirm } from "./RightPanel.jsx";
 
 function formatTokens(value){const n=Number(value||0);if(n>=1_000_000)return (n/1_000_000).toFixed(n>=10_000_000?1:2)+"M";if(n>=1_000)return (n/1_000).toFixed(n>=100_000?0:1)+"K";return n.toLocaleString()}
 function runtimeLabel(value){return ({native:"Trebell Native",codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"}[value]||value||"Unknown")}
@@ -146,7 +147,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   },[data.records]);
   const maxDaily=Math.max(1,...daily.map(([,value])=>Number(value.tokens||0)));
   async function clear(){
-    if(!confirm("Clear Trebell's locally recorded usage history? Provider account usage is not affected."))return;
+    if(!await askConfirm("Clear Trebell's locally recorded usage history? Provider account usage is not affected.",{confirm:"Clear history"}))return;
     setClearing(true);setError("");
     try{
       await api("/api/usage",{method:"DELETE"});
@@ -158,7 +159,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     finally{setClearing(false)}
   }
   async function resetCodexLimit(creditId=null){
-    if(!rpc||!confirm("Use one earned Codex reset credit now? This can reset an eligible rate-limit window."))return;
+    if(!rpc||!await askConfirm("Use one earned Codex reset credit now? This can reset an eligible rate-limit window.",{confirm:"Use reset credit",tone:"primary"}))return;
     setCodex(current=>({...current,loading:true,notice:"",failure:""}));
     try{
       const result=await rpc.request("account/rateLimitResetCredit/consume",{idempotencyKey:crypto.randomUUID(),creditId:creditId||null});

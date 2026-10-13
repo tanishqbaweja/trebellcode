@@ -32,9 +32,10 @@ async function proxyRelay(page,harness){
 }
 
 // One thread per name, opened on the first. branch makes the project a Git repository on that branch with a change to review;
-// desktop stands in for the desktop app's bridge (its folder picker counts its calls). window.prompt throws, as it does in the
-// desktop app, so Rename asks in the app's own dialog.
+// desktop stands in for the desktop app's bridge (its folder picker counts its calls), where window.prompt throws as it does there.
+// nativeDialogs lists every browser dialog the page opened (each is dismissed): the app asks in its own.
 async function openHeaderApp(page,{names=["Release checklist"],replies=[],branch=null,desktop=false}={}){
+  const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
   const harness=await startRelayHarness({replies});
   for(const name of names)harness.seedThread(name,[{user:"Prepare the "+name.toLowerCase(),items:[replyItem("seed-reply-"+harness.threads.length,"Ready when you are.")]}]);
   await routeRelayApp(page,harness);
@@ -42,16 +43,16 @@ async function openHeaderApp(page,{names=["Release checklist"],replies=[],branch
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
   if(branch)await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:true,cwd:harness.repo,root:harness.repo,branch,branches:[branch],upstream:null,status:[{path:"app.js",index:" ",workingTree:"M"}],remotes:[],worktrees:[{path:harness.repo,branch}]}));
   const proxy=await proxyRelay(page,harness);
-  await page.addInitScript(isDesktop=>{
+  if(desktop)await page.addInitScript(()=>{
     window.prompt=()=>{throw new Error("prompt() is and will not be supported.")};
-    if(isDesktop)window.trebellDesktop={pickDirectory:async()=>{window.__folderPicks=(window.__folderPicks||0)+1;return null}};
-  },desktop);
+    window.trebellDesktop={pickDirectory:async()=>{window.__folderPicks=(window.__folderPicks||0)+1;return null}};
+  });
   await page.setViewportSize({width:1280,height:800});
   await page.goto("/");
   const row=page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${names[0]}"]`)});
   await row.locator(".thread-main").click();
   await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
-  return {harness,proxy,header:page.locator(".chat-workspace .workspace-header")};
+  return {harness,proxy,nativeDialogs,header:page.locator(".chat-workspace .workspace-header")};
 }
 // The header's theme button, as a person switches between dark and light, and the window at 1280x800 and 900x800 in that mode.
 async function switchMode(page,mode){
@@ -118,6 +119,29 @@ test("a refused rename says why and keeps the title, and while the harness is st
     await expect(page.locator('.thread-row.active .thread-main[title="Ship the release"]')).toBeVisible();
     expect(harness.threadStore.get(thread.id).name).toBe("Ship the release");
     expect(errors).toEqual([]);
+  }finally{await harness.close()}
+});
+
+test("Rename asks in the app's own dialog in the browser too, never the browser's prompt, and works from the keyboard",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,nativeDialogs,header}=await openHeaderApp(page);
+  const title=header.locator(".thread-title-button"),question=dialog(page),field=question.getByRole("textbox",{name:"Rename thread"});
+  try{
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      await title.click();
+      await expect(question).toBeVisible();await expect(field).toBeFocused();await expect(field).toHaveValue("Release checklist");
+      await shoot(page,"header-rename-question");
+      // Escape leaves the title as it was, with focus back on it.
+      await page.keyboard.type("Not this",{delay:20});await page.keyboard.press("Escape");
+      await expect(question).toHaveCount(0);await expect(title).toHaveText("Release checklist");await expect(title).toBeFocused();
+    }
+    // From the keyboard alone: Enter on the title asks, the new name is typed over the old one, and Enter renames.
+    await page.keyboard.press("Enter");await expect(field).toBeFocused();
+    await page.keyboard.type("Ship the release",{delay:20});await page.keyboard.press("Enter");
+    await expect(question).toHaveCount(0);await expect(title).toHaveText("Ship the release");await expect(title).toBeFocused();
+    expect(harness.threadStore.get(harness.threads[0].id).name).toBe("Ship the release");
+    expect(nativeDialogs).toEqual([]);
   }finally{await harness.close()}
 });
 

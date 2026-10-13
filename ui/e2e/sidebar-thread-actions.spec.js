@@ -299,3 +299,39 @@ test("a bulk action that changes every selected thread leaves keyboard focus on 
     await page.keyboard.press("Enter");await expect(bulkBar(page)).toBeVisible();
   }finally{await harness.close()}
 });
+
+test("Delete asks in the app's own dialog, never the browser's: Escape and Cancel keep the thread, and Delete thread removes it from the keyboard",async({page})=>{
+  test.setTimeout(90_000);
+  const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
+  const {harness,id}=await openSidebarApp(page);
+  const question=page.locator("dialog.inspector-text-prompt"),doomed=id("Bulk three");
+  try{
+    for(const [mode,close] of [["dark","Escape"],["light","Cancel"]]){
+      await switchMode(page,mode);
+      const row=await rowMenu(page,"Bulk three");
+      await row.getByRole("button",{name:"Delete",exact:true}).click();
+      await expect(question.locator("p")).toHaveText("Delete “Bulk three” permanently? This cannot be undone.");
+      await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+      await expect(question.getByRole("button",{name:"Delete thread",exact:true})).toBeVisible();
+      await shoot(page,"sidebar-delete-question");
+      if(close==="Escape")await page.keyboard.press("Escape");else await question.getByRole("button",{name:"Cancel",exact:true}).click();
+      await expect(question).toHaveCount(0);
+      await expect(row.locator(".thread-menu summary")).toBeFocused();await expect(row).toBeVisible();
+    }
+    expect(harness.threadStore.get(doomed)).toBeTruthy();
+    await switchMode(page,"dark");
+    // From the keyboard: Enter on the row's menu button, Tab down to Delete, Enter, Tab from Cancel to Delete thread, Enter.
+    const row=threadRow(page,"Bulk three"),button=row.locator(".thread-menu summary"),remove=row.getByRole("button",{name:"Delete",exact:true});
+    await row.locator(".thread-main").focus();await page.keyboard.press("Tab");await expect(button).toBeFocused();
+    await page.keyboard.press("Enter");await expect(row.locator(".thread-menu")).toHaveAttribute("open","");
+    for(let step=0;step<14&&!await remove.evaluate(node=>node===document.activeElement);step++)await page.keyboard.press("Tab");
+    await expect(remove).toBeFocused();await page.keyboard.press("Enter");
+    await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+    await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Delete thread",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(question).toHaveCount(0);
+    await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk two","Bulk four"]]]);
+    expect(harness.threadStore.get(doomed)).toBeFalsy();
+    expect(nativeDialogs).toEqual([]);
+  }finally{await harness.close()}
+});

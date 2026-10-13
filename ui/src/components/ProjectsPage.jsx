@@ -6,6 +6,7 @@ import { PROJECT_PAGE_SIZE, projectGroupCounts, projectGroupKey, projectWindow }
 import { projectRemovalQuestion, projectRestoreBlocker, projectRestoreBody } from "../project-restore.js";
 import { inkOn } from "../theme-utils.js";
 import { startVisibilityPoll } from "../visibility-poll.js";
+import { askConfirm } from "./RightPanel.jsx";
 
 // The Projects page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves on,
 // or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.
@@ -338,7 +339,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   // (projectRestoreBlocker), the page asks first and says what goes with it.
   async function removeProject(project){
     const removed=latestProject(project),blocker=projectRestoreBlocker(removed),undoable=Boolean(onOfferUndo)&&!blocker;
-    if(!undoable&&!confirm(projectRemovalQuestion(removed,blocker)))return;
+    if(!undoable&&!await askConfirm(projectRemovalQuestion(removed,blocker),{confirm:"Remove project"}))return;
     const index=projectsRef.current.findIndex(item=>item.id===removed.id);
     setBusy(true);setError("");setCardError(null);
     try{

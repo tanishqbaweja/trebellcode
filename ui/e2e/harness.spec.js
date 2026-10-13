@@ -186,9 +186,18 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await expect.poll(()=>page.evaluate(()=>window.__copiedText.at(-1))).toBe("#2");
   await expect(page.getByLabel("Stack merge method")).toHaveValue("squash");
   await page.getByLabel("Stack merge method").selectOption("rebase");
-  page.once("dialog",dialog=>dialog.accept());
-  await page.getByRole("button",{name:"Merge through #2"}).click();
+  // Merge through asks in the app's own dialog, never the browser's: Escape merges nothing, and the keyboard says yes.
+  const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
+  const appQuestion=page.locator("dialog.inspector-text-prompt"),mergeThrough=page.getByRole("button",{name:"Merge through #2"});
+  await mergeThrough.click();
+  await expect(appQuestion.locator("p")).toHaveText(/^Merge .*#2 using rebase as one GitHub stack operation\?/);
+  await expect(appQuestion.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+  await page.keyboard.press("Escape");await expect(appQuestion).toHaveCount(0);await expect(mergeThrough).toBeFocused();
+  expect(stackActions).toEqual([]);
+  await page.keyboard.press("Enter");await page.keyboard.press("Tab");
+  await expect(appQuestion.getByRole("button",{name:"Merge through #2",exact:true})).toBeFocused();await page.keyboard.press("Enter");
   await expect.poll(()=>stackActions.length).toBe(1);
+  expect(nativeDialogs).toEqual([]);
   expect(stackActions[0].action).toBe("merge");
   expect(stackActions[0].number).toBe(2);
   expect(stackActions[0].method).toBe("rebase");
@@ -268,8 +277,9 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await expect(page.getByText("Update available",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"Download update"}).click();
   await expect(page.getByRole("button",{name:"Restart & install"})).toBeVisible();
-  page.once("dialog",dialog=>dialog.accept());
   await page.getByRole("button",{name:"Restart & install"}).click();
+  await appQuestion.getByRole("button",{name:"Restart and install",exact:true}).click();
+  expect(nativeDialogs).toEqual([]);
   await expect.poll(()=>page.evaluate(()=>window.__updateInstalled)).toBe(true);
   await page.getByRole("button",{name:/Appearance/}).click();
   await page.getByLabel("Panel animations").fill("200");

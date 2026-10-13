@@ -233,6 +233,33 @@ test("/goal pause, resume and clear on a Native thread change its goal, as the G
   }finally{await harness.close()}
 });
 
+test("the Goal panel's Clear asks in the app's own dialog, never the browser's: Escape keeps the goal, and Clear goal clears it from the keyboard",async({page})=>{
+  test.setTimeout(90_000);
+  const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
+  const harness=await openComposerApp(page);
+  try{
+    const composer=page.getByTestId("composer"),panel=page.getByTestId("goal-panel"),objective=panel.getByLabel("Objective",{exact:true}),status=panel.locator(".goal-status");
+    await composer.click();await page.keyboard.type("/goal Make the login tests pass",{delay:15});await page.keyboard.press("Enter");
+    await expect(objective).toHaveValue("Make the login tests pass");await expect(status).toHaveText("active");
+    const clear=panel.getByRole("button",{name:"Clear",exact:true}),question=page.locator("dialog.inspector-text-prompt"),cancel=question.getByRole("button",{name:"Cancel",exact:true});
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      await clear.click();
+      await expect(question.locator("p")).toHaveText("Clear this thread goal?");await expect(cancel).toBeFocused();
+      await expect(question.getByRole("button")).toHaveText(["Cancel","Clear goal"]);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+"goal-clear-question-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+      await page.keyboard.press("Escape");await expect(question).toHaveCount(0);await expect(clear).toBeFocused();
+      await expect(status).toHaveText("active");await expect(objective).toHaveValue("Make the login tests pass");
+    }
+    // From the keyboard: Enter on Clear, Tab from Cancel to Clear goal, Enter.
+    await page.keyboard.press("Enter");await expect(cancel).toBeFocused();
+    await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Clear goal",exact:true})).toBeFocused();await page.keyboard.press("Enter");
+    await expect(status).toHaveText("not set");await expect(objective).toHaveValue("");
+    expect(nativeDialogs).toEqual([]);
+  }finally{await harness.close()}
+});
+
 test("/plan puts the plan prompt with what follows it in the composer, ready to send",async({page})=>{
   test.setTimeout(60_000);
   const harness=await openComposerApp(page);

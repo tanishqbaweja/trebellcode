@@ -13,7 +13,7 @@ import { api } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
 import ChatMarkdown,{ StreamingMarkdown } from "./components/LazyChatMarkdown.jsx";
-import RightPanel, { askText } from "./components/RightPanel.jsx";
+import RightPanel, { askChoice, askConfirm, askText } from "./components/RightPanel.jsx";
 import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx";
@@ -3174,7 +3174,7 @@ export default function App(){
       return;
     }
     if(action==="delete"){
-      if(!rpc||!confirm("Delete this thread permanently?"))return;
+      if(!rpc||!await askConfirm("Delete “"+titleOf(thread)+"” permanently? This cannot be undone.",{confirm:"Delete thread"}))return;
       if(openingThreadRef.current===String(thread.id))await newChat();
       await rpc.request("thread/delete",{threadId:thread.id});
       setThreads(prev=>prev.filter(t=>t.id!==thread.id));
@@ -4445,8 +4445,14 @@ export default function App(){
       message.checkpointId&&currentProject?.managedWorktree&&!currentProject.managedWorktree.cleanedAt
       &&normalizePath(currentProject.path)===normalizePath(activeThread.cwd||projectPath)
     );
-    const restoreFiles=isolatedWorktree?confirm("Also restore workspace files to the checkpoint before this turn?\n\nOK = conversation + files\nCancel = conversation only"):false;
-    if(restoreFiles)await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId:activeThread.id}}).catch(e=>alert(e.message));
+    // In a worktree of its own the files can go back with the conversation. Cancel rewinds nothing, and files that cannot be put back
+    // leave the conversation as it is too, rather than rewinding half of what was asked.
+    const restoreFiles=isolatedWorktree?await askChoice("Also restore workspace files to the checkpoint before this turn?\n\nEither way the conversation goes back to before this message.",{choices:[{value:false,label:"Conversation only"},{value:true,label:"Conversation and files",tone:"danger"}]}):false;
+    if(restoreFiles==null)return;
+    if(restoreFiles){
+      try{await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId:activeThread.id}})}
+      catch(error){showActionError(error,"Could not restore the workspace files");return}
+    }
     // A rewind the harness refuses (a running turn, a turn it has no checkpoint for) is shown, and the conversation stays as it is.
     try{await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId})}
     catch(error){showActionError(error,"Could not edit from this message");return}

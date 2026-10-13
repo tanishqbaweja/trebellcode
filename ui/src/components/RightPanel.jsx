@@ -12,19 +12,13 @@ const TABS=[
   ["runtime",Cpu,"Runtime"],
 ];
 
-// Asks for one line of text, like window.prompt: resolves to the text (possibly empty) on OK and to null on Cancel or Escape.
-// Electron's renderer throws on window.prompt ("prompt() is not supported"), which left Create branch, Add worktree, Publish,
-// PR edits and review comments doing nothing in the desktop app; there a small in-app dialog asks instead, while browsers keep
-// the native prompt. A click outside the dialog does not cancel it, so a double click on the opening button cannot dismiss it.
-// Text that may hold line breaks (`multiline`: a description, a comment) is always asked in the dialog, in a box where Enter adds a
-// line and Ctrl+Enter gives OK: a one-line field drops the breaks, so a description came back as one run-on paragraph.
+// Asks for one line of text in the app's own dialog: resolves to the text (possibly empty) on OK and to null on Cancel or Escape.
+// The browser's window.prompt is not used: Electron's renderer throws on it ("prompt() is not supported"), and in a browser it
+// opens the browser's own box instead of the app's. A click outside the dialog does not cancel it, so a double click on the opening
+// button cannot dismiss it. Text that may hold line breaks (`multiline`: a description, a comment) is asked in a box
+// where Enter adds a line and Ctrl+Enter gives OK: a one-line field drops the breaks, so a description came back as one run-on
+// paragraph.
 export function askText(message,defaultValue="",{multiline=false}={}){
-  if(multiline)return askTextInApp(message,defaultValue,true);
-  try{return Promise.resolve(window.prompt(message,defaultValue))}
-  catch{return askTextInApp(message,defaultValue,false)}
-}
-
-function askTextInApp(message,defaultValue,multiline){
   return new Promise(resolve=>{
     const opener=document.activeElement;
     const dialog=document.createElement("dialog");
@@ -60,10 +54,11 @@ function askTextInApp(message,defaultValue,multiline){
   });
 }
 
-// Asks before something is dropped, in the same dialog with no field: resolves to true on the `confirm` button and to false on the
-// `cancel` one or Escape. It opens with focus on `cancel`, so Enter keeps things as they are.
-export function askConfirm(message,{confirm,cancel}){
-  return askChoice(message,{choices:[{value:true,label:confirm,tone:"danger"}],cancel}).then(value=>value===true);
+// Asks before something is done, in the same dialog with no field: resolves to true on the `confirm` button and to false on the
+// `cancel` one or Escape. It opens with focus on `cancel`, so Enter keeps things as they are. The confirm button is red (`tone`)
+// unless what it does can be taken back or loses nothing ("primary").
+export function askConfirm(message,{confirm,cancel,tone="danger"}){
+  return askChoice(message,{choices:[{value:true,label:confirm,tone}],cancel}).then(value=>value===true);
 }
 
 // Asks for one of a few answers in the same dialog: one button per choice after `cancel`, each resolving to its `value` (`tone` is its

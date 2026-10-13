@@ -124,8 +124,9 @@ test.describe("Removing a project",()=>{
     await page.screenshot({animations:"disabled",path:shots+`project-restored-${mode}-1280.png`});
   });
 
-  test("a project that is still cloning asks first, names what is lost, and Cancel keeps it",async({page,request})=>{
+  test("a project that is still cloning asks first in the app's own dialog, names what is lost, and Escape or Cancel keeps it",async({page,request})=>{
     const boot=await open(page,request);
+    const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
     const path=join(boot.cwd,"ui");
     await request.post("/api/projects",{data:{path,name:"Cloning Project"}});
     // The list says this project is still cloning, as it does while a clone job runs.
@@ -135,22 +136,31 @@ test.describe("Removing a project",()=>{
       return json(route,{...body,projects:(body.projects||[]).map(project=>project.path===path?{...project,cloneJob:{id:"polish-clone",url:"https://github.com/owner/repo.git",status:"running",progress:40,phase:"Receiving objects",error:null,startedAt:Date.now(),completedAt:null}}:project)});
     });
     const deletes=[];page.on("request",request=>{if(request.method()==="DELETE"&&/\/api\/projects\?/.test(request.url()))deletes.push(request.url())});
-    await nav(page,"Projects").click();
+    // The card has moved into its repository's group (drawn again there) before the person reaches for Remove.
+    await openProjects(page);
     const card=page.locator(".project-card").filter({hasText:"Cloning Project"});
     await expect(card.locator(".project-clone-status")).toContainText("Receiving objects");
-    const asked=[];
-    page.once("dialog",dialog=>{asked.push(dialog.message());dialog.dismiss().catch(()=>{})});
-    await card.getByRole("button",{name:"Remove Cloning Project",exact:true}).click();
-    await expect.poll(()=>asked.length).toBe(1);
-    expect(asked[0]).toBe("Remove “Cloning Project” while it is still cloning? This cannot be undone: its saved actions, hooks and settings are lost. The clone keeps running.");
+    const question=page.locator("dialog.inspector-text-prompt"),cancel=question.getByRole("button",{name:"Cancel",exact:true}),remove=card.getByRole("button",{name:"Remove Cloning Project",exact:true});
+    for(const mode of MODES){
+      if(mode==="light"){await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      await remove.click();
+      await expect(question.locator("p")).toHaveText("Remove “Cloning Project” while it is still cloning? This cannot be undone: its saved actions, hooks and settings are lost. The clone keeps running.");
+      await expect(cancel).toBeFocused();await expect(question.getByRole("button")).toHaveText(["Cancel","Remove project"]);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:shots+`project-remove-question-${mode}-${width}.png`})}
+      await page.setViewportSize({width:1280,height:800});
+      if(mode==="dark")await page.keyboard.press("Escape");else await cancel.click();
+      await expect(question).toHaveCount(0);await expect(remove).toBeFocused();
+    }
     await page.waitForTimeout(300);
     expect(deletes).toEqual([]);
     await expect(card).toBeVisible();
-    page.once("dialog",dialog=>dialog.accept().catch(()=>{}));
-    await card.getByRole("button",{name:"Remove Cloning Project",exact:true}).click();
+    // From the keyboard: Enter on Remove, Tab from Cancel to Remove project, Enter.
+    await page.keyboard.press("Enter");await expect(cancel).toBeFocused();
+    await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Remove project",exact:true})).toBeFocused();await page.keyboard.press("Enter");
     await expect(card).toHaveCount(0);
     expect(deletes.length).toBe(1);
     await expect(page.getByTestId("thread-undo-toast")).toHaveCount(0);
+    expect(nativeDialogs).toEqual([]);
     // The page polls the list while a clone runs: a read still in flight when the test ends must not fail the next test.
     await page.unrouteAll({behavior:"ignoreErrors"});
   });

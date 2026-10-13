@@ -3371,13 +3371,15 @@ test("runtime install refreshes only the installed active harness and reuses bun
     {id:"opencode-default",kind:"opencode",name:"OpenCode",available:true,installed:true,authenticated:true,version:"fixture"},
     {id:"antigravity-default",kind:"antigravity",name:"Antigravity",available:true,installed:true,authenticated:true,version:"fixture"},
   ];
-  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  // The header's theme button sets appearanceMode, which stays in the page.
+  let appearanceMode="dark";
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode,panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const snapshot=()=>({selectedRuntime,selectedInstanceId,definitions,instances,statuses:statuses()});
   const bootstrap=()=>({mock:true,provider:"openai",providerReady:true,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"runtime-install-bundle-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const catalog=()=>({agentRuntime:selectedRuntime,models:["fixture-model"],metadata:{models:[{id:"fixture-model",name:"Fixture model",agent:selectedRuntime}]}});
   await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(bootstrap())})});
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
-  await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())}));
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")appearanceMode=route.request().postDataJSON()?.appearanceMode||appearanceMode;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())})});
   await page.route(/\/api\/models$/,route=>{requests.modelGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog())})});
   await page.route(/\/api\/agent-runtimes$/,route=>{
     if(route.request().method()==="GET")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(snapshot())});
@@ -3388,13 +3390,28 @@ test("runtime install refreshes only the installed active harness and reuses bun
   });
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-  page.on("dialog",dialog=>dialog.accept());
+  const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
   await page.goto("/");
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
-  const activeRuntime=page.locator(".agent-runtime-option").filter({hasText:"OpenCode"});
+  const activeRuntime=page.locator(".agent-runtime-option").filter({hasText:"OpenCode"}),update=activeRuntime.getByRole("button",{name:"Update",exact:true});
+  // Update asks first, in the app's own dialog with Cancel focused: Escape installs nothing.
+  const question=page.locator("dialog.inspector-text-prompt"),cancel=question.getByRole("button",{name:"Cancel",exact:true});
+  for(const mode of ["dark","light"]){
+    if(mode==="light"){await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+    await update.click();
+    await expect(question.locator("p")).toHaveText(/^Install or update OpenCode in the selected environment\?/);await expect(cancel).toBeFocused();
+    await expect(question.getByRole("button")).toHaveText(["Cancel","Update OpenCode"]);
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+"runtime-install-question-"+mode+"-"+width+"x800.png"})}
+    await page.setViewportSize({width:1280,height:800});
+    await page.keyboard.press("Escape");await expect(question).toHaveCount(0);await expect(update).toBeFocused();
+  }
+  expect(requests.runtimePosts).toBe(0);
   const activeBefore={...requests};
-  await activeRuntime.getByRole("button",{name:"Update",exact:true}).click();
+  // From the keyboard: Enter on Update, Tab from Cancel to Update OpenCode, Enter.
+  await page.keyboard.press("Enter");await expect(cancel).toBeFocused();
+  await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Update OpenCode",exact:true})).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(page.locator(".agent-runtime-settings")).toContainText("OpenCode installed and ready.");
   expect(requests.runtimePosts-activeBefore.runtimePosts).toBe(1);
   expect(requests.bootstrapGets-activeBefore.bootstrapGets).toBe(0);
@@ -3402,10 +3419,12 @@ test("runtime install refreshes only the installed active harness and reuses bun
   const inactiveRuntime=page.locator(".agent-runtime-option").filter({hasText:"Antigravity"});
   const inactiveBefore={...requests};
   await inactiveRuntime.getByRole("button",{name:"Update",exact:true}).click();
+  await question.getByRole("button",{name:"Update Antigravity",exact:true}).click();
   await expect.poll(()=>requests.runtimePosts-inactiveBefore.runtimePosts).toBe(1);
   await page.waitForTimeout(250);
   expect(requests.bootstrapGets-inactiveBefore.bootstrapGets).toBe(0);
   expect(requests.modelGets-inactiveBefore.modelGets).toBe(0);
+  expect(nativeDialogs).toEqual([]);
 });
 
 test("successful direct runtime authentication reuses the returned runtime snapshot",async({page})=>{
@@ -4721,8 +4740,8 @@ test("usage clear failures keep recorded usage visible",async({page,request})=>{
   const recent=page.locator(".usage-recent");
   await expect(recent).toContainText("test/coding-fast");
   await expect(page.getByRole("button",{name:"Clear local history",exact:true})).toBeEnabled();
-  page.once("dialog",dialog=>dialog.accept());
   await page.getByRole("button",{name:"Clear local history",exact:true}).click();
+  await page.locator("dialog.inspector-text-prompt").getByRole("button",{name:"Clear history",exact:true}).click();
   await expect(page.getByRole("alert")).toHaveText("Could not clear local usage history: Deliberate usage clear failure");
   await expect(recent).toContainText("test/coding-fast");
   await expect(page.locator(".usage-summary")).toContainText("1 recorded turn");
@@ -6422,11 +6441,10 @@ test("Forgejo repository publishing is exposed with a clear owner path prompt",a
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-forgejo-publish-1280x800.png",fullPage:true});
-  page.once("dialog",async dialog=>{
-    expect(dialog.message()).toContain("owner/repository or repository");
-    await dialog.dismiss();
-  });
   await publish.click();
+  const question=page.locator("dialog.inspector-text-prompt");
+  await expect(question).toContainText("owner/repository or repository");
+  await page.keyboard.press("Escape");await expect(question).toHaveCount(0);
 });
 
 test("source control keeps the PR visible when loading full details fails",async({page,request})=>{
@@ -6819,8 +6837,9 @@ test("Add worktree reports native folder picker failures",async({page,request})=
   await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
   const addWorktree=panel.getByRole("button",{name:"Add worktree",exact:true});
   await expect(addWorktree).toBeVisible();
-  page.once("dialog",dialog=>dialog.accept("picker-failure"));
   await addWorktree.click();
+  await expect(page.locator("dialog.inspector-text-prompt")).toContainText("New worktree branch");
+  await page.keyboard.type("picker-failure",{delay:15});await page.keyboard.press("Enter");
   const alert=panel.getByRole("alert");
   await expect(alert).toHaveText("Could not choose a worktree folder: Deliberate worktree folder picker failure");
   await expect(alert).toBeInViewport();

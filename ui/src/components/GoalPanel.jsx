@@ -4,6 +4,7 @@ import { startSameThreadVerificationRepair } from "../verification-repair.js";
 import { verificationEvidenceMeta, verificationEvidenceSummary, verificationEvidenceView } from "../verification-evidence-view.js";
 import { codexGoalStatusLabel } from "../codex-turn-options.js";
 import { workspaceLabel } from "../workspace-label.js";
+import { askConfirm } from "./RightPanel.jsx";
 
 function lines(value){return (Array.isArray(value)?value:[]).join("\n")}
 function parseLines(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean)}
@@ -113,7 +114,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     });
   }
   async function clear(){
-    if(!rpc||!confirm("Clear this thread goal?"))return;setBusy("clear");setError("");
+    if(!rpc||!await askConfirm("Clear this thread goal?",{confirm:"Clear goal"}))return;setBusy("clear");setError("");
     try{
       await rpc.request("thread/goal/clear",{threadId:thread.id});onGoal?.(null);
       setObjective("");setTokenBudget("");setTimeBudget("");setTurnBudget("");setToolCallBudget("");setChildAgentBudget("");setCostBudgetUsd("");setCompletionConditions("");setConstraints("");setValidationExpectations("");setDetailsOpen(false);setAdvancedBudgetOpen(false);
@@ -132,7 +133,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     }catch(e){setError(e.message||String(e))}finally{setBusy("")}
   }
   async function clearContinuity(){
-    if(!rpc||!confirm("Clear explicit continuity notes? Trebell-derived verification, checkpoints, queue and failure evidence will remain."))return;
+    if(!rpc||!await askConfirm("Clear explicit continuity notes? Trebell-derived verification, checkpoints, queue and failure evidence will remain.",{confirm:"Clear notes"}))return;
     setBusy("continuity-clear");setError("");
     try{
       const result=await rpc.request("thread/continuity/clear",{threadId:thread.id});onContinuity?.(result?.continuity||null);

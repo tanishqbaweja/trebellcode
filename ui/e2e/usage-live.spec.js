@@ -134,6 +134,8 @@ async function openUsage(page,wsUrl,usage,{runtime="codex",runtimeUsage=null}={}
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
   await page.route(/\/api\/environments$/,route=>json(route,{profiles:[],activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/usage(?:\?.*)?$/,usage);
+  // The header's theme button: its setting stays in the page.
+  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
   await page.goto("/");await page.getByRole("button",{name:"Usage",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();
 }
@@ -253,15 +255,31 @@ test("Usage failures name the action before the reason, and only once",async({pa
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({records:[record],total:{inputTokens:1200,outputTokens:300,totalTokens:1500},models:{},runtimes:{},daily:{}})});
     });
     await expect(page.locator(".usage-recent")).toContainText("test/coding-fast");
-    page.once("dialog",dialog=>dialog.accept());
-    await page.getByRole("button",{name:"Clear local history",exact:true}).click();
+    // Both actions ask first in the app's own dialog, never the browser's, with Cancel focused: Escape does nothing.
+    const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
+    const question=page.locator("dialog.inspector-text-prompt"),cancel=question.getByRole("button",{name:"Cancel",exact:true}),clear=page.getByRole("button",{name:"Clear local history",exact:true});
+    for(const mode of ["dark","light"]){
+      if(mode==="light"){await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      await clear.click();
+      await expect(question.locator("p")).toHaveText("Clear Trebell's locally recorded usage history? Provider account usage is not affected.");await expect(cancel).toBeFocused();
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+"usage-clear-question-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+      await page.keyboard.press("Escape");await expect(question).toHaveCount(0);await expect(clear).toBeFocused();
+    }
+    await expect(page.locator(".usage-page>.inline-error")).toHaveCount(0);
+    // From the keyboard: Enter on Clear local history, Tab from Cancel to Clear history, Enter.
+    await page.keyboard.press("Enter");await expect(cancel).toBeFocused();
+    await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Clear history",exact:true})).toBeFocused();await page.keyboard.press("Enter");
     await expect(page.locator(".usage-page>.inline-error")).toHaveText("Could not clear local usage history: the usage file is read-only");
+    await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
     // Using a reset credit fails with a bare reason: the card's alert names the action first.
     const codexCard=page.getByTestId("codex-account-usage");
     await expect(codexCard).toContainText("1 reset credit available");
-    page.once("dialog",dialog=>dialog.accept());
     await codexCard.getByRole("button",{name:"Use reset credit"}).click();
+    await expect(question.locator("p")).toHaveText("Use one earned Codex reset credit now? This can reset an eligible rate-limit window.");
+    await question.getByRole("button",{name:"Use reset credit",exact:true}).click();
     await expect(codexCard.getByRole("alert")).toHaveText("Could not use the reset credit: Deliberate reset credit failure");
+    expect(nativeDialogs).toEqual([]);
     await expect(codexCard.getByRole("button",{name:"Use reset credit"})).toBeEnabled();
     await codexCard.getByRole("alert").scrollIntoViewIfNeeded();
     await page.screenshot({animations:"disabled",path:auditDir+"usage-action-failures-1280x800.png",fullPage:false});
@@ -287,8 +305,8 @@ test("Usage takes cleared turns off the page even when the reload after the clea
     const rows=recent.locator(".usage-table>div:not(.usage-table-head)"),clear=page.getByRole("button",{name:"Clear local history",exact:true});
     await expect(rows).toHaveCount(1);await expect(rows).toContainText("test/coding-fast");
     await expect(summary).toContainText("1 recorded turn");
-    page.once("dialog",dialog=>dialog.accept());
     await clear.click();
+    await page.locator("dialog.inspector-text-prompt").getByRole("button",{name:"Clear history",exact:true}).click();
     await expect(page.locator(".usage-page>.inline-error")).toHaveText("Could not load usage: Deliberate usage reload failure");
     expect(deletes).toBe(1);
     // The turn was deleted, so it is not shown beside the failed reload's alert: no row, model, daily bar or total speaks for it,

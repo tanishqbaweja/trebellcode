@@ -750,6 +750,33 @@ test("Merge and Auto-merge ask first, naming the pull request, the method and th
   await shootBothModes(page,"source-control-merged-notice");
 });
 
+// In a browser too, where window.prompt and window.confirm would work, the panel asks in the app's own dialog.
+test("Revert PR asks in the app's own dialog, never the browser's: Escape opens nothing, and the keyboard opens the revert",async({page,request})=>{
+  test.setTimeout(60_000);
+  await page.addInitScript(()=>{window.__opened=[];window.open=url=>{window.__opened.push(String(url));return null}});
+  const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,capabilities:{revert:true},prs:[samplePr(31,{title:"Merged change",state:"MERGED",mergedAt:"2026-10-12T10:00:00Z",mergeCommitSha:"abc1234"})]});
+  const {pulls}=await openGitPanel(page,request,"Source control revert question");
+  const dialog=page.locator("dialog.inspector-text-prompt"),detail=pulls.locator(".pr-detail"),reverts=()=>host.actions().filter(body=>body.action==="revert");
+  await pulls.getByRole("button",{name:/#31 Merged change/}).click();
+  const revert=detail.getByRole("button",{name:"Revert PR",exact:true});
+  const ask=async()=>{await revert.click();await expect(dialog.locator("p")).toHaveText("Open a new pull request that reverts #31?")};
+  await ask();
+  await expect(dialog.getByRole("button")).toHaveText(["Cancel","Open revert pull request"]);
+  await expect(dialog.getByRole("button",{name:"Cancel"})).toBeFocused();
+  await shootBothModes(page,"source-control-revert-question",{close:()=>page.keyboard.press("Escape"),reopen:ask});
+  await page.keyboard.press("Escape");await expect(dialog).toHaveCount(0);await expect(revert).toBeFocused();
+  await page.waitForTimeout(200);expect(reverts()).toEqual([]);
+  // From the keyboard: Enter on Revert PR, Tab from Cancel to Open revert pull request, Enter.
+  await page.keyboard.press("Enter");await expect(dialog.getByRole("button",{name:"Cancel"})).toBeFocused();
+  await page.keyboard.press("Tab");await expect(dialog.getByRole("button",{name:"Open revert pull request"})).toBeFocused();
+  await page.keyboard.press("Enter");await expect(dialog).toHaveCount(0);
+  await expect.poll(()=>reverts().length).toBe(1);
+  expect(reverts()[0]).toMatchObject({action:"revert",number:31});
+  expect(nativeDialogs).toEqual([]);
+});
+
 test("auto-merge that is on says so and is not offered again, and requested reviewers are listed",async({page,request})=>{
   test.setTimeout(60_000);
   await asInDesktopApp(page);

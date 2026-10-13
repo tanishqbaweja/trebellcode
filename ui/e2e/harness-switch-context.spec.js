@@ -261,7 +261,7 @@ test("asking for the commit text while the pull request text is still being writ
   test.setTimeout(60_000);
   let releaseReview=()=>{};const reviewAnswer=new Promise(resolve=>{releaseReview=resolve});
   const directory=await projectDirectory(),{server,relay,close}=await startHarness(page,{runtime:"grok",projectPath:directory.path,holdReviewText:{grok:reviewAnswer}});
-  const dialogs=[];page.on("dialog",async dialog=>{dialogs.push([dialog.type(),dialog.message(),dialog.defaultValue()]);await dialog.accept(dialog.defaultValue())});
+  const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
   try{
     const right=await openProjectGitPanel(page,relay),alert=right.locator(".source-control-error"),message=right.getByPlaceholder("Commit message");
     await right.getByRole("button",{name:"Generate PR",exact:true}).click();
@@ -271,11 +271,12 @@ test("asking for the commit text while the pull request text is still being writ
     await expect(generate).toBeEnabled();await generate.click();
     await expect(message).toHaveValue("Grok Build fixture commit message");
     releaseReview();
-    // The pull request text still lands: the title prompt and the description dialog open with it, and the pull request is created.
-    const description=page.locator("dialog.inspector-text-prompt textarea");
+    // The pull request text still lands: the title and description questions open with it, and the pull request is created.
+    const title=page.locator("dialog.inspector-text-prompt").getByRole("textbox",{name:"PR title"}),description=page.locator("dialog.inspector-text-prompt textarea");
+    await expect(title).toHaveValue("Grok Build fixture PR title");await expect(title).toBeFocused();await page.keyboard.press("Enter");
     await expect(description).toHaveValue("Written by Grok Build.");await expect(description).toBeFocused();await page.keyboard.press("Control+Enter");
     await expect.poll(()=>server.pullRequests.length,{timeout:10_000}).toBe(1);
-    expect(dialogs).toEqual([["prompt","PR title","Grok Build fixture PR title"]]);
+    expect(nativeDialogs).toEqual([]);
     expect(server.pullRequests[0]).toMatchObject({cwd:directory.path,title:"Grok Build fixture PR title",body:"Written by Grok Build."});
     await expect(alert).toHaveCount(0);
     expect(server.gitText.map(item=>item.runtime)).toEqual(["grok"]);

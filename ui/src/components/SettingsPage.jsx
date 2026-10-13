@@ -13,6 +13,7 @@ import { harnessCheck, harnessStateText, harnessStateTitle } from "../harness-ch
 import { agentName } from "../display-labels.js";
 import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, MODEL_PROVIDER_LABELS, modelProviderLabel } from "../provider-labels.js";
 import ScopedSettingsCard from "./ScopedSettingsCard.jsx";
+import { askConfirm } from "./RightPanel.jsx";
 
 const PROVIDER_NOTES={
   openai:"Models are loaded live from the official OpenAI /v1/models API for this key.",
@@ -289,13 +290,14 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       setAgentInfo(result);setInstanceDraft(null);showAgentMessage("Runtime profile removed.");
     }catch(error){showAgentMessage(error.message,true)}
   }
-  async function installAgentRuntime(kind){
+  // verb: what the button said, Install or Update, which the question's button says again.
+  async function installAgentRuntime(kind,verb="Install"){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind);if(!definition?.installable)return;
     const label=definition.name||kind;const packageName=definition.packageName||"the official package";
     const confirmation=kind==="antigravity"
       ?"Install or update "+label+" ACP runtime on this machine?\n\nTrebell will download Google's published Antigravity ACP runtime through the official Agent Client Protocol registry."
       :"Install or update "+label+" in the selected environment?\n\nTrebell will run: "+(definition.installCommand||"npm install -g "+packageName);
-    if(!confirm(confirmation))return;
+    if(!await askConfirm(confirmation,{confirm:verb+" "+label,tone:"primary"}))return;
     setAgentMessageTarget(kind);
     setInstallingAgent(kind);showAgentMessage("Installing "+label+"…");
     try{
@@ -675,7 +677,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   async function installDesktopUpdate(){
     if(!window.trebellDesktop?.updates)return;
     const version=desktopUpdate?.availableVersion?` ${desktopUpdate.availableVersion}`:"";
-    if(!window.confirm(`Install update${version} and restart Trebell Code?\n\nRunning agent tasks and terminal commands may be interrupted. ${settings.continueThreadsAfterRestart?"Supported active threads are configured to resume after restart.":"Restart recovery is off, so active threads will not automatically resume."}`))return;
+    if(!await askConfirm(`Install update${version} and restart Trebell Code?\n\nRunning agent tasks and terminal commands may be interrupted. ${settings.continueThreadsAfterRestart?"Supported active threads are configured to resume after restart.":"Restart recovery is off, so active threads will not automatically resume."}`,{confirm:"Restart and install",tone:"primary"}))return;
     try{await window.trebellDesktop.updates.install()}catch(error){setDesktopUpdate(prev=>({...prev,status:"error",error:error.message||String(error)}))}
   }
 
@@ -803,7 +805,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           const actionText=active?(incompatible||unverified?"Needs setup":"Active"):status?.available?(incompatible||unverified?"Needs setup":"Switch"):status?.installed?"Not ready":"Not installed";
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(def.id,status.id)}>
             <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em className={"is-"+String(actionText).toLowerCase().replace(/\s+/g,"-")}>{actionText}</em>
-          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id)}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
+          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id,status?.installed?"Update":"Install")}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
         })}</div>
         {selectedAgentDefinition?.multipleInstances!==false&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>

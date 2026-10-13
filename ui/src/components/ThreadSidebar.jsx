@@ -64,8 +64,12 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
     if(!copied)throw new Error("Could not copy to clipboard.");
   };
   // An item gives focus back to the menu's button as the menu closes (the item hides with it), so a dialog it opens, Snooze…,
-  // gives focus back there too.
-  const runMenuAction=callback=>{const menu=menuRef.current;menu?.querySelector("summary")?.focus();closeRowMenu(menu);return runAction(callback)};
+  // gives focus back there too. The button shows only while its row has focus or the pointer, so after a question the item asked
+  // (Delete) it cannot take focus back by itself: the row's own button takes it first and hands it on, as SnoozeDialog does.
+  const runMenuAction=callback=>{
+    const menu=menuRef.current,button=menu?.querySelector("summary");button?.focus();closeRowMenu(menu);
+    return runAction(callback).then(()=>{if(document.activeElement===document.body&&button?.isConnected){button.closest(".thread-row")?.querySelector(".thread-main")?.focus({preventScroll:true});button.focus({preventScroll:true})}});
+  };
   // Why a thread cannot be moved: Codex orders the threads outside a section by recent activity only, and a thread of a section whose
   // order could not be read has no place to move from (the reason is named).
   const orderHint=thread.sectionOrderError||(agentRuntime==="codex"&&!thread.section?.id&&!thread.section?.name?"This list is kept in order of recent activity":undefined);
