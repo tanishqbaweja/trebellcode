@@ -345,8 +345,9 @@
 :root:root .context-panel .git-diff .diff-line.add{background:color-mix(in srgb,var(--ok) 8%,transparent);color:var(--dadd)}
 :root:root .context-panel .git-diff .diff-line.del{background:color-mix(in srgb,var(--err) 8%,transparent);color:var(--ddel)}
 :root:root .context-panel .git-diff .diff-line.ctx{color:var(--tx2)}
+/* A reason longer than the box scrolls inside it from its top, rather than spilling above the box over the Files | Changes switch. */
 :root:root .context-panel .changes-empty{
-  box-sizing:border-box;min-height:220px;margin:16px;padding:32px 22px;display:grid;place-items:center;align-content:center;gap:6px;text-align:center;
+  box-sizing:border-box;min-height:220px;margin:16px;padding:32px 22px;display:grid;place-items:center;align-content:safe center;gap:6px;text-align:center;overflow:auto;
   border:1.5px dashed var(--line2)!important;border-radius:var(--r-l);background:transparent!important;color:var(--tx3)!important;
 }
 :root:root .context-panel .changes-empty svg{box-sizing:content-box;width:20px;height:20px;margin-bottom:8px;padding:11px;border:1px solid color-mix(in srgb,var(--ok) 28%,transparent);border-radius:13px;background:var(--okt);color:var(--ok)!important}

@@ -349,6 +349,27 @@ test("the Diff tab says it is loading until the working tree answers, and the in
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-tabs-agree-changes-light-1280x800.png",fullPage:true});
 });
 
+test("Changes for a folder that is not a Git repository says so in one line, and a long reason stays in its box under the switch",async({page,request})=>{
+  test.setTimeout(60_000);
+  const {right,inner}=await openFilesFolder(page,request,"Workspace plain folder",{"notes.txt":"notes\n"});
+  const empty=right.locator(".changes-empty"),changes=inner.getByRole("button",{name:/^Changes/}),files=inner.getByRole("button",{name:"Files",exact:true});
+  await changes.click();
+  await expect(empty).toHaveText("Could not load changesThis folder is not a Git repository");
+  await shootBothModes(page,"workspace-changes-not-git");
+  // A reason as long as git's whole usage text stays inside the box, below the Files | Changes switch, which can still be clicked.
+  const long="git diff failed: "+"a reason that goes on and on ".repeat(160);
+  await page.route("**/api/workspace/diff?**",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:false,status:"",diff:"",error:long})}));
+  for(const width of [1280,900]){
+    await page.setViewportSize({width,height:800});
+    await files.click();await changes.click();await expect(empty).toContainText("a reason that goes on");
+    const place=await empty.evaluate(node=>{const own=node.getBoundingClientRect(),reason=node.querySelector("span").getBoundingClientRect(),tabs=node.closest(".workspace-panel").querySelector(".panel-tabs").getBoundingClientRect();return {startsInBox:reason.top>=own.top,belowSwitch:own.top>=tabs.bottom}});
+    expect(place,"the long reason at "+width).toEqual({startsInBox:true,belowSwitch:true});
+    await files.click();await expect(right.locator("[data-workspace-entry]").first()).toBeVisible();
+  }
+  await page.setViewportSize({width:1280,height:800});await changes.click();
+  await shootBothModes(page,"workspace-changes-long-reason");
+});
+
 test("a general chat keeps its Files view, with no Changes switch beside the disabled Diff tab",async({page,request})=>{
   test.setTimeout(35_000);
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});

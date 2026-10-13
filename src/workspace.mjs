@@ -172,6 +172,9 @@ export async function workspaceDiff(root) {
     }).catch(() => ({stdout:""}));
     return { cwd, isGit: true, status: statusOut, diff: stdout, stderr };
   } catch (error) {
+    // Outside a Git repository git diff takes its arguments as two paths to compare and, given none, prints its whole usage and
+    // exits 129: the folder is named as not a repository instead.
+    if (error?.code === 129) return { cwd, isGit: false, status: "", diff: "", error: "This folder is not a Git repository" };
     return { cwd, isGit: false, status: "", diff: "", error: error instanceof Error ? error.message : String(error) };
   }
 }
