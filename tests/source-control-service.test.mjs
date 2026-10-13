@@ -73,6 +73,9 @@ test("provider capabilities reflect known host limitations",()=>{
   assert.equal(CAPABILITIES.bitbucket.updateBranch,false);
   assert.equal(CAPABILITIES["azure-devops"].comment,true);
   assert.equal(CAPABILITIES["azure-devops"].editComments,true);
+  // A merged pull request's title and description: GitHub, GitLab and Forgejo still edit them; Bitbucket and Azure DevOps refuse
+  // to change one that is merged (completed).
+  assert.deepEqual(Object.fromEntries(Object.entries(CAPABILITIES).map(([host,can])=>[host,can.editMerged])),{github:true,gitlab:true,forgejo:true,bitbucket:false,"azure-devops":false});
 });
 
 function sourceFixtureExecutor(remoteUrl,{extraRun=null,extraStdin=null,onTempJson=null}={}){

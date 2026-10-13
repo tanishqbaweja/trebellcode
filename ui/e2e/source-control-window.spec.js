@@ -777,6 +777,34 @@ test("Revert PR asks in the app's own dialog, never the browser's: Escape opens 
   expect(nativeDialogs).toEqual([]);
 });
 
+// A merged pull request offers only what its host still does with one: no Checkout and no reviewer to ask (it can no longer be
+// reviewed), and Edit only on a host that edits a merged one's title and description. Comments stay, and so does Revert PR.
+test("a merged pull request offers only what still applies to it on its host",async({page,request})=>{
+  test.setTimeout(60_000);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,capabilities:{revert:true,editMerged:true},prs:[samplePr(41,{title:"Merged change",state:"MERGED",mergedAt:"2026-10-12T10:00:00Z",mergeCommitSha:"abc1234"}),samplePr(42,{title:"Open change"})]});
+  const {pulls}=await openGitPanel(page,request,"Source control merged pull request");
+  const detail=pulls.locator(".pr-detail"),actions=detail.locator(".pr-actions button"),composer=detail.locator(".pr-composer-trigger");
+  // An open one, for comparison, offers everything.
+  await pulls.getByRole("button",{name:/#42 Open change/}).click();
+  await expect(detail.getByRole("heading",{name:"#42 Open change"})).toBeVisible();
+  await expect(actions).toHaveText(["Open","Attach","Link to thread","Edit","Checkout","Request reviewer","Auto-merge","Merge"]);
+  await expect(composer).toHaveText("Comment / review");
+  await pulls.getByRole("button",{name:/#41 Merged change/}).click();
+  await expect(detail.getByRole("heading",{name:"#41 Merged change"})).toBeVisible();
+  await expect(actions).toHaveText(["Open","Attach","Link to thread","Edit","Revert PR"]);
+  await expect(composer).toHaveText("Comment");
+  await shootBothModes(page,"source-control-merged-pr-actions");
+  // On a host that does not edit a merged pull request, it offers no Edit either.
+  host.capabilities.editMerged=false;
+  await pulls.getByRole("button",{name:"Refresh pull requests",exact:true}).click();
+  await expect.poll(()=>host.calls.filter(call=>call.path==="prs").length).toBeGreaterThan(1);
+  await pulls.getByRole("button",{name:/#42 Open change/}).click();await expect(detail.getByRole("heading",{name:"#42 Open change"})).toBeVisible();
+  await pulls.getByRole("button",{name:/#41 Merged change/}).click();await expect(detail.getByRole("heading",{name:"#41 Merged change"})).toBeVisible();
+  await expect(actions).toHaveText(["Open","Attach","Link to thread","Revert PR"]);
+  await expect(composer).toHaveText("Comment");
+});
+
 test("auto-merge that is on says so and is not offered again, and requested reviewers are listed",async({page,request})=>{
   test.setTimeout(60_000);
   await asInDesktopApp(page);
