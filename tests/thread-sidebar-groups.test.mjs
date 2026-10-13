@@ -13,6 +13,15 @@ test("a thread shows as running from the open window's state, the turn events se
   const unchanged={detached:true};assert.equal(settleTurnStates(unchanged,[{id:"other",status:{type:"idle"}}]),unchanged);
 });
 
+// Each Codex thread runs on an app-server of its own, and the listing comes from another one, which has not loaded it: "notLoaded"
+// says nothing about the thread's turn, so the turn events seen stay.
+test("a listing that has not loaded a thread leaves the turn events seen for it",()=>{
+  const seen={background:true,ended:false};
+  assert.equal(settleTurnStates(seen,[{id:"background",status:{type:"notLoaded"}},{id:"ended",status:{type:"notLoaded"}}]),seen);
+  assert.deepEqual(settleTurnStates(seen,[{id:"background",status:{type:"notLoaded"}},{id:"ended",status:{type:"idle"}}]),{background:true});
+  assert.deepEqual([...runningThreadIds([{id:"background",status:{type:"notLoaded"}}],{turnStates:seen})],["background"]);
+});
+
 test("sidebar grouping classifies each thread exactly once in display order",()=>{
   const threads=[
     {id:"p",section:{name:"Pinned"}},

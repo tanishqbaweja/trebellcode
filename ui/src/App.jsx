@@ -924,6 +924,8 @@ export default function App(){
   // harness has answered a thread-list load since it connected; until then an empty sidebar is waiting, not empty.
   // threadTurnStates: the turn starts and ends this window saw per thread (the sidebar's running dot).
   const [threadListError,setThreadListError]=useState(""); const [threadListLoaded,setThreadListLoaded]=useState(false); const [threadTurnStates,setThreadTurnStates]=useState({});
+  // The turn states as of the last render, for a transport that reconnects (followedThreadIds).
+  const threadTurnStatesRef=useRef(threadTurnStates);threadTurnStatesRef.current=threadTurnStates;
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   // The turn the live activity card shows: the running turn, and once it ends the last one (the card stays until the next send,
   // which leaves it to no turn until its own starts). Layout effects, so the rows are ordered for the new turn before it paints.
@@ -1965,6 +1967,24 @@ export default function App(){
       return null;
     }
   }
+  // The threads whose updates this window follows besides the one shown: those whose turn it saw start and not end, its background
+  // tasks and its sends still on their way.
+  function followedThreadIds(){
+    const ids=new Set([...backgroundThreadsRef.current].map(String));
+    for(const [id,runs] of Object.entries(threadTurnStatesRef.current||{}))if(runs)ids.add(id);
+    for(const id of pendingSendsRef.current.keys())ids.add(String(id));
+    return ids;
+  }
+  // Resumes those threads (all but the one shown, which its reopen resumed) on a new transport, and takes the status each has now.
+  async function resumeFollowedThreads(client,ids){
+    const shown=String(activeThreadRef.current?.id||"");
+    await Promise.all([...ids].filter(id=>id&&id!==shown).map(async id=>{
+      const resumed=await client.request("thread/resume",{threadId:id,excludeTurns:true}).catch(()=>null);
+      if(!resumed?.thread||client!==rpcRef.current)return;
+      markThreadTurn(id,resumed.thread.status?.type==="active"||pendingSendsRef.current.has(id));
+      if(resumed.thread.status)setThreads(prev=>prev.map(thread=>thread.id===id?{...thread,status:resumed.thread.status}:thread));
+    }));
+  }
   function markThreadTurn(threadId,running){
     const id=String(threadId||"");if(!id)return;
     setThreadTurnStates(previous=>previous[id]===Boolean(running)?previous:{...previous,[id]:Boolean(running)});
@@ -2279,7 +2299,8 @@ export default function App(){
     // for the reopen of the thread shown: a harness that answers that it cannot resume the thread (a thread's own Codex app-server
     // that cannot start again) is asked twice more, then the composer says why with Retry, and the thread's turn, which ran where the
     // harness can no longer reach, no longer shows as running.
-    let disposed=false,retryTimer=null,client=null,established=false,refusals=0,reopenRefusals=0;setTransportReason("");
+    // followed: the threads this window followed on a socket that dropped (followedThreadIds), resumed once a connect is through.
+    let disposed=false,retryTimer=null,client=null,established=false,refusals=0,reopenRefusals=0,followed=null;setTransportReason("");
     const retry=attempt=>{
       clearTimeout(retryTimer);retryTimer=null;if(disposed)return;
       if(attempt>=120){setRpcStatus("error");return}
@@ -2292,7 +2313,7 @@ export default function App(){
         // status its refusal set (an initialize or a reopen of the thread shown that the harness refused).
         if(current!==rpcRef.current||refused||reopenRefused)return;
         setRpcStatus(status);
-        if(status==="disconnected"&&ready&&!disposed){ready=false;retry(0)}
+        if(status==="disconnected"&&ready&&!disposed){ready=false;followed=followedThreadIds();retry(0)}
       },onNotification:message=>notificationHandlerRef.current?.(message,current),onServerRequest:message=>serverRequestHandlerRef.current?.(current,message)});
       client=current;rpcRef.current=current;setRpc(current);
       try{
@@ -2326,6 +2347,10 @@ export default function App(){
             if(openSeqRef.current===asked){reopenRefusals=0;break}
           }
         }
+        // Each Codex thread runs on an app-server of its own, which sends a thread's updates only to the connections that resumed it: the
+        // threads this window followed on the socket that dropped (a turn that runs, a background task, a send on its way) are resumed on
+        // this one too, so their updates come again, and one whose turn ended meanwhile reads so.
+        if(followed?.size&&agentRuntime==="codex"){const ids=followed;followed=null;await resumeFollowedThreads(current,ids);if(disposed)return}
         await Promise.all([loadSkills(current,projectPath),loadCollaborationModes(current)]);
         if(disposed)return;ready=established=true;reopenRefusals=0;
         if(!current.isConnected()){ready=false;retry(0)}

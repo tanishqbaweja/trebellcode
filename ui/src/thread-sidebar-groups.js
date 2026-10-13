@@ -12,9 +12,10 @@ export function runningThreadIds(threads=[],{activeThreadId=null,activeRunning=f
   return ids;
 }
 
-// A listing that reports a thread's status is newer than the turn events seen before it, so its status takes over.
+// A listing that reports a thread's status is newer than the turn events seen before it, so its status takes over. "notLoaded" is no
+// such report: each Codex thread runs on an app-server of its own, and the one that lists them has not loaded the thread.
 export function settleTurnStates(turnStates={},listed=[]){
-  const reported=(listed||[]).filter(thread=>thread?.id&&thread?.status?.type).map(thread=>String(thread.id));
+  const reported=(listed||[]).filter(thread=>thread?.id&&thread?.status?.type&&thread.status.type!=="notLoaded").map(thread=>String(thread.id));
   if(!reported.some(id=>Object.prototype.hasOwnProperty.call(turnStates||{},id)))return turnStates;
   const next={...turnStates};for(const id of reported)delete next[id];
   return next;
