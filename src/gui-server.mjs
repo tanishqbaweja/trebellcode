@@ -3311,6 +3311,10 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     cleanupDelegationWorkspace:({workspace,parentThread})=>cleanupPreparedDelegationWorkspace(workspace,parentThread),
   });
 
+  // The page, Playwright's request context and Node's keep-alive agent send their next request on a connection they keep open. Node
+  // closes one that sat idle for 5 s, so a request sent just then met a closing socket (ECONNRESET): an idle connection is kept
+  // longer than those clients keep it, and the header timeout stays above that.
+  server.keepAliveTimeout=65_000;server.headersTimeout=66_000;
   await new Promise((resolve,reject)=>{
     server.once("error",reject);
     server.listen(port,host,resolve);
