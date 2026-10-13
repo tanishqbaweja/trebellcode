@@ -88,15 +88,32 @@ test("an empty Enter on the command line reaches the program, so a prompt waitin
   }finally{await shell.close()}
 });
 
-test("a paste of several lines runs each finished line and leaves the last one on the command line, as a terminal does",async({page,request,context})=>{
+// A clipboard of the page's own: Ctrl+V is kept from the machine's clipboard, and the paste event the browser would send is sent with
+// the text the test put there, which the page then takes as from a paste (a paste no handler takes goes in at the caret). Nothing is
+// read from or written to the machine's clipboard: nativePastes counts the pastes the browser itself sent.
+async function pageClipboard(page){
+  await page.addInitScript(()=>{
+    window.__clipboard={text:"",nativePastes:0};
+    document.addEventListener("paste",event=>{if(event.isTrusted)window.__clipboard.nativePastes++},true);
+    document.addEventListener("keydown",event=>{
+      if(!(event.ctrlKey||event.metaKey)||event.key.toLowerCase()!=="v")return;
+      event.preventDefault();
+      const data=new DataTransfer(),text=window.__clipboard.text;data.setData("text/plain",text);
+      if((document.activeElement||document.body).dispatchEvent(new ClipboardEvent("paste",{clipboardData:data,bubbles:true,cancelable:true,composed:true})))document.execCommand("insertText",false,text);
+    },true);
+  });
+  return {copy:text=>page.evaluate(value=>{window.__clipboard.text=value},text),nativePastes:()=>page.evaluate(()=>window.__clipboard.nativePastes)};
+}
+
+test("a paste of several lines runs each finished line and leaves the last one on the command line, as a terminal does",async({page,request})=>{
   test.setTimeout(60_000);
   const shell=await realTerminals(page);
   try{
-    await context.grantPermissions(["clipboard-read","clipboard-write"]);
+    const clipboard=await pageClipboard(page);
     const {screen,input}=await openTerminal(page,request);
     await input.click();
     await page.keyboard.type("echo ",{delay:8});
-    await page.evaluate(()=>navigator.clipboard.writeText("pasted-one\r\necho pasted-two\necho pasted-three"));
+    await clipboard.copy("pasted-one\r\necho pasted-two\necho pasted-three");
     await page.keyboard.press("Control+V");
     await expect(screen).toContainText(/^pasted-one$/m);
     await expect(screen).toContainText(/^pasted-two$/m);
@@ -109,11 +126,12 @@ test("a paste of several lines runs each finished line and leaves the last one o
     await expect(input).toHaveValue("");
     // Pasted with the caret inside a typed command, the first line goes in at the caret, and its Enter sends the whole command.
     await page.keyboard.type("echo AB",{delay:8});await page.keyboard.press("ArrowLeft");
-    await page.evaluate(()=>navigator.clipboard.writeText("1\r\n2"));
+    await clipboard.copy("1\r\n2");
     await page.keyboard.press("Control+V");
     await expect(screen).toContainText(/^A1B$/m);
     await expect(input).toHaveValue("2");
     await shots(page,"terminal-paste-inside-command");
+    expect(await clipboard.nativePastes(),"pastes from the machine's clipboard").toBe(0);
   }finally{await shell.close()}
 });
 

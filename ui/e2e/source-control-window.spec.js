@@ -297,19 +297,31 @@ test("the Git panel lines its loading and clean text up with its rows, ends a lo
   await worktreeShot(auditDir+"source-control-worktrees-dark-1280x800.png");
 
   // Copying a path or a branch from its row gives it as written, on one line, separators included, although the folder is drawn
-  // before its parent and a cut name is in two parts.
-  await page.context().grantPermissions(["clipboard-read","clipboard-write"]);
+  // before its parent and a cut name is in two parts. The copy goes to a clipboard of the page's own: Ctrl+C is kept from the
+  // machine's clipboard, and the copy event the browser would send goes, with the page's own data, to where the selection starts.
+  // What the row hands over, or the selection when nothing takes the event, is what was copied; nativeCopies counts the copies the
+  // browser itself made.
+  await page.evaluate(()=>{
+    window.__clipboard={text:null,nativeCopies:0};
+    document.addEventListener("copy",event=>{if(event.isTrusted)window.__clipboard.nativeCopies++},true);
+    document.addEventListener("keydown",event=>{
+      if(!(event.ctrlKey||event.metaKey)||event.key.toLowerCase()!=="c")return;
+      event.preventDefault();
+      const selection=getSelection(),start=selection.rangeCount?selection.getRangeAt(0).startContainer:document.body,data=new DataTransfer();
+      const taken=!(start.nodeType===Node.ELEMENT_NODE?start:start.parentElement).dispatchEvent(new ClipboardEvent("copy",{clipboardData:data,bubbles:true,cancelable:true,composed:true}));
+      window.__clipboard.text=taken?data.getData("text/plain"):selection.toString();
+    },true);
+  });
+  const copy=async()=>{await page.keyboard.press("Control+C");return page.evaluate(()=>window.__clipboard.text)};
   const copied=async locator=>{
     await locator.evaluate(node=>{const selection=getSelection();selection.removeAllRanges();selection.selectAllChildren(node)});
-    await page.keyboard.press("Control+C");
-    return page.evaluate(()=>navigator.clipboard.readText());
+    return copy();
   };
   expect(await copied(rows.nth(1).locator("code"))).toBe(worktrees[1].path);
   expect(await copied(rows.nth(5).locator("code"))).toBe(worktrees[5].path);
   expect(await copied(rows.nth(4).locator(":scope > span"))).toBe("feature/inspector-review-panels");
   // The same by hand: a drag across the drawn path (folder first, so its end is the parent's), a triple-click on a cut folder name
   // and a double-click on a cut branch each select the whole path or branch and copy it as written.
-  const copy=async()=>{await page.keyboard.press("Control+C");return page.evaluate(()=>navigator.clipboard.readText())};
   for(const [index,backwards] of [[1,false],[2,true]]){
     const box=await rows.nth(index).locator("code").boundingBox(),y=box.y+box.height/2,[from,to]=backwards?[box.x+box.width-1,box.x+1]:[box.x+1,box.x+box.width-1];
     await page.mouse.move(from,y);await page.mouse.down();await page.mouse.move(to,y,{steps:6});await page.mouse.up();
@@ -319,6 +331,7 @@ test("the Git panel lines its loading and clean text up with its rows, ends a lo
   expect(await copy()).toBe(worktrees[4].path);
   await rows.nth(5).locator(":scope > span").click({clickCount:2});
   expect(await copy()).toBe(worktrees[5].branch);
+  expect(await page.evaluate(()=>window.__clipboard.nativeCopies),"copies to the machine's clipboard").toBe(0);
   await page.evaluate(()=>getSelection().removeAllRanges());
 
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
