@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { contrastRatio, inkOn, luminance, normalizeCustomTheme, parseThemeJson, themeCssVariables } from "../ui/src/theme-utils.js";
+import { contrastRatio, inkOn, luminance, normalizeCustomTheme, themeCssVariables } from "../ui/src/theme-utils.js";
+import { parseThemeJson } from "../ui/src/theme-json.js";
 
 const fills=variables=>[variables["--bg"],variables["--panel"],variables["--panel2"]];
 const minContrast=(variables,name)=>Math.min(...fills(variables).map(fill=>contrastRatio(variables[name],fill)));
