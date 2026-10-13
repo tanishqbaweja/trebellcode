@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { ContextEngine, createRemoteContextIo, pageRank, parseSource, planContextBudget } from "../src/context-engine.mjs";
+import { repositoryContextSeed } from "../src/context-provenance.mjs";
 
 test("JavaScript and TypeScript structure uses a real parser with graceful regex fallback",()=>{
   const parsed=parseSource(`
@@ -231,6 +232,40 @@ test("context engine ranks task-relevant code, instructions and tests under a ha
     assert.ok(session.reasons.some(reason=>/task-related symbol|task terms|path matches/i.test(reason)));
     assert.ok(packet.stats.graphEdges>=3);
   }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("context packets carry the Git state at turn start, and the Native seed states it",async()=>{
+  const root=await fixture(),plain=await mkdtemp(join(tmpdir(),"trebell-context-plain-"));
+  try{
+    await execFileAsync("git",["-c","user.name=Trebell Test","-c","user.email=trebell@example.test","commit","-qm","Initial fixture"],{cwd:root});
+    await execFileAsync("git",["checkout","-q","-b","feature/seed"],{cwd:root});
+    const head=(await execFileAsync("git",["rev-parse","HEAD"],{cwd:root})).stdout.trim(),engine=new ContextEngine(),task="Fix the refresh token session bug";
+    const clean=await engine.buildPacket({root,task,maxTokens:1800,maxFiles:8});
+    assert.deepEqual(clean.git,{head,branch:"feature/seed",detached:false,changed:[],changedCount:0,untracked:0});
+    const seed=repositoryContextSeed(clean,{currentTask:task}).split("\n");
+    assert.equal(seed[1],`Git at turn start: HEAD ${head.slice(0,12)} (feature/seed); working tree clean`);
+    assert.ok(seed.indexOf("Related tests:")>seed.indexOf("Likely relevant paths:"),"ranked tests follow the source paths");
+    assert.ok(seed.slice(seed.indexOf("Related tests:")).some(line=>line.startsWith("- tests/auth-refresh.test.js")),seed.join("\n"));
+    assert.equal(seed.slice(seed.indexOf("Likely relevant paths:"),seed.indexOf("Related tests:")).some(line=>line.includes("tests/")),false);
+
+    await writeFile(join(root,"src","server.js"),"export function startServer() { return null; }\n","utf8");
+    await writeFile(join(root,"src","auth","token.js"),"export function rotateRefreshToken(token) { return token; }\n","utf8");
+    await mkdir(join(root,"scratch"),{recursive:true});
+    await writeFile(join(root,"scratch","notes.txt"),"draft\n","utf8");
+    await writeFile(join(root,"todo.txt"),"draft\n","utf8");
+    const dirty=await engine.buildPacket({root,task,maxTokens:1800,maxFiles:8});
+    assert.deepEqual(dirty.git,{head,branch:"feature/seed",detached:false,changed:["src/auth/token.js","src/server.js"],changedCount:2,untracked:2});
+    assert.equal(repositoryContextSeed(dirty,{currentTask:task}).split("\n")[1],`Git at turn start: HEAD ${head.slice(0,12)} (feature/seed); changed: src/auth/token.js, src/server.js; untracked: 2`);
+
+    await execFileAsync("git",["checkout","-q","--detach"],{cwd:root});
+    const detached=await engine.buildPacket({root,task,maxTokens:1800,maxFiles:8});
+    assert.equal(detached.git.detached,true);assert.equal(detached.git.branch,null);assert.equal(detached.git.head,head);
+
+    await writeFile(join(plain,"parser.py"),"def parse(text):\n    return text\n","utf8");
+    const outside=await engine.buildPacket({root:plain,task:"Fix the parser",maxTokens:1800,maxFiles:8});
+    assert.equal(outside.git,null);
+    assert.doesNotMatch(repositoryContextSeed(outside),/Git at turn start/);
+  }finally{await Promise.all([rm(root,{recursive:true,force:true}),rm(plain,{recursive:true,force:true})])}
 });
 
 test("context engine exposes deterministic symbol and file relationship queries",async()=>{
@@ -548,7 +583,7 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
       if(command==="git"&&args.includes("blame"))return ok("b".repeat(40)+" 1 1 1\nauthor Remote Tester\nauthor-mail <remote@example.test>\nauthor-time 1700000000\nsummary Remote history\nfilename src/auth/session.js\n\timport { rotateRefreshToken } from \"./token.js\";\n");
       if(command==="git"&&args.includes("status"))return ok(status);
       if(command==="git"&&args.includes("diff"))return ok(status?"diff --git a/src/auth/session.js b/src/auth/session.js\n":"");
-      if(command==="git"&&args.includes("rev-parse"))return ok("remote-head-1\n");
+      if(command==="git"&&args.includes("rev-parse"))return ok(args.includes("--abbrev-ref")?"remote-head-1\nremote-main\n":"remote-head-1\n");
       if(command==="python3"||command==="python")return ok(JSON.stringify({available:true,version:"3.fixture",diagnostics:[{severity:"error",code:"PY_SYNTAX",message:"invalid syntax",line:1,column:10,endLine:1,endColumn:11}]}));
       if(command==="gofmt"){
         const target=String(args[0]||"");return target.endsWith("broken.go")?{exitCode:2,stdout:"",stderr:`${target}:2:14: expected ')', found '{'`,timedOut:false}:ok("package fixture\n\nfunc Tool() bool { return true }\n");
@@ -597,6 +632,7 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.equal(first.stats.remote,true);assert.ok(first.stats.reparsed>=4);assert.match(first.injection,/Keep authentication changes covered by tests/);
   assert.ok(first.items.some(item=>item.path==="src/auth/session.js"));
   assert.deepEqual(first.testEntryPoints,[{command:"npm run test",path:"package.json",source:"declared"}]);
+  assert.deepEqual(first.git,{head:"remote-head-1",branch:"remote-main",detached:false,changed:[],changedCount:0,untracked:0},"remote packets read the branch with HEAD");
   const afterFirstMetadata=metadataCalls,afterFirstContent=contentCalls;
   const second=await engine.buildPacket({root,io,task:"Fix the refresh token session bug",maxTokens:1800,maxFiles:8});
   assert.equal(second.stats.reparsed,0);assert.ok(second.stats.reused>=4);
@@ -652,6 +688,7 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   files.set("src/auth/session.js",files.get("src/auth/session.js")+"export const changed = true;\n");versions.set("src/auth/session.js","v2");status=" M src/auth/session.js\n";
   const third=await engine.buildPacket({root,io,task:"refresh session",maxTokens:1800,maxFiles:8});
   assert.equal(third.stats.reparsed,1);assert.ok(third.stats.reused>=3);assert.equal(third.stats.pathInventoryReused,false);assert.equal(discoverCalls,2);
+  assert.deepEqual(third.git,{head:"remote-head-1",branch:"remote-main",detached:false,changed:["src/auth/session.js"],changedCount:1,untracked:0});
   const remoteGit=await engine.gitContext({root,io});assert.equal(remoteGit.isGit,true);assert.ok(remoteGit.changed.includes("src/auth/session.js"));
 });
 

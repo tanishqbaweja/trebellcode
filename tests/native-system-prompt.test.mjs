@@ -96,7 +96,8 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/Batch independent read-only/i);
   assert.match(prompt,/explicit user ordering constraints/i);
   assert.match(prompt,/exposed repository tools/i);
-  assert.match(prompt,/repository seed already names likely relevant paths/i);
+  assert.ok(prompt.includes("If the seed names likely relevant source paths, inspect those directly instead of listing or searching only to rediscover them."),"the seed guidance names source paths only");
+  assert.doesNotMatch(prompt,/repository seed already names likely relevant paths/i);
   assert.match(prompt,/edit calls together in one model response/i);
   assert.match(prompt,/executes non-parallel edits in order/i);
   assert.match(prompt,/image file is relevant/i);

@@ -15,6 +15,8 @@ const SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs",".py","
 // Non-source text files (docs, templates, configuration, changelogs) that search_code reads on demand, per file
 // and per search. Files beyond either bound are skipped and reported, so such a search never claims to be complete.
 const SEARCH_TEXT_MAX_BYTES=1_048_576,SEARCH_TEXT_TOTAL_BYTES=8_388_608;
+// Changed paths a packet keeps for the Native seed's bounded Git line, which shows the rest as a count.
+const GIT_SEED_CHANGED_PATHS=20;
 const BABEL_SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs"]);
 const PYTHON_SOURCE_EXTENSIONS=new Set([".py",".pyi"]);
 const GO_SOURCE_EXTENSIONS=new Set([".go"]);
@@ -472,17 +474,42 @@ async function discoverFiles(root,{signal=null,environment=process.env}={}){
   }catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);return fallbackFiles(root,{signal})}
 }
 
+// "git rev-parse HEAD --abbrev-ref HEAD" prints the commit, then the branch name, or "HEAD" when detached.
+function parseGitHead(output){
+  const [head="",ref=""]=String(output||"").split(/\r?\n/).map(line=>line.trim());
+  return {head:head||null,branch:head&&ref&&ref!=="HEAD"?ref:null,detached:Boolean(head)&&ref==="HEAD"};
+}
+
+// Tracked changes in "git status --short" order, and the untracked count (Git lists an untracked directory once).
+function parseGitStatusChanges(rawStatus){
+  const tracked=[];let untracked=0;
+  for(const line of String(rawStatus||"").split(/\r?\n/)){
+    if(!line)continue;
+    if(line.startsWith("?? ")){untracked++;continue}
+    if(line.startsWith("!! "))continue;
+    tracked.push(slash(line.slice(3).replace(/^.* -> /,"")).replace(/\\/g,"/"));
+  }
+  return {trackedChanges:tracked.slice(0,GIT_SEED_CHANGED_PATHS),trackedChangeCount:tracked.length,untrackedCount:untracked};
+}
+
+// The Git state a packet was built on, for the Native seed's "Git at turn start" line; null outside a Git repository.
+function packetGitState(git){
+  if(!git?.isGit)return null;
+  const counted=Array.isArray(git.trackedChanges)?git:parseGitStatusChanges(git.status);
+  return {head:git.head||null,branch:git.branch||null,detached:git.detached===true,changed:counted.trackedChanges.slice(0,GIT_SEED_CHANGED_PATHS),changedCount:Number(counted.trackedChangeCount)||0,untracked:Number(counted.untrackedCount)||0};
+}
+
 async function gitState(root,{signal=null,environment=process.env}={}){
   throwIfContextAborted(signal);
   try{
     const [{stdout:status},{stdout:diff},headResult]=await Promise.all([
       execFileAsync("git",["-C",root,"status","--short"],{env:environment,windowsHide:true,maxBuffer:1024*1024,timeout:12_000,...(signal?{signal}:{})}),
       execFileAsync("git",["-C",root,"diff","--no-ext-diff","--no-color","--unified=1"],{env:environment,windowsHide:true,maxBuffer:2*1024*1024,timeout:15_000,...(signal?{signal}:{})}),
-      execFileAsync("git",["-C",root,"rev-parse","HEAD"],{env:environment,windowsHide:true,maxBuffer:64*1024,timeout:8_000,...(signal?{signal}:{})}).catch(error=>{if(signal?.aborted||error?.name==="AbortError")throw error;return {stdout:""}}),
+      execFileAsync("git",["-C",root,"rev-parse","HEAD","--abbrev-ref","HEAD"],{env:environment,windowsHide:true,maxBuffer:64*1024,timeout:8_000,...(signal?{signal}:{})}).catch(error=>{if(signal?.aborted||error?.name==="AbortError")throw error;return {stdout:""}}),
     ]);
     throwIfContextAborted(signal);
     const rawStatus=String(status||""),changed=new Set(rawStatus.split(/\r?\n/).filter(Boolean).map(line=>slash(line.slice(3).replace(/^.* -> /,""))));
-    return {isGit:true,head:String(headResult?.stdout||"").trim()||null,changed,status:rawStatus.slice(0,12_000),statusFingerprint:createHash("sha256").update(rawStatus).digest("hex").slice(0,20),diff:String(diff||"").slice(0,16_000)};
+    return {isGit:true,...parseGitHead(headResult?.stdout),changed,status:rawStatus.slice(0,12_000),statusFingerprint:createHash("sha256").update(rawStatus).digest("hex").slice(0,20),diff:String(diff||"").slice(0,16_000),...parseGitStatusChanges(rawStatus)};
   }catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);return {isGit:false,head:null,changed:new Set(),status:"",diff:""}}
 }
 
@@ -767,12 +794,12 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     const [status,diff,head]=await Promise.all([
       run({command:"git",args:["-C",absolute,"status","--short"],cwd:"",timeoutMs:15_000,maxOutput:1024*1024}),
       run({command:"git",args:["-C",absolute,"diff","--no-ext-diff","--no-color","--unified=1"],cwd:"",timeoutMs:20_000,maxOutput:2*1024*1024}),
-      run({command:"git",args:["-C",absolute,"rev-parse","HEAD"],cwd:"",timeoutMs:10_000,maxOutput:64*1024}),
+      run({command:"git",args:["-C",absolute,"rev-parse","HEAD","--abbrev-ref","HEAD"],cwd:"",timeoutMs:10_000,maxOutput:64*1024}),
     ]);
     throwIfContextAborted(signal);
     if(status.exitCode!==0)return {isGit:false,head:null,changed:new Set(),status:"",diff:""};
     const rawStatus=String(status.stdout||""),changed=new Set(rawStatus.split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replace(/^.* -> /,"").replace(/\\/g,"/")));
-    return {isGit:true,head:head.exitCode===0?String(head.stdout||"").trim()||null:null,changed,status:rawStatus.slice(0,12_000),statusFingerprint:createHash("sha256").update(rawStatus).digest("hex").slice(0,20),diff:diff.exitCode===0?String(diff.stdout||"").slice(0,16_000):""};
+    return {isGit:true,...parseGitHead(head.exitCode===0?head.stdout:""),changed,status:rawStatus.slice(0,12_000),statusFingerprint:createHash("sha256").update(rawStatus).digest("hex").slice(0,20),diff:diff.exitCode===0?String(diff.stdout||"").slice(0,16_000):"",...parseGitStatusChanges(rawStatus)};
   };
   const searchPaths=async({query,regex=false,caseSensitive=false,limit=120}={})=>{
     let result=await runListing({command:"git",args:gitGrepArgs(absolute,{query,regex,caseSensitive}),cwd:"",timeoutMs:25_000,maxOutput:4*1024*1024});
@@ -1202,7 +1229,7 @@ export class ContextEngine{
     return {
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,
-      items:selected,testEntryPoints,injection,instructionInjection,untrustedInjection,budget:budgetPlan,
+      items:selected,testEntryPoints,git:packetGitState(git),injection,instructionInjection,untrustedInjection,budget:budgetPlan,
       stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:edgeCount,durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed,pathInventoryReused:Boolean(index.pathInventoryReused),graphReused:packetGraph.reused,graphStructureReused:packetGraph.structureReused},
     };
   }
