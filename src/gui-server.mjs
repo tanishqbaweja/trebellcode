@@ -2011,6 +2011,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           const profile=environments.get(id,{includeDisabled:true});
           if(!profile)throw new Error("Environment profile was not found");
           if(profile.enabled===false)throw new Error("Environment is switched off. Turn it on before using it for agents.");
+          // A host that does not answer the environment's own check (its Test button) is refused before anything stops: no harness
+          // runs there, and Trebell Native checks nothing on the host when it starts.
+          if(profile.type!=="local"){
+            const reached=await environments.probe(id).catch(error=>({ok:false,stderr:error?.message||String(error)}));
+            if(!reached.ok)return json(res,503,{error:String(reached.stderr||reached.stdout||"").trim()||`${profile.name} did not answer`,activeEnvironmentId:state.settings().activeEnvironmentId||null});
+          }
         }
         // Whether the runtime runs in the chosen environment is known only once it has restarted there. A switch it cannot run in is
         // undone: the environment that was active is saved and restarted again, and the failure answers with an error status.

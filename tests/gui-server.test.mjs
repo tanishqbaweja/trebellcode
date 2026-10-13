@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
 import { codexHistoryImportStatus, createGuiServer, offlineE2eFetch, requestAbortController } from "../src/gui-server.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
+import { EnvironmentManager } from "../src/environment-manager.mjs";
 import { ProviderManager } from "../src/provider-manager.mjs";
 import { git } from "../src/git-service.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
@@ -344,9 +345,10 @@ test("a profile or environment restart leaves an in-flight Codex Git text app-se
   }
 });
 
-// Use for agent on a host the runtime cannot reach fails with an error status and changes nothing: Local machine stays the agent
-// environment, on the server and after a restart, and its Codex app-server runs again.
-test("an environment its runtime cannot reach is not made active, and the one that was active runs again",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
+// Use for agent on a host that answers but where the harness cannot run (here Codex over SSH cannot be reached) fails with an error
+// status and changes nothing: Local machine stays the agent environment, on the server and after a restart, and its Codex
+// app-server runs again.
+test("an environment its runtime cannot run in is not made active, and the one that was active runs again",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-activate-rollback-"));
   await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",onboardingComplete:true}}));
   await mkdir(join(home,"codex"),{recursive:true});
@@ -357,7 +359,8 @@ test("an environment its runtime cannot reach is not made active, and the one th
   const env={...process.env,TREBELL_HOME:home,CODEX_HOME:join(home,"codex"),TREBELL_CODEX_BIN:launcher,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
   // Nothing listens on the dead host's port; the probe answers as Codex over SSH does there.
   const deadPort=await freePort(),refused=`ssh: connect to host 127.0.0.1 port ${deadPort}: Connection refused`;
-  const originalProbe=AgentRuntimeManager.prototype.probe;
+  const originalProbe=AgentRuntimeManager.prototype.probe,originalEnvironmentProbe=EnvironmentManager.prototype.probe;
+  EnvironmentManager.prototype.probe=async function(id){return {exitCode:0,stdout:"trebell-environment-ok",stderr:"",timedOut:false,ok:true,profile:{id}}};
   AgentRuntimeManager.prototype.probe=async function(instanceOrKind,{environmentId}={}){
     const instance=typeof instanceOrKind==="string"?this.instances().find(item=>item.kind===instanceOrKind):instanceOrKind,dead=environmentId==="dead-host";
     return {id:instance?.id,kind:instance?.kind,name:"Codex",available:!dead,installed:!dead,authenticated:!dead,protocol:"codex",version:dead?null:"fixture",message:dead?refused:"Ready"};
@@ -379,7 +382,29 @@ test("an environment its runtime cannot reach is not made active, and the one th
     await gui.close();gui=null;
     assert.equal(new TrebellStateStore(env).settings().activeEnvironmentId??null,null,"the next start uses Local machine too");
   }finally{
-    AgentRuntimeManager.prototype.probe=originalProbe;
+    AgentRuntimeManager.prototype.probe=originalProbe;EnvironmentManager.prototype.probe=originalEnvironmentProbe;
+    if(gui)await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+// A host where nothing answers is refused before anything stops, whatever the harness: Trebell Native checks nothing on the host
+// when it starts, so the environment's own reachability check (its Test button) is what keeps the dead host from becoming active.
+test("a host that does not answer is never made the agent environment, with Trebell Native too",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-activate-unreachable-"));
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",onboardingComplete:true}}));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const [port,appPort,deadPort]=await Promise.all([freePort(),freePort(),freePort()]);
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:true,env});
+    const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    assert.equal((await post("/api/environments",{id:"dead-host",type:"ssh",name:"Dead host",host:"127.0.0.1",port:deadPort})).status,200);
+    const activated=await post("/api/environment/activate",{id:"dead-host"});
+    assert.equal(activated.status,503);
+    assert.ok((await activated.json()).error);
+    assert.equal((await fetch(gui.url+"/api/environments").then(r=>r.json())).activeEnvironmentId,null);
+  }finally{
     if(gui)await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
@@ -679,10 +704,11 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(unreachableActivation.status,503);
     assert.ok((await unreachableActivation.json()).error);
     assert.equal((await fetch(gui.url+"/api/environments").then(r=>r.json())).activeEnvironmentId,null);
-    // With Codex answering there, the switch is kept.
-    const originalProbe=AgentRuntimeManager.prototype.probe;
+    // With the host and Codex answering there, the switch is kept.
+    const originalProbe=AgentRuntimeManager.prototype.probe,originalEnvironmentProbe=EnvironmentManager.prototype.probe;
+    EnvironmentManager.prototype.probe=async function(id){return {exitCode:0,stdout:"trebell-environment-ok",stderr:"",timedOut:false,ok:true,profile:{id}}};
     AgentRuntimeManager.prototype.probe=async function(instance){return {id:instance?.id,kind:instance?.kind,name:"Codex",available:true,installed:true,authenticated:true,version:"fixture"}};
-    const activatedEnvironment=await fetch(gui.url+"/api/environment/activate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test"})}).then(r=>r.json()).finally(()=>{AgentRuntimeManager.prototype.probe=originalProbe});
+    const activatedEnvironment=await fetch(gui.url+"/api/environment/activate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test"})}).then(r=>r.json()).finally(()=>{AgentRuntimeManager.prototype.probe=originalProbe;EnvironmentManager.prototype.probe=originalEnvironmentProbe});
     assert.equal(activatedEnvironment.activeEnvironmentId,"ssh-test");
     assert.equal(activatedEnvironment.agentRuntime,"codex");
     assert.equal(activatedEnvironment.agentRuntimeReady,true);

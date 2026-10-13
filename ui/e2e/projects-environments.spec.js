@@ -499,8 +499,8 @@ test.describe("Adding an environment",()=>{
 });
 
 test.describe("Using an environment for agents",()=>{
-  // Codex is the harness here, so Use for agent asks Codex over SSH on a port where nothing listens. The switch fails, says so where
-  // the person looks, and Local machine stays the agent environment on the page, on the server and after a reload.
+  // Use for agent, with Codex as the harness, on an SSH host whose port has nothing listening. The switch fails, says so where the
+  // person looks, and Local machine stays the agent environment on the page, on the server and after a reload.
   test("a host the agent cannot reach is not made active, before or after a reload",async({page,request})=>{
     test.setTimeout(90_000);
     await open(page,request,{settings:{agentRuntime:"codex"}});
