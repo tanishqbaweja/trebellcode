@@ -927,3 +927,18 @@ test("Trebell Native clears a shown draft with a reset frame when its call goes 
     assert.equal(script.length,0);
   }finally{await fixture.close()}
 });
+
+test("opening a Trebell Native thread keeps its place in the thread list: an open is not activity",async()=>{
+  const fixture=await nativeRelayFixture("trebell-native-open-recency-",{modelProvider:"openai"}),{rpc,repo,threadStore}=fixture;
+  try{
+    const providerMeta={runtimeInstanceId:"native-default",modelProvider:"openai",permissionProfile:"auto",projectless:false,environmentId:null};
+    const turns=[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Refactor the payment flow"}]},{type:"agentMessage",id:"assistant-1",text:"Done."}]}];
+    const at=Math.floor(Date.now()/1000);
+    const newer=threadStore.importHistory({runtime:"native",cwd:repo,providerSessionId:"recency-newer",model:"gpt-5.6",name:"Fix login redirect",providerMeta,turns,createdAt:at-600,updatedAt:at-300});
+    const older=threadStore.importHistory({runtime:"native",cwd:repo,providerSessionId:"recency-older",model:"gpt-5.6",name:"Refactor payment flow",providerMeta,turns,createdAt:at-3600,updatedAt:at-1920});
+    await rpc.request("thread/resume",{threadId:older.id});
+    assert.equal(threadStore.get(older.id).updatedAt,at-1920,"opening it does not make it just active");
+    const listed=await rpc.request("thread/list",{limit:10,sortKey:"updated_at",sortDirection:"desc"});
+    assert.deepEqual(listed.data.map(thread=>thread.id),[newer.id,older.id]);
+  }finally{await fixture.close()}
+});

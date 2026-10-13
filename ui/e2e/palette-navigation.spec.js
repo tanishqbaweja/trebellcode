@@ -688,3 +688,34 @@ test("Link pull request refuses a URL that is not a pull request plainly, with t
     expect(nativeDialogs).toEqual([]);
   }finally{await fixture.close()}
 });
+
+test("Opening an older thread keeps its place in the thread list and its age, after a reload too",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const saved={};
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(saved)})});
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Refactor payment flow",preview:"Payment"},{name:"Tidy the changelog",preview:"Changelog"},{name:"Fix login redirect",preview:"Login"}]});
+  try{
+    // The threads were last active 32, 22 and 12 minutes ago.
+    const now=Math.floor(Date.now()/1000);
+    fixture.threads.forEach((thread,index)=>fixture.threadStore.update(thread.id,{updatedAt:now-1920+index*600},{touch:false}));
+    await page.reload();
+    const order=()=>page.locator(".thread-row .thread-main").evaluateAll(list=>list.map(node=>node.getAttribute("title")));
+    const expected=["Fix login redirect","Tidy the changelog","Refactor payment flow"];
+    const oldest=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Refactor payment flow"]')});
+    await expect.poll(order).toEqual(expected);await expect(oldest).toContainText("32m");
+    await fixture.open("Refactor payment flow");
+    await expect(oldest).toHaveClass(/active/);
+    await expect.poll(order).toEqual(expected);await expect(oldest).toContainText("32m");
+    // The list as the relay keeps it: a reload reads it again.
+    await page.reload();
+    await expect.poll(order).toEqual(expected);await expect(oldest).toContainText("32m");
+    await fixture.open("Refactor payment flow");await expect(oldest).toHaveClass(/active/);
+    await expect.poll(order).toEqual(expected);await expect(oldest).toContainText("32m");
+    for(const pass of ["dark","light"]){
+      if(pass==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:`${shots}open-keeps-thread-place-${pass}-${width}x800.png`})}
+      await page.setViewportSize({width:1280,height:800});
+    }
+  }finally{await fixture.close()}
+});

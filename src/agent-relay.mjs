@@ -901,7 +901,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(thread?.runtime!=="native")return {thread,retiredProvider:false};
     const retiredProvider=isRetiredModelProvider(thread.providerMeta?.modelProvider),legacy=migrateLegacyNativeThread(thread,{provider:normalizeProviderId(state?.settings?.().modelProvider)});
     if(!legacy.changed)return {thread,retiredProvider};
-    return {thread:threadStore.update(thread.id,{model:legacy.thread.model,providerMeta:legacy.thread.providerMeta})||legacy.thread,retiredProvider};
+    return {thread:threadStore.update(thread.id,{model:legacy.thread.model,providerMeta:legacy.thread.providerMeta},{touch:false})||legacy.thread,retiredProvider};
   }
 
   // Whether a revert starts the thread's harness conversation over (T3's ACP rollbackThread): Grok and Antigravity, and
@@ -997,7 +997,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(thread?.runtime==="native"){
       const storedNamespaces=Array.isArray(thread.providerMeta?.dynamicToolNamespaces)?thread.providerMeta.dynamicToolNamespaces:[],activeNamespaces=expandableNativeToolNamespaces(storedNamespaces);
       if(activeNamespaces.length!==storedNamespaces.length){
-        thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),dynamicToolNamespaces:activeNamespaces}});
+        thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),dynamicToolNamespaces:activeNamespaces}},{touch:false});
       }
       const legacy=migrateRetiredNativeThread(thread);thread=legacy.thread;
       if(legacy.retiredProvider||isRetiredProviderModel(model))model=null;
@@ -1152,7 +1152,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
       if(generation!==sessionGeneration){await runtime.close().catch(()=>{});throw restartedWhileStarting()}
       const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
-      threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session,nativeMcp:{namespaces:mcpTools.map(item=>item.name),failures:mcpBroker.failures()}},model:model||started.session.models?.currentModelId||thread.model||null});
+      // A started session is not activity: opening a thread starts it, and the thread keeps its place in the list.
+      threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session,nativeMcp:{namespaces:mcpTools.map(item=>item.name),failures:mcpBroker.failures()}},model:model||started.session.models?.currentModelId||thread.model||null},{touch:false});
       sessions.set(thread.id,runtime);return runtime;
     }
     const projectless=Boolean(thread.providerMeta?.projectless),repositoryMcp=!projectless&&!remoteIo&&contextEngine?repositoryMcpProcessConfig({root:runtimeCwd,env:runtimeManager.env||process.env}):null;
@@ -1198,7 +1199,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     reportModels();sessionModelReports.set(runtime,reportModels);
     const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
     // A resumed session keeps the thread's id; an ACP session reports the model it actually runs (an alias resolves to the real id).
-    threadStore.update(thread.id,{providerSessionId:started.session.sessionId||(lost?"":thread.providerSessionId)||"",providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:(runtime instanceof AcpAgentSession?runtime.model:null)||model||started.session.models?.currentModelId||thread.model||null});
+    // The start is not activity either: opening a Claude Code thread starts its session and keeps the thread's place in the list.
+    threadStore.update(thread.id,{providerSessionId:started.session.sessionId||(lost?"":thread.providerSessionId)||"",providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:(runtime instanceof AcpAgentSession?runtime.model:null)||model||started.session.models?.currentModelId||thread.model||null},{touch:false});
     if(lost)beginHistoryHandoff(thread,{...lost,sessionId:started.session.sessionId||""});
     sessions.set(thread.id,runtime);return runtime;
   }
