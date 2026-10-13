@@ -1,5 +1,8 @@
 import { test,expect } from "@playwright/test";
+import { mkdtemp,rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import { attachCodexRelay } from "../../src/codex-relay.mjs";
 import { keepThreadMeta } from "./test-home.js";
@@ -134,10 +137,13 @@ for(const action of ["Delete","Archive"]){
 // A Codex app-server the test drives, reached through Trebell's Codex relay. Its turn/start is held: the test lets the turn start
 // (turn/started) and lets the answer go, in either order, as Codex sends them. A started turn streams its reply and completes
 // unless turn/interrupt ends it first; one interrupted before it started ends as it starts. interruptDelayMs holds the interrupt's
-// answer (Codex answers once the turn has stopped), and compactError fails thread/compact/start with that message.
-async function startCodex(page,{name}){
-  const thread={id:"codex-stop-thread",name,preview:name,cwd:process.cwd(),createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,status:{type:"idle"},turns:[]};
-  const codex={thread,turns:[],interrupts:[],interruptDelayMs:0,socket:null};
+// answer (Codex answers once the turn has stopped), compactError fails thread/compact/start with that message, and holdTurns keeps
+// a turn running after its reply until it is set false. project makes the thread a project thread, whose follow-ups wait in
+// Trebell's own queue (Codex's queue holds only General chats').
+async function startCodex(page,{name,project=false}){
+  const cwd=project?await mkdtemp(join(tmpdir(),"turn-controls-codex-")):process.cwd();
+  const thread={id:"codex-stop-thread",name,preview:name,cwd,createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,status:{type:"idle"},turns:[]};
+  const codex={thread,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null};
   const upstream=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
   upstream.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   const notify=(method,params)=>{if(codex.socket?.readyState===1)codex.socket.send(JSON.stringify({method,params}))};
@@ -158,6 +164,7 @@ async function startCodex(page,{name}){
           const tick=()=>{
             if(turn.status!=="inProgress")return;
             if(index<words.length){notify("item/agentMessage/delta",{threadId:thread.id,turnId:turn.id,itemId,delta:words[index++]});turn.timer=setTimeout(tick,60);return}
+            if(codex.holdTurns){turn.timer=setTimeout(tick,60);return}
             notify("item/completed",{threadId:thread.id,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:words.join("")}});end(turn,"completed");
           };
           turn.timer=setTimeout(tick,60);
@@ -187,15 +194,23 @@ async function startCodex(page,{name}){
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   await keepThreadMeta(page);await keepSettings(page);
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"turn-controls-codex",activeEnvironmentId:null,activeEnvironment:null}));
-  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}}));
+  const projects=project?[{id:"codex-queue-project",name:"Codex queue project",path:cwd,environmentId:null,effectiveSettings:{}}]:[];
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects,...(project?{activeProjectId:projects[0].id}:{}),threadMeta:{[thread.id]:project?{projectless:false,environmentId:null,cwd}:{projectless:true,environmentId:null}}}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
-  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{project:projects[0]||null}:{projects}));
+  if(project){
+    await page.route(/\/api\/worktree\/ensure$/,route=>json(route,{ok:true}));
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:false,root:cwd,branch:null,status:[],remotes:[],worktrees:[]}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{id:"codex-queue-checkpoint",threadId:thread.id}:{checkpoints:[]}));
+    await page.route(/\/api\/checkpoints\/link$/,route=>json(route,{ok:true}));
+    await page.route(/\/api\/context\/packet$/,route=>json(route,{id:"codex-queue-context",skipped:true,budget:{reserveTokens:1024}}));
+  }
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
   await threadRow(page,name).locator(".thread-main").click();await expect(composer(page)).toBeEnabled({timeout:15_000});
-  codex.close=async()=>{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstream.close(resolve))])};
+  codex.close=async()=>{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstream.close(resolve))]);if(project)await rm(cwd,{recursive:true,force:true,maxRetries:8,retryDelay:100})};
   return codex;
 }
 const stopping=page=>page.getByRole("button",{name:"Stopping",exact:true});
@@ -265,3 +280,46 @@ test("a Compact that fails ends its row as failed, with no compaction left runni
     await shoot(page,"compact-failed");
   }finally{await codex.close()}
 });
+
+// Editing a queued follow-up in the composer sets the composer's draft aside: the draft comes back once the edit is saved, and Escape
+// ends an edit with the queued message as it was. Trebell Native keeps its queue in the relay; a Codex project thread keeps its own
+// in Trebell.
+for(const kind of ["native","local"]){
+  test(`editing a ${kind} queued follow-up keeps the composer's draft, and Escape ends the edit with the message unchanged`,async({page})=>{
+    test.setTimeout(90_000);
+    await page.setViewportSize({width:1280,height:800});
+    let fixture=null,codex=null;const finish=gate();
+    try{
+      if(kind==="native"){
+        await keepSettings(page);
+        fixture=await startStreamingFixture(page,{threads:[{name:"Queue edits",preview:"Queue"}]});const streamed=gate();
+        answerBy(fixture,[["Main task",async(request,hook)=>{hook({type:"text",delta:"Working on the main task. "});streamed.open();await Promise.race([finish.promise,untilAborted(request.signal)]);return reply(request,"Main task done.")}]]);
+        await fixture.open("Queue edits");await sendTyped(page,"Main task with a queue.");await streamed.promise;
+      }else{
+        codex=await startCodex(page,{name:"Queue edits",project:true});codex.holdTurns=true;
+        await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+      }
+      await expect(stop(page)).toBeVisible();
+      for(const text of ["Queued alpha","Queued beta"]){await sendTyped(page,text);await expect(page.locator(".queued-message").filter({hasText:text})).toHaveCount(1)}
+      const alpha=page.locator(".queued-message").filter({hasText:"Queued alpha"}),beta=page.locator(".queued-message").filter({hasText:"Queued beta"});
+      await typeInComposer(page,"My unsent draft that matters");
+      await beta.getByRole("button",{name:"Edit",exact:true}).click();
+      await expect(composer(page)).toHaveValue("Queued beta");await expect(beta).toContainText("editing · your draft returns after");await expect(page.locator(".queued-message")).toHaveCount(2);
+      await expect(page.locator(".composer-hints")).toHaveText("Save editEnter · CancelEsc");
+      if(kind==="native")await shoot(page,"queue-edit-with-draft");
+      // Saved, the edit replaces the queued message in its place, and the draft is back in the composer.
+      await composer(page).click();await page.keyboard.press("End");await page.keyboard.type(" (edited)",{delay:8});await page.keyboard.press("Enter");
+      await expect(page.locator(".queued-message p")).toHaveText(["Queued alpha","Queued beta (edited)"]);
+      await expect(composer(page)).toHaveValue("My unsent draft that matters");await expect(page.locator(".queued-message.editing")).toHaveCount(0);
+      await expect(page.locator(".composer-hints")).toContainText("Queue follow-ups");
+      // Escape ends an edit and leaves the message as it was; the draft comes back.
+      await alpha.getByRole("button",{name:"Edit",exact:true}).click();await expect(composer(page)).toHaveValue("Queued alpha");
+      await composer(page).click();await page.keyboard.press("End");await page.keyboard.type(" never saved",{delay:8});
+      await page.keyboard.press("Escape");
+      await expect(page.locator(".queued-message.editing")).toHaveCount(0);await expect(alpha.getByRole("button",{name:"Edit",exact:true})).toBeEnabled();
+      await expect(page.locator(".queued-message p")).toHaveText(["Queued alpha","Queued beta (edited)"]);
+      await expect(composer(page)).toHaveValue("My unsent draft that matters");
+      if(kind==="native")await shoot(page,"queue-edit-escaped");
+    }finally{finish.open();if(fixture)await fixture.close();if(codex)await codex.close()}
+  });
+}
