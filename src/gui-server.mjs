@@ -3157,7 +3157,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
 
   const terminalWs=terminals?.attachWebSocket(server);
   const relay=attachCodexRelay(server,{
-    targetUrl:()=>appServer?.targetUrl||null,
+    // A mock server runs no Codex: its requests go to the app-server port it was given, where a test's stand-in answers. A real one
+    // has no such fallback, since a program on a fixed port is not this Trebell's Codex.
+    targetUrl:()=>appServer?.targetUrl||(mock&&appPort?`ws://127.0.0.1:${appPort}`:null),
     resolveTarget:message=>codexRelayTarget(message),
     // A thread's app-server that is released leaves the pool before it is stopped, and one started in its place has another URL; one
     // that died is still there.
