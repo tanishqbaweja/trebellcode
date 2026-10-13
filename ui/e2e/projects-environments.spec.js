@@ -1,5 +1,6 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,9 +29,9 @@ const RICH_PROJECT={
   settingsOverrides:{autoPull:true,sourceControlMergeMethod:"rebase"},
 };
 
-async function open(page,request,{mode="dark",width=1280,height=800}={}){
+async function open(page,request,{mode="dark",width=1280,height=800,settings={}}={}){
   await page.setViewportSize({width,height});
-  await request.post("/api/settings",{data:{...BASE,appearanceMode:mode}});
+  await request.post("/api/settings",{data:{...BASE,appearanceMode:mode,...settings}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:MAIN,activate:true}});
   await page.goto("/");
@@ -45,6 +46,24 @@ const projectCard=(page,name)=>page.locator(".project-card").filter({has:page.lo
 // What a person saved on a project: the record apart from its id and times, which a restore cannot keep.
 const savedSetup=project=>{const {id,createdAt,lastOpenedAt,...rest}=project||{};return rest};
 const flipMode=(page,mode)=>page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+// The header's mode button, clicked as a person switches between dark and light.
+async function switchMode(page,mode){
+  if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").click();
+  await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+}
+// A screenshot of what is on screen in dark and light, at 1280 and 900 wide; the page is left dark at 1280.
+async function shootModes(page,name,{height=800}={}){
+  for(const mode of MODES){
+    await page.setViewportSize({width:1280,height});await switchMode(page,mode);
+    for(const width of [1280,900]){await page.setViewportSize({width,height});await page.screenshot({animations:"disabled",path:shots+`${name}-${mode}-${width}.png`})}
+  }
+  await page.setViewportSize({width:1280,height});await switchMode(page,"dark");
+}
+// A loopback port with nothing listening on it.
+async function deadPort(){
+  const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
+  const {port}=server.address();await new Promise(resolve=>server.close(resolve));return port;
+}
 const sideways=page=>page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);
 // A card is drawn before its Git details arrive. One with a remote then moves into its repository's group, which draws the
 // card and its open fields again, so the tests that type into a card wait for that first.
@@ -414,6 +433,36 @@ test.describe("Removing an environment",()=>{
     expect(asked,"removing the project asks as if its environment were gone").toEqual([]);
     await toast.getByRole("button",{name:"Undo",exact:true}).click();
     await expect(place).toHaveText("Build box · /srv/api");
+  });
+});
+
+test.describe("Using an environment for agents",()=>{
+  // Codex is the harness here, so Use for agent asks Codex over SSH on a port where nothing listens. The switch fails, says so where
+  // the person looks, and Local machine stays the agent environment on the page, on the server and after a reload.
+  test("a host the agent cannot reach is not made active, before or after a reload",async({page,request})=>{
+    test.setTimeout(90_000);
+    await open(page,request,{settings:{agentRuntime:"codex"}});
+    const port=await deadPort();
+    expect((await request.post("/api/environments",{data:{id:"polish-dead-host",type:"ssh",name:"Dead host",host:"127.0.0.1",port,cwd:"/srv/app"}})).ok()).toBe(true);
+    await nav(page,"Environments").click();
+    const rows=page.locator(".environment-list>div"),local=rows.filter({hasText:"Local machine"}),dead=rows.filter({hasText:"Dead host"});
+    await expect(local.getByText("Active",{exact:true})).toBeVisible();
+    await dead.getByRole("button",{name:"Use for agent",exact:true}).click();
+    const alert=page.locator(".environments-page").getByRole("alert");
+    await expect(alert).toContainText("Connection refused",{timeout:30_000});
+    const server=async()=>(await (await request.get("/api/environments")).json()).activeEnvironmentId;
+    expect(await server(),"the server keeps Local machine").toBe(null);
+    await expect(alert).toHaveText(`Could not use Dead host for agents: ssh: connect to host 127.0.0.1 port ${port}: Connection refused`);
+    await expect(local.getByText("Active",{exact:true})).toBeVisible();
+    await expect(dead.getByRole("button",{name:"Use for agent",exact:true})).toBeEnabled();
+    await shootModes(page,"environment-unreachable-not-used");
+    await page.reload();
+    await expect(page.getByTestId("composer").or(page.locator(".environments-page")).first()).toBeVisible();
+    if(!await page.locator(".environments-page").count())await nav(page,"Environments").click();
+    await expect(local.getByText("Active",{exact:true})).toBeVisible();
+    await expect(dead.getByRole("button",{name:"Use for agent",exact:true})).toBeEnabled();
+    await expect(dead.getByText("Agent active",{exact:true})).toHaveCount(0);
+    expect(await server()).toBe(null);
   });
 });
 

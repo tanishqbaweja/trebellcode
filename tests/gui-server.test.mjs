@@ -344,6 +344,47 @@ test("a profile or environment restart leaves an in-flight Codex Git text app-se
   }
 });
 
+// Use for agent on a host the runtime cannot reach fails with an error status and changes nothing: Local machine stays the agent
+// environment, on the server and after a restart, and its Codex app-server runs again.
+test("an environment its runtime cannot reach is not made active, and the one that was active runs again",{skip:/\s/.test(tmpdir())&&"the Codex launcher path is passed through a shell"},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-activate-rollback-"));
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",onboardingComplete:true}}));
+  await mkdir(join(home,"codex"),{recursive:true});
+  const fixture=join(home,"fake-codex.mjs"),record=join(home,"codex-starts.jsonl"),launcher=join(home,process.platform==="win32"?"codex.cmd":"codex");
+  await writeFile(fixture,FAKE_CODEX_APP_SERVER,"utf8");
+  if(process.platform==="win32")await writeFile(launcher,["@echo off",`"${process.execPath}" "${fixture}" "${record}" %*`,""].join("\r\n"),"utf8");
+  else{await writeFile(launcher,`#!/bin/sh\nexec "${process.execPath}" "${fixture}" "${record}" "$@"\n`,"utf8");await chmod(launcher,0o755)}
+  const env={...process.env,TREBELL_HOME:home,CODEX_HOME:join(home,"codex"),TREBELL_CODEX_BIN:launcher,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  // Nothing listens on the dead host's port; the probe answers as Codex over SSH does there.
+  const deadPort=await freePort(),refused=`ssh: connect to host 127.0.0.1 port ${deadPort}: Connection refused`;
+  const originalProbe=AgentRuntimeManager.prototype.probe;
+  AgentRuntimeManager.prototype.probe=async function(instanceOrKind,{environmentId}={}){
+    const instance=typeof instanceOrKind==="string"?this.instances().find(item=>item.kind===instanceOrKind):instanceOrKind,dead=environmentId==="dead-host";
+    return {id:instance?.id,kind:instance?.kind,name:"Codex",available:!dead,installed:!dead,authenticated:!dead,protocol:"codex",version:dead?null:"fixture",message:dead?refused:"Ready"};
+  };
+  const localStarts=async()=>(await readFile(record,"utf8").catch(()=>"")).trim().split(/\r?\n/).filter(Boolean).length;
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:false,env});
+    const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    assert.equal((await post("/api/environments",{id:"dead-host",type:"ssh",name:"Dead host",host:"127.0.0.1",port:deadPort})).status,200);
+    const activated=await post("/api/environment/activate",{id:"dead-host"}),answer=await activated.json();
+    assert.equal(activated.status,503,"a failed switch answers with an error status");
+    assert.ok(answer.error,"and says why");
+    const environments=await fetch(gui.url+"/api/environments").then(r=>r.json());
+    assert.equal(environments.activeEnvironmentId,null);assert.equal(environments.activeEnvironment,null);
+    assert.equal(await localStarts(),2,"the local Codex app-server started at boot and again after the failed switch");
+    assert.equal((await fetch(gui.url+"/api/bootstrap").then(r=>r.json())).appServerReady,true);
+    await gui.close();gui=null;
+    assert.equal(new TrebellStateStore(env).settings().activeEnvironmentId??null,null,"the next start uses Local machine too");
+  }finally{
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    if(gui)await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
 test("mock GUI server serves the default Native provider catalog and direct replies without provider requests",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-mock-provider-"));
   await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"retired-provider-fixture",onboardingComplete:true}}));
@@ -599,7 +640,15 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(environmentsWhileDisabled.profiles.find(profile=>profile.id==="ssh-test").enabled,false);
     const enabledEnvironment=await fetch(gui.url+"/api/environment/enabled",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test",enabled:true})}).then(r=>r.json());
     assert.equal(enabledEnvironment.profile.enabled,true);
-    const activatedEnvironment=await fetch(gui.url+"/api/environment/activate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test"})}).then(r=>r.json());
+    // Codex cannot be reached on a host whose name never resolves, so using it for agents fails and Local machine stays active.
+    const unreachableActivation=await fetch(gui.url+"/api/environment/activate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test"})});
+    assert.equal(unreachableActivation.status,503);
+    assert.ok((await unreachableActivation.json()).error);
+    assert.equal((await fetch(gui.url+"/api/environments").then(r=>r.json())).activeEnvironmentId,null);
+    // With Codex answering there, the switch is kept.
+    const originalProbe=AgentRuntimeManager.prototype.probe;
+    AgentRuntimeManager.prototype.probe=async function(instance){return {id:instance?.id,kind:instance?.kind,name:"Codex",available:true,installed:true,authenticated:true,version:"fixture"}};
+    const activatedEnvironment=await fetch(gui.url+"/api/environment/activate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test"})}).then(r=>r.json()).finally(()=>{AgentRuntimeManager.prototype.probe=originalProbe});
     assert.equal(activatedEnvironment.activeEnvironmentId,"ssh-test");
     assert.equal(activatedEnvironment.agentRuntime,"codex");
     assert.equal(activatedEnvironment.agentRuntimeReady,true);

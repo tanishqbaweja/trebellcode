@@ -71,17 +71,19 @@ export default function EnvironmentsPage({onOfferUndo}={}){
       if(wasActive&&!enabled&&result.activeEnvironmentId!==id)setTimeout(()=>window.location.reload(),120);
     }catch(e){setError(e.message)}finally{setBusy("")}
   }
+  // A switch the runtime cannot run in fails with an error status and leaves the active environment as it was, so the message
+  // names the environment that was not used.
   async function activate(id){
     setBusy("activate:"+(id||"local"));setMessage("");
+    const name=id?(data.profiles.find(profile=>profile.id===id)?.name||"this environment"):"Local machine";
     try{
       const result=await api("/api/environment/activate",{method:"POST",body:{id:id||null}});
-      if(result.error)throw new Error(result.error);
       const labels={native:"Trebell Native",codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"};
       const runtimeName=result.agentRuntimeStatus?.name||labels[result.agentRuntime]||"active agent runtime";
       const ready=result.agentRuntimeReady??result.appServerReady;
       setMessage(ready?`Environment switched for ${runtimeName}. Reconnecting…`:`Environment selected, but ${runtimeName} is not ready.`);
       setTimeout(()=>window.location.reload(),120);
-    }catch(e){setError(e.message)}finally{setBusy("")}
+    }catch(e){setError(`Could not use ${name} for agents: ${e.message||String(e)}`)}finally{setBusy("")}
   }
   async function probe(id){
     setBusy("probe:"+id);setMessage("");

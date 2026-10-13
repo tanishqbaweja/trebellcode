@@ -2012,9 +2012,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           if(!profile)throw new Error("Environment profile was not found");
           if(profile.enabled===false)throw new Error("Environment is switched off. Turn it on before using it for agents.");
         }
-        state.updateSettings({activeEnvironmentId:id});
-        await agentRelay?.reset?.();
-        await restartAppServer();
+        // Whether the runtime runs in the chosen environment is known only once it has restarted there. A switch it cannot run in is
+        // undone: the environment that was active is saved and restarted again, and the failure answers with an error status.
+        const previousId=state.settings().activeEnvironmentId||null;
+        const switchTo=async environmentId=>{state.updateSettings({activeEnvironmentId:environmentId});await agentRelay?.reset?.();await restartAppServer()};
+        await switchTo(id);
         const appReady=mock||await appServerReady(appServer,appPort);
         const activeAgentInstance=agentRuntimes.activeInstance();
         const activeAgentStatus=await agentRuntimes.probe(activeAgentInstance,{environmentId:id}).catch(error=>({
@@ -2028,6 +2030,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const runtimeError=selectedAgentRuntime==="codex"
           ?(appServer?.error||(!activeAgentStatus?.available?activeAgentStatus?.message:null)||null)
           :(agentRuntimeReady?null:(activeAgentStatus?.message||"Active agent runtime is unavailable"));
+        if(runtimeError){
+          if(id!==previousId)await switchTo(previousId);
+          return json(res,503,{error:runtimeError,activeEnvironmentId:previousId});
+        }
         return json(res,200,{
           activeEnvironmentId:id,
           activeEnvironment:id?environments.get(id):null,
@@ -2036,7 +2042,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           agentRuntimeReady,
           agentRuntimeStatus:activeAgentStatus,
           appServerReady:appReady,
-          error:runtimeError,
         });
       }catch(error){return json(res,400,{error:error.message});}
     }
