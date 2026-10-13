@@ -334,6 +334,20 @@ test("the scoped After inactive days field keeps every digit typed and saves the
     await expect(days).toHaveValue("365");
     expect(daysSaved()).toEqual([365]);
     await shootModes(page,"scoped-days-365",{show:days});
+    // Back in the field while its save is on its way: what is typed there, and the keyboard, stay when that save lands, and
+    // leaving the field again saves it.
+    typedFrom=saves.length;await typeDays("45",60);
+    const landed=page.waitForResponse(response=>response.url().endsWith("/api/scoped-settings")&&response.request().method()==="POST");
+    await page.keyboard.press("Tab");await page.keyboard.press("Shift+Tab");
+    await expect(days).toBeFocused();
+    await page.keyboard.press("Control+A");await page.keyboard.type("60",{delay:60});
+    await landed;
+    await expect(card).toContainText("Scoped default saved.");
+    await expect(days).toHaveValue("60");
+    await expect(days).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect.poll(async()=>(await scoped()).effective.worktreeCleanup.rules.worktreeAfterDays).toBe(60);
+    expect(daysSaved()).toEqual([45,60]);
     // A toggle clicked straight after typing keeps the days typed: its save does not send the saved days back over them.
     typedFrom=saves.length;await typeDays("45",150);
     await card.locator("label.toggle-line",{hasText:"After merge"}).click();
