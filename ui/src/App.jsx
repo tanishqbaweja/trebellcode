@@ -4671,6 +4671,17 @@ export default function App(){
     catch(error){showActionError(error,isolatedWorktree?"Restored the files to the checkpoint, but could not edit from this message":"Could not edit from this message");return}
     // A draft already in the composer stays, below the message brought back to edit.
     setPrompt(current=>String(current||"").trim()&&current!==message.text?message.text+"\n\n"+current:message.text);await reloadActiveThread();
+    // The message is the composer's to edit now, so the focus goes there, at its end: the button that had it left with the message.
+    focusComposerAt(String(message.text||"").length);
+  }
+  // Waits a few frames for a composer that is still held (the thread reloading) and leaves the focus where the person put it meanwhile.
+  function focusComposerAt(caret,frames=30){
+    requestAnimationFrame(()=>{
+      const node=document.querySelector('[data-testid="composer"]'),focused=document.activeElement;if(!node)return;
+      if(focused&&focused!==document.body&&focused!==node&&focused.isConnected&&!focused.closest(".user-row"))return;
+      if(node.disabled){if(frames>0)focusComposerAt(caret,frames-1);return}
+      node.focus();node.setSelectionRange(caret,caret);
+    });
   }
   async function stashPrompt(){
     if(prompt.trim()||attachments.length){await api("/api/stashes",{method:"POST",body:{text:prompt,attachments,contextChips,projectPath}});setPrompt("");setAttachments([]);setContextChips([]);return}

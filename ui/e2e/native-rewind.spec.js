@@ -240,6 +240,25 @@ test("a turn another window started, whose notice has not reached this window ye
   }finally{holdNotices.on=false;for(const send of holdNotices.held.splice(0))try{send()}catch{}release();await other.close().catch(()=>{});await fixture.close()}
 });
 
+// Confirmed from the keyboard, Edit from here brings the message back to the composer with the focus there, at the message's end:
+// the button that had the focus left with the message, which would leave a keyboard user on the page body.
+for(const worktree of [false,true])test(`Edit from here confirmed from the keyboard leaves the focus in the composer that holds the message (${worktree?"worktree":"project"})`,async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const fixture=await rewindFixture(page,{worktree});
+  try{
+    const composer=page.getByTestId("composer"),ask=question(page);
+    await messageEdit(page).focus();await page.keyboard.press("Enter");
+    await expect(ask).toBeVisible();
+    await ask.getByRole("button",{name:"Edit from here",exact:true}).focus();await page.keyboard.press("Enter");
+    await expect(page.locator(".user-row")).toHaveCount(0,{timeout:10_000});
+    await expect(composer).toHaveValue("Rewind this Native work");
+    await expect(composer).toBeFocused();
+    expect(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd])).toEqual([23,23]);
+    expect(fixture.restoreBody).toEqual(worktree?{id:fixture.checkpoint.id,threadId:fixture.thread.id}:null);
+  }finally{await fixture.close()}
+});
+
 // Files and conversation stay in step: a file restore that fails rewinds nothing, and says so beside the conversation it left as it
 // was. A draft already in the composer is kept.
 test("a file restore that fails leaves the conversation as it was and says so, and the draft stays",async({page})=>{
