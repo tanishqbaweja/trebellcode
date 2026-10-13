@@ -64,10 +64,24 @@ const COMPONENTS={a:MarkdownLink,pre:CodeBlock};
 // B16); nothing is kept otherwise.
 const perf=typeof window==="undefined"?null:window.__trebellPerf||null;
 
+// The live reply drawn last (StreamingMarkdown), whose code blocks' copy outcomes and keyboard focus the finished reply takes over:
+// a reply that finishes streaming is drawn again as a ChatMarkdown, in the commit that takes the live one away, so Copied keeps its
+// own timer through the end of the stream, a refusal stays until the next copy, and the keyboard stays on Copy code. A finished
+// reply is the live one when either text starts with the other (the last deltas may come with the finished text), and it takes
+// over within 2 s of the live reply going.
+let liveReply=null;
+function finishedReplyScope(value){
+  const live=liveReply;if(!live||(live.endedAt&&Date.now()-live.endedAt>2000))return null;
+  const finished=value.trimEnd(),streamed=live.text.trimEnd();
+  return streamed&&(finished.startsWith(streamed)||streamed.startsWith(finished))?{from:0,kept:live.kept}:null;
+}
+
 // record, for StreamingMarkdown's tail, is a remark step that sees the parsed tree.
 const ChatMarkdown=memo(function ChatMarkdown({text,lineBreaks=false,record=null}){
   const value=String(text||"");if(perf)(perf.markdown||=[]).push(value.length);
-  return <ReactMarkdown remarkPlugins={record?[remarkGfm,record]:lineBreaks?LINE_BREAK_PLUGINS:REMARK_PLUGINS} components={COMPONENTS}>{value}</ReactMarkdown>;
+  const inLiveReply=Boolean(useContext(LiveCode)),[carried]=useState(()=>inLiveReply||lineBreaks?null:finishedReplyScope(value));
+  const markdown=<ReactMarkdown remarkPlugins={record?[remarkGfm,record]:lineBreaks?LINE_BREAK_PLUGINS:REMARK_PLUGINS} components={COMPONENTS}>{value}</ReactMarkdown>;
+  return carried?<LiveCode value={carried}>{markdown}</LiveCode>:markdown;
 });
 export default ChatMarkdown;
 
@@ -77,7 +91,7 @@ export default ChatMarkdown;
 // stays in place. A tail that turns out to define a link or a footnote has the reply render whole before that frame is drawn. The
 // finished reply is a ChatMarkdown, as before. A child of the tail that is still open when the text before it is cut off moves into
 // the new tail and is drawn again there; each code block's copy outcome and keyboard focus go with it (LiveCode), until the reply
-// starts again.
+// starts again, and on into the finished reply (finishedReplyScope).
 export const StreamingMarkdown=memo(function StreamingMarkdown({text}){
   const stream=useRef(null);stream.current||=markdownStream();
   const live=useRef(null);live.current||={text:"",kept:new Map(),scopes:new Map()};
@@ -85,7 +99,8 @@ export const StreamingMarkdown=memo(function StreamingMarkdown({text}){
   useLayoutEffect(()=>{if(stream.current.wantsWhole())again()});
   const value=String(text||""),{whole,blocks,from}=stream.current.step(value);
   if(!value.startsWith(live.current.text))live.current.kept.clear();
-  live.current.text=value;
+  live.current.text=value;liveReply=live.current;
+  useEffect(()=>{live.current.endedAt=0;return()=>{live.current.endedAt=Date.now()}},[]);
   const scope=at=>{const {scopes,kept}=live.current;if(!scopes.has(at))scopes.set(at,{from:at,kept});return scopes.get(at)};
   if(whole)return <LiveCode value={scope(0)}><ChatMarkdown text={value}/></LiveCode>;
   return <>{blocks.map(block=><Fragment key={block.from}><LiveCode value={scope(block.from)}><ChatMarkdown text={block.text}/></LiveCode>{"\n"}</Fragment>)}<Fragment key={from}><LiveCode value={scope(from)}><ChatMarkdown text={value.slice(from)} record={stream.current.record}/></LiveCode></Fragment></>;

@@ -255,6 +255,51 @@ test("Copy code on a reply still streaming keeps its refusal and the keyboard as
   }finally{await harness.close()}
 });
 
+// When the reply finishes streaming it is drawn again as the finished reply, and each code block's copy outcome goes with it: Copied
+// keeps its own 1.5 s from the copy, a refusal stays until the next copy, and the keyboard stays on Copy code. The copies go to the
+// page's own clipboard, never the machine's.
+test("Copy code's Copied and its refusal last through the end of the stream, with the keyboard on the button",async({page})=>{
+  test.setTimeout(60_000);
+  await pageClipboard(page);
+  const thread=fixtureThread("markdown-stream-end-copy","Markdown stream end copy fixture"),harness=await startHarness(thread);
+  // One streamed reply with a code block, its copy pressed from the keyboard while it streams, then the reply finished.
+  async function streamAndCopy(turnId,code,allowed){
+    await page.getByTestId("composer").fill("Show the change "+turnId+".");await page.getByTestId("send").click();
+    await expect(page.locator(".user-bubble").last()).toContainText("Show the change "+turnId+".");
+    harness.push("turn/started",{turn:{id:turnId,status:"inProgress",startedAt:Date.now()/1000}});
+    const item={type:"agentMessage",id:"assistant-"+turnId,text:""},head="Here is the change:\n\n```js\n"+code+"\n```\n\n";
+    harness.push("item/started",{turnId,item,startedAtMs:Date.now()});
+    harness.push("item/agentMessage/delta",{turnId,itemId:item.id,delta:head});
+    const live=page.locator(".agent-block .assistant-answer .chat-markdown-code");
+    await expect(live).toContainText(code);
+    await page.evaluate(value=>{window.__clipboard.allowed=value},allowed);
+    await live.getByRole("button",{name:"Copy code"}).focus();await page.keyboard.press("Enter");
+    await expect(allowed?live.getByRole("button",{name:"Copied"}):live.getByRole("alert")).toBeVisible();
+    harness.push("item/completed",{turnId,item:{...item,text:head+"Done."},completedAtMs:Date.now()});
+    harness.push("turn/completed",{turn:{id:turnId,status:"completed",completedAt:Date.now()/1000}});
+    const finished=page.locator(".assistant-message-text").last().locator(".chat-markdown-code");
+    await expect(finished.locator("pre")).toHaveText(code);await expect(page.locator(".agent-block .assistant-answer")).toHaveCount(0);
+    thread.turns.push({id:turnId,status:"completed",items:[]});
+    return finished;
+  }
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,thread});
+    const copied=await streamAndCopy("turn-2","const copied = 1;",true);
+    await expect(copied.getByRole("button",{name:"Copied"}),"Copied as the finished reply shows").toBeVisible({timeout:1000});
+    await expect(copied.getByRole("button",{name:"Copied"}),"the keyboard on the button").toBeFocused();
+    await page.screenshot({path:join(shotsDir,"chat-markdown-copied-after-stream-dark-1280x800.png"),animations:"disabled"});
+    await expect(copied.getByRole("button",{name:"Copy code"}),"Copied ends on its own timer").toBeVisible({timeout:4000});
+    const refused=await streamAndCopy("turn-3","const refused = 2;",false);
+    await expect(refused.getByRole("alert"),"the refusal as the finished reply shows").toHaveText("Could not copy to clipboard.");
+    await expect(refused.getByRole("button",{name:"Copy code"}),"the keyboard on the button").toBeFocused();
+    await page.screenshot({path:join(shotsDir,"chat-markdown-refused-after-stream-dark-1280x800.png"),animations:"disabled"});
+    await page.evaluate(()=>{window.__clipboard.allowed=true});await page.keyboard.press("Enter");
+    await expect(refused.getByRole("button",{name:"Copied"})).toBeVisible();await expect(refused.getByRole("alert")).toHaveCount(0);
+    expect(await page.evaluate(()=>window.__clipboard.writes)).toEqual(["const copied = 1;","const refused = 2;"]);
+  }finally{await harness.close()}
+});
+
 test("a reply's visualization whose file is missing says so by its file name in the card, without a local path",async({page})=>{
   test.setTimeout(45_000);
   const fixtureFile=fileURLToPath(new URL("../../visual-audit/chat-visualization-fixture.html",import.meta.url));
