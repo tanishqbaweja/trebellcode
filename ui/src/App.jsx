@@ -13,7 +13,7 @@ import { api } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
 import ChatMarkdown,{ StreamingMarkdown } from "./components/LazyChatMarkdown.jsx";
-import RightPanel, { askChoice, askConfirm, askText } from "./components/RightPanel.jsx";
+import RightPanel, { askConfirm, askText } from "./components/RightPanel.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx";
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
@@ -1050,7 +1050,7 @@ export default function App(){
   // openRunRef: the last open asked for ({done} settles with it). resumedOnRef: the thread last resumed and the transport it was
   // resumed on. A reconnect waits for the one and does not resume again a thread the other says is resumed on it already.
   // heldNotificationsRef: the notifications of the thread an open has resumed, kept until it shows (see holdThreadNotifications).
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0); const openRunRef=useRef(null); const resumedOnRef=useRef(null); const heldNotificationsRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef(null); if(!navigationHistoryRef.current)navigationHistoryRef.current=createNavigationHistory(); const paletteSeedRef=useRef(null); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set());
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0); const openRunRef=useRef(null); const resumedOnRef=useRef(null); const heldNotificationsRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef(null); if(!navigationHistoryRef.current)navigationHistoryRef.current=createNavigationHistory(); const paletteSeedRef=useRef(null); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set()); const editFromHereAskingRef=useRef(false);
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
@@ -4585,26 +4585,41 @@ export default function App(){
   }
   async function editFromHere(message){
     if(!runtimeCapabilities.rewind||!rpc||!activeThread?.id||!message.turnId)return;
+    // One question at a time: a double click, or Enter held on the button, asks once.
+    if(editFromHereAskingRef.current)return;
+    const threadId=activeThread.id;
     const normalizePath=value=>String(value||"").replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase();
+    // In a worktree of its own the files go back with the conversation, to the checkpoint taken before this message; anywhere else
+    // only the conversation does.
     const isolatedWorktree=Boolean(
       message.checkpointId&&currentProject?.managedWorktree&&!currentProject.managedWorktree.cleanedAt
       &&normalizePath(currentProject.path)===normalizePath(activeThread.cwd||projectPath)
     );
     // Files and conversation go back together or not at all: nothing is restored while a turn runs (the harness refuses that rewind),
     // and files that could not go back leave the conversation as it is.
-    if(running){showActionError(new Error("Stop the running turn first."),"Could not edit from this message");return}
-    // In a worktree of its own the files can go back with the conversation. Cancel rewinds nothing, and files that cannot be put back
-    // leave the conversation as it is too, rather than rewinding half of what was asked.
-    const restoreFiles=isolatedWorktree?await askChoice("Also restore workspace files to the checkpoint before this turn?\n\nEither way the conversation goes back to before this message.",{choices:[{value:false,label:"Conversation only"},{value:true,label:"Conversation and files",tone:"danger"}]}):false;
-    if(restoreFiles==null)return;
-    if(restoreFiles){
-      try{await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId:activeThread.id}})}
+    const refuseWhileRunning=()=>showActionError(new Error("Stop the running turn first."),"Could not edit from this message");
+    if(running){refuseWhileRunning();return}
+    // Asked once, before anything changes, saying what will go: Cancel, Escape or closing the question leaves the conversation, the
+    // composer and the files as they are.
+    editFromHereAskingRef.current=true;
+    let confirmed=false;
+    try{
+      confirmed=await askConfirm("Edit from this message?\n\nThe messages after it are removed from this thread"+(isolatedWorktree
+        ?", this message comes back to the composer to edit, and the files in this worktree go back to how they were before it."
+        :", and this message comes back to the composer to edit."),{confirm:"Edit from here"});
+    }finally{editFromHereAskingRef.current=false}
+    if(!confirmed||String(activeThreadRef.current?.id||"")!==String(threadId))return;
+    // A turn that started while the question was open, in this window or another, is refused the same way.
+    if(turnRunsNow()){refuseWhileRunning();return}
+    const client=rpcRef.current||rpc;
+    if(isolatedWorktree){
+      try{await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId}})}
       catch(error){showActionError(error,"Could not restore the files, so the conversation was not changed");return}
     }
     // A rewind the harness refuses (a running turn, a turn it has no checkpoint for) is shown, and the conversation stays as it is;
     // files already restored for it are said to be, since they stay at the checkpoint.
-    try{await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId})}
-    catch(error){showActionError(error,restoreFiles?"Restored the files to the checkpoint, but could not edit from this message":"Could not edit from this message");return}
+    try{await client.request("thread/revert",{threadId,beforeTurnId:message.turnId})}
+    catch(error){showActionError(error,isolatedWorktree?"Restored the files to the checkpoint, but could not edit from this message":"Could not edit from this message");return}
     // A draft already in the composer stays, below the message brought back to edit.
     setPrompt(current=>String(current||"").trim()&&current!==message.text?message.text+"\n\n"+current:message.text);await reloadActiveThread();
   }
@@ -5048,6 +5063,8 @@ export default function App(){
   const sourceControlRuntime=bootstrap.agentRuntime||agentRuntime;
   const sourceControlRuntimeInstanceId=bootstrap.agentRuntimeInstanceId||(settings.agentRuntime===sourceControlRuntime?settings.agentRuntimeInstanceId:null)||null;
   const conversationEditFromHere=useLatestCallback(editFromHere);
+  // Whether a turn runs now, for an action that waited on a question: the `running` of its own render is from before it asked.
+  const turnRunsNow=useLatestCallback(()=>running);
   const conversationLoadEarlier=useLatestCallback(()=>loadEarlierMessages("top"));
   const conversationLoadGap=useLatestCallback(()=>loadEarlierMessages("gap"));
   const focusThreadFindLatest=useLatestCallback(focusThreadFindOccurrence);

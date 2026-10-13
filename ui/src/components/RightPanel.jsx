@@ -62,8 +62,9 @@ export function askConfirm(message,{confirm,cancel,tone="danger"}){
 }
 
 // Asks for one of a few answers in the same dialog: one button per choice after `cancel`, each resolving to its `value` (`tone` is its
-// button class), and null on `cancel` or Escape. It opens with focus on `cancel`, so Enter keeps things as they are. A message's line
-// breaks show.
+// button class), and null on `cancel`, Escape or the dialog closing any other way. It opens with focus on `cancel`, so Enter keeps
+// things as they are. A message's line breaks show. What carries on from the press that opened it answers nothing: the second click
+// of a double click, and Enter or Space held down and repeating, so the question waits for a press of its own.
 export function askChoice(message,{choices,cancel="Cancel"}){
   return new Promise(resolve=>{
     const opener=document.activeElement;
@@ -79,11 +80,14 @@ export function askChoice(message,{choices,cancel="Cancel"}){
       try{if(opener?.isConnected)opener.focus()}catch{}
       resolve(value);
     };
-    const keep=document.createElement("button");Object.assign(keep,{type:"button",textContent:cancel});keep.addEventListener("click",()=>finish(null));actions.append(keep);
-    for(const choice of choices){const button=document.createElement("button");Object.assign(button,{type:"button",textContent:choice.label,className:choice.tone||""});button.addEventListener("click",()=>finish(choice.value));actions.append(button)}
+    const answer=value=>event=>{if(event.detail>1)return;finish(value)};
+    const keep=document.createElement("button");Object.assign(keep,{type:"button",textContent:cancel});keep.addEventListener("click",answer(null));actions.append(keep);
+    for(const choice of choices){const button=document.createElement("button");Object.assign(button,{type:"button",textContent:choice.label,className:choice.tone||""});button.addEventListener("click",answer(choice.value));actions.append(button)}
     form.append(text,actions);dialog.append(form);
     form.addEventListener("submit",event=>event.preventDefault());
+    dialog.addEventListener("keydown",event=>{if(event.repeat&&(event.key==="Enter"||event.key===" "))event.preventDefault()});
     dialog.addEventListener("cancel",event=>{event.preventDefault();finish(null)});
+    dialog.addEventListener("close",()=>finish(null));
     document.body.append(dialog);
     dialog.showModal();keep.focus();
   });

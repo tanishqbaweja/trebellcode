@@ -3581,7 +3581,11 @@ test("Trebell Native fork and rewind stay usable and visually honest",async({pag
     await expect(page.getByText("Keep parser behavior",{exact:true})).toBeVisible({timeout:10_000});
     const editFromHere=page.getByRole("button",{name:"Edit from here",exact:true});await expect(editFromHere).toBeVisible();
     await page.screenshot({animations:"disabled",path:auditDir+"native-forked-thread-rewind-1600x980.png",fullPage:true});
+    // Edit from here asks once, in the app's own dialog, before the conversation goes back; with no worktree no files go back.
     await editFromHere.click();
+    const question=page.locator("dialog.inspector-text-prompt");
+    await expect(question.locator("p")).toHaveText(/^Edit from this message\?\s+The messages after it are removed from this thread, and this message comes back to the composer to edit\.$/);
+    await question.getByRole("button",{name:"Edit from here",exact:true}).click();await expect(question).toHaveCount(0);
     await expect(page.getByTestId("composer")).toHaveValue("Keep parser behavior");await expect(page.locator(".user-row")).toHaveCount(0);
     const forked=threadStore.list("native").find(item=>item.forkedFromId===thread.id);expect(forked).toBeTruthy();expect(forked.turns).toHaveLength(0);
     await page.setViewportSize({width:1280,height:800});const workspace=page.locator(".workspace-shell");const metrics=await workspace.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
