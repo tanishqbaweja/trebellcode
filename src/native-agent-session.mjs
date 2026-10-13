@@ -276,18 +276,17 @@ const NATIVE_PROCESS_TOOLS=Object.freeze({trebell_process:new Set(["start","stat
 function nativeProcessTool(call={}){return Boolean(NATIVE_PROCESS_TOOLS[String(call?.namespace||"")]?.has(String(call?.name||"")))}
 const PROCESS_LABEL_CHARS=60;
 function processLabel(command){const text=String(command??"").replace(/\s+/g," ").trim();return text.length>PROCESS_LABEL_CHARS?text.slice(0,PROCESS_LABEL_CHARS-1)+"…":text}
-// What the model sees of a background process: its short handle, a command label and its state, then the (shaped) output. The
-// full id, thread, pid, timestamps and full command stay in the person's view. A call that named the full id gets it back, so
-// it can tell the result is the process it asked about. Anything else (a failure) is passed on as it is.
-function processModelReceipt(record,shaped,call){
-  if(!record||typeof record!=="object"||Array.isArray(record)||typeof record.handle!=="string"||!record.handle)return shaped;
-  const output=shaped&&typeof shaped==="object"&&!Array.isArray(shaped)?shaped:{},receipt={process_id:record.handle};
+// What the model sees of a background process: its short handle, a command label and its state, then its output. The full id,
+// thread, pid, timestamps, environment id and full command stay in the person's view. A call that named the full id gets it
+// back, so it can tell the result is the process it asked about. Anything that is not a process record (a failure) is null.
+function processModelReceipt(record,call){
+  if(!record||typeof record!=="object"||Array.isArray(record)||typeof record.handle!=="string"||!record.handle)return null;
+  const receipt={process_id:record.handle};
   let args=call?.arguments;if(typeof args==="string"){try{args=JSON.parse(args)}catch{args={}}}
   const named=String(args?.process_id??"").trim();
   if(named&&named===String(record.processId||""))receipt.processId=record.processId;
   receipt.command=processLabel(record.command);
-  for(const key of ["cwd","environmentId","environmentType","running","exitCode","signal"])if(Object.prototype.hasOwnProperty.call(record,key))receipt[key]=record[key];
-  for(const key of ["stdout","stderr","truncated","preview","_trebell_output"])if(Object.prototype.hasOwnProperty.call(output,key))receipt[key]=output[key];
+  for(const key of ["cwd","environmentType","running","exitCode","signal","stdout","stderr","truncated"])if(Object.prototype.hasOwnProperty.call(record,key))receipt[key]=record[key];
   return receipt;
 }
 
@@ -590,7 +589,11 @@ export class NativeAgentSession{
       const terminalRun=call.namespace==="trebell_terminal"&&call.name==="run",processTool=nativeProcessTool(call);
       // Repeated command-output lines collapse only where the model can still fetch the raw output through trebell_output.
       const collapseRepeatedLines=Boolean(this.toolOutputStore)&&outputRetrievalVisible&&(terminalRun||processTool);
-      const shaped=this.toolOutputStore?await this.toolOutputStore.virtualize(observed,{namespace:call.namespace||null,name:call.name||null,...(collapseRepeatedLines?{collapseRepeatedLines:true}:{})}):{value:observed,virtualized:false};
+      // A background process's result reaches the model as its receipt; the person keeps the whole record.
+      const processView=processTool?record=>processModelReceipt(record,call):null;
+      const shaped=this.toolOutputStore
+        ?await this.toolOutputStore.virtualize(observed,{namespace:call.namespace||null,name:call.name||null,...(collapseRepeatedLines?{collapseRepeatedLines:true}:{}),...(processView?{modelView:processView}:{})})
+        :{value:processView?.(observed)||observed,uiValue:observed,virtualized:false};
       let uiOutput=shaped.uiValue??shaped.value,modelSource=shaped.value;
       if(this.toolOutputStore&&!preserveCacheHistory&&outputRetrievalVisible&&terminalRun&&shaped.virtualized!==true&&Number(shaped.totalBytes||0)>=1200&&uiOutput&&typeof uiOutput==="object"&&!Array.isArray(uiOutput)&&!uiOutput._trebell_output){
         // A collapsed output is already stored whole, so the person's archive pointer names that copy and the model keeps the
@@ -603,7 +606,7 @@ export class NativeAgentSession{
         }
       }
       const replaceText=call.namespace==="trebell_workspace"&&call.name==="replace_text";
-      const modelOutput=terminalRun?compactTerminalModelOutput(modelSource):processTool?processModelReceipt(observed,modelSource,call):replaceText?replaceTextModelOutput(modelSource):modelSource,failed=uiOutput?.success===false;
+      const modelOutput=terminalRun?compactTerminalModelOutput(modelSource):replaceText?replaceTextModelOutput(modelSource):modelSource,failed=uiOutput?.success===false;
       this.onUpdate({update:{sessionUpdate:"tool_call_update",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,rawOutput:uiOutput,content:contentItems(replaceText?modelOutput:uiOutput),status:failed?"failed":"completed"}});
       return modelToolResult(modelOutput);
     };

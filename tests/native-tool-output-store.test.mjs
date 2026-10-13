@@ -149,3 +149,26 @@ test("a collapsed output too large for hot context still gives the person the pr
     assert.equal(shaped.uiValue.preview,before.value.preview);assert.equal(shaped.uiValue._trebell_output.handle,shaped.handle);
   }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test("a model view is what the model is shown and what trebell_output returns, while the person keeps the whole value",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-output-model-view-")),secret="trebell-view-secret-value";
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096,environment:{TEST_VIEW_SECRET:secret}});
+    const id="2f1c0e6a-9b7d-4c1e-8a55-0d6f3b2a9c10",view=record=>({process_id:record.handle,running:record.running,stdout:record.stdout});
+    const record=stdout=>({processId:id,handle:"p1",threadId:"thread-7",createdAt:1791317470236,osPid:4242,running:true,stdout});
+    const small=await store.virtualize(record("listening "+secret+"\n"),{namespace:"trebell_process",name:"status",modelView:view});
+    assert.deepEqual(small.value,{process_id:"p1",running:true,stdout:"listening [redacted]\n"},"the view is taken from the redacted value");
+    assert.equal(small.uiValue.processId,id);assert.equal(small.handle,undefined);
+    const lines=Array.from({length:600},(_,index)=>"frame "+index+" rendered").join("\n")+"\n";
+    const big=await store.virtualize(record(lines),{namespace:"trebell_process",name:"status",modelView:view});
+    assert.equal(big.virtualized,true);assert.deepEqual(Object.keys(big.value),["process_id","running","preview","_trebell_output"]);
+    for(const hidden of [id,"thread-7","1791317470236","osPid","createdAt","threadId","processId"])assert.equal(JSON.stringify(big.value).includes(hidden),false,"the model's preview leaves out "+hidden);
+    assert.match(big.value.preview,/frame 0 rendered/);
+    const stored=await store.read({handle:big.handle,start_line:1,max_chars:48_000});
+    assert.match(stored.content,/frame 599 rendered/);assert.equal(stored.content.includes(id),false,"trebell_output returns the model's view with every output line");
+    assert.match(big.uiValue.preview,new RegExp(id),"the person's preview is of the whole record");assert.equal(big.uiValue._trebell_output.handle,big.handle);
+    const collapsed=await store.virtualize(record("waiting for port 8000\n".repeat(50)),{namespace:"trebell_process",name:"status",modelView:view,collapseRepeatedLines:true});
+    assert.equal(collapsed.value.process_id,"p1");assert.equal(collapsed.value.stdout,"waiting for port 8000\n[Trebell: previous line repeated 49 more times]\n");
+    assert.equal(Object.hasOwn(collapsed.value,"processId"),false);assert.equal(collapsed.uiValue.processId,id);
+  }finally{await rm(root,{recursive:true,force:true})}
+});

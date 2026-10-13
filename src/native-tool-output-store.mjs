@@ -8,11 +8,13 @@ const SIGNAL_LINE=/\b(?:error|failed|failure|exception|assert(?:ion)?|traceback|
 const VIRTUALIZED_OUTPUT_NOTE="Full redacted output is outside hot model context. Preview contains bounded head/tail plus important failure-like lines when found. Use trebell_output/inspect only when more detail is needed; set query to search, or omit it to read a bounded range.";
 const COLLAPSED_OUTPUT_NOTE="Runs of identical consecutive lines are collapsed here. The full redacted output is stored by Trebell; use trebell_output/inspect with this handle only if the exact repeated lines matter.";
 
+// The text fields serialized() writes out as sections after an output's other fields.
+const TEXT_KEYS=["stdout","stderr","content","output","aggregatedOutput"];
 function serialized(value){
   if(typeof value==="string")return value;
   if(value&&typeof value==="object"&&!Array.isArray(value)){
-    const textKeys=["stdout","stderr","content","output","aggregatedOutput"],sections=[],rest={...value};
-    for(const key of textKeys){
+    const sections=[],rest={...value};
+    for(const key of TEXT_KEYS){
       if(typeof rest[key]!=="string")continue;
       const text=rest[key];delete rest[key];
       sections.push("--- "+key+" ---\n"+text);
@@ -92,6 +94,17 @@ function scalarMetadata(value){
   const keep=["success","exitCode","signal","timedOut","truncated","durationMs","cwd","command","args","path","size","replacements","error","message","status"];
   return Object.fromEntries(keep.filter(key=>Object.prototype.hasOwnProperty.call(value,key)).map(key=>[key,value[key]]));
 }
+// A model view (see virtualize) applied to the redacted value, or null when there is none or it gives no object.
+function projectedView(modelView,safeValue){
+  if(typeof modelView!=="function")return null;
+  let view;try{view=modelView(safeValue)}catch{return null}
+  return view&&typeof view==="object"&&!Array.isArray(view)?view:null;
+}
+// A model view is already cut down to what the model is shown, so all its scalar fields other than the text sections stay
+// beside its preview.
+function viewMetadata(view){
+  return Object.fromEntries(Object.entries(view).filter(([key,value])=>!TEXT_KEYS.includes(key)&&(value===null||["string","number","boolean"].includes(typeof value))));
+}
 
 export class NativeToolOutputStore{
   constructor({directory,maxHotBytes=DEFAULT_HOT_BYTES,maxEntries=120,onVirtualized=null,environment=process.env}={}){
@@ -115,10 +128,13 @@ export class NativeToolOutputStore{
     await this.#prune();
     return handle;
   }
+  // modelView (optional): what the model is shown of this output when that is less than the whole value, such as a
+  // background-process receipt. It is applied to the redacted value. The person's view (uiValue) stays the whole value, or its
+  // preview when it is too large, and the stored copy behind the handle is the model's view with every output line.
   // collapseRepeatedLines (command output only): the model sees stdout and stderr with runs of identical lines collapsed,
-  // and the raw output is stored behind a handle so trebell_output can still return every line. uiValue is the person's view,
-  // which is not collapsed.
-  async virtualize(value,{namespace=null,name=null,collapseRepeatedLines=false}={}){
+  // and the raw output is stored behind a handle so trebell_output can still return every line. The person's view is not
+  // collapsed.
+  async virtualize(value,{namespace=null,name=null,collapseRepeatedLines=false,modelView=null}={}){
     // A text preview would irreversibly discard model-visible image pixels.
     // Redact ordinary metadata and text, but keep image payloads intact in hot context.
     if(Array.isArray(value?.contentItems)&&value.contentItems.some(item=>item?.type==="inputImage"||item?.type==="image")){
@@ -128,41 +144,37 @@ export class NativeToolOutputStore{
       return {value:{...safeMetadata,contentItems:safeItems},virtualized:false,totalBytes:0};
     }
     const safeValue=redactSecretValue(value,{environment:this.environment,maxDepth:20,maxArray:5000,maxFields:5000});
-    const text=serialized(safeValue),totalBytes=byteLength(text);
-    const collapsed=collapseRepeatedLines===true?collapsedOutputValue(safeValue):null;
-    if(collapsed)return await this.#virtualizeCollapsed(safeValue,text,totalBytes,collapsed,{namespace,name});
-    if(totalBytes<=this.maxHotBytes)return {value:safeValue,virtualized:false,totalBytes};
-    const handle=await this.#store(text,{namespace,name,totalBytes});
-    try{this.onVirtualized?.({handle,totalBytes,namespace,name})}catch{}
-    const lines=text.split(/\r?\n/).length;
+    const text=serialized(safeValue),totalBytes=byteLength(text),view=projectedView(modelView,safeValue);
+    const model=view?{value:view,text:serialized(view),metadata:viewMetadata(view)}:{value:safeValue,text,metadata:scalarMetadata(safeValue)};
+    const collapsed=collapseRepeatedLines===true?collapsedOutputValue(model.value):null;
+    if(collapsed)return await this.#virtualizeCollapsed(safeValue,text,totalBytes,model,collapsed,{namespace,name});
+    if(totalBytes<=this.maxHotBytes)return view?{value:view,uiValue:safeValue,virtualized:false,totalBytes}:{value:safeValue,virtualized:false,totalBytes};
+    const handle=await this.#store(model.text,{namespace,name}),storedBytes=byteLength(model.text);
+    try{this.onVirtualized?.({handle,totalBytes:storedBytes,namespace,name})}catch{}
+    const compactSignalPreview=failureLike(safeValue),pointer={handle,totalBytes:storedBytes,totalLines:model.text.split(/\r?\n/).length,note:VIRTUALIZED_OUTPUT_NOTE};
     return {
       virtualized:true,totalBytes,handle,
-      value:{
-        ...scalarMetadata(safeValue),
-        preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview:failureLike(safeValue)}),
-        _trebell_output:{
-          handle,totalBytes,totalLines:lines,
-          note:VIRTUALIZED_OUTPUT_NOTE,
-        },
-      },
+      value:{...model.metadata,preview:preview(model.text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview}),_trebell_output:pointer},
+      ...(view?{uiValue:{...scalarMetadata(safeValue),preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview}),_trebell_output:pointer}}:{}),
     };
   }
-  async #virtualizeCollapsed(safeValue,text,totalBytes,collapsed,{namespace=null,name=null}={}){
-    const handle=await this.#store(text,{namespace,name,totalBytes}),totalLines=text.split(/\r?\n/).length,collapsedText=serialized(collapsed.value);
-    const compactSignalPreview=failureLike(safeValue),metadata=scalarMetadata(safeValue),pointer={handle,totalBytes,totalLines,note:VIRTUALIZED_OUTPUT_NOTE};
+  async #virtualizeCollapsed(safeValue,text,totalBytes,model,collapsed,{namespace=null,name=null}={}){
+    // The stored copy is the model's view with every line, so trebell_output returns the lines the collapse leaves out.
+    const handle=await this.#store(model.text,{namespace,name}),storedBytes=byteLength(model.text),totalLines=model.text.split(/\r?\n/).length,collapsedText=serialized(collapsed.value);
+    const compactSignalPreview=failureLike(safeValue),pointer={handle,totalBytes:storedBytes,totalLines,note:VIRTUALIZED_OUTPUT_NOTE};
     // The person sees what they would see without the collapse: the whole value, or its preview when it is too large.
-    const uiValue=totalBytes<=this.maxHotBytes?safeValue:{...metadata,preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview}),_trebell_output:pointer};
+    const uiValue=totalBytes<=this.maxHotBytes?safeValue:{...scalarMetadata(safeValue),preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview}),_trebell_output:pointer};
     if(byteLength(collapsedText)<=this.maxHotBytes){
-      try{this.onVirtualized?.({handle,totalBytes,namespace,name,archived:true})}catch{}
+      try{this.onVirtualized?.({handle,totalBytes:storedBytes,namespace,name,archived:true})}catch{}
       return {
         virtualized:false,archived:true,collapsedLines:collapsed.removedLines,totalBytes,handle,uiValue,
-        value:{...collapsed.value,_trebell_output:{handle,totalBytes,totalLines,archived:true,note:COLLAPSED_OUTPUT_NOTE}},
+        value:{...collapsed.value,_trebell_output:{handle,totalBytes:storedBytes,totalLines,archived:true,note:COLLAPSED_OUTPUT_NOTE}},
       };
     }
-    try{this.onVirtualized?.({handle,totalBytes,namespace,name})}catch{}
+    try{this.onVirtualized?.({handle,totalBytes:storedBytes,namespace,name})}catch{}
     return {
       virtualized:true,collapsedLines:collapsed.removedLines,totalBytes,handle,uiValue,
-      value:{...metadata,preview:preview(collapsedText,DEFAULT_PREVIEW_CHARS,{compactSignalPreview,signalText:text}),_trebell_output:pointer},
+      value:{...model.metadata,preview:preview(collapsedText,DEFAULT_PREVIEW_CHARS,{compactSignalPreview,signalText:model.text}),_trebell_output:pointer},
     };
   }
   async archive(value,{namespace=null,name=null,minBytes=0}={}){

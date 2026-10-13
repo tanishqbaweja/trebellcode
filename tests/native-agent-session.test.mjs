@@ -1773,7 +1773,7 @@ test("Native session collapses repeated background-process output lines and leav
 test("Native session gives the model a short process receipt with its handle and keeps the full record for the person",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-process-receipt-")),requests=[],updates=[];let calls=0;
   const processId="2f1c0e6a-9b7d-4c1e-8a55-0d6f3b2a9c10",longCommand="python3 -c "+"import json,sys; print(json.dumps({'k':1}))".repeat(6);
-  const record=(extra={})=>({processId,handle:"p1",threadId:"trebell-harbor",command:longCommand,cwd:"/app",environmentId:null,environmentType:"local",running:true,exitCode:null,signal:null,createdAt:1791317470236,updatedAt:1791317477991,osPid:4242,stdout:"listening on 8000\n",stderr:"",truncated:false,...extra});
+  const record=(extra={})=>({processId,handle:"p1",threadId:"trebell-harbor",command:longCommand,cwd:"/app",environmentId:"7c9e6679-7425-40de-944b-e07fc1f90ae7",environmentType:"ssh",running:true,exitCode:null,signal:null,createdAt:1791317470236,updatedAt:1791317477991,osPid:4242,stdout:"listening on 8000\n",stderr:"",truncated:false,...extra});
   try{
     const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});
     const session=new NativeAgentSession({
@@ -1803,18 +1803,19 @@ test("Native session gives the model a short process receipt with its handle and
     for(const id of ["start","by-handle","by-id","big","legacy"]){
       const receipt=seen(id);
       assert.equal(receipt.process_id,"p1",id);assert.ok(receipt.command.length<=60,id);assert.ok(receipt.command.startsWith("python3 -c import json"),id);assert.ok(receipt.command.endsWith("…"),id);
-      for(const dropped of ["threadId","osPid","createdAt","updatedAt"])assert.equal(Object.hasOwn(receipt,dropped),false,id+" drops "+dropped);
+      for(const dropped of ["threadId","osPid","createdAt","updatedAt","environmentId"])assert.equal(Object.hasOwn(receipt,dropped),false,id+" drops "+dropped);
       assert.equal(typeof receipt.running,"boolean",id);
     }
     assert.equal(Object.hasOwn(seen("start"),"processId"),false,"the model is given the handle, not the full id");
     assert.equal(Object.hasOwn(seen("by-handle"),"processId"),false);
     assert.equal(seen("by-id").processId,processId,"a call that named the full id gets it back");
-    assert.equal(seen("start").stdout,"listening on 8000\n");assert.equal(seen("start").cwd,"/app");
+    assert.equal(seen("start").stdout,"listening on 8000\n");assert.equal(seen("start").cwd,"/app");assert.equal(seen("start").environmentType,"ssh");
     assert.match(seen("big").preview,/frame 0 rendered/);assert.match(seen("big")._trebell_output.handle,/^out_/);assert.equal(seen("big").running,true);
+    for(const hidden of [processId,"trebell-harbor","1791317470236","osPid","createdAt","threadId","processId","environmentId",longCommand])assert.equal(JSON.stringify(seen("big")).includes(hidden),false,"the large receipt's preview leaves out "+hidden.slice(0,24));
     assert.deepEqual({running:seen("legacy").running,exitCode:seen("legacy").exitCode,signal:seen("legacy").signal},{running:false,exitCode:0,signal:"SIGTERM"});
     assert.deepEqual(seen("missing"),{success:false,error:"Native background process not found"});
     const raw=updates.find(entry=>entry.update?.sessionUpdate==="tool_call_update"&&entry.update.toolCallId==="start")?.update?.rawOutput;
-    assert.equal(raw.processId,processId);assert.equal(raw.osPid,4242);assert.equal(raw.command,longCommand);assert.equal(raw.handle,"p1");
+    assert.equal(raw.processId,processId);assert.equal(raw.osPid,4242);assert.equal(raw.environmentId,"7c9e6679-7425-40de-944b-e07fc1f90ae7");assert.equal(raw.command,longCommand);assert.equal(raw.handle,"p1");
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
