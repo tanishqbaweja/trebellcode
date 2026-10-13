@@ -521,6 +521,32 @@ test("Save is busy until its answer comes, so a second press never reports the p
   expect(saves.answers).toEqual([200]);
 });
 
+test("Ctrl+S in the Files editor saves the file, and in the inspector's fields leaves the composer's draft and attachment where they are",async({page,request})=>{
+  test.setTimeout(60_000);
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace Ctrl+S",{"notes.txt":"first line\n","plan.md":"# plan\n"});
+  const composer=page.getByTestId("composer"),editor=right.locator("textarea.file-editor"),shelf=page.locator(".attachment-shelf > span");
+  const button=name=>right.locator(".file-head").getByRole("button",{name,exact:true}),draft="Compare the plan with my notes";
+  // The person attaches plan.md, writes a draft about it, then edits notes.txt in the Files view and presses Ctrl+S, as in any editor.
+  await right.getByRole("button",{name:"Attach plan.md to chat",exact:true}).click();await expect(shelf).toHaveCount(1);
+  await composer.click();await page.keyboard.type(draft,{delay:15});
+  await row("notes.txt").click();await expect(right.locator(".syntax-view")).toContainText("first line");
+  await button("Edit").click();await editor.click();await page.keyboard.press("Control+End");await page.keyboard.type("second line",{delay:15});
+  await page.keyboard.press("Control+s");
+  await expect.poll(()=>readFile(join(dir,"notes.txt"),"utf8")).toBe("first line\nsecond line");
+  await expect(editor).toHaveCount(0);await expect(right.locator(".syntax-view")).toContainText("second line");
+  await expect(composer).toHaveValue(draft);await expect(shelf).toHaveCount(1);
+  // Ctrl+S in another of the inspector's fields, the file search, leaves the draft too.
+  await right.getByPlaceholder("Search files…").click();await page.keyboard.press("Control+s");
+  await page.waitForTimeout(300);
+  await expect(composer).toHaveValue(draft);await expect(shelf).toHaveCount(1);
+  await shootBothModes(page,"workspace-ctrl-s-saves");
+  // From the composer, Ctrl+S still stashes the draft with its attachment, and once more brings them back.
+  await composer.click();await page.keyboard.press("Control+s");
+  await expect(composer).toHaveValue("");await expect(shelf).toHaveCount(0);
+  await page.keyboard.press("Control+s");
+  await expect(composer).toHaveValue(draft);await expect(shelf).toHaveCount(1);
+});
+
 test("text typed while a save is on its way stays in the editor, unsaved, and the next save writes it with no question",async({page,request})=>{
   test.setTimeout(60_000);
   const {right,row,dir}=await openFilesFolder(page,request,"Workspace typed during save",{"notes.txt":"line one\n"});

@@ -344,7 +344,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
 
   function preview(){
     if(!file)return <div className="file-empty">Select a file to inspect it.</div>;
-    if(edit)return <textarea className="file-editor" value={draft} onChange={e=>setDraft(e.target.value)}/>;
+    // Ctrl+S (Cmd+S) saves, as in any editor, as Save does.
+    if(edit)return <textarea className="file-editor" value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==="s"){e.preventDefault();if(!saving)save()}}}/>;
     if(file.kind==="image")return <div className="media-preview image"><img src={rawUrl} alt={file.name}/></div>;
     if(file.kind==="video")return <div className="media-preview"><video src={rawUrl} controls preload="metadata"/></div>;
     if(file.kind==="audio")return <div className="media-preview audio"><Music2 size={34}/><audio src={rawUrl} controls preload="metadata"/></div>;

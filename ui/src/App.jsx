@@ -2456,7 +2456,8 @@ export default function App(){
     const key=event=>{
       const active=document.activeElement;
       const context={
-        chatFocus:section==="chat"||section==="new",
+        // The chat, not the inspector beside it: Ctrl+S there (in the Files editor, the commit message) is not the composer's stash.
+        chatFocus:(section==="chat"||section==="new")&&!active?.closest?.('[data-testid="right-panel"]'),
         codexRuntime:agentRuntime==="codex",
         threadSearch:Boolean(runtimeCapabilities.threadSearch),
         terminalFocus:Boolean(panel==="terminal"&&active?.closest?.(".terminal-drawer")),
