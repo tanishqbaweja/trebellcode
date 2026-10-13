@@ -60,6 +60,15 @@ const appStays=async page=>{
   await expect(page.locator(".sidebar"),"the sidebar").toBeVisible();
   await expect(page.getByTestId("composer"),"the composer").toBeVisible();
 };
+// Opens the fixture's thread from the sidebar and waits until it shows: its General chat welcome. The new-task screen before the
+// click has a welcome of its own, so waiting for any welcome let the harness's messages come while the thread was still opening.
+// Those are handled as the thread shows, and steps of a turn that is not running then stay on that turn's own card only, so the
+// denial's step was not on the live card when it came during the open.
+async function openFixtureThread(page){
+  await page.goto("/");await page.getByRole("button",{name:/Lazy chunk fixture/}).click();
+  await expect(page.getByRole("heading",{name:"What do you want to think through?"})).toBeVisible();
+  await expect(page.getByTestId("composer")).toHaveAttribute("placeholder","Ask Trebell Code anything…");
+}
 
 // A harness waits on its approval, so the approval card is part of the app's first script: it shows the moment the request comes
 // and is answered with no script left to load.
@@ -67,8 +76,7 @@ test("an approval shows the moment it is asked and is answered with no script le
   test.setTimeout(45_000);
   const fixture=await codexFixture(page);
   try{
-    await page.goto("/");await page.getByRole("button",{name:/Lazy chunk fixture/}).click();
-    await expect(page.locator(".welcome")).toBeVisible();
+    await openFixtureThread(page);
     const refused=await refuseScriptsFromNow(page);
     fixture.send({id:"approval-now",method:"item/commandExecution/requestApproval",params:{threadId:fixture.thread.id,turnId:"turn-approval",itemId:"cmd-approval",command:["echo","approval"],reason:"Approve this fixture command"}});
     const card=page.locator(".conversation-column .approval-card").filter({hasText:"Approve this fixture command"});
@@ -88,8 +96,7 @@ test("a denial whose card cannot load says so in its place, and the rest of the 
   test.setTimeout(45_000);
   const fixture=await codexFixture(page);
   try{
-    await page.goto("/");await page.getByRole("button",{name:/Lazy chunk fixture/}).click();
-    await expect(page.locator(".welcome")).toBeVisible();
+    await openFixtureThread(page);
     await refuseScriptsFromNow(page);
     const startedAt=Date.now(),action={type:"command",source:"unifiedExec",command:"rm generated.tmp",cwd:process.cwd()};
     fixture.send({method:"item/autoApprovalReview/started",params:{threadId:fixture.thread.id,turnId:"turn-1",startedAtMs:startedAt,reviewId:"review-1",targetItemId:"cmd-1",review:{status:"inProgress",riskLevel:null,userAuthorization:null,rationale:null},action}});
@@ -100,6 +107,7 @@ test("a denial whose card cannot load says so in its place, and the rest of the 
     await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
     await appStays(page);
     await expect(page.getByText(/Auto review · rm generated\.tmp/).first()).toBeVisible();
+    await page.screenshot({animations:"disabled",path:auditDir+"lazy-chunk-denial-card-cannot-load.png"});
   }finally{await fixture.close()}
 });
 
