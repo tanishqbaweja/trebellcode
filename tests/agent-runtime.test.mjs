@@ -657,6 +657,35 @@ test("a chat start that joins a running probe asks again when that probe finds t
   assert.equal((await started).available,true);assert.equal((await again).available,true);
   assert.equal(launches.filter(line=>line==="auth status").length,2,"the two chat starts share one check made after they asked");
 });
+// OpenCode with no provider connected still runs (authenticated null), as Cursor or Grok do when Trebell cannot read their sign-in.
+// The person then signs in with the harness's own CLI in a terminal of their own (`opencode auth login`, `grok login`), and Settings'
+// next 5-s poll probes without fresh.
+test("a probe that finds no sign-in is asked again, so a provider connected outside Trebell shows at the next poll",async()=>{
+  const auth={credentials:0,grok:"- grok-4.6\n"},launches=[];
+  const profile={id:"ssh-no-sign-in",type:"ssh",cwd:"/srv/app"};
+  const environments={
+    get:id=>id===profile.id?profile:null,
+    executeArgv:async(_id,{command,args})=>{
+      launches.push(command+" "+args[0]);
+      if(args[0]==="--version")return {exitCode:0,stdout:"1.20.0\n",stderr:""};
+      if(command==="opencode"&&args[0]==="auth")return {exitCode:0,stdout:"— "+auth.credentials+" credentials\n— 0 environment variables\n",stderr:""};
+      if(command==="grok"&&args[0]==="models")return {exitCode:0,stdout:auth.grok,stderr:""};
+      return {exitCode:1,stdout:"",stderr:"unexpected command"};
+    },
+    spawnArgv:()=>{throw new Error("not used")},
+  };
+  const manager=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test"}});
+  const before=await manager.probe("opencode");
+  assert.deepEqual([before.available,before.authenticated,before.account?.connectedProviders],[true,null,0],"no credentials yet");
+  auth.credentials=1;
+  const poll=await manager.probe("opencode");
+  assert.deepEqual([poll.authenticated,poll.account?.connectedProviders,poll.message],[true,1,"OpenCode has 1 connected credential source."]);
+  assert.equal((await manager.probe("grok")).authenticated,null,"Grok's sign-in cannot be read yet");
+  auth.grok="You are logged in\n- grok-4.6\n";
+  assert.equal((await manager.probe("grok")).authenticated,true);
+  // A signed-in answer is reused, as before.
+  const asked=launches.length;await manager.probe("opencode");await manager.probe("grok");assert.equal(launches.length,asked);
+});
 
 test("runtime auth commands use the provider's real interactive CLI flow",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-auth-command-"));const env={...process.env,TREBELL_HOME:home};

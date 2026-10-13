@@ -13,8 +13,9 @@ import { git, gitInfo } from "../src/git-service.mjs";
 // Process budgets for the child processes Trebell starts while it sits idle (goal.md section 6; perf plan budgets B6-B8). Each one
 // counts launches through an injected runner, so the numbers do not depend on how busy the machine is.
 
-// A `codex app-server` that answers initialize and account/read as a signed-out Codex does, over the same stdio JSON lines.
-function fakeCodexAppServer(){
+// A `codex app-server` that answers initialize and account/read (as a signed-out Codex does unless told otherwise), over the same
+// stdio JSON lines.
+function fakeCodexAppServer(account={account:null,requiresOpenaiAuth:true}){
   const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();
   let buffer="";
   child.stdin.on("data",chunk=>{
@@ -22,7 +23,7 @@ function fakeCodexAppServer(){
     while((index=buffer.indexOf("\n"))>=0){
       const message=JSON.parse(buffer.slice(0,index));buffer=buffer.slice(index+1);
       if(message.id===undefined)continue;
-      const result=message.method==="initialize"?{userAgent:"codex_cli_rs/0.200.0"}:{account:null,requiresOpenaiAuth:true};
+      const result=message.method==="initialize"?{userAgent:"codex_cli_rs/0.200.0"}:account;
       child.stdout.write(JSON.stringify({id:message.id,result})+"\n");
     }
   });
@@ -30,7 +31,7 @@ function fakeCodexAppServer(){
   return child;
 }
 // Every harness CLI launch a probe makes, by runtime, through a remote environment (the runner the manager already takes).
-function countingEnvironment(){
+function countingEnvironment({codexAccount}={}){
   const launches={},count=command=>{launches[command]=(launches[command]||0)+1};
   const profile={id:"ssh-budget",type:"ssh",cwd:"/srv/app"};
   const answers={
@@ -44,7 +45,7 @@ function countingEnvironment(){
   return {launches,profile,environments:{
     get:id=>id===profile.id?profile:null,
     executeArgv:async(_id,{command,args})=>{count(runtime(command));return {exitCode:0,stdout:answers[runtime(command)]?.(args)??"",stderr:""}},
-    spawnArgv:(_id,{command})=>{count(runtime(command));return fakeCodexAppServer()},
+    spawnArgv:(_id,{command})=>{count(runtime(command));return fakeCodexAppServer(codexAccount)},
   }};
 }
 
@@ -72,6 +73,16 @@ test("B7: a harness that cannot run is asked again at every poll, so a sign-in o
   // answer, so it checks that too (a local one keeps it until the binary changes, which leaves the account read).
   for(let poll=0;poll<12;poll++){const status=await manager.probe("codex");assert.equal(status.authenticated,false);clock+=5000}
   assert.equal(launches.codex,24);
+});
+
+// Codex's answer for a model provider that needs no OpenAI sign-in has no sign-in to read (authenticated null) and is kept, unlike
+// OpenCode's with no provider connected: a remote profile keeps no version answer, so asking it again would launch at every poll.
+test("B7: twelve Settings polls launch a Codex whose model provider needs no OpenAI sign-in at most 3 times",async()=>{
+  const {launches,profile,environments}=countingEnvironment({codexAccount:{account:null,requiresOpenaiAuth:false}});
+  let clock=1_000_000;
+  const manager=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test"},now:()=>clock});
+  for(let poll=0;poll<12;poll++){const status=await manager.probe("codex");assert.deepEqual([status.available,status.authenticated],[true,null]);clock+=5000}
+  assert.ok(launches.codex<=3,"codex launched "+launches.codex+" times in 12 polls");
 });
 
 test("B7: Settings' own check asks again at once, and probes that overlap share one launch",async()=>{
