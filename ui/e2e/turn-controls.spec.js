@@ -121,9 +121,15 @@ for(const action of ["Delete","Archive"]){
       await sendTyped(page,"Find why the login redirect loops.");await streamed.promise;
       await expect(stop(page)).toBeVisible();
       const row=threadRow(page,"Fix login redirect");await row.hover();await row.locator(".thread-menu summary").click();
-      if(action==="Delete")page.once("dialog",dialog=>dialog.accept());
+      const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
       await row.getByRole("button",{name:action,exact:true}).click();
-      await expect(threadRow(page,"Fix login redirect")).toHaveCount(0);
+      // Delete asks first, in the app's own dialog; Archive does not ask.
+      if(action==="Delete"){
+        const question=page.locator("dialog.inspector-text-prompt");
+        await expect(question.locator("p")).toHaveText("Delete “Fix login redirect” permanently? This cannot be undone.");
+        await question.getByRole("button",{name:"Delete thread",exact:true}).click();await expect(question).toHaveCount(0);
+      }
+      await expect(threadRow(page,"Fix login redirect")).toHaveCount(0);expect(nativeDialogs).toEqual([]);
       await expectIdleNewTask(page);
       await shoot(page,`${action.toLowerCase()}-running-thread`);
       release.open();await page.waitForTimeout(300);await expectIdleNewTask(page);
