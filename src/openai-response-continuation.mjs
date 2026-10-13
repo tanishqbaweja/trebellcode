@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
+import { responsesCompactionItem } from "./provider-turn.mjs";
 
 export const NATIVE_OPENAI_CONTINUATION_IDENTITY=Symbol.for("trebell.native.openai-continuation-identity");
+
+// The last compaction item of a response's output, as it is sent back as input: its type and opaque encrypted_content.
+function outputCompactionItem(output){
+  let found=null;for(const item of Array.isArray(output)?output:[])if(responsesCompactionItem(item))found=item;
+  return found?{type:"compaction",encrypted_content:found.encrypted_content}:null;
+}
 
 function digest(value){
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -128,13 +135,33 @@ export class OpenAiResponseContinuationTracker{
     };
   }
 
-  record(responseId,preparation={},turn={}){
+  // baseCompaction: the server compaction the request was sent on top of. A continuation (the default when the preparation was
+  // used) is sent on its parent's; a request the caller resent whole passes null, and one resent from a compaction passes it.
+  // A compaction in this response's own output stands for everything the request held.
+  record(responseId,preparation={},turn={},{baseCompaction}={}){
     const id=String(responseId||"").trim();if(!id)return null;
     const requestDigests=Array.isArray(preparation?.fullInputDigests)?preparation.fullInputDigests:[];
     const outputDigests=openAiContinuationOutputItems(turn).map(digest),conversationDigests=[...requestDigests,...outputDigests];
+    const own=outputCompactionItem(turn?.raw?.output),inherited=baseCompaction!==undefined?baseCompaction:preparation?.used?this.compactionOf(preparation.parentId):null;
+    const compaction=own?{item:own,coveredInputCount:requestDigests.length,responseId:id}:inherited&&typeof inherited==="object"&&inherited.item?inherited:null;
     this.entries.delete(id);
-    this.entries.set(id,{model:String(preparation?.body?.model||turn?.model||""),conversationDigests,requestFingerprints:Array.isArray(preparation?.requestFingerprints)?preparation.requestFingerprints:[],requestFingerprintByteSum:preparation?.requestFingerprintByteSum!=null&&Number.isFinite(Number(preparation.requestFingerprintByteSum))?Number(preparation.requestFingerprintByteSum):null,messageRefs:Array.isArray(preparation?.messageRefs)?preparation.messageRefs:null,identityToken:preparation?.identityToken||null,recordedAtMs:Number(this.now())});
+    this.entries.set(id,{model:String(preparation?.body?.model||turn?.model||""),conversationDigests,requestFingerprints:Array.isArray(preparation?.requestFingerprints)?preparation.requestFingerprints:[],requestFingerprintByteSum:preparation?.requestFingerprintByteSum!=null&&Number.isFinite(Number(preparation.requestFingerprintByteSum))?Number(preparation.requestFingerprintByteSum):null,messageRefs:Array.isArray(preparation?.messageRefs)?preparation.messageRefs:null,identityToken:preparation?.identityToken||null,recordedAtMs:Number(this.now()),compaction});
     while(this.entries.size>this.maxEntries)this.entries.delete(this.entries.keys().next().value);
     return {responseId:id,inputItems:requestDigests.length,outputItems:outputDigests.length,conversationItems:conversationDigests.length};
+  }
+
+  compactionOf(responseId=""){return this.entries.get(String(responseId||"").trim())?.compaction||null}
+
+  // When a chain the server compacted has to be sent again without previous_response_id, the server's own context is the
+  // compaction item and what followed it, not the whole local transcript. The body is fullBody with its input cut to that,
+  // once the full input's prefix is proven to be the one the compaction stands for; otherwise null.
+  compactedResend(fullBody={},previousResponseId=""){
+    const parentId=String(previousResponseId||"").trim(),parent=parentId?this.entries.get(parentId):null,compaction=parent?.compaction;
+    if(!compaction?.item||String(parent.model||"")!==String(fullBody?.model||""))return null;
+    const input=Array.isArray(fullBody?.input)?fullBody.input:null,covered=Math.trunc(Number(compaction.coveredInputCount)||0),prefix=Array.isArray(parent.conversationDigests)?parent.conversationDigests:[];
+    if(!input||covered<1||covered>input.length||covered>prefix.length)return null;
+    for(let index=0;index<covered;index++)if(digest(input[index])!==prefix[index])return null;
+    const body={...fullBody,input:[{...compaction.item},...input.slice(covered)]};delete body.previous_response_id;
+    return {body,compaction,parentId,compactionResponseId:compaction.responseId||null,omittedInputCount:covered,inputCount:body.input.length};
   }
 }

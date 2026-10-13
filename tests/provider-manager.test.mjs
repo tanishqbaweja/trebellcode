@@ -1956,3 +1956,126 @@ test("an error inside a streamed chat or Anthropic reply retries as the same err
     const rateLimited=await anthropicFailure("rate_limit_error");assert.equal(rateLimited.retryable,true);assert.equal(rateLimited.rateLimited,true);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
+
+function compactedChainManager({root,env={},fetchFn,webSocket}){
+  const manager=new ProviderManager({env:{TREBELL_HOME:root,...env},fetchFn,openAiResponsesWebSocketFactory:webSocket});manager.setKey("openai","oa-key");return manager;
+}
+const COMPACTION_ITEM={type:"compaction",id:"cmp_1",encrypted_content:"gAAAA-compacted-state"};
+const compactedResponse=(body,id="resp-compacted")=>({requestBytes:50,response:{id,model:body.model,status:"completed",output:[COMPACTION_ITEM,{type:"function_call",id:"fc-1",call_id:"call-1",name:"trebell_terminal__run",arguments:'{"command":"ls"}'}],usage:{input_tokens:250000,output_tokens:5,total_tokens:250005}},telemetry:{responseBytes:40,totalLatencyMs:1,timeToFirstTokenMs:1}});
+const httpReply=(body,text="continued")=>Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text}]}],usage:{input_tokens:12,output_tokens:1,total_tokens:13}});
+function compactedChainRequests({sessionId,token}){
+  const user={role:"user",content:"Recover the key from the capture"},meta={sessionId},contextManagement=[{type:"compaction",compactThreshold:245_000}];
+  const firstRequest={model:"gpt-6-luna",messages:[user],tools:[],metadata:meta,contextManagement,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token};
+  const next=response=>({model:"gpt-6-luna",messages:[user,{role:"assistant",content:"",toolCalls:response.toolCalls},{role:"tool",toolCallId:"call-1",content:"exit 0"}],tools:[],metadata:meta,contextManagement,promptCacheComparisonResponseId:response.id,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+  return {firstRequest,next};
+}
+function assertCompactedInput(body){
+  assert.equal(Object.hasOwn(body,"previous_response_id"),false);
+  assert.deepEqual(body.input[0],{type:"compaction",encrypted_content:"gAAAA-compacted-state"});
+  assert.deepEqual(body.input.slice(1).map(item=>item.type),["function_call","function_call_output"]);
+  assert.equal(JSON.stringify(body.input).includes("Recover the key"),false,"the compacted-away transcript is not resent");
+  assert.deepEqual(body.context_management,[{type:"compaction",compact_threshold:245_000}]);
+}
+function socketClosedAfterSend(options){
+  options.onReset?.({reason:"transport_failure"});
+  const error=new Error("OpenAI Responses WebSocket closed (1000: ).");error.transportFailure=true;error.webSocketFailureKind="transport";error.replaySafe=false;error.retryable=false;error.webSocketTelemetry={requestBytes:60,responseBytes:0,timeToFirstTokenMs:null};
+  return error;
+}
+const httpError=(status,message)=>new Response(JSON.stringify({error:{message}}),{status,headers:{"content-type":"application/json"}});
+
+test("an HTTPS fallback after a WebSocket failure resends the server-compacted context, not the whole transcript",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-compacted-resend-")),httpBodies=[];let wsCalls=0;
+  try{
+    const manager=compactedChainManager({root,
+      webSocket:options=>({close:()=>{},request:async body=>{wsCalls++;if(wsCalls===1)return compactedResponse(body);throw socketClosedAfterSend(options)}}),
+      fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");httpBodies.push(body);return httpBodies.length===1?httpError(404,"Previous response with id 'resp-compacted' not found."):httpReply(body)},
+    });
+    const {firstRequest,next}=compactedChainRequests({sessionId:"native_compacted_resend",token:{}});
+    const first=await manager.turn("openai",firstRequest,{streamResponses:true});assert.deepEqual(first.serverCompaction,{items:1});
+    const request=next(first);
+    await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.retryable===true,"the socket closed after the send");
+    const second=await manager.turn("openai",request,{streamResponses:true});
+    assert.equal(second.text,"continued");assert.equal(httpBodies.length,2);assert.equal(httpBodies[0].previous_response_id,"resp-compacted");
+    assertCompactedInput(httpBodies[1]);
+    assert.deepEqual(second.telemetry.responseContinuation.compactedResend,{compactionResponseId:"resp-compacted",omittedInputCount:1,inputCount:3,rejected:false});
+    assert.equal(second.telemetry.responseContinuation.fallback,true);assert.equal(second.telemetry.responseContinuation.fallbackReason,"previous_response_unavailable");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a compacted resend the API rejects is sent once more as the whole transcript",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-compacted-reject-")),httpBodies=[];let wsCalls=0;
+  try{
+    const manager=compactedChainManager({root,
+      webSocket:options=>({close:()=>{},request:async body=>{wsCalls++;if(wsCalls===1)return compactedResponse(body);throw socketClosedAfterSend(options)}}),
+      fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");httpBodies.push(body);
+        if(httpBodies.length===1)return httpError(404,"Previous response not found.");
+        if(httpBodies.length===2)return httpError(400,"Invalid input item.");
+        return httpReply(body,"whole");},
+    });
+    const {firstRequest,next}=compactedChainRequests({sessionId:"native_compacted_reject",token:{}});
+    const first=await manager.turn("openai",firstRequest,{streamResponses:true}),request=next(first);
+    await assert.rejects(manager.turn("openai",request,{streamResponses:true}));
+    const second=await manager.turn("openai",request,{streamResponses:true});
+    assert.equal(second.text,"whole");assert.equal(httpBodies.length,3);assertCompactedInput(httpBodies[1]);
+    assert.equal(Object.hasOwn(httpBodies[2],"previous_response_id"),false);assert.equal(httpBodies[2].input.length,3);assert.equal(httpBodies[2].input[0].role,"user");
+    assert.equal(second.telemetry.responseContinuation.compactedResend.rejected,true);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a replaced WebSocket connection resends the server-compacted context on the new socket",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-compacted-replaced-")),requests=[];let factoryCalls=0,resetFirst=null;
+  try{
+    const manager=compactedChainManager({root,
+      fetchFn:async()=>{throw new Error("HTTP should not be needed")},
+      webSocket:options=>{
+        factoryCalls++;const instance=factoryCalls;let open=true,generation=1;
+        if(instance===1)resetFirst=()=>options.onReset?.({reason:"transport_failure"});
+        return {connectionState:()=>({open,generation}),close:()=>{open=false;generation++},request:async body=>{
+          requests.push({instance,body:structuredClone(body)});
+          return instance===1?compactedResponse(body):{requestBytes:30,response:{id:"resp-new-socket",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"second"}]}]},telemetry:{responseBytes:20,totalLatencyMs:1,timeToFirstTokenMs:1}};
+        }};
+      },
+    });
+    manager.openAiResponsesWebSocketRetryMs=0;
+    const {firstRequest,next}=compactedChainRequests({sessionId:"native_compacted_replaced",token:{}});
+    const first=await manager.turn("openai",firstRequest,{streamResponses:true});resetFirst();
+    const second=await manager.turn("openai",next(first),{streamResponses:true});
+    assert.equal(second.text,"second");assert.equal(requests.length,2);assert.equal(requests[1].instance,2);assertCompactedInput(requests[1].body);
+    assert.equal(second.telemetry.responseContinuation.fallbackReason,"websocket_connection_replaced");assert.equal(second.telemetry.responseContinuation.compactedResend.omittedInputCount,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a WebSocket continuation rejection resends the server-compacted context over HTTPS",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-compacted-ws-reject-")),httpBodies=[];let wsCalls=0;
+  try{
+    const manager=compactedChainManager({root,
+      webSocket:()=>({request:async body=>{
+        wsCalls++;if(wsCalls===1)return compactedResponse(body);
+        const error=new Error("Previous response is unavailable.");error.webSocketFailureKind="api_error";error.replaySafe=false;error.retryable=false;error.webSocketEvent={type:"error",status:404,error:{type:"invalid_request_error",message:error.message}};error.webSocketTelemetry={requestBytes:75,responseBytes:40,timeToFirstTokenMs:null};throw error;
+      }}),
+      fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");httpBodies.push(body);return httpReply(body)},
+    });
+    const {firstRequest,next}=compactedChainRequests({sessionId:"native_compacted_ws_reject",token:{}});
+    const first=await manager.turn("openai",firstRequest,{streamResponses:true});
+    const second=await manager.turn("openai",next(first),{streamResponses:true});
+    assert.equal(second.text,"continued");assert.equal(wsCalls,2);assert.equal(httpBodies.length,1);assertCompactedInput(httpBodies[0]);
+    assert.equal(second.telemetry.responseContinuation.compactedResend.rejected,false);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a completion judge without a usable WebSocket is sent the server-compacted coding context",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-compacted-judge-")),httpBodies=[];
+  try{
+    const manager=compactedChainManager({root,
+      webSocket:()=>({request:async body=>({requestBytes:10,response:{id:"resp-source",model:body.model,status:"completed",output:[COMPACTION_ITEM,{type:"message",role:"assistant",content:[{type:"output_text",text:"Implemented"}]}],usage:{}},telemetry:{responseBytes:10,totalLatencyMs:1}})}),
+      fetchFn:async(_url,init)=>{const body=JSON.parse(init.body);httpBodies.push(body);return httpReply(body,"verified")},
+    });
+    const identity={},user={role:"user",content:"Implement and then audit"},meta={sessionId:"native-compacted-judge"};
+    const initial=await manager.turn("openai",{model:"gpt-6-luna",messages:[user],tools:[],metadata:meta,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:identity},{streamResponses:true});
+    manager.env.TREBELL_OPENAI_RESPONSES_WEBSOCKET="0";
+    const verdict=await manager.turn("openai",{model:"gpt-6-luna",messages:[user,{role:"assistant",content:initial.text},{role:"developer",content:"Judge completion"}],tools:[],metadata:{...meta,sessionId:"gate-native-compacted-judge",completionGate:true},openAiContinuationResponseId:initial.id,promptCacheComparisonResponseId:initial.id,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:identity},{streamResponses:true});
+    assert.equal(verdict.text,"verified");assert.equal(httpBodies.length,1);assert.equal(Object.hasOwn(httpBodies[0],"previous_response_id"),false);
+    assert.deepEqual(httpBodies[0].input.map(item=>item.type==="message"?item.role:item.type),["compaction","assistant","developer"]);
+    assert.equal(verdict.telemetry.responseContinuation.fallbackReason,"control_gate_websocket_unavailable");assert.equal(verdict.telemetry.responseContinuation.compactedResend.omittedInputCount,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});

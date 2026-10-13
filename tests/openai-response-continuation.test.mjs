@@ -108,3 +108,40 @@ test("OpenAI continuation suffix proof fails closed when replayed provider outpu
   assert.ok(tracker.preflight("resp-1",{messageRefs:refs,identityToken:token,model:"gpt-5.6"}));
   assert.equal(tracker.prepareSuffix(body(changed),"resp-1",{messageRefs:refs,identityToken:token}),null);
 });
+
+test("after a server compaction the resend body is the compaction item and the input that followed it",()=>{
+  const tracker=new OpenAiResponseContinuationTracker(),user={type:"message",role:"user",content:[{type:"input_text",text:"Decrypt the capture"}]};
+  const call=index=>({id:"call-"+index,namespace:"trebell_terminal",name:"run",arguments:'{"command":"python3","args":["step'+index+'.py"]}'});
+  const replay=index=>openAiContinuationOutputItems({toolCalls:[call(index)]}),output=index=>({type:"function_call_output",call_id:"call-"+index,output:"result "+index});
+  const compactionItem={type:"compaction",id:"cmp_1",encrypted_content:"gAAAA-compacted-state"};
+  const first=tracker.prepare(body([user]));tracker.record("resp-1",first,{model:"gpt-5.6",toolCalls:[call(1)],raw:{output:[...replay(1)]}});
+  assert.equal(tracker.compactionOf("resp-1"),null);
+  const second=tracker.prepare(body([user,...replay(1),output(1)]),"resp-1");assert.equal(second.used,true);
+  tracker.record("resp-2",second,{model:"gpt-5.6",toolCalls:[call(2)],raw:{output:[compactionItem,...replay(2)]}});
+  assert.equal(tracker.compactionOf("resp-2").coveredInputCount,3,"the compaction stands for everything the request held");
+  const third=tracker.prepare(body([user,...replay(1),output(1),...replay(2),output(2)]),"resp-2");assert.equal(third.used,true);
+  tracker.record("resp-3",third,{model:"gpt-5.6",toolCalls:[call(3)],raw:{output:[...replay(3)]}});
+  assert.equal(tracker.compactionOf("resp-3").responseId,"resp-2","a continuation keeps its parent's compaction");
+  const full=body([user,...replay(1),output(1),...replay(2),output(2),...replay(3),output(3)]),resend=tracker.compactedResend(full,"resp-3");
+  assert.ok(resend);assert.deepEqual(resend.body.input,[{type:"compaction",encrypted_content:"gAAAA-compacted-state"},...replay(2),output(2),...replay(3),output(3)]);
+  assert.equal(Object.hasOwn(resend.body,"previous_response_id"),false);assert.equal(resend.body.instructions,"Stable");assert.deepEqual(resend.body.tools,full.tools);
+  assert.equal(resend.omittedInputCount,3);assert.equal(resend.inputCount,5);assert.equal(resend.compactionResponseId,"resp-2");assert.equal(full.input.length,7,"the full body is left as it was");
+  assert.equal(tracker.compactedResend(full,"resp-1"),null,"no compaction in the chain, no compacted resend");
+  assert.equal(tracker.compactedResend(body([{...user,content:[{type:"input_text",text:"Rewritten"}]},...full.input.slice(1)]),"resp-3"),null,"a rewritten prefix is not the compacted one");
+  assert.equal(tracker.compactedResend({...full,model:"gpt-6"},"resp-3"),null,"another model cannot read the compaction");
+  assert.equal(tracker.compactedResend(full,"missing"),null);
+});
+
+test("a compaction is carried only by what the server actually holds",()=>{
+  const tracker=new OpenAiResponseContinuationTracker(),user={type:"message",role:"user",content:[{type:"input_text",text:"Task"}]};
+  const first=tracker.prepare(body([user]));tracker.record("resp-c",first,{model:"gpt-5.6",text:"Working",raw:{output:[{type:"compaction_summary",encrypted_content:"gAAAA-old-name"},{type:"message",role:"assistant",content:[{type:"output_text",text:"Working"}]}]}});
+  const compaction=tracker.compactionOf("resp-c");assert.equal(compaction.coveredInputCount,1);assert.deepEqual(compaction.item,{type:"compaction",encrypted_content:"gAAAA-old-name"});
+  const reply=openAiContinuationOutputItems({text:"Working"}),next={type:"message",role:"user",content:[{type:"input_text",text:"Next"}]};
+  const fullSend=tracker.prepare(body([user,...reply,next]),"resp-c");
+  tracker.record("resp-full",fullSend,{model:"gpt-5.6",text:"ok",raw:{output:[]}},{baseCompaction:null});
+  assert.equal(tracker.compactionOf("resp-full"),null,"a response to the whole transcript holds no compaction");
+  tracker.record("resp-resent",fullSend,{model:"gpt-5.6",text:"ok",raw:{output:[]}},{baseCompaction:compaction});
+  assert.equal(tracker.compactionOf("resp-resent"),compaction,"a response to a compacted resend holds the compaction it was sent");
+  const later=body([user,...reply,next,...openAiContinuationOutputItems({text:"ok"}),{type:"message",role:"user",content:[{type:"input_text",text:"Again"}]}]);
+  assert.deepEqual(tracker.compactedResend(later,"resp-resent").body.input[0],{type:"compaction",encrypted_content:"gAAAA-old-name"});
+});
