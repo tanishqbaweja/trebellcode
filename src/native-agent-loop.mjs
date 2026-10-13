@@ -273,14 +273,17 @@ function explicitAcceptanceRequirementClauses(messages=[]){
   return clauses;
 }
 
-// Words inside URLs, markdown link targets, and code spans (inline or fenced) name a location or code, not external state
-// the user asks to change: a docs link ending in /api next to "write()" is not a request to write to an API. A markdown
-// link keeps its visible text, which is the user's own prose.
+// Words inside URLs, markdown link targets, and inline code spans name a location or code, not external state the user asks
+// to change: a docs link ending in /api next to "write()" is not a request to write to an API. A markdown link keeps its
+// visible text, which is the user's own prose. An inline code span stays on one line, holds no backtick, and opens and closes
+// at a word boundary, so a backtick used as an apostrophe ("don`t") or left unclosed never hides the prose after it; a fenced
+// block is not inline code and is read as it is. Each pattern scans a stretch of text at most once (the URL scheme is at most
+// 32 characters and starts a word), so a long input cannot stall the turn.
 function externalPersistenceProse(text=""){
   return String(text||"")
-    .replace(/(?<!\x60)(\x60+)(?!\x60)[\s\S]*?(?<!\x60)\1(?!\x60)/g," ")
-    .replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g," $1 ")
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>]+|\bwww\.[^\s<>]+/gi," ");
+    .replace(/(?<![\p{L}\p{N}_\x60])(\x60+)([^\x60\n]+)\1(?![\p{L}\p{N}_\x60])/gu," ")
+    .replace(/!?\[([^[\]\n]*)\]\([^()\n]*\)/g," $1 ")
+    .replace(/(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,31}:\/\/[^\s<>]+|\bwww\.[^\s<>]+/gi," ");
 }
 
 function requestsExternalPersistence(text=""){

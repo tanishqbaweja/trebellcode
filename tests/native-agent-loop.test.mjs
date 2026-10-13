@@ -1952,7 +1952,6 @@ test("external-state classifier ignores words inside URLs, markdown link targets
     "Fix the HTML writer: the `formats` option to the [`write()`](https://docs.example.org/en/stable/api/io.write.html) method is ignored.",
     "Update `api.py` so retries stop after three attempts.",
     "Fix the link checker so it accepts https://example.com/api/v2/update?id=1 without warnings.",
-    "Fix the exporter.\n```python\nclient.post(api_url, data)  # write the record to the API\n```\nIt drops the last record.",
     "Fix the docs builder so <https://example.com/api/delete> renders as a link.",
   ])assert.equal(workspace(text),true,text);
   assert.equal(requestsTaskMutation([{role:"user",content:"Do not modify any files. Explain why https://example.com/api/update returns 404."}]),false,"a URL cannot turn a read-only question into a state change");
@@ -1961,6 +1960,27 @@ test("external-state classifier ignores words inside URLs, markdown link targets
     "Submit the batch to the [intake API](https://intake.example.test/v1).",
     "Update the live configuration through the service endpoint, then wait for the rollout.",
   ])assert.equal(workspace(text),false,text);
+});
+
+test("only inline code spans are set aside: a backtick used as an apostrophe or left unclosed hides no prose, and a fenced block is read as written",()=>{
+  const workspace=text=>requestsWorkspaceMutation([{role:"user",content:text}]);
+  for(const text of [
+    "Don`t touch the README. Update the records in the production database and don`t stop until done.",
+    "The exporter in `report.py drops the last row.\n\nAfter fixing it, submit the corrected totals to the billing API.\n\nRun `make check` first.",
+    "The exporter in `report.py drops the last row; after fixing it, submit the corrected totals to the billing API and run `make check` first.",
+    "Fix the exporter.\n```python\nclient.post(api_url, data)  # write the record to the API\n```\nIt drops the last record.",
+  ])assert.equal(workspace(text),false,text);
+  assert.equal(workspace("Fix ``Table.write()`` and `io.ascii`'s `write()`: the `database` option is ignored."),true,"spans of one or two backticks, followed by punctuation, are code");
+});
+
+test("the external-state classifier reads long URL-like, bracket and backtick runs in linear time",()=>{
+  for(const [name,text] of [
+    ["dotted",`Fix the parser for this input: ${"a.".repeat(40_000)}`],["dashed",`Fix ${"a-".repeat(40_000)}://`],
+    ["brackets",`Fix ${"[a".repeat(40_000)}`],["link targets",`Fix ${"[x](".repeat(20_000)}`],["backticks",`Fix${" `a".repeat(27_000)}`],
+  ]){
+    const started=performance.now();requestsWorkspaceMutation([{role:"user",content:text}]);const elapsed=performance.now()-started;
+    assert.ok(elapsed<200,`${name}: ${elapsed.toFixed(0)} ms for ${text.length} characters`);
+  }
 });
 
 test("native implementation pressure does not treat a build-only request as a workspace mutation",async()=>{
