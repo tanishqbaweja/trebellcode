@@ -1,8 +1,9 @@
 // A harness probe answer is kept for a minute (PROBE_REUSE_MS), and the 5-s poll and the relay's session start read it. A harness
 // that fails where it runs in that minute is asked again at once, so a sign-out made outside Trebell (`claude auth logout` in the
-// person's own terminal) shows at the next poll and the failure carries the probe's advice beside the harness's own message.
-// Stubbed probes (a remote environment's executeArgv, a local runFn) and scripted harnesses only: no real harness is started,
-// signed in or signed out.
+// person's own terminal) shows at the next poll and the failure carries the probe's advice beside the harness's own message. A turn
+// the person or Trebell ends first (a Stop, the thread's next turn, an archive or a delete) does not wait for that check. Stubbed
+// probes (a remote environment's executeArgv, a local runFn) and scripted harnesses only: no real harness is started, signed in or
+// signed out.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -60,7 +61,8 @@ async function startRelay(t,options){
 
 // The SDK's Query as the Claude session drives it (the shape of tests/agent-relay-resume-fallback.test.mjs's fake): each user
 // message is answered, unless the CLI fails. failing: the error the CLI process ends with on the next message (as a signed-out
-// Claude Code exits); lost: a resumed conversation Claude Code says it has no transcript for.
+// Claude Code exits); lost: a resumed conversation Claude Code says it has no transcript for; replyHold: a promise each answer waits
+// on (a turn that runs a while).
 class Channel{
   constructor(){this.items=[];this.waiters=[];this.done=false;this.error=null}
   push(value){if(this.done)return;const waiter=this.waiters.shift();if(waiter)waiter.resolve({value,done:false});else this.items.push(value)}
@@ -72,7 +74,7 @@ class Channel{
   }
 }
 function fakeClaudeSdk(){
-  const claude={queries:0,failed:0,failing:null,lost:false};
+  const claude={queries:0,failed:0,failing:null,lost:false,replyHold:null};
   const query=({prompt,options})=>{
     const out=new Channel();claude.queries++;
     void (async()=>{
@@ -82,6 +84,7 @@ function fakeClaudeSdk(){
         if(failure){await sleep(10);claude.failed++;out.end(failure);return}
         const sessionId=options.sessionId||options.resume;
         if(index===0)out.push({type:"system",subtype:"init",session_id:sessionId,model:"claude-test",permissionMode:options.permissionMode,tools:[],mcp_servers:[],slash_commands:[],agents:[],capabilities:[]});
+        await claude.replyHold;
         const id=`msg-${claude.queries}-${index++}`;
         out.push({type:"assistant",uuid:`assistant-${id}`,parent_tool_use_id:null,message:{id,content:[{type:"text",text:"PELICAN"}]}});
         out.push({type:"result",subtype:"success",is_error:false,result:"PELICAN",user_message_uuid:message.uuid,total_cost_usd:0,usage:{input_tokens:3,output_tokens:1}});
@@ -307,4 +310,56 @@ test("a recheck replaces the kept answer at once, overlapping rechecks share one
   assert.deepEqual(answers.map(answer=>answer.available),[false,false,false]);
   assert.notEqual(answers[0],answers[1],"each caller gets its own copy");
   assert.equal(await manager.recheck("native"),null);
+});
+
+// The turn's notifications as the window saw them: where turn/started or turn/completed of turnId came, and the turn it carried.
+const notified=(relay,method,turnId)=>relay.seen.findIndex(message=>message.method===method&&message.params.turn?.id===turnId);
+const completedTurn=(relay,turnId)=>relay.seen.find(message=>message.method==="turn/completed"&&message.params.turn?.id===turnId)?.params.turn;
+
+test("Stop ends a failed turn that waits on its harness's recheck at once, and a send after it runs with the thread active",async t=>{
+  const fx=await claudeFixture(t,"local");
+  await fx.poll();
+  const {thread}=await fx.relay.rpc("thread/start",{cwd:fx.root});
+  // `claude auth logout` in the person's own terminal, and a sign-in check that takes a while to answer.
+  fx.auth.loggedIn=false;fx.claude.failing=new Error(CLAUDE_EXIT);
+  let release;fx.auth.hold=new Promise(resolve=>{release=resolve});onCleanup(t,()=>release());
+  const asked=fx.launches.length,first=(await fx.relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello"}]})).turn.id;
+  while(fx.launches.length<asked+2)await sleep(5);
+  assert.equal(fx.threadStore.get(thread.id).turns.find(turn=>turn.id===first).status,"inProgress","the failed turn waits on its recheck");
+  // The window still shows the turn running, and the person presses Stop: the turn ends before Stop answers.
+  await fx.relay.rpc("turn/interrupt",{threadId:thread.id});
+  const stopped=completedTurn(fx.relay,first);
+  assert.deepEqual([stopped?.status,stopped?.error?.message],["failed",CLAUDE_EXIT],"Stop ended it at once, with the harness's own message");
+  // The window's Stop clears its running state at once, so the person sends again while the check runs; that turn runs a while.
+  fx.claude.failing=null;let answer;fx.claude.replyHold=new Promise(resolve=>{answer=resolve});onCleanup(t,()=>answer());
+  const second=(await fx.relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Again"}]})).turn.id;
+  assert.ok(notified(fx.relay,"turn/completed",first)<notified(fx.relay,"turn/started",second),"the stopped turn ended before the next one started");
+  // The check answers while the second turn runs: it ends nothing, and the next poll reads what it found.
+  fx.auth.hold=null;release();
+  const poll=await fx.poll();await sleep(50);
+  assert.deepEqual([poll.available,poll.authenticated],[false,false],"the check went on, and its answer reached the poll");
+  assert.equal(fx.threadStore.get(thread.id).status?.type,"active","the thread shows the turn that runs");
+  assert.equal(fx.relay.seen.filter(message=>message.method==="turn/completed"&&message.params.turn?.id===first).length,1);
+  answer();
+  assert.equal((await fx.relay.next(message=>message.method==="turn/completed"&&message.params.turn?.id===second)).params.turn.status,"completed");
+});
+
+test("a turn a second window starts while an earlier failed turn waits on its recheck ends that turn first, and the two share the check",async t=>{
+  const fx=await claudeFixture(t,"local");
+  await fx.poll();
+  const {thread}=await fx.relay.rpc("thread/start",{cwd:fx.root});
+  fx.auth.loggedIn=false;fx.claude.failing=new Error(CLAUDE_EXIT);
+  let release;fx.auth.hold=new Promise(resolve=>{release=resolve});onCleanup(t,()=>release());
+  const asked=fx.launches.length,first=(await fx.relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello"}]})).turn.id;
+  while(fx.launches.length<asked+2)await sleep(5);
+  // Another window sends on the thread; the signed-out Claude Code fails that turn too.
+  const second=(await fx.relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"From another window"}]})).turn.id;
+  assert.ok(notified(fx.relay,"turn/completed",first)>=0&&notified(fx.relay,"turn/completed",first)<notified(fx.relay,"turn/started",second),"the earlier turn ended before the new one started");
+  assert.equal(completedTurn(fx.relay,first).error.message,CLAUDE_EXIT);
+  // The new turn fails while the check still runs, and waits on it too.
+  while(fx.claude.failed<2)await sleep(5);
+  await sleep(50);fx.auth.hold=null;release();
+  const failed=(await fx.relay.next(message=>message.method==="turn/completed"&&message.params.turn?.id===second)).params.turn;
+  assert.equal(failed.error.message,`${CLAUDE_EXIT}. ${CLAUDE_ADVICE}`,"the new turn's failure carries the check's advice");
+  assert.equal(fx.launches.length,asked+2,"the two failures shared one check");
 });

@@ -1302,7 +1302,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // A turn its harness failed asks the harness again before it ends (harnessFailureMessage); one the person stopped did not fail.
       const harness=sessionHarnesses.get(session);
       if(stoppedTurns.get(session)===turn.id||!failedWhereItRuns(harness,error,generation))return fail(error.message);
-      return harnessFailureMessage(harness,error).then(fail);
+      // Stop, the thread's next turn, an archive or a delete ends that wait at once with the harness's own message (failureWaits), so
+      // no turn of the thread ends under a later one; the check goes on, and the next poll and session start read what it finds.
+      const threadId=String(thread.id);let settle,refuse;const ended=new Promise((resolve,reject)=>{settle=resolve;refuse=reject});
+      const wait={end:(message=error.message)=>{if(failureWaits.get(threadId)!==wait)return;failureWaits.delete(threadId);try{fail(message);settle()}catch(failure){refuse(failure)}}};
+      endFailureWait(threadId);failureWaits.set(threadId,wait);
+      void harnessFailureMessage(harness,error).then(message=>wait.end(message),()=>wait.end());
+      return ended;
     }).finally(()=>{clearLiveToolOutput(thread.id);recoveryInFlight.delete(thread.id);if(sessions.get(thread.id)===session)sessionUsed.set(session,Date.now())});
     promptSettlements.add(settlement);
     void settlement.finally(()=>promptSettlements.delete(settlement)).catch(error=>log(error?.stack||String(error)));
@@ -1322,6 +1328,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   function startWakeTurn(threadId,promptPromise,context){
     const thread=threadStore.get(threadId),session=sessions.get(threadId);
     if(!thread||!session){promptPromise.catch(()=>{});return}
+    endFailureWait(thread.id);
     const turn=threadStore.addTurn(thread.id,{inputText:"",status:"inProgress"});session.__assistant="";session.__usage=null;
     emit("turn/started",{threadId:thread.id,turn});emit("thread/status/changed",{threadId:thread.id,status:{type:"active",activeFlags:[]}});
     settlePrompt({thread,turn,session,promptPromise,model:thread.model||null,context});
@@ -1493,6 +1500,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const waitingSends=new Map();
   // The running turn the person stopped, by the session it runs in: a harness that ends it with an error did not fail (settlePrompt).
   const stoppedTurns=new WeakMap();
+  // A turn its harness failed, waiting on that harness's recheck before it ends (settlePrompt), by thread. endFailureWait ends it at
+  // once with the harness's own message: Stop, the thread's next turn, an archive and a delete do not wait for the check.
+  const failureWaits=new Map();
+  function endFailureWait(threadId){failureWaits.get(String(threadId??""))?.end()}
   const stoppedBeforeTurn=()=>new Error("Stopped before the turn started.");
   function waitingSend(threadId){
     let sends=waitingSends.get(threadId);if(!sends)waitingSends.set(threadId,sends=new Set());
@@ -1640,6 +1651,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(method==="thread/delete"){
       const deletedThread=threadStore.get(params.threadId);
       if(deletedThread?.runtime==="native")await nativeBackgroundProcesses.clean(params.threadId).catch(()=>{});
+      endFailureWait(params.threadId);
       const runtimeSession=sessions.get(params.threadId);if(runtimeSession instanceof ClaudeAgentSession)await runtimeSession.delete().catch(()=>{});else await runtimeSession?.close().catch(()=>{});
       sessions.delete(params.threadId);settleToolWrites(params.threadId,{write:false});threadStore.delete(params.threadId);if(state?.removeThreadMeta)state.removeThreadMeta(params.threadId);else state?.updateThreadMeta?.(params.threadId,{deletedAt:Date.now(),archived:true});emit("thread/deleted",{threadId:params.threadId});if(onThreadDeleted)try{await onThreadDeleted(deletedThread)}catch{}return {ok:true}
     }
@@ -1881,7 +1893,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       return await nativeBackgroundProcesses.clean(thread.id);
     }
     // Archiving is not activity: the thread keeps its last-update time, so one brought back (an undo) takes its old place by recent activity.
-    if(method==="thread/archive"){await sessions.get(params.threadId)?.close().catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
+    if(method==="thread/archive"){endFailureWait(params.threadId);await sessions.get(params.threadId)?.close().catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
     if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/unarchived",{threadId:params.threadId});return {thread}}
     if(method==="thread/fork"){
       const source=threadStore.get(params.threadId);if(!source)throw new Error("Thread not found");
@@ -1952,6 +1964,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         session.setContextWindow(contextWindow);
       }
       if(send?.stopped)throw stoppedBeforeTurn();
+      // An earlier turn that failed and still waits on its harness's recheck ends before this one starts.
+      endFailureWait(thread.id);
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
       if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;
       // The stored message is the redacted one: a secret pasted into the first message never reaches the thread list.
@@ -1972,6 +1986,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }
     if(method==="turn/interrupt"){
       for(const send of waitingSends.get(String(params.threadId||""))||[])send.interrupt();
+      // A turn that already failed and waits on its harness's recheck ends now, before this answers.
+      endFailureWait(params.threadId);
       const target=sessions.get(params.threadId),running=target?lastTurnOf(String(params.threadId||"")):null;
       if(running?.id&&running.status==="inProgress")stoppedTurns.set(target,running.id);
       target?.cancel();
