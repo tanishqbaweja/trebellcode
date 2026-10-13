@@ -785,6 +785,29 @@ test.describe("A project's icon",()=>{
     }
     await shootModes(page,"icon-refused",{show:page.getByRole("alert").filter({hasText:"Could not use logo.bmp"})});
   });
+  // Keyboard only: Tab goes on from Monogram to Image, and Enter on Image opens the file chooser, as Import JSON does in Settings.
+  test("the Image control is reached with Tab and Enter on it opens the file chooser",async({page,request})=>{
+    const boot=await open(page,request);
+    await openProjects(page);
+    const card=page.locator(".project-card.active");
+    await card.getByRole("button",{name:/Project identity/}).click();
+    const monogram=card.getByRole("button",{name:"Monogram",exact:true}),image=card.getByRole("button",{name:"Image",exact:true});
+    await monogram.focus();await expect(monogram).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(image).toBeFocused();
+    const files=await iconFiles(page),chooser=page.waitForEvent("filechooser",{timeout:3000});
+    await page.keyboard.press("Enter");
+    await (await chooser).setFiles(files.png);
+    await expect.poll(async()=>(await listedProjects(request)).find(project=>project.path===boot.cwd)?.icon?.kind).toBe("image");
+    await expect(image).toBeFocused();
+    // Shown with the keyboard on Image in both modes: the header's mode button takes focus, so Tab brings it back each time.
+    for(const mode of MODES){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      await monogram.focus();await page.keyboard.press("Tab");await expect(image).toBeFocused();
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await image.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:shots+`icon-image-keyboard-${mode}-${width}.png`})}
+    }
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+  });
 });
 
 // A failure of a card's own control is said by that control, in view, not at the top of the page above every card.
