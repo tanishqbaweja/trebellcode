@@ -153,10 +153,11 @@ test("app shortcuts wait while the rename question is open, so the new name land
     for(const mode of ["dark","light"]){
       await switchMode(page,mode);
       await title.click();await expect(question).toBeVisible();
-      // Ctrl+B and Ctrl+N would fold the sidebar and open New task behind the question.
-      await page.keyboard.press("Control+b");await page.keyboard.press("Control+n");
+      // Ctrl+B, Ctrl+N and Ctrl+K would fold the sidebar, open New task and open the palette behind the question.
+      await page.keyboard.press("Control+b");await page.keyboard.press("Control+n");await page.keyboard.press("Control+k");
       await expect(question).toBeVisible();await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
       await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Release checklist");
+      await expect(page.getByTestId("command-palette")).toHaveCount(0);
       await shoot(page,"header-rename-shortcuts-wait");
       await page.keyboard.press("Escape");await expect(question).toHaveCount(0);await expect(title).toHaveText("Release checklist");
     }

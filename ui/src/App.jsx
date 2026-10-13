@@ -2473,7 +2473,9 @@ export default function App(){
       if(!command)return;
       event.preventDefault();
       if(command==="newChat")runUserAction(newChat,"Could not start a new thread");
-      else if(command==="commandPalette")setPaletteOpen(value=>!value);
+      // The palette's key opens and closes it over anything but one of the app's own questions: the question stays on top, so the
+      // palette would open, or close, unseen behind it.
+      else if(command==="commandPalette"){if(!document.querySelector("dialog[open]"))setPaletteOpen(value=>!value)}
       else if(command==="navigationBack")runUserAction(()=>navigateHistory(-1),"Could not navigate back");
       else if(command==="navigationForward")runUserAction(()=>navigateHistory(1),"Could not navigate forward");
       else if(command==="sidebarToggle")setSidebarOpen(value=>!value);
