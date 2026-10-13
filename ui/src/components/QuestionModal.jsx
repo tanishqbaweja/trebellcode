@@ -59,6 +59,9 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
   useModalFocus(dialogRef,Boolean(request));
   if(!request)return null;
   const fileCount=Object.values(filesByQuestion).reduce((sum,items)=>sum+(items?.length||0),0);
+  // A part is answered by a choice, words of the person's own or a file. Submit waits for every part (one the harness marks optional
+  // excepted), since an empty answer would go to the agent as if it were the person's.
+  const unanswered=questions.some(q=>q.required!==false&&!(answers[q.id]||[]).some(value=>String(value).trim())&&!(filesByQuestion[q.id]||[]).length);
   async function attach(questionId){
     if(fileCount>=100)return;
     setBusy(questionId);setAttachError("");
@@ -102,6 +105,6 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
     </div>)}
     {attachError&&<div className="inline-error" role="alert">{attachError}</div>}
     {submitError&&<div className="inline-error" role="alert">{submitError}</div>}
-    <div className="modal-actions"><span>{[fileCount?`${fileCount}/100 attached`:"",waiting>0?`${waiting} more waiting`:""].filter(Boolean).join(" · ")}</span><button className="tb-btn" onClick={cancel} disabled={Boolean(busy)}>{busy==="cancel"?"Cancelling…":"Cancel"}</button><button className="tb-btn tb-btn--primary primary" disabled={Boolean(busy)} onClick={async()=>{setAttachError("");setSubmitError("");setBusy("submit");try{await onSubmit(answers,filesByQuestion)}catch(error){setSubmitError(error?.message||String(error))}finally{setBusy("")}}}>{busy==="submit"?"Submitting…":"Submit"}</button></div>
+    <div className="modal-actions"><span>{[fileCount?`${fileCount}/100 attached`:"",waiting>0?`${waiting} more waiting`:""].filter(Boolean).join(" · ")}</span><button className="tb-btn" onClick={cancel} disabled={Boolean(busy)}>{busy==="cancel"?"Cancelling…":"Cancel"}</button><button className="tb-btn tb-btn--primary primary" disabled={Boolean(busy)||unanswered} title={unanswered?"Answer every question to submit":undefined} onClick={async()=>{setAttachError("");setSubmitError("");setBusy("submit");try{await onSubmit(answers,filesByQuestion)}catch(error){setSubmitError(error?.message||String(error))}finally{setBusy("")}}}>{busy==="submit"?"Submitting…":"Submit"}</button></div>
   </div></div>;
 }

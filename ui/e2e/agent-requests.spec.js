@@ -153,3 +153,34 @@ test("a double click on Allow once answers only the approval it was aimed at, an
     expect(harness.answersTo(second)).toHaveLength(1);
   }finally{await harness.close()}
 });
+
+test("a question's Submit waits until every part of it has an answer",async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    for(const pass of ["dark","light"]){
+      if(pass==="light")await toggleMode(page);
+      const modal=page.locator(".question-modal"),submit=modal.getByRole("button",{name:"Submit",exact:true});
+      const asked=harness.ask("item/tool/requestUserInput",{threadId:RELEASE.id,turnId:"turn-release",itemId:"q-two-"+pass,questions:[
+        {id:"env",header:"Target",question:"Which environment should I deploy to?",options:[{label:"dev"},{label:"staging"}],allowMultiple:false},
+        {id:"owner",header:"Owner",question:"Who signs off on the release?",options:[],allowMultiple:false}]});
+      await expect(modal).toContainText("Who signs off on the release?");
+      await expect(submit).toBeDisabled();
+      if(pass==="dark")await shoot(page,"question-unanswered");
+      await modal.getByRole("button",{name:"staging",exact:true}).click();
+      await expect(submit).toBeDisabled();
+      await modal.getByPlaceholder("Custom answer…").nth(1).click();await page.keyboard.type("Dana",{delay:8});
+      await expect(submit).toBeEnabled();
+      await shoot(page,"question-answered");
+      // Clearing a part again takes Submit away again.
+      for(let index=0;index<4;index++)await page.keyboard.press("Backspace");
+      await expect(submit).toBeDisabled();
+      await page.keyboard.type("Dana",{delay:8});
+      await submit.click();
+      expect(await asked.answered).toEqual({answers:{env:{answers:["staging"]},owner:{answers:["Dana"]}}});
+      await expect(modal).toHaveCount(0);
+    }
+  }finally{await harness.close()}
+});
