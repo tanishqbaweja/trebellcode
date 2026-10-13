@@ -54,6 +54,15 @@ test("Trebell-owned tool arguments are schema-validated before policy or executi
   assert.equal(hintedResult.success,true);assert.equal(seen.command,"node");assert.deepEqual(seen.args,["verify.mjs"]);assert.equal(Object.prototype.hasOwnProperty.call(seen,"shell"),false);
 });
 
+test("replace_text takes an edits list, and malformed hunks are rejected before execution",()=>{
+  const authorize=args=>authorizePlatformToolCall({namespace:"trebell_workspace",name:"replace_text",arguments:args},{permissionProfile:"full",workspace:"/repo"});
+  assert.equal(authorize({path:"a.js",edits:[{old_text:"a",new_text:"b"},{old_text:"c",new_text:"d",expected_replacements:2}]}).decision,POLICY_ALLOW);
+  assert.equal(authorize({path:"a.js",old_text:"a",new_text:"b"}).decision,POLICY_ALLOW,"the single pair stays valid");
+  const missing=authorize({path:"a.js",edits:[{old_text:"a"}]});assert.equal(missing.decision,POLICY_REJECT);assert.match(missing.reason,/edits\[0\]\.new_text is required/);
+  const extra=authorize({path:"a.js",edits:[{old_text:"a",new_text:"b",surprise:true}]});assert.equal(extra.decision,POLICY_REJECT);assert.match(extra.reason,/edits\[0\]\.surprise is not allowed/);
+  const count=authorize({path:"a.js",edits:[{old_text:"a",new_text:"b",expected_replacements:0}]});assert.equal(count.decision,POLICY_REJECT);assert.match(count.reason,/expected_replacements must be >= 1/);
+});
+
 test("repository intelligence goes through the same gateway as other Trebell tools",async()=>{
   const authorized=authorizePlatformToolCall({namespace:"trebell_repo",name:"search_symbols",arguments:{query:"Session"}},{permissionProfile:"read-only",workspace:"/repo"});
   assert.equal(authorized.decision,POLICY_ALLOW);assert.equal(authorized.definition.source,"repository");assert.equal(authorized.action.kind,"read");

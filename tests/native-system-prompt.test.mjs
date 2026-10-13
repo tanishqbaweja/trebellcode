@@ -98,8 +98,8 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/exposed repository tools/i);
   assert.ok(prompt.includes("If the seed names likely relevant source paths, inspect those directly instead of listing or searching only to rediscover them."),"the seed guidance names source paths only");
   assert.doesNotMatch(prompt,/repository seed already names likely relevant paths/i);
-  assert.match(prompt,/edit calls together in one model response/i);
-  assert.match(prompt,/executes non-parallel edits in order/i);
+  assert.match(prompt,/Put every hunk you already know for a file into one replace_text call's edits list\. The result shows the applied diff; re-read only if you need context beyond it\./);
+  assert.doesNotMatch(prompt,/edit calls together in one model response|executes non-parallel edits in order/i);
   assert.match(prompt,/image file is relevant/i);
   assert.match(prompt,/read_file with as_image=true/i);
   assert.match(prompt,/pixel dumps/i);

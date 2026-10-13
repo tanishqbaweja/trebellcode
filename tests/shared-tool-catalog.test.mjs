@@ -37,7 +37,8 @@ test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   assert.match(terminal.inputSchema.properties.command.description,/executable only/i);assert.match(terminal.inputSchema.properties.args.description,/argument vector/i);
   const compactCodingSurface=sharedDynamicToolNamespaces({workspaceTools:true,terminal:true,sourceControl:false});
   // 2240 (was 2200) leaves room for the timeout_ms default note, so a slow whole-file test run is not cut off at 30 s.
-  assert.ok(JSON.stringify(compactCodingSurface).length<=2240,"workspace + terminal schema (including image inspection) should stay compact without dropping argv guardrails");
+  // 2580 (was 2240) adds replace_text's edits list, which puts several hunks for one file into one call.
+  assert.ok(JSON.stringify(compactCodingSurface).length<=2580,"workspace + terminal schema (including image inspection) should stay compact without dropping argv guardrails");
   assert.match(terminal.inputSchema.properties.timeout_ms.description,/Default 30000; raise for slow runs/);
   assert.deepEqual(sharedToolNamespace("trebell_output").tools.map(item=>item.name),["inspect"]);
   assert.ok(JSON.stringify(sharedDynamicToolNamespaces({output:true,sourceControl:false})).length<=725,"virtualized-output manifest grew past its recurring wire budget");

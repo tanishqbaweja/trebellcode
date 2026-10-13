@@ -146,6 +146,33 @@ test("Native exact replacement fails closed and workspace paths cannot escape",a
   }finally{await rm(root,{recursive:true,force:true});await rm(outside,{force:true}).catch(()=>{})}
 });
 
+test("Native replace_text applies an edits list to one file in order, all or nothing, and returns the applied diff",async()=>{
+  const root=await workspace(),source="function total(items) {\n  let sum = 0;\n  for (const item of items) sum += item.price;\n  return sum;\n}\n";
+  try{
+    await writeFile(join(root,"src","total.js"),source,"utf8");
+    const execute=createNativeBuiltins({root});
+    await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/total.js",edits:[
+      {old_text:"let sum = 0;",new_text:"let sum = 0n;"},
+      {old_text:"item.cost",new_text:"BigInt(item.cost)"},
+    ]}}),error=>/^edits\[1\]: Expected 1 exact replacement in src\/total\.js, found 0\. No changes were written \(edits are all or nothing\)\./.test(error.message));
+    assert.equal(await readFile(join(root,"src","total.js"),"utf8"),source,"a failing later hunk leaves the earlier hunks unwritten");
+    const result=await execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/total.js",edits:[
+      {old_text:"let sum = 0;",new_text:"let sum = 0n;"},
+      {old_text:"sum += item.price;",new_text:"sum += BigInt(item.price);"},
+    ]}});
+    assert.equal(await readFile(join(root,"src","total.js"),"utf8"),"function total(items) {\n  let sum = 0n;\n  for (const item of items) sum += BigInt(item.price);\n  return sum;\n}\n");
+    assert.equal(result.replacements,2);
+    assert.equal(result.diff,["@@ -1,5 +1,5 @@"," function total(items) {","-  let sum = 0;","-  for (const item of items) sum += item.price;","+  let sum = 0n;","+  for (const item of items) sum += BigInt(item.price);","   return sum;"," }"].join("\n"));
+    assert.match(result.beforeSha256,/^[a-f0-9]{64}$/);assert.match(result.afterSha256,/^[a-f0-9]{64}$/,"the raw result keeps both hashes for audit logs");
+    assert.ok(Object.keys(result).indexOf("afterSha256")<Object.keys(result).indexOf("diff"),"the hashes come before the diff, so a capped audit record keeps them");
+    const single=await execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"value = 1",new_text:"value = 2"}});
+    assert.equal(single.replacements,1);assert.equal(single.diff,"@@ -1 +1 @@\n-const value = 1;\n+const value = 2;");
+    await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"const  value = 2;",new_text:"x"}}),
+      error=>error.message==="Expected 1 exact replacement in src/app.js, found 0. No changes were written.\nold_text matches line 1 when whitespace is ignored. The exact current text there:\n1| const value = 2;");
+    assert.equal(await readFile(join(root,"src","app.js"),"utf8"),"const value = 2;\n");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("Native workspace tools keep absolute paths that name the workspace root or a path inside it",async()=>{
   const root=await workspace(),rooted=rootedSpelling(root),doubled=join(root,rooted.replace(/^[\\/]+/,""));
   try{
