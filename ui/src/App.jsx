@@ -4027,9 +4027,10 @@ export default function App(){
     }finally{if(codexGoalActivationRef.current===activation)codexGoalActivationRef.current=null}
   }
   // A Stop pressed before its send's turn had an id is sent once to that turn, as soon as the id comes (turn/start's answer or
-  // turn/started); one that fails gives the Stop back.
+  // turn/started); one that fails gives the Stop back. The Stop is then the turn's, so a press for the turn sends nothing more.
   function interruptStoppedSend(send,threadId,turnId){
     if(!send?.stopped||send.interrupted||!turnId||send.threadId!==String(threadId||""))return;send.interrupted=true;
+    if(stopKeyRef.current===send)stopKeyRef.current=send.threadId+"\0"+turnId;
     rpcRef.current?.request("turn/interrupt",{threadId,turnId}).catch(error=>{if(String(activeThreadRef.current?.id||"")===send.threadId){stopKeyRef.current=null;setStoppingThreadId(null)}showActionError(error,"Could not stop turn")});
   }
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false}={}){

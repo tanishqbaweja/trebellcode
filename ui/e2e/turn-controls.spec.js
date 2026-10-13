@@ -139,8 +139,8 @@ for(const action of ["Delete","Archive"]){
 // unless turn/interrupt ends it first; one interrupted before it started ends as it starts. interruptDelayMs holds the interrupt's
 // answer (Codex answers once the turn has stopped), compactError fails thread/compact/start with that message, and holdTurns keeps
 // a turn running after its reply until it is set false. project makes the thread a project thread, whose follow-ups wait in
-// Trebell's own queue (Codex's queue holds only General chats').
-async function startCodex(page,{name,project=false}){
+// Trebell's own queue (Codex's queue holds only General chats'); settings adds to the app's settings.
+async function startCodex(page,{name,project=false,settings={}}){
   const cwd=project?await mkdtemp(join(tmpdir(),"turn-controls-codex-")):process.cwd();
   const thread={id:"codex-stop-thread",name,preview:name,cwd,createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,status:{type:"idle"},turns:[]};
   const codex={thread,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null};
@@ -195,7 +195,7 @@ async function startCodex(page,{name,project=false}){
   await keepThreadMeta(page);await keepSettings(page);
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"turn-controls-codex",activeEnvironmentId:null,activeEnvironment:null}));
   const projects=project?[{id:"codex-queue-project",name:"Codex queue project",path:cwd,environmentId:null,effectiveSettings:{}}]:[];
-  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects,...(project?{activeProjectId:projects[0].id}:{}),threadMeta:{[thread.id]:project?{projectless:false,environmentId:null,cwd}:{projectless:true,environmentId:null}}}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue",...settings},projects,...(project?{activeProjectId:projects[0].id}:{}),threadMeta:{[thread.id]:project?{projectless:false,environmentId:null,cwd}:{projectless:true,environmentId:null}}}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
   await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{project:projects[0]||null}:{projects}));
   if(project){
@@ -255,6 +255,27 @@ test("a double click on Stop sends one turn/interrupt for the turn",async({page}
     await expect(stop(page)).toBeVisible();await expect(page.getByText("One two three",{exact:false})).toBeVisible({timeout:10_000});
     await stop(page).dblclick();
     await expect(stop(page)).toHaveCount(0,{timeout:10_000});await expect(stopping(page)).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect(codex.interrupts).toEqual([{threadId:codex.thread.id,turnId:turn.id}]);
+    await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/);
+  }finally{await codex.close()}
+});
+
+// The Stop shortcut, pressed before Codex names the turn and again once it has, while the interrupt sent on its naming is still on
+// its way, sends that one interrupt and no other.
+test("the Stop shortcut pressed before and after Codex names the turn sends one turn/interrupt for it",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex stop shortcut",settings:{keybindingRules:[{command:"threadStop",key:"Ctrl+Alt+X"}]}});
+  try{
+    codex.interruptDelayMs=800;
+    await sendTyped(page,"Count from one to forty, one number per line.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;
+    await page.keyboard.press("Control+Alt+X");await expect(stopping(page)).toBeVisible();
+    turn.start();await expect.poll(()=>codex.interrupts.length).toBe(1);
+    turn.answer();await expect(composer(page)).not.toHaveAttribute("placeholder","Sending…");await expect(stopping(page)).toBeVisible();
+    await page.keyboard.press("Control+Alt+X");
+    await expect(stopping(page)).toHaveCount(0,{timeout:10_000});await expect(stop(page)).toHaveCount(0);
     await page.waitForTimeout(500);
     expect(codex.interrupts).toEqual([{threadId:codex.thread.id,turnId:turn.id}]);
     await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/);
