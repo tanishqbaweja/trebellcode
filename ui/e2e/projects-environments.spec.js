@@ -964,6 +964,45 @@ test.describe("Clone",()=>{
       try{rmSync(parent,{recursive:true,force:true,maxRetries:50,retryDelay:100})}catch{}
     }
   });
+
+  // Cancel on the banner of a clone still at 0%: while the clone stops, the banner says so instead of a progress that no longer
+  // moves, and once it has stopped it says the clone was cancelled, with Retry clone. It never reads 0% after the Cancel. The
+  // clone's progress reads are held while it stops, as on a busy server, so the stopping state can be seen.
+  test("after Cancel the clone banner says the clone is stopping, then cancelled, never a stuck 0%",async({page,request})=>{
+    await request.post("/api/settings",{data:BASE});
+    let job={id:"clone-cancel-banner",url:"https://example.invalid/team/held-repo.git",status:"running",phase:"Cloning",progress:0,error:null,startedAt:Date.now(),completedAt:null};
+    const project=()=>({id:"clone-cancel-project",name:"held-repo",path:process.cwd(),environmentId:null,scripts:[],cloneJob:job});
+    let releaseReads=()=>{};const readsHeld=new Promise(resolve=>{releaseReads=resolve});
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:true,provider:"openai",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"clone-cancel-banner-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings:{...BASE,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:"clone-cancel-project"},projects:[project()],threadMeta:{}}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[project()],project:project()}));
+    await page.route(/\/api\/git\/info\?/,route=>json(route,{isGit:false,status:[],remotes:[],worktrees:[]}));
+    await page.route(/\/api\/clone-jobs\?id=/,async route=>{if(job.status!=="running")await readsHeld;return json(route,{job,project:project()})});
+    const cancels=[];
+    await page.route(/\/api\/clone-jobs$/,route=>{
+      const body=route.request().postDataJSON()||{};
+      if(body.action!=="cancel")return route.fallback();
+      cancels.push(body.id);job={...job,status:"cancelling",phase:"Cancelling"};
+      return json(route,{ok:true,job,project:project()});
+    });
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const banner=page.getByTestId("clone-banner");
+    await expect(banner).toContainText("You can keep writing");
+    await expect(banner.locator("em"),"a running clone shows its progress").toHaveText("0%");
+    await banner.getByRole("button",{name:"Cancel"}).click();
+    await expect(banner).toContainText("Stopping the clone…");
+    await expect(banner).not.toContainText("%");
+    await expect(banner).not.toContainText("You can keep writing");
+    expect(cancels).toEqual(["clone-cancel-banner"]);
+    await shootModes(page,"clone-banner-stopping");
+    // The clone has stopped.
+    job={...job,status:"cancelled",phase:"Cancelled",completedAt:Date.now()};releaseReads();
+    await expect(banner).toContainText("Clone cancelled");
+    await expect(banner).not.toContainText("%");
+    await expect(banner.getByRole("button",{name:"Retry clone"})).toBeVisible();
+    await shootModes(page,"clone-banner-cancelled-no-percent");
+  });
 });
 
 // Files a person might pick for a project's icon: a real png, a text file named like one, and a bitmap the app does not keep.
