@@ -2457,7 +2457,9 @@ export default function App(){
         projectOpen:Boolean(projectPath&&!projectlessMode),
         threadOpen:Boolean(activeThread?.id),
         running:Boolean(running),
-        modalOpen:Boolean(paletteOpen||question||elicitations.length||approvals.length||snoozeRequest||settings.onboardingComplete===false),
+        // The app's own text questions and confirmations (askText, askConfirm) are <dialog>s outside React's state: one open covers
+        // the app too, so Ctrl+N does not open New task behind a rename that then lands there.
+        modalOpen:Boolean(paletteOpen||question||elicitations.length||approvals.length||snoozeRequest||settings.onboardingComplete===false||document.querySelector("dialog[open]")),
         rightPanelOpen:Boolean(rightPanelOpen),
         sidebarOpen:Boolean(sidebarOpen),
         undoAvailable:Boolean(threadUndo),
@@ -4659,8 +4661,8 @@ export default function App(){
     return result.proof;
   }
   // The name goes to the transport there is once the dialog closes; with none (the harness went away meanwhile) the rename names the
-  // harness, as the title's tooltip does.
-  async function renameThread(){if(!rpc||!activeThread)return;const name=await askText("Rename thread",titleOf(activeThread));if(!name?.trim())return;const client=rpcRef.current;if(!client?.isConnected())throw new Error(agentRuntimeLabel+" is not connected.");await client.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
+  // harness, as the title's tooltip does. It names the thread it was asked for, even when another view is open by then.
+  async function renameThread(){if(!rpc||!activeThread)return;const name=await askText("Rename thread",titleOf(activeThread));if(!name?.trim())return;const client=rpcRef.current;if(!client?.isConnected())throw new Error(agentRuntimeLabel+" is not connected.");await client.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>prev?.id===activeThread.id?{...prev,name:name.trim()}:prev);setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
   async function shareThread(){const text=messages.filter(m=>m.role==="user"||m.role==="assistant").map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
   async function startReview(){
     if(!rpc||!activeThread?.id)throw new Error("Start or open a thread before reviewing.");

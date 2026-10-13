@@ -145,6 +145,34 @@ test("Rename asks in the app's own dialog in the browser too, never the browser'
   }finally{await harness.close()}
 });
 
+test("app shortcuts wait while the rename question is open, so the new name lands on the thread it was asked for",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,nativeDialogs,header}=await openHeaderApp(page,{replies:[{text:"Renamed and ready."}]});
+  const title=header.locator(".thread-title-button"),question=dialog(page),thread=harness.threads[0];
+  try{
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      await title.click();await expect(question).toBeVisible();
+      // Ctrl+B and Ctrl+N would fold the sidebar and open New task behind the question.
+      await page.keyboard.press("Control+b");await page.keyboard.press("Control+n");
+      await expect(question).toBeVisible();await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
+      await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Release checklist");
+      await shoot(page,"header-rename-shortcuts-wait");
+      await page.keyboard.press("Escape");await expect(question).toHaveCount(0);await expect(title).toHaveText("Release checklist");
+    }
+    await title.click();await page.keyboard.press("Control+n");
+    await page.keyboard.type("Ship the release",{delay:20});await page.keyboard.press("Enter");
+    await expect(question).toHaveCount(0);await expect(title).toHaveText("Ship the release");
+    await expect(page.locator('.thread-row.active .thread-main[title="Ship the release"]')).toBeVisible();
+    expect(harness.threadStore.get(thread.id).name).toBe("Ship the release");
+    // The next message goes to that thread.
+    await page.getByTestId("composer").click();await page.keyboard.type("Check the release notes",{delay:15});await page.keyboard.press("Enter");
+    await expect(page.getByText("Renamed and ready.")).toBeVisible();
+    expect(harness.threadStore.get(thread.id).turns).toHaveLength(2);
+    expect(nativeDialogs).toEqual([]);
+  }finally{await harness.close()}
+});
+
 for(const build of ["browser","desktop"])test(`the project crumb opens Projects in the ${build} build, and nothing beside it poses as a menu`,async({page})=>{
   test.setTimeout(60_000);
   const {harness,header}=await openHeaderApp(page,{desktop:build==="desktop"});
