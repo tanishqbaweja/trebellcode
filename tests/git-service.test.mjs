@@ -24,6 +24,29 @@ test("a commit git refuses fails with git's reason, and a commit with nothing to
   }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:50})}
 });
 
+// The Git panel's Commit in a merge stopped on a conflict that the person resolved by keeping this branch's side: the index then
+// matches HEAD, and the commit still concludes the merge, as git commit does.
+test("a commit concludes a merge whose conflicts were resolved by keeping this branch's side",{timeout:20000},async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-merge-commit-"));
+  try{
+    await git(dir,["init","--initial-branch=main"]);await git(dir,["config","user.email","trebell@example.test"]);await git(dir,["config","user.name","Trebell Test"]);
+    await writeFile(join(dir,"notes.txt"),"base\n");await commitAll(dir,"Base");
+    await git(dir,["switch","-c","other"]);await writeFile(join(dir,"notes.txt"),"theirs\n");await commitAll(dir,"Theirs");
+    await git(dir,["switch","main"]);await writeFile(join(dir,"notes.txt"),"ours\n");await commitAll(dir,"Ours");
+    const merge=await git(dir,["merge","other"],{allowFailure:true});
+    assert.equal(merge.ok,false,"the merge stopped on its conflict");
+    assert.match((await git(dir,["status","--porcelain"])).stdout,/^UU notes\.txt/m);
+    await writeFile(join(dir,"notes.txt"),"ours\n");
+    const committed=await commitAll(dir,"Merge other, keeping ours");
+    assert.equal(committed.status.length,0);
+    assert.equal((await git(dir,["rev-list","--parents","-n","1","HEAD"])).stdout.trim().split(" ").length,3,"HEAD is a merge commit");
+    assert.equal((await git(dir,["log","-1","--format=%s"])).stdout.trim(),"Merge other, keeping ours");
+    assert.equal((await git(dir,["rev-parse","-q","--verify","MERGE_HEAD"],{allowFailure:true})).ok,false,"the merge is concluded");
+    // With the merge concluded, nothing is left to commit, and Commit says so again.
+    await assert.rejects(()=>commitAll(dir,"Nothing here"),{message:"Nothing to commit: the working tree has no changes."});
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:50})}
+});
+
 test("Git service reports status and branch operations",{timeout:20000},async()=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-git-"));
   try{

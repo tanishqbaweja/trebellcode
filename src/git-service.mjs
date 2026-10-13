@@ -130,10 +130,11 @@ export async function createBranch(cwd,name,{checkout=true,startPoint=null}={}){
 }
 export async function switchBranch(cwd,name){ await git(cwd,["switch",name]); return gitInfo(cwd,{fresh:true}); }
 // A commit git refuses (a hook, say) fails with git's own words; with nothing staged git would print a status listing instead, so
-// that case is named here.
+// that case is named here. A merge in progress (MERGE_HEAD) is concluded even so, as git commit does: its conflicts resolved by
+// keeping this branch's side leave the index as HEAD has it, and the merge commit is still what finishes it.
 export async function commitAll(cwd,message){
   await git(cwd,["add","-A"]);
-  if((await git(cwd,["diff","--cached","--quiet"],{allowFailure:true})).ok)throw new Error("Nothing to commit: the working tree has no changes.");
+  if((await git(cwd,["diff","--cached","--quiet"],{allowFailure:true})).ok&&!(await git(cwd,["rev-parse","-q","--verify","MERGE_HEAD"],{allowFailure:true})).ok)throw new Error("Nothing to commit: the working tree has no changes.");
   await git(cwd,["commit","-m",message]);
   return gitInfo(cwd,{fresh:true});
 }
