@@ -194,6 +194,22 @@ test("Escape in the question a palette command asks closes that question alone, 
   }finally{await harness.close()}
 });
 
+test("switching the theme with the header's button leaves an action's error on screen to be read",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,proxy,header}=await openHeaderApp(page);
+  const title=header.locator(".thread-title-button"),alert=page.getByTestId("app-action-error"),reason="Could not rename thread: Thread name store is read-only";
+  try{
+    proxy.refuse=message=>message.method==="thread/name/set"?"Thread name store is read-only":null;
+    // The error shows in one mode and is still there once the button has switched to the other.
+    for(const [from,to] of [["dark","light"],["light","dark"]]){
+      await switchMode(page,from);
+      await rename(page,title,"Ship the release");await expect(alert).toHaveText(reason);
+      await switchMode(page,to);await expect(alert).toHaveText(reason);
+      await shoot(page,"header-error-kept-after-theme-switch");
+    }
+  }finally{await harness.close()}
+});
+
 for(const build of ["browser","desktop"])test(`the project crumb opens Projects in the ${build} build, and nothing beside it poses as a menu`,async({page})=>{
   test.setTimeout(60_000);
   const {harness,header}=await openHeaderApp(page,{desktop:build==="desktop"});

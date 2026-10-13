@@ -4993,7 +4993,8 @@ export default function App(){
   const renameFromHeader=()=>runUserAction(renameThread,"Could not rename thread");
   const renameReady=Boolean(rpc)&&rpcStatus==="connected";
   const toggleTerminalPanel=()=>setPanel(panel==="terminal"?null:"terminal");
-  const toggleAppearanceMode=()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance");
+  // Not a runUserAction, which first clears the last action's error: switching the mode leaves an error the person has not read yet.
+  const toggleAppearanceMode=()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}).catch(error=>showActionError(error,"Could not change appearance"));
   const appearanceToggleLabel=resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode";
   // One Open-in state for the row's picker and the menu's copy, so both open the editor last chosen in either, and an Open from
   // either replaces the failure the row's picker shows. The menu closes as Open runs, so a failure there is reported like the
@@ -5228,7 +5229,7 @@ export default function App(){
           </div>
           <div className="workspace-header-actions">
             <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else{setRightPanelTab(tab=>tab||"files");setRightPanelOpen(true)}}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
-            <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={()=>runUserAction(()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}),"Could not change appearance")} aria-label={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"} title={resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode"}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
+            <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={toggleAppearanceMode} aria-label={appearanceToggleLabel} title={appearanceToggleLabel}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
             <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title={withKey("Command palette",sidebarShortcuts.commandPalette)}><Command size={15}/></button>
           </div>
         </header>})()}
