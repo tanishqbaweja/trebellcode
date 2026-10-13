@@ -356,6 +356,15 @@ function postEditReadReceipt(output,expected={}){
   };
 }
 
+// Why the provider no longer holds the conversation's earlier items, or null: the server compacted the context during this
+// response, or the request was resent from a server compaction (the compaction item and what followed it) instead of the
+// whole transcript.
+function providerContextReset(response){
+  if(response?.serverCompaction)return "server_compaction";
+  const resend=response?.telemetry?.responseContinuation?.compactedResend;
+  return resend&&typeof resend==="object"&&resend.rejected!==true?"compacted_resend":null;
+}
+
 function preserveCacheableProviderHistory(provider){
   return providerFeatureEnabled(provider,"promptCaching");
 }
@@ -502,6 +511,15 @@ export class NativeAgentSession{
         historicalReadResultSavedChars:Number(reads.historicalReadResultSavedChars||0),
       };
     };
+    // A repeated read is answered "already present" from what the conversation holds. Once the provider no longer holds the
+    // earlier items (the server compacted them, or a request restarted the chain from a compaction), those answers would be
+    // untrue, so the observations and the exact file contents behind post-edit receipts are forgotten.
+    let observationsForgotten=false;
+    const forgetPresentObservations=reason=>{
+      const observations=this.observationCache.size,files=exactWorkspaceContents.size;observationsForgotten=true;
+      this.observationCache.clear();exactWorkspaceContents.clear();postEditExpected.clear();
+      this.onEvent?.({name:"native.tool.observation_cache_cleared",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{reason,observations,files}});
+    };
     if(priorContext.count)this.onEvent?.({name:"native.context.history_cooled",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{count:priorContext.count,savedChars:priorContext.savedChars,supersededEntries:Number(priorContext.supersededEntries||0),retainedEntries:Number(priorContext.retainedEntries||0)}});
     const controllerToolContext={toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null};
     const rawExecutor=call=>this.executeTool(call,controllerToolContext);
@@ -627,6 +645,8 @@ export class NativeAgentSession{
               if(completionGate){openAiControlGateResponseId=responseId||openAiControlGateResponseId}
               else{openAiControlGateResponseId="";if(responseId)this.lastProviderResponseId=responseId}
             }
+            // A completion-gate response forks off the coding lane, so what it holds never becomes the coding context.
+            const contextReset=completionGate?null:providerContextReset(response);if(contextReset)forgetPresentObservations(contextReset);
             return response;
           }
           catch(error){
@@ -651,7 +671,8 @@ export class NativeAgentSession{
       return {stopReason:"end_turn",messageId,providerMessageId:result.lastResponse?.id||null,raw:{usage:result.usage,modelTurns:result.modelTurns,toolCalls:result.toolCalls,provider:result.provider,model:result.model}};
     }catch(error){
       if(draftsOn)this.#withdrawDraft(this.controller.signal.aborted||error?.name==="AbortError"?"cancelled":"failed");
-      this.observationCache=observationSnapshot;
+      // A failed turn's observations are not kept, but a provider context reset seen during it still holds.
+      this.observationCache=observationsForgotten?new Map():observationSnapshot;
       this.previousTerminalRuns=[];
       if(error?.nativeUsage){
         const usage=error.nativeUsage;

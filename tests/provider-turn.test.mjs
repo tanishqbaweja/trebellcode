@@ -216,3 +216,16 @@ test("Responses normalization preserves call_id instead of the function-call ite
   },"openai");
   assert.equal(result.toolCalls[0].id,"call-continuation-1");
 });
+
+test("Responses normalization reports a server-side compaction only when the output carries one",()=>{
+  const compacted=normalizeResponsesTurnResponse({
+    id:"resp-c",model:"gpt-6-luna",status:"completed",
+    output:[{type:"compaction",id:"cmp_1",encrypted_content:"gAAAA-opaque"},{type:"function_call",call_id:"call-1",name:"trebell_terminal__run",arguments:'{"command":"ls"}'}],
+    usage:{input_tokens:250000,output_tokens:10,total_tokens:250010},
+  },"openai");
+  assert.deepEqual(compacted.serverCompaction,{items:1});assert.equal(compacted.toolCalls.length,1);assert.equal(compacted.text,"");
+  const aliased=normalizeResponsesTurnResponse({id:"resp-a",status:"completed",output:[{type:"compaction_summary",encrypted_content:"gAAAA-older-name"}],usage:{}},"openai");
+  assert.deepEqual(aliased.serverCompaction,{items:1});
+  const plain=normalizeResponsesTurnResponse({id:"resp-p",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{}},"openai");
+  assert.equal(Object.hasOwn(plain,"serverCompaction"),false);
+});

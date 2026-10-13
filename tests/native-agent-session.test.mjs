@@ -1799,3 +1799,96 @@ test("Native session still answers a running-state question about a full process
   await session.start({providerSessionId:"process-status-handle",model:"model-a"});await session.prompt([{type:"text",text:`Is background process \`${processId}\` still running?`}]);
   assert.equal(providerCalls,0);assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,`Background process ${processId} is running.`);
 });
+
+test("Native session stops calling a repeated read already present once the server compacts the context",async()=>{
+  const requests=[],events=[];let providerCalls=0;const content="A".repeat(4000);
+  const read=id=>({id,namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"large.txt"}'});
+  const session=new NativeAgentSession({
+    model:"gpt-6-luna",provider:"openai",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"r1",text:"",toolCalls:[read("read-a")],usage:{}};
+      if(providerCalls===2)return {id:"r2",text:"",toolCalls:[read("read-b")],usage:{}};
+      if(providerCalls===3)return {id:"r3",text:"",toolCalls:[read("read-c")],usage:{},serverCompaction:{items:1}};
+      if(providerCalls===4)return {id:"r4",text:"",toolCalls:[read("read-d")],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({path:"large.txt",size:content.length,content}),
+  });
+  await session.start({providerSessionId:"native-dedupe-compaction",model:"gpt-6-luna"});await session.prompt([{type:"text",text:"read repeatedly"}]);
+  const observation=id=>requests.at(-1).messages.find(message=>message.role==="tool"&&message.toolCallId===id)?.content||"";
+  assert.match(observation("read-b"),/byte-identical/i,"before compaction the repeat is answered from the conversation");
+  assert.match(observation("read-c"),/A{1000}/,"after the server compacted, the earlier read is no longer present");assert.doesNotMatch(observation("read-c"),/byte-identical/i);
+  assert.match(observation("read-d"),/byte-identical/i,"a read after the compaction is present again");
+  const cleared=events.find(event=>event.name==="native.tool.observation_cache_cleared");assert.ok(cleared);assert.equal(cleared.data.reason,"server_compaction");assert.equal(cleared.data.observations,1);assert.equal(cleared.data.files,1);
+});
+
+test("Native session does not claim a post-edit reread matches an edit the server compacted away",async()=>{
+  const requests=[],events=[];let providerCalls=0,content=("prefix line\n".repeat(700))+"mode=legacy\n"+("suffix line\n".repeat(120));
+  const session=new NativeAgentSession({
+    model:"gpt-6-luna",provider:"openai",semanticCompletionGate:false,tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"read-before",text:"",toolCalls:[{id:"read-before",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
+      if(providerCalls===2)return {id:"edit",text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/config.txt","old_text":"mode=legacy","new_text":"mode=strict"}'}],usage:{}};
+      if(providerCalls===3)return {id:"read-after",text:"",toolCalls:[{id:"read-after",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{},serverCompaction:{items:1}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.name==="read_file")return {path:"C:/repo/src/config.txt",name:"config.txt",size:Buffer.byteLength(content,"utf8"),content};
+      const replacements=content.split("mode=legacy").length-1;content=content.split("mode=legacy").join("mode=strict");return {path:"C:/repo/src/config.txt",size:Buffer.byteLength(content,"utf8"),replacements};
+    },
+  });
+  await session.start({providerSessionId:"native-post-edit-compaction",model:"gpt-6-luna"});await session.prompt([{type:"text",text:"read edit reread"}]);
+  const fresh=requests[3].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-after");assert.ok(fresh);
+  assert.doesNotMatch(fresh.content,/postEditVerified/);assert.match(fresh.content,/mode=strict/);assert.match(fresh.content,/suffix line\nsuffix line/);
+  assert.equal(events.some(event=>event.name==="native.tool.post_edit_read_compacted"),false);
+});
+
+test("Native session keeps the observation cache cleared when a turn that saw a server compaction fails",async()=>{
+  const requests=[];let providerCalls=0;const content="B".repeat(4000);
+  const read=id=>({id,namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"large.txt"}'});
+  const session=new NativeAgentSession({
+    model:"gpt-6-luna",provider:"openai",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"t1-read",text:"",toolCalls:[read("t1-read")],usage:{}};
+      if(providerCalls===2)return {id:"t1-done",text:"read it",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {id:"t2-compacted",text:"",toolCalls:[{id:"t2-list",namespace:"trebell_workspace",name:"list",arguments:"{}"}],usage:{},serverCompaction:{items:1}};
+      if(providerCalls===4){const error=new Error("provider rejected the request");error.retryable=false;throw error}
+      if(providerCalls===5)return {id:"t3-read",text:"",toolCalls:[read("t3-read")],usage:{}};
+      return {id:"t3-done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.name==="list"?{entries:[]}:{path:"large.txt",size:content.length,content},
+  });
+  await session.start({providerSessionId:"native-dedupe-failed-turn",model:"gpt-6-luna"});
+  await session.prompt([{type:"text",text:"read the file"}]);
+  await assert.rejects(()=>session.prompt([{type:"text",text:"look around"}]),/provider rejected/);
+  await session.prompt([{type:"text",text:"read the file again"}]);
+  const again=requests.at(-1).messages.find(message=>message.role==="tool"&&message.toolCallId==="t3-read")?.content||"";
+  assert.match(again,/B{1000}/,"the compaction's clear is not undone by the failed turn");assert.doesNotMatch(again,/byte-identical/i);
+});
+
+test("Native session forgets present observations when a request restarted the provider chain from a compaction",async()=>{
+  const run=async compactedResend=>{
+    const requests=[],events=[];let providerCalls=0;const content="C".repeat(4000);
+    const read=id=>({id,namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"large.txt"}'});
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],onEvent:event=>events.push(event),
+      providerTurn:async request=>{
+        requests.push(structuredClone(request));providerCalls++;
+        if(providerCalls===1)return {id:"r1",text:"",toolCalls:[read("read-a")],usage:{}};
+        if(providerCalls===2)return {id:"r2",text:"",toolCalls:[read("read-b")],usage:{},telemetry:{responseContinuation:{used:false,attempted:true,fallback:true,compactedResend}}};
+        return {id:"done",text:"done",toolCalls:[],usage:{}};
+      },
+      executeTool:async()=>({path:"large.txt",size:content.length,content}),
+    });
+    await session.start({providerSessionId:"native-dedupe-resend",model:"gpt-6-luna"});await session.prompt([{type:"text",text:"read twice"}]);
+    return {observation:requests.at(-1).messages.find(message=>message.role==="tool"&&message.toolCallId==="read-b")?.content||"",events};
+  };
+  const resent=await run({compactionResponseId:"r0",omittedInputCount:40,inputCount:5,rejected:false});
+  assert.match(resent.observation,/C{1000}/);assert.equal(resent.events.find(event=>event.name==="native.tool.observation_cache_cleared")?.data?.reason,"compacted_resend");
+  const rejected=await run({compactionResponseId:"r0",omittedInputCount:40,inputCount:5,rejected:true});
+  assert.match(rejected.observation,/byte-identical/i,"a rejected compacted resend fell back to the whole transcript, which still holds the read");
+  assert.equal(rejected.events.some(event=>event.name==="native.tool.observation_cache_cleared"),false);
+});

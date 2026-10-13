@@ -253,15 +253,25 @@ export function normalizeChatTurnResponse(body={},provider=null,fallbackModel=""
   };
 }
 
+// A Responses output item that carries the server-side compaction of the context (context_management): an opaque
+// encrypted_content that stands for everything the request held. "compaction_summary" is its older name.
+export function responsesCompactionItem(item){
+  return (item?.type==="compaction"||item?.type==="compaction_summary")&&typeof item.encrypted_content==="string"&&item.encrypted_content.length>0;
+}
+
 export function normalizeResponsesTurnResponse(body={},provider=null,fallbackModel=""){
-  const text=[],toolCalls=[];
+  const text=[],toolCalls=[];let compactions=0;
   for(const item of Array.isArray(body.output)?body.output:[]){
     if(item?.type==="message"){
       for(const part of Array.isArray(item.content)?item.content:[])if(part?.type==="output_text"&&typeof part.text==="string")text.push(part.text);
     }else if(item?.type==="function_call")toolCalls.push(normalizeToolCall(item));
+    else if(responsesCompactionItem(item))compactions++;
   }
   return {
     id:String(body.id||""),provider:provider?String(provider):null,model:String(body.model||fallbackModel||""),text:text.join(""),toolCalls,
-    serviceTier:normalizedServiceTier(body.service_tier??body.serviceTier),finishReason:toolCalls.length?"tool_calls":String(body.status||"completed"),status:String(body.status||"completed"),usage:normalizeUsage(body.usage||{}),raw:body,
+    serviceTier:normalizedServiceTier(body.service_tier??body.serviceTier),finishReason:toolCalls.length?"tool_calls":String(body.status||"completed"),status:String(body.status||"completed"),usage:normalizeUsage(body.usage||{}),
+    // Only present when the server compacted the context during this response.
+    ...(compactions?{serverCompaction:{items:compactions}}:{}),
+    raw:body,
   };
 }
