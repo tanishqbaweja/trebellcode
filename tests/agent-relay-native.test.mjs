@@ -813,6 +813,45 @@ test("Trebell Native runs a Supervised command after Allow session and runs it a
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 
+test("Stop ends a Supervised Trebell Native turn whose approval waits, takes the card away, and no window that opens later is asked it",async()=>{
+  // Stop answered the other harnesses' waiting approvals but not Native's: the turn, waiting on that answer, ran on until the card was
+  // answered, and a reload asked the stopped turn's approval again of the next window.
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-stop-approval-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;
+  const nativeProviderTurn=async request=>{
+    calls++;
+    const reply=(text,toolCalls=[])=>({id:"stop-approval-"+calls,provider:request.provider,model:request.model,text,toolCalls,finishReason:toolCalls.length?"tool_calls":"stop",usage:{}});
+    if(request.toolChoice==="none")return reply('{"status":"complete","unresolved":[],"reason":"The command ran."}');
+    if(request.messages.at(-1)?.role==="tool")return reply("Ran it.");
+    return reply("",[{id:"run-"+calls,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:process.execPath,args:["-e","require('fs').writeFileSync('ran.txt','A')"],cwd:".",timeout_ms:30000})}]);
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),url=`ws://127.0.0.1:${port}/api/agent/ws`;
+  const open=async()=>{const ws=new WebSocket(url);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});return ws};
+  let first=null,second=null;
+  try{
+    first=await open();const rpc=client(first);
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"supervised",dynamicTools:[]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"supervised",input:[{type:"text",text:"Write ran.txt"}]})).turn;
+    const asked=await rpc.waitFor(message=>message.method==="item/tool/requestApproval",15000);
+    await rpc.request("turn/interrupt",{threadId:thread.id,turnId:turn.id});
+    assert.deepEqual((await rpc.waitFor(message=>message.method==="serverRequest/resolved",5000)).params,{requestId:asked.id,threadId:thread.id},"Stop takes the card away");
+    const ended=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id,5000);
+    assert.equal(ended.params.turn.status,"cancelled","Stop ends the turn without waiting for an answer");
+    // The window reloads.
+    await new Promise(resolve=>{first.once("close",resolve);first.close()});
+    second=await open();const seen=[];second.on("message",raw=>seen.push(JSON.parse(String(raw))));second.send(JSON.stringify({method:"initialized",params:{}}));
+    await new Promise(resolve=>setTimeout(resolve,500));
+    assert.deepEqual(seen.filter(message=>message.method==="item/tool/requestApproval").map(message=>message.id),[],"the stopped turn's approval is not asked of the next window");
+    assert.equal(await readFile(join(repo,"ran.txt"),"utf8").then(()=>true,()=>false),false,"the command did not run");
+    assert.equal(threadStore.get(thread.id).turns.at(-1).status,"cancelled");
+  }finally{
+    for(const ws of [first,second])try{ws?.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
+  }
+});
+
 // Native reply drafts through the relay. The fake provider drives the session's stream hook the way a provider stream does.
 const DRAFT_REPLY="Trebell Native keeps one thread per conversation, and each reply comes from the model that thread names.\n\nThe session builds every request from the stored turns and sends it to the thread's provider, which streams the answer back as it is written.";
 const SECOND_REPLY="The retried call answered on its own.\n\nNothing the first attempt streamed stays on screen: its draft was cleared before the second attempt began, and this text started again from the first character.";

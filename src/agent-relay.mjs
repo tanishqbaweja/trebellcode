@@ -730,7 +730,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // Whether an approval, a question or a form of the thread waits on the person (the idle sweep keeps its session).
   const waitsOn=threadId=>[...pendingServer.values()].some(pending=>pending.threadId===String(threadId||""));
   // Stop, or an ACP process that died, answers the thread's open approvals, questions and form requests as cancelled and takes them off
-  // the screen (T3 settles a session's pending approvals and user input when its turn is interrupted or the process exits).
+  // the screen, so none is asked again of a window that opens later (T3 settles a session's pending approvals and user input when its
+  // turn is interrupted or the process exits).
   function cancelThreadRequests(threadId){
     const owner=String(threadId||""),cancelled={"item/tool/requestApproval":{decision:"cancel"},"item/tool/requestUserInput":{answers:{}},"mcpServer/elicitation/request":{action:"cancel"}};
     if(!owner)return;
@@ -2023,9 +2024,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const target=sessions.get(params.threadId),running=target?lastTurnOf(String(params.threadId||"")):null;
       if(running?.id&&running.status==="inProgress")stoppedTurns.set(target,running.id);
       target?.cancel();
-      // Stop answers a harness's waiting approvals, questions and form requests as cancelled and withdraws their cards, for Claude Code
-      // and OpenCode as for the ACP harnesses (T3 cancels every pending runtime request of an interrupted run).
-      if(target&&!(target instanceof NativeAgentSession))cancelThreadRequests(params.threadId);
+      // Stop answers a harness's waiting approvals, questions and form requests as cancelled and withdraws their cards, for Claude Code,
+      // OpenCode and Trebell Native as for the ACP harnesses (T3 cancels every pending runtime request of an interrupted run). A Native
+      // turn ends only once the tool it runs returns, and a tool waiting on its approval returns only once that is answered.
+      cancelThreadRequests(params.threadId);
       return {ok:true};
     }
     if(method==="turn/steer"){
