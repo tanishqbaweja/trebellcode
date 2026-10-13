@@ -1385,6 +1385,37 @@ test.describe("A choice made while Trebell is still starting",()=>{
     await toggledShots(page,"project-removed-while-starting");
   });
 
+  test("the mode switched with the header's button before the start-up lands stays, in the window and saved",async({page,request})=>{
+    const {release}=await startHeld(page,request);
+    await page.goto("/");
+    const html=page.locator("html");
+    await expect(page.getByTestId("composer")).toHaveAttribute("placeholder","Starting Trebell Code…");
+    await expect(html).toHaveAttribute("data-mode","dark");
+    await page.getByTestId("appearance-toggle").first().click();
+    await expect(html).toHaveAttribute("data-mode","light");
+    await expect.poll(async()=>(await (await request.get("/api/settings")).json()).appearanceMode,{message:"the mode saved"}).toBe("light");
+    release();
+    await expect(page.getByTestId("model-picker"),"the start-up has landed").toBeEnabled({timeout:15_000});
+    await page.waitForTimeout(300);
+    await expect(html,"the mode the person chose").toHaveAttribute("data-mode","light");
+    await toggledShots(page,"mode-switched-while-starting");
+  });
+
+  test("the permission and workspace modes picked in the composer before the start-up lands stay",async({page,request})=>{
+    const {release}=await startHeld(page,request);
+    await page.goto("/");
+    const composer=page.getByTestId("composer"),permission=page.locator("select.permission-picker").first(),workspace=page.locator("select.workspace-mode");
+    await expect(composer).toHaveAttribute("placeholder","Starting Trebell Code…");
+    await expect(permission).toHaveValue("supervised");await expect(workspace).toHaveValue("current");
+    await permission.selectOption({label:"Read only"});await workspace.selectOption({label:"New worktree"});
+    release();
+    await expect(page.getByTestId("model-picker"),"the start-up has landed").toBeEnabled({timeout:15_000});
+    await page.waitForTimeout(300);
+    await expect(permission,"the permission mode the person picked").toHaveValue("read-only");
+    await expect(workspace,"the workspace mode the person picked").toHaveValue("worktree");
+    await toggledShots(page,"modes-picked-while-starting");
+  });
+
   test("a General chat started before the start-up lands keeps its own folder",async({page,request})=>{
     const {release}=await startHeld(page,request);
     await page.goto("/");
