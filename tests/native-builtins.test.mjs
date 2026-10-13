@@ -165,8 +165,8 @@ test("Native replace_text applies an edits list to one file in order, all or not
     assert.equal(result.diff,["@@ -1,5 +1,5 @@"," function total(items) {","-  let sum = 0;","-  for (const item of items) sum += item.price;","+  let sum = 0n;","+  for (const item of items) sum += BigInt(item.price);","   return sum;"," }"].join("\n"));
     assert.match(result.beforeSha256,/^[a-f0-9]{64}$/);assert.match(result.afterSha256,/^[a-f0-9]{64}$/,"the raw result keeps both hashes for audit logs");
     assert.ok(Object.keys(result).indexOf("afterSha256")<Object.keys(result).indexOf("diff"),"the hashes come before the diff, so a capped audit record keeps them");
-    const single=await execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"value = 1",new_text:"value = 2"}});
-    assert.equal(single.replacements,1);assert.equal(single.diff,"@@ -1 +1 @@\n-const value = 1;\n+const value = 2;");
+    const single=await execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"value = 1",new_text:"value = 2",expected_replacements:1,edits:[]}});
+    assert.equal(single.replacements,1,"the model's every-field shape (an empty edits list beside old_text) applies the single edit");assert.equal(single.diff,"@@ -1 +1 @@\n-const value = 1;\n+const value = 2;");
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"const  value = 2;",new_text:"x"}}),
       error=>error.message==="Expected 1 exact replacement in src/app.js, found 0. No changes were written.\nold_text matches line 1 when whitespace is ignored. The exact current text there:\n1| const value = 2;");
     assert.equal(await readFile(join(root,"src","app.js"),"utf8"),"const value = 2;\n");

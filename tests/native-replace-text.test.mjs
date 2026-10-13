@@ -81,6 +81,17 @@ test("the single old_text/new_text form is unchanged, and the two forms cannot b
   assert.throws(()=>replaceTextHunks({path:"x",edits:Array.from({length:51},()=>({old_text:"a",new_text:"b"}))}),/at most 50/);
 });
 
+test("a call that also sends the other form's fields empty or at their default is read as the form it fills in",()=>{
+  // gpt-6-luna sends every field: on 2026-10-13 all 23 replace_text calls of a django__django-13741 run carried
+  // "edits":[] beside old_text/new_text and expected_replacements 1, and each was refused as mixing the forms.
+  assert.deepEqual(replaceTextHunks({path:"x",old_text:"a",new_text:"b",expected_replacements:1,edits:[]}),[{label:null,oldText:"a",newText:"b",expected:1}]);
+  assert.deepEqual(replaceTextHunks({path:"x",old_text:"a",new_text:"",edits:null}),[{label:null,oldText:"a",newText:"",expected:1}]);
+  assert.deepEqual(replaceTextHunks({path:"x",old_text:"",new_text:"",expected_replacements:1,edits:[{old_text:"a",new_text:"b"}]}),[{label:"edits[0]",oldText:"a",newText:"b",expected:1}]);
+  assert.throws(()=>replaceTextHunks({path:"x",old_text:"a",new_text:"",edits:[{old_text:"a",new_text:"b"}]}),/either old_text\/new_text or edits/);
+  assert.throws(()=>replaceTextHunks({path:"x",old_text:"",new_text:"b",edits:[{old_text:"a",new_text:"b"}]}),/either old_text\/new_text or edits/);
+  assert.throws(()=>replaceTextHunks({path:"x",old_text:"",new_text:"",edits:[]}),/non-empty list/);
+});
+
 test("an old_text that matches only when whitespace is ignored is answered with the exact current text and its line numbers",()=>{
   const message=fails(GREETER,{old_text:"def greet(self):\n    prefix = 'Hello'",new_text:"x"});
   assert.equal(message,[

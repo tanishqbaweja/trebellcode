@@ -11,10 +11,15 @@ function replacementCount(value){const number=Math.trunc(Number(value));return N
 
 // The hunks a replace_text call asks for, in order: [{label,oldText,newText,expected}]. label is null for the single-pair form,
 // so its messages read as they always have, and "edits[i]" for an edits list.
+// Models often send every field of the schema, so the other form's fields count only when they say something: an empty
+// edits list beside old_text is the single form, and empty old_text/new_text or expected_replacements 1 beside an edits
+// list is the list form.
+const filled=value=>value!==undefined&&value!==null&&value!=="";
 export function replaceTextHunks(args={}){
   const source=args&&typeof args==="object"&&!Array.isArray(args)?args:{};
-  if(source.edits!==undefined&&source.edits!==null){
-    if(source.old_text!==undefined||source.new_text!==undefined||source.expected_replacements!==undefined)throw new Error("Use either old_text/new_text or edits, not both; put expected_replacements inside each edit. No changes were written.");
+  const editsGiven=Array.isArray(source.edits)?source.edits.length>0||!filled(source.old_text):filled(source.edits);
+  if(editsGiven){
+    if(filled(source.old_text)||filled(source.new_text)||(filled(source.expected_replacements)&&Number(source.expected_replacements)!==1))throw new Error("Use either old_text/new_text or edits, not both; put expected_replacements inside each edit. No changes were written.");
     if(!Array.isArray(source.edits)||!source.edits.length)throw new Error("edits must be a non-empty list of {old_text, new_text}. No changes were written.");
     if(source.edits.length>REPLACE_TEXT_MAX_EDITS)throw new Error(`edits lists ${source.edits.length} edits; one call takes at most ${REPLACE_TEXT_MAX_EDITS}. No changes were written.`);
     return source.edits.map((edit,index)=>{
