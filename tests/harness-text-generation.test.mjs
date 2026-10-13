@@ -120,6 +120,25 @@ test("harness text generation refuses Trebell Native and reports an unavailable 
   assert.equal(queried,false);
 });
 
+// The probe answer a request starts on is kept for a minute: a harness that then fails is asked again once, as the relay asks after
+// a failed session, and an answer that it is not signed in (a sign-out outside Trebell) adds its advice after the harness's words.
+test("a harness that fails to write the Git text is asked again once, and a sign-out it finds adds the probe's advice",async()=>{
+  const advice="Claude Code is not authenticated. Run `claude auth login` and try again.",rechecks=[];
+  const failing=()=>(async function*(){yield {type:"result",subtype:"error_during_execution",is_error:true,errors:["Claude Code process exited"]}})();
+  let status={available:false,authenticated:false,message:advice};
+  const manager=fakeRuntimeManager("claude",{recheck:async(instance,options)=>{rechecks.push({id:instance.id,options});return status}});
+  await assert.rejects(()=>generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",environmentId:"ssh-fixture",deps:{claudeQuery:failing}}),error=>error.code==="HARNESS_TEXT_FAILED"&&error.message==="Claude Code could not write the Git text: Claude Code process exited. "+advice);
+  assert.deepEqual(rechecks,[{id:"claude-default",options:{environmentId:"ssh-fixture"}}]);
+  // A harness that still probes ready fails in its own words, as before.
+  status={available:true,authenticated:true,message:"Ready"};
+  await assert.rejects(()=>generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",deps:{claudeQuery:failing}}),error=>error.message==="Claude Code could not write the Git text: Claude Code process exited");
+  assert.equal(rechecks.length,2);
+  // One its own probe refused is not asked again.
+  const refused=fakeRuntimeManager("claude",{probe:async()=>({available:false,message:advice}),recheck:async()=>{rechecks.push("refused");return null}});
+  await assert.rejects(()=>generateTextWithHarness({runtimeManager:refused,prompt:"PROMPT",deps:{claudeQuery:failing}}),error=>error.code==="HARNESS_UNAVAILABLE"&&error.message===advice);
+  assert.equal(rechecks.length,2);
+});
+
 test("Codex adapter uses an isolated ephemeral read-only never-approve thread in an empty folder and declines server requests",async()=>{
   const server=await fakeCodexAppServer({serverRequest:{method:"item/commandExecution/requestApproval",params:{threadId:"thread-git-text",command:"git diff"}}});
   let released=0;

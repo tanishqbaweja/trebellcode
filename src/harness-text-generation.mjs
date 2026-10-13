@@ -7,6 +7,7 @@ import { createOpencodeClient as createOpencodeV2Client } from "@opencode-ai/sdk
 import { AcpClient } from "./acp-client.mjs";
 import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "./acp-session-config.mjs";
+import { withProbeAdvice } from "./agent-runtime-manager.mjs";
 import { claudeExplainedApiError, claudeResultFailure, claudeSignedOutMessage } from "./claude-agent-session.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexApprovalResponse, isCodexApprovalRequest } from "./codex-policy-adapter.mjs";
@@ -350,7 +351,11 @@ export async function generateTextWithHarness({runtimeManager,instance=null,prom
     return {text:reply,model:result?.model||null,runtime:kind,name};
   }catch(error){
     if(EXPECTED_CODES.has(error?.code))throw error;
-    const detail=String(error?.message||error||"unknown error").trim().slice(0,1500);
+    // A harness that failed is asked again once, as the relay asks after a failed session (AgentRuntimeManager.recheck): the probe
+    // answer it started on is kept for a minute and may be one it no longer gives (a sign-out outside Trebell). The next poll reads
+    // what the check finds, and an answer that the harness cannot run or is not signed in adds its advice after the harness's words.
+    const status=kind!=="codex"&&typeof runtimeManager?.recheck==="function"?await runtimeManager.recheck(target,{environmentId}).catch(()=>null):null;
+    const detail=withProbeAdvice(String(error?.message||error||"unknown error").trim().slice(0,1500),status);
     throw Object.assign(new Error(`${name} could not write the Git text: ${detail}`),{code:"HARNESS_TEXT_FAILED",cause:error});
   }finally{
     closed=true;clearTimeout(timer);signal?.removeEventListener?.("abort",onAbort);
