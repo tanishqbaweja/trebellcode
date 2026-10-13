@@ -719,7 +719,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const socketContexts=new Set();
   // The approvals, questions, forms and app tool calls a harness asked of the person, until they are answered. They wait here, not with
   // the socket that showed them: a window that reloads or loses its socket leaves them waiting, and they are asked again, under the same
-  // id, of another window still open or of the next one to connect (T3 keeps a pending approval in its thread for the next client).
+  // id, of another window still open or of the next one to connect (T3 keeps a pending approval in its thread for the next client). An
+  // app tool call waits that way only until a window has been given it (see the socket's close).
   const pendingServer=new Map();let nextServerId=1;
   const isOpen=context=>Boolean(context)&&context.ws.readyState===context.ws.OPEN;
   const openContext=preferred=>isOpen(preferred)?preferred:[...socketContexts].reverse().find(isOpen)||null;
@@ -2235,7 +2236,18 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           const result=await request(context,message.method,message.params||{});ws.send(JSON.stringify({id:message.id,result}))}
         catch(error){log(error?.stack||String(error));ws.send(JSON.stringify({id:message.id,error:{code:Number(error?.code)||-32000,message:error instanceof Error?error.message:String(error)}}))}
       });
-      ws.on("close",()=>{socketContexts.delete(context);for(const pending of pendingServer.values())if(pending.holder===context)pending.holder=null;askAgain(openContext(null))});
+      // An app tool call this window was given may have run already (a click, typed text, a delegated task), so it is refused rather
+      // than asked of another window, which would run it a second time: the model is told the window closed before it answered.
+      // Approvals, questions and forms change nothing until answered, so they wait for the next window.
+      ws.on("close",()=>{
+        socketContexts.delete(context);
+        for(const [id,pending] of [...pendingServer]){
+          if(pending.holder!==context)continue;
+          if(pending.method==="item/tool/call"){pendingServer.delete(id);clearTimeout(pending.timer);pending.reject(new Error("The Trebell window running this tool closed before it answered, so the tool may or may not have run."));continue}
+          pending.holder=null;
+        }
+        askAgain(openContext(null));
+      });
     });
   };
   server.on("upgrade",upgrade);

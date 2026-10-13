@@ -893,6 +893,46 @@ test("Stop ends a Trebell Native turn whose browser tool call the app has not an
   }
 });
 
+test("a Trebell Native browser click that a window was given when it reloaded is not run again by the next window, and the model is told",async()=>{
+  // The app runs the click as soon as it is asked (the desktop bridge clicks the page) and answers afterwards. A window that reloads,
+  // or loses its socket, before its answer is sent may have clicked already: asking the next window would click a second time, as it
+  // would type a second time on the person's desktop or start a second delegated task.
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-app-tool-reload-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;const toolResults=[];
+  const nativeProviderTurn=async request=>{
+    calls++;
+    const reply=(text,toolCalls=[])=>({id:"app-tool-reload-"+calls,provider:request.provider,model:request.model,text,toolCalls,finishReason:toolCalls.length?"tool_calls":"stop",usage:{}});
+    if(request.toolChoice==="none")return reply('{"status":"complete","unresolved":[],"reason":"The window closed."}');
+    if(request.messages.at(-1)?.role==="tool"){toolResults.push(JSON.stringify(request.messages.at(-1).content));return reply("The window closed before the click was confirmed.")}
+    return reply("",[{id:"click-"+calls,namespace:"trebell_browser",name:"click",arguments:JSON.stringify({ref:"e12"})}]);
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),url=`ws://127.0.0.1:${port}/api/agent/ws`;
+  const open=async()=>{const ws=new WebSocket(url);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});return ws};
+  let first=null,second=null;
+  try{
+    first=await open();const rpc=client(first);
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"supervised",dynamicTools:[{type:"namespace",name:"trebell_browser"}]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"supervised",input:[{type:"text",text:"Press Submit on the open page"}]})).turn;
+    const approval=await rpc.waitFor(message=>message.method==="item/tool/requestApproval",15000);
+    first.send(JSON.stringify({id:approval.id,result:{decision:"accept"}}));
+    const asked=await rpc.waitFor(message=>message.method==="item/tool/call",15000);
+    assert.deepEqual([asked.params.namespace,asked.params.tool],["trebell_browser","click"]);
+    // The window has the click (and runs it), and reloads before its answer is sent.
+    await new Promise(resolve=>{first.once("close",resolve);first.close()});
+    second=await open();const seen=[];second.on("message",raw=>seen.push(JSON.parse(String(raw))));second.send(JSON.stringify({method:"initialized",params:{}}));
+    for(const deadline=Date.now()+15000;threadStore.get(thread.id).turns.find(item=>item.id===turn.id)?.status==="inProgress"&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,25));
+    assert.deepEqual(seen.filter(message=>message.method==="item/tool/call").map(message=>message.id),[],"the next window is not asked to click again");
+    assert.equal(toolResults.length,1,"the model gets one answer for its click");
+    assert.match(toolResults[0],/closed before it answered/,"the model is told the window closed before it answered");
+    assert.equal(threadStore.get(thread.id).turns.find(item=>item.id===turn.id)?.status,"completed","the turn goes on and ends");
+  }finally{
+    for(const ws of [first,second])try{ws?.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
+  }
+});
+
 // Native reply drafts through the relay. The fake provider drives the session's stream hook the way a provider stream does.
 const DRAFT_REPLY="Trebell Native keeps one thread per conversation, and each reply comes from the model that thread names.\n\nThe session builds every request from the stored turns and sends it to the thread's provider, which streams the answer back as it is written.";
 const SECOND_REPLY="The retried call answered on its own.\n\nNothing the first attempt streamed stays on screen: its draft was cleared before the second attempt began, and this text started again from the first character.";
