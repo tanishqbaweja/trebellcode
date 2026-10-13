@@ -2275,19 +2275,22 @@ export default function App(){
     setThreadListLoaded(false);
     // established: this transport connected at least once, so later attempts back off from 500ms to 5s. refusals counts the attempts in
     // a row whose initialize the server answered with an error: it is up but cannot reach the harness (its app-server could not start).
-    // The third ends the attempts and the composer says why, with Retry, instead of connecting forever.
-    let disposed=false,retryTimer=null,client=null,established=false,refusals=0;setTransportReason("");
+    // The third ends the attempts and the composer says why, with Retry, instead of connecting forever. reopenRefusals counts the same
+    // for the reopen of the thread shown: a harness that answers that it cannot resume the thread (a thread's own Codex app-server
+    // that cannot start again) is asked twice more, then the composer says why with Retry, and the thread's turn, which ran where the
+    // harness can no longer reach, no longer shows as running.
+    let disposed=false,retryTimer=null,client=null,established=false,refusals=0,reopenRefusals=0;setTransportReason("");
     const retry=attempt=>{
       clearTimeout(retryTimer);retryTimer=null;if(disposed)return;
       if(attempt>=120){setRpcStatus("error");return}
       setRpcStatus("connecting");retryTimer=setTimeout(()=>connect(attempt),established?Math.min(5000,500*2**attempt):500);
     };
     const connect=async(attempt=0)=>{
-      let ready=false,refused=false;
+      let ready=false,refused=false,reopenRefused=null;
       const current=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:status=>{
         // A replaced client's late close must not overwrite the status of the transport that replaced it, nor a refused one's the
-        // status its refusal set.
-        if(current!==rpcRef.current||refused)return;
+        // status its refusal set (an initialize or a reopen of the thread shown that the harness refused).
+        if(current!==rpcRef.current||refused||reopenRefused)return;
         setRpcStatus(status);
         if(status==="disconnected"&&ready&&!disposed){ready=false;retry(0)}
       },onNotification:message=>notificationHandlerRef.current?.(message,current),onServerRequest:message=>serverRequestHandlerRef.current?.(current,message)});
@@ -2319,15 +2322,25 @@ export default function App(){
             if(!reopen||resumedHere||threadCatalogRuntime(reopen,threadMeta[reopen.id]||{},agentRuntime)!==agentRuntime)break;
             // A reopen that fails fails this transport, which connects again and reopens the thread shown (the composer says why
             // meanwhile), as a harness still starting after a restart needs.
-            const asked=openSeqRef.current+1;await openThread(reopen,{client:current,preserveSection:true});if(disposed)return;
-            if(openSeqRef.current===asked)break;
+            const asked=openSeqRef.current+1;await openThread(reopen,{client:current,preserveSection:true}).catch(error=>{if(error?.trebellRpcResponse)reopenRefused=reopen.id;throw error});if(disposed)return;
+            if(openSeqRef.current===asked){reopenRefusals=0;break}
           }
         }
         await Promise.all([loadSkills(current,projectPath),loadCollaborationModes(current)]);
-        if(disposed)return;ready=established=true;
+        if(disposed)return;ready=established=true;reopenRefusals=0;
         if(!current.isConnected()){ready=false;retry(0)}
       }
-      catch(error){current.close();if(disposed)return;if(refused&&++refusals>=3){setTransportReason(String(error?.message||"").replace(/[.\s]+$/,""));setRpcStatus("error");return}retry(attempt+1)}
+      catch(error){
+        current.close();if(disposed)return;
+        if(refused&&++refusals>=3){setTransportReason(String(error?.message||"").replace(/[.\s]+$/,""));setRpcStatus("error");return}
+        if(reopenRefused&&++reopenRefusals>=3){
+          setTransportReason(String(error?.message||"").replace(/[.\s]+$/,""));setRpcStatus("error");
+          if(String(activeThreadRef.current?.id||"")===String(reopenRefused)){setRunning(false);setActiveTurnId(null);setStoppingThreadId(null)}
+          markThreadTurn(reopenRefused,false);return;
+        }
+        if(!reopenRefused)reopenRefusals=0;
+        retry(attempt+1);
+      }
     };
     // Tearing the transport down (harness or environment switch, retry) closes its socket, and with it every request it carried.
     connect(); return()=>{disposed=true;clearTimeout(retryTimer);client?.close();dropServerRequestsExcept(null)};
