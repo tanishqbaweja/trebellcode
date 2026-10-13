@@ -1688,12 +1688,12 @@ test("the session's prompt holds cover every prompt the loop would reject a text
 });
 
 test("Native session collapses repeated command-output lines for the model and keeps the raw output retrievable",async()=>{
-  const root=await mkdtemp(join(tmpdir(),"trebell-native-collapse-")),requests=[],updates=[];let calls=0;
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-collapse-")),requests=[],updates=[],events=[];let calls=0;
   const warning="Warning: grid volume is not an integer number of pixels; cell size will be rounded.",repeatedFile=("same line of a data file\n").repeat(50);
   try{
     const store=new NativeToolOutputStore({directory:root,maxHotBytes:16*1024});
     const session=new NativeAgentSession({
-      model:"gpt-6-luna",provider:"openai",toolOutputStore:store,onUpdate:update=>updates.push(update),
+      model:"gpt-6-luna",provider:"openai",toolOutputStore:store,onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),
       tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]},{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]}],
       providerTurn:async request=>{requests.push(structuredClone(request));calls++;
         if(calls===1)return {id:"run",text:"",toolCalls:[{id:"sim",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python3","args":["sim.py"]}'}],usage:{}};
@@ -1701,19 +1701,44 @@ test("Native session collapses repeated command-output lines for the model and k
         return {id:"done",text:"done",toolCalls:[],usage:{}};
       },
       executeTool:async call=>call.namespace==="trebell_terminal"
-        ?{success:true,exitCode:0,stdout:"transmission 0.7888\n",stderr:(warning+"\n").repeat(200),durationMs:5,cwd:"/app",command:"python3",args:["sim.py"]}
+        ?{success:true,exitCode:0,stdout:"transmission 0.7888\n",stderr:(warning+"\n").repeat(150),durationMs:5,cwd:"/app",command:"python3",args:["sim.py"]}
         :{path:"/app/data.txt",size:repeatedFile.length,content:repeatedFile},
     });
     await session.start({providerSessionId:"native-collapse",model:"gpt-6-luna"});
     await session.prompt([{type:"text",text:"Run the simulation, then read the data file."}],{maxModelTurns:3,maxToolCalls:4});
     const observation=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="sim")?.content||"";
-    assert.match(observation,/\[Trebell: previous line repeated 199 more times\]/);assert.equal(observation.split(warning).length-1,1);assert.match(observation,/transmission 0\.7888/);
+    assert.match(observation,/\[Trebell: previous line repeated 149 more times\]/);assert.equal(observation.split(warning).length-1,1);assert.match(observation,/transmission 0\.7888/);
     const handle=/"handle":"(out_[a-zA-Z0-9-]+)"/.exec(observation)?.[1];assert.ok(handle,"the model is given the handle of the raw output");
-    const read=await store.read({handle,start_line:1,max_chars:48_000});assert.equal(read.content.split(warning).length-1,200);
+    const read=await store.read({handle,start_line:1,max_chars:48_000});assert.equal(read.content.split(warning).length-1,150);
     const raw=updates.find(entry=>entry.update?.sessionUpdate==="tool_call_update"&&entry.update.toolCallId==="sim")?.update?.rawOutput;
-    assert.equal(raw.stderr,(warning+"\n").repeat(200),"the person sees the command's output as it ran");
+    assert.equal(raw.stderr,(warning+"\n").repeat(150),"the person sees the command's output as it ran");
+    assert.equal(raw._trebell_output,undefined,"as for an uncollapsed output, a prompt-caching provider's history is not archived");assert.equal(events.some(event=>event.name==="native.tool.output_archived"),false);
     const fileObservation=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="data")?.content||"";
     assert.equal(fileObservation.split("same line of a data file").length-1,50,"file reads are never collapsed");assert.doesNotMatch(fileObservation,/previous line repeated/);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("a collapsed command output gives the person the archive pointer an uncollapsed one of its size gets",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-collapse-archive-")),requests=[],updates=[],events=[];let calls=0;
+  const warning="Warning: grid volume is not an integer number of pixels; cell size will be rounded.";
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:16*1024});
+    const session=new NativeAgentSession({
+      model:"model-a",provider:"fixture",toolOutputStore:store,onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]}],
+      providerTurn:async request=>{requests.push(structuredClone(request));calls++;
+        return calls===1?{id:"run",text:"",toolCalls:[{id:"sim",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python3","args":["sim.py"]}'}],usage:{}}:{id:"done",text:"done",toolCalls:[],usage:{}};
+      },
+      executeTool:async()=>({success:true,exitCode:0,stdout:"transmission 0.7888\n",stderr:(warning+"\n").repeat(150),durationMs:5,cwd:"/app",command:"python3",args:["sim.py"]}),
+    });
+    await session.start({providerSessionId:"native-collapse-archive",model:"model-a"});
+    await session.prompt([{type:"text",text:"Run the simulation."}],{maxModelTurns:2,maxToolCalls:2});
+    const observation=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="sim")?.content||"";
+    assert.match(observation,/previous line repeated 149 more times/);assert.doesNotMatch(observation,/archived by Trebell/,"the model keeps the collapsed value and its note");
+    const handle=/"handle":"(out_[a-zA-Z0-9-]+)"/.exec(observation)?.[1],raw=updates.find(entry=>entry.update?.sessionUpdate==="tool_call_update"&&entry.update.toolCallId==="sim")?.update?.rawOutput;
+    assert.equal(raw.stderr,(warning+"\n").repeat(150));assert.equal(raw._trebell_output?.archived,true);assert.equal(raw._trebell_output.handle,handle,"the pointer names the copy the collapse stored");assert.match(raw._trebell_output.note,/archived by Trebell/);
+    assert.equal(events.filter(event=>event.name==="native.tool.output_archived"&&event.data?.handle===handle).length,1);
+    assert.equal((await store.read({handle,start_line:1,max_chars:48_000})).content.split(warning).length-1,150);
   }finally{await rm(root,{recursive:true,force:true})}
 });
 

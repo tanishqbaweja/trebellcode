@@ -136,3 +136,16 @@ test("a large collapsed output previews the collapsed text and indexes raw line 
     assert.equal(shaped.uiValue._trebell_output.handle,shaped.handle);
   }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test("a collapsed output too large for hot context still gives the person the preview it had without the collapse",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-output-collapse-ui-"));
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});
+    const value={exitCode:0,stdout:"render done\n",stderr:"Warning: texture cache miss; using CPU sampling for this tile.\n".repeat(400)};
+    const before=await store.virtualize(value,{namespace:"trebell_terminal",name:"run"});
+    const shaped=await store.virtualize(value,{namespace:"trebell_terminal",name:"run",collapseRepeatedLines:true});
+    assert.equal(shaped.virtualized,false);assert.match(shaped.value.stderr,/previous line repeated 399 more times/);
+    assert.equal(Object.hasOwn(shaped.uiValue,"stderr"),false,"the person is not handed the whole 25 KB output");
+    assert.equal(shaped.uiValue.preview,before.value.preview);assert.equal(shaped.uiValue._trebell_output.handle,shaped.handle);
+  }finally{await rm(root,{recursive:true,force:true})}
+});

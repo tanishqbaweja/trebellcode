@@ -149,19 +149,20 @@ export class NativeToolOutputStore{
   }
   async #virtualizeCollapsed(safeValue,text,totalBytes,collapsed,{namespace=null,name=null}={}){
     const handle=await this.#store(text,{namespace,name,totalBytes}),totalLines=text.split(/\r?\n/).length,collapsedText=serialized(collapsed.value);
+    const compactSignalPreview=failureLike(safeValue),metadata=scalarMetadata(safeValue),pointer={handle,totalBytes,totalLines,note:VIRTUALIZED_OUTPUT_NOTE};
+    // The person sees what they would see without the collapse: the whole value, or its preview when it is too large.
+    const uiValue=totalBytes<=this.maxHotBytes?safeValue:{...metadata,preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview}),_trebell_output:pointer};
     if(byteLength(collapsedText)<=this.maxHotBytes){
       try{this.onVirtualized?.({handle,totalBytes,namespace,name,archived:true})}catch{}
       return {
-        virtualized:false,archived:true,collapsedLines:collapsed.removedLines,totalBytes,handle,uiValue:safeValue,
+        virtualized:false,archived:true,collapsedLines:collapsed.removedLines,totalBytes,handle,uiValue,
         value:{...collapsed.value,_trebell_output:{handle,totalBytes,totalLines,archived:true,note:COLLAPSED_OUTPUT_NOTE}},
       };
     }
     try{this.onVirtualized?.({handle,totalBytes,namespace,name})}catch{}
-    const compactSignalPreview=failureLike(safeValue),metadata=scalarMetadata(safeValue);
     return {
-      virtualized:true,collapsedLines:collapsed.removedLines,totalBytes,handle,
-      uiValue:{...metadata,preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview}),_trebell_output:{handle,totalBytes,totalLines,note:VIRTUALIZED_OUTPUT_NOTE}},
-      value:{...metadata,preview:preview(collapsedText,DEFAULT_PREVIEW_CHARS,{compactSignalPreview,signalText:text}),_trebell_output:{handle,totalBytes,totalLines,note:VIRTUALIZED_OUTPUT_NOTE}},
+      virtualized:true,collapsedLines:collapsed.removedLines,totalBytes,handle,uiValue,
+      value:{...metadata,preview:preview(collapsedText,DEFAULT_PREVIEW_CHARS,{compactSignalPreview,signalText:text}),_trebell_output:pointer},
     };
   }
   async archive(value,{namespace=null,name=null,minBytes=0}={}){

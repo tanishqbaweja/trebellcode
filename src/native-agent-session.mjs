@@ -592,10 +592,13 @@ export class NativeAgentSession{
       const collapseRepeatedLines=Boolean(this.toolOutputStore)&&outputRetrievalVisible&&(terminalRun||processTool);
       const shaped=this.toolOutputStore?await this.toolOutputStore.virtualize(observed,{namespace:call.namespace||null,name:call.name||null,...(collapseRepeatedLines?{collapseRepeatedLines:true}:{})}):{value:observed,virtualized:false};
       let uiOutput=shaped.uiValue??shaped.value,modelSource=shaped.value;
-      if(this.toolOutputStore&&!preserveCacheHistory&&outputRetrievalVisible&&terminalRun&&shaped.virtualized!==true&&!shaped.handle&&Number(shaped.totalBytes||0)>=1200&&uiOutput&&typeof uiOutput==="object"&&!Array.isArray(uiOutput)&&!uiOutput._trebell_output){
-        const archived=await this.toolOutputStore.archive(observed,{namespace:call.namespace,name:call.name,minBytes:1200});
+      if(this.toolOutputStore&&!preserveCacheHistory&&outputRetrievalVisible&&terminalRun&&shaped.virtualized!==true&&Number(shaped.totalBytes||0)>=1200&&uiOutput&&typeof uiOutput==="object"&&!Array.isArray(uiOutput)&&!uiOutput._trebell_output){
+        // A collapsed output is already stored whole, so the person's archive pointer names that copy and the model keeps the
+        // collapsed value.
+        const stored=shaped.archived===true&&shaped.handle?modelSource?._trebell_output:null;
+        const archived=stored?.handle?{archived:true,handle:stored.handle,totalBytes:stored.totalBytes,totalLines:stored.totalLines}:await this.toolOutputStore.archive(observed,{namespace:call.namespace,name:call.name,minBytes:1200});
         if(archived?.archived){
-          uiOutput={...uiOutput,_trebell_output:{handle:archived.handle,totalBytes:archived.totalBytes,totalLines:archived.totalLines,archived:true,note:"Full redacted command output is archived by Trebell. Older successful probe output may later be compacted to a preview; inspect this handle only if exact prior evidence is needed."}};modelSource=uiOutput;
+          uiOutput={...uiOutput,_trebell_output:{handle:archived.handle,totalBytes:archived.totalBytes,totalLines:archived.totalLines,archived:true,note:"Full redacted command output is archived by Trebell. Older successful probe output may later be compacted to a preview; inspect this handle only if exact prior evidence is needed."}};if(!stored?.handle)modelSource=uiOutput;
           this.onEvent?.({name:"native.tool.output_archived",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{namespace:call.namespace,name:call.name,handle:archived.handle,totalBytes:archived.totalBytes}});
         }
       }
