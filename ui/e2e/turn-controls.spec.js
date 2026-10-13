@@ -141,32 +141,36 @@ for(const action of ["Delete","Archive"]){
 // answer (Codex answers once the turn has stopped), compactError fails thread/compact/start with that message, and holdTurns keeps
 // a turn running after its reply until it is set false. project makes the thread a project thread, whose follow-ups wait in
 // Trebell's own queue (Codex's queue holds only General chats'); settings adds to the app's settings.
-async function startCodex(page,{name,project=false,settings={}}){
-  const cwd=project?await mkdtemp(join(tmpdir(),"turn-controls-codex-")):process.cwd();
-  const thread={id:"codex-stop-thread",name,preview:name,cwd,createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,status:{type:"idle"},turns:[]};
-  const codex={thread,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null};
+// names: several threads, the first opened. Each turn is its thread's; turn.fail refuses its turn/start, and a thread with a started
+// turn still running resumes active, with its turns. modes: the collaboration modes Codex lists.
+async function startCodex(page,{name,names=[name],project=false,settings={},modes=[]}){
+  const cwd=project?await mkdtemp(join(tmpdir(),"turn-controls-codex-")):process.cwd(),now=Date.now()/1000;
+  const threads=names.map((threadName,index)=>({id:"codex-stop-thread"+(index?"-"+(index+1):""),name:threadName,preview:threadName,cwd,createdAt:now-60+index,updatedAt:now-index,status:{type:"idle"},turns:[]})),[thread]=threads;
+  const codex={thread,threads,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null};
+  const live=item=>{const turns=codex.turns.filter(turn=>turn.threadId===item.id&&turn.status!=="refused");return {...item,status:turns.some(turn=>turn.started&&turn.status==="inProgress")?{type:"active",activeFlags:[]}:{type:"idle"},turns:turns.map(turn=>({id:turn.id,status:turn.status,items:[]}))}};
   const upstream=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
   upstream.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   const notify=(method,params)=>{if(codex.socket?.readyState===1)codex.socket.send(JSON.stringify({method,params}))};
-  const end=(turn,status)=>{turn.status=status;clearTimeout(turn.timer);notify("turn/completed",{threadId:thread.id,turn:{id:turn.id,status,items:[]}})};
+  const end=(turn,status)=>{turn.status=status;clearTimeout(turn.timer);notify("turn/completed",{threadId:turn.threadId,turn:{id:turn.id,status,items:[]}})};
   wss.on("connection",ws=>{
     sockets.add(ws);codex.socket=ws;ws.on("close",()=>sockets.delete(ws));
     ws.on("message",raw=>{
       const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
       const params=message.params||{},respond=result=>{if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,result}))};
       if(message.method==="turn/start"){
-        const turn={id:"codex-turn-"+(codex.turns.length+1),status:"inProgress",started:false,timer:null};codex.turns.push(turn);
+        const turn={id:"codex-turn-"+(codex.turns.length+1),threadId:params.threadId||thread.id,status:"inProgress",started:false,timer:null};codex.turns.push(turn);
         turn.answer=()=>respond({turn:{id:turn.id,status:"inProgress",items:[],startedAt:turn.started?Math.floor(Date.now()/1000):null}});
+        turn.fail=text=>{turn.status="refused";if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:text}}))};
         turn.start=()=>{
-          turn.started=true;notify("turn/started",{threadId:thread.id,turn:{id:turn.id,status:"inProgress",items:[]}});
+          turn.started=true;notify("turn/started",{threadId:turn.threadId,turn:{id:turn.id,status:"inProgress",items:[]}});
           if(turn.status!=="inProgress")return end(turn,turn.status);
           const itemId="reply-"+turn.id,words="One two three four five six seven eight nine ten. Counting is done.".split(/(?<= )/);let index=0;
-          notify("item/started",{threadId:thread.id,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:""}});
+          notify("item/started",{threadId:turn.threadId,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:""}});
           const tick=()=>{
             if(turn.status!=="inProgress")return;
-            if(index<words.length){notify("item/agentMessage/delta",{threadId:thread.id,turnId:turn.id,itemId,delta:words[index++]});turn.timer=setTimeout(tick,60);return}
+            if(index<words.length){notify("item/agentMessage/delta",{threadId:turn.threadId,turnId:turn.id,itemId,delta:words[index++]});turn.timer=setTimeout(tick,60);return}
             if(codex.holdTurns){turn.timer=setTimeout(tick,60);return}
-            notify("item/completed",{threadId:thread.id,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:words.join("")}});end(turn,"completed");
+            notify("item/completed",{threadId:turn.threadId,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:words.join("")}});end(turn,"completed");
           };
           turn.timer=setTimeout(tick,60);
         };
@@ -180,10 +184,11 @@ async function startCodex(page,{name,project=false,settings={}}){
       }
       let result={};
       if(message.method==="initialize")result={userAgent:"turn-controls-codex"};
-      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
-      else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null};
+      else if(message.method==="thread/list")result={data:threads.map(live),nextCursor:null};
+      else if(message.method==="thread/resume")result={thread:live(threads.find(item=>item.id===params.threadId)||thread),itemsBackwardsCursor:null,turnsBackwardsCursor:null};
       else if(["thread/turns/list","thread/items/list","thread/queue/list","thread/attachment/list","thread/timeline/list"].includes(message.method))result={data:[],nextCursor:null};
-      else if(["threadSection/list","skills/list","collaborationMode/list"].includes(message.method))result={data:[]};
+      else if(message.method==="collaborationMode/list")result={data:modes};
+      else if(["threadSection/list","skills/list"].includes(message.method))result={data:[]};
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
       else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
@@ -197,7 +202,7 @@ async function startCodex(page,{name,project=false,settings={}}){
   await keepThreadMeta(page);await keepSettings(page);
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"turn-controls-codex",activeEnvironmentId:null,activeEnvironment:null}));
   const projects=project?[{id:"codex-queue-project",name:"Codex queue project",path:cwd,environmentId:null,effectiveSettings:{}}]:[];
-  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue",...settings},projects,...(project?{activeProjectId:projects[0].id}:{}),threadMeta:{[thread.id]:project?{projectless:false,environmentId:null,cwd}:{projectless:true,environmentId:null}}}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue",...settings},projects,...(project?{activeProjectId:projects[0].id}:{}),threadMeta:Object.fromEntries(threads.map(item=>[item.id,project?{projectless:false,environmentId:null,cwd}:{projectless:true,environmentId:null}]))}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
   await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{project:projects[0]||null}:{projects}));
   if(project){
@@ -211,7 +216,7 @@ async function startCodex(page,{name,project=false,settings={}}){
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
-  await threadRow(page,name).locator(".thread-main").click();await expect(composer(page)).toBeEnabled({timeout:15_000});
+  await threadRow(page,names[0]).locator(".thread-main").click();await expect(composer(page)).toBeEnabled({timeout:15_000});
   codex.close=async()=>{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstream.close(resolve))]);if(project)await rm(cwd,{recursive:true,force:true,maxRetries:8,retryDelay:100})};
   return codex;
 }
