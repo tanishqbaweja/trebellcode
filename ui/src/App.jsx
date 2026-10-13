@@ -18,7 +18,6 @@ import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx"
 import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx";
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
-import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
 import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, ruleRuns, shadowedKeybindings, shortcutHint } from "./keybindings.js";
 import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, movedDuringStep, navigationKey, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
@@ -97,6 +96,8 @@ const SettingsPage=lazy(()=>import("./components/SettingsPage.jsx"));
 const HarnessToolsPage=lazy(()=>import("./components/HarnessToolsPage.jsx"));
 const EnvironmentsPage=lazy(()=>import("./components/EnvironmentsPage.jsx"));
 const GoalPanel=lazy(()=>import("./components/GoalPanel.jsx"));
+// Shown only while a new worktree is set up, so it loads with its first setup instead of with the app (B11).
+const WorktreeSetupCard=lazy(()=>import("./components/WorktreeSetupCard.jsx"));
 const UsagePage=lazy(()=>import("./components/UsagePage.jsx"));
 const LicensesPage=lazy(()=>import("./components/LicensesPage.jsx"));
 const ContextInspector=lazy(()=>import("./components/ContextInspector.jsx"));
@@ -5088,7 +5089,7 @@ export default function App(){
 
           {!openingOverPage&&<div className={"conversation-scroll"+(openingShown?" opening-covered":"")} ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
-              <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
+              {worktreeSetup&&<Suspense fallback={null}><WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/></Suspense>}
               <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={shownTurnOrder} turnActivity={shownTurnActivity} liveCardTurnId={liveCardTurnId} newestTurnId={newestTurnId} onToggleLayout={activityCardToggleLayout}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
