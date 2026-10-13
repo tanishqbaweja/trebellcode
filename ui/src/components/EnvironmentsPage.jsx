@@ -9,7 +9,12 @@ let environmentsOnScreen=null;
 export default function EnvironmentsPage({onOfferUndo}={}){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
   const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"",themeDirectory:""});
-  const [busy,setBusy]=useState("");
+  // Every button is disabled while an action runs, which drops the keyboard on the page body; once the page is idle again it goes
+  // back to the button that started the action, if that is still there (a removed environment's row is not).
+  const [busy,setBusyState]=useState("");
+  const busyFocusRef=useRef(null);
+  const setBusy=value=>{if(value&&!busyFocusRef.current)busyFocusRef.current=document.activeElement;setBusyState(value)};
+  useEffect(()=>{if(busy)return;const button=busyFocusRef.current;busyFocusRef.current=null;if(button&&button!==document.body&&button.isConnected&&!button.disabled&&document.activeElement===document.body)button.focus()},[busy]);
   // A notice reports what an action did; an error says what failed and is styled as one.
   const [message,setMessageState]=useState({text:"",tone:"notice"});
   const setMessage=(text,tone="notice")=>setMessageState({text:String(text||""),tone});

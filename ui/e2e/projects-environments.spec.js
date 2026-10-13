@@ -553,6 +553,23 @@ test.describe("Using an environment for agents",()=>{
       await new Promise(resolve=>silent.close(resolve));
     }
   });
+  // Keyboard only: Enter on Use for agent disables every button while the host is checked, which drops the keyboard; when the
+  // switch is refused the keyboard is back on Use for agent, and the next Tab goes on to that row's Test.
+  test("a refused Use for agent pressed with the keyboard leaves the keyboard on it",async({page,request})=>{
+    test.setTimeout(60_000);
+    await open(page,request);
+    const port=await deadPort();
+    expect((await request.post("/api/environments",{data:{id:"polish-dead-keys",type:"ssh",name:"Dead host",host:"127.0.0.1",port,cwd:"/srv/app"}})).ok()).toBe(true);
+    await nav(page,"Environments").click();
+    const row=page.locator(".environment-list>div").filter({hasText:"Dead host"}),use=row.getByRole("button",{name:"Use for agent",exact:true});
+    // The person has tabbed to the button; Enter presses it.
+    await use.focus();await expect(use).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".environments-page").getByRole("alert")).toContainText("Could not use Dead host for agents",{timeout:30_000});
+    await expect(use).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(row.getByRole("button",{name:"Test",exact:true})).toBeFocused();
+  });
 });
 
 test.describe("A project list that failed or is still loading",()=>{
