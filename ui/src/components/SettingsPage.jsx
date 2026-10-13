@@ -283,6 +283,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   }
   async function removeInstance(instance){
     if(!instance||instance.id===`${instance.kind}-default`)return;
+    // A profile holds its paths, its server and the variables it passes on, and a removal cannot be undone: it asks first, in the
+    // app's dialog, and Cancel keeps it. Removing the active one also says which profile its harness goes back to.
+    const harness=(agentInfo?.definitions||[]).find(item=>item.id===instance.kind)?.name||instance.kind||"The harness";
+    const activeNote=activeInstanceId===instance.id?` ${harness} goes back to its default profile.`:"";
+    if(!await askConfirm(`Remove the runtime profile “${instance.displayName||instance.id}”? This cannot be undone: its paths and settings are lost.${activeNote}`,{confirm:"Remove profile"}))return;
     setAgentMessageTarget(instance.kind||selectedAgent);
     showAgentMessage("Removing runtime profile…");
     try{

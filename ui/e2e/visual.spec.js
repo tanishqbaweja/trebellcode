@@ -3295,7 +3295,10 @@ test("runtime profile mutations reuse bundled refresh state without follow-up re
 
   const spare=page.locator(".runtime-profile-row").filter({hasText:"Codex Spare"});
   const spareRemoveBefore={...requests};
+  // A removal asks first in the app's dialog; its own button removes.
+  const removeQuestion=page.locator("dialog.inspector-text-prompt");
   await spare.getByRole("button",{name:"Remove",exact:true}).click();
+  await removeQuestion.getByRole("button",{name:"Remove profile",exact:true}).click();
   await expect(spare).toHaveCount(0);
   expect(requests.runtimeDeletes-spareRemoveBefore.runtimeDeletes).toBe(1);
   expect(requests.settingsGets-spareRemoveBefore.settingsGets).toBe(0);
@@ -3304,6 +3307,8 @@ test("runtime profile mutations reuse bundled refresh state without follow-up re
 
   const activeRemoveBefore={...requests};
   await page.locator(".runtime-profile-row").filter({hasText:"Codex Personal Updated"}).getByRole("button",{name:"Remove",exact:true}).click();
+  await expect(removeQuestion.locator("p")).toHaveText("Remove the runtime profile “Codex Personal Updated”? This cannot be undone: its paths and settings are lost. Codex goes back to its default profile.");
+  await removeQuestion.getByRole("button",{name:"Remove profile",exact:true}).click();
   await expect(page.locator(".runtime-profile-row").filter({hasText:"Codex Personal Updated"})).toHaveCount(0);
   await expect(page.locator(".runtime-profile-row").filter({hasText:"Codex"}).first().getByText("Active",{exact:true})).toBeVisible();
   expect(requests.runtimeDeletes-activeRemoveBefore.runtimeDeletes).toBe(1);
