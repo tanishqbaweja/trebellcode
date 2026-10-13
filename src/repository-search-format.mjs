@@ -9,9 +9,10 @@ const HIT_TEXT_CHARS=240,HIT_TEXT_SLACK=20,UNREAD_FILE_NAMES=20,SUMMARY_FILE_NAM
 // becomes a 3,600-character preview behind a handle, which hides most of the hits shown with text. So what is listed by line
 // number (the "+N more at" lines, files with no hit shown, and unread files) shares OVERFLOW_BYTES, and never takes more than
 // keeps the whole text within TEXT_BYTES. Definition line numbers go first and may use all of TEXT_BYTES; then the other line
-// numbers of files with hits shown; then files with only line numbers, in order. Files that do not fit are counted, and a few
-// of them are named.
-const OVERFLOW_BYTES=4096,TEXT_BYTES=15*1024,PARTIAL_SUFFIX_BYTES=5;
+// numbers of files with hits shown (the file the limit cut first); then files with only line numbers, in order. Files that do
+// not fit are counted, and a few of them are named. 1 KB holds about 150 line numbers: over the ranks 290-321 searches whose
+// results were cut, a full 4 KB listing made the text up to 2x what arm A sent, against at most 1.05x at 1 KB.
+const OVERFLOW_BYTES=1024,TEXT_BYTES=15*1024,PARTIAL_SUFFIX_BYTES=5;
 const PARTIAL_NOTE="Not every line number is listed; narrow with path or glob to see them all.";
 
 function plural(count,one,many){return `${count} ${count===1?one:many}`}
