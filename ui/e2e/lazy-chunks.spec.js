@@ -181,3 +181,30 @@ test("a new task whose tool catalog cannot load says so instead of waiting, and 
     await page.screenshot({animations:"disabled",path:auditDir+"tool-catalog-cannot-load-dark-1280x800.png"});
   }finally{await fixture.close()}
 });
+
+// The catalog comes before anything is set up for a new task, so a "New worktree" send that cannot load it makes no Git worktree
+// and branch at each try, and the view stays on the project instead of moving into a worktree nothing runs in.
+test("a new task in a new worktree whose tool catalog cannot load makes no worktree, at each try",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  let refused=0;
+  await page.route(/\/assets\/shared-tool-catalog-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const fixture=await startStreamingFixture(page,{providerTurn:async request=>({id:"catalog-refused",provider:request.provider,model:request.model,text:"This should not start.",toolCalls:[],finishReason:"stop",usage:{}})});
+  const actions=[];
+  await page.route(/\/api\/git\/action$/,async route=>{const body=route.request().postDataJSON()||{};actions.push(body);await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,result:{worktree:body.path}})})});
+  try{
+    await expect.poll(()=>refused,{message:"the catalog asked for at idle"}).toBeGreaterThan(0);
+    await page.locator("select.workspace-mode").selectOption("worktree");
+    const before=fixture.threadStore.list("native").length,crumb=await page.locator(".workspace-header").innerText();
+    for(let attempt=0;attempt<2;attempt++){
+      await fixture.send("Start in a new worktree");
+      await expect(page.getByRole("alert").filter({hasText:"Not sent"})).toHaveText("Not sent: Part of Trebell could not load. Reload Trebell to get it back. Your draft is kept.",{timeout:10_000});
+      await expect(page.getByTestId("composer")).toHaveValue("Start in a new worktree");
+    }
+    expect(actions.filter(body=>body.action==="worktree-create"),"no worktree is made for a send that cannot start").toEqual([]);
+    expect(fixture.threadStore.list("native")).toHaveLength(before);
+    expect(await page.locator(".workspace-header").innerText(),"the view stays on the project").toBe(crumb);
+    await expect(page.getByText("Worktree created",{exact:false})).toHaveCount(0);
+    await appStays(page);
+  }finally{await fixture.close()}
+});

@@ -4099,8 +4099,9 @@ export default function App(){
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
     const autoCompaction=thread?await maybeAutoCompactBeforeTurn(thread):{attempted:false,compacted:false,decision:null,error:null};
-    // A thread the send creates keeps its turns' cards from its first turn on, as an opened thread does.
-    if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>prependThread(prev,thread));setTurnActivity(emptyTurnActivity(thread.id));setProjectPath(cwd)}
+    // A thread the send creates keeps its turns' cards from its first turn on, as an opened thread does. Trebell's tool catalog comes
+    // first: a send that cannot start for want of it sets nothing up (no worktree, no thread).
+    if(!thread){await loadSharedToolCatalog();if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>prependThread(prev,thread));setTurnActivity(emptyTurnActivity(thread.id));setProjectPath(cwd)}
     // The live card leaves the last turn here: until the new turn starts it lists only this send's notices, under no turn's name.
     const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,{id:clientId,role:"user",text}])}setCardTurnId(null);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
     // Until turn/start answers the send has no turn for Stop to name, and a harness that has to start first can take a minute: Stop
@@ -4158,7 +4159,10 @@ export default function App(){
   async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null,projectless=projectlessMode,focusPaths=null}={}){
     assertTurnModel(modelId);
     await validateAttachmentPaths(paths||[]);if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
-    let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");if(!projectless)cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree,environmentId:workspaceEnvironmentId});
+    let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");
+    // Trebell's tool catalog comes before the worktree, so a task that cannot start for want of it leaves no worktree behind.
+    await loadSharedToolCatalog();
+    if(!projectless)cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree,environmentId:workspaceEnvironmentId});
     let thread=null;let turnRequestStarted=false;
     try{
       thread=await createThreadFor(modelId,cwd,{projectless,taskText:text});if(!thread?.id)throw new Error("Agent harness did not create a background thread");
