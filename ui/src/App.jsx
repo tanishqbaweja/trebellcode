@@ -103,6 +103,9 @@ const ContextInspector=lazy(()=>import("./components/ContextInspector.jsx"));
 const RuntimeTrace=lazy(()=>import("./components/RuntimeTrace.jsx"));
 // Shown only on the right panel's Runtime tab, so it loads when that tab first shows instead of with the app (B11).
 const AgentBackgroundTerminals=lazy(()=>import("./components/AgentBackgroundTerminals.jsx"));
+// Shown only while a harness waits on an approval or auto review has denied an action, so they load with the first one (B11).
+const ApprovalCard=lazy(()=>import("./components/ApprovalCards.jsx").then(module=>({default:module.ApprovalCard})));
+const GuardianDenialCard=lazy(()=>import("./components/ApprovalCards.jsx").then(module=>({default:module.GuardianDenialCard})));
 const QuestionModal=lazy(()=>import("./components/QuestionModal.jsx"));
 const McpElicitationModal=lazy(()=>import("./components/McpElicitationModal.jsx"));
 const SnoozeDialog=lazy(()=>import("./components/SnoozeDialog.jsx"));
@@ -544,36 +547,12 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
-// threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
-function ApprovalCard({request,onResolve,threadLabel=""}){
-  if(!request)return null;
-  const p=request.params||{};
-  const permissions=request.method==="item/permissions/requestApproval";
-  const network=permissions?p.permissions?.network:null;const fileSystem=permissions?p.permissions?.fileSystem:null;
-  const title=permissions?"Additional access requested":request.method.includes("fileChange")||request.method==="applyPatchApproval"?"File changes need approval":p.networkApprovalContext?.host?"Network access needs approval":"Command needs approval";
-  // The command is shown even when the harness gives a reason, so nobody approves "Run the tests" without seeing what runs.
-  const commandText=Array.isArray(p.command)?p.command.map(part=>String(part)).join(" "):typeof p.command==="string"?p.command:"";
-  const networkTarget=p.networkApprovalContext?.host?`${p.networkApprovalContext.protocol||"network"}://${p.networkApprovalContext.host}`:"";
-  const detail=permissions?[network&&"Network access",fileSystem&&"Filesystem access"].filter(Boolean).join(" + "):(networkTarget||p.reason||commandText||p.path||request.method);
-  const showCommand=!permissions&&Boolean(commandText.trim())&&detail!==commandText;
-  const approvalOptions=Array.isArray(p.approvalOptions)?p.approvalOptions.filter(option=>option&&typeof option.decision==="string"&&option.label):[];
-  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}<p>{detail||p.reason||request.method}</p>{showCommand&&<pre className="approval-command" data-testid="approval-command"><code>{commandText}</code></pre>}{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}{approvalOptions.filter(option=>option.warning).map(option=><small key={"warning-"+option.decision}>{option.label}: {option.warning}</small>)}<div className="approval-actions">{approvalOptions.length
-    // An ACP harness's own choices, in its order and wording (T3 grokApprovalOptions / antigravityApprovalOptions).
-    ?approvalOptions.map(option=><button key={option.decision} className={option.decision==="accept"?"approve":undefined} onClick={()=>onResolve(request,option.decision)}>{option.label}</button>)
-    :<><button onClick={()=>onResolve(request,"decline")}>Deny</button><button onClick={()=>onResolve(request,"acceptForSession")}>Allow session</button><button className="approve" onClick={()=>onResolve(request,"accept")}>Allow once</button></>}</div></div>;
-}
 // The undo toast's remaining seconds, counting down with the timer that removes it. Hidden from the live region so it is
 // not announced every second.
 function UndoCountdown({expiresAt}){
   const [now,setNow]=useState(()=>Date.now());
   useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),250);return()=>clearInterval(timer)},[expiresAt]);
   return <em aria-hidden="true">{Math.max(1,Math.ceil((Number(expiresAt)-now)/1000))}s</em>;
-}
-function GuardianDenialCard({review,busy,onApprove,onDismiss}){
-  if(!review)return null;
-  const detail=guardianActionSummary(review.action||{});
-  const risk=review.review?.riskLevel;
-  return <div className="approval-card guardian-denial-card" data-testid="guardian-denial-card"><div className="card-title"><ShieldCheck size={16}/><strong>Auto review denied this action</strong></div><p>{detail}</p>{review.review?.rationale&&<p>{review.review.rationale}</p>}{risk&&<small>Risk assessment: {risk}</small>}<div className="approval-actions"><button onClick={()=>onDismiss(review)} disabled={busy}>Dismiss</button><button className="approve" onClick={()=>onApprove(review)} disabled={busy}>{busy?"Allowing…":"Allow anyway"}</button></div></div>;
 }
 
 // Scrolls a menu just enough to show its keyboard-highlighted row (without scrolling anything around the menu).
@@ -5099,7 +5078,7 @@ export default function App(){
         {/* Steps are counted only when there are some: an idle runtime has no step pending. */}
         <small data-testid="runtime-activity-steps">{events.length?`${completedEvents}/${events.length} current activity ${events.length===1?"step":"steps"} complete`:"No activity yet"}</small>
       </section>
-      <ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/>
+      {shownApproval&&<Suspense fallback={null}><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></Suspense>}
       <section className="runtime-grid">
         <div><span>Agent harness</span><strong>{agentRuntimeLabel}</strong></div>
         <div><span>Harness status</span><strong>{providerReady?"Ready":"Setup required"}</strong></div>
@@ -5214,8 +5193,8 @@ export default function App(){
               {worktreeSetup&&<Suspense fallback={null}><WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/></Suspense>}
               <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={shownTurnOrder} turnActivity={shownTurnActivity} liveCardTurnId={liveCardTurnId} newestTurnId={newestTurnId} onToggleLayout={activityCardToggleLayout}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout}/>
-              {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
-              {shownApproval&&<div className="inline-approval"><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
+              {guardianDenials.map(review=><Suspense key={review.reviewId} fallback={null}><div className="inline-approval"><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div></Suspense>)}
+              {shownApproval&&<Suspense fallback={null}><div className="inline-approval"><ApprovalCard request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div></Suspense>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?`Queued in ${agentRuntimeLabel}`:item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button disabled={running&&!runtimeCapabilities.steering} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>runUserAction(()=>editQueued(item),"Could not edit queued follow-up")} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
               {!messages.length&&!events.length&&!storeCardTurnIds(shownTurnActivity).length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
