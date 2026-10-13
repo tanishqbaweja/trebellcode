@@ -15,6 +15,8 @@ const OPTIONS={
 };
 function optionLabel(key,id){return OPTIONS[key].find(([value])=>value===id)?.[1]||id}
 function optionList(key){return OPTIONS[key].map(([id,label])=><option key={id} value={id}>{label}</option>)}
+// Same normalization the server applies (whole days, 1-3650, anything else means "Never"), so the field shows what was saved.
+function cleanupDays(value){const text=String(value??"").trim();if(!text)return null;const days=Math.trunc(Number(text));return Number.isFinite(days)&&days>=1?Math.min(3650,days):null}
 
 export default function ScopedSettingsCard({settings={},models=[],onChanged,scopeEnvironmentId=null,scopeProjectId=null,onScopeChange,onCatalog,showScopeTargets=true}){
   const [environmentData,setEnvironmentData]=useState({profiles:[]});
@@ -93,9 +95,23 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged,scop
     const current=value("worktreeCleanup")?.mode==="custom"?value("worktreeCleanup").rules:{};
     return write("worktreeCleanup",{mode:"custom",rules:{worktreeAfterDays:current?.worktreeAfterDays??30,worktreeOnMerge:Boolean(current?.worktreeOnMerge),worktreeOnDelete:Boolean(current?.worktreeOnDelete),worktreeUnchanged:Boolean(current?.worktreeUnchanged)}});
   }
+  // A rule starts from the rules still on their way for this scope, so a toggle clicked as the days field is left keeps the days
+  // instead of sending the saved ones back over them.
+  const sentRulesRef=React.useRef(null);
   async function setCleanupRule(key,next){
-    const current=value("worktreeCleanup")?.mode==="custom"?value("worktreeCleanup").rules:{};
-    return write("worktreeCleanup",{mode:"custom",rules:{worktreeAfterDays:current?.worktreeAfterDays??30,worktreeOnMerge:Boolean(current?.worktreeOnMerge),worktreeOnDelete:Boolean(current?.worktreeOnDelete),worktreeUnchanged:Boolean(current?.worktreeUnchanged),[key]:next}});
+    const target=projectId||environmentId,sent=sentRulesRef.current?.target===target?sentRulesRef.current.rules:null;
+    const current=sent||(value("worktreeCleanup")?.mode==="custom"?value("worktreeCleanup").rules:{});
+    const rules={worktreeAfterDays:current?.worktreeAfterDays??30,worktreeOnMerge:Boolean(current?.worktreeOnMerge),worktreeOnDelete:Boolean(current?.worktreeOnDelete),worktreeUnchanged:Boolean(current?.worktreeUnchanged),[key]:next};
+    const mark={target,rules};sentRulesRef.current=mark;
+    return write("worktreeCleanup",{mode:"custom",rules}).finally(()=>{if(sentRulesRef.current===mark)sentRulesRef.current=null});
+  }
+  // The days field is typed in freely and saved once it is left, as the Projects card's own field is: a save on every keystroke came
+  // back while the person was still typing and put an earlier keystroke's value in the field (365 was saved as 35). A failed save
+  // puts the saved value back.
+  const savedCleanupDays=value("worktreeCleanup")?.rules?.worktreeAfterDays??null;
+  function saveCleanupDays(input){
+    const days=cleanupDays(input.value);input.value=days??"";
+    if(days!==savedCleanupDays)setCleanupRule("worktreeAfterDays",days).catch(()=>{input.value=savedCleanupDays??""});
   }
   async function runCleanup(){
     setLoading(true);setMessage("Running cleanup…");
@@ -127,7 +143,7 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged,scop
       <label>Follow PR templates<select value={projectScope&&!hasOverride("sourceControlFollowTemplates")?INHERIT:String(Boolean(value("sourceControlFollowTemplates")))} onChange={event=>write("sourceControlFollowTemplates",event.target.value===INHERIT?INHERIT:event.target.value==="true")}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.sourceControlFollowTemplates?"On":"Off"}</option>}<option value="true">On</option><option value="false">Off</option></select></label>
       {value("sourceControlTextStyle")==="custom"&&<label className="scoped-settings-wide">Custom Git instructions<textarea key={(projectId||environmentId)+":"+(hasOverride("sourceControlCustomInstructions")?"override":"default")} defaultValue={value("sourceControlCustomInstructions")||""} placeholder="Keep titles concise. Use short bullet points in descriptions." onBlur={event=>write("sourceControlCustomInstructions",event.target.value)}/>{projectScope&&hasOverride("sourceControlCustomInstructions")&&<button type="button" onClick={()=>write("sourceControlCustomInstructions",INHERIT)}>Use inherited instructions</button>}</label>}
     </div>}
-    {scope&&<div className="project-cleanup scoped-cleanup"><label>Automatic worktree cleanup<select value={cleanupMode} onChange={event=>setCleanupMode(event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {optionLabel("worktreeCleanup",scope.defaults.worktreeCleanup?.mode||"off")}</option>}{optionList("worktreeCleanup")}</select></label>{cleanupMode==="custom"&&<div className="cleanup-rule-grid"><label>After inactive days<input type="number" min="1" max="3650" value={value("worktreeCleanup")?.rules?.worktreeAfterDays??""} placeholder="Never" onChange={event=>setCleanupRule("worktreeAfterDays",event.target.value?Number(event.target.value):null)}/></label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeOnMerge)} onChange={event=>setCleanupRule("worktreeOnMerge",event.target.checked)}/> After merge</label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeOnDelete)} onChange={event=>setCleanupRule("worktreeOnDelete",event.target.checked)}/> After last thread deletion</label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeUnchanged)} onChange={event=>setCleanupRule("worktreeUnchanged",event.target.checked)}/> If unchanged</label></div>}</div>}
+    {scope&&<div className="project-cleanup scoped-cleanup"><label>Automatic worktree cleanup<select value={cleanupMode} onChange={event=>setCleanupMode(event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {optionLabel("worktreeCleanup",scope.defaults.worktreeCleanup?.mode||"off")}</option>}{optionList("worktreeCleanup")}</select></label>{cleanupMode==="custom"&&<div className="cleanup-rule-grid"><label>After inactive days<input key={(projectId||environmentId)+":"+(savedCleanupDays??"never")} type="number" min="1" max="3650" defaultValue={savedCleanupDays??""} placeholder="Never" onBlur={event=>saveCleanupDays(event.target)}/></label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeOnMerge)} onChange={event=>setCleanupRule("worktreeOnMerge",event.target.checked)}/> After merge</label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeOnDelete)} onChange={event=>setCleanupRule("worktreeOnDelete",event.target.checked)}/> After last thread deletion</label><label className="toggle-line"><input type="checkbox" checked={Boolean(value("worktreeCleanup")?.rules?.worktreeUnchanged)} onChange={event=>setCleanupRule("worktreeUnchanged",event.target.checked)}/> If unchanged</label></div>}</div>}
     <div className="provider-key-actions"><button onClick={()=>loadScope()} disabled={loading}><RefreshCw size={12}/> Refresh</button><button onClick={runCleanup} disabled={loading}>Clean up worktrees now</button></div>
     {message.text&&<p className={message.error?"provider-status-error":"provider-note"}>{message.text}</p>}
   </div>;

@@ -20,6 +20,21 @@ async function openSettings(page,request,name,settings={}){
   await page.getByRole("button",{name:"Settings",exact:true}).click();
 }
 async function savedSettings(request){return (await (await request.get("/api/state")).json()).settings}
+const shots=fileURLToPath(new URL("../../visual-audit/polish/settings-reliability/",import.meta.url));mkdirSync(shots,{recursive:true});
+// The header's mode button, clicked as a person switches between dark and light.
+async function switchMode(page,mode){
+  if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").click();
+  await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+}
+// Screenshots of what is on screen in dark and light, at 1280 and 900 wide, with show (a locator) brought into view at each width;
+// the page is left dark at 1280.
+async function shootModes(page,name,{height=800,show=null}={}){
+  for(const mode of ["dark","light"]){
+    await page.setViewportSize({width:1280,height});await switchMode(page,mode);
+    for(const width of [1280,900]){await page.setViewportSize({width,height});await show?.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:shots+`${name}-${mode}-${width}.png`})}
+  }
+  await page.setViewportSize({width:1280,height});await switchMode(page,"dark");
+}
 
 // The mock server keeps settings and published themes for the whole run: leave the theme state, and storage cleanup off, as the specs
 // after this one expect them.
@@ -276,6 +291,64 @@ test("storage cleanup retention treats zero, negative and too-large days like th
   await expect(attachments).toHaveValue("14");
   expect((await savedSettings(request)).storageCleanup.attachmentsAfterDays).toBe(14);
   await page.locator(".storage-settings").screenshot({animations:"disabled",path:auditDir+"settings-storage-retention-failed-save-keeps-value.png"});
+});
+
+// The scoped "After inactive days" field is typed in like any number: it saves once it is left, the whole number, as the Projects
+// card's own days field does. Saves are slowed as a busy disk or a remote environment slows them; a save on every keystroke came
+// back mid-typing and put an earlier keystroke's value in the field, so 365 was saved as 35.
+test("the scoped After inactive days field keeps every digit typed and saves the whole number",async({page,request})=>{
+  const scoped=async(projectId="")=>(await (await request.get("/api/scoped-settings?"+new URLSearchParams(projectId?{environmentId:"",projectId}:{environmentId:""}))).json());
+  const before=(await scoped()).effective.worktreeCleanup;
+  try{
+    await openSettings(page,request,"Scoped Days Workspace");
+    const saves=[];
+    await page.route(/\/api\/scoped-settings$/,async route=>{
+      if(route.request().method()!=="POST")return route.continue();
+      saves.push(route.request().postDataJSON());await new Promise(resolve=>setTimeout(resolve,400));return route.continue();
+    });
+    // The days each save after the field was first typed in sent (the cleanup select's own saves come before it).
+    let typedFrom=0;const daysSaved=()=>saves.slice(typedFrom).map(body=>body.patch?.worktreeCleanup?.rules?.worktreeAfterDays);
+    await page.getByRole("button",{name:/Workspace/}).click();
+    const card=page.getByTestId("scoped-settings-card");
+    await card.getByLabel("Automatic worktree cleanup").selectOption("custom");
+    const days=card.getByLabel("After inactive days");
+    await expect(days).toHaveValue("30");
+    const typeDays=async(text,delay)=>{await days.click();await page.keyboard.press("Control+A");await page.keyboard.press("Delete");await page.keyboard.type(text,{delay})};
+    typedFrom=saves.length;await typeDays("365",110);
+    await expect(days).toHaveValue("365");
+    await page.keyboard.press("Tab");
+    await expect.poll(async()=>(await scoped()).effective.worktreeCleanup.rules.worktreeAfterDays).toBe(365);
+    await expect(card).toContainText("Scoped default saved.");
+    await expect(days).toHaveValue("365");
+    expect(daysSaved()).toEqual([365]);
+    await shootModes(page,"scoped-days-365",{show:days});
+    // A toggle clicked straight after typing keeps the days typed: its save does not send the saved days back over them.
+    typedFrom=saves.length;await typeDays("45",150);
+    await card.locator("label.toggle-line",{hasText:"After merge"}).click();
+    await expect.poll(async()=>(await scoped()).effective.worktreeCleanup.rules).toMatchObject({worktreeAfterDays:45,worktreeOnMerge:true});
+    await expect(days).toHaveValue("45");
+    await expect(card.getByLabel("After merge")).toBeChecked();
+    expect(daysSaved()).toEqual([45,45]);
+    // A project's own rule is typed the same way, faster.
+    await page.getByRole("combobox",{name:"Project scope"}).selectOption({label:"Scoped Days Workspace"});
+    await card.getByLabel("Automatic worktree cleanup").selectOption("custom");
+    await expect(days).toHaveValue("45");
+    const project=(await (await request.get("/api/projects")).json()).projects.find(item=>item.name==="Scoped Days Workspace");
+    typedFrom=saves.length;await typeDays("120",60);
+    await expect(days).toHaveValue("120");
+    await page.keyboard.press("Tab");
+    await expect.poll(async()=>(await scoped(project.id)).overrides.worktreeCleanup?.rules?.worktreeAfterDays).toBe(120);
+    await expect(days).toHaveValue("120");
+    expect(daysSaved()).toEqual([120]);
+    // Leaving the field without a change saves nothing.
+    await days.click();await page.keyboard.press("Tab");
+    await page.waitForTimeout(600);
+    expect(daysSaved()).toEqual([120]);
+  }finally{
+    const project=(await (await request.get("/api/projects")).json()).projects.find(item=>item.name==="Scoped Days Workspace");
+    if(project)await request.post("/api/scoped-settings",{data:{projectId:project.id,patch:{},resetKeys:["worktreeCleanup"]}});
+    await request.post("/api/scoped-settings",{data:{environmentId:null,patch:{worktreeCleanup:before}}});
+  }
 });
 
 test("failed saves from inline settings controls stay in the alert without unhandled rejections",async({page,request})=>{
