@@ -2,6 +2,7 @@ import { createSharedToolGateway } from "./shared-tool-gateway.mjs";
 import { platformToolDefinition } from "./platform-tool-catalog.mjs";
 import { ADVANCED_REPOSITORY_TOOL_NAMES, advancedRepositoryToolDefinition, invokeRepositoryTool, parseRepositoryToolArguments, repositoryToolHandlers, repositoryToolInputJsonSchema } from "./repository-tool-catalog.mjs";
 import { normalizeRepositoryWorkspacePath } from "./native-workspace-path.mjs";
+import { formatRepositorySearchResult } from "./repository-search-format.mjs";
 
 function baseContext(value,call){
   if(typeof value==="function")return value(call)||{};
@@ -49,7 +50,11 @@ export function createNativeToolExecutor({
     },
     execute:async call=>{
       const repositoryInvocation=repositoryCall(call);
-      if(repositoryInvocation)return await invokeRepositoryTool(repositoryHandlers,repositoryInvocation.definition,repositoryInvocation.args);
+      if(repositoryInvocation){
+        const result=await invokeRepositoryTool(repositoryHandlers,repositoryInvocation.definition,repositoryInvocation.args);
+        // Search results reach the model grouped by file, each path once, instead of as one JSON record per hit.
+        return formatRepositorySearchResult(repositoryInvocation.definition.name,result)??result;
+      }
       if(call.definition?.source==="repository-discovery"){
         if(typeof discoverRepositoryTools!=="function")throw new Error("Repository tool discovery is unavailable.");
         return await discoverRepositoryTools(call.arguments||{});

@@ -19,9 +19,33 @@ test("Native repository tools execute in-process through Context Engine and shar
   try{
     const executor=createNativeToolExecutor({contextEngine:new ContextEngine(),root,policyContext:{permissionProfile:"read-only",runtime:"native"}});
     const result=await executor({id:"repo-1",namespace:"trebell_repo",name:"search_symbols",arguments:{query:"SessionManager"}});
-    assert.equal(result.query,"SessionManager");assert.ok(result.data.some(item=>item.name==="SessionManager"&&item.path==="src/session.js"));
+    assert.equal(result,"1 definition in 1 file\nsrc/session.js\n  1: export class SessionManager { refresh(){ return true; } }");
     const invalid=await executor({id:"repo-2",namespace:"trebell_repo",name:"search_symbols",arguments:{}});
     assert.equal(invalid.success,false);assert.match(invalid.error,/query/i);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native repository searches reach the model grouped by file and scoped by path and glob",async()=>{
+  const root=await fixture();
+  try{
+    await mkdir(join(root,"lib"),{recursive:true});
+    await writeFile(join(root,"lib","session-cache.js"),"import { SessionManager } from '../src/session.js';\nexport const cache = new SessionManager();\n","utf8");
+    await writeFile(join(root,"lib","notes.md"),"SessionManager notes\n","utf8");
+    const executor=createNativeToolExecutor({contextEngine:new ContextEngine(),root,policyContext:{permissionProfile:"read-only",runtime:"native"}});
+    const all=await executor({namespace:"trebell_repo",name:"search_code",arguments:{query:"SessionManager"}});
+    assert.equal(typeof all,"string");
+    assert.equal(all.split("\n")[0],"4 matches in 3 files");
+    assert.match(all,/^lib\/session-cache\.js\n  1: import \{ SessionManager \} from '\.\.\/src\/session\.js';\n  2: export const cache = new SessionManager\(\);$/m,"the path is written once, then line: text");
+    assert.doesNotMatch(all,/"path"|"line"|"text"/,"no per-hit JSON keys");
+    const scoped=await executor({namespace:"trebell_repo",name:"search_code",arguments:{query:"SessionManager",path:"/lib",glob:"*.js"}});
+    assert.equal(scoped,"2 matches in 1 file (path: lib, glob: *.js)\nlib/session-cache.js\n  1: import { SessionManager } from '../src/session.js';\n  2: export const cache = new SessionManager();");
+    const files=await executor({namespace:"trebell_repo",name:"search_files",arguments:{query:"session",path:"lib"}});
+    assert.equal(files,"1 matching file (path: lib)\nlib/session-cache.js");
+    // The gateway's workspace boundary refuses a path outside the project before the search runs.
+    const outside=await executor({namespace:"trebell_repo",name:"search_code",arguments:{query:"SessionManager",path:"../elsewhere"}});
+    assert.equal(outside.success,false);assert.match(outside.error,/outside the active workspace/i);
+    const missing=await executor({namespace:"trebell_repo",name:"search_code",arguments:{query:"SessionManager",path:"lib/missing"}});
+    assert.equal(missing.success,false);assert.match(missing.error,/not a file or folder in the repository/i);
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
