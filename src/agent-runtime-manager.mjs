@@ -614,7 +614,7 @@ export class AgentRuntimeManager{
   async probe(instanceOrKind,{environmentId=undefined,fresh=false}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="native")return this.#probeNow(instance,{environmentId});
-    const key=this.#probeKey(instance,environmentId),cached=this.#probes.get(key);
+    const key=this.#probeKey(instance,environmentId),owner=this.#probeOwner(instance,environmentId),cached=this.#probes.get(key);
     if(!fresh&&cached?.pending){
       const value=await cached.pending;if(value?.available)return structuredClone(value);
       const next=this.#probes.get(key);if(next?.pending&&next.pending!==cached.pending)return structuredClone(await next.pending);
@@ -622,10 +622,10 @@ export class AgentRuntimeManager{
     // A local binary replaced since (npm i -g, the harness's own updater) makes its version check due, so its answer is not kept
     // past that either. Read before the probe runs, so a binary replaced while it runs makes the next caller ask again.
     const binary=this.#binaryPaths(instance,environmentId),signature=binarySignature(binary);
-    const pending=this.#probeNow(instance,{environmentId,fresh});this.#probes.set(key,{pending});
+    const pending=this.#probeNow(instance,{environmentId,fresh});this.#probes.set(key,{pending,owner});
     try{
       const value=await pending;
-      if(this.#probes.get(key)?.pending===pending){if(keptProbeAnswer(value))this.#probes.set(key,{at:this.now(),value,binary,signature});else this.#probes.delete(key)}
+      if(this.#probes.get(key)?.pending===pending){if(keptProbeAnswer(value))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
       return structuredClone(value);
     }catch(error){
       if(this.#probes.get(key)?.pending===pending)this.#probes.delete(key);
@@ -633,6 +633,8 @@ export class AgentRuntimeManager{
     }
   }
   #probeKey(instance,environmentId=undefined){return JSON.stringify([this.activeEnvironment(environmentId)?.id||"local",instance])}
+  // The runtime profile and environment an answer is about, whatever fields the profile had when it was asked (#probeKey holds them).
+  #probeOwner(instance,environmentId=undefined){return instance?.id==null?null:JSON.stringify([this.activeEnvironment(environmentId)?.id||"local",instance.kind,String(instance.id)])}
   #rechecks=new Map();
   // A harness that failed where it runs (its session did not start, or a turn ended in its error) is asked again: the ready answer
   // kept for PROBE_REUSE_MS may be one it no longer gives, as after a `claude auth logout` in the person's own terminal, and the next
@@ -645,6 +647,10 @@ export class AgentRuntimeManager{
     if(instance.kind==="native")return Promise.resolve(null);
     const key=this.#probeKey(instance,environmentId),running=this.#rechecks.get(key);
     if(running)return running.then(value=>structuredClone(value));
+    // A session keeps the profile it started with. Once Settings has saved that profile since (any field), the poll and the next
+    // session start read the answer kept under its new fields: that one goes too, so they ask the harness again.
+    const owner=this.#probeOwner(instance,environmentId);
+    if(owner)for(const [other,entry] of this.#probes)if(other!==key&&entry.owner===owner&&!entry.pending)this.#probes.delete(other);
     const pending=this.probe(instance,{environmentId,fresh:true}),settled=()=>{if(this.#rechecks.get(key)===pending)this.#rechecks.delete(key)};
     this.#rechecks.set(key,pending);pending.then(settled,settled);
     return pending;

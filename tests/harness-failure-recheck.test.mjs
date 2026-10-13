@@ -31,10 +31,11 @@ function onCleanup(t,step){
   if(!stack){stack=[];cleanups.set(t,stack);t.after(async()=>{let failure=null;for(const next of stack.reverse()){try{await next()}catch(error){failure??=error}}if(failure)throw failure})}
   stack.push(step);
 }
-// The settings both the runtime manager and the relay read, and the thread metadata the relay keeps (and a delete removes).
+// The settings both the runtime manager and the relay read (and Settings' save writes), and the thread metadata the relay keeps
+// (and a delete removes).
 function memoryState(settings){
   const meta=new Map();
-  return {settings:()=>({...settings}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},removeThreadMeta:id=>meta.delete(id)};
+  return {settings:()=>({...settings}),updateSettings:patch=>{Object.assign(settings,patch);return {...settings}},threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},removeThreadMeta:id=>meta.delete(id)};
 }
 async function startRelay(t,options){
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{version:"test",...options});
@@ -394,4 +395,20 @@ test("a send that Trebell's own Claude Code session refuses while a turn runs as
   assert.deepEqual(fx.launches.slice(asked),[],"Trebell's own refusal is no failure of Claude Code");
   answer();
   assert.equal((await fx.relay.next(message=>message.method==="turn/completed"&&message.params.turn?.id===running)).params.turn.status,"completed");
+});
+
+test("after the Claude Code profile is saved in Settings, a turn its thread fails after a sign-out outside Trebell still shows at the next poll",async t=>{
+  const fx=await claudeFixture(t,"local");
+  await fx.poll();
+  const {thread}=await fx.relay.rpc("thread/start",{cwd:fx.root});
+  assert.equal((await fx.relay.turn(thread.id)).turn.status,"completed","the thread's session runs on the profile as it was");
+  // Settings saves the active profile (a new name; the save fills in the rest), and its listing asks again.
+  fx.manager.upsertInstance({...fx.manager.activeInstance(),displayName:"Claude Code (work)"});
+  assert.equal((await fx.manager.probe(fx.manager.activeInstance(),{fresh:true})).available,true);
+  fx.auth.loggedIn=false;fx.claude.failing=new Error(CLAUDE_EXIT);
+  const asked=fx.launches.length,{turn}=await fx.relay.turn(thread.id);
+  assert.equal(turn.error.message,`${CLAUDE_EXIT}. ${CLAUDE_ADVICE}`,"the failed turn says how to sign in");
+  const poll=await fx.poll();
+  assert.deepEqual([poll.available,poll.authenticated],[false,false],"the next poll asks again");
+  assert.deepEqual(fx.launches.slice(asked),["claude --version","claude auth status","claude auth status"],"the recheck, then the poll's own sign-in check");
 });
