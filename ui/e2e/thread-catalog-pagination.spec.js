@@ -54,7 +54,8 @@ test("History pages older Trebell catalog rows even without a connected runtime"
 });
 
 // A failed Load older threads is said by the button, at the bottom of a long History where the person clicked it; it was said at the
-// top of the page, out of view, and only the button coming back showed anything had happened. Trying again loads the page.
+// top of the page, out of view, and only the button coming back showed anything had happened. Pressed with the keyboard, the button
+// keeps the keyboard while it loads and after it fails, so Enter tries again; trying again loads the page.
 test("a failed Load older threads says so by the button",async({page})=>{
   test.setTimeout(45_000);
   const now=Date.now()/1000;
@@ -70,7 +71,9 @@ test("a failed Load older threads says so by the button",async({page})=>{
   await page.route(/\/api\/projects$/,route=>route.fulfill(json({projects:[]})));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill(json({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})));
   await page.route(/\/api\/recovery$/,route=>route.fulfill(json({enabled:false,items:[]})));
-  await page.route(/\/api\/thread-meta\?/,route=>{catalogReads++;return catalogReads===1?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate catalog page failure"})}):route.fulfill(json({threadMeta:older,nextCursor:null}))});
+  // The first older page is held until its loading state has been shown; the second fails too, after a moment.
+  let releaseFirst=null;const firstHeld=new Promise(resolve=>{releaseFirst=resolve});
+  await page.route(/\/api\/thread-meta\?/,async route=>{catalogReads++;await (catalogReads===1?firstHeld:new Promise(resolve=>setTimeout(resolve,150)));return catalogReads<=2?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate catalog page failure"})}):route.fulfill(json({threadMeta:older,nextCursor:null}))});
   await page.setViewportSize({width:1280,height:800});
   await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
   await page.getByRole("button",{name:"History",exact:true}).click();
@@ -81,6 +84,18 @@ test("a failed Load older threads says so by the button",async({page})=>{
   for(let notch=0;notch<60&&!await load.evaluate(node=>node.getBoundingClientRect().bottom<=innerHeight);notch++){await page.mouse.wheel(0,200);await page.waitForTimeout(40)}
   await expect(load).toBeInViewport({ratio:1});
   await load.click();
+  // While it loads the button keeps focus, says so and looks unavailable, in both modes.
+  const loading=page.getByRole("button",{name:"Loading older threads…"});
+  await expect(loading).toBeFocused();
+  await expect(loading).toHaveAttribute("aria-disabled","true");
+  for(const mode of ["dark","light"]){
+    await page.setViewportSize({width:1280,height:800});
+    if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await loading.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`polish/history/older-threads-loading-${mode}-${width}.png`})}
+  }
+  await page.setViewportSize({width:1280,height:800});await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
+  releaseFirst();
   const failure=history.getByRole("alert").filter({hasText:"Deliberate catalog page failure"});
   await expect(failure).toBeInViewport({ratio:1});
   await expect(failure).toHaveText("Could not load older threads: Trebell catalog: Deliberate catalog page failure");
@@ -97,11 +112,16 @@ test("a failed Load older threads says so by the button",async({page})=>{
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await page.getByRole("button",{name:"History",exact:true}).click();
   await expect(load).toBeVisible();await expect(history.getByRole("alert")).toHaveCount(0);
-  // Trying again loads the older page.
-  await load.click();
+  // The keyboard way: the person has tabbed to the button and presses Enter; it fails again, and the keyboard is still on it.
+  await load.focus();await page.keyboard.press("Enter");
+  await expect(page.getByRole("button",{name:"Loading older threads…"})).toBeFocused();
+  await expect(failure).toBeVisible();
+  await expect(load).toBeFocused();
+  // Trying again, with Enter, loads the older page.
+  await page.keyboard.press("Enter");
   await expect(history.getByRole("button",{name:/Older C/})).toBeVisible();
   await expect(history.getByRole("alert")).toHaveCount(0);await expect(load).toHaveCount(0);
-  expect(catalogReads).toBe(2);
+  expect(catalogReads).toBe(3);
 });
 
 test("connected runtime history refresh preserves the independent Trebell catalog cursor",async({page})=>{

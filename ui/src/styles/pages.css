@@ -60,7 +60,7 @@
 :root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar>button:hover:not(:disabled),
 :root:root .usage-page .usage-toolbar>button:hover:not(:disabled),
 :root:root .projects-page :is(.project-page-actions>button,.clone-card>button,.project-window-footer button):hover:not(:disabled),
-:root:root .secondary-page .history-page .history-load-more button:hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .secondary-page .history-page .history-load-more button:hover:not(:disabled,[aria-disabled="true"]){background:var(--bg4)!important;color:var(--tx0)!important}
 
 /* Small secondary button (tb-btn--sm) for in-card actions. */
 :root:root .projects-page :is(.project-identity-toggle button,.project-icon-actions button,.project-image-button,.project-icon-draft button,.project-actions-head button,.project-config-hint button,.project-import-list button,.project-clone-status button,.project-action-editor button,.project-hook-editor button),
@@ -84,8 +84,9 @@
 :root:root .agents-page .delegate-submit:hover:not(:disabled),
 :root:root .preview-page .annotation-actions button.primary:hover:not(:disabled){filter:brightness(1.1);background:var(--acfill)!important;color:#fff!important}
 
-/* Disabled buttons, every page. */
-:root:root :is(.projects-page,.history-page,.usage-page,.capabilities-page,.environments-page,.licenses-page,.agents-page,.preview-page) button:disabled{opacity:.5;cursor:default;box-shadow:none!important;filter:none}
+/* Disabled buttons, every page. Load older threads only says it is busy (aria-disabled), so the keyboard stays on it while it loads. */
+:root:root :is(.projects-page,.history-page,.usage-page,.capabilities-page,.environments-page,.licenses-page,.agents-page,.preview-page) button:disabled,
+:root:root .history-page .history-load-more button[aria-disabled="true"]{opacity:.5;cursor:default;box-shadow:none!important;filter:none}
 
 /* Fields (tb-input / tb-select). */
 :root:root .projects-page :is(.clone-card input,.clone-card select,.project-overrides select,.project-identity-editor input:not([type="color"]):not([type="file"]),.project-cleanup select,.project-cleanup input[type="number"],.project-action-editor>input,.project-hook-editor>input,.project-hook-editor>select,.project-hook-options input,.project-hook-options select),
