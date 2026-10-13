@@ -2347,7 +2347,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
             if(setup&&!mock&&terminals){
               const spec=commandShellSpec(setup.command,env);
-              const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} Â· setup`,cols:120,rows:32,shell:spec.shell,args:spec.args});
+              const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} · setup`,cols:120,rows:32,shell:spec.shell,args:spec.args});
               result={...result,setup:{scriptId:setup.id,scriptName:setup.name,command:setup.command,waitForSetup:Boolean(setup.waitForSetup),session:terminals.snapshot(session.id)}};
             }
             break;

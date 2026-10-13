@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readdir, readFile } from "node:fs/promises";
 import { apiKeyLabel, formatByteSize, safeAttachmentName } from "../src/gui-server.mjs";
 import { EnvironmentManager, validatedSshPort } from "../src/environment-manager.mjs";
 
@@ -47,4 +48,22 @@ test("SSH profiles reject an invalid port instead of saving 22",()=>{
   assert.equal(manager.upsert({type:"ssh",host:"build.example"}).port,22);
   // Local profiles never had a port to validate.
   assert.equal(manager.upsert({type:"local",port:"not a port"}).port,undefined);
+});
+
+// UTF-8 text read once as Windows-1252 and saved again shows in the app as "Â·" for "·" or "â€”" for "—". Turned back into
+// Windows-1252 bytes, such characters are a valid UTF-8 sequence, which accented letters or symbols that belong side by side are not.
+test("server strings hold no double-encoded characters",async()=>{
+  const windows1252=new TextDecoder("windows-1252"),utf8=new TextDecoder("utf-8",{fatal:true}),byteOf=new Map();
+  for(let value=0x80;value<=0xff;value++)byteOf.set(windows1252.decode(Uint8Array.of(value)),value);
+  const garbled=line=>{
+    const chars=[...line];
+    for(let start=0;start<chars.length;start++)for(let length=2;length<=4&&start+length<=chars.length;length++){
+      const bytes=chars.slice(start,start+length).map(char=>byteOf.get(char));if(bytes.includes(undefined))break;
+      try{utf8.decode(Uint8Array.from(bytes));return chars.slice(start,start+length).join("")}catch{}
+    }
+    return null;
+  };
+  const source=new URL("../src/",import.meta.url),found=[];
+  for(const name of (await readdir(source)).filter(name=>name.endsWith(".mjs")))(await readFile(new URL(name,source),"utf8")).split("\n").forEach((line,index)=>{const text=/[^\x00-\x7f]/.test(line)&&garbled(line);if(text)found.push(`${name}:${index+1} ${text}`)});
+  assert.deepEqual(found,[]);
 });
