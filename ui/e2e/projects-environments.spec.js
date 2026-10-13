@@ -435,6 +435,50 @@ test.describe("Removing a project",()=>{
     }finally{release();await page.unrouteAll({behavior:"ignoreErrors"})}
   });
 
+  // A Permissions change never gets an answer (the server stopped answering it) when the person removes the project and chooses
+  // Undo. Undo waits for it a few seconds, not for good: the project comes back as it was removed, and the card says the change
+  // still saving is not in it. Undo from another page says so in the app's toast.
+  test("Undo of a removal waits a few seconds at most for a save that never answers, and says it is not in the project",async({page,request})=>{
+    test.setTimeout(60_000);
+    const boot=await open(page,request);
+    const path=join(boot.cwd,"ui");
+    await request.post("/api/projects",{data:{path,name:"Project A",permissionMode:"edits"}});
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    // The save is taken and never answered.
+    let held=0;
+    await page.route(/\/api\/projects$/,route=>{if(route.request().method()!=="POST"||route.request().postDataJSON()?.permissionMode!=="supervised")return route.fallback();held++});
+    const toast=page.getByTestId("thread-undo-toast"),restored=async()=>(await listedProjects(request)).filter(project=>project.path===path).map(project=>project.permissionMode).join(",")||"missing";
+    const note="Project restored, but a change still saving when it was removed (Permissions) did not answer in time and is not in it.";
+    try{
+      await openProjects(page);
+      let card=projectCard(page,"Project A");
+      await card.getByRole("combobox",{name:"Permissions"}).selectOption("supervised");
+      await expect.poll(()=>held,{message:"the save was sent"}).toBe(1);
+      await card.getByRole("button",{name:"Remove Project A",exact:true}).click();
+      await expect(toast).toContainText("Project “Project A” removed");
+      await toast.getByRole("button",{name:"Undo",exact:true}).click();
+      const undoneAt=Date.now();
+      card=projectCard(page,"Project A");
+      await expect(card).toBeVisible({timeout:10_000});
+      expect(Date.now()-undoneAt,"Undo went ahead within a few seconds").toBeLessThan(8000);
+      await expect(card.getByRole("alert")).toHaveText(note);
+      await expect(card.getByRole("combobox",{name:"Permissions"})).toHaveValue("edits");
+      await expect.poll(restored,{message:"the restored project's permission"}).toBe("edits");
+      await shootModes(page,"project-undo-save-never-answered",{show:card.getByRole("alert")});
+      // From another page the same Undo says so in the app's toast.
+      await card.getByRole("combobox",{name:"Permissions"}).selectOption("supervised");
+      await expect.poll(()=>held,{message:"the second save was sent"}).toBe(2);
+      await card.getByRole("button",{name:"Remove Project A",exact:true}).click();
+      await expect(toast).toContainText("Project “Project A” removed");
+      await nav(page,"History").click();
+      await toast.getByRole("button",{name:"Undo",exact:true}).click();
+      await expect(page.getByTestId("app-action-error")).toContainText("Undo: "+note,{timeout:10_000});
+      await expect.poll(restored,{message:"the project is back"}).toBe("edits");
+      await page.screenshot({animations:"disabled",path:shots+"project-undo-save-never-answered-elsewhere-dark-1280.png"});
+    }finally{await page.unrouteAll({behavior:"ignoreErrors"})}
+  });
+
   // The palette shows the project list it read when it was last open until it has read the list again. A project removed on
   // Projects is not offered there meanwhile (opening it would add it back), and its Undo puts it back there at once.
   for(const mode of MODES)test(`the palette offers a removed project no more, and a restored one again, before it reads the list again (${mode})`,async({page,request})=>{

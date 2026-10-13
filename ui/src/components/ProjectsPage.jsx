@@ -11,6 +11,11 @@ import { askConfirm } from "./RightPanel.jsx";
 // The Projects page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves on,
 // or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.
 let projectsOnScreen=null;
+// How long an Undo of a removal waits for the card saves still on their way before it puts the project back without them.
+const UNDO_SAVE_WAIT_MS=4000;
+// What card saves change, named as the card names it: "Permissions, name".
+const SAVE_FIELD_NAMES={name:"name",icon:"icon",scripts:"actions",preferredScriptId:"actions",hooks:"hooks",recipes:"recipes",defaultModel:"Model",permissionMode:"Permissions",workspaceMode:"Workspace",worktreeSubmodules:"Submodules",worktreeCleanup:"worktree cleanup"};
+function unsavedChangeNames(entries){return [...new Set(entries.flatMap(entry=>Object.keys(entry.patch||{}).map(key=>SAVE_FIELD_NAMES[key]||key)))].join(", ")}
 
 function blankScript(){
   return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
@@ -212,7 +217,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     }catch(err){
       if(err?.status===404&&removingRef.current.has(project.id)){entry.gone=true;return null}
       failInCard(project,area,err.message||String(err));return null;
-    }finally{if(!entry.gone)saves.delete(entry);settle()}
+    }finally{if(!entry.gone)saves.delete(entry);entry.answered=true;settle()}
     const issues=[];
     try{onProjectUpdated?.(result.project)}catch(err){issues.push("the local project view could not apply the saved update: "+(err.message||String(err))+".")}
     const refreshed=await freshRefresh({reportErrors:true});if(!refreshed)issues.push("the project list could not refresh. The last valid project data is still shown.");
@@ -370,17 +375,25 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   // they reached it after the removal, once those still on their way are answered; the page on screen shows the card where it
   // was. A project still open when Undo runs is the active one again; one the person left meanwhile (they opened another project)
   // stays in the list only, so Undo does not take them out of where they are.
+  // Undo waits for those saves a few seconds at most: one that never answers held the Undo for good. The project then comes back
+  // without it, and the card says so (the app's toast, from another page, through the note this returns).
   async function restoreProject(removed,{index,shown=removed}){
     const activate=Boolean(isProjectOpen?.(removed)),saves=[...(savesRef.current.get(removed.id)||[])];
-    await Promise.all(saves.map(entry=>entry.settled));
+    let timer=null;
+    await Promise.race([Promise.all(saves.map(entry=>entry.settled)),new Promise(resolve=>{timer=setTimeout(resolve,UNDO_SAVE_WAIT_MS)})]);
+    clearTimeout(timer);
     savesRef.current.delete(removed.id);
     const record=Object.assign({},removed,...saves.filter(entry=>entry.gone).map(entry=>entry.patch));
+    const missing=unsavedChangeNames(saves.filter(entry=>!entry.answered));
+    const note=missing?`Project restored, but a change still saving when it was removed (${missing}) did not answer in time and is not in it.`:"";
     let restored;
     try{restored=(await api("/api/projects",{method:"POST",body:{...projectRestoreBody(record),...(activate?{activate:true}:{})}}))?.project||null}
     catch(err){const page=projectsOnScreen?.current;if(!page)throw err;page.showError("Could not restore project: "+(err.message||String(err)));return}
     const page=projectsOnScreen?.current;
     try{(page?.onProjectUpdated||onProjectUpdated)?.(restored)}catch{}
     await page?.placeRestored(restored,shown,index);
+    if(!note)return;
+    if(page&&restored?.id)page.noteInCard(restored,"remove",note);else return note;
   }
   // The restored card takes the removed one's place (with its new id it would lead the list as a new project) and keeps
   // the removed card's Git state until the refresh reads it again. It is placed again once a refresh that began before the
@@ -398,7 +411,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     await refreshAfterSuccess("Project was restored");
   }
   const screenRef=useRef(null);
-  screenRef.current={showError:setError,placeRestored,onProjectUpdated};
+  screenRef.current={showError:setError,placeRestored,onProjectUpdated,noteInCard:(project,area,text)=>setCardError({id:project.id,area,text})};
   useEffect(()=>{const page=screenRef;projectsOnScreen=page;return()=>{if(projectsOnScreen===page)projectsOnScreen=null}},[]);
 
   function editScript(project,script=null){

@@ -3196,7 +3196,9 @@ export default function App(){
   function offerSettingsUndo(label,undo){offerThreadUndo(label,()=>Promise.resolve().then(undo).catch(error=>{if(sectionRef.current!=="settings")showActionError(error,"Undo failed")}))}
   // A removed project or environment comes back the same way. Its page reports a failed restore while it is on screen; once it is
   // not, the restore throws and the app's error toast says so.
-  function offerPageUndo(label,undo){offerThreadUndo(label,()=>Promise.resolve().then(undo).catch(error=>showActionError(error,"Undo failed")))}
+  // A page's Undo that went through with something left out (Projects: a save that did not answer in time) says so here when that
+  // page is no longer on screen: it resolves to the note.
+  function offerPageUndo(label,undo){offerThreadUndo(label,()=>Promise.resolve().then(undo).then(note=>{if(typeof note==="string"&&note)showActionError(new Error(note),"Undo")}).catch(error=>showActionError(error,"Undo failed")))}
   async function undoThreadAction(){
     const current=threadUndoRef.current;if(!current)return;
     clearThreadUndo();
