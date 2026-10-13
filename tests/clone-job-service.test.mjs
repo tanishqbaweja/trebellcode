@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloneJobService, parseCloneProgress } from "../src/clone-job-service.mjs";
@@ -96,4 +97,33 @@ test("remote clone jobs run Git and finalization inside the selected environment
     assert.equal(calls.some(call=>call.kind==="exec"&&call.command==="mv"&&call.args.at(-1)==="/srv/projects/widget"),true);
     assert.equal(state.project("/srv/projects/widget","ssh-a").cloneJob.status,"completed");
   }finally{await rm(home,{recursive:true,force:true})}
+});
+
+// A remote that takes the request and never answers holds git on the transfer, through its HTTP helper (git-remote-http, a child of
+// git on Windows). Cancel ends the whole process tree within a few seconds: the remote sees its connection close, the partial folder
+// is removed and the job says cancelled.
+test("cancelling a clone that a remote holds ends git and its helper and removes the partial folder",{timeout:40000},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-clone-held-home-")),parent=await mkdtemp(join(tmpdir(),"trebell-clone-held-dest-"));
+  const sockets=new Set();let asked=null;const reached=new Promise(resolve=>{asked=resolve});
+  const remote=createServer(request=>{sockets.add(request.socket);asked()});
+  await new Promise((resolve,reject)=>remote.listen(0,"127.0.0.1",resolve).once("error",reject));
+  try{
+    const env={...process.env,TREBELL_HOME:home,GIT_TERMINAL_PROMPT:"0",GCM_INTERACTIVE:"never"},state=new TrebellStateStore(env),service=new CloneJobService({state,env});
+    const destination=join(parent,"slow-repo"),started=await service.start({url:`http://127.0.0.1:${remote.address().port}/slow-repo.git`,destination});
+    await reached;
+    const {tempPath}=state.project(destination,null).cloneJob;
+    assert.equal((await stat(tempPath)).isDirectory(),true,"git made the partial folder");
+    const held=[...sockets].map(socket=>new Promise(resolve=>socket.destroyed?resolve():socket.once("close",resolve)));
+    const cancelledAt=Date.now();await service.cancel(started.id);
+    const finished=await service.wait(started.id,{timeoutMs:8000});
+    assert.equal(finished.status,"cancelled");
+    assert.ok(Date.now()-cancelledAt<6000,`cancel took ${Date.now()-cancelledAt} ms`);
+    await Promise.race([Promise.all(held),new Promise((_,reject)=>setTimeout(()=>reject(new Error("the remote still holds a connection from git")),2000))]);
+    await assert.rejects(stat(tempPath));
+    assert.equal(state.project(destination,null).cloneJob.status,"cancelled");
+  }finally{
+    for(const socket of sockets)socket.destroy();
+    await new Promise(resolve=>remote.close(resolve));
+    await Promise.all([rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100}),rm(parent,{recursive:true,force:true,maxRetries:30,retryDelay:100})]);
+  }
 });

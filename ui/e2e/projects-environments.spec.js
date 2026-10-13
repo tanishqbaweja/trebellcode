@@ -1,6 +1,8 @@
 import { test,expect } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -585,6 +587,48 @@ test.describe("Clone",()=>{
     await clone.getByRole("button",{name:"Clone",exact:true}).click();
     await expect(page.getByRole("alert").filter({hasText:"Deliberate clone refusal"})).toBeVisible();
     expect(posts).toBe(1);
+  });
+
+  // A remote that takes the request and never answers holds git and its HTTP helper on the transfer. The card's Cancel ends them
+  // within a few seconds: the remote sees its connection close, the partial folder goes and the card says the clone was cancelled,
+  // with Retry. The folder the person picks comes from the desktop bridge, as the folder dialog would give it.
+  test("Cancel on a clone the remote holds ends it within seconds and offers Retry",async({page,request})=>{
+    test.setTimeout(90_000);
+    const parent=mkdtempSync(join(tmpdir(),"trebell-e2e-clone-held-"));
+    const sockets=new Set(),remote=createHttpServer(incoming=>{sockets.add(incoming.socket)});
+    await new Promise((resolve,reject)=>remote.listen(0,"127.0.0.1",resolve).once("error",reject));
+    try{
+      await page.addInitScript(folder=>{window.trebellDesktop={pickDirectory:async()=>folder}},parent);
+      await open(page,request);
+      await nav(page,"Projects").click();
+      const clone=page.locator(".clone-card");
+      await clone.getByRole("textbox",{name:"Clone URL"}).click();
+      await page.keyboard.type(`http://127.0.0.1:${remote.address().port}/team/slow-repo.git`,{delay:10});
+      await clone.getByRole("button",{name:"Clone",exact:true}).click();
+      // The new project opens with its clone banner; the person goes back to Projects to its card.
+      await expect(page.getByTestId("clone-banner")).toBeVisible({timeout:20_000});
+      await expect.poll(()=>sockets.size,{message:"git reached the remote",timeout:20_000}).toBeGreaterThan(0);
+      await nav(page,"Projects").click();
+      const status=projectCard(page,"slow-repo").locator(".project-clone-status");
+      await expect(status).toContainText("%");
+      const partial=()=>readdirSync(parent).filter(name=>name.startsWith("slow-repo.trebell-clone-"));
+      expect(partial(),"git made the partial folder").toHaveLength(1);
+      const held=[...sockets].map(socket=>new Promise(resolve=>socket.destroyed?resolve():socket.once("close",resolve)));
+      await status.getByRole("button",{name:"Cancel"}).click();
+      const cancelledAt=Date.now();
+      await expect(status).toContainText("Clone cancelled",{timeout:6000});
+      expect(Date.now()-cancelledAt).toBeLessThan(6000);
+      await expect(status.getByRole("button",{name:"Retry"})).toBeVisible();
+      await Promise.race([Promise.all(held),new Promise((_,reject)=>setTimeout(()=>reject(new Error("the remote still holds a connection from git")),2000))]);
+      expect(partial(),"the partial folder is removed").toEqual([]);
+      await shootModes(page,"clone-cancelled-retry");
+    }finally{
+      // The remote hangs up, so a git that is still there ends and lets go of the folder.
+      for(const socket of sockets)socket.destroy();
+      await new Promise(resolve=>remote.close(resolve));
+      await expect.poll(async()=>(await listedProjects(request)).some(project=>["running","cancelling"].includes(project.cloneJob?.status)),{timeout:20_000}).toBe(false).catch(()=>{});
+      try{rmSync(parent,{recursive:true,force:true,maxRetries:50,retryDelay:100})}catch{}
+    }
   });
 });
 

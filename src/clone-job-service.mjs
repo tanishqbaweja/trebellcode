@@ -4,8 +4,11 @@ import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { posix } from "node:path";
 import { redactSecretText } from "./secret-redactor.mjs";
+import { terminateHostProcessTree } from "./environment-manager.mjs";
 
 const ACTIVE=new Set(["running","cancelling"]);
+// Off Windows git runs in its own process group, so a cancel reaches the transport helpers it starts (git-remote-http) too.
+const PROCESS_GROUP=process.platform!=="win32";
 
 function trim(text,limit=16000){
   const value=String(text||"");
@@ -98,8 +101,8 @@ export class CloneJobService{
   }
   spawnClone(job){
     const args=["clone","--progress",job.url,job.tempPath];const parent=this.parent(job.tempPath,job.environmentId);
-    if(this.isRemote(job.environmentId))return this.environments.spawnArgv(job.environmentId,{command:"git",args,cwd:parent,stdio:["ignore","pipe","pipe"]});
-    return this.spawnProcess("git",args,{cwd:parent,env:this.env,windowsHide:true,stdio:["ignore","pipe","pipe"]});
+    if(this.isRemote(job.environmentId))return this.environments.spawnArgv(job.environmentId,{command:"git",args,cwd:parent,stdio:["ignore","pipe","pipe"],detached:PROCESS_GROUP});
+    return this.spawnProcess("git",args,{cwd:parent,env:this.env,windowsHide:true,stdio:["ignore","pipe","pipe"],detached:PROCESS_GROUP});
   }
   updateFromOutput(job,chunk){
     const text=String(chunk||"");job.output=trim((job.output||"")+text);
@@ -156,8 +159,11 @@ export class CloneJobService{
     const job=this.jobs.get(String(id||""));if(!job)throw new Error("Clone job is not running");
     if(!ACTIVE.has(job.status))return publicJob(job,this.env);
     job.cancelRequested=true;job.status="cancelling";job.phase="Cancelling";this.persist(job);
-    try{job.child?.kill("SIGTERM")}catch{}
-    setTimeout(()=>{if(!job.settled){try{job.child?.kill("SIGKILL")}catch{}}},2500).unref?.();
+    // The transfer runs in a helper git starts (git-remote-http), which keeps the remote and the job open when git alone is stopped.
+    // Windows ends the tree at once (taskkill /t /f, while git is still there to find its children by); elsewhere the group gets
+    // SIGTERM, then SIGKILL.
+    terminateHostProcessTree(job.child,{force:process.platform==="win32",processGroup:PROCESS_GROUP});
+    setTimeout(()=>{if(!job.settled)terminateHostProcessTree(job.child,{force:true,processGroup:PROCESS_GROUP})},2500).unref?.();
     return publicJob(job,this.env);
   }
   async retry(id){

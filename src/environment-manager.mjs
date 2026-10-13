@@ -79,7 +79,9 @@ function remoteShellCommand(command,working=""){
   return REMOTE_TOOL_PATH_SCRIPT+"\n"+run;
 }
 
-function terminateHostProcessTree(child,{force=true,processGroup=false}={}){
+// Ends a host process with the processes it started: taskkill /t on Windows; elsewhere the process group of a child spawned
+// detached (processGroup), or else the child alone.
+export function terminateHostProcessTree(child,{force=true,processGroup=false}={}){
   const pid=Number(child?.pid),signal=force?"SIGKILL":"SIGTERM";
   if(!Number.isInteger(pid)||pid<=0){try{child?.kill?.(signal)}catch{};return}
   if(process.platform==="win32"){
