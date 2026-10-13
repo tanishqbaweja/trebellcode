@@ -822,3 +822,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .chat-workspace .conversation-column:has(> .agent-block)>.conversation-history>.latest-turn-start~:is(.history-assistant,.reasoning-row,.turn-card){order:3}
 .chat-workspace .conversation-column:has(> .agent-block)>.conversation-history>.turn-outcome-row.latest-turn-end{order:3}
 .chat-workspace .conversation-column:has(> .agent-block)>.agent-block~*{order:4}
+/* A part loaded later that could not be shown (LazySlot in App.jsx) says so in its place; a dialog's, at the foot of the window. */
+.lazy-slot-error{display:flex;align-items:center;gap:10px;margin:8px 0;padding:9px 10px 9px 12px;border:1px solid var(--errb);border-radius:var(--r-m);background:color-mix(in srgb,var(--err) 9%,var(--panel));color:var(--tx0);font-size:12.5px;line-height:1.5;overflow-wrap:anywhere}
+.lazy-slot-error>span{flex:1;min-width:0}
+.lazy-slot-error>button{flex:none}
+.app-shell>.lazy-slot-error{position:fixed;z-index:170;left:50%;bottom:24px;margin:0;translate:-50% 0;width:max-content;max-width:min(560px,calc(100vw - 32px));box-shadow:var(--shadow)}

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {guardianActionSummary,guardianDeniedEvent} from "../ui/src/guardian-review.js";
+import {guardianActionSummary} from "../ui/src/guardian-review.js";
+import {guardianDeniedEvent} from "../ui/src/guardian-denied-event.js";
 
 test("guardian denial converts native notification payload back to the core event shape",()=>{
   const event=guardianDeniedEvent({
