@@ -212,6 +212,9 @@
 :root:root .settings-page.redesigned-settings .settings-card .toggle-line>input[type="checkbox"]:hover:not(:checked):not(:disabled){border-color:var(--tx3)!important}
 :root:root .settings-page.redesigned-settings .settings-card .toggle-line>input[type="checkbox"]:checked{border-color:transparent!important;background-color:var(--ac)!important;background-image:radial-gradient(circle closest-side,#fff 86%,transparent 100%),linear-gradient(135deg,var(--ac2),var(--ac))!important;background-position:18px 50%,0 0!important}
 :root:root .settings-page.redesigned-settings .settings-card .toggle-line>input[type="checkbox"]:disabled{opacity:.5;cursor:not-allowed}
+/* The old .settings-card input rule (styles.css) takes every outline away, so a switch with the keyboard on it looked like any
+   other; it draws the app's focus ring again (theme.css gives its colour and offset). */
+:root:root .settings-page.redesigned-settings .settings-card .toggle-line>input[type="checkbox"]:focus-visible{outline-style:solid;outline-width:2px}
 :root:root .settings-page.redesigned-settings .settings-card .toggle-line:has(>input:disabled){cursor:not-allowed;color:var(--tx3)!important}
 /* Switch row with a description. The native checkbox stays a 16px hit target over the drawn switch. */
 :root:root .settings-page.redesigned-settings .settings-card .check-row{position:relative;display:grid!important;grid-template-columns:minmax(0,1fr) 34px!important;align-items:center;gap:14px!important;min-width:0;margin:0;padding:10px 2px;border-bottom:1px solid var(--line);letter-spacing:normal!important;text-transform:none!important;cursor:pointer}

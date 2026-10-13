@@ -104,6 +104,15 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [apiKey,setApiKey]=useState("");
   const [providerMessage,setProviderMessage]=useState("");
   const [settingsError,setSettingsError]=useState("");
+  // The control that had the keyboard when the alert came up (the one whose save failed): dismissing the alert gives focus back to
+  // it, or to the next control after the alert once it is gone, instead of dropping it on the page body.
+  const failedControlRef=useRef(null);
+  useEffect(()=>{if(!settingsError)return;const active=document.activeElement;failedControlRef.current=active&&active!==document.body&&!active.closest(".settings-action-error")?active:null},[settingsError]);
+  function dismissSettingsError(event){
+    const alert=event.currentTarget.closest(".settings-action-error"),failed=failedControlRef.current;
+    const next=failed?.isConnected&&!failed.disabled?failed:[...alert.parentElement.querySelectorAll("button,input,select,textarea,a[href]")].find(item=>alert.compareDocumentPosition(item)&Node.DOCUMENT_POSITION_FOLLOWING&&!alert.contains(item)&&item.tabIndex>=0&&!item.disabled&&item.getClientRects().length);
+    setSettingsError("");next?.focus();
+  }
   const [environmentThemeRefreshing,setEnvironmentThemeRefreshing]=useState(false);
   const [providerSwitching,setProviderSwitching]=useState(false);
   const [agentInfo,setAgentInfoState]=useState(()=>lastAgentRuntimeInfo);
@@ -746,7 +755,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     <section className="settings-stage">
       <div className="settings-section-head"><div><h2>{activeSettingsSection[2]}</h2><p>{activeSettingsSection[3]}</p></div><span>{settingsSections.findIndex(item=>item[0]===settingsSection)+1} / {settingsSections.length}</span></div>
       {/* The alert stays in view while the page scrolls, so it can be dismissed instead of covering rows until the next action succeeds. */}
-      {settingsError&&<p className="settings-action-error" role="alert"><span>{settingsError}</span><button type="button" className="settings-action-error-dismiss" aria-label="Dismiss settings error" onClick={()=>setSettingsError("")}><X size={13}/></button></p>}
+      {settingsError&&<p className="settings-action-error" role="alert"><span>{settingsError}</span><button type="button" className="settings-action-error-dismiss" aria-label="Dismiss settings error" onClick={dismissSettingsError}><X size={13}/></button></p>}
       {settingsSection==="workspace"&&<div className="settings-scope-sentence" data-testid="settings-scope-sentence">
         <span>Applying settings for</span>
         <select aria-label="Project scope" value={workspaceScope.projectId} onChange={event=>setWorkspaceScope(current=>({...current,projectId:event.target.value}))}>

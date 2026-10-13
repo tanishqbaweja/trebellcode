@@ -380,6 +380,45 @@ test("failed saves from inline settings controls stay in the alert without unhan
   expect(pageErrors).toEqual([]);
 });
 
+// Dismissing the Settings alert puts the keyboard back on the control whose save failed, with the mouse or the keyboard, so the
+// next Tab goes on from there instead of from the top of the page.
+test("dismissing the Settings error alert gives focus back to the control that failed",async({page,request})=>{
+  await openSettings(page,request,"Dismiss Focus Workspace",{continueThreadsAfterRestart:false});
+  // Only the restart recovery save fails, so the header's mode button still saves for the screenshots.
+  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"&&"continueThreadsAfterRestart" in (route.request().postDataJSON()||{})
+    ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate restart recovery failure"})})
+    :route.continue());
+  const restart=page.getByLabel("Continue supported active threads after restarts");
+  const alert=page.locator(".settings-action-error"),dismiss=page.getByRole("button",{name:"Dismiss settings error"});
+  await restart.click();
+  await expect(alert).toContainText("Deliberate restart recovery failure");
+  await expect(restart).not.toBeChecked();
+  await dismiss.click();
+  await expect(alert).toHaveCount(0);
+  await expect(restart).toBeFocused();
+  // The keyboard way: back up from the toggle to the alert's Dismiss button, press Enter. Shown in both modes, switched with the
+  // header's mode button between the two.
+  for(const mode of ["dark","light"]){
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+    if(mode==="dark")await page.keyboard.press("Space");else await restart.click();
+    await expect(alert).toContainText("Deliberate restart recovery failure");
+    await expect(restart).toBeFocused();
+    for(let step=0;step<20&&!await dismiss.evaluate(button=>button===document.activeElement).catch(()=>false);step++)await page.keyboard.press("Shift+Tab");
+    await expect(dismiss).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(alert).toHaveCount(0);
+    await expect(restart).toBeFocused();
+    expect(await restart.evaluate(input=>input.matches(":focus-visible")&&getComputedStyle(input).outlineStyle),"the toggle shows it has the keyboard").toBe("solid");
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await restart.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:shots+`settings-dismiss-focus-${mode}-${width}.png`})}
+  }
+  await page.setViewportSize({width:1280,height:800});
+  // The next Tab goes on from the toggle, not from the top of the page.
+  const after=await page.evaluate(()=>{const items=[...document.querySelectorAll("button,input,select,textarea,a[href]")].filter(item=>item.tabIndex>=0&&!item.disabled&&item.getClientRects().length);return items[items.indexOf(document.activeElement)+1]?.outerHTML.slice(0,80)});
+  await page.keyboard.press("Tab");
+  expect(await page.evaluate(()=>document.activeElement.outerHTML.slice(0,80))).toBe(after);
+  await switchMode(page,"dark");
+});
+
 test("the panel animation slider follows a drag and saves once with the final value",async({page,request})=>{
   await openSettings(page,request,"Slider Workspace",{panelAnimationMs:0});
   await page.getByRole("button",{name:/Appearance/}).click();
