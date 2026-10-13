@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { compactDateTime, fullDateTime, isoDateTime } from "./time-format.js";
 import { CodexRpcClient } from "./rpc.js";
-import { api } from "./api.js";
+import { api, wsUrl } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
 import ChatMarkdown,{ StreamingMarkdown } from "./components/LazyChatMarkdown.jsx";
@@ -1054,7 +1054,7 @@ export default function App(){
   // The settings a save changed (the header's theme button) and the composer's modes the person picked: a start-up that lands after
   // them read the state before them, so it leaves them as the person set them.
   const savedSettingKeysRef=useRef(new Set()); const pickedModesRef=useRef({});
-  const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [cloneRefreshError,setCloneRefreshError]=useState(""); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
+  const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [actionRuns,setActionRuns]=useState({}); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [cloneRefreshError,setCloneRefreshError]=useState(""); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [questions,setQuestions]=useState([]); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
   const [guardianDenials,setGuardianDenials]=useState([]); const [guardianBusy,setGuardianBusy]=useState("");
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [rightPanelMaximized,setRightPanelMaximized]=useState(false); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
@@ -4954,12 +4954,15 @@ export default function App(){
     setEvents(prev=>[...prev,{id:"review-"+Date.now(),kind:"tool",title:"Reviewing uncommitted changes",status:"running",raw:result}]);
     return result;
   }
+  // An action that runs already is not started again: its terminal is shown (the server answers the same for a run it knows of).
   async function runProjectAction(script){
     if(!script||!projectPath)return;
-    const result=await api("/api/project-script/run",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,scriptId:script.id}});
+    const key=actionRunKey(script),runningId=actionRuns[key];
+    const result=runningId?{alreadyRunning:true,session:{id:runningId,running:true}}:await api("/api/project-script/run",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,scriptId:script.id}});
+    if(result?.session?.running)setActionRuns(current=>({...current,[key]:result.session.id}));
     setSection("chat");setPanel("terminal");
     setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0);
-    if(script.previewUrl&&script.autoOpenPreview){openRightPanel("preview");requestPreview(script.previewUrl)}
+    if(!result?.alreadyRunning&&script.previewUrl&&script.autoOpenPreview){openRightPanel("preview");requestPreview(script.previewUrl)}
     return result;
   }
   async function onProjectOpen(path,environmentId=null){
@@ -5264,6 +5267,33 @@ export default function App(){
   // The header's actions, shared by its buttons and by the More actions menu they fold into at the tightest fit.
   const headerScript=(currentProject?.scripts||[]).find(item=>item.id===currentProject.preferredScriptId)||currentProject?.scripts?.[0]||null;
   const runHeaderScript=()=>runUserAction(()=>runProjectAction(headerScript),"Project action failed");
+  // The actions that run now, by environment, project and action, as the server tells them when a project opens and as each run
+  // answers (an answer that comes later never drops a run made meanwhile). A watch socket per running action hears its terminal end
+  // (its command exited, or Stop), with none of its output; nothing is polled.
+  const actionRunsKey=projectlessMode||!projectPath?"":(workspaceEnvironmentId||"")+"\0"+projectPath;
+  const actionRunKey=script=>actionRunsKey+"\0"+script.id;
+  useEffect(()=>{
+    if(!actionRunsKey)return;let live=true;
+    api("/api/project-script/runs?"+new URLSearchParams({path:projectPath,environmentId:workspaceEnvironmentId||""})).then(data=>{if(live)setActionRuns(current=>{const next={...current};for(const [scriptId,sessionId] of Object.entries(data?.runs||{}))next[actionRunsKey+"\0"+scriptId]??=sessionId;return next})},()=>{});
+    return()=>{live=false};
+  },[actionRunsKey]);
+  const actionRunSessions=Object.values(actionRuns).join("|");
+  useEffect(()=>{
+    const sockets=[];
+    for(const sessionId of new Set(Object.values(actionRuns))){
+      const ws=new WebSocket(wsUrl("/api/terminal/ws?watch=1&session="+encodeURIComponent(sessionId)));sockets.push(ws);
+      const ended=()=>setActionRuns(current=>Object.fromEntries(Object.entries(current).filter(([,id])=>id!==sessionId)));
+      ws.onmessage=event=>{let message;try{message=JSON.parse(event.data)}catch{return}if(message.type==="exit"||(message.type==="state"&&!message.running))ended()};
+      ws.onclose=()=>{if(!ws.trebellClosed)ended()};
+    }
+    return()=>{for(const ws of sockets){ws.trebellClosed=true;ws.close()}};
+  },[actionRunSessions]);
+  const headerRunning=Boolean(headerScript&&actionRuns[actionRunKey(headerScript)]);
+  async function stopHeaderScript(){
+    const script=headerScript;if(!script||!projectPath)return;const key=actionRunKey(script);
+    const result=await api("/api/project-script/stop",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,scriptId:script.id}});
+    if(!result?.session?.running)setActionRuns(current=>{const next={...current};delete next[key];return next});
+  }
   const reviewFromHeader=()=>runUserAction(startReview,"Could not start review");
   const reviewHint=running?"Wait for the running turn to finish before reviewing":"Review uncommitted changes";
   // A rename the harness refuses says why, and the title keeps its name; with the harness away the title cannot rename at all.
@@ -5453,7 +5483,8 @@ export default function App(){
               {/* data-fold names the actions header-fit.js folds into the More actions menu when the title needs their room. */}
               {gitInfo?.isGit&&projectControlsShown&&<button className="header-control branch-control" data-fold="source" onClick={()=>openRightPanel("source")} title={(gitInfo.branch||"detached")+" · Source control"}><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
               {headerOpenInShown&&projectControlsShown&&<OpenInControl openIn={headerOpenIn} fold="open-in"/>}
-              {headerScript&&projectControlsShown&&<button className="header-control script-control" data-fold="script" onClick={runHeaderScript} aria-label={headerScript.name} title={headerScript.command}><Play size={13}/><span>{headerScript.name}</span></button>}
+              {headerScript&&projectControlsShown&&<button className={"header-control script-control"+(headerRunning?" running":"")} data-fold="script" data-running={headerRunning||undefined} onClick={runHeaderScript} aria-label={headerScript.name} title={headerRunning?headerScript.name+" is running · Show its terminal":headerScript.command}>{headerRunning?<span className="script-running-dot" aria-hidden="true"/>:<Play size={13}/>}<span>{headerScript.name}</span></button>}
+              {headerScript&&projectControlsShown&&headerRunning&&<button className="header-control icon-only script-stop-control" data-fold="script" onClick={()=>runUserAction(stopHeaderScript,"Could not stop the project action")} aria-label={"Stop "+headerScript.name} title={"Stop "+headerScript.name}><CircleStop size={14}/></button>}
               {activeThread?.id&&!openingShown&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} disabled={running} aria-label="Review" title={reviewHint}><ShieldCheck size={14}/><span>Review</span></button>}
               {running&&!openingShown&&<button className={"header-control stop-control"+(stopping?" stopping":"")} disabled={stopping} onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label={stopping?"Stopping":"Stop"} title={stopping?"Stopping the running turn…":"Stop the running turn"}><CircleStop size={14}/><span>{stopping?"Stopping…":"Stop"}</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} data-fold="terminal" onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>

@@ -195,6 +195,11 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header .header-control.branch-control span{max-width:140px}
 .workspace-header .header-control.stop-control{color:var(--err)}
 .workspace-header .header-control.stop-control:hover{background:var(--errt);color:var(--err)}
+/* A project action that runs shows a live dot in its button, which then shows its terminal, and a Stop beside it. */
+.workspace-header .header-control.script-control.running{color:var(--tx0)}
+.workspace-header .script-running-dot{flex:none;width:7px;height:7px;margin:0 3px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--okt)}
+.workspace-header .header-control.script-stop-control{color:var(--err)}
+.workspace-header .header-control.script-stop-control:hover{background:var(--errt);color:var(--err)}
 /* A held control (Review during a turn) fades as well: the muted text colour alone is hardly lighter than an enabled control's in
    light mode. */
 .workspace-header .header-control:is(:disabled,:disabled:hover){background:transparent;color:var(--tx3);cursor:default;opacity:.65}
@@ -619,8 +624,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control.active{background:var(--acsoft)!important;color:var(--ac)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control.branch-control{background:var(--bg2)!important;border-color:var(--line)!important;color:var(--tx1)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control.branch-control:hover{background:var(--bg2)!important;border-color:var(--line2)!important;color:var(--tx0)!important}
-:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control.stop-control{color:var(--err)!important}
-:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control.stop-control:hover{background:var(--errt)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control:is(.stop-control,.script-stop-control){color:var(--err)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control:is(.stop-control,.script-stop-control):hover{background:var(--errt)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control:is(:disabled,:disabled:hover){background:transparent!important;color:var(--tx3)!important;cursor:default}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .workspace-header .header-control.stop-control.stopping{background:transparent!important;color:var(--tx2)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .chat-workspace .thread-find-bar{background:var(--panel)!important;border-color:var(--line2)!important;box-shadow:var(--shadow)!important}
