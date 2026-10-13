@@ -581,3 +581,22 @@ test("a Stop still on its way reads Stopping after the thread is left and opened
     expect(codex.interrupts).toEqual([{threadId:codex.thread.id,turnId:turn.id}]);
   }finally{await codex.close()}
 });
+
+// New task pressed again on the new task keeps its unsent draft and the collaboration mode chosen for it, so the draft goes out in the
+// mode the person picked.
+test("New task pressed again on an unsent new-task draft keeps the collaboration mode chosen for it",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const modes=[{name:"Plan",mode:"plan",model:null,reasoning_effort:"medium"},{name:"Default",mode:"default",model:null,reasoning_effort:null}];
+  const codex=await startCodex(page,{name:"Codex modes",modes});
+  try{
+    await newTask(page).click();await expect(page.locator(".workspace-header")).toContainText("New Trebell task");
+    const picker=page.getByTestId("collaboration-mode-picker");
+    await expect(picker).toBeVisible({timeout:15_000});await expect(picker).toHaveValue("default");
+    await picker.selectOption("plan");await expect(picker).toHaveValue("plan");
+    await typeInComposer(page,"Plan the release checklist first.");
+    await newTask(page).click();
+    await expect(composer(page)).toHaveValue("Plan the release checklist first.");await expect(picker).toHaveValue("plan");
+    await shoot(page,"new-task-keeps-its-mode");
+  }finally{await codex.close()}
+});
