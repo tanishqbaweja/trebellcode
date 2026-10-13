@@ -86,10 +86,12 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
   },[]);
   const messageSearchRef=useRef(onSearchThreadMessages);
   messageSearchRef.current=onSearchThreadMessages;
+  // Escape in a question a command asked over the palette (askText's <dialog>, Link pull request) belongs to that question: it
+  // cancels the question alone, and the command then ends as Cancel ends it.
   useEffect(()=>{
     if(!open)return;
     const closeOnEscape=event=>{
-      if(event.key!=="Escape")return;
+      if(event.key!=="Escape"||event.target?.closest?.("dialog[open]"))return;
       event.preventDefault();
       event.stopPropagation();
       onClose?.();

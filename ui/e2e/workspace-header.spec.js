@@ -173,6 +173,27 @@ test("app shortcuts wait while the rename question is open, so the new name land
   }finally{await harness.close()}
 });
 
+test("Escape in the question a palette command asks closes that question alone, and focus goes back to where the palette was opened",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,nativeDialogs}=await openHeaderApp(page);
+  const palette=page.getByTestId("command-palette"),question=dialog(page),composer=page.getByTestId("composer");
+  try{
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      await composer.click();await page.keyboard.press("Control+K");await expect(palette).toBeVisible();
+      await page.keyboard.type("Link pull request",{delay:20});await page.keyboard.press("Enter");
+      await expect(question.getByRole("textbox",{name:"Pull request URL"})).toBeFocused();
+      await shoot(page,"palette-link-pr-question");
+      // One Escape: the question goes, the command ends with nothing linked as Cancel would, and so does the palette.
+      await page.keyboard.press("Escape");
+      await expect(question).toHaveCount(0);await expect(palette).toHaveCount(0);
+      await expect(composer).toBeFocused();
+      await expect(page.getByTestId("app-action-error")).toHaveCount(0);
+    }
+    expect(nativeDialogs).toEqual([]);
+  }finally{await harness.close()}
+});
+
 for(const build of ["browser","desktop"])test(`the project crumb opens Projects in the ${build} build, and nothing beside it poses as a menu`,async({page})=>{
   test.setTimeout(60_000);
   const {harness,header}=await openHeaderApp(page,{desktop:build==="desktop"});
