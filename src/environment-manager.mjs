@@ -189,6 +189,8 @@ function validateProfile(input={}){
     next.identityFile=String(input.identityFile||"").trim();
     if(!next.host) throw new Error("SSH host is required");
   }
+  // The Codex executable a WSL or SSH host starts its app-server with (environment-app-server.mjs); blank is codex on its PATH.
+  if(type!=="local")next.codexPath=String(input.codexPath||"").trim().slice(0,1024);
   next.themeDirectory=String(input.themeDirectory||"").trim().slice(0,1024);
   return next;
 }

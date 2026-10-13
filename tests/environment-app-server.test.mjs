@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { remoteCodexArgs, remoteCodexProfileSetup, sshRemotePorts, startRemoteAppServer } from "../src/environment-app-server.mjs";
-import { remoteToolPathPrelude } from "../src/environment-manager.mjs";
+import { EnvironmentManager, remoteToolPathPrelude } from "../src/environment-manager.mjs";
 
 test("remote harness PATH bootstrap covers Linuxbrew and common Node version managers",()=>{
   const script=remoteToolPathPrelude();
@@ -119,4 +119,20 @@ test("SSH native Codex transport omits Trebell provider reverse tunnels and over
   const remoteCommand=String(launch.args.at(-1)||"");
   assert.match(remoteCommand,/app-server/);
   assert.doesNotMatch(remoteCommand,/model_provider|model_providers\./);
+});
+
+// The Codex executable typed for an SSH or WSL environment is saved with it, and it is the command that environment's Codex
+// app-server starts; left blank, the host's codex on PATH is used.
+test("an environment's Codex executable is saved and starts its Codex app-server",async()=>{
+  const saved=[],state={environments:()=>saved,upsertEnvironment:value=>{const index=saved.findIndex(item=>item.id===value.id);if(index>=0)saved[index]=value;else saved.push(value);return value}};
+  const environments=new EnvironmentManager({state});
+  const ssh=environments.upsert({id:"ssh-codex",type:"ssh",name:"Build box",host:"build.example.test",user:"dev",port:22,cwd:"/srv/app",codexPath:" /opt/lane/bin/codex "});
+  assert.equal(ssh.codexPath,"/opt/lane/bin/codex");
+  assert.equal(environments.upsert({type:"wsl",name:"WSL",distro:"Ubuntu",codexPath:"~/bin/codex"}).codexPath,"~/bin/codex");
+  const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();let launch=null;
+  const remote=await startRemoteAppServer({environments,environmentId:"ssh-codex",appPort:33460,hostEnvironment:{PATH:"/usr/bin"},spawnProcess:(command,args,options)=>{launch={command,args,options};return child}});
+  assert.ok(remote);
+  assert.match(String(launch.args.at(-1)),/exec .*'\/opt\/lane\/bin\/codex' 'app-server' '--listen'/);
+  const blank=environments.upsert({id:"ssh-codex",type:"ssh",name:"Build box",host:"build.example.test",codexPath:""});
+  assert.equal(remoteCodexProfileSetup({profile:blank}).command,"codex");
 });

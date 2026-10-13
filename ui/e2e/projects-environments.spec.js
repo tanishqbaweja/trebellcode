@@ -53,11 +53,12 @@ async function switchMode(page,mode){
   if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").click();
   await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
 }
-// A screenshot of what is on screen in dark and light, at 1280 and 900 wide; the page is left dark at 1280.
-async function shootModes(page,name,{height=800}={}){
+// A screenshot of what is on screen in dark and light, at 1280 and 900 wide, with show (a locator) brought into view at each width;
+// the page is left dark at 1280.
+async function shootModes(page,name,{height=800,show=null}={}){
   for(const mode of MODES){
     await page.setViewportSize({width:1280,height});await switchMode(page,mode);
-    for(const width of [1280,900]){await page.setViewportSize({width,height});await page.screenshot({animations:"disabled",path:shots+`${name}-${mode}-${width}.png`})}
+    for(const width of [1280,900]){await page.setViewportSize({width,height});await show?.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:shots+`${name}-${mode}-${width}.png`})}
   }
   await page.setViewportSize({width:1280,height});await switchMode(page,"dark");
 }
@@ -435,6 +436,43 @@ test.describe("Removing an environment",()=>{
     expect(asked,"removing the project asks as if its environment were gone").toEqual([]);
     await toast.getByRole("button",{name:"Undo",exact:true}).click();
     await expect(place).toHaveText("Build box · /srv/api");
+  });
+});
+
+test.describe("Adding an environment",()=>{
+  // A person clears the Codex executable field as they clear any field, and it stays empty; the path they type is saved with the
+  // environment, whose Codex app-server starts it. The empty field's placeholder names the default it stands for.
+  test("the Codex executable field can be cleared and the path typed is saved",async({page,request})=>{
+    // SSH needs an OpenSSH client on the host; the form offers it as on a host that has one.
+    await page.route(/\/api\/environments$/,async route=>{
+      if(route.request().method()!=="GET")return route.fallback();
+      const body=await (await route.fetch()).json(),ssh=body.capabilities?.ssh;
+      return json(route,{...body,capabilities:{...body.capabilities,ssh:ssh?.available?ssh:{available:true,version:"OpenSSH client",error:null}}});
+    });
+    await open(page,request);
+    await nav(page,"Environments").click();
+    const form=page.locator(".environment-create"),field=label=>form.locator("label").filter({hasText:new RegExp("^"+label)}).locator("input, select").first();
+    await expect(page.getByTestId("host-discovery-pending")).toHaveCount(0,{timeout:20_000});
+    await field("Type").selectOption("ssh");
+    const codex=field("Codex executable");
+    await codex.click();await page.keyboard.press("End");
+    for(let key=0;key<8;key++)await page.keyboard.press("Backspace");
+    await expect(codex,"the field stays empty once cleared").toHaveValue("");
+    await page.keyboard.type("/usr/bin/codx",{delay:20});
+    await page.keyboard.press("Control+a");await page.keyboard.press("Backspace");
+    await expect(codex).toHaveValue("");
+    await page.keyboard.type("/opt/lane/bin/codex",{delay:20});
+    await expect(codex).toHaveValue("/opt/lane/bin/codex");
+    await field("Name").click();await page.keyboard.type("Lane box",{delay:20});
+    await field("Host").click();await page.keyboard.type("lane.example.test",{delay:20});
+    await form.getByRole("button",{name:"Add environment"}).click();
+    await expect(page.locator(".environment-list>div").filter({hasText:"Lane box"})).toBeVisible();
+    expect((await listedEnvironments(request)).find(profile=>profile.name==="Lane box")?.codexPath,"the typed path is saved").toBe("/opt/lane/bin/codex");
+    // The form starts over for the next environment, the field empty with its placeholder.
+    await field("Type").selectOption("ssh");
+    await expect(codex).toHaveValue("");
+    await expect(codex).toHaveAttribute("placeholder","Default codex on the host's PATH");
+    await shootModes(page,"environment-codex-executable-empty",{show:codex});
   });
 });
 

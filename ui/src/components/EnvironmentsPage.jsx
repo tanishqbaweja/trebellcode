@@ -8,7 +8,7 @@ let environmentsOnScreen=null;
 
 export default function EnvironmentsPage({onOfferUndo}={}){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
-  const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
+  const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"",themeDirectory:""});
   const [busy,setBusy]=useState("");
   // A notice reports what an action did; an error says what failed and is styled as one.
   const [message,setMessageState]=useState({text:"",tone:"notice"});
@@ -34,7 +34,7 @@ export default function EnvironmentsPage({onOfferUndo}={}){
     try{
       const body={...draft,port:Number.isInteger(portNumber)?portNumber:22,name:draft.name||({local:"Local machine",wsl:"WSL",ssh:"SSH"}[draft.type])};
       await api("/api/environments",{method:"POST",body});
-      setDraft({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
+      setDraft({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"",themeDirectory:""});
       await refresh();
     }catch(e){setError(e.message)}finally{setBusy("")}
   }
@@ -108,7 +108,7 @@ export default function EnvironmentsPage({onOfferUndo}={}){
         <label>Working directory<input value={draft.cwd} onChange={e=>setDraft(d=>({...d,cwd:e.target.value}))} placeholder={draft.type==="wsl"?"/home/me/project":draft.type==="ssh"?"/srv/project":"C:\\code\\project"}/></label>
         <label>Published themes directory<input value={draft.themeDirectory} onChange={e=>setDraft(d=>({...d,themeDirectory:e.target.value}))} placeholder={draft.type==="local"?"Default Trebell themes folder":"Default .trebell/themes"}/></label>
         {draft.type==="wsl"&&<label>Distribution<select value={draft.distro} onChange={e=>setDraft(d=>({...d,distro:e.target.value}))}><option value="">Default WSL distro</option>{(data.capabilities?.wsl?.distros||[]).map(x=><option key={x}>{x}</option>)}</select></label>}
-        {draft.type!=="local"&&<label>Codex executable<input value={draft.codexPath||"codex"} onChange={e=>setDraft(d=>({...d,codexPath:e.target.value}))} placeholder="/usr/local/bin/codex"/></label>}
+        {draft.type!=="local"&&<label>Codex executable<input value={draft.codexPath} onChange={e=>setDraft(d=>({...d,codexPath:e.target.value}))} placeholder={"Default codex on the host's PATH"}/></label>}
         {draft.type==="ssh"&&<><label>Host<input value={draft.host} onChange={e=>setDraft(d=>({...d,host:e.target.value}))} placeholder="dev.example.com"/></label><div className="environment-two"><label>User<input value={draft.user} onChange={e=>setDraft(d=>({...d,user:e.target.value}))}/></label><label>Port<input type="number" min="1" max="65535" aria-invalid={portInvalid?"true":undefined} value={draft.port} onChange={e=>setDraft(d=>({...d,port:e.target.value}))}/></label></div>{portInvalid&&<p className="environment-field-error" role="alert">Port must be a whole number from 1 to 65535.</p>}<label>Identity file<input value={draft.identityFile} onChange={e=>setDraft(d=>({...d,identityFile:e.target.value}))} placeholder={"C:\\Users\\me\\.ssh\\id_ed25519"}/></label></>}
         <button className="primary" onClick={add} disabled={!!busy||(draft.type==="ssh"&&!draft.host.trim())||portInvalid}><Plus size={13}/> Add environment</button>
       </section>
