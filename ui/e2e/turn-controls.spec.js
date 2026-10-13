@@ -535,6 +535,49 @@ test("another thread opened while a send waits for Codex has its own composer, f
   }finally{await codex.close()}
 });
 
+// A new task's send whose thread is still being made (Trebell's tool catalog still loading, or the new thread's workspace save on its
+// way) when the person opens another thread: the thread opened stays shown with its own history, and the new task's thread starts on
+// its own in the sidebar, with its message and reply there once it is opened.
+for(const held of ["the tool catalog","the new thread's workspace save"])test(`a thread opened while a new task's send waits for ${held} stays shown when that send's thread starts`,async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const heldRoutes=[],catalog=held==="the tool catalog";let holding=true;
+  if(catalog)await page.route(/\/assets\/shared-tool-catalog-[^/]*\.js$/,route=>{heldRoutes.push(route)});
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Other work",preview:"Other"}],providerTurn:async request=>reply(request,"The new task answered in its own thread.")});
+  const other=fixture.threads[0],known=new Set(fixture.threads.map(thread=>String(thread.id)));
+  if(!catalog)await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{
+    const body=route.request().method()==="POST"?route.request().postDataJSON():null;
+    if(holding&&body&&!known.has(String(body.threadId||"")))heldRoutes.push(route);else await route.fallback();
+  });
+  const turn=fixture.threadStore.addTurn(other.id,{inputText:"What does the other thread hold?"});
+  fixture.threadStore.addItem(other.id,turn.id,{id:"other-answer",type:"agentMessage",text:"The other thread's own answer."});fixture.threadStore.finishTurn(other.id,turn.id);
+  try{
+    if(catalog)await expect.poll(()=>heldRoutes.length,{message:"the catalog asked for at idle"}).toBe(1);
+    const before=fixture.threadStore.list("native").length;
+    await fixture.send("A new task sent while it waits");
+    await expect(composer(page)).toHaveValue("");
+    if(!catalog)await expect.poll(()=>heldRoutes.length,{timeout:10_000}).toBe(1);
+    await threadRow(page,"Other work").locator(".thread-main").click();
+    await expect(page.locator(".workspace-header")).toContainText("Other work",{timeout:10_000});
+    await expect(page.getByText("The other thread's own answer.",{exact:true})).toBeVisible({timeout:10_000});
+    holding=false;for(const route of heldRoutes.splice(0))await (catalog?route.continue():route.fallback());
+    await expect.poll(()=>fixture.threadStore.list("native").length,{timeout:15_000}).toBe(before+1);
+    const sent=fixture.threadStore.list("native").find(thread=>!known.has(String(thread.id)));
+    await expect.poll(()=>fixture.threadStore.get(sent.id).turns.at(-1)?.status,{timeout:15_000}).toBe("completed");
+    await page.waitForTimeout(300);
+    // The thread opened is still the one shown, with its own history only, and nothing of the send.
+    await expect(page.locator(".workspace-header")).toContainText("Other work");
+    await expect(threadRow(page,"Other work")).toHaveClass(/active/);
+    await expect(page.locator(".user-row")).toHaveCount(1);await expect(page.locator(".user-row")).toContainText("What does the other thread hold?");
+    await expect(stop(page)).toHaveCount(0);await expect(composer(page)).toHaveAttribute("placeholder",IDLE_PLACEHOLDER);
+    // The send ran in its own thread, which is in the sidebar and shows its message and reply once opened.
+    const sentRow=page.locator(`.thread-row[data-thread-id="${sent.id}"]`);
+    await expect(sentRow).toBeVisible();await expect(sentRow).not.toHaveClass(/active/);await sentRow.locator(".thread-main").click();
+    await expect(page.locator(".user-row").filter({hasText:"A new task sent while it waits"})).toBeVisible({timeout:10_000});
+    await expect(page.getByText("The new task answered in its own thread.",{exact:true})).toBeVisible({timeout:10_000});
+  }finally{for(const route of heldRoutes)await route.continue().catch(()=>{});await fixture.close()}
+});
+
 // A send that fails in a thread left is that thread's: the thread shown, with a turn of its own, stays as it was, and the draft and its
 // note come back in the thread that sent it. The failure comes once the other thread is open, or while it is still opening.
 for(const when of ["once the running thread is open","while the running thread opens"])test(`a send that fails in the thread left leaves the running thread shown as it was, and its draft comes back in its own thread, ${when}`,async({page})=>{

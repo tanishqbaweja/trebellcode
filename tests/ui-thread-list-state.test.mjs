@@ -50,5 +50,6 @@ test("App never prepends a thread without replacing an earlier copy of it",()=>{
   const unguarded=[...app.matchAll(/setThreads\(\s*(\w+)\s*=>\s*\[\s*[\w.]+\s*,\s*\.\.\.\1\s*\]\s*\)/g)].map(match=>match[0]);
   assert.deepEqual(unguarded,[],"every prepend must drop an existing copy of the thread");
   assert.match(app,/method==="thread\/started"[\s\S]{0,240}isListedThread\(p\.thread\)\)setThreads\(prev=>prependThread\(prev,p\.thread\)\)/);
-  assert.match(app,/createThreadFor\([^;]+\);activeThreadRef\.current=thread;setActiveThread\(thread\);setThreads\(prev=>prependThread\(prev,thread\)\)/);
+  // A new task's send lists the thread it made at once, whether or not that task is still the view shown (startTurn).
+  assert.match(app,/thread=await createThreadFor\([^;]+\);\s*setThreads\(prev=>prependThread\(prev,thread\)\);/);
 });

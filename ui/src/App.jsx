@@ -3871,22 +3871,25 @@ export default function App(){
     return {timeout:true,exitCode:null};
   }
 
-  async function prepareWorktree(basePath,modelId){
+  // owns: whether the view that asked for the worktree is still shown. One left meanwhile gets no worktree card, project or terminal
+  // of this worktree; the worktree is still made for the send.
+  async function prepareWorktree(basePath,modelId,{owns=null}={}){
     if(workspaceMode!=="worktree")return basePath;
+    const card=next=>{if(!owns||owns())setWorktreeSetup(next)};
     const info=await api("/api/git/info?path="+encodeURIComponent(basePath));
     if(!info.isGit)throw new Error("New worktree mode requires a Git project.");
     const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";
     const stamp=Date.now().toString(36);
     const branch="trebell/"+slug+"-"+stamp;
     const path=info.root+"-trebell-"+slug+"-"+stamp;
-    setWorktreeSetup({phase:"creating",branch,path,scriptName:null,sessionId:null,detail:"Creating an isolated Git worktree"});
+    card({phase:"creating",branch,path,scriptName:null,sessionId:null,detail:"Creating an isolated Git worktree"});
     try{
       const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});
       const worktree=response.result?.worktree||path;
-      await touchProject(worktree);
+      await touchProject(worktree,undefined,{owns});
       const setup=response.result?.setup||null;
       if(setup?.session?.id){
-        setWorktreeSetup({
+        card({
           phase:"running",
           branch,
           path:worktree,
@@ -3895,8 +3898,7 @@ export default function App(){
           waitForSetup:Boolean(setup.waitForSetup),
           detail:setup.waitForSetup?"Agent will start after setup completes":"Setup is running in the background",
         });
-        setPanel("terminal");
-        setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:setup.session.id})),0);
+        if(!owns||owns()){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:setup.session.id})),0)}
         const completion=monitorWorktreeSetup(setup.session.id);
         if(setup.waitForSetup){
           const settled=await completion;
@@ -3913,11 +3915,11 @@ export default function App(){
           });
         }
       }else{
-        setWorktreeSetup({phase:"done",branch,path:worktree,scriptName:null,sessionId:null,detail:"Worktree created"});
+        card({phase:"done",branch,path:worktree,scriptName:null,sessionId:null,detail:"Worktree created"});
       }
       return worktree;
     }catch(error){
-      setWorktreeSetup(prev=>({...prev,phase:"failed",detail:error.message||String(error)}));
+      card(prev=>({...prev,phase:"failed",detail:error.message||String(error)}));
       if(error&&typeof error==="object")WORKTREE_CARD_ERRORS.add(error);
       throw error;
     }
@@ -4094,20 +4096,35 @@ export default function App(){
     rpcRef.current?.request("turn/interrupt",{threadId,turnId}).catch(error=>{stopsSentRef.current.delete(sentKey);if(String(activeThreadRef.current?.id||"")===send.threadId){stopKeyRef.current=null;setStoppingThreadId(null)}showActionError(error,"Could not stop turn")});
   }
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false}={}){
+    // The view the send was made from: its composer's hold (send()) and the open count (openThread, newChat). A new task's send keeps
+    // that view only while no thread is shown or opening and the hold is still its own (another thread opened, or a new task opened
+    // from one, released it); with no hold, while nothing was opened since.
+    const sendView=submittingRef.current,sendOpen=openSeqRef.current;
+    const newTaskShown=()=>!activeThreadRef.current&&!openingThreadRef.current&&(sendView?submittingRef.current===sendView:openSeqRef.current===sendOpen);
     assertTurnModel(modelId);
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
     const autoCompaction=thread?await maybeAutoCompactBeforeTurn(thread):{attempted:false,compacted:false,decision:null,error:null};
     // A thread the send creates keeps its turns' cards from its first turn on, as an opened thread does. Trebell's tool catalog comes
-    // first: a send that cannot start for want of it sets nothing up (no worktree, no thread).
-    if(!thread){await loadSharedToolCatalog();if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>prependThread(prev,thread));setTurnActivity(emptyTurnActivity(thread.id));setProjectPath(cwd)}
+    // first: a send that cannot start for want of it sets nothing up (no worktree, no thread). A new task left while its thread was
+    // being made (another thread opened meanwhile) stays as the person left it: the thread starts on its own in the sidebar, and its
+    // send shows there when it is opened (openThread).
+    if(!thread){
+      await loadSharedToolCatalog();
+      if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId,{owns:newTaskShown});
+      thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});
+      setThreads(prev=>prependThread(prev,thread));
+      if(newTaskShown()){activeThreadRef.current=thread;setActiveThread(thread);setTurnActivity(emptyTurnActivity(thread.id));setProjectPath(cwd)}
+    }
+    const shown=()=>activeThreadRef.current?.id===thread.id;
     // The live card leaves the last turn here: until the new turn starts it lists only this send's notices, under no turn's name.
-    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,{id:clientId,role:"user",text}])}setCardTurnId(null);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
+    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);
+    if(shown()){if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,{id:clientId,role:"user",text}])}setCardTurnId(null);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true)}
     // Until turn/start answers the send has no turn for Stop to name, and a harness that has to start first can take a minute: Stop
     // meanwhile marks this send stopped (stop()), so it sends nothing more, and a turn the harness started before the Stop reached it
     // is stopped as soon as it is named.
-    const pendingSend={threadId:String(thread.id),requested:false,stopped:false,interrupted:false,view:submittingRef.current,message:goalResume?null:{id:clientId,role:"user",text}},pendingSends=pendingSendsRef.current;pendingSends.set(pendingSend.threadId,pendingSend);
+    const pendingSend={threadId:String(thread.id),requested:false,stopped:false,interrupted:false,view:sendView,message:goalResume?null:{id:clientId,role:"user",text}},pendingSends=pendingSendsRef.current;pendingSends.set(pendingSend.threadId,pendingSend);
     // The context packet only reads files, so the server builds it while the checkpoint is made and the goal set; reached says the
     // send got to it.
     let reached=()=>{};const contextReady=prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted,ready:new Promise(resolve=>{reached=resolve})});
@@ -4136,7 +4153,7 @@ export default function App(){
       const turnContext={...repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
       if(pendingSend.stopped)throw sendStoppedError();pendingSend.requested=true;
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null,shown=()=>activeThreadRef.current?.id===thread.id;if(shown())setActiveTurnId(turnId);if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;if(shown())setActiveTurnId(turnId);if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
       // An answer with no start time names a turn Codex has queued, which it can interrupt only once it has started it (turn/started;
       // T3 Code waits for that too): the send stays until then, through as far as the composer goes. Any other answer ends it.
       const queued=Boolean(turnId)&&result.turn.startedAt===null&&!pendingSend.startedTurnId&&turnStillRuns(result.turn)&&pendingSends.get(pendingSend.threadId)===pendingSend;
