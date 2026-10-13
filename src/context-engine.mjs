@@ -1122,6 +1122,12 @@ export function planContextBudget({task="",focusPaths=[],tokensUsed=null,context
 // are never dropped: up to SEARCH_EXTRA_DEFINITION_HITS of them past the limit keep their text, and the rest are listed
 // by line number even after that budget runs out.
 const SEARCH_OVERFLOW_LINE_NUMBERS=600,SEARCH_EXTRA_DEFINITION_HITS=40;
+// A definition hit past the limit keeps its text only while the hits shown with text take at most this many bytes as the model
+// reads them (each file's path once, then "line: text"); past it, the hit is listed by line number, and the model's text lists
+// definition line numbers first. The tool output store shows a result over its 16 KB hot bound as a short preview, so the
+// definitions past the limit must not push a result the limit alone keeps under it over; repository-search-format.mjs keeps
+// what it adds (counts, line numbers, notes) within 15 KB.
+const SEARCH_EXTRA_DEFINITION_TEXT_BYTES=12*1024;
 // A matching line longer than this shows a window around its first match.
 const SEARCH_HIT_TEXT_CHARS=240;
 // Matching files past the bound on files read line by line are named, up to this many (and counted in full).
@@ -1749,7 +1755,7 @@ export class ContextEngine{
       const sampled=[...defining,...rest];candidates=sampled.slice(0,candidateLimit);unread=sampled.slice(candidateLimit);
     }
     const contents=await contextIo.readMany(candidates),data=[],left=[];
-    let textLeft=resultLimit,definitionsLeft=SEARCH_EXTRA_DEFINITION_HITS,matchedFiles=0,totalMatches=0;
+    let textLeft=resultLimit,definitionsLeft=SEARCH_EXTRA_DEFINITION_HITS,shownBytes=0,shownPath=null,matchedFiles=0,totalMatches=0;
     for(const filePath of candidates){
       const content=contents.get(filePath);if(typeof content!=="string")continue;
       const lines=content.split(/\r?\n/),definitions=definitionNamesByLine(index.files.get(filePath)),rest=[];let fileMatches=0;
@@ -1759,8 +1765,13 @@ export class ContextEngine{
         let ranges=null;const rangesOf=()=>ranges??=matchRanges(line);
         const names=definitions.get(lineIndex+1),definition=Boolean(names)&&definitionHit(names,line,rangesOf());
         if(textLeft>0||(definition&&definitionsLeft>0)){
-          if(textLeft>0)textLeft--;else definitionsLeft--;
-          data.push({path:filePath,line:lineIndex+1,text:searchHitText(line,line.length>SEARCH_HIT_TEXT_CHARS?rangesOf():[]),...(definition?{definition:true}:{})});
+          const text=searchHitText(line,line.length>SEARCH_HIT_TEXT_CHARS?rangesOf():[]);
+          const bytes=Buffer.byteLength(`  ${lineIndex+1}: ${text}`,"utf8")+1+(shownPath===filePath?0:Buffer.byteLength(filePath,"utf8")+1);
+          if(textLeft>0||shownBytes+bytes<=SEARCH_EXTRA_DEFINITION_TEXT_BYTES){
+            if(textLeft>0)textLeft--;else definitionsLeft--;
+            shownBytes+=bytes;shownPath=filePath;
+            data.push({path:filePath,line:lineIndex+1,text,...(definition?{definition:true}:{})});
+          }else rest.push({line:lineIndex+1,definition});
         }else rest.push({line:lineIndex+1,definition});
       }
       if(fileMatches){matchedFiles++;totalMatches+=fileMatches}

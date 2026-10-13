@@ -130,6 +130,27 @@ test("a broad code search of a real repository stays within the hot-context boun
   }finally{await Promise.all([rm(root,{recursive:true,force:true}),rm(store,{recursive:true,force:true})])}
 });
 
+test("definition hits past the limit keep their text only while the result stays in hot context, and the rest are listed by line number",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-search-extra-definitions-")),store=join(root,"..",root.split(/[\\/]/).at(-1)+"-store");
+  try{
+    const folder=join(root,"src","acme_platform","widgets");await mkdir(folder,{recursive:true});
+    const files=Array.from({length:130},(_,index)=>`src/acme_platform/widgets/widget_${String(index).padStart(3,"0")}.py`);
+    for(const [index,path] of files.entries())await writeFile(join(root,path),[`def render_widget_${index}(request, template_name="widgets/default.html", context=None, using=None, status=None):`,"    return None",""].join("\n"),"utf8");
+    await execFileAsync("git",["init","-q"],{cwd:root});await execFileAsync("git",["add","."],{cwd:root});
+    await execFileAsync("git",["-c","user.name=Trebell Test","-c","user.email=trebell@example.test","commit","-qm","fixture"],{cwd:root});
+    const result=await new ContextEngine().searchCode({root,query:"render_widget",limit:80}),text=formatRepositorySearchResult("search_code",result);
+    assert.equal(result.totalMatches,130);
+    assert.ok(result.data.length>=80&&result.data.length<120,`${result.data.length} hits shown with text`);
+    assert.ok(result.data.every(hit=>hit.definition===true));
+    const shown=new Set(result.data.map(hit=>hit.path)),listed=(result.more||[]).filter(entry=>entry.definitions?.length===1&&entry.definitions[0]===1).map(entry=>entry.path);
+    assert.deepEqual([...shown,...listed].sort(),files,"each definition is shown with text or listed by line number");
+    assert.ok(utf8Bytes(text)<=16*1024,`${utf8Bytes(text)} bytes`);
+    assert.ok(text.includes(`${listed[0]}\n  +1 more at 1\n`),"the first definition left without text is listed by its line number");
+    const shaped=await new NativeToolOutputStore({directory:store}).virtualize(text,{namespace:"trebell_repo",name:"search_code"});
+    assert.equal(shaped.virtualized,false,"the model reads the whole result");
+  }finally{await Promise.all([rm(root,{recursive:true,force:true}),rm(store,{recursive:true,force:true})])}
+});
+
 test("code search without git grep says that only indexed source was searched",()=>{
   const text=formatRepositorySearchResult("search_code",{query:"x",source:"index-sample",complete:false,truncated:true,totalMatches:0,matchedFiles:0,data:[]});
   assert.equal(text,"No matches.\nGit grep was unavailable, so only indexed source was searched; results may be incomplete.");
