@@ -68,6 +68,9 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   const [editor,setEditor]=useState(null);
   const [hookEditor,setHookEditor]=useState(null);
   const [error,setError]=useState("");
+  // A failure of a card's own control is said in that card, at the end of the part the control is in (cardAlert), where the person
+  // is looking: at the top of the page it was out of view of every card but the first. The page's own failures stay at its top.
+  const [cardError,setCardError]=useState(null);
   const [suggestionsOpen,setSuggestionsOpen]=useState({});
   const [identityOpen,setIdentityOpen]=useState({});
   // Per project: an emptied Name field was given back its saved name, and the editor says why until the name is edited again.
@@ -184,12 +187,16 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   const cloning=projects.some(project=>["running","cancelling"].includes(project.cloneJob?.status));
   useEffect(()=>{if(!cloning)return;const poll=startVisibilityPoll(()=>refresh(),{intervalMs:750});return()=>poll.dispose()},[cloning]);
 
+  // The part of a card a save's failure is said in: the one whose control sent it.
+  function cardArea(patch){return patch.scripts?"actions":patch.hooks?"hooks":"worktreeCleanup" in patch?"cleanup":"name" in patch||"icon" in patch?"identity":"overrides"}
+  function failInCard(project,area,text){setError("");setCardError({id:project.id,area,text})}
+  const cardAlert=(project,area)=>cardError?.id===project.id&&cardError.area===area&&<p className="provider-status-error project-card-error" role="alert">{cardError.text}</p>;
   async function saveProject(project,patch){
-    setError("");
+    setError("");setCardError(null);
     let result;
     try{
       result=await api("/api/projects",{method:"POST",body:{path:project.path,environmentId:project.environmentId||null,...patch}});
-    }catch(err){setError(err.message||String(err));return null}
+    }catch(err){failInCard(project,cardArea(patch),err.message||String(err));return null}
     const issues=[];
     try{onProjectUpdated?.(result.project)}catch(err){issues.push("the local project view could not apply the saved update: "+(err.message||String(err))+".")}
     const refreshed=await freshRefresh({reportErrors:true});if(!refreshed)issues.push("the project list could not refresh. The last valid project data is still shown.");
@@ -197,14 +204,15 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     return result.project||project;
   }
   async function openProject(project){
+    setCardError(null);
     if(project.managedWorktree?.cleanedAt){
       setBusy(true);setError("");
       try{await api("/api/worktree/ensure",{method:"POST",body:{path:project.path}});await refresh()}
-      catch(err){setError("Could not restore managed worktree: "+(err.message||String(err)));return}
+      catch(err){failInCard(project,"open","Could not restore managed worktree: "+(err.message||String(err)));return}
       finally{setBusy(false)}
     }
     try{await Promise.resolve(onOpen(project.path,project.environmentId||null))}
-    catch(err){setError("Could not open project: "+(err.message||String(err)))}
+    catch(err){failInCard(project,"open","Could not open project: "+(err.message||String(err)))}
   }
   async function startGeneralChat(){
     if(!onGeneralChat||busy)return;
@@ -318,9 +326,9 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     }finally{setBusy(false)}
   }
   async function cloneAction(project,action){
-    setError("");
+    setError("");setCardError(null);
     try{await api("/api/clone-jobs",{method:"POST",body:{action,id:project.cloneJob?.id}});await refreshAfterSuccess("Clone "+action+" was accepted")}
-    catch(err){setError(err.message||String(err))}
+    catch(err){failInCard(project,"clone",err.message||String(err))}
   }
   // A removal is undone from the app's toast when the listed record can put the project back as it was; when it cannot
   // (projectRestoreBlocker), the page asks first and says what goes with it.
@@ -419,12 +427,12 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   async function deleteHook(project,id){const saved=await saveProject(project,{hooks:(project.hooks||[]).filter(hook=>hook.id!==id)});if(saved&&hookEditor?.projectId===project.id&&hookEditor?.id===id)setHookEditor(null)}
 
   async function runScript(project,script){
-    setBusy(true);setError("");
+    setBusy(true);setError("");setCardError(null);
     try{
       const result=await api("/api/project-script/run",{method:"POST",body:{path:project.path,environmentId:project.environmentId||null,scriptId:script.id}});
       onRunScript?.(result);
       if(script.previewUrl&&script.autoOpenPreview)onOpenPreview?.(script.previewUrl);
-    }catch(err){setError(err.message||String(err))}
+    }catch(err){failInCard(project,"actions",err.message||String(err))}
     finally{setBusy(false)}
   }
 
@@ -464,13 +472,13 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   // Only a picture the card can show becomes the icon: a file of another type (a .bmp) or one that does not decode (a text file
   // named .png) is refused with a message, and the icon stays as it was.
   async function importProjectImage(project,file){
-    if(!file)return;if(file.size>1_400_000){setError("Project icon images must be under 1.4 MB.");return}
+    if(!file)return;setCardError(null);if(file.size>1_400_000){failInCard(project,"identity","Project icon images must be under 1.4 MB.");return}
     try{
       const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||""));reader.onerror=()=>reject(reader.error||new Error("Could not read image"));reader.readAsDataURL(file)});
       const image=new Image();image.src=dataUrl;
-      if(!/^image\/(png|jpeg|webp|gif)$/.test(file.type)||!await image.decode().then(()=>true,()=>false)){setError(`Could not use ${file.name} as the icon: choose a png, jpeg, webp or gif image.`);return}
+      if(!/^image\/(png|jpeg|webp|gif)$/.test(file.type)||!await image.decode().then(()=>true,()=>false)){failInCard(project,"identity",`Could not use ${file.name} as the icon: choose a png, jpeg, webp or gif image.`);return}
       await saveProject(project,{icon:{kind:"image",value:dataUrl,color:autoColor(project.name)}});
-    }catch(err){setError("Could not import project image: "+(err.message||String(err)))}
+    }catch(err){failInCard(project,"identity","Could not import project image: "+(err.message||String(err)))}
   }
 
   const projectView=useMemo(()=>projectWindow(projects,{query:projectQuery,limit:projectLimit,currentPath,currentEnvironmentId}),[projects,projectQuery,projectLimit,currentPath,currentEnvironmentId]);
@@ -497,12 +505,14 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id} ref={cardRef(p.id)}>
         <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong title={p.name}>{p.name}</strong><span title={projectEnvironmentLabel(p,environmentData.profiles)+" · "+p.path}>{projectEnvironmentLabel(p,environmentData.profiles)} · {p.path}</span><small title={projectCardDetail(p)||undefined}>{projectCardDetail(p)}</small></div></button>
         <button className="project-remove" aria-label={"Remove "+p.name} onClick={()=>removeProject(p)} disabled={busy}><Trash2 size={13}/></button>
-        {p.cloneJob&&p.cloneJob.status!=="completed"&&<div className={"project-clone-status "+p.cloneJob.status}><div><strong>{p.cloneJob.phase||"Cloning repository"}</strong><span>{p.cloneJob.status==="failed"?(p.cloneJob.error||"Clone failed"):p.cloneJob.status==="cancelled"?"Clone cancelled":Math.round(p.cloneJob.progress||0)+"%"}</span></div>{["running","cancelling"].includes(p.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(p.cloneJob.progress)||0)+"%"}}/></i>}<div>{p.cloneJob.status==="running"&&<button onClick={()=>cloneAction(p,"cancel")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(p.cloneJob.status)&&<button onClick={()=>cloneAction(p,"retry")}><RefreshCw size={11}/> Retry</button>}</div></div>}
+        {cardAlert(p,"open")}
+        {p.cloneJob&&p.cloneJob.status!=="completed"&&<div className={"project-clone-status "+p.cloneJob.status}><div><strong>{p.cloneJob.phase||"Cloning repository"}</strong><span>{p.cloneJob.status==="failed"?(p.cloneJob.error||"Clone failed"):p.cloneJob.status==="cancelled"?"Clone cancelled":Math.round(p.cloneJob.progress||0)+"%"}</span></div>{["running","cancelling"].includes(p.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(p.cloneJob.progress)||0)+"%"}}/></i>}<div>{p.cloneJob.status==="running"&&<button onClick={()=>cloneAction(p,"cancel")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(p.cloneJob.status)&&<button onClick={()=>cloneAction(p,"retry")}><RefreshCw size={11}/> Retry</button>}</div>{cardAlert(p,"clone")}</div>}
         <div className="project-overrides">
           <label>Model<select value={p.defaultModel||""} onChange={e=>saveProject(p,{defaultModel:e.target.value||null})}><option value="">Inherit client default</option>{models.map(id=><option key={id} value={id}>{id}</option>)}</select></label>
           <label>Permissions<select value={p.permissionMode||""} onChange={e=>saveProject(p,{permissionMode:e.target.value||null})}><option value="">Inherit</option><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select></label>
           <label>Workspace<select value={p.workspaceMode||""} onChange={e=>saveProject(p,{workspaceMode:e.target.value||null})}><option value="">Inherit</option><option value="current">Current checkout</option><option value="worktree">New worktree</option></select></label>
           <label>Submodules<select value={p.worktreeSubmodules||""} onChange={e=>saveProject(p,{worktreeSubmodules:e.target.value||null})}><option value="">Inherit</option><option value="recursive">Recursive</option><option value="top-level">Top level only</option><option value="none">Skip</option></select></label>
+          {cardAlert(p,"overrides")}
         </div>
         <div className="project-identity-toggle"><button onClick={()=>{setIdentityOpen(current=>({...current,[p.id]:!current[p.id]}));setNameNote(current=>({...current,[p.id]:false}))}} title="Project identity · name and icon" aria-expanded={Boolean(identityOpen[p.id])}><Settings2 size={13}/><span>Project identity</span></button></div>
         {identityOpen[p.id]&&<div className="project-identity-editor"><label>Name<input defaultValue={savedProjectName(p)} aria-describedby={nameNote[p.id]?"project-name-note-"+p.id:undefined}
@@ -512,8 +522,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
             if(e.key==="Enter"&&!e.nativeEvent.isComposing){e.preventDefault();commitProjectName(p,e.currentTarget)}
             else if(e.key==="Escape"){e.preventDefault();e.currentTarget.value=savedProjectName(p)}
           }}
-          onBlur={e=>commitProjectName(p,e.currentTarget)}/></label>{nameNote[p.id]&&<p id={"project-name-note-"+p.id} className="project-name-note" role="status">A project needs a name, so the saved one is back.</p>}<div className="project-icon-actions"><button onClick={()=>saveProject(p,{icon:null})}>Automatic</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"emoji",value:p.icon?.kind==="emoji"?p.icon.value:"🚀",color:p.icon?.color||autoColor(p.name)}}))}>Emoji</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"monogram",value:p.icon?.kind==="monogram"?p.icon.value:autoMonogram(p.name),color:p.icon?.color||autoColor(p.name)}}))}>Monogram</button><label className="project-image-button"><ImagePlus size={12}/> Image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={e=>importProjectImage(p,e.target.files?.[0])}/></label></div>{iconDraft[p.id]&&<div className="project-icon-draft"><input maxLength={iconDraft[p.id].kind==="monogram"?2:16} value={iconDraft[p.id].value} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],value:e.target.value}}))}/><input type="color" value={iconDraft[p.id].color||autoColor(p.name)} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],color:e.target.value}}))}/><button onClick={async()=>{const saved=await saveProject(p,{icon:iconDraft[p.id]});if(saved)setIconDraft(current=>({...current,[p.id]:null}))}}>Save icon</button></div>}</div>}
-        <div className="project-cleanup"><label>Automatic worktree cleanup<select value={p.worktreeCleanup?.mode||"inherit"} onChange={e=>setCleanupMode(p,e.target.value)}><option value="inherit">Inherit</option><option value="off">Off</option><option value="custom">Custom</option></select></label>{p.worktreeCleanup?.mode==="custom"&&<div className="project-cleanup-rules"><label>After inactive days<input type="number" min="1" max="3650" defaultValue={p.worktreeCleanup.rules?.worktreeAfterDays??""} placeholder="Never" onBlur={e=>{const days=cleanupDays(e.target.value);e.target.value=days==null?"":String(days);setCleanupRule(p,"worktreeAfterDays",days)}}/></label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnMerge)} onChange={e=>setCleanupRule(p,"worktreeOnMerge",e.target.checked)}/> After merge</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnDelete)} onChange={e=>setCleanupRule(p,"worktreeOnDelete",e.target.checked)}/> After last thread deletion</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeUnchanged)} onChange={e=>setCleanupRule(p,"worktreeUnchanged",e.target.checked)}/> If unchanged from base</label></div>}</div>
+          onBlur={e=>commitProjectName(p,e.currentTarget)}/></label>{nameNote[p.id]&&<p id={"project-name-note-"+p.id} className="project-name-note" role="status">A project needs a name, so the saved one is back.</p>}<div className="project-icon-actions"><button onClick={()=>saveProject(p,{icon:null})}>Automatic</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"emoji",value:p.icon?.kind==="emoji"?p.icon.value:"🚀",color:p.icon?.color||autoColor(p.name)}}))}>Emoji</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"monogram",value:p.icon?.kind==="monogram"?p.icon.value:autoMonogram(p.name),color:p.icon?.color||autoColor(p.name)}}))}>Monogram</button><label className="project-image-button"><ImagePlus size={12}/> Image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={e=>importProjectImage(p,e.target.files?.[0])}/></label></div>{iconDraft[p.id]&&<div className="project-icon-draft"><input maxLength={iconDraft[p.id].kind==="monogram"?2:16} value={iconDraft[p.id].value} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],value:e.target.value}}))}/><input type="color" value={iconDraft[p.id].color||autoColor(p.name)} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],color:e.target.value}}))}/><button onClick={async()=>{const saved=await saveProject(p,{icon:iconDraft[p.id]});if(saved)setIconDraft(current=>({...current,[p.id]:null}))}}>Save icon</button></div>}{cardAlert(p,"identity")}</div>}
+        <div className="project-cleanup"><label>Automatic worktree cleanup<select value={p.worktreeCleanup?.mode||"inherit"} onChange={e=>setCleanupMode(p,e.target.value)}><option value="inherit">Inherit</option><option value="off">Off</option><option value="custom">Custom</option></select></label>{p.worktreeCleanup?.mode==="custom"&&<div className="project-cleanup-rules"><label>After inactive days<input type="number" min="1" max="3650" defaultValue={p.worktreeCleanup.rules?.worktreeAfterDays??""} placeholder="Never" onBlur={e=>{const days=cleanupDays(e.target.value);e.target.value=days==null?"":String(days);setCleanupRule(p,"worktreeAfterDays",days)}}/></label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnMerge)} onChange={e=>setCleanupRule(p,"worktreeOnMerge",e.target.checked)}/> After merge</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnDelete)} onChange={e=>setCleanupRule(p,"worktreeOnDelete",e.target.checked)}/> After last thread deletion</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeUnchanged)} onChange={e=>setCleanupRule(p,"worktreeUnchanged",e.target.checked)}/> If unchanged from base</label></div>}{cardAlert(p,"cleanup")}</div>
 
         <div className="project-actions">
           <div className="project-actions-head"><span><SquareTerminal size={13}/> Project actions</span><div>{importableScripts(p).length>0&&<button onClick={()=>setSuggestionsOpen(current=>({...current,[p.id]:!current[p.id]}))}><Download size={12}/> Import {importableScripts(p).length}</button>}<button onClick={()=>editScript(p)}><Plus size={12}/> Add action</button></div></div>
@@ -537,6 +547,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
             <label><input type="checkbox" checked={editor.autoOpenPreview} disabled={!editor.previewUrl.trim()} onChange={e=>setEditor({...editor,autoOpenPreview:e.target.checked})}/> Open preview when this action runs</label>
             <div><button className="primary" disabled={!editor.command.trim()} onClick={()=>submitScript(p)}><Check size={12}/> Save action</button><button onClick={()=>setEditor(null)}><X size={12}/> Cancel</button></div>
           </div>}
+          {cardAlert(p,"actions")}
         </div>
         <div className="project-hooks">
           <div className="project-actions-head"><span><Workflow size={13}/> Lifecycle hooks</span><button onClick={()=>editHook(p)}><Plus size={12}/> Add hook</button></div>
@@ -553,6 +564,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
             <div className="project-hook-options"><label>Timeout (seconds)<input type="number" min="1" max="300" value={hookEditor.timeoutText??Math.round(hookEditor.timeoutMs/1000)} onChange={e=>setHookEditor({...hookEditor,timeoutText:e.target.value,timeoutMs:Math.max(1,Math.min(300,Math.trunc(Number(e.target.value))||30))*1000})} onBlur={()=>setHookEditor(current=>current&&{...current,timeoutText:undefined})}/></label>{hookEditor.event==="source-control.before"&&<label>On failure<select value={hookEditor.failureMode} onChange={e=>setHookEditor({...hookEditor,failureMode:e.target.value})}><option value="block">Block mutation</option><option value="warn">Warn and continue</option></select></label>}</div>
             <div><button className="primary" disabled={!hookEditor.command.trim()} onClick={()=>submitHook(p)}><Check size={12}/> Save hook</button><button onClick={()=>setHookEditor(null)}><X size={12}/> Cancel</button></div>
           </div>}
+          {cardAlert(p,"hooks")}
         </div>
       </div>)}</div>
     </section>)}</div>

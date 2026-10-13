@@ -787,6 +787,66 @@ test.describe("A project's icon",()=>{
   });
 });
 
+// A failure of a card's own control is said by that control, in view, not at the top of the page above every card.
+test.describe("A card's failures",()=>{
+  test("a failed action save, a refused run and a too big icon are said in the card where the person is",async({page,request})=>{
+    const boot=await open(page,request);
+    try{
+      await openProjects(page);
+      const card=page.locator(".project-card.active"),actions=card.locator(".project-actions"),identity=card.locator(".project-identity-editor");
+      const pageAlert=page.locator(".projects-page>.provider-status-error");
+      await card.getByRole("button",{name:/Project identity/}).click();
+      // The action editor, typed in; its first save fails.
+      let failSave=true;
+      await page.route(/\/api\/projects$/,route=>{
+        if(route.request().method()!=="POST"||!route.request().postDataJSON()?.scripts||!failSave)return route.fallback();
+        failSave=false;return json(route,{error:"Deliberate action save failure"},500);
+      });
+      await card.getByRole("button",{name:"Add action",exact:true}).click();
+      await card.getByPlaceholder("Action name (e.g. Dev server)").click();await page.keyboard.type("Dev server",{delay:5});
+      await card.getByPlaceholder("Command (e.g. npm run dev)").click();await page.keyboard.type("npm run dev",{delay:5});
+      const save=card.getByRole("button",{name:"Save action",exact:true});
+      await save.scrollIntoViewIfNeeded();await save.click();
+      const saveFailure=actions.getByRole("alert").filter({hasText:"Deliberate action save failure"});
+      await expect(saveFailure).toBeInViewport();
+      await expect(save).toBeInViewport();
+      await expect(card.getByPlaceholder("Command (e.g. npm run dev)")).toHaveValue("npm run dev");
+      await expect(pageAlert).toHaveCount(0);
+      await shootModes(page,"card-action-save-failed",{show:save});
+      await save.click();
+      await expect(actions.locator(".project-action-row")).toContainText("Dev server");
+      await expect(card.locator(".project-action-editor")).toHaveCount(0);
+      await expect(saveFailure).toHaveCount(0);
+      // A refused change of the card's model is said under the card's own settings, across their row.
+      await page.route(/\/api\/projects$/,route=>route.request().method()==="POST"&&"defaultModel" in (route.request().postDataJSON()||{})?json(route,{error:"Deliberate model save failure"},500):route.fallback());
+      const model=card.getByRole("combobox",{name:"Model"});
+      await model.scrollIntoViewIfNeeded();await model.selectOption({index:1});
+      const modelFailure=card.locator(".project-overrides").getByRole("alert").filter({hasText:"Deliberate model save failure"});
+      await expect(modelFailure).toBeInViewport();
+      const [row,box]=[await card.locator(".project-overrides").boundingBox(),await modelFailure.boundingBox()];
+      expect(box.width,"the message runs across the settings row").toBeGreaterThan(row.width-40);
+      await expect(pageAlert).toHaveCount(0);
+      await shootModes(page,"card-model-save-failed",{show:model});
+      // The card's run of that action is refused.
+      await page.route(/\/api\/project-script\/run$/,route=>json(route,{error:"Deliberate run refusal"},400));
+      const run=actions.locator(".project-action-run").filter({hasText:"Dev server"});
+      await run.scrollIntoViewIfNeeded();await run.click();
+      await expect(actions.getByRole("alert").filter({hasText:"Deliberate run refusal"})).toBeInViewport();
+      await expect(pageAlert).toHaveCount(0);
+      // An icon over the size limit, picked from the Image button.
+      const chooser=page.waitForEvent("filechooser");
+      const image=card.locator(".project-image-button");await image.scrollIntoViewIfNeeded();await image.click();
+      await (await chooser).setFiles({name:"huge.png",mimeType:"image/png",buffer:Buffer.alloc(1_500_000,1)});
+      await expect(identity.getByRole("alert").filter({hasText:"Project icon images must be under 1.4 MB."})).toBeInViewport();
+      await expect(actions.getByRole("alert")).toHaveCount(0);
+      await expect(pageAlert).toHaveCount(0);
+      await shootModes(page,"card-icon-too-big",{show:image});
+    }finally{
+      await request.post("/api/projects",{data:{path:boot.cwd,scripts:[]}});
+    }
+  });
+});
+
 test.describe("Renaming a project",()=>{
   test("Enter in the Name field saves the name, and Escape puts back the saved one",async({page,request})=>{
     const boot=await open(page,request);
