@@ -33,8 +33,15 @@ function threadCanFork(thread,runtimeCapabilities={}){
 }
 
 const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,running=false,onOpen,onSelect,onAction,onMove,canMoveUp=false,canMoveDown=false,runAction,agentRuntime="codex",runtimeCapabilities={}}){
-  const menuRef=useRef(null);
+  const menuRef=useRef(null),rowRef=useRef(null);
   const [menuOpen,setMenuOpen]=useState(false);
+  // A row taken away (Delete, Archive) while focus is in it hands focus on to the row after it, or the one before, so the keyboard
+  // keeps its place in the list instead of falling to the page. The row is still in the page when this runs, so its place is known.
+  useLayoutEffect(()=>()=>{
+    const row=rowRef.current;if(!row?.contains(document.activeElement))return;
+    const rows=[...(row.closest(".thread-sections")?.querySelectorAll(".thread-row")||[])],at=rows.indexOf(row);
+    (rows[at+1]||rows[at-1])?.querySelector(".thread-main")?.focus({preventScroll:true});
+  },[]);
   // One row menu is open at a time, and it closes like other menus: Escape (focus returns to its button) or a click outside it.
   useEffect(()=>{
     const menu=menuRef.current;if(!menuOpen||!menu)return;
@@ -73,7 +80,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
   // Why a thread cannot be moved: Codex orders the threads outside a section by recent activity only, and a thread of a section whose
   // order could not be read has no place to move from (the reason is named).
   const orderHint=thread.sectionOrderError||(agentRuntime==="codex"&&!thread.section?.id&&!thread.section?.name?"This list is kept in order of recent activity":undefined);
-  return <div className={active?"thread-row active":"thread-row"} data-thread-id={thread.id}>
+  return <div ref={rowRef} className={active?"thread-row active":"thread-row"} data-thread-id={thread.id}>
     {bulk&&<input className="thread-select" type="checkbox" checked={selected} disabled={foreignRuntime} title={foreignRuntime?"Open this thread before applying bulk actions":undefined} onChange={()=>onSelect(thread.id)}/>}
     <button className="thread-main" onClick={()=>runAction(()=>onOpen(thread))} title={titleOf(thread)}>
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>

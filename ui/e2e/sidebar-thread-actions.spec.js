@@ -319,19 +319,30 @@ test("Delete asks in the app's own dialog, never the browser's: Escape and Cance
       await expect(row.locator(".thread-menu summary")).toBeFocused();await expect(row).toBeVisible();
     }
     expect(harness.threadStore.get(doomed)).toBeTruthy();
+    // From the keyboard: Enter on the row's menu button, Tab down to Delete, Enter, Tab from Cancel to Delete thread, Enter. Focus
+    // then goes to the row after the deleted one, or the one before for the last row, so the keyboard keeps its place in the list.
+    const deleteFromKeyboard=async name=>{
+      const row=threadRow(page,name),button=row.locator(".thread-menu summary"),remove=row.getByRole("button",{name:"Delete",exact:true});
+      await row.locator(".thread-main").focus();await page.keyboard.press("Tab");await expect(button).toBeFocused();
+      await page.keyboard.press("Enter");await expect(row.locator(".thread-menu")).toHaveAttribute("open","");
+      for(let step=0;step<14&&!await remove.evaluate(node=>node===document.activeElement);step++)await page.keyboard.press("Tab");
+      await expect(remove).toBeFocused();await page.keyboard.press("Enter");
+      await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+      await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Delete thread",exact:true})).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(question).toHaveCount(0);
+    };
     await switchMode(page,"dark");
-    // From the keyboard: Enter on the row's menu button, Tab down to Delete, Enter, Tab from Cancel to Delete thread, Enter.
-    const row=threadRow(page,"Bulk three"),button=row.locator(".thread-menu summary"),remove=row.getByRole("button",{name:"Delete",exact:true});
-    await row.locator(".thread-main").focus();await page.keyboard.press("Tab");await expect(button).toBeFocused();
-    await page.keyboard.press("Enter");await expect(row.locator(".thread-menu")).toHaveAttribute("open","");
-    for(let step=0;step<14&&!await remove.evaluate(node=>node===document.activeElement);step++)await page.keyboard.press("Tab");
-    await expect(remove).toBeFocused();await page.keyboard.press("Enter");
-    await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
-    await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Delete thread",exact:true})).toBeFocused();
-    await page.keyboard.press("Enter");
-    await expect(question).toHaveCount(0);
+    await deleteFromKeyboard("Bulk three");
     await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk two","Bulk four"]]]);
     expect(harness.threadStore.get(doomed)).toBeFalsy();
+    await expect(threadRow(page,"Bulk four").locator(".thread-main"),"focus after the delete").toBeFocused();
+    await shoot(page,"sidebar-delete-focus-next-row");
+    await switchMode(page,"light");
+    await deleteFromKeyboard("Bulk four");
+    await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk two"]]]);
+    await expect(threadRow(page,"Bulk two").locator(".thread-main"),"focus after the last row's delete").toBeFocused();
+    await shoot(page,"sidebar-delete-focus-next-row");
     expect(nativeDialogs).toEqual([]);
   }finally{await harness.close()}
 });
