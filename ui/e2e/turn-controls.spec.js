@@ -502,3 +502,29 @@ test("Stop in a thread opened again while its send waits ends that send, also af
     expect(fixture.threadStore.get(fixture.threads[0].id).turns).toHaveLength(0);
   }finally{releaseContext();await fixture.close()}
 });
+
+// A send still on its way belongs to its thread: another thread opened meanwhile has its own composer, free to type and send, as a new
+// task has, and the first send goes on in its own thread.
+test("another thread opened while a send waits for Codex has its own composer, free to type and send",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{names:["Codex sender","Codex other"]});
+  try{
+    await sendTyped(page,"Count from one to forty, one number per line.");
+    await expect.poll(()=>codex.turns.length).toBe(1);await expect(composer(page)).toHaveAttribute("placeholder",/^Sending/);
+    await threadRow(page,"Codex other").locator(".thread-main").click();
+    await expect(page.locator(".workspace-header")).toContainText("Codex other");
+    await expect(composer(page)).toHaveAttribute("placeholder",IDLE_PLACEHOLDER);await expect(composer(page)).toBeEnabled();
+    await shoot(page,"another-thread-free-while-a-send-waits");
+    await sendTyped(page,"Reply in the other thread.");
+    await expect.poll(()=>codex.turns.length,{timeout:5000}).toBe(2);
+    const [first,second]=codex.turns;expect(second.threadId).toBe(codex.threads[1].id);
+    second.answer();second.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});
+    first.answer();first.start();
+    await expect.poll(()=>first.status,{timeout:10_000}).toBe("completed");
+    await threadRow(page,"Codex sender").locator(".thread-main").click();
+    await expect(page.locator(".workspace-header")).toContainText("Codex sender");
+    await expect(composer(page)).toHaveAttribute("placeholder",IDLE_PLACEHOLDER);await expect(stop(page)).toHaveCount(0);
+  }finally{await codex.close()}
+});

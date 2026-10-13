@@ -3500,6 +3500,8 @@ export default function App(){
     if(pendingSendsRef.current.get(String(thread.id))?.turnId&&openedThread.status?.type!=="active")pendingSendsRef.current.delete(String(thread.id));
     const pendingSend=pendingSendsRef.current.get(String(thread.id)),resumedRunning=openedThread.status?.type==="active"||Boolean(pendingSend),resumedTurnId=resumedActiveTurnId(resumed);
     const withPendingSend=history=>pendingSend?.message&&!resumedTurnId?[...history,pendingSend.message]:history;
+    // The composer is held only for a send of the thread shown: another thread opened releases it, as a new task does (showNewTask).
+    if(previousThreadId!==thread.id&&submittingRef.current){submittingRef.current=null;setSubmitting(false)}
     if(pendingSend?.view&&!submittingRef.current){submittingRef.current=pendingSend.view;setSubmitting(true)}
     if(pendingSend?.stopped){stopKeyRef.current=pendingSend;setStoppingThreadId(String(thread.id))}
     // The composer's note goes with the view it was about: another thread shown, or this one opening after all, ends it; the thread
