@@ -729,9 +729,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   }
   // Whether an approval, a question or a form of the thread waits on the person (the idle sweep keeps its session).
   const waitsOn=threadId=>[...pendingServer.values()].some(pending=>pending.threadId===String(threadId||""));
-  // Stop, or an ACP process that died, answers the thread's open approvals, questions and form requests as cancelled and takes them off
-  // the screen, so none is asked again of a window that opens later (T3 settles a session's pending approvals and user input when its
-  // turn is interrupted or the process exits).
+  // Stop, an ACP process that died, or a session the relay closes (closeSession) answers the thread's open approvals, questions and form
+  // requests as cancelled and takes them off the screen, so none is asked again of a window that opens later (T3 settles a session's
+  // pending approvals and user input when its turn is interrupted or the process exits).
   function cancelThreadRequests(threadId){
     const owner=String(threadId||""),cancelled={"item/tool/requestApproval":{decision:"cancel"},"item/tool/requestUserInput":{answers:{}},"mcpServer/elicitation/request":{action:"cancel"}};
     if(!owner)return;
@@ -975,8 +975,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const sessionHarnesses=new WeakMap(),resetWaits=new Set(),closedSessions=new WeakSet();
   const failedWhereItRuns=(harness,error,generation,session=null)=>Boolean(harness)&&typeof runtimeManager.recheck==="function"&&!isHarnessSessionLost(error)&&!isSessionRefusal(error)&&!(session&&closedSessions.has(session))&&!closing&&generation===sessionGeneration;
   // The relay closes a thread's session whose turn may still run (an archive, a delete, a profile switch): whatever error the harness
-  // ends that prompt with, the relay caused it.
-  function closeThreadSession(session){closedSessions.add(session);return session.close()}
+  // ends that prompt with, the relay caused it. What that session still asked of the person goes with it (closeSession).
+  function closeThreadSession(session,threadId){closedSessions.add(session);return closeSession(session,threadId)}
+  // A session the relay closes takes its thread's waiting approvals, questions and forms with it: they are answered as cancelled and
+  // leave every window, so the next window to open is not asked them (T3 ends the pending requests of a session it releases). They go
+  // once the close has begun, so the harness already knows its turn is ending when their answers reach it.
+  function closeSession(session,threadId){const closed=session.close();cancelThreadRequests(threadId);return closed}
   // The message a harness failure shows: the harness's own, and after it the advice of an answer that the harness cannot run or is
   // not signed in (withProbeAdvice); a check that still finds it ready leaves the message as it was.
   async function harnessFailureMessage(harness,error){
@@ -1619,7 +1623,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
       const status=await runtimeManager.probe(target,{environmentId});if(!status.available)throw new Error(status.message||"The selected Claude profile is unavailable");
       if(status.authenticated===false)throw new Error("Sign in to the selected Claude profile before switching this thread.");
-      const existing=sessions.get(thread.id);if(existing){await closeThreadSession(existing).catch(()=>{});sessions.delete(thread.id)}
+      const existing=sessions.get(thread.id);if(existing){await closeThreadSession(existing,thread.id).catch(()=>{});sessions.delete(thread.id)}
       const providerMeta={...(thread.providerMeta||{}),runtimeInstanceId:target.id};
       const updated=threadStore.update(thread.id,{runtimeInstanceId:target.id,providerMeta});
       emit("thread/runtimeInstance/updated",{threadId:thread.id,runtimeInstanceId:target.id,thread:updated});
@@ -1685,7 +1689,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       endFailureWait(params.threadId);
       // Claude Code's delete closes its session, then removes the transcript: the relay closed that session too (closedSessions).
       const runtimeSession=sessions.get(params.threadId);
-      if(runtimeSession instanceof ClaudeAgentSession){closedSessions.add(runtimeSession);await runtimeSession.delete().catch(()=>{})}else if(runtimeSession)await closeThreadSession(runtimeSession).catch(()=>{});
+      if(runtimeSession instanceof ClaudeAgentSession){closedSessions.add(runtimeSession);const deleted=runtimeSession.delete();cancelThreadRequests(params.threadId);await deleted.catch(()=>{})}else if(runtimeSession)await closeThreadSession(runtimeSession,params.threadId).catch(()=>{});
       sessions.delete(params.threadId);settleToolWrites(params.threadId,{write:false});threadStore.delete(params.threadId);if(state?.removeThreadMeta)state.removeThreadMeta(params.threadId);else state?.updateThreadMeta?.(params.threadId,{deletedAt:Date.now(),archived:true});emit("thread/deleted",{threadId:params.threadId});if(onThreadDeleted)try{await onThreadDeleted(deletedThread)}catch{}return {ok:true}
     }
     if(method==="thread/section/move"){
@@ -1926,7 +1930,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       return await nativeBackgroundProcesses.clean(thread.id);
     }
     // Archiving is not activity: the thread keeps its last-update time, so one brought back (an undo) takes its old place by recent activity.
-    if(method==="thread/archive"){endFailureWait(params.threadId);const live=sessions.get(params.threadId);if(live)await closeThreadSession(live).catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
+    if(method==="thread/archive"){endFailureWait(params.threadId);const live=sessions.get(params.threadId);if(live)await closeThreadSession(live,params.threadId).catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
     if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false},{touch:false});if(!thread)throw new Error("Thread not found");emit("thread/unarchived",{threadId:params.threadId});return {thread}}
     if(method==="thread/fork"){
       const source=threadStore.get(params.threadId);if(!source)throw new Error("Thread not found");
@@ -2235,7 +2239,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   async function closeSessions(){
     sessionGeneration++;for(const wake of resetWaits)wake();
     for(const runtime of [...startingSessions])await runtime.close().catch(()=>{});
-    for(const session of sessions.values())await session.close().catch(()=>{});sessions.clear();
+    for(const [threadId,session] of sessions)await closeSession(session,threadId).catch(()=>{});sessions.clear();
     if(sessionReleases.size)await Promise.allSettled([...sessionReleases]);
     if(promptSettlements.size)await Promise.allSettled([...promptSettlements]);
     for(const threadId of [...toolWrites.keys()])settleToolWrites(threadId);

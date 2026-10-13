@@ -1297,6 +1297,75 @@ test("an OpenCode approval waiting when the page reloads stays waiting and is as
   }
 });
 
+// An OpenCode approval waits when Trebell itself closes the thread's session (end), and then the window reloads. The approval used to
+// stay waiting in the relay, so the next window was asked it again, of a thread whose turn had already ended cancelled.
+async function openCodeApprovalWhenTrebellClosesItsSession(end){
+  const root=await mkdtemp(join(tmpdir(),"trebell-opencode-closed-approval-")),fixture=await fakeOpenCodeServe({askPermission:true});
+  const instance={id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,serverUrl:fixture.url};
+  const runtimeManager={
+    instances:()=>[{...instance}],activeInstance:()=>({...instance}),activeRuntime:()=>"opencode",compatibleInstanceIds:()=>[instance.id],
+    probe:async()=>({id:instance.id,name:"OpenCode",available:true,authenticated:true,version:"1.18.32"}),
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),executable:()=>"opencode",
+  };
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env),state=memoryThreadState();
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
+  const port=await listen(server),url="ws://127.0.0.1:"+port+"/api/agent/ws",model="anthropic/claude-sonnet-4-5";
+  const next=(ws,predicate)=>new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{ws.off("message",onMessage);reject(new Error("timed out waiting for a relay message"))},15_000);
+    const onMessage=raw=>{const message=JSON.parse(String(raw));if(!predicate(message))return;clearTimeout(timer);ws.off("message",onMessage);resolve(message)};
+    ws.on("message",onMessage);
+  });
+  let first=null,second=null;
+  try{
+    first=await connect(url);const rpc=request(first);
+    const started=await rpc("thread/start",{cwd:root,model,permissionProfile:"supervised"}),threadId=started.thread.id;
+    const approval=next(first,message=>message.method==="item/tool/requestApproval");
+    await rpc("turn/start",{threadId,model,input:[{type:"text",text:"run the tests"}],permissionProfile:"supervised"});
+    const asked=await approval;
+    const resolved=next(first,message=>message.method==="serverRequest/resolved"),completed=turnCompleted(first);
+    await end({rpc,relay,threadId});
+    const withdrawn=(await resolved).params,status=(await completed).turn.status;
+    // The window reloads: its socket closes, and the next one opens.
+    await new Promise(resolve=>{first.once("close",resolve);first.close()});
+    second=await connect(url);const seen=[];second.on("message",raw=>seen.push(JSON.parse(String(raw))));
+    await request(second)("initialize",{clientInfo:{name:"test"}});second.send(JSON.stringify({method:"initialized",params:{}}));
+    await new Promise(resolve=>setTimeout(resolve,500));
+    const deadline=Date.now()+5000;while(!fixture.called("POST /permission/per_fixture/reply").length&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+    return {
+      asked,threadId,withdrawn,status,reasked:seen.filter(message=>message.method==="item/tool/requestApproval").map(message=>message.id),
+      replies:fixture.called("POST /permission/per_fixture/reply").map(call=>call.body.reply),
+    };
+  }finally{
+    for(const ws of [first,second])try{ws?.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true});
+  }
+}
+
+test("an OpenCode approval waiting when its thread is archived leaves the window, and no window that opens later is asked it",async()=>{
+  const {asked,threadId,withdrawn,status,reasked,replies}=await openCodeApprovalWhenTrebellClosesItsSession(({rpc,threadId})=>rpc("thread/archive",{threadId}));
+  assert.deepEqual(withdrawn,{requestId:asked.id,threadId},"the card leaves the window that showed it");
+  assert.equal(status,"cancelled");
+  assert.deepEqual(reasked,[],"the archived thread's approval is not asked of the next window");
+  assert.deepEqual(replies,["reject"],"OpenCode is not left waiting for an answer");
+});
+
+test("an OpenCode approval waiting when its thread is deleted leaves the window, and no window that opens later is asked it",async()=>{
+  const {asked,threadId,withdrawn,status,reasked,replies}=await openCodeApprovalWhenTrebellClosesItsSession(({rpc,threadId})=>rpc("thread/delete",{threadId}));
+  assert.deepEqual(withdrawn,{requestId:asked.id,threadId},"the card leaves the window that showed it");
+  assert.equal(status,"cancelled");
+  assert.deepEqual(reasked,[],"the deleted thread's approval is not asked of the next window");
+  assert.deepEqual(replies,["reject"],"OpenCode is not left waiting for an answer");
+});
+
+test("an OpenCode approval waiting when an environment switch resets the relay leaves the window, and the reloaded window is not asked it",async()=>{
+  // /api/environment/activate and /api/environment/enabled reset the relay, and the Environments page then reloads.
+  const {asked,threadId,withdrawn,status,reasked,replies}=await openCodeApprovalWhenTrebellClosesItsSession(({relay})=>relay.reset());
+  assert.deepEqual(withdrawn,{requestId:asked.id,threadId},"the card leaves the window that showed it");
+  assert.equal(status,"cancelled");
+  assert.deepEqual(reasked,[],"the approval of a session the reset closed is not asked of the reloaded window");
+  assert.deepEqual(replies,["reject"],"OpenCode is not left waiting for an answer");
+});
+
 test("an attached audio file reaches every harness by its saved path, as T3 Code names the attachments it does not send as content",async()=>{
   const prompt=await contextualAgentPrompt([{type:"text",text:"Transcribe this"},{type:"localAudio",path:"/recordings/memo 1.mp3"}]);
   assert.deepEqual(prompt.map(part=>({type:part.type,text:part.text})),[{type:"text",text:"Transcribe this"},{type:"text",text:'[Attached audio "memo 1.mp3" is saved at: /recordings/memo 1.mp3]'}]);
