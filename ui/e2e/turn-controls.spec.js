@@ -600,3 +600,27 @@ test("New task pressed again on an unsent new-task draft keeps the collaboration
     await shoot(page,"new-task-keeps-its-mode");
   }finally{await codex.close()}
 });
+
+// One queued follow-up is edited at a time: while one is being edited the others' Edit waits, so the edit typed is never replaced
+// without a word, and once that edit is saved the next can be edited.
+test("Edit on another queued follow-up waits while one is being edited, so the unsaved edit stays",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Queue double edit",project:true});
+  try{
+    codex.holdTurns=true;
+    await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+    await expect(stop(page)).toBeVisible();
+    for(const text of ["Queued alpha","Queued beta"]){await sendTyped(page,text);await expect(page.locator(".queued-message").filter({hasText:text})).toHaveCount(1)}
+    const alpha=page.locator(".queued-message").filter({hasText:"Queued alpha"}),beta=page.locator(".queued-message").filter({hasText:"Queued beta"});
+    await alpha.getByRole("button",{name:"Edit",exact:true}).click();await expect(composer(page)).toHaveValue("Queued alpha");
+    await composer(page).click();await page.keyboard.press("End");await page.keyboard.type(" with an important change",{delay:8});
+    const betaEdit=beta.getByRole("button",{name:"Edit",exact:true});
+    await expect(betaEdit).toBeDisabled();await expect(betaEdit).toHaveAttribute("title","Save the follow-up you are editing, or press Escape, first");
+    await shoot(page,"queued-edit-waits-for-the-open-edit");
+    await expect(composer(page)).toHaveValue("Queued alpha with an important change");
+    await composer(page).click();await page.keyboard.press("End");await page.keyboard.press("Enter");
+    await expect(alpha).toContainText("Queued alpha with an important change");
+    await expect(betaEdit).toBeEnabled();await betaEdit.click();await expect(composer(page)).toHaveValue("Queued beta");
+  }finally{await codex.close()}
+});
