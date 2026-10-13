@@ -874,6 +874,27 @@ test.describe("A card's failures",()=>{
       await request.post("/api/projects",{data:{path:boot.cwd,scripts:[]}});
     }
   });
+  // The card's own trash button, on a card further down the list: a removal that fails is said in that card under its header, by
+  // the button, not at the top of the page.
+  test("a failed removal of a project further down the list is said in its card",async({page,request})=>{
+    const root=mkdtempSync(join(tmpdir(),"trebell-polish-remove-"));
+    try{
+      await open(page,request);
+      for(let index=1;index<=6;index++){const path=join(root,"service-"+index);mkdirSync(path);await request.post("/api/projects",{data:{path,name:"Service "+index}})}
+      await page.route(/\/api\/projects\?id=/,route=>route.request().method()==="DELETE"?json(route,{error:"Deliberate removal failure"},500):route.fallback());
+      await openProjects(page);
+      const card=projectCard(page,"Service 1"),trash=card.getByRole("button",{name:"Remove Service 1",exact:true});
+      await trash.scrollIntoViewIfNeeded();await trash.click();
+      const failure=card.getByRole("alert").filter({hasText:"Could not remove project: Deliberate removal failure"});
+      await expect(failure).toBeInViewport({ratio:1});
+      await expect(trash).toBeInViewport({ratio:1});
+      await expect(card).toHaveCount(1);
+      await expect(page.locator(".projects-page>.provider-status-error")).toHaveCount(0);
+      await shootModes(page,"card-remove-failed",{show:failure});
+    }finally{
+      try{rmSync(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}catch{}
+    }
+  });
 });
 
 test.describe("Renaming a project",()=>{

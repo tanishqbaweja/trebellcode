@@ -340,13 +340,13 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     const removed=latestProject(project),blocker=projectRestoreBlocker(removed),undoable=Boolean(onOfferUndo)&&!blocker;
     if(!undoable&&!confirm(projectRemovalQuestion(removed,blocker)))return;
     const index=projectsRef.current.findIndex(item=>item.id===removed.id);
-    setBusy(true);setError("");
+    setBusy(true);setError("");setCardError(null);
     try{
       await api("/api/projects?id="+encodeURIComponent(removed.id),{method:"DELETE"});
       try{onProjectRemoved?.(removed)}catch{}
       if(undoable)onOfferUndo(`Project “${removed.name}” removed`,()=>restoreProject(removed,{index}));
       await refreshAfterSuccess("Project was removed");
-    }catch(err){setError("Could not remove project: "+(err.message||String(err)))}
+    }catch(err){failInCard(removed,"remove","Could not remove project: "+(err.message||String(err)))}
     finally{setBusy(false)}
   }
   // Undo of a removal: the listed record goes back (the server gives it a new id), and the page on screen shows the card where
@@ -509,7 +509,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id} ref={cardRef(p.id)}>
         <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong title={p.name}>{p.name}</strong><span title={projectEnvironmentLabel(p,environmentData.profiles)+" · "+p.path}>{projectEnvironmentLabel(p,environmentData.profiles)} · {p.path}</span><small title={projectCardDetail(p)||undefined}>{projectCardDetail(p)}</small></div></button>
         <button className="project-remove" aria-label={"Remove "+p.name} onClick={()=>removeProject(p)} disabled={busy}><Trash2 size={13}/></button>
-        {cardAlert(p,"open")}
+        {cardAlert(p,"open")}{cardAlert(p,"remove")}
         {p.cloneJob&&p.cloneJob.status!=="completed"&&<div className={"project-clone-status "+p.cloneJob.status}><div><strong>{p.cloneJob.phase||"Cloning repository"}</strong><span>{p.cloneJob.status==="failed"?(p.cloneJob.error||"Clone failed"):p.cloneJob.status==="cancelled"?"Clone cancelled":Math.round(p.cloneJob.progress||0)+"%"}</span></div>{["running","cancelling"].includes(p.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(p.cloneJob.progress)||0)+"%"}}/></i>}<div>{p.cloneJob.status==="running"&&<button onClick={()=>cloneAction(p,"cancel")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(p.cloneJob.status)&&<button onClick={()=>cloneAction(p,"retry")}><RefreshCw size={11}/> Retry</button>}</div>{cardAlert(p,"clone")}</div>}
         <div className="project-overrides">
           <label>Model<select value={p.defaultModel||""} onChange={e=>saveProject(p,{defaultModel:e.target.value||null})}><option value="">Inherit client default</option>{models.map(id=><option key={id} value={id}>{id}</option>)}</select></label>

@@ -223,7 +223,7 @@
 /* Under Name, after an emptied name was given back its saved one. */
 :root:root .projects-page .project-identity-editor>.project-name-note{margin:-6px 0 0!important;font-size:11.5px!important;line-height:1.45;color:var(--tx2)!important}
 /* A card control's failure, last in the part of the card the control is in (ProjectsPage cardAlert): across the whole row of a
-   part laid out in columns, and under the card's header for a failed open. */
+   part laid out in columns, and under the card's header for a failed open or removal. */
 :root:root .projects-page .project-card .project-card-error{grid-column:1/-1}
 :root:root .projects-page .project-card>.project-card-error{margin:0 18px 14px!important}
 :root:root .projects-page .project-icon-actions{display:flex;flex-wrap:wrap;gap:6px}
