@@ -998,11 +998,13 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     if(!roots.some(root=>pathInside(root,target)))throw new Error("Visualization is outside the active workspace and Codex visualization directory");
     return {remote:false,path:target,roots};
   }
-  async function readVisualization({workspaceRoot,path,file,threadId,environmentId}={}){
+  // check: only whether it can be shown (a HEAD request), without reading it.
+  async function readVisualization({workspaceRoot,path,file,threadId,environmentId,check=false}={}){
     const located=await resolveVisualizationPath({workspaceRoot,path,file,threadId,environmentId});
     const info=located.remote?await environments.attachmentInfo(environmentId,located.path):await stat(located.path).then(item=>({size:item.size,isFile:item.isFile()}));
     if(info.isFile===false)throw new Error("Visualization path is not a file");
     if(!Number.isFinite(Number(info.size))||Number(info.size)>2*1024*1024)throw new Error("Visualization is too large to render (maximum 2 MB)");
+    if(check)return {path:located.path,content:""};
     if(!located.remote)return {path:located.path,content:await readFile(located.path,"utf8")};
     const child=environments.streamFile(environmentId,located.path);let stdout="",stderr="";
     await new Promise((resolveRead,reject)=>{
@@ -2676,20 +2678,25 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
       return json(res,200,await environmentWorkspaceDiff(url.searchParams.get("path")||process.cwd(),{environments,environmentId}));
     }
-    if(url.pathname==="/api/visualization"&&req.method==="GET"){
+    if(url.pathname==="/api/visualization"&&(req.method==="GET"||req.method==="HEAD")){
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
         const result=await readVisualization({
           workspaceRoot:url.searchParams.get("root")||process.cwd(),path:url.searchParams.get("path")||null,file:url.searchParams.get("file")||null,
-          threadId:url.searchParams.get("threadId")||null,environmentId,
+          threadId:url.searchParams.get("threadId")||null,environmentId,check:req.method==="HEAD",
         });
         res.writeHead(200,{
           "content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff",
           "content-security-policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
           "content-disposition":"inline; filename=\""+basename(result.path).replace(/\"/g,"")+"\"",
         });
-        return res.end(result.content);
-      }catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
+        return res.end(req.method==="HEAD"?undefined:result.content);
+      }catch(error){
+        // A missing file is named by its file name alone, so a reply never shows a local path (the card asks with HEAD first).
+        const missing=error?.code==="ENOENT"||/ENOENT|no such file/i.test(String(error?.message||""));
+        if(req.method==="HEAD"){res.writeHead(missing?404:400);return res.end()}
+        return json(res,missing?404:400,{error:missing?"Visualization not found: "+basename(String(url.searchParams.get("path")||url.searchParams.get("file")||"")):error instanceof Error?error.message:String(error)});
+      }
     }
     if(url.pathname==="/api/workspace/raw"&&(req.method==="GET"||req.method==="HEAD")){
       try{

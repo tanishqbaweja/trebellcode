@@ -1,5 +1,5 @@
 import { test,expect } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -253,4 +253,38 @@ test("Copy code on a reply still streaming keeps its refusal and the keyboard as
     harness.push("turn/completed",{turn:{id:"turn-2",status:"completed",completedAt:Date.now()/1000}});
     await expect(page.locator(".assistant-message-text").last().locator(".chat-markdown-code pre")).toHaveText("const value = 1;");
   }finally{await harness.close()}
+});
+
+test("a reply's visualization whose file is missing says so by its file name in the card, without a local path",async({page})=>{
+  test.setTimeout(45_000);
+  const fixtureFile=fileURLToPath(new URL("../../visual-audit/chat-visualization-fixture.html",import.meta.url));
+  writeFileSync(fixtureFile,"<!doctype html><meta charset=utf-8><body style=\"font:14px sans-serif\"><h1>Chart fixture</h1></body>");
+  const text="Here are both charts.\n\n::codex-inline-vis{path=\"visual-audit/chat-visualization-fixture.html\"}\n\n::codex-inline-vis{path=\"missing-chart.html\"}";
+  const thread={...fixtureThread("visualization-reply","Visualization reply fixture"),turns:[{id:"turn-1",status:"completed",items:[
+    {type:"userMessage",id:"user-1",content:[{type:"text",text:"Draw the two charts."}]},{type:"agentMessage",id:"assistant-1",text}]}]};
+  const harness=await startHarness(thread);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    // The settings the header's light and dark toggle saves stay in the page, so the shared e2e server keeps its own.
+    const saved={};
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(saved)})});
+    await openApp(page,{harness,thread});
+    const cards=page.locator(".inline-visualization-card");
+    await expect(cards).toHaveCount(2);
+    await expect(cards.nth(0).locator("iframe")).toBeVisible();
+    await expect(cards.nth(0).frameLocator("iframe").getByRole("heading",{name:"Chart fixture"})).toBeVisible();
+    await expect(cards.nth(1).getByTestId("visualization-missing")).toHaveText("Visualization not found: missing-chart.html");
+    await expect(cards.nth(1).locator("iframe")).toHaveCount(0);
+    expect(await page.locator(".conversation-column").innerText()).not.toMatch(/ENOENT|no such file|TrebellFix|visual-audit/i);
+    for(const pass of [0,1]){
+      await cards.nth(1).scrollIntoViewIfNeeded();
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        const mode=await page.locator("html").getAttribute("data-mode");
+        await page.screenshot({path:join(shotsDir,`chat-visualization-missing-${mode}-${width}x800.png`),animations:"disabled"});
+      }
+      await page.setViewportSize({width:1280,height:800});
+      if(!pass){const before=await page.locator("html").getAttribute("data-mode");await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).not.toHaveAttribute("data-mode",before||"")}
+    }
+  }finally{await harness.close();rmSync(fixtureFile,{force:true})}
 });

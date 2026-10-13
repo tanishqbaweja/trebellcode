@@ -582,6 +582,21 @@ test("linking a URL that is not a pull request is refused plainly",async()=>{
   }finally{await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });
 
+test("a visualization whose file is missing is named by its file name alone, and HEAD checks one without reading it",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-visualization-"));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  await writeFile(join(home,"chart.html"),"<h1>Chart</h1>");
+  const gui=await createGuiServer({port:await freePort(),mock:true,env});
+  const at=path=>gui.url+"/api/visualization?"+new URLSearchParams({root:home,path});
+  try{
+    const head=await fetch(at("chart.html"),{method:"HEAD"});assert.equal(head.status,200);assert.equal(await head.text(),"");
+    assert.equal((await fetch(at("missing.html"),{method:"HEAD"})).status,404);
+    const missing=await fetch(at("missing.html"));assert.equal(missing.status,404);
+    assert.deepEqual(await missing.json(),{error:"Visualization not found: missing.html"});
+    assert.equal(await (await fetch(at("chart.html"))).text(),"<h1>Chart</h1>");
+  }finally{await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
+});
+
 test("mock GUI server serves the default Native provider catalog and direct replies without provider requests",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-mock-provider-"));
   await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"retired-provider-fixture",onboardingComplete:true}}));

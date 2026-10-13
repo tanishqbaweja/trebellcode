@@ -322,6 +322,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-history>:is(.user-row,.history-assistant).find-active{content-visibility:visible}
 .conversation-column .user-row.find-active .user-bubble,.conversation-column .history-assistant.find-active>div:last-child{outline:1px solid color-mix(in srgb,var(--ac) 70%,transparent);box-shadow:0 0 0 3px var(--acsoft);border-radius:12px}
 .conversation-column .inline-visualization-card{border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2)}
+.inline-visualization-card .inline-visualization-wait{height:340px}.inline-visualization-card.wide .inline-visualization-wait{height:500px}
+.inline-visualization-card .inline-visualization-missing{margin:0;padding:12px 14px;color:var(--tx2);font-size:12.5px;line-height:1.5;overflow-wrap:anywhere}
 
 /* Agent activity cards (TurnActivityCard): the live turn's (.agent-block) and each earlier turn's (.turn-card) read alike, one
    card whose head names the activity and counts its steps, and opens or closes the steps below it. Closed, a card is its head.

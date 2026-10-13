@@ -458,15 +458,20 @@ function TurnOutcomePill({label,tone}){
 function SessionHandoffRow({message}){
   return <div className="session-handoff-row" data-testid="session-handoff" data-message-id={message.id} data-turn-id={message.turnId==null?undefined:String(message.turnId)}><History size={13} aria-hidden="true"/><p>{message.text}</p></div>;
 }
+// A visualization's frame opens once its file is known to be there (a HEAD request): one that is missing, or cannot be shown, is said
+// in the card by its file name, instead of the server's error inside the frame.
+function InlineVisualization({visualization,src}){
+  const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
+  const [found,setFound]=useState(null);
+  useEffect(()=>{let live=true;setFound(null);fetch(src,{method:"HEAD"}).then(response=>{if(live)setFound(response.ok?"yes":response.status===404?"missing":"failed")},()=>{if(live)setFound("failed")});return()=>{live=false}},[src]);
+  return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div>{found==="yes"?<iframe title={label} src={src} sandbox="allow-scripts" referrerPolicy="no-referrer"/>:found?<p className="inline-visualization-missing" data-testid="visualization-missing">{found==="missing"?"Visualization not found: ":"Could not show visualization "}{label}</p>:<div className="inline-visualization-wait" aria-hidden="true"/>}</div>;
+}
 const ConversationMessageRow=memo(function ConversationMessageRow({message,activeFind,allowRevert,projectPath,environmentId,threadId,onEditFromHere,heading="",outcomeLabel="",outcomeTone=""}){
   const parsed=useMemo(()=>message.role==="user"||message.role==="handoff"?null:parseVisualizationMessage(message.text),[message.role,message.text]);
   if(message.role==="reasoning")return <ReasoningRow id={message.id} messageId={message.id} text={message.text}/>;
   if(message.role==="handoff")return <SessionHandoffRow message={message}/>;
   if(message.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="user-bubble"><p>{message.text}</p>{allowRevert&&message.turnId&&<button className="message-action" onClick={()=>onEditFromHere(message)}>Edit from here</button>}</div></div>;
-  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text chat-markdown" data-assistant-citation-source={message.id}><ChatMarkdown text={parsed.text}/></div>}{(parsed?.visualizations||[]).map((visualization,index)=>{
-    const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
-    return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
-  })}{outcomeLabel&&<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/>}</div></div>;
+  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text chat-markdown" data-assistant-citation-source={message.id}><ChatMarkdown text={parsed.text}/></div>}{(parsed?.visualizations||[]).map((visualization,index)=><InlineVisualization key={(visualization.path||visualization.file)+":"+index} visualization={visualization} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})}/>)}{outcomeLabel&&<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/>}</div></div>;
 },sameConversationMessageRowProps);
 // How a turn that failed, was stopped or completed before any reply ended (turn-outcome.js turnTrailers), where its reply would
 // have been: the heading and pill on one line, then the error it ended with in full ("Finished without a reply." for a completed
