@@ -1710,13 +1710,25 @@ export class ContextEngine{
       }
       return ranges;
     };
+    // A file whose indexed definitions declare a name the query matches is read first, so a definition hit never falls among the
+    // files past the read bound (a widely used name has its uses in many more files than are read line by line).
+    const definesQueryName=filePath=>(index.files.get(filePath)?.parsed?.definitions||[]).some(definition=>{
+      const name=String(definition?.name||""),signature=String(definition?.signature||"");
+      return Boolean(name&&signature&&matchesLine(signature)&&definitionHit([name],signature,matchRanges(signature)));
+    });
+    const splitByDefinition=paths=>{const defining=[],rest=[];for(const item of paths)(definesQueryName(item)?defining:rest).push(item);return {defining,rest}};
     let candidates=[],unread=[],source="index-sample",listingComplete=false,listingCapped=false,skippedLargeFiles=0;
     if(typeof contextIo.searchPaths==="function"){
       try{
-        // Indexed source first, then the other matching text files (docs, templates, configuration). Those used
-        // to be dropped while the result still claimed to be complete.
+        // Indexed source first (the files defining a matching name before the others), then the other matching text files
+        // (docs, templates, configuration). Those used to be dropped while the result still claimed to be complete.
         const requestLimit=Math.min(500,candidateLimit*2),found=(await contextIo.searchPaths({query:needle,regex:Boolean(expression),caseSensitive:Boolean(caseSensitive),limit:requestLimit+1,scope,include:inScope})).filter(inScope);
-        const listed=found.slice(0,requestLimit),indexed=listed.filter(path=>index.files.has(path)),other=listed.filter(path=>!index.files.has(path));
+        listingCapped=found.length>requestLimit;
+        const listed=found.slice(0,requestLimit),listedSet=new Set(listed),other=listed.filter(path=>!index.files.has(path));
+        // When Git lists more matching files than are taken, an indexed file defining a matching name may be among those left
+        // out, so it is added from the index.
+        const unlisted=listingCapped?[...index.files.keys()].filter(path=>!listedSet.has(path)&&inScope(path)&&definesQueryName(path)):[];
+        const indexed=splitByDefinition(listed.filter(path=>index.files.has(path)));
         const readable=[];
         if(other.length){
           const metadata=typeof contextIo.metadata==="function"?await contextIo.metadata(other):null;
@@ -1727,14 +1739,14 @@ export class ContextEngine{
           }
           skippedLargeFiles=other.length-readable.length;
         }
-        const ordered=[...indexed,...readable];
-        candidates=ordered.slice(0,candidateLimit);unread=ordered.slice(candidateLimit);listingCapped=found.length>requestLimit;
+        const ordered=[...indexed.defining,...unlisted,...indexed.rest,...readable];
+        candidates=ordered.slice(0,candidateLimit);unread=ordered.slice(candidateLimit);
         listingComplete=!listingCapped&&!skippedLargeFiles&&!unread.length;source="git-grep";
       }catch{}
     }
     if(source!=="git-grep"){
-      const sampled=[...index.files.values()].filter(entry=>inScope(entry.relativePath)&&String(entry.sample||"").split(/\r?\n/).some(matchesLine)).map(entry=>entry.relativePath);
-      candidates=sampled.slice(0,candidateLimit);unread=sampled.slice(candidateLimit);
+      const {defining,rest}=splitByDefinition([...index.files.values()].filter(entry=>inScope(entry.relativePath)&&String(entry.sample||"").split(/\r?\n/).some(matchesLine)).map(entry=>entry.relativePath));
+      const sampled=[...defining,...rest];candidates=sampled.slice(0,candidateLimit);unread=sampled.slice(candidateLimit);
     }
     const contents=await contextIo.readMany(candidates),data=[],left=[];
     let textLeft=resultLimit,definitionsLeft=SEARCH_EXTRA_DEFINITION_HITS,matchedFiles=0,totalMatches=0;

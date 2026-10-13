@@ -874,6 +874,23 @@ test("code search marks the definition hits it lists by line number",async()=>{
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("code search reads the file that defines a matching name first, also when more files use it than are read",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-context-definition-first-"));
+  try{
+    await mkdir(join(root,"app"),{recursive:true});
+    for(let index=0;index<260;index++)await writeFile(join(root,"app",`use_${String(index).padStart(3,"0")}.py`),"from app.widgets import make_widget\nvalue = make_widget()\n","utf8");
+    await writeFile(join(root,"app","widgets.py"),"def make_widget():\n    return object()\n","utf8");
+    await execFileAsync("git",["init","-q"],{cwd:root});await execFileAsync("git",["add","."],{cwd:root});
+    await execFileAsync("git",["-c","user.name=Trebell Test","-c","user.email=trebell@example.test","commit","-qm","fixture"],{cwd:root});
+    const result=await new ContextEngine().searchCode({root,query:"make_widget"});
+    assert.equal(result.unreadFileCount,21,"240 of the 261 matching files are read line by line");
+    assert.deepEqual(result.data[0],{path:"app/widgets.py",line:1,text:"def make_widget():",definition:true});
+    assert.equal((result.unreadFiles||[]).includes("app/widgets.py"),false);
+    const usage=await new ContextEngine().searchCode({root,query:"value = make_widget"});
+    assert.equal(usage.data[0].path,"app/use_000.py","a query that matches no definition keeps Git's order");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("code search scopes to a folder or a file and filters by glob, and rejects paths outside the repository",async()=>{
   const root=await fixture();
   try{
