@@ -287,6 +287,34 @@ test("removing an attachment chip from the keyboard moves focus to the next chip
   }finally{await harness.close()}
 });
 
+test("an attachment chip removed with the mouse leaves focus in the composer, so the text typed on goes there and removes no other chip",async({page},testInfo)=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page);
+  try{
+    const composer=page.getByTestId("composer");
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      const files=["alpha","beta","gamma"].map(name=>name+"-"+mode+".txt");
+      for(const name of files)await writeFile(testInfo.outputPath(name),"contents of "+name);
+      await chooseFiles(page,files.map(name=>testInfo.outputPath(name)));
+      await expect(page.locator(".attachment-shelf > span:not(.uploading)")).toHaveCount(3);
+      const shown=await chips(page).allTextContents();
+      // The person writes, clicks the first chip's X, and writes on: each space would press a remove button that had focus.
+      await composer.click();await page.keyboard.type("Check",{delay:20});
+      await chips(page).getByRole("button",{name:"Remove "+shown[0],exact:true}).click();
+      await expect(chips(page)).toHaveText([shown[1],shown[2]]);await expect(composer).toBeFocused();
+      await page.keyboard.type(" these files",{delay:20});
+      await expect(composer).toHaveValue("Check these files");await expect(chips(page)).toHaveText([shown[1],shown[2]]);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+"attachment-removed-by-mouse-typing-on-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+      // Clear the draft and the chips for the next mode.
+      await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");
+      for(const name of [shown[1],shown[2]])await chips(page).getByRole("button",{name:"Remove "+name,exact:true}).click();
+      await expect(chips(page)).toHaveCount(0);
+    }
+  }finally{await harness.close()}
+});
+
 test("/plan puts the plan prompt with what follows it in the composer, ready to send",async({page})=>{
   test.setTimeout(60_000);
   const harness=await openComposerApp(page);
