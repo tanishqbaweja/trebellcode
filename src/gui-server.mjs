@@ -15,6 +15,7 @@ import {
   environmentWorkspacePath,
   environmentWorkspaceSearch,
   environmentWorkspaceTree,
+  localWorkspaceFileInfo,
 } from "./workspace.mjs";
 import { spawn } from "node:child_process";
 import { codexBin, codexHome, packageRoot, trebellHome } from "./paths.mjs";
@@ -2666,15 +2667,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
         const located=environmentWorkspacePath(url.searchParams.get("root")||process.cwd(),url.searchParams.get("path")||"",{environments,environmentId});
-        const root=located.root,requested=located.path;
+        const requested=located.path;
         let info;
         if(located.remote)info=await environments.attachmentInfo(environmentId,requested);
-        else{
-          if(requested!==root&&!requested.startsWith(root+sep))return json(res,403,{error:"File is outside the active workspace"});
-          const localInfo=await stat(requested).catch(error=>{throw error?.code==="ENOENT"?new Error(basename(requested)+" was not found"):error});
-          if(!localInfo.isFile())return json(res,404,{error:"Not a file"});
-          info={size:localInfo.size};
-        }
+        // Placed as the editor's read is, through '..' and links, so a picture behind a link out of the project is refused as its text is.
+        else info={size:(await localWorkspaceFileInfo(located)).size};
         const type=MIME[extname(requested).toLowerCase()]||"application/octet-stream";
         const range=String(req.headers.range||"").match(/^bytes=(\d*)-(\d*)$/);
         const common={"content-type":type,"accept-ranges":"bytes","cache-control":"no-store","content-disposition":`inline; filename="${basename(requested).replace(/"/g,"")}"`};

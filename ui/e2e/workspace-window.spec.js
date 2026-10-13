@@ -1,5 +1,6 @@
 import { test,expect } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync,symlinkSync } from "node:fs";
 import { mkdir,mkdtemp,readFile,rm,writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -703,6 +704,36 @@ test("an image deleted on disk says it could not be opened, from the tree and on
   await expect(view.getByRole("alert")).toHaveText("logo.png was not found");
   await expect(view.locator(".media-preview")).toHaveCount(0);await expect(attach).toHaveCount(0);
   await shootBothModes(page,"workspace-open-image-deleted-refresh");
+});
+
+test("a picture or text file reached through a link out of the project is refused by the Files view and by its raw address",async({page,request})=>{
+  test.setTimeout(60_000);
+  const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==","base64");
+  const base=await mkdtemp(join(tmpdir(),"trebell-files-link-"));folders.push(base);
+  const project=join(base,"proj"),outside=join(base,"outside");
+  await mkdir(project,{recursive:true});await mkdir(outside,{recursive:true});
+  await writeFile(join(project,"logo.png"),png);await writeFile(join(outside,"secret.txt"),"outside secret\n");await writeFile(join(outside,"secret.png"),png);
+  symlinkSync(outside,join(project,"linked"),"junction");
+  // In a Git checkout, Files search lists what git lists, the files behind the link among them.
+  execFileSync("git",["init","-q","."],{cwd:project,windowsHide:true});
+  // The raw address a picture, video, sound or PDF shows from refuses them as the editor's read does, and serves a picture inside.
+  const raw=path=>request.get("/api/workspace/raw?"+new URLSearchParams({root:project,path}));
+  for(const name of ["secret.txt","secret.png"]){
+    const answer=await raw(join(project,"linked",name));
+    expect(answer.ok(),name+" through the link").toBe(false);expect((await answer.json()).error,name).toBe("File is outside the active workspace");
+  }
+  expect((await raw(join(project,"logo.png"))).status(),"a picture inside the project").toBe(200);
+  const {right}=await openProjectInspector(page,request,"Workspace linked picture",project);
+  const view=right.locator(".file-view"),head=right.locator(".file-head strong"),hit=name=>right.locator("[data-workspace-entry]").filter({hasText:name});
+  await right.getByPlaceholder("Search files…").click();await page.keyboard.type("secret",{delay:30});
+  await expect(hit("secret.txt")).toBeVisible();await expect(hit("secret.png")).toBeVisible();
+  await hit("secret.txt").click();
+  await expect(view.getByRole("alert")).toHaveText("Could not open secret.txt: File is outside the active workspace");
+  await hit("secret.png").click();
+  await expect(head).toHaveText("secret.png");
+  await expect(view.getByRole("alert")).toHaveText("Could not open secret.png: File is outside the active workspace");
+  await expect(view.locator(".media-preview")).toHaveCount(0);await expect(view.getByRole("button",{name:/^Attach/})).toHaveCount(0);
+  await shootBothModes(page,"workspace-linked-picture-refused");
 });
 
 test("Edit pressed while Refresh still reads the open file keeps the editor and what is typed",async({page,request})=>{

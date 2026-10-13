@@ -273,6 +273,15 @@ async function insideLocalRoot({root,path}){
   const rel=relative(top,place);
   if(rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel))throw new Error("File is outside the active workspace");
 }
+// A local file the Files view reads, as text in the editor or from its raw address (a picture, video, sound or PDF): placed inside
+// the project's folder first, so nothing outside it is read by either. One that is not there says so by its name, not by the
+// system's error with its full path; the save still sees ENOENT.
+export async function localWorkspaceFileInfo(located){
+  await insideLocalRoot(located);
+  const info=await stat(located.path).catch(error=>{throw error?.code==="ENOENT"?Object.assign(new Error(basename(located.path)+" was not found"),{code:"ENOENT"}):error});
+  if(!info.isFile())throw new Error("Not a file");
+  return info;
+}
 
 // The Files panel's viewer and editor read a file as bytes (a remote one streams from its environment, so no byte is lost to text
 // decoding on the way). It is text only when its bytes are UTF-8 with no NUL byte, so saving what the editor shows writes the same
@@ -284,11 +293,7 @@ async function editorBytes(filePath,maxBytes,{root=null,environments=null,enviro
   const name=located.remote?posix.basename(located.path):basename(located.path);
   let size;
   if(located.remote)size=(await environments.attachmentInfo(environmentId,located.path)).size;
-  else{
-    // A file that is not there says so by its name, not by the system's error with its full path; the save still sees ENOENT.
-    await insideLocalRoot(located);const info=await stat(located.path).catch(error=>{throw error?.code==="ENOENT"?Object.assign(new Error(name+" was not found"),{code:"ENOENT"}):error});
-    if(!info.isFile())throw new Error("Not a file");size=info.size;
-  }
+  else size=(await localWorkspaceFileInfo(located)).size;
   const tooLarge=bytes=>new Error(`File is too large to preview (${Math.ceil(bytes/1024)} KB)`);
   if(size>maxBytes)throw tooLarge(size);
   if(!located.remote)return {located,name,bytes:await readFile(located.path)};
