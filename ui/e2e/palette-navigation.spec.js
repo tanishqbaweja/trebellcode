@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 import { keepThreadMeta } from "./test-home.js";
+import { startStreamingFixture } from "./native-stream-fixture.js";
 
 // The command palette from the keyboard (keys typed straight after Ctrl+K, where focus goes after a command) and moving between pages
 // with the browser's Back and Forward beside the app's own Navigate back/forward shortcuts.
@@ -652,4 +653,38 @@ test("a thread the palette's search finds beyond the loaded list shows by its na
     await expect(palette).toBeHidden();
     await expect(page.locator(".workspace-header .thread-title-button strong")).toHaveText("Old task 120");
   }finally{await harness.close()}
+});
+
+test("Link pull request refuses a URL that is not a pull request plainly, with the palette open to try again",async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width:1280,height:800});
+  // The settings the header's light and dark toggle saves stay in the page, so the shared e2e server keeps its own.
+  const saved={};
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(saved)})});
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Review the release",preview:"Release"}]});
+  // The URL is asked in the app's own question: a browser dialog is noted (and dismissed), as the app asks in its own.
+  const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
+  try{
+    await fixture.open("Review the release");
+    const palette=page.locator(".command-palette"),question=page.locator("dialog.inspector-text-prompt");
+    for(const pass of ["dark","light"]){
+      if(pass==="light"){
+        const direct=page.locator("[data-testid=appearance-toggle]:visible").first();await direct.click();
+        await expect(page.locator("html")).toHaveAttribute("data-mode","light");
+      }
+      await pressShortcut(page,"Control+K");await expect(palette).toBeVisible();
+      await page.keyboard.type("Link pull request",{delay:8});
+      await page.keyboard.press("Enter");
+      await expect(question.getByRole("textbox",{name:"Pull request URL"})).toBeFocused();
+      await page.keyboard.type("not a url",{delay:8});
+      await page.keyboard.press("Enter");
+      await expect(question).toHaveCount(0);
+      await expect(palette.getByRole("alert")).toHaveText("Not a pull request URL");
+      await expect(palette.locator("input")).toBeFocused();
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:`${shots}link-pr-not-a-pr-url-${pass}-${width}x800.png`})}
+      await page.setViewportSize({width:1280,height:800});
+      await page.keyboard.press("Escape");await expect(palette).toHaveCount(0);
+    }
+    expect(nativeDialogs).toEqual([]);
+  }finally{await fixture.close()}
 });

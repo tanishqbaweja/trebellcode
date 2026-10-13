@@ -2473,6 +2473,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           const body=await readJsonBody(req);const action=String(body.action||"link");const threadId=String(body.threadId||"").trim();
           if(action==="resolve"){
             const identity=normalizePullRequestIdentity(body.identity||body.pr||{url:body.url})||parsePullRequestUrl(body.url);
+            if(!identity)throw new Error("Not a pull request URL");
             const resolved=await resolvePullRequestIdentity(identity,{preferredPath:body.cwd||null,preferredEnvironmentId:body.environmentId||null});
             return json(res,200,{identity:resolved.detail.item.identity,project:resolved.project,pr:resolved.detail.item});
           }

@@ -570,6 +570,18 @@ test("a configured Codex app-server port another program holds is refused with w
   }
 });
 
+test("linking a URL that is not a pull request is refused plainly",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-not-a-pr-"));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const gui=await createGuiServer({port:await freePort(),mock:true,env});
+  try{
+    for(const url of ["not a url","https://example.com/docs/page"]){
+      const response=await fetch(gui.url+"/api/source-control/thread-link",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"resolve",url,cwd:home})});
+      assert.equal(response.status,400);assert.deepEqual(await response.json(),{ok:false,error:"Not a pull request URL"});
+    }
+  }finally{await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
+});
+
 test("mock GUI server serves the default Native provider catalog and direct replies without provider requests",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-mock-provider-"));
   await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"retired-provider-fixture",onboardingComplete:true}}));
