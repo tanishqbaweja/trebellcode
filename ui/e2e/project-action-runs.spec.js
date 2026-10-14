@@ -118,3 +118,27 @@ test("a double click on the header's action button starts the action once",async
     await expect(tabs.filter({hasText:"Dev server"}),"one terminal for it").toHaveCount(1);
   }finally{await cleanup()}
 });
+
+test("an action run from its Projects card shows running on the header's button, with its Stop",async({page,request})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {started,cleanup}=await scriptedActions(page,request,{latencyMs:50});
+  try{
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"Projects",exact:true}).click();
+    await page.locator(".project-card.active .project-action-run").filter({hasText:"Dev server"}).click();
+    await expect(page.getByTestId("drawer")).toContainText("DEV SERVER READY");
+    expect(started.length).toBe(1);
+    const {button,stop}=headerAction(page);
+    await expect(button,"the header's button shows the action running").toHaveAttribute("data-running","true",{timeout:5000}).catch(async error=>{
+      console.log("header button data-running:",await button.getAttribute("data-running"),"title:",await button.getAttribute("title"),"Stop buttons:",await stop.count());throw error;
+    });
+    await expect(button).toHaveAttribute("title","Dev server is running · Show its terminal");
+    await expect(stop,"with its Stop").toBeVisible();
+    await page.screenshot({animations:"disabled",path:proofShots+"F2-projects-card-run-header-running.png"});
+    await stop.click();
+    await expect(button,"its Stop ends it").not.toHaveAttribute("data-running");await expect(stop).toHaveCount(0);
+    expect(started.length,"the header never started a second run").toBe(1);
+  }finally{await cleanup()}
+});

@@ -4928,11 +4928,16 @@ export default function App(){
     let result;
     if(runningId)result={alreadyRunning:true,session:{id:runningId,running:true}};
     else try{starting.add(key);result=await api("/api/project-script/run",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,scriptId:script.id}})}finally{starting.delete(key)}
+    showActionRun(key,result);
+    if(!result?.alreadyRunning&&script.previewUrl&&script.autoOpenPreview){openRightPanel("preview");requestPreview(script.previewUrl)}
+    return result;
+  }
+  // A run's answer, from the header, the palette, a key or the action's Projects card: the action runs (the header's button shows it)
+  // and its terminal is shown.
+  function showActionRun(key,result){
     if(result?.session?.running)setActionRuns(current=>({...current,[key]:result.session.id}));
     setSection("chat");setPanel("terminal");
     setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0);
-    if(!result?.alreadyRunning&&script.previewUrl&&script.autoOpenPreview){openRightPanel("preview");requestPreview(script.previewUrl)}
-    return result;
   }
   async function onProjectOpen(path,environmentId=null){
     const targetEnvironmentId=environmentId||null;
@@ -5519,7 +5524,7 @@ export default function App(){
             <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title={withKey("Command palette",sidebarShortcuts.commandPalette)}><Command size={15}/></button>
           </div>
         </header>})()}
-        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onOfferUndo={offerPageUndo} isProjectOpen={projectIsOpen} onProjectUpdated={projectsPageUpdated} onProjectRemoved={projectsPageRemoved} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");requestPreview(previewUrl)}}/></DeferredSurface></div>}
+        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onOfferUndo={offerPageUndo} isProjectOpen={projectIsOpen} onProjectUpdated={projectsPageUpdated} onProjectRemoved={projectsPageRemoved} onRunScript={(result,run)=>showActionRun((run.environmentId||"")+"\0"+run.path+"\0"+run.scriptId,result)} onOpenPreview={previewUrl=>{openRightPanel("preview");requestPreview(previewUrl)}}/></DeferredSurface></div>}
         {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} skillsLoad={skillsLoad} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} onSkillsReload={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage onOfferUndo={offerPageUndo}/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}

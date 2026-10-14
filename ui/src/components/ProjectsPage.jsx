@@ -471,8 +471,9 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   async function runScript(project,script){
     setBusy(true);setError("");setCardError(null);
     try{
-      const result=await api("/api/project-script/run",{method:"POST",body:{path:project.path,environmentId:project.environmentId||null,scriptId:script.id}});
-      onRunScript?.(result);
+      const run={path:project.path,environmentId:project.environmentId||null,scriptId:script.id};
+      // The app shows the run as the header's does: its terminal, and the action running on the header's button with its Stop.
+      onRunScript?.(await api("/api/project-script/run",{method:"POST",body:run}),run);
       if(script.previewUrl&&script.autoOpenPreview)onOpenPreview?.(script.previewUrl);
     }catch(err){failInCard(project,"action:"+script.id,err.message||String(err))}
     finally{setBusy(false)}
