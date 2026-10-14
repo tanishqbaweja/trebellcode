@@ -475,6 +475,13 @@ export class AgentRuntimeManager{
       :instance.kind==="opencode"?["auth","login"]
       :null;
     if(!args)throw new Error((RUNTIMES[instance.kind]?.name||instance.kind)+" does not expose an interactive Trebell sign-in command.");
+    // Codex signs in into its profile's home: one under a user this machine does not have is refused before the sign-in writes
+    // anywhere (on an SSH or WSL host the home is the host's to expand).
+    const profile=this.activeEnvironment(environmentId);
+    if(instance.kind==="codex"&&!(profile&&profile.type!=="local")){
+      const layout=resolveCodexHomeLayout({homePath:instance.homePath,shadowHomePath:instance.shadowHomePath,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
+      if(layout.error)throw new Error(layout.error);
+    }
     return {runtime:instance.kind,instanceId:instance.id,name:RUNTIMES[instance.kind]?.name||instance.kind,command:this.executable(instance,{environmentId}),args};
   }
   async install(kind,{environmentId=undefined}={}){

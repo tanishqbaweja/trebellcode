@@ -702,6 +702,26 @@ test("runtime auth commands use the provider's real interactive CLI flow",async(
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+// Codex's sign-in writes its auth.json into the profile's home: one typed as ~name/... for a user this machine does not have was a
+// folder named ~name where Trebell runs. The sign-in is refused before its terminal opens; on an SSH or WSL host that home is the
+// host's to expand (environment-app-server), so a sign-in there is not refused here.
+test("a local Codex sign-in for a profile whose home is under a user this machine does not have is refused with a message",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-runtime-auth-named-home-"));const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);
+    const environments={get:id=>id==="ssh-named"?{id,name:"Named SSH",type:"ssh",host:"example.test",cwd:"/srv/app"}:null};
+    const manager=new AgentRuntimeManager({state,env,environments});
+    const shared=manager.upsertInstance({id:"codex-named-home",kind:"codex",homePath:"~trebell-no-such-user-7f3a/.codex"});
+    const shadowed=manager.upsertInstance({id:"codex-named-shadow",kind:"codex",homePath:join(home,"codex-shared"),shadowHomePath:"~trebell-no-such-user-7f3a/.codex-work"});
+    assert.throws(()=>manager.authCommand(shared),{message:"Trebell could not find the home folder of the user trebell-no-such-user-7f3a on this machine, so it cannot use ~trebell-no-such-user-7f3a/.codex."});
+    assert.throws(()=>manager.authCommand(shadowed),{message:"Trebell could not find the home folder of the user trebell-no-such-user-7f3a on this machine, so it cannot use ~trebell-no-such-user-7f3a/.codex-work."});
+    assert.deepEqual(manager.authCommand(shared,{environmentId:"ssh-named"}).args,["login"]);
+    // Nothing else about the profile fails for it: its continuation key and child environment are read as before.
+    assert.equal(typeof manager.continuationKey(shared),"string");
+    assert.ok(manager.compatibleInstanceIds(shared).includes(shared.id));
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("remote runtime probes use provider-native auth status without treating unknown as signed out",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-auth-"));const env={...process.env,TREBELL_HOME:home};
   try{

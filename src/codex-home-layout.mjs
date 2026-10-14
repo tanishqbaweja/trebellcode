@@ -1,19 +1,16 @@
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { lstat, link as hardlink, mkdir, readdir, readlink, rm, symlink } from "node:fs/promises";
+import { localHomePath } from "./local-home-path.mjs";
 
 const SHARED_DIRECTORIES=["sessions","archived_sessions","sqlite","shell_snapshots","worktrees","skills","plugins","cache","logs","mcp-oauth-locks"];
 const PRIVATE_ENTRIES=new Set(["auth.json","models_cache.json"]);
 const SHADOW_LOCAL_ENTRIES=new Set(["log","memories","tmp"]);
 const REPLACEABLE_SHARED_ENTRIES=new Set(["mcp-oauth-locks"]);
 
-function expandHome(value){
-  const raw=String(value||"").trim();
-  if(raw==="~")return homedir();
-  if(raw.startsWith("~/")||raw.startsWith("~\\"))return join(homedir(),raw.slice(2));
-  return raw;
-}
-function normalized(value,fallback){return resolve(expandHome(value)||fallback)}
+// A home path as the person typed it, with ~, ~/... and ~name/... placed on this machine (local-home-path); one under a user this
+// machine does not have keeps its old place for the continuation key only, and its error refuses it before anything is made there.
+function normalized(value,fallback){const home=localHomePath(value);return {path:resolve(home.path||fallback),error:home.error||null}}
 async function linkState(path){
   try{const stat=await lstat(path);if(!stat.isSymbolicLink())return {kind:"other"};return {kind:"link",target:await readlink(path)}}catch(error){if(error?.code==="ENOENT")return {kind:"missing"};throw error}
 }
@@ -37,14 +34,17 @@ async function ensureLink({sharedHome,effectiveHome,name}){
   }
 }
 
+// The homes a Codex profile runs in on this machine. A home under a user this machine does not have gives the layout an error (the
+// message that says so), which prepareCodexHome and the profile's sign-in refuse with; its key and paths are read as before.
 export function resolveCodexHomeLayout({homePath=null,shadowHomePath=null,defaultHome=join(homedir(),".codex")}={}){
-  const sharedHomePath=normalized(homePath,defaultHome);const shadow=String(shadowHomePath||"").trim();
-  if(!shadow)return {mode:"direct",sharedHomePath,effectiveHomePath:homePath?sharedHomePath:null,continuationKey:`codex:home:${sharedHomePath}`};
-  const effectiveHomePath=normalized(shadow,defaultHome);
-  return {mode:"authOverlay",sharedHomePath,effectiveHomePath,continuationKey:`codex:home:${sharedHomePath}`};
+  const shared=normalized(homePath,defaultHome),sharedHomePath=shared.path;const shadow=String(shadowHomePath||"").trim();
+  if(!shadow)return {mode:"direct",sharedHomePath,effectiveHomePath:homePath?sharedHomePath:null,continuationKey:`codex:home:${sharedHomePath}`,...(shared.error?{error:shared.error}:{})};
+  const effective=normalized(shadow,defaultHome),error=shared.error||effective.error;
+  return {mode:"authOverlay",sharedHomePath,effectiveHomePath:effective.path,continuationKey:`codex:home:${sharedHomePath}`,...(error?{error}:{})};
 }
 
 export async function materializeCodexShadowHome(layout){
+  if(layout?.error)throw new Error(layout.error);
   if(layout?.mode!=="authOverlay")return layout;
   const sharedHome=layout.sharedHomePath,effectiveHome=layout.effectiveHomePath;
   if(!effectiveHome)throw new Error("Codex shadow home path is missing");

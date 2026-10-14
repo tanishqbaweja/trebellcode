@@ -45,6 +45,7 @@ import { StorageCleanupService } from "./storage-cleanup-service.mjs";
 import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome, resolveCodexHomeLayout } from "./codex-home-layout.mjs";
+import { localHomePath } from "./local-home-path.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { createNativeSourceControlExecutor, sourceControlEnvironmentKeys } from "./native-source-control.mjs";
@@ -939,11 +940,10 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     const base=resolve(rootPath||process.cwd());const target=resolve(filePath||"");
     const rel=relative(base,target);return rel===""||(!rel.startsWith("..")&&!isAbsolute(rel));
   }
+  // A Codex profile's home on this machine (local-home-path); one under a user this machine does not have is no home to look in.
   function expandLocalHomePath(value){
     const raw=String(value||"").trim();if(!raw)return null;
-    if(raw==="~")return homedir();
-    if(raw.startsWith("~/")||raw.startsWith("~\\"))return join(homedir(),raw.slice(2));
-    return resolve(raw);
+    const home=localHomePath(raw);return home.error?null:resolve(home.path);
   }
   async function localVisualizationRoots(workspaceRoot){
     const roots=[resolve(workspaceRoot||process.cwd()),join(codexHome(env),"visualizations")];
