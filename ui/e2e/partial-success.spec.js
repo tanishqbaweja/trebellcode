@@ -15,6 +15,7 @@ async function prepare(page,request){
 }
 
 test("successful project removal reports a follow-up refresh failure as partial success",async({page,request})=>{
+  test.setTimeout(60_000);
   await prepare(page,request);
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
@@ -28,7 +29,9 @@ test("successful project removal reports a follow-up refresh failure as partial 
   });
   await card.getByRole("button",{name:"Remove Partial Success Workspace"}).click();
   const alert=page.getByRole("alert");
-  await expect(alert).toContainText("Project was removed, but the project list could not refresh");
+  // The page reads the list again after a removal once the read already on its way has answered, and that read asks Git about this
+  // checkout for the card (2 to 6 s on a loaded host): the outcome is waited for as a person waits for it, up to 20 s.
+  await expect(alert).toContainText("Project was removed, but the project list could not refresh",{timeout:20_000});
   await expect(alert).toContainText("last valid project data is still shown");
   await expect(alert).not.toContainText("Could not remove project");
   await expect(card).toBeVisible();

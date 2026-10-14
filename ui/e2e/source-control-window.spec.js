@@ -884,7 +884,9 @@ test("auto-merge that is on says so and is not offered again, and requested revi
 });
 
 // Git under load (a busy disk, benchmarks on the same host) can take longer than expect's 5 s to answer a status read or a commit:
-// the Commit tests below wait for what Git answers, up to 30 s each, instead of failing on a slow first read.
+// the Commit tests below wait for what Git answers, up to 30 s each, instead of failing on a slow first read. So do the Initialize
+// Git, Fetch, Pull and Push tests, as a person waits for the panel's first read and for each action and the read of the repository
+// after it (a refused action says why once that read has answered; on a loaded host each of those reads took more than 5 s).
 const GIT_WAIT={timeout:30_000};
 
 // A real repository with one commit and `files` written over it (relative path: text), registered as a project; git runs Git in it,
@@ -958,10 +960,10 @@ test("Initialize Git that fails says why in the not-a-repository view",async({pa
   await scriptCodeHost(page,{boot,info:false});
   const {right}=await openGitPanel(page,request,"Source control init failure",root);
   const view=right.locator(".source-control .empty-state");
-  await expect(view).toContainText("Not a Git repository");
+  await expect(view).toContainText("Not a Git repository",GIT_WAIT);
   await view.getByRole("button",{name:"Initialize Git"}).click();
   const alert=right.getByRole("alert");
-  await expect(alert).toHaveText(/^Could not initialize the Git repository: fatal: not a git repository: .*missing-git-dir$/);
+  await expect(alert).toHaveText(/^Could not initialize the Git repository: fatal: not a git repository: .*missing-git-dir$/,GIT_WAIT);
   await expect(view.getByRole("button",{name:"Initialize Git"})).toBeEnabled();
   await shootBothModes(page,"source-control-init-failed");
 });
@@ -977,10 +979,10 @@ test("after Initialize Git the branch picker and the header show the new branch,
   await page.route(/\/api\/git\/info\?/,route=>{if(new URL(route.request().url()).searchParams.has("environmentId"))return route.fallback()});
   const {right,changes}=await openGitPanel(page,request,"Source control unborn branch",root);
   const chip=page.locator("header.workspace-header .branch-control");
-  await expect(right.locator(".source-control .empty-state")).toContainText("Not a Git repository");
+  await expect(right.locator(".source-control .empty-state")).toContainText("Not a Git repository",GIT_WAIT);
   await expect(chip,"no branch before the init").toHaveCount(0);
   await right.locator(".source-control .empty-state").getByRole("button",{name:"Initialize Git"}).click();
-  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1",GIT_WAIT);
   const branch=await git(["symbolic-ref","--short","HEAD"]);await git(["config","user.email","trebell-test@example.invalid"]);await git(["config","user.name","Trebell Test"]);
   await expect(chip,"the header's branch, right after the init").toHaveText(branch);
   const picker=right.getByRole("combobox",{name:"Current branch"});
@@ -991,7 +993,7 @@ test("after Initialize Git the branch picker and the header show the new branch,
   // The first commit makes it a branch like any other.
   await changes.getByPlaceholder("Commit message").click();await page.keyboard.type("First commit",{delay:15});
   await changes.getByRole("button",{name:"Commit",exact:true}).click();
-  await expect(changes.locator(".sc-clean")).toHaveText("Working tree clean.");
+  await expect(changes.locator(".sc-clean")).toHaveText("Working tree clean.",GIT_WAIT);
   await expect(picker).toHaveAttribute("title",branch+" · switch branch");
   await expect(picker.locator("option")).toHaveText([branch]);
   await expect(picker).toHaveValue(branch);
@@ -1012,14 +1014,14 @@ test("Fetch shows how far the branch is behind or ahead, and a refused Pull or P
   await scriptCodeHost(page,{boot,info:false});
   const {right,changes,repository}=await openGitPanel(page,request,"Source control sync state",work);
   const upstream=repository.locator("p").filter({hasText:"Upstream:"}),alert=right.locator(".source-control-error");
-  await expect(upstream).toHaveText("Upstream: origin/main up to date");
+  await expect(upstream).toHaveText("Upstream: origin/main up to date",GIT_WAIT);
   await right.getByRole("button",{name:"Fetch",exact:true}).click();
-  await expect(upstream).toHaveText("Upstream: origin/main 1 commit behind");
+  await expect(upstream).toHaveText("Upstream: origin/main 1 commit behind",GIT_WAIT);
   await shootBothModes(page,"source-control-behind-after-fetch");
   // A local edit the incoming commit would overwrite: git refuses the pull, says why line by line, and Changes shows the edit.
   await writeFile(join(work,"shared.txt"),"base line\nmy local line\n","utf8");
   await right.getByRole("button",{name:"Pull",exact:true}).click();
-  await expect(alert).toContainText("Could not pull:");
+  await expect(alert).toContainText("Could not pull:",GIT_WAIT);
   await expect.poll(()=>alert.innerText()).toMatch(/would be overwritten by merge:\n\s*shared\.txt\n/);
   await expect(changes.getByRole("heading")).toHaveText("Changes 1");
   await expect(changes.locator(".status-list > div")).toHaveText(/shared\.txt/);
@@ -1027,7 +1029,7 @@ test("Fetch shows how far the branch is behind or ahead, and a refused Pull or P
   // Committed locally, the branch has gone both ways; a refused Push keeps each of git's hints on its own line.
   await run(work,["commit","-am","My change"]);
   await right.getByRole("button",{name:"Push",exact:true}).click();
-  await expect(alert).toContainText("Could not push:");
+  await expect(alert).toContainText("Could not push:",GIT_WAIT);
   await expect(upstream).toHaveText("Upstream: origin/main 1 ahead, 1 behind");
   const lines=(await alert.innerText()).split("\n");
   expect(lines.filter(line=>/^hint: /.test(line)).length).toBeGreaterThan(1);
@@ -1051,18 +1053,21 @@ test("a refused Pull keeps git's reason on screen when the refresh after it cann
   let hostDown=false;const unreachable="fetch failed: getaddrinfo ENOTFOUND code.example.test";
   await page.route("**/api/source-control/prs?**",route=>hostDown?route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({ok:false,items:[],error:unreachable})}):route.fallback());
   const {right,changes,repository,pulls}=await openGitPanel(page,request,"Source control pull refused offline",work);
-  const alert=right.locator(".source-control-error");
+  const alert=right.locator(".source-control-error"),upstream=repository.locator("p").filter({hasText:"Upstream:"});
+  // Fetch is pressed once the panel's first read of the repository has answered, as a person presses it once the panel shows the
+  // branch.
+  await expect(upstream).toHaveText("Upstream: origin/main up to date",GIT_WAIT);
   await right.getByRole("button",{name:"Fetch",exact:true}).click();
-  await expect(repository.locator("p").filter({hasText:"Upstream:"})).toHaveText("Upstream: origin/main 1 commit behind");
+  await expect(upstream).toHaveText("Upstream: origin/main 1 commit behind",GIT_WAIT);
   await writeFile(join(work,"shared.txt"),"base line\nmy local line\n","utf8");
   hostDown=true;
   await right.getByRole("button",{name:"Pull",exact:true}).click();
   // The view is read again (Changes shows the edit, the card says it could not list the pull requests) and the banner says why
   // git refused the pull.
-  await expect(changes.getByRole("heading")).toHaveText("Changes 1");
-  await expect(pulls.locator(".pr-empty-state")).toContainText("Could not list pull requests");
+  await expect(changes.getByRole("heading")).toHaveText("Changes 1",GIT_WAIT);
+  await expect(pulls.locator(".pr-empty-state")).toContainText("Could not list pull requests",GIT_WAIT);
   await expect(pulls.locator(".pr-empty-state")).toContainText(unreachable);
-  await expect(alert).toContainText("Could not pull:");
+  await expect(alert).toContainText("Could not pull:",GIT_WAIT);
   await expect(alert).toContainText("would be overwritten by merge");
   await expect(alert).not.toContainText("pull requests");
   await shootBothModes(page,"source-control-pull-refused-host-down");
