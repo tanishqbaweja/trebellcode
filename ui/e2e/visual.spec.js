@@ -1204,6 +1204,9 @@ test("checkpoint failures warn without blocking successful turns",async({page})=
     });
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    // The send's repository context is not under test: a skipped packet stands in for the server reading this whole checkout,
+    // which on a loaded machine outlasts the turn poll below.
+    await page.route(/\/api\/context\/packet$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"checkpoint-warning-context",skipped:true,budget:{mode:"skip",pressure:"normal",reserveTokens:4096,maxTokens:0,maxFiles:0}})}));
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
     const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Checkpoint warning fixture"]')});
