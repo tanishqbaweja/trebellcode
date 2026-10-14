@@ -210,7 +210,7 @@ test("Delete share on a shared plugin asks first, and Cancel keeps the share",as
 test("Removing an MCP server keeps another server's Disable that landed while the question was open",async({page})=>{
   test.setTimeout(45_000);
   await page.setViewportSize({width:1280,height:800});
-  const proofShots=process.env.TREBELL_PROOF_SHOTS?String(process.env.TREBELL_PROOF_SHOTS).replace(/[\/]*$/,"/"):shots+"proof-";
+  const proofShots=process.env.TREBELL_PROOF_SHOTS?String(process.env.TREBELL_PROOF_SHOTS).replace(/[\\/]*$/,"/"):shots+"proof-";
   const workspace={id:"mcp-workspace-tools",name:"Workspace tools",runtime:"native",environmentId:null,enabled:true,type:"stdio",command:"workspace-mcp",args:["--stdio"],env:[]};
   const docs={id:"mcp-docs-search",name:"Docs search",runtime:"native",environmentId:null,enabled:true,type:"stdio",command:"docs-mcp",args:[],env:[]};
   let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",activeEnvironmentId:null,mcpServers:[workspace,docs]};

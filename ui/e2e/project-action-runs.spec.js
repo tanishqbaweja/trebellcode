@@ -67,8 +67,8 @@ test("the header's action button shows its action running, shows its terminal on
 // The server side of action runs for the tests below, scripted as above: each run answers after latencyMs (a real run answered in
 // 450-1275 ms on a loaded host) with a terminal of its own, the terminal list holds every terminal started, and a watch socket says
 // whether its terminal runs. Proof screenshots go to TREBELL_PROOF_SHOTS when it is set.
-const proofShots=process.env.TREBELL_PROOF_SHOTS?String(process.env.TREBELL_PROOF_SHOTS).replace(/[\/]*$/,"/"):auditDir+"proof-";
-mkdirSync(proofShots.replace(/[^\/]*$/,""),{recursive:true});
+const proofShots=process.env.TREBELL_PROOF_SHOTS?String(process.env.TREBELL_PROOF_SHOTS).replace(/[\\/]*$/,"/"):auditDir+"proof-";
+if(process.env.TREBELL_PROOF_SHOTS)mkdirSync(proofShots,{recursive:true});
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const devServer={id:"dev-server",name:"Dev server",command:"node server.js",previewUrl:null,autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
 async function scriptedActions(page,request,{latencyMs=500}={}){
