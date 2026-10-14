@@ -401,6 +401,10 @@ function knownModelProvider(providerId){
 // The Codex requests that start a turn in their thread: a restore of the thread's files waits for none of them, and refuses while one
 // is on its way.
 const CODEX_TURN_START_METHODS=new Set(["turn/start","review/start","thread/compact/start","thread/queue/start"]);
+// Requests the server answers by starting the thread's next turn itself (its own turn/start to Codex): verification's next step and
+// its repair. Edit from here counts them as turn starts.
+const CODEX_SERVER_TURN_METHODS=new Set(["thread/verification/continue","thread/verification/repair"]);
+const startsCodexTurn=method=>CODEX_TURN_START_METHODS.has(method)||CODEX_SERVER_TURN_METHODS.has(method);
 
 const MOCK_DEFAULT_MODEL="test/coding-fast";
 function fakeModels(provider=DEFAULT_MODEL_PROVIDER){
@@ -1544,7 +1548,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   }
   // The Codex turns each thread runs, as the relay sees them pass (turn/started, or a turn-start's answer, until turn/completed, or a
   // read of the thread that finds it idle), and the threads whose files Edit from here is restoring: the restore refuses a thread that
-  // runs or is starting a turn, a turn start that comes meanwhile is refused (CODEX_TURN_START_METHODS), and one Codex starts by itself
+  // runs or is starting a turn, a turn start that comes meanwhile is refused (startsCodexTurn), and one Codex starts by itself
   // meanwhile (a goal's next turn) is noted, so the restore puts the files back as they were.
   const codexRunningTurns=new Map(),restoringThreads=new Map();
   // A thread's own app-server that died (it had served, nothing stopped or released it): how it ended, and whether a turn ran on it, by
@@ -1577,7 +1581,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   function threadTurnRuns(threadId){
     const id=String(threadId||"");if(!id)return false;
     if(agentThreads.getMetadata(id)?.status?.type==="active"||codexRunningTurns.has(id))return true;
-    return relay.requestsInProgress(({method,params})=>CODEX_TURN_START_METHODS.has(method)&&String(params?.threadId||"")===id)>0;
+    return relay.requestsInProgress(({method,params})=>startsCodexTurn(method)&&String(params?.threadId||"")===id)>0;
   }
   function markCodexTurnActive(threadId,turnId){
     if(!threadId||!turnId)return;
@@ -3315,6 +3319,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         state.updateThreadMeta(threadId,{continuityNotes:undefined});const continuity=durableCodexContinuity(threadId);
         relay.broadcast("thread/continuity/updated",{threadId,continuity});return {handled:true,result:{ok:true,continuity}};
       }
+      // While Edit from here puts the thread's files back, no turn of it starts through Trebell: one the window asks for, nor one the
+      // server starts for it (verification's next step or repair, which would also make a checkpoint of the files half restored).
+      if(threadId&&startsCodexTurn(message.method)&&restoringThreads.has(threadId))throw Object.assign(new Error("This thread's files are going back for Edit from here. Send again once that is done."),{code:-32001});
       if(message.method==="thread/verification/get")return {handled:true,result:threadId?codexVerificationState(threadId,params.recordId||null):{record:null,nextAction:null}};
       if(message.method==="thread/verification/evidence/record"){
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});const turnId=String(params.turnId||"").trim();if(!turnId)throw Object.assign(new Error("turnId is required"),{code:-32602});
@@ -3329,7 +3336,6 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         return {handled:true,result:await continueCodexVerification(threadId,params,requestUpstream)};
       }
       if(message.method==="thread/delegate")return {handled:true,result:await delegateCodexThread(params,requestUpstream)};
-      if(threadId&&CODEX_TURN_START_METHODS.has(message.method)&&restoringThreads.has(threadId))throw Object.assign(new Error("This thread's files are going back for Edit from here. Send again once that is done."),{code:-32001});
       if(((message.method==="turn/start"&&params.turnTrigger!=="trebell-restart-continuation")||message.method==="thread/queue/start")&&threadId)assertCodexGoalBudget(threadId);
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:await codexThreadProfiles(message.params?.threadId)};
       if(message.method==="thread/runtimeInstance/set")return {handled:true,result:await setCodexThreadProfile(message.params?.threadId,message.params?.instanceId)};

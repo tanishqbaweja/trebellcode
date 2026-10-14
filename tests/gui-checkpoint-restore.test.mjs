@@ -47,11 +47,13 @@ async function codexSocket(gui){
 
 // A Codex thread in a managed worktree of its own with a checkpoint, then the turn's work on the files: one changed, one deleted, one
 // staged and one added. files() reads what a person would check: each file and git status.
-async function restoreFixture(prefix){
+async function restoreFixture(prefix,{many=0}={}){
   const root=await mkdtemp(join(tmpdir(),prefix)),home=join(root,"home"),repo=join(root,"repo"),worktree=join(root,"worktree");
   await mkdir(repo,{recursive:true});
   await git(repo,["init"]);await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);await git(repo,["checkout","-b","main"]);
   for(const name of ["edited.txt","deleted.txt","staged.txt"])await writeFile(join(repo,name),"base\n");
+  // many: extra files, so that a restore takes a moment as a real project's does.
+  if(many){await mkdir(join(repo,"many"),{recursive:true});for(let index=0;index<many;index++)await writeFile(join(repo,"many",`file-${index}.txt`),"base "+index+"\n")}
   await git(repo,["add","."]);await git(repo,["commit","-m","Base"]);await git(repo,["branch","feature"]);await git(repo,["worktree","add",worktree,"feature"]);
   const env={...process.env,TREBELL_HOME:home,OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
   const state=new TrebellStateStore(env);
@@ -65,6 +67,7 @@ async function restoreFixture(prefix){
   assert.equal(checkpoint.supported,true);
   await writeFile(join(worktree,"edited.txt"),"turn work\n");await rm(join(worktree,"deleted.txt"));
   await writeFile(join(worktree,"staged.txt"),"staged work\n");await git(worktree,["add","staged.txt"]);await writeFile(join(worktree,"added.txt"),"new file\n");
+  for(let index=0;index<many;index++)await writeFile(join(worktree,"many",`file-${index}.txt`),"turn work "+index+"\n");
   const files=async()=>{
     const out={};for(const name of ["edited.txt","deleted.txt","staged.txt","added.txt"])out[name]=await readFile(join(worktree,name),"utf8").catch(()=>null);
     out.status=(await git(worktree,["status","--porcelain=v1","--untracked-files=all"])).stdout;return out;
@@ -141,4 +144,56 @@ test("a Codex turn that starts while the files are being restored leaves every f
     assert.deepEqual(await fixture.files(),before,"every file is as it was");
     assert.equal(restored.status,409,JSON.stringify(restored.body));assert.equal(restored.body.error,"Stop the running turn first.");
   }finally{try{shown?.ws.terminate()}catch{}await fixture.close()}
+});
+
+// Verification's next turn (thread/verification/continue, and thread/verification/repair) is a turn the server starts itself, with
+// its own turn/start to Codex: another window's, or the auto verification flow's. One on its way when the restore comes refuses the
+// restore, and one asked for while the files go back is refused, as a turn start is.
+const verificationPlan={risk:"medium",steps:[{id:"diagnostics",kind:"diagnostics",scope:"changed",cost:"low",required:true,reason:"Check syntax"},{id:"tests",kind:"tests",scope:"affected",cost:"medium",required:true,command:"npm test",reason:"Run affected tests"}]};
+const verificationRecord=(fixture,method)=>fixture.post("/api/verification-records",{id:"restore-record",threadId:THREAD,turnId:"user-turn",projectPath:fixture.worktree,plan:verificationPlan,evidence:[{stepId:"diagnostics",status:method==="thread/verification/repair"?"failed":"passed",rawOutput:method==="thread/verification/repair"?"error: syntax":"ok"}]});
+for(const method of ["thread/verification/continue","thread/verification/repair"])test(`a verification turn on its way (${method}) gets no files restored under it`,async()=>{
+  const fixture=await restoreFixture("trebell-gui-restore-verification-starting-");
+  let shown=null,other=null;
+  try{
+    await verificationRecord(fixture,method);
+    shown=await codexSocket(fixture.gui);other=await codexSocket(fixture.gui);
+    assert.equal((await shown.ask("thread/read",{threadId:THREAD,includeTurns:false})).result.thread.status.type,"idle");
+    assert.equal((await other.ask("thread/verification/get",{threadId:THREAD})).result.nextAction.action,method==="thread/verification/repair"?"repair":"verify");
+    fixture.codex.hold(true);
+    const pending=other.send(method,{threadId:THREAD,recordId:"restore-record",auto:true});
+    for(const deadline=Date.now()+20_000;!fixture.codex.requests.some(message=>message.method==="turn/start")&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,20));
+    assert.ok(fixture.codex.requests.some(message=>message.method==="turn/start"),"the verification's turn start reached Codex");
+    const before=await fixture.files();
+    const restored=await fixture.post("/api/checkpoints/restore",{id:fixture.checkpoint.id,threadId:THREAD});
+    assert.deepEqual(await fixture.files(),before,"no file is restored under the verification turn that is starting");
+    assert.equal(restored.status,409,JSON.stringify(restored.body));assert.equal(restored.body.error,"Stop the running turn first.");
+    fixture.codex.release();assert.ok(!(await other.answer(pending)).error);
+  }finally{for(const socket of [shown,other])try{socket?.ws.terminate()}catch{}await fixture.close()}
+});
+
+test("a verification turn asked for while Edit from here restores the files is refused like a turn start",{timeout:240_000},async()=>{
+  const fixture=await restoreFixture("trebell-gui-restore-verification-during-",{many:300});
+  let shown=null,other=null;
+  try{
+    await verificationRecord(fixture,"thread/verification/continue");
+    shown=await codexSocket(fixture.gui);other=await codexSocket(fixture.gui);
+    assert.equal((await shown.ask("thread/read",{threadId:THREAD,includeTurns:false})).result.thread.status.type,"idle");
+    assert.equal((await other.ask("thread/verification/get",{threadId:THREAD})).result.nextAction.action,"verify");
+    let restoreSettledAt=null;
+    const restoring=fixture.post("/api/checkpoints/restore",{id:fixture.checkpoint.id,threadId:THREAD}).then(result=>{restoreSettledAt=Date.now();return result});
+    // Once the restore is writing the checkpoint's files (edited.txt reads the checkpoint's text), another window's auto verification
+    // asks for the next verification turn.
+    for(const deadline=Date.now()+120_000;Date.now()<deadline&&restoreSettledAt==null;await new Promise(resolve=>setTimeout(resolve,5))){
+      if(await readFile(join(fixture.worktree,"edited.txt"),"utf8").catch(()=>null)==="base\n")break;
+    }
+    const continued=await other.ask("thread/verification/continue",{threadId:THREAD,recordId:"restore-record",auto:true});
+    const answeredAt=Date.now(),restored=await restoring;
+    const upstreamTurnStart=fixture.codex.requests.find(message=>message.method==="turn/start");
+    console.log(JSON.stringify({continueAnsweredDuringRestore:answeredAt<restoreSettledAt,continued:continued.error||continued.result?.turn||null,restore:{status:restored.status,body:restored.body},upstreamTurnStart:Boolean(upstreamTurnStart)}));
+    assert.ok(answeredAt<restoreSettledAt,"the verification request was answered while the restore still ran");
+    assert.ok(continued.error,"the verification turn is refused while the thread's files go back: "+JSON.stringify(continued.result||null));
+    assert.match(continued.error.message,/going back for Edit from here/);
+    assert.equal(upstreamTurnStart,undefined,"no turn reached Codex while the files went back");
+    assert.equal(restored.status,200,"and Edit from here's restore goes through: "+JSON.stringify(restored.body));
+  }finally{for(const socket of [shown,other])try{socket?.ws.terminate()}catch{}await fixture.close()}
 });
