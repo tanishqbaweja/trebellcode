@@ -2549,7 +2549,9 @@ test("Codex repository tools query Trebell context intelligence end to end",asyn
     const relations=JSON.parse(relationsResponse.result.contentItems[0].text);
     expect(relations.path).toBe("src/context-engine.mjs");
     expect(relations.definitions.some(item=>item.name==="ContextEngine")).toBe(true);
-    expect(relations.importers.some(item=>item.path==="src/gui-server.mjs")).toBe(true);
+    // An importer the index holds: the index leaves out a file over its 256,000-byte cap (ContextEngine maxFileBytes), and
+    // src/gui-server.mjs, which imports it too, outgrew that cap. The Repository MCP server is a small file that imports it.
+    expect(relations.importers.some(item=>item.path==="src/repository-mcp-stdio.mjs")).toBe(true);
   }finally{await harness.close()}
 });
 
