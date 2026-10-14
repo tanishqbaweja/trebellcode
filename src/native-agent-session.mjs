@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { posix, win32 } from "node:path";
 import { fileUriPath } from "./file-uri.mjs";
 import { requestsTaskMutation, runNativeAgentTurn } from "./native-agent-loop.mjs";
 import { platformToolDefinition, platformToolParallelSafe } from "./platform-tool-catalog.mjs";
@@ -243,11 +242,10 @@ function modelToolResult(value){
   return {contentItems:tagged};
 }
 
-// cwd is in a terminal run's model view only when the run used another directory than its call asked for.
 function compactTerminalModelOutput(value){
   if(!value||typeof value!=="object"||Array.isArray(value))return value;
   const keep=[
-    "success","exitCode","stdout","stderr","output","content","aggregatedOutput","signal","timedOut","truncated","durationMs","cwd",
+    "success","exitCode","stdout","stderr","output","content","aggregatedOutput","signal","timedOut","truncated","durationMs",
     "error","message","status","uncertain","retrySafe","preview","_trebell_output",
   ],out={};
   for(const key of keep)if(Object.prototype.hasOwnProperty.call(value,key))out[key]=value[key];
@@ -384,27 +382,6 @@ function processExitStdoutTail(record,shownStdout,preview,environment){
   if(previewText.includes(shown.slice(-PREVIEW_STDOUT_END_CHARS)+header)||previewText.includes(collapseRepeatedOutputLines(shown).text.slice(-PREVIEW_STDOUT_END_CHARS)+header))return {};
   const bytes=Buffer.from(text,"utf8");
   return {final_stdout:redactSecretText(bytes.subarray(exitTailOffset(bytes)).toString("utf8"),{environment})};
-}
-
-const WINDOWS_ABSOLUTE_PATH=/^[a-zA-Z]:[\\/]|^\\\\/;
-// Whether a terminal run's working directory is not the one its call asked for, the workspace root resolving a relative or
-// missing cwd: true when the run fell back to another directory. False when that cannot be told.
-function terminalRunCwdDiffers(actual,requested,root){
-  const cwd=typeof actual==="string"?actual.trim():"";if(!cwd)return false;
-  const windows=WINDOWS_ABSOLUTE_PATH.test(cwd),paths=windows?win32:posix,absolute=value=>windows?WINDOWS_ABSOLUTE_PATH.test(value):value.startsWith("/");
-  const asked=typeof requested==="string"&&requested.trim()?requested.trim():".",base=String(root??"").trim();
-  const expected=absolute(asked)?paths.resolve(asked):absolute(base)?paths.resolve(base,asked):null;
-  if(expected==null)return false;
-  const ran=paths.resolve(cwd);
-  return windows?expected.toLowerCase()!==ran.toLowerCase():expected!==ran;
-}
-// What the model reads back from a terminal run: its result without the command and args it just sent, and without the working
-// directory unless the run used another one than the call asked for. The person's view keeps the whole result.
-function terminalRunModelView(record,call,root){
-  if(!record||typeof record!=="object"||Array.isArray(record))return null;
-  const {command:_command,args:_args,cwd,...view}=record;
-  if(cwd!==undefined&&terminalRunCwdDiffers(cwd,callArguments(call).cwd,root))view.cwd=cwd;
-  return view;
 }
 
 function exposesTool(tools,namespace,name){
@@ -729,14 +706,13 @@ export class NativeAgentSession{
       const terminalRun=call.namespace==="trebell_terminal"&&call.name==="run",processTool=nativeProcessTool(call);
       // Repeated command-output lines collapse only where the model can still fetch the raw output through trebell_output.
       const collapseRepeatedLines=Boolean(this.toolOutputStore)&&outputRetrievalVisible&&(terminalRun||processTool);
-      // A background process's result reaches the model as its receipt, and a terminal run's without the call it echoes; the
-      // person keeps the whole record.
-      const processView=processTool?record=>processModelReceipt(record,call):null,terminalView=terminalRun?record=>terminalRunModelView(record,call,this.cwd):null,modelView=processView||terminalView;
+      // A background process's result reaches the model as its receipt; the person keeps the whole record.
+      const processView=processTool?record=>processModelReceipt(record,call):null;
       // When a partial process read replaces the model's view, this shaping serves only the person's view, which is never
       // collapsed, so it collapses nothing: a collapsed copy would be stored for a view no one is shown.
       const shaped=this.toolOutputStore
-        ?await this.toolOutputStore.virtualize(observed,{namespace:call.namespace||null,name:call.name||null,...(collapseRepeatedLines&&!processRead?{collapseRepeatedLines:true}:{}),...(modelView?{modelView}:{})})
-        :{value:modelView?.(observed)||observed,uiValue:observed,virtualized:false};
+        ?await this.toolOutputStore.virtualize(observed,{namespace:call.namespace||null,name:call.name||null,...(collapseRepeatedLines&&!processRead?{collapseRepeatedLines:true}:{}),...(processView?{modelView:processView}:{})})
+        :{value:processView?.(observed)||observed,uiValue:observed,virtualized:false};
       let uiOutput=shaped.uiValue??shaped.value,modelSource=shaped.value;
       // A read of a process the model has partly seen gives it only the output since then. That receipt goes through the same hot
       // bound, preview and line collapse as a whole one would.
@@ -752,7 +728,7 @@ export class NativeAgentSession{
         const stored=shaped.archived===true&&shaped.handle?modelSource?._trebell_output:null;
         const archived=stored?.handle?{archived:true,handle:stored.handle,totalBytes:stored.totalBytes,totalLines:stored.totalLines}:await this.toolOutputStore.archive(observed,{namespace:call.namespace,name:call.name,minBytes:1200});
         if(archived?.archived){
-          uiOutput={...uiOutput,_trebell_output:{handle:archived.handle,totalBytes:archived.totalBytes,totalLines:archived.totalLines,archived:true,note:"Full redacted command output is archived by Trebell. Older successful probe output may later be compacted to a preview; inspect this handle only if exact prior evidence is needed."}};if(!stored?.handle)modelSource={...modelSource,_trebell_output:uiOutput._trebell_output};
+          uiOutput={...uiOutput,_trebell_output:{handle:archived.handle,totalBytes:archived.totalBytes,totalLines:archived.totalLines,archived:true,note:"Full redacted command output is archived by Trebell. Older successful probe output may later be compacted to a preview; inspect this handle only if exact prior evidence is needed."}};if(!stored?.handle)modelSource=uiOutput;
           this.onEvent?.({name:"native.tool.output_archived",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{namespace:call.namespace,name:call.name,handle:archived.handle,totalBytes:archived.totalBytes}});
         }
       }
