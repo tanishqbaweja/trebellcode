@@ -140,10 +140,27 @@ test("a process record gives each stream's retained text its absolute byte offse
     assert.equal(status.truncated,true);assert.equal(status.outputOffsets.stdout.end,1600,"the end counts every byte written");
     assert.equal(status.outputOffsets.stdout.start,1600-Buffer.byteLength(status.stdout),"the start is where the retained text begins");
     assert.equal(status.outputOffsets.stdout.start,576);
-    // A trim that cuts a character leaves a replacement character; the offsets still place the text that follows it exactly.
+    // A trim that would cut a character drops the rest of it too, so the text starts on a whole character, holds no replacement
+    // character, and its start is the exact position of that character in everything written.
     child.stdout.write("a"+"é".repeat(600)+"b");await new Promise(resolve=>setImmediate(resolve));
     status=manager.status("thread-o","p1");const {start,end}=status.outputOffsets.stdout;
-    assert.equal(end,1600+1202);assert.equal(end-start,Buffer.byteLength(status.stdout));assert.ok(status.stdout.endsWith("éb"));
+    // 1,024 retained + 1,202 written = 2,226 bytes; keeping the last 1,024 would start inside the 89th "é" (byte 1,202), so the
+    // cut moves on to byte 1,203: 1,023 bytes are kept, from absolute byte 1,600+179.
+    assert.equal(end,1600+1202);assert.equal(start,1600+179);assert.equal(end-start,Buffer.byteLength(status.stdout));
+    assert.equal(Buffer.byteLength(status.stdout),1023);assert.ok(status.stdout.startsWith("é"));assert.equal(status.stdout.includes("�"),false);assert.ok(status.stdout.endsWith("éb"));
+    assert.equal(Object.hasOwn(status.outputOffsets.stdout,"redacted"),false,"text redaction left alone has no redacted flag");
+  }finally{await manager.closeAll()}
+});
+
+test("a process stream whose text redaction changed is flagged, since its offsets count what the process wrote",async()=>{
+  const {environments,children}=fakeRemoteEnvironment(),manager=new NativeBackgroundProcessManager({environments,environment:{}});
+  try{
+    manager.start({threadId:"thread-r",command:"python3",args:["serve.py"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH"]});
+    const child=children[0];child.stdout.write("password=abcdefghijklmnopq\n");child.stderr.write("listening\n");
+    await new Promise(resolve=>setImmediate(resolve));
+    const status=manager.status("thread-r","p1");
+    assert.equal(status.stdout,"password=[redacted]\n");
+    assert.deepEqual(status.outputOffsets,{stdout:{start:0,end:27,redacted:true},stderr:{start:0,end:10}});
   }finally{await manager.closeAll()}
 });
 
@@ -188,6 +205,20 @@ test("waitForExit ends with an AbortError when the turn is cancelled",async()=>{
     assert.ok(Date.now()-started<2000,"the abort ends the wait at once");
     await assert.rejects(()=>manager.waitForExit("thread-a","p1",{waitMs:30_000,signal:controller.signal}),error=>error?.name==="AbortError","an already aborted turn does not wait");
     assert.equal(manager.status("thread-a","p1").running,true,"cancelling the wait leaves the process running");
+  }finally{await manager.closeAll()}
+});
+
+test("waitForExit ends without an error when its wake signal fires, as when the person steers the turn",async()=>{
+  const {environments}=fakeRemoteEnvironment(),manager=new NativeBackgroundProcessManager({environments,environment:{}});
+  try{
+    manager.start({threadId:"thread-k",command:"python3",args:["run.py"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH"]});
+    const turn=new AbortController(),wake=new AbortController(),started=Date.now();
+    setTimeout(()=>wake.abort("native-steering"),50);
+    await manager.waitForExit("thread-k","p1",{waitMs:30_000,signal:turn.signal,wake:wake.signal});
+    assert.ok(Date.now()-started<2000,"the wake ends the wait at once");
+    const again=Date.now();await manager.waitForExit("thread-k","p1",{waitMs:30_000,signal:turn.signal,wake:wake.signal});
+    assert.ok(Date.now()-again<100,"an already woken call does not wait");
+    assert.equal(manager.status("thread-k","p1").running,true);
   }finally{await manager.closeAll()}
 });
 

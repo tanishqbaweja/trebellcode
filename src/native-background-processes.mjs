@@ -14,9 +14,13 @@ function boundedBytes(value,fallback=DEFAULT_OUTPUT_BYTES){
   const number=Math.trunc(Number(value));return Number.isFinite(number)?Math.max(1024,Math.min(MAX_OUTPUT_BYTES,number)):fallback;
 }
 
+// The end of text, at most maxBytes long. A cut inside a multi-byte character drops the rest of that character instead of
+// leaving a replacement character, so the kept text is exactly the last bytes written and its offsets stay exact.
 function trimTail(text,maxBytes){
   const value=String(text||"");if(Buffer.byteLength(value,"utf8")<=maxBytes)return value;
-  const bytes=Buffer.from(value,"utf8");return bytes.subarray(Math.max(0,bytes.length-maxBytes)).toString("utf8");
+  const bytes=Buffer.from(value,"utf8");let from=Math.max(0,bytes.length-maxBytes);
+  while(from<bytes.length&&(bytes[from]&0xc0)===0x80)from++;
+  return bytes.subarray(from).toString("utf8");
 }
 
 function cursorOffset(cursor){
@@ -94,12 +98,17 @@ export class NativeBackgroundProcessManager{
     if(includeOutput){
       // Where each stream's retained text sits in everything the process wrote to it: absolute UTF-8 byte offsets, counted
       // before redaction. They come before the text so a capped audit record still has them.
-      base.outputOffsets={stdout:this.#offsets(record,"stdout"),stderr:this.#offsets(record,"stderr")};
-      base.stdout=redactSecretText(record.stdout||"",{environment:this.environment});base.stderr=redactSecretText(record.stderr||"",{environment:this.environment});base.truncated=Boolean(record.truncated);
+      const stdout=redactSecretText(record.stdout||"",{environment:this.environment}),stderr=redactSecretText(record.stderr||"",{environment:this.environment});
+      base.outputOffsets={stdout:this.#offsets(record,"stdout",stdout),stderr:this.#offsets(record,"stderr",stderr)};
+      base.stdout=stdout;base.stderr=stderr;base.truncated=Boolean(record.truncated);
     }
     return base;
   }
-  #offsets(record,key){const end=record.written[key];return {start:end-Buffer.byteLength(String(record[key]||""),"utf8"),end}}
+  // redacted: redaction changed the stream's text, so offsets into what the process wrote no longer point into the text shown.
+  #offsets(record,key,shown){
+    const text=String(record[key]||""),end=record.written[key];
+    return {start:end-Buffer.byteLength(text,"utf8"),end,...(shown===text?{}:{redacted:true})};
+  }
   #append(record,key,chunk){
     const text=String(chunk),before=String(record[key]||""),next=before+text,limit=record.maxOutputBytes;
     record.written[key]+=Buffer.byteLength(text,"utf8");
@@ -131,17 +140,19 @@ export class NativeBackgroundProcessManager{
     return this.#public(this.#record(threadId,processId),{includeOutput:true});
   }
   // Waits until the process ends or waitMs (at most MAX_PROCESS_WAIT_MS) passes, whichever is first. New output does not end
-  // the wait. An aborted signal ends it with an AbortError.
-  async waitForExit(threadId,processId,{waitMs=0,signal=null}={}){
+  // the wait. An aborted signal ends it with an AbortError; an aborted wake signal (the person steered the turn) ends it as
+  // the time passing would.
+  async waitForExit(threadId,processId,{waitMs=0,signal=null,wake=null}={}){
     const record=this.#record(threadId,processId),limit=Math.max(0,Math.min(MAX_PROCESS_WAIT_MS,Math.trunc(Number(waitMs))||0));
     if(signal?.aborted)throw abortError(signal);
-    if(!record.running||limit<=0)return;
+    if(!record.running||limit<=0||wake?.aborted)return;
     await new Promise((resolve,reject)=>{
       let timer=null;
-      const finish=error=>{clearTimeout(timer);record.waiters.delete(done);signal?.removeEventListener?.("abort",onAbort);error?reject(error):resolve()};
+      const finish=error=>{clearTimeout(timer);record.waiters.delete(done);signal?.removeEventListener?.("abort",onAbort);wake?.removeEventListener?.("abort",done);error?reject(error):resolve()};
       const done=()=>finish(null),onAbort=()=>finish(abortError(signal));
       record.waiters.add(done);timer=setTimeout(done,limit);
       signal?.addEventListener?.("abort",onAbort,{once:true});
+      wake?.addEventListener?.("abort",done,{once:true});
     });
   }
   list(threadId,{cursor=null,limit=50}={}){
