@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NATIVE_REPLY_STREAM, NativeAgentSession, nativeCompactionMessage, nativeDraftEligible, nativeMessagesFromThread, openAiServerCompactionArmTokens } from "../src/native-agent-session.mjs";
@@ -2060,6 +2060,7 @@ test("Native process status and stop repeat the final tail once a process has en
       assert.ok(view.stdout.endsWith("iter 59 obj=0.5900\nfinal obj=0.6123 Tshort=0.3311\n"),id+" shows the final lines");
       assert.ok(Buffer.byteLength(view.stdout)<=1000,id+" repeats only a short tail");assert.match(view.stdout,/^iter \d+ obj=/,id+" starts the tail at a line");
       assert.match(view.note,/stdout: the process has ended, so its final \d+ bytes, already shown, are repeated\./,id);
+      assert.equal(Object.hasOwn(view,"final_stdout"),false,id+": a read that shows the streams does not repeat their end again");
     }
     const repeated=Number(/final (\d+) bytes/.exec(toolView(requests,"after-exit").note)[1]);
     assert.equal(repeated,Buffer.byteLength(toolView(requests,"after-exit").stdout)-Buffer.byteLength("final obj=0.6123 Tshort=0.3311\n"),"the note counts only the bytes already shown");
@@ -2085,6 +2086,8 @@ test("Native process status says how many unread bytes the retained output trimm
     assert.equal(trimmed.note,"stdout: 976 bytes written since your previous read were trimmed from the retained output unread.");
     assert.equal(trimmed.stdout,retained,"everything still retained is shown");assert.equal(trimmed.truncated,true);
     assert.equal(toolView(requests,"s3").stdout,"tail line\n");assert.equal(Object.hasOwn(toolView(requests,"s3"),"note"),false);
+    assert.equal(toolView(requests,"s3").truncated,false,"a read that lost nothing to the trim is not truncated, though the buffer once was");
+    assert.equal(uiRecord(updates,"s3").truncated,true,"the person's record keeps the buffer's flag");
   }finally{await processes.manager.closeAll()}
 });
 
@@ -2220,4 +2223,122 @@ test("a terminal run's working directory is compared with the requested one in t
   assert.equal(await view({cwd:"/app",requested:"/app/sub/",ran:"/app/sub"}),undefined);
   assert.equal(await view({cwd:"/app",requested:"./sub/../sub",ran:"/app/sub"}),undefined);
   assert.equal(await view({cwd:"/app",requested:".",ran:"/app/other"}),"/app/other");
+});
+
+// A session over scripted process reads: each step runs before its model request returns and gives that request's tool calls.
+function processSession({processes,steps,requests,updates=[],requestTimes=null,...options}){
+  let calls=0;
+  return new NativeAgentSession({
+    model:"gpt-6-luna",provider:"openai",tools:PROCESS_TOOLS,onUpdate:update=>updates.push(update),executeTool:call=>processes.builtins(call),...options,
+    providerTurn:async request=>{requestTimes?.push(Date.now());requests.push(structuredClone({...request,signal:undefined}));const step=steps[calls++];return step?{id:"r"+calls,text:"",toolCalls:await step(),usage:{}}:{id:"done",text:"done",toolCalls:[],usage:{}}},
+  });
+}
+const OUTPUT_TOOLS=[{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]}];
+
+test("Native process status gives a read back when its result fails to reach the model, so the next status repeats that output instead of skipping it",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-process-giveback-")),blocked=join(root,"store");await writeFile(blocked,"not a directory");
+  const processes=scriptedProcesses(),child=processes.start(),requests=[];
+  const rows=Array.from({length:400},(_,index)=>`row ${String(index).padStart(3,"0")} value=${index*7}`).join("\n")+"\n";
+  try{
+    const steps=[
+      async()=>{await processes.write(child,"start\n");return [statusCall("s1")]},
+      // The whole record and the new output are both over the store's hot bound, and the store cannot write: the read fails.
+      async()=>{await processes.write(child,rows);return [statusCall("s2")]},
+      async()=>{await rm(blocked,{force:true});await processes.write(child,"tail line\n");return [statusCall("s3")]},
+    ];
+    const store=new NativeToolOutputStore({directory:blocked,maxHotBytes:4096});
+    const session=processSession({processes,steps,requests,toolOutputStore:store,tools:[...PROCESS_TOOLS,...OUTPUT_TOOLS]});
+    await session.start({providerSessionId:"native-process-giveback",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Watch the job."}],{maxModelTurns:5,maxToolCalls:5});
+    assert.equal(toolView(requests,"s1").stdout,"start\n");
+    assert.equal(toolView(requests,"s2").success,false,"the failed read reaches the model as a failure");
+    const s3=toolView(requests,"s3");
+    assert.match(s3.preview,/--- stdout ---\nrow 000 value=0\n/,"the next read starts where the last delivered read ended");
+    assert.match(s3.preview,/tail line/);assert.equal(s3.preview.includes("start\n"),false,"output the model already has is not repeated");
+    assert.equal(Object.hasOwn(s3,"note"),false,"nothing was skipped");
+    const stored=await store.read({handle:s3._trebell_output.handle,start_line:1,max_chars:48_000});
+    assert.match(stored.content,/row 399 value=2793\ntail line/,"every row the failed read took is still behind the handle");
+  }finally{await processes.manager.closeAll();await rm(root,{recursive:true,force:true})}
+});
+
+test("Native process status shows a stream whose text redaction changed whole, so no slice of it can start in the wrong place",async()=>{
+  const processes=scriptedProcesses(),child=processes.start(),requests=[];
+  try{
+    const steps=[
+      async()=>{await processes.write(child,"password=abcdefghijklmnopq\n");await processes.write(child,"warming up\n","stderr");return [statusCall("s1")]},
+      // Two redactions that change the length by opposite amounts keep the stream's total length.
+      async()=>{await processes.write(child,"NEW-DATA-1234567 password=abc\n");await processes.write(child,"ready\n","stderr");return [statusCall("s2")]},
+    ];
+    const session=processSession({processes,steps,requests});
+    await session.start({providerSessionId:"native-process-redacted",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Watch the server."}],{maxModelTurns:4,maxToolCalls:4});
+    const s2=toolView(requests,"s2");
+    assert.equal(s2.stdout,"password=[redacted]\nNEW-DATA-1234567 password=[redacted]\n","the redacted stream is shown whole");
+    assert.equal(s2.stderr,"ready\n","the other stream stays incremental");assert.equal(Object.hasOwn(s2,"note"),false);
+  }finally{await processes.manager.closeAll()}
+});
+
+test("Native process status of an ended process that the model sees as a preview also carries each stream's exact end",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-process-final-")),processes=scriptedProcesses(),child=processes.start(),requests=[];
+  const rows=Array.from({length:900},(_,index)=>`train row ${String(index).padStart(3,"0")} loss=${(index%97)/97}`).join("\n")+"\n";
+  const progress=Array.from({length:200},(_,index)=>`progress ${index}/200 it/s=${(index%13)+3}`).join("\n")+"\n";
+  try{
+    let quiet=null;
+    const steps=[
+      async()=>{await processes.write(child,"epoch 0\n");return [statusCall("s1")]},
+      async()=>{
+        await processes.write(child,rows);await processes.write(child,"FINAL objective=0.61234 Tshort=0.3311\n");await processes.write(child,progress,"stderr");
+        child.emit("close",0,null);await new Promise(resolve=>setImmediate(resolve));return [statusCall("s2")];
+      },
+      // A second job that writes nothing to stderr: its preview ends with stdout's end, so nothing is added.
+      async()=>{
+        quiet=processes.start();await processes.write(quiet,rows);await processes.write(quiet,"FINAL objective=0.70001\n");
+        quiet.emit("close",0,null);await new Promise(resolve=>setImmediate(resolve));return [statusCall("q1",{process_id:"p2"})];
+      },
+    ];
+    const store=new NativeToolOutputStore({directory:root});
+    const session=processSession({processes,steps,requests,toolOutputStore:store,tools:[...PROCESS_TOOLS,...OUTPUT_TOOLS]});
+    await session.start({providerSessionId:"native-process-final",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Run it to the end."}],{maxModelTurns:5,maxToolCalls:5});
+    const s2=toolView(requests,"s2");
+    assert.deepEqual({running:s2.running,exitCode:s2.exitCode},{running:false,exitCode:0});assert.equal(typeof s2.preview,"string");
+    assert.equal(s2.preview.includes("FINAL objective"),false,"the preview's tail is the end of stderr");
+    assert.ok(s2.final_stdout.endsWith("train row 899 loss=0.26804123711340205\nFINAL objective=0.61234 Tshort=0.3311\n"),"the exact end of stdout is shown");
+    assert.ok(Buffer.byteLength(s2.final_stdout)<=1000);assert.match(s2.final_stdout,/^train row \d+ /,"it starts at a line");
+    assert.equal(Object.hasOwn(s2,"final_stderr"),false,"stderr's end closes the preview, so it is not repeated");
+    const q1=toolView(requests,"q1");
+    assert.equal(typeof q1.preview,"string");assert.match(q1.preview,/FINAL objective=0\.70001\n\n\n--- stderr ---\n$/);
+    assert.equal(Object.hasOwn(q1,"final_stdout"),false,"a preview that shows stdout's end gets no copy of it");
+  }finally{await processes.manager.closeAll();await rm(root,{recursive:true,force:true})}
+});
+
+test("Native process status stores no collapsed copy of the person's view when the model is shown only the new output",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-process-orphan-")),processes=scriptedProcesses(),child=processes.start(),requests=[],virtualized=[];
+  try{
+    const steps=[1,2,3].map(epoch=>async()=>{await processes.write(child,`epoch ${epoch} step\n`.repeat(40));return [statusCall("s"+epoch)]});
+    const store=new NativeToolOutputStore({directory:root,onVirtualized:event=>virtualized.push(event)});
+    const session=processSession({processes,steps,requests,toolOutputStore:store,tools:[...PROCESS_TOOLS,...OUTPUT_TOOLS]});
+    await session.start({providerSessionId:"native-process-orphan",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Watch training."}],{maxModelTurns:5,maxToolCalls:5});
+    for(const epoch of [1,2,3])assert.match(toolView(requests,"s"+epoch).stdout,new RegExp(`^epoch ${epoch} step\\n\\[Trebell: previous line repeated 39 more times\\]\\n$`));
+    const stored=(await readdir(root)).filter(name=>name.endsWith(".json")).map(name=>name.slice(0,-5)),lastRequest=JSON.stringify(requests.at(-1).messages);
+    assert.equal(stored.length,3,"one stored copy per read");assert.equal(virtualized.length,3);
+    for(const handle of stored)assert.ok(lastRequest.includes(handle),"every stored copy is one the model can name");
+  }finally{await processes.manager.closeAll();await rm(root,{recursive:true,force:true})}
+});
+
+test("Native process status waiting with wait_ms ends its wait when the person steers, and returns the status as usual",async()=>{
+  const processes=scriptedProcesses(),child=processes.start(),requests=[],requestTimes=[];let steeredAt=null;
+  try{
+    const steps=[async()=>{await processes.write(child,"working\n");return [statusCall("wait",{wait_ms:30_000})]}];
+    const session=processSession({processes,steps,requests,requestTimes});
+    await session.start({providerSessionId:"native-process-steer",model:"gpt-6-luna"});
+    const pending=session.prompt([{type:"text",text:"Wait for the job."}],{maxModelTurns:4,maxToolCalls:4});
+    setTimeout(()=>{session.steer([{type:"text",text:"Stop waiting and check the config."}]);steeredAt=Date.now()},150);
+    const result=await pending;
+    assert.equal(result.stopReason,"end_turn");assert.ok(requestTimes[1]-steeredAt<2000,`the steering reached the model ${requestTimes[1]-steeredAt} ms after it was sent`);
+    const view=toolView(requests,"wait");assert.equal(view.running,true);assert.equal(view.stdout,"working\n","the status is returned as usual");
+    assert.ok(requests[1].messages.some(message=>message.role==="user"&&JSON.stringify(message.content).includes("check the config")),"the steering is in the next request");
+    assert.equal(processes.manager.status("thread-p","p1").running,true,"the process keeps running");
+  }finally{await processes.manager.closeAll()}
 });
