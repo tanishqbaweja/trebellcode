@@ -623,7 +623,7 @@ test("Native session keeps large tool output outside hot provider history behind
 test("Native session does not echo terminal command metadata back into model tool context",async()=>{
   const requests=[],updates=[];let calls=0;
   const session=new NativeAgentSession({
-    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],onUpdate:update=>updates.push(update),
+    cwd:"/repo",model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],onUpdate:update=>updates.push(update),
     providerTurn:async request=>{requests.push(structuredClone(request));calls++;return calls===1
       ?{id:"tool",text:"",toolCalls:[{id:"probe",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["probe.js"],"cwd":"src"}'}],usage:{}}
       :{id:"done",text:"done",toolCalls:[],usage:{}}},
@@ -2158,4 +2158,66 @@ test("Native process status with wait_ms ends with the turn when it is cancelled
     assert.equal(result.stopReason,"cancelled");assert.ok(Date.now()-started<5000,"the wait does not outlast the cancelled turn");
     assert.equal(processes.manager.status("thread-p","p1").running,true,"the process keeps running");
   }finally{await processes.manager.closeAll()}
+});
+
+test("Native terminal runs reach the model without the command, args and working directory they echo, unless the run used another directory",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-run-view-")),requests=[],updates=[];let calls=0;
+  const script="set -e\n"+"python3 - <<'PY'\nprint('checking design constraints')\nPY\n".repeat(40);
+  const runs={
+    same:{arguments:{command:"bash",args:["-lc","ls"],cwd:"src"},output:{exitCode:0,signal:null,stdout:"a.py\n",stderr:"",timedOut:false,truncated:false,durationMs:7,cwd:"/repo/src",command:"bash",args:["-lc","ls"]}},
+    root:{arguments:{command:"pwd"},output:{exitCode:0,signal:null,stdout:"/repo\n",stderr:"",timedOut:false,truncated:false,durationMs:3,cwd:"/repo",command:"pwd",args:[]}},
+    fallback:{arguments:{command:"ls",cwd:"/workspace/tools"},output:{exitCode:0,signal:null,stdout:"build.sh\n",stderr:"",timedOut:false,truncated:false,durationMs:4,cwd:"/repo/tools",command:"ls",args:[]}},
+    big:{arguments:{command:"bash",args:["-lc",script]},output:{exitCode:1,signal:null,stdout:Array.from({length:700},(_,index)=>"check "+index+" ok").join("\n"),stderr:"AssertionError: constraint 3 failed",timedOut:false,truncated:false,durationMs:900,cwd:"/repo",command:"bash",args:["-lc",script]}},
+  };
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});
+    const session=new NativeAgentSession({
+      cwd:"/repo",model:"gpt-6-luna",provider:"openai",toolOutputStore:store,onUpdate:update=>updates.push(update),
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]}],
+      providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));calls++;
+        return calls===1?{id:"runs",text:"",toolCalls:Object.entries(runs).map(([id,run])=>({id,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify(run.arguments)})),usage:{}}:{id:"done",text:"done",toolCalls:[],usage:{}};
+      },
+      executeTool:async call=>structuredClone(runs[call.id].output),
+    });
+    await session.start({providerSessionId:"native-run-view",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Run the checks."}],{maxModelTurns:3,maxToolCalls:8});
+    const content=id=>requests.at(-1).messages.find(message=>message.role==="tool"&&message.toolCallId===id)?.content||"";
+    for(const id of Object.keys(runs)){
+      const view=toolView(requests,id);
+      assert.equal(Object.hasOwn(view,"command"),false,id);assert.equal(Object.hasOwn(view,"args"),false,id);
+      assert.doesNotMatch(content(id),/"command"|"args"/,id);
+      assert.equal(view.exitCode,runs[id].output.exitCode,id);assert.equal(typeof view.durationMs,"number",id);
+      const ui=uiRecord(updates,id);
+      if(id!=="big")assert.deepEqual(ui,runs[id].output,id+": the person's view is the whole result");
+    }
+    assert.deepEqual(toolView(requests,"same"),{exitCode:0,stdout:"a.py\n",stderr:"",signal:null,timedOut:false,truncated:false,durationMs:7});
+    assert.equal(Object.hasOwn(toolView(requests,"root"),"cwd"),false,"a run in the requested directory does not repeat it");
+    assert.equal(toolView(requests,"fallback").cwd,"/repo/tools","a run that used another directory than the call asked for says where it ran");
+    const big=toolView(requests,"big");
+    assert.match(big._trebell_output.handle,/^out_/);assert.match(big.preview,/check 0 ok/);assert.match(big.preview,/AssertionError: constraint 3 failed/);
+    assert.equal(content("big").includes("checking design constraints"),false,"the preview of a large result leaves out the script it ran");
+    const ui=uiRecord(updates,"big");assert.match(ui.preview,/checking design constraints/,"the person's preview is the one it was");assert.equal(ui.command,"bash");
+    const stored=await store.read({handle:big._trebell_output.handle,start_line:1,max_chars:48_000});
+    assert.match(stored.content,/check 699 ok/);assert.equal(stored.content.includes("checking design constraints"),false,"the stored copy behind the model's handle has every output line and no echo");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("a terminal run's working directory is compared with the requested one in the run's own path style",async()=>{
+  const view=async({cwd,requested,ran})=>{
+    const requests=[];let calls=0;
+    const session=new NativeAgentSession({
+      cwd,model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+      providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));calls++;return calls===1?{id:"r",text:"",toolCalls:[{id:"run",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"dir",...(requested==null?{}:{cwd:requested})})}],usage:{}}:{id:"done",text:"done",toolCalls:[],usage:{}}},
+      executeTool:async()=>({exitCode:0,signal:null,stdout:"ok",stderr:"",timedOut:false,truncated:false,durationMs:1,cwd:ran,command:"dir",args:[]}),
+    });
+    await session.start({providerSessionId:"native-run-cwd",model:"model-a"});await session.prompt([{type:"text",text:"list"}],{maxModelTurns:2,maxToolCalls:2});
+    return toolView(requests,"run").cwd;
+  };
+  assert.equal(await view({cwd:"C:\\repo",requested:"src",ran:"C:\\repo\\src"}),undefined);
+  assert.equal(await view({cwd:"C:\\repo",requested:"src\\",ran:"c:\\Repo\\SRC"}),undefined,"Windows paths compare without case or a trailing separator");
+  assert.equal(await view({cwd:"C:\\repo",requested:null,ran:"C:\\repo"}),undefined);
+  assert.equal(await view({cwd:"C:\\repo",requested:"/tools",ran:"C:\\repo\\tools"}),"C:\\repo\\tools");
+  assert.equal(await view({cwd:"/app",requested:"/app/sub/",ran:"/app/sub"}),undefined);
+  assert.equal(await view({cwd:"/app",requested:"./sub/../sub",ran:"/app/sub"}),undefined);
+  assert.equal(await view({cwd:"/app",requested:".",ran:"/app/other"}),"/app/other");
 });
