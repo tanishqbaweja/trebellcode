@@ -1,4 +1,5 @@
 import { epochSeconds } from "./time-format.js";
+import { compactThreadSnapshot } from "../../src/thread-snapshot.mjs";
 
 const RUNTIMES=new Set(["native","codex","claude","opencode","cursor","grok","antigravity"]);
 
@@ -142,6 +143,9 @@ export function catalogMetaPatch(thread,{runtime:runtimeHint=null,provider=null,
   };
 }
 
+// Two snapshots are the same when the server keeps the same catalog for both. A load hands the page the server's compacted copy (no
+// null section, a status with its activeFlags), which never equalled the page's own snapshot as written: every load posted every
+// listed thread again (100 POSTs on the perf home), though the server had made those posts write nothing.
 export function sameCatalogSnapshot(left,right){
-  return JSON.stringify(left||null)===JSON.stringify(right||null);
+  return JSON.stringify(compactThreadSnapshot(left))===JSON.stringify(compactThreadSnapshot(right));
 }

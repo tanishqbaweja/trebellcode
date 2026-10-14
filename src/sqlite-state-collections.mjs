@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 import { dirname,join } from "node:path";
 import { trebellHome } from "./paths.mjs";
+import { boundedText, compactThreadSnapshot } from "./thread-snapshot.mjs";
 
 const require=createRequire(import.meta.url);
 const LIMITS=Object.freeze({checkpoints:200,usage:5000,verification:1000,knowledge:5000});
@@ -17,7 +18,6 @@ function parseCatalogCursor(value){
     const at=Number(updatedAt),id=String(threadId||"");return Number.isFinite(at)&&id?{updatedAt:at,threadId:id}:null;
   }catch{return null}
 }
-function boundedText(value,max=1000){const text=String(value??"").trim();return text?text.slice(0,max):null}
 function compactPullRequest(value){
   if(!value||typeof value!=="object")return null;
   const identity=value.identity&&typeof value.identity==="object"?{
@@ -30,12 +30,6 @@ function compactPullRequest(value){
     title:boundedText(value.title,500),state:boundedText(value.state,80),url:boundedText(value.url,2000),
     headRefName:boundedText(value.headRefName,300),baseRefName:boundedText(value.baseRefName,300),...(snapshot?{snapshot}:{}),
   };
-}
-function compactThreadSnapshot(value){
-  if(!value||typeof value!=="object")return null;
-  const section=value.section&&typeof value.section==="object"?{id:boundedText(value.section.id,300),name:boundedText(value.section.name,300)}:null;
-  const status=value.status&&typeof value.status==="object"?{type:boundedText(value.status.type,80),activeFlags:Array.isArray(value.status.activeFlags)?value.status.activeFlags.slice(0,20).map(item=>String(item).slice(0,100)):[]}:null;
-  return {id:boundedText(value.id,500),name:boundedText(value.name,500),preview:boundedText(value.preview,1000),cwd:boundedText(value.cwd,4000),model:boundedText(value.model,500),updatedAt:Number(value.updatedAt)||0,createdAt:Number(value.createdAt)||0,...(status?{status}:{}),...(section?{section}:{}),projectId:boundedText(value.projectId,500),runtime:boundedText(value.runtime,80),provider:boundedText(value.provider,200)};
 }
 function compactDelegation(value){
   if(!value||typeof value!=="object")return null;

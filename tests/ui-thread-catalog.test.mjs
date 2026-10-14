@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openThreadTitleSource, threadCatalogRuntime, threadKeptBySwitch, threadOwnerElsewhere, threadsFromCatalogMeta, threadTitle } from "../ui/src/thread-catalog.js";
+import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openThreadTitleSource, sameCatalogSnapshot, threadCatalogRuntime, threadKeptBySwitch, threadOwnerElsewhere, threadsFromCatalogMeta, threadTitle } from "../ui/src/thread-catalog.js";
+import { threadMetaCatalogProjection } from "../src/sqlite-state-collections.mjs";
 
 test("thread catalog preserves rows from other runtimes when the active runtime reloads",()=>{
   const existing=[
@@ -116,4 +117,32 @@ test("a harness switch keeps a thread of the harness it lands on that was opened
   assert.equal(threadKeptBySwitch(untagged,{runtimeInstanceId:"grok-work"},{switchThreadId:null,landingRuntime:"grok",openedUnder:"codex"}),true,"a saved profile names its harness");
   assert.equal(threadKeptBySwitch(null,{},{landingRuntime:"cursor",openedUnder:"cursor"}),false);
   assert.equal(threadKeptBySwitch(cursor,{},{switchThreadId:null,landingRuntime:null,openedUnder:"cursor"}),false);
+});
+
+// A load hands the page each thread's catalog as the server keeps it (src/sqlite-state-collections.mjs, threadMetaCatalogProjection),
+// and the page posts a listed thread only when its catalog differs from that copy. As written, the page's snapshot never equalled the
+// server's, so every load posted every listed thread again (perf plan F7, budget B12).
+test("a listed thread whose catalog the server already holds is not posted again after a load, and a change the sidebar shows still is",()=>{
+  const owner={runtime:"native",provider:"openai",runtimeInstanceId:"native-default"};
+  const listed=[
+    {id:"t1",name:"Fix the relay",preview:"Fix the relay",cwd:"H:/repo",model:"gpt-6-luna",updatedAt:1760000000,createdAt:1759990000,status:{type:"idle"}},
+    {id:"t2",name:"",preview:"Hello",cwd:"H:/repo",model:null,updatedAt:1760000000,createdAt:1759990000,status:"notLoaded",section:{id:"s1",name:"Work"}},
+    {id:"t3",name:"Waiting",preview:"x",cwd:"H:/repo",updatedAt:1760000000,createdAt:1759990000,status:{type:"active",activeFlags:["waitingOnApproval"]},projectId:"p1"},
+    {id:"t4",name:"  Padded  ",preview:"p".repeat(1500),cwd:"H:/repo",updatedAt:1760000000,createdAt:1759990000,status:{type:"systemError",activeFlags:["a","b"],message:"dropped by the server"}},
+  ];
+  for(const thread of listed){
+    const patch=catalogMetaPatch(thread,owner),held=threadMetaCatalogProjection({...patch,updatedAt:Date.now()});
+    assert.equal(sameCatalogSnapshot(held.threadSnapshot,patch.threadSnapshot),true,thread.id);
+    // The copy a POST answers with (the stored meta, uncompacted) compares the same way.
+    assert.equal(sameCatalogSnapshot(patch.threadSnapshot,catalogMetaPatch(thread,owner).threadSnapshot),true,thread.id+" against itself");
+  }
+  const base=listed[0],held=threadMetaCatalogProjection(catalogMetaPatch(base,owner)).threadSnapshot;
+  for(const [change,thread] of Object.entries({
+    renamed:{...base,name:"Fix the relay order"},
+    newer:{...base,updatedAt:base.updatedAt+1},
+    sectioned:{...base,section:{id:"s2",name:"Later"}},
+    errored:{...base,status:{type:"systemError"}},
+    moved:{...base,projectId:"p2"},
+  }))assert.equal(sameCatalogSnapshot(held,catalogMetaPatch(thread,owner).threadSnapshot),false,change);
+  assert.equal(sameCatalogSnapshot(undefined,catalogMetaPatch(base,owner).threadSnapshot),false,"a thread the server holds nothing for is posted");
 });
