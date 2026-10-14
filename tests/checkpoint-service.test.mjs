@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -431,3 +432,32 @@ for(const [autocrlf,eol] of [["input","\r\n"],["true","\n"]]){
     }finally{await rm(fixture.root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
   });
 }
+
+// A restore that stops on a file another program holds (it may be read, not deleted or replaced, as a program that uses a file holds
+// it on Windows) puts every other file and the staged state back, and counts the held file, which never changed, as put back.
+function holdOpen(path){
+  return new Promise((resolve,reject)=>{
+    const script=`$f=[System.IO.File]::Open('${path.replace(/'/g,"''")}',[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::Read);[Console]::Out.WriteLine('held');[Console]::Out.Flush();[void][Console]::In.ReadLine();$f.Close()`;
+    const child=spawn("powershell.exe",["-NoProfile","-NonInteractive","-Command",script],{windowsHide:true,stdio:["pipe","pipe","pipe"]});
+    let held=false;
+    child.stdout.on("data",chunk=>{if(!held&&String(chunk).includes("held")){held=true;resolve({release:()=>new Promise(done=>{if(child.exitCode!=null)return done();child.once("exit",done);child.stdin.end("\n")})})}});
+    child.once("error",reject);child.once("exit",code=>{if(!held)reject(new Error("the holder exited "+code))});
+  });
+}
+test("a file restore that stops on a file another program holds puts every file and the staged state back",{skip:process.platform!=="win32"&&"Windows file sharing only",timeout:180_000},async()=>{
+  const fixture=await rewindWorktree("trebell-checkpoint-held-");
+  let holder=null;
+  try{
+    const service=new CheckpointService({state:fixture.state,env:fixture.env});
+    const checkpoint=await service.create({cwd:fixture.worktree,threadId:"thread-owner",label:"Before change"});
+    await fixture.later();const before=await fixture.snapshot();
+    holder=await holdOpen(join(fixture.worktree,"edited.txt"));
+    const error=await service.restore(checkpoint.id,{threadId:"thread-owner"}).then(()=>null,caught=>caught);
+    await holder.release();holder=null;
+    const after=await fixture.snapshot();
+    console.log("error:",error?.message,"filesPutBack:",error?.filesPutBack,"after:",JSON.stringify(after));
+    assert.ok(error,"the restore stopped on the held file");
+    assert.deepEqual(after,before,"the files, git status and the staged changes are as they were");
+    assert.equal(error.filesPutBack,true,"the failure says the files were put back");
+  }finally{if(holder)await holder.release();await rm(fixture.root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});

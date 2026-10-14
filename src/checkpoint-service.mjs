@@ -58,8 +58,19 @@ async function keepFile(root,rel,copyPath){
   await copyFile(path,copyPath);
   return {rel,copy:copyPath,mode:info.mode};
 }
+// Whether a kept path already is as it was kept: the same bytes and executable bit, the same link, or still absent.
+async function isKept(root,file){
+  if(file.skip)return true;
+  const path=join(root,file.rel),info=await lstatOrNull(path);
+  if(!file.copy&&file.link==null)return !info;
+  if(!info)return false;
+  if(file.link!=null)return info.isSymbolicLink()&&await readlink(path)===file.link;
+  if(!info.isFile()||(info.mode&0o111)!==(file.mode&0o111)||info.size!==(await stat(file.copy)).size)return false;
+  const [current,kept]=await Promise.all([readFile(path),readFile(file.copy)]);
+  return current.equals(kept);
+}
+const listed=items=>items.slice(0,3).join(", ")+(items.length>3?` and ${items.length-3} more`:"");
 async function putFileBack(root,file){
-  if(file.skip)return;
   const path=join(root,file.rel),info=await lstatOrNull(path);
   // A link or a file that is not to be there goes first: a copy onto a link would write through it.
   if(info&&(!file.copy||info.isSymbolicLink()))await rm(path,{force:true});
@@ -341,10 +352,18 @@ export class CheckpointService{
     return kept;
   }
   #forget(kept){this.#undos.delete(kept.id);void rm(kept.dir,{recursive:true,force:true}).catch(()=>{})}
-  // Every kept file as it was (its own bytes and mode, a link, or absent), then the index's own bytes.
+  // Every kept file as it was (its own bytes and mode, a link, or absent), then the index's own bytes, going on past one that cannot be
+  // put back (another program holds it); a file that already is as it was (the restore could not replace it) counts as put back.
+  // Answers the ones that are not.
   async #putBack(kept){
-    for(const file of kept.files)await putFileBack(kept.root,file);
-    if(kept.index)await writeFile(kept.indexPath,kept.index);else await rm(kept.indexPath,{force:true});
+    const failed=[];
+    for(const file of kept.files){
+      try{if(!await isKept(kept.root,file))await putFileBack(kept.root,file)}
+      catch(error){failed.push(file.rel+" ("+(error?.code||error?.message||error)+")")}
+    }
+    try{if(kept.index)await writeFile(kept.indexPath,kept.index);else await rm(kept.indexPath,{force:true})}
+    catch(error){failed.push("the index ("+(error?.code||error?.message||error)+")")}
+    return failed;
   }
   // The files go back to the checkpoint, or stay exactly as they were: a restore that fails part-way (git restore wrote some files
   // and stopped, a file could not be removed) puts back what it changed, and the error says whether that worked (filesPutBack). The
@@ -359,9 +378,8 @@ export class CheckpointService{
     const kept=await this.#keepLocal(cp.root,cp.commit,threadId,baseEnv);
     try{await this.#restoreLocalTree(cp.root,cp.commit,baseEnv)}
     catch(error){
-      const message=error?.message||String(error);
-      try{await this.#putBack(kept)}
-      catch(putBackError){this.#undos.delete(kept.id);throw Object.assign(new Error(message+" Putting the files back as they were failed too: "+(putBackError?.message||putBackError)+" Their bytes are kept in "+kept.dir+".",{cause:error}),{filesPutBack:false})}
+      const message=error?.message||String(error),failed=await this.#putBack(kept);
+      if(failed.length){this.#undos.delete(kept.id);throw Object.assign(new Error(message+" Putting the files back as they were failed too, for "+listed(failed)+"; their bytes are kept in "+kept.dir+".",{cause:error}),{filesPutBack:false})}
       this.#forget(kept);
       throw Object.assign(new Error(message,{cause:error}),{filesPutBack:true});
     }
@@ -373,7 +391,9 @@ export class CheckpointService{
     const kept=this.#undos.get(String(undoId||""));
     if(!kept)throw new Error("The files from before this restore are no longer kept.");
     if(!threadId||kept.threadId!==threadId)throw new Error("A restore can be taken back only from the thread that made it.");
-    await this.#putBack(kept);
+    // One that could not put every file back stays kept, so it can be taken back again.
+    const failed=await this.#putBack(kept);
+    if(failed.length)throw new Error("Could not put every file back as it was: "+listed(failed)+".");
     this.#forget(kept);
     return {ok:true};
   }
