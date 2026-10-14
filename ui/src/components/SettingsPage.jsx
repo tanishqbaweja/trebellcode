@@ -408,7 +408,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   async function removeMcpServer(server){
     if(!await askConfirm(`Remove the MCP server “${server.name}”? This cannot be undone: its ${server.type==="http"?"URL":"command"} and settings are lost.`,{confirm:"Remove server"}))return;
     setMcpMessage("");
-    try{await save({mcpServers:(settings.mcpServers||[]).filter(item=>item.id!==server.id)});setMcpDraft(current=>current?.id===server.id?null:current);setMcpMessage(mcpSavedMessage("removed"))}
+    // The servers as they are once the person answers: a change that landed while the question was open (another server's Disable)
+    // stays.
+    try{await save({mcpServers:(settingsRef.current.mcpServers||[]).filter(item=>item.id!==server.id)});setMcpDraft(current=>current?.id===server.id?null:current);setMcpMessage(mcpSavedMessage("removed"))}
     catch(error){setMcpMessage(error?.message||String(error))}
   }
   async function setBackgroundMode(enabled){

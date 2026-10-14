@@ -204,3 +204,47 @@ test("Delete share on a shared plugin asks first, and Cancel keeps the share",as
     expect(deletes).toEqual([{remotePluginId:"remote-weather"}]);
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });
+
+// A server's change that lands while another server's Remove question is open stays: the removal saves the servers as they are once
+// the person answers. Here Workspace tools' Disable is slow to save, and lands behind the question.
+test("Removing an MCP server keeps another server's Disable that landed while the question was open",async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width:1280,height:800});
+  const proofShots=process.env.TREBELL_PROOF_SHOTS?String(process.env.TREBELL_PROOF_SHOTS).replace(/[\/]*$/,"/"):shots+"proof-";
+  const workspace={id:"mcp-workspace-tools",name:"Workspace tools",runtime:"native",environmentId:null,enabled:true,type:"stdio",command:"workspace-mcp",args:["--stdio"],env:[]};
+  const docs={id:"mcp-docs-search",name:"Docs search",runtime:"native",environmentId:null,enabled:true,type:"stdio",command:"docs-mcp",args:[],env:[]};
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",activeEnvironmentId:null,mcpServers:[workspace,docs]};
+  const posts=[];
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:true,provider:"openai",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:true,wsUrl:null,cwd:process.cwd(),platform:process.platform,version:"removal-confirmations-fixture",runtimeCapabilities:{mcpInjection:true,dynamicTools:true}}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
+  // The first save (the Disable) answers after 1.5 s: a busy disk or a slow link.
+  await page.route(/\/api\/settings$/,async route=>{
+    if(route.request().method()==="POST"){const patch=route.request().postDataJSON()||{};posts.push(patch);if(posts.length===1)await new Promise(resolve=>setTimeout(resolve,1500));settings={...settings,...patch}}
+    return json(route,settings);
+  });
+  await page.route(/\/api\/agent-runtimes$/,route=>json(route,{selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native",capabilities:{mcpInjection:true,dynamicTools:true}}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[{id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true,version:"built-in"}]}));
+  await page.route(/\/api\/providers$/,route=>json(route,{ready:true,providers:[{id:"openai",name:"OpenAI API",official:true,ready:true}]}));
+  await page.route(/\/api\/models$/,route=>json(route,{models:["gpt-5.6"],metadata:{provider:"openai",models:[{id:"gpt-5.6",name:"GPT-5.6"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  await page.route(/\/api\/runtime$/,route=>json(route,{agentRuntime:"native",agentRuntimeStatus:{available:true}}));
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.locator(".settings-nav").getByRole("button",{name:/Agents & models/}).click();
+  const card=page.locator('[data-setting-target="agents-mcp"]'),row=name=>card.locator(".custom-model-list>div").filter({hasText:name});
+  await row("Workspace tools").getByRole("button",{name:"Disable",exact:true}).scrollIntoViewIfNeeded();
+  await row("Workspace tools").getByRole("button",{name:"Disable",exact:true}).click();
+  await row("Docs search").getByRole("button",{name:"Remove",exact:true}).click();
+  await expect(question(page)).toBeVisible();
+  // The Disable lands while the question is open: Workspace tools reads Enable behind the dialog.
+  await expect(row("Workspace tools").getByRole("button",{name:"Enable",exact:true})).toBeVisible({timeout:5000});
+  await question(page).getByRole("button",{name:"Remove server",exact:true}).click();
+  await expect(row("Docs search")).toHaveCount(0);
+  await expect(card).toContainText("MCP server removed.");
+  console.log("posts:",JSON.stringify(posts.map(patch=>patch.mcpServers?.map(item=>item.name+":"+(item.enabled===false?"off":"on")))));
+  await card.screenshot({animations:"disabled",path:proofShots+"F3-mcp-remove-keeps-disable.png"});
+  expect(settings.mcpServers.find(item=>item.id===workspace.id)?.enabled,"Workspace tools stays disabled on the server").toBe(false);
+  expect(posts.at(-1),"the removal saves Workspace tools as disabled").toEqual({mcpServers:[{...workspace,enabled:false}]});
+  await expect(row("Workspace tools").getByRole("button",{name:"Enable",exact:true}),"and it reads Enable").toBeVisible();
+});
