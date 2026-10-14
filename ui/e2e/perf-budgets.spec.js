@@ -1,6 +1,11 @@
 import { test,expect } from "@playwright/test";
+import { mkdtemp,rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { markdownReply } from "../../scripts/perf/lib/fake-openai.mjs";
+import { TrebellStateStore } from "../../src/trebell-state.mjs";
 import { gate,live,startStreamingFixture } from "./native-stream-fixture.js";
+import { routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 
 // Count budgets for the renderer (the perf plan's section 2): what the page does at idle and while a reply streams, measured as
 // counts that do not depend on how busy the machine is. Each budget holds the line its fix reached, or the baseline until then.
@@ -165,4 +170,32 @@ test("B11: the first reply after a load renders as Markdown, never as its plain 
     finish.open();await expect(page.locator(".history-assistant .assistant-message-text pre")).toContainText("const value = 1;",{timeout:15_000});
     expect(await page.evaluate(()=>window.__plainTextShown)).toEqual([]);
   }finally{finish.open();await fixture.close()}
+});
+
+// B12: what a load asks the server for once the server holds the catalog of every thread it lists. The page compared its own
+// snapshot with the server's compacted copy, which never matched, so every load posted every listed thread again (100 POSTs per
+// load on the perf home, scripts/perf/reload.mjs). The server had made those posts write nothing, but they were all still sent.
+const B12_RELOAD={apiRequests:20,threadMetaPosts:1};
+
+test("B12: a reload posts none of the thread catalogs the server already holds",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startRelayHarness(),metaHome=await mkdtemp(join(tmpdir(),"trebell-b12-meta-")),metaStore=new TrebellStateStore({...process.env,TREBELL_HOME:metaHome});
+  try{
+    for(let index=1;index<=30;index++){
+      const thread=harness.seedThread("Catalog thread "+index);
+      metaStore.updateThreadMeta(thread.id,{projectless:false,environmentId:null,cwd:harness.repo,runtime:"native",runtimeInstanceId:"native-default"});
+    }
+    await routeRelayApp(page,harness,{metaStore});
+    const requests=[];page.on("request",request=>{const url=new URL(request.url());if(url.pathname.startsWith("/api/"))requests.push({at:Date.now(),path:request.method()+" "+url.pathname})});
+    const posts=(from=0)=>requests.filter(row=>row.at>=from&&row.path==="POST /api/thread-meta").length;
+    // The first load stores each listed thread's catalog, which the server did not hold yet; it is done once the posts stop.
+    await page.goto("/");await expect(page.locator(".thread-row").first()).toBeVisible({timeout:15_000});
+    let last=-1;await expect.poll(()=>{const now=posts(),steady=now>0&&now===last;last=now;return steady},{intervals:[1000],timeout:20_000}).toBe(true);
+    const reloadAt=Date.now();await page.reload();await expect(page.locator(".thread-row").first()).toBeVisible({timeout:15_000});
+    await page.waitForTimeout(Math.max(0,reloadAt+4000-Date.now()));
+    const loaded=requests.filter(row=>row.at>=reloadAt&&row.at<reloadAt+4000);
+    console.log("B12 a reload:",JSON.stringify({firstLoadPosts:posts()-posts(reloadAt),apiRequests:loaded.length,threadMetaPosts:posts(reloadAt),requests:loaded.reduce((counts,row)=>({...counts,[row.path]:(counts[row.path]||0)+1}),{})}));
+    expect(posts(reloadAt)).toBeLessThanOrEqual(B12_RELOAD.threadMetaPosts);
+    expect(loaded.length).toBeLessThanOrEqual(B12_RELOAD.apiRequests);
+  }finally{await harness.close();await rm(metaHome,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });

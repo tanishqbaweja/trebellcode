@@ -64,18 +64,27 @@ export async function startRelayHarness({replies=[]}={}){
 }
 
 // The app's own API answered for a Native window on the relay, every thread in one project at the harness's repository.
-// sent lists the requests the page sends the relay, as {method,params}.
-export async function routeRelayApp(page,harness){
+// sent lists the requests the page sends the relay, as {method,params}. metaStore, when given, is a real TrebellStateStore that keeps
+// the threads' meta the way the GUI server does: the page loads its catalog view and its posts write there.
+export async function routeRelayApp(page,harness,{metaStore=null}={}){
   const repo=harness.repo,project={id:"relay-history-project",name:"Relay History Project",path:repo,environmentId:null,effectiveSettings:{}};
   const uiMeta={projectless:false,environmentId:null,cwd:repo,runtime:"native",runtimeInstanceId:"native-default"},sent=[];
-  const threadMeta=()=>Object.fromEntries(harness.threads.map(thread=>[thread.id,uiMeta]));
+  const threadMeta=()=>metaStore?metaStore.snapshot({includeCollections:false,threadMetaView:"catalog",threadMetaLimit:250}).threadMeta:Object.fromEntries(harness.threads.map(thread=>[thread.id,uiMeta]));
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:harness.wsUrl,cwd:repo,platform:process.platform,version:"relay-history-fixture",activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"auto",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:threadMeta()}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["gpt-5.6"],metadata:{provider:"agentrouter",models:[{id:"gpt-5.6",name:"GPT-5.6",provider:"agentrouter",agent:"Trebell Native"}]}}));
   await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{project}:{projects:[project]}));
   await page.route(/\/api\/worktree\/ensure$/,route=>json(route,{ok:true}));
   await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:false,cwd:repo,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]}));
-  await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>json(route,uiMeta));
+  await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>{
+    if(!metaStore)return json(route,uiMeta);
+    // As src/gui-server.mjs answers /api/thread-meta.
+    const request=route.request(),url=new URL(request.url()),id=url.searchParams.get("threadId");
+    if(request.method()==="POST"){const body=request.postDataJSON()||{};return json(route,metaStore.updateThreadMeta(body.threadId,body.patch||{}))}
+    if(id)return json(route,metaStore.threadMeta(id));
+    if(url.searchParams.get("view")==="catalog")return json(route,metaStore.threadMetaCatalogPage({limit:url.searchParams.get("limit")||100,cursor:url.searchParams.get("cursor")||null}));
+    return json(route,metaStore.listThreadMeta());
+  });
   await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{id:"relay-history-checkpoint-"+Date.now(),threadId:harness.threads[0]?.id||null}:{checkpoints:[]}));
   await page.route(/\/api\/checkpoints\/link$/,route=>json(route,{ok:true}));
   await page.route(/\/api\/context\/packet$/,route=>json(route,{id:"relay-history-context",skipped:true,budget:{reserveTokens:1024}}));
