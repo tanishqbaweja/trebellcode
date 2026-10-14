@@ -72,8 +72,8 @@ async function deadPort(){
   const {port}=server.address();await new Promise(resolve=>server.close(resolve));return port;
 }
 const sideways=page=>page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);
-// A card is drawn before its Git details arrive. One with a remote then moves into its repository's group, which draws the
-// card and its open fields again, so the tests that type into a card wait for that first.
+// A card is drawn before its Git details arrive. One whose repository has a checkout listed before it then moves into that
+// checkout's group, which draws the card and its open fields again, so the tests that type into a card wait for that first.
 async function openProjects(page){
   const git=page.waitForResponse(response=>response.url().includes("/api/git/info"));
   await nav(page,"Projects").click();
@@ -81,6 +81,9 @@ async function openProjects(page){
   const remote=info?.remotes?.find(item=>item.kind==="fetch")?.url;
   if(remote)await expect(page.locator(".project-group-head").filter({hasText:remote}).first()).toBeVisible();
 }
+// Another checkout of the main project's repository, opened after it so the list leads with it: when Git answers, the main
+// project's card moves into this checkout's group and is drawn again there.
+const leadingCheckout=(request,boot)=>request.post("/api/projects",{data:{path:join(boot.cwd,"docs"),name:"Neighbour Project"}});
 
 // Each test leaves only the main project, under its own name, and no saved environments.
 test.afterEach(async({request})=>{
@@ -136,7 +139,7 @@ test.describe("Removing a project",()=>{
       return json(route,{...body,projects:(body.projects||[]).map(project=>project.path===path?{...project,cloneJob:{id:"polish-clone",url:"https://github.com/owner/repo.git",status:"running",progress:40,phase:"Receiving objects",error:null,startedAt:Date.now(),completedAt:null}}:project)});
     });
     const deletes=[];page.on("request",request=>{if(request.method()==="DELETE"&&/\/api\/projects\?/.test(request.url()))deletes.push(request.url())});
-    // The card has moved into its repository's group (drawn again there) before the person reaches for Remove.
+    // Git has answered and the cards are in their repository's group before the person reaches for Remove.
     await openProjects(page);
     const card=page.locator(".project-card").filter({hasText:"Cloning Project"});
     await expect(card.locator(".project-clone-status")).toContainText("Receiving objects");
@@ -1281,10 +1284,11 @@ test.describe("Renaming a project",()=>{
     expect(await savedName()).toBe("Second Name");
   });
 
-  // A card is drawn again, Name field and all, when Git answers and it moves into its repository's group. A name on its way when
-  // that happens is still the field's name, so Escape and leaving the field keep it.
+  // A card is drawn again, Name field and all, when Git answers and it moves into its repository's group, led by a checkout listed
+  // before it. A name on its way when that happens is still the field's name, so Escape and leaving the field keep it.
   test("a name on its way stays in the Name field when the card moves into its repository's group",async({page,request})=>{
     const boot=await open(page,request);
+    await leadingCheckout(request,boot);
     const saves=[];
     await page.route(/\/api\/projects$/,async route=>{
       if(route.request().method()!=="POST")return route.fallback();
@@ -1321,10 +1325,11 @@ test.describe("Renaming a project",()=>{
   });
 
   // A rename begun straight away, before Enter or leaving the field, keeps its place when Git answers and the card is drawn again
-  // in its repository's group: the field still has the keyboard, the text typed so far and the caret where it was. So does a field
-  // of the card's action editor. Nothing is saved until the person saves it.
+  // in its repository's group, led by a checkout listed before it: the field still has the keyboard, the text typed so far and the
+  // caret where it was. So does a field of the card's action editor. Nothing is saved until the person saves it.
   for(const mode of MODES)test(`a field being typed in keeps its text, caret and focus when the card moves into its repository's group (${mode})`,async({page,request})=>{
     const boot=await open(page,request,{mode});
+    await leadingCheckout(request,boot);
     const saves=[];
     page.on("request",item=>{if(item.method()==="POST"&&/\/api\/projects$/.test(item.url()))saves.push(item.postDataJSON())});
     let release=()=>{},held=Promise.resolve();
@@ -1363,8 +1368,10 @@ test.describe("Renaming a project",()=>{
     await expect(title).toHaveText("Renamed While Moving");
     expect(saves.map(body=>body.name)).toEqual(["Renamed While Moving"]);
 
-    // A field of the action editor, which keeps its text on the page, keeps the keyboard and its caret too.
+    // A field of the action editor, which keeps its text on the page, keeps the keyboard and its caret too. The rename made the main
+    // project the one opened last, so the other checkout is opened again to lead the list.
     hold();
+    await leadingCheckout(request,boot);
     await page.reload();
     await expect(page.getByTestId("composer")).toBeVisible();
     await nav(page,"Projects").click();

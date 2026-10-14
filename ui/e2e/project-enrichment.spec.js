@@ -82,6 +82,51 @@ test("the Clone card shows when environments answer, and a card says nothing abo
   }finally{releaseGit()}
 });
 
+// The page draws its cards before Git answers, each in a section of its own under the project's name. When Git answers, a section
+// takes its repository's name and a second checkout of the repository moves into it, while the first card of each section stays
+// the element it was: the field the person is in keeps the keyboard, and the card being looked at is not swapped for a new one.
+test("a card stays the element it was when Git answers and its section takes the repository's name",async({page})=>{
+  test.setTimeout(30_000);
+  let releaseGit=()=>{};const gitAnswered=new Promise(resolve=>{releaseGit=resolve});
+  const local={id:null,name:"Local machine",type:"local"};
+  const remotes={"C:/repos/stable-card":"https://example.test/stable-card.git","C:/repos/other-repo":"https://example.test/other-repo.git","C:/repos/stable-card-second":"https://example.test/stable-card.git"};
+  await routeProjectsShell(page,{
+    projects:[
+      {id:"stable-card",name:"Stable Card Project",path:"C:/repos/stable-card",environmentId:null,environment:local,scripts:[]},
+      {id:"other-repo",name:"Other Repo Project",path:"C:/repos/other-repo",environmentId:null,environment:local,scripts:[]},
+      {id:"stable-card-second",name:"Second Checkout Project",path:"C:/repos/stable-card-second",environmentId:null,environment:local,scripts:[]},
+    ],
+    git:async path=>{await gitAnswered;return {isGit:true,root:path,branch:"main",remotes:[{name:"origin",kind:"fetch",url:remotes[path]}]}},
+  });
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await page.getByRole("button",{name:"Projects",exact:true}).click();
+    const labels=page.locator(".project-group-head strong"),counts=page.locator(".project-group-head span"),titles=page.locator(".project-card .project-open strong");
+    const card=name=>page.locator(".project-card").filter({hasText:name});
+    // Git has not answered: each card is a section of its own, under its project's name, and says nothing about Git.
+    await expect(labels).toHaveText(["Stable Card Project","Other Repo Project","Second Checkout Project"]);
+    await expect(counts).toHaveText(["Local machine · 1 checkout","Local machine · 1 checkout","Local machine · 1 checkout"]);
+    await expect(card("Stable Card Project").locator(".project-open small")).toHaveText("");
+    const first=await page.locator(".project-card").first().elementHandle(),other=await card("Other Repo Project").elementHandle();
+    const permissions=card("Stable Card Project").getByRole("combobox",{name:"Permissions"});
+    await permissions.focus();
+    const field=await permissions.elementHandle();
+    await page.screenshot({animations:"disabled",path:auditDir+"projects-sections-git-pending-1280x800.png"});
+    releaseGit();
+    await expect(labels).toHaveText(["https://example.test/stable-card.git","https://example.test/other-repo.git"]);
+    await expect(counts).toHaveText(["Local machine · 2 checkouts","Local machine · 1 checkout"]);
+    await expect(titles).toHaveText(["Stable Card Project","Second Checkout Project","Other Repo Project"]);
+    await expect(card("Stable Card Project").locator(".project-open small")).toHaveText("main");
+    await expect(card("Other Repo Project").locator(".project-open small")).toHaveText("main");
+    expect(await first.evaluate(node=>node.isConnected),"the first card is the element it was").toBe(true);
+    expect(await first.evaluate(node=>node.querySelector(".project-open strong").textContent)).toBe("Stable Card Project");
+    expect(await other.evaluate(node=>node.isConnected),"the other repository's card is the element it was").toBe(true);
+    expect(await field.evaluate(node=>node.isConnected&&node===document.activeElement),"the Permissions field keeps the keyboard").toBe(true);
+    await page.screenshot({animations:"disabled",path:auditDir+"projects-sections-git-answered-1280x800.png"});
+  }finally{releaseGit()}
+});
+
 test("the Clone repository form gives a repository URL room at desktop widths and wraps cleanly when narrow",async({page})=>{
   test.setTimeout(40_000);
   await routeProjectsShell(page,{
