@@ -34,6 +34,21 @@ test("Harbor Native adapter stages the OpenAI key instead of passing it through 
   assert.doesNotMatch(source,/cwd="\/app"/,"the Native adapter must preserve Harbor's task-specific container working directory");
 });
 
+// Harbor's own helper writes with Path.write_text, which on a Windows host turned every instruction line ending into CRLF
+// for Native only (the Codex lanes get the instruction as a shell argument). Checked byte for byte with Harbor's interpreter
+// on 2026-10-14: the helper wrote 8 CRs for a text holding 1, the override wrote the text exactly.
+test("Harbor Native adapter uploads the instruction's exact bytes, not text-mode line endings",async()=>{
+  const source=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
+  const start=source.indexOf("async def _upload_config_text("),end=source.indexOf("async def run(",start);
+  assert.ok(start>0&&end>start,"the adapter overrides Harbor's config upload before run()");
+  const upload=source.slice(start,end);
+  assert.ok(upload.includes('local_path.write_bytes(content.encode("utf-8"))'));
+  assert.ok(!upload.includes("write_text("),"text mode would translate line endings on Windows");
+  assert.ok(upload.includes("chown {owner} {quoted_remote_path} && "),"the owner and mode stay as Harbor's helper sets them");
+  assert.ok(upload.includes("chmod 600 {quoted_remote_path}"));
+  assert.ok(source.includes("content=instruction,")&&source.includes("remote_path=self._REMOTE_INSTRUCTION"));
+});
+
 test("Harbor Native runner keeps durable output retrieval available and avoids a smaller private task budget",async()=>{
   const source=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
   assert.match(source,/output:true/);

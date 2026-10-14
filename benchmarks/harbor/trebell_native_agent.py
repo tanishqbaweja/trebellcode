@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import shlex
+import tempfile
 from pathlib import Path
 from typing import Literal, override
 
@@ -206,6 +207,34 @@ class TrebellNativeAgent(BaseInstalledAgent):
             ),
         )
         await write_runtime_marker("node")
+
+    # Harbor's helper writes the file with Path.write_text, which on a Windows host turns every "\n" into "\r\n":
+    # Native read each task instruction with CRLF line endings, while the Codex lanes get it unchanged as a shell
+    # argument. Write the exact UTF-8 bytes instead, and set the owner and mode as Harbor's helper does.
+    @override
+    async def _upload_config_text(
+        self,
+        environment: BaseEnvironment,
+        *,
+        content: str,
+        remote_path: str,
+        filename: str,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="harbor-agent-config-") as temp_dir:
+            local_path = Path(temp_dir) / filename
+            local_path.write_bytes(content.encode("utf-8"))
+            await environment.upload_file(local_path, remote_path)
+
+        if environment.default_user is not None:
+            owner = shlex.quote(str(environment.default_user))
+            quoted_remote_path = shlex.quote(remote_path)
+            await self.exec_as_root(
+                environment,
+                command=(
+                    f"chown {owner} {quoted_remote_path} && "
+                    f"chmod 600 {quoted_remote_path}"
+                ),
+            )
 
     @with_prompt_template
     @override
