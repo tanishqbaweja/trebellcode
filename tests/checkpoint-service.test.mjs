@@ -462,6 +462,26 @@ test("a file restore that stops on a file another program holds puts every file 
   }finally{if(holder)await holder.release();await rm(fixture.root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 
+// Taking a restore back that cannot write a file another program holds says so and stays kept; taken back again once the file is free,
+// it puts that file back too, and names no file as changed since the restore (the ones the first try put back are as they were).
+test("a file restore taken back while a file is held can be taken back again once it is free",{skip:process.platform!=="win32"&&"Windows file sharing only",timeout:180_000},async()=>{
+  const fixture=await rewindWorktree("trebell-checkpoint-undo-held-");
+  let holder=null;
+  try{
+    const service=new CheckpointService({state:fixture.state,env:fixture.env});
+    const checkpoint=await service.create({cwd:fixture.worktree,threadId:"thread-owner",label:"Before change"});
+    await fixture.later();const before=await fixture.snapshot();
+    const restored=await service.restore(checkpoint.id,{threadId:"thread-owner"});
+    holder=await holdOpen(join(fixture.worktree,"edited.txt"));
+    await assert.rejects(()=>service.undoRestore(restored.undoId,{threadId:"thread-owner"}),/Could not put every file back as it was: edited\.txt/);
+    await holder.release();holder=null;
+    const undone=await service.undoRestore(restored.undoId,{threadId:"thread-owner"});
+    console.log("undo again:",JSON.stringify(undone));
+    assert.deepEqual(undone,{ok:true},"no file is named as changed since the restore");
+    assert.deepEqual(await fixture.snapshot(),before,"the files, git status and the staged changes are as they were");
+  }finally{if(holder)await holder.release();await rm(fixture.root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
 // A turn that starts while the files go back (Codex starts a goal's next turn by itself) works on them meanwhile. The restore removes
 // only the untracked files it kept, so the turn's new file stays, and taking the restore back puts back only what the restore changed
 // that nobody changed since: the turn's edit to a file the restore wrote stays too.

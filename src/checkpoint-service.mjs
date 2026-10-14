@@ -362,8 +362,9 @@ export class CheckpointService{
     const failed=[],changedSince=[];
     for(const file of kept.files){
       try{
+        if(await isKept(kept.root,file))continue;
         if(kept.restored&&fileState(await lstatOrNull(join(kept.root,file.rel)))!==kept.restored.get(file.rel)){changedSince.push(file.rel);continue}
-        if(!await isKept(kept.root,file))await putFileBack(kept.root,file);
+        await putFileBack(kept.root,file);
       }catch(error){failed.push(file.rel+" ("+(error?.code||error?.message||error)+")")}
     }
     try{if(kept.index)await writeFile(kept.indexPath,kept.index);else await rm(kept.indexPath,{force:true})}
