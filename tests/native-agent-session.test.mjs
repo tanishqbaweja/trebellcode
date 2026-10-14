@@ -7,6 +7,10 @@ import { NATIVE_REPLY_STREAM, NativeAgentSession, nativeCompactionMessage, nativ
 import { NativeToolOutputStore } from "../src/native-tool-output-store.mjs";
 import { agentToolLifecycle, contextualAgentPrompt } from "../src/agent-relay.mjs";
 import { attachNativePromptProvenance } from "../src/native-request-metrics.mjs";
+import { NativeBackgroundProcessManager } from "../src/native-background-processes.mjs";
+import { createNativeBuiltins } from "../src/native-builtins.mjs";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("Native session implements the relay start/prompt contract with usage updates",async()=>{
@@ -1979,4 +1983,179 @@ test("a Native request sent with working context counts the user's request once"
   assert.deepEqual(provenance[0].userParts,["Run the tests"]);
   const requested=events.find(event=>event.name==="native.model.requested");
   assert.equal(requested.data.requestMetrics.currentUser.bytes,Buffer.byteLength(JSON.stringify(["Run the tests"])));
+});
+
+// A background process whose output and exit a test controls: the real process manager and built-in tools over a scripted
+// remote child, so status and stop return real records with their stream offsets.
+function scriptedProcesses({maxOutputBytes=512*1024}={}){
+  const children=[];
+  const environments={get:id=>id==="ssh-1"?{id:"ssh-1",name:"Build",type:"ssh",cwd:"/srv/app"}:null,spawnArgv:()=>{
+    const child=new EventEmitter();Object.assign(child,{stdout:new PassThrough(),stderr:new PassThrough(),pid:9100+children.length,kill(){queueMicrotask(()=>child.emit("close",null,"SIGTERM"));return true}});children.push(child);return child;
+  }};
+  const manager=new NativeBackgroundProcessManager({environments,environment:{}}),builtins=createNativeBuiltins({root:"/srv/app",backgroundProcesses:manager,threadId:"thread-p"});
+  const start=()=>{manager.start({threadId:"thread-p",command:"python3",args:["-u","optimize.py"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH"],maxOutputBytes});return children.at(-1)};
+  const write=async(child,text,stream="stdout")=>{child[stream].write(text);await new Promise(resolve=>setImmediate(resolve))};
+  return {manager,builtins,start,write,children};
+}
+const PROCESS_TOOLS=[{type:"namespace",name:"trebell_process",tools:[{name:"start"},{name:"status"},{name:"stop"}]}];
+const statusCall=(id,args={})=>({id,namespace:"trebell_process",name:"status",arguments:JSON.stringify({process_id:"p1",...args})});
+function toolView(requests,id){
+  for(const request of [...requests].reverse()){
+    const content=request.messages.find(message=>message.role==="tool"&&message.toolCallId===id)?.content;
+    if(typeof content==="string")return JSON.parse(content.slice(content.indexOf("{")));
+  }
+  return null;
+}
+const uiRecord=(updates,id)=>updates.find(entry=>entry.update?.sessionUpdate==="tool_call_update"&&entry.update.toolCallId===id)?.update?.rawOutput;
+
+test("Native process status shows the model only output written since its previous read, while the person keeps the whole record",async()=>{
+  const processes=scriptedProcesses(),child=processes.start(),requests=[],updates=[];let calls=0;
+  try{
+    const steps=[
+      async()=>{await processes.write(child,"line 1\nline 2\n");return [statusCall("s1")]},
+      async()=>{await processes.write(child,"line 3\n");await processes.write(child,"warning: slow\n","stderr");return [statusCall("s2")]},
+      async()=>[statusCall("s3")],
+      async()=>{await processes.write(child,"line 4\n");return [statusCall("s4",{since:"start"})]},
+      async()=>{await processes.write(child,"line 5\n");return [statusCall("s5")]},
+    ];
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",tools:PROCESS_TOOLS,onUpdate:update=>updates.push(update),executeTool:call=>processes.builtins(call),
+      providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));const step=steps[calls++];return step?{id:"r"+calls,text:"",toolCalls:await step(),usage:{}}:{id:"done",text:"done",toolCalls:[],usage:{}}},
+    });
+    await session.start({providerSessionId:"native-process-cursor",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Watch the optimizer."}],{maxModelTurns:8,maxToolCalls:8});
+    assert.equal(toolView(requests,"s1").stdout,"line 1\nline 2\n","the first read shows everything retained");
+    assert.deepEqual([toolView(requests,"s2").stdout,toolView(requests,"s2").stderr],["line 3\n","warning: slow\n"],"a later read shows only what is new, per stream");
+    assert.deepEqual([toolView(requests,"s3").stdout,toolView(requests,"s3").stderr],["",""],"nothing new shows nothing");
+    assert.equal(toolView(requests,"s4").stdout,"line 1\nline 2\nline 3\nline 4\n","since start shows the whole retained output");
+    assert.equal(toolView(requests,"s5").stdout,"line 5\n","since start also moved the cursor");
+    for(const id of ["s1","s2","s3","s4","s5"]){
+      const view=toolView(requests,id);assert.equal(view.process_id,"p1",id);assert.equal(view.running,true,id);assert.equal(Object.hasOwn(view,"note"),false,id);assert.equal(Object.hasOwn(view,"outputOffsets"),false,id);
+    }
+    const ui=uiRecord(updates,"s5");
+    assert.equal(ui.stdout,"line 1\nline 2\nline 3\nline 4\nline 5\n","the person's record keeps the whole output");assert.equal(ui.stderr,"warning: slow\n");
+    assert.equal(Object.hasOwn(ui,"outputOffsets"),false,"the offsets are not part of the record the person is shown");assert.equal(ui.handle,"p1");assert.equal(ui.command,"python3 -u optimize.py");
+  }finally{await processes.manager.closeAll()}
+});
+
+test("Native process status and stop repeat the final tail once a process has ended, and say so",async()=>{
+  const processes=scriptedProcesses(),child=processes.start(),requests=[];let calls=0;
+  const progress=Array.from({length:60},(_,index)=>`iter ${index} obj=${(index/100).toFixed(4)}`).join("\n")+"\n";
+  try{
+    const steps=[
+      async()=>{await processes.write(child,progress);return [statusCall("before-exit")]},
+      async()=>{await processes.write(child,"final obj=0.6123 Tshort=0.3311\n");child.emit("close",0,null);await new Promise(resolve=>setImmediate(resolve));return [statusCall("after-exit")]},
+      async()=>[{id:"stop",namespace:"trebell_process",name:"stop",arguments:'{"process_id":"p1"}'}],
+    ];
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",tools:PROCESS_TOOLS,executeTool:call=>processes.builtins(call),
+      providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));const step=steps[calls++];return step?{id:"r"+calls,text:"",toolCalls:await step(),usage:{}}:{id:"done",text:"done",toolCalls:[],usage:{}}},
+    });
+    await session.start({providerSessionId:"native-process-tail",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Watch the optimizer to the end."}],{maxModelTurns:6,maxToolCalls:6});
+    assert.equal(toolView(requests,"before-exit").stdout,progress);
+    for(const id of ["after-exit","stop"]){
+      const view=toolView(requests,id);
+      assert.deepEqual({running:view.running,exitCode:view.exitCode},{running:false,exitCode:0},id+" shows the exit state");
+      assert.ok(view.stdout.endsWith("iter 59 obj=0.5900\nfinal obj=0.6123 Tshort=0.3311\n"),id+" shows the final lines");
+      assert.ok(Buffer.byteLength(view.stdout)<=1000,id+" repeats only a short tail");assert.match(view.stdout,/^iter \d+ obj=/,id+" starts the tail at a line");
+      assert.match(view.note,/stdout: the process has ended, so its final \d+ bytes, already shown, are repeated\./,id);
+    }
+    const repeated=Number(/final (\d+) bytes/.exec(toolView(requests,"after-exit").note)[1]);
+    assert.equal(repeated,Buffer.byteLength(toolView(requests,"after-exit").stdout)-Buffer.byteLength("final obj=0.6123 Tshort=0.3311\n"),"the note counts only the bytes already shown");
+  }finally{await processes.manager.closeAll()}
+});
+
+test("Native process status says how many unread bytes the retained output trimmed away",async()=>{
+  const processes=scriptedProcesses({maxOutputBytes:1024}),child=processes.start(),requests=[],updates=[];let calls=0;
+  try{
+    const steps=[
+      async()=>{await processes.write(child,"a".repeat(299)+"\n");return [statusCall("s1")]},
+      async()=>{for(let index=0;index<20;index++)await processes.write(child,`row ${String(index).padStart(2,"0")} `+"b".repeat(92)+"\n");return [statusCall("s2")]},
+      async()=>{await processes.write(child,"tail line\n");return [statusCall("s3")]},
+    ];
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",tools:PROCESS_TOOLS,onUpdate:update=>updates.push(update),executeTool:call=>processes.builtins(call),
+      providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));const step=steps[calls++];return step?{id:"r"+calls,text:"",toolCalls:await step(),usage:{}}:{id:"done",text:"done",toolCalls:[],usage:{}}},
+    });
+    await session.start({providerSessionId:"native-process-trim",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Watch the log."}],{maxModelTurns:5,maxToolCalls:5});
+    const trimmed=toolView(requests,"s2"),retained=uiRecord(updates,"s2").stdout;
+    // 300 bytes were read; 2,000 more were written into a 1,024-byte buffer, so 976 unread bytes were trimmed away.
+    assert.equal(trimmed.note,"stdout: 976 bytes written since your previous read were trimmed from the retained output unread.");
+    assert.equal(trimmed.stdout,retained,"everything still retained is shown");assert.equal(trimmed.truncated,true);
+    assert.equal(toolView(requests,"s3").stdout,"tail line\n");assert.equal(Object.hasOwn(toolView(requests,"s3"),"note"),false);
+  }finally{await processes.manager.closeAll()}
+});
+
+test("Native process cursors reset when the context is compacted, by the server or locally",async()=>{
+  const processes=scriptedProcesses(),child=processes.start(),requests=[];let calls=0;
+  try{
+    const steps=[
+      async()=>{await processes.write(child,"alpha\n");return {toolCalls:[statusCall("s1")]}},
+      async()=>{await processes.write(child,"beta\n");return {toolCalls:[statusCall("s2")],serverCompaction:{items:1}}},
+      async()=>{await processes.write(child,"gamma\n");return {toolCalls:[statusCall("s3")]}},
+      async()=>({text:"watched"}),
+      async()=>({text:"Goal: watch the optimizer. p1 is running."}),
+      async()=>{await processes.write(child,"delta\n");return {toolCalls:[statusCall("s4")]}},
+    ];
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",tools:PROCESS_TOOLS,executeTool:call=>processes.builtins(call),
+      providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));const step=steps[calls++];const reply=step?await step():{text:"done"};return {id:"r"+calls,text:"",toolCalls:[],usage:{},...reply}},
+    });
+    await session.start({providerSessionId:"native-process-compaction",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Watch the optimizer."}],{maxModelTurns:6,maxToolCalls:6});
+    assert.equal(toolView(requests,"s1").stdout,"alpha\n");
+    assert.equal(toolView(requests,"s2").stdout,"alpha\nbeta\n","after a server compaction the next read shows the retained output again");
+    assert.equal(toolView(requests,"s3").stdout,"gamma\n","then reads are incremental again");
+    await session.compact({maxOutputTokens:1024});
+    await session.prompt([{type:"text",text:"Keep watching."}],{maxModelTurns:3,maxToolCalls:3});
+    assert.equal(toolView(requests,"s4").stdout,"alpha\nbeta\ngamma\ndelta\n","after a local compaction too");
+  }finally{await processes.manager.closeAll()}
+});
+
+test("Native process reads by the app or the harness itself, and reads in a failed turn, do not move the model's cursor",async()=>{
+  const processes=scriptedProcesses(),child=processes.start(),requests=[];let calls=0;
+  try{
+    const steps=[
+      async()=>{await processes.write(child,"one\n");return {toolCalls:[statusCall("s1")]}},
+      async()=>({text:"first look"}),
+      async()=>{
+        await processes.write(child,"two\n");
+        // The app's process panel and a harness-internal read see the process too.
+        assert.equal(processes.manager.status("thread-p","p1").stdout,"one\ntwo\n");
+        assert.equal((await processes.builtins({namespace:"trebell_process",name:"status",arguments:{process_id:"p1"}})).stdout,"one\ntwo\n");
+        return {toolCalls:[statusCall("s2")]};
+      },
+      async()=>{await processes.write(child,"three\n");return {toolCalls:[statusCall("s3")]}},
+      async()=>{const error=new Error("provider rejected the request");error.retryable=false;throw error},
+      async()=>{await processes.write(child,"four\n");return {toolCalls:[statusCall("s4")]}},
+    ];
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",tools:PROCESS_TOOLS,executeTool:call=>processes.builtins(call),
+      providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));const step=steps[calls++];const reply=step?await step():{text:"done"};return {id:"r"+calls,text:"",toolCalls:[],usage:{},...reply}},
+    });
+    await session.start({providerSessionId:"native-process-readers",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Look at the job."}],{maxModelTurns:3,maxToolCalls:3});
+    await assert.rejects(()=>session.prompt([{type:"text",text:"Look again."}],{maxModelTurns:4,maxToolCalls:4}),/provider rejected/);
+    assert.equal(toolView(requests,"s2").stdout,"two\n","reads outside the model's view do not move its cursor");
+    await session.prompt([{type:"text",text:"And again."}],{maxModelTurns:3,maxToolCalls:3});
+    assert.equal(toolView(requests,"s4").stdout,"two\nthree\nfour\n","the failed turn's reads were never kept, so its output shows again");
+  }finally{await processes.manager.closeAll()}
+});
+
+test("Native process status with wait_ms ends with the turn when it is cancelled",async()=>{
+  const processes=scriptedProcesses();processes.start();let calls=0;
+  try{
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",tools:PROCESS_TOOLS,executeTool:call=>processes.builtins(call),
+      providerTurn:async()=>{calls++;return calls===1?{id:"wait",text:"",toolCalls:[statusCall("wait",{wait_ms:60_000})],usage:{}}:{id:"done",text:"done",toolCalls:[],usage:{}}},
+    });
+    await session.start({providerSessionId:"native-process-wait-cancel",model:"gpt-6-luna"});
+    const started=Date.now(),pending=session.prompt([{type:"text",text:"Wait for the job."}],{maxModelTurns:3,maxToolCalls:3});
+    setTimeout(()=>session.cancel(),80);
+    const result=await pending;
+    assert.equal(result.stopReason,"cancelled");assert.ok(Date.now()-started<5000,"the wait does not outlast the cancelled turn");
+    assert.equal(processes.manager.status("thread-p","p1").running,true,"the process keeps running");
+  }finally{await processes.manager.closeAll()}
 });

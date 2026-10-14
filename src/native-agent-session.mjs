@@ -294,6 +294,63 @@ function processModelReceipt(record,call){
   return receipt;
 }
 
+// The process reads whose output the model sees incrementally: status and stop, and their legacy names.
+const NATIVE_PROCESS_READS=Object.freeze({trebell_process:new Set(["status","stop"]),trebell_terminal:new Set(["background_status","stop_background"])});
+function nativeProcessRead(call={}){return Boolean(NATIVE_PROCESS_READS[String(call?.namespace||"")]?.has(String(call?.name||"")))}
+// Once a process has ended, status and stop show at least this much of the end of each stream, already seen or not.
+const PROCESS_EXIT_TAIL_BYTES=1000;
+const PROCESS_STREAMS=["stdout","stderr"];
+function callArguments(call){
+  let args=call?.arguments;if(typeof args==="string"){try{args=JSON.parse(args)}catch{args={}}}
+  return args&&typeof args==="object"&&!Array.isArray(args)?args:{};
+}
+// The process manager's absolute offsets of each stream's retained text, or null when they are missing or malformed.
+function processOutputOffsets(value){
+  if(!value||typeof value!=="object"||Array.isArray(value))return null;
+  const offsets={};
+  for(const stream of PROCESS_STREAMS){
+    const start=value[stream]?.start,end=value[stream]?.end;
+    if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<start)return null;
+    offsets[stream]={start,end};
+  }
+  return offsets;
+}
+// A byte offset moved forward past UTF-8 continuation bytes, so a slice from it starts on a whole character.
+function characterStart(bytes,offset){let at=Math.max(0,Math.min(bytes.length,offset));while(at<bytes.length&&(bytes[at]&0xc0)===0x80)at++;return at}
+// Where the final tail of a retained stream starts: the first line that begins within its last PROCESS_EXIT_TAIL_BYTES bytes,
+// or that window's first whole character when no line begins there.
+function exitTailOffset(bytes){
+  if(bytes.length<=PROCESS_EXIT_TAIL_BYTES)return 0;
+  const window=bytes.length-PROCESS_EXIT_TAIL_BYTES,newline=bytes.indexOf(0x0a,window-1);
+  return newline>=0&&newline+1<bytes.length?newline+1:characterStart(bytes,window);
+}
+// What one status or stop shows the model of a process's output: per stream, what the process wrote since the cursor (the end of
+// what the model's previous status or stop of it showed), or everything retained when there is no cursor or the call asked
+// since:"start". Once the process has ended, each stream shows at least its final tail. Returns the new cursor and the receipt
+// for the model, or a null receipt when the read shows every retained byte (the ordinary receipt then serves).
+// A stream whose redacted text no longer has the byte length its offsets give cannot be mapped onto them, so it is shown whole.
+function processOutputRead(record,offsets,cursor,{fromStart=false,call=null}={}){
+  const next={},shown={},notes=[];let partial=false;
+  for(const stream of PROCESS_STREAMS){
+    const text=typeof record?.[stream]==="string"?record[stream]:"",{start,end}=offsets[stream],seen=cursor?.[stream];
+    next[stream]=Math.max(end,Number.isSafeInteger(seen)?seen:0);
+    const bytes=Buffer.from(text,"utf8");
+    if(bytes.length!==end-start||fromStart||!Number.isSafeInteger(seen)){shown[stream]=text;continue}
+    let from=characterStart(bytes,Math.max(0,Math.min(seen,end)-start));
+    const skipped=Math.max(0,start-seen);
+    if(skipped)notes.push(`${stream}: ${skipped} bytes written since your previous read were trimmed from the retained output unread.`);
+    if(record.running===false){
+      const tail=exitTailOffset(bytes);
+      if(tail<from){notes.push(`${stream}: the process has ended, so its final ${from-tail} bytes, already shown, are repeated.`);from=tail}
+    }
+    shown[stream]=bytes.subarray(from).toString("utf8");if(from>0)partial=true;
+  }
+  if(!partial&&!notes.length)return {cursor:next,receipt:null};
+  const receipt=processModelReceipt({...record,...shown},call);if(!receipt)return {cursor:next,receipt:null};
+  if(notes.length)receipt.note=notes.join(" ");
+  return {cursor:next,receipt};
+}
+
 function exposesTool(tools,namespace,name){
   const entry=(Array.isArray(tools)?tools:[]).find(item=>item?.type==="namespace"&&String(item.name||"")===String(namespace||""));
   return Boolean((Array.isArray(entry?.tools)?entry.tools:[]).some(tool=>String(tool?.name||"")===String(name||"")));
@@ -403,7 +460,7 @@ export class NativeAgentSession{
     this.streamDrafts=streamDrafts===true;this.draft=null;
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.reasoningEffort=reasoningEffort?String(reasoningEffort):null;this.serviceTier=serviceTier?String(serviceTier):null;this.semanticCompletionGate=semanticCompletionGate!==false;this.contextWindow=null;this.setContextWindow(contextWindow);const compactThreshold=Math.trunc(Number(openAiServerCompactionThreshold));this.openAiServerCompactionThreshold=Number.isFinite(compactThreshold)&&compactThreshold>0?compactThreshold:null;this.openAiServerCompactionArmed=false;this.maxOpenAiInputTokens=0;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.statedPermissionMode=String(permissionMode||"supervised")||"supervised";this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;const reconstructed=[...(Array.isArray(initialMessages)?initialMessages:[])],restartCooling=coolRestartProviderHistory(reconstructed,provider);this.messages=restartCooling.messages;this.restartHistoryCooling=restartCooling.count?restartCooling:null;this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.reasoningEffort=reasoningEffort?String(reasoningEffort):null;this.serviceTier=serviceTier?String(serviceTier):null;this.semanticCompletionGate=semanticCompletionGate!==false;this.contextWindow=null;this.setContextWindow(contextWindow);const compactThreshold=Math.trunc(Number(openAiServerCompactionThreshold));this.openAiServerCompactionThreshold=Number.isFinite(compactThreshold)&&compactThreshold>0?compactThreshold:null;this.openAiServerCompactionArmed=false;this.maxOpenAiInputTokens=0;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.statedPermissionMode=String(permissionMode||"supervised")||"supervised";this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;const reconstructed=[...(Array.isArray(initialMessages)?initialMessages:[])],restartCooling=coolRestartProviderHistory(reconstructed,provider);this.messages=restartCooling.messages;this.restartHistoryCooling=restartCooling.count?restartCooling:null;this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.processOutputCursors=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
@@ -491,14 +548,14 @@ export class NativeAgentSession{
       const modelSummary=String(result.text||"").trim();if(!modelSummary)throw new Error("Native context compaction returned an empty continuation brief.");
       const summary=[modelSummary,continuity&&("Deterministic Trebell state:\n"+continuity)].filter(Boolean).join("\n\n").slice(0,32_000);
       const persistent=sourceMessages.filter(message=>["system","developer"].includes(message?.role)&&!message?.trebellCompaction);
-      this.messages=[...persistent,nativeCompactionMessage(summary),...recent];this.observationCache.clear();this.previousTerminalRuns=[];
+      this.messages=[...persistent,nativeCompactionMessage(summary),...recent];this.observationCache.clear();this.processOutputCursors.clear();this.previousTerminalRuns=[];
       return {summary,modelSummary,usage:result.usage,model:result.model||this.model,provider:result.provider||this.provider,modelTurns:result.modelTurns,sourceMessageCount:sourceMessages.length,retainedRecentMessageCount:recent.length,continuityChars:continuity.length};
     }finally{this.controller=null}
   }
   async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null,maxWallTimeMs=null,toolAllowlist=null}={}){
     if(this.closed)throw new Error("Native session is closed");if(!this.model)throw new Error("Trebell Native requires a model");
     if(this.turnActive)throw new Error("Trebell Native already has a running turn");
-    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),statedMode=this.permissionMode,modeNote=statedMode!==this.statedPermissionMode?nativePermissionModeMessage(this.statedPermissionMode,statedMode):null,observationSnapshot=new Map(this.observationCache),preserveCacheHistory=preserveCacheableProviderHistory(this.provider),userMeta=user[NATIVE_PROMPT_PROVENANCE],freshEntries=Array.isArray(userMeta?.contextEntries)?userMeta.contextEntries:[],hasFreshWorkingContext=Boolean(String(userMeta?.contextText||"").trim()&&freshEntries.length),exactWorkspaceContents=new Map(),postEditExpected=new Map(),priorTerminalRuns=this.previousTerminalRuns.slice(-16),currentTerminalRuns=[];let providerHistoryCooledThrough=0,lastOpenAiInputTokens=0;
+    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),statedMode=this.permissionMode,modeNote=statedMode!==this.statedPermissionMode?nativePermissionModeMessage(this.statedPermissionMode,statedMode):null,observationSnapshot=new Map(this.observationCache),processCursorSnapshot=new Map(this.processOutputCursors),preserveCacheHistory=preserveCacheableProviderHistory(this.provider),userMeta=user[NATIVE_PROMPT_PROVENANCE],freshEntries=Array.isArray(userMeta?.contextEntries)?userMeta.contextEntries:[],hasFreshWorkingContext=Boolean(String(userMeta?.contextText||"").trim()&&freshEntries.length),exactWorkspaceContents=new Map(),postEditExpected=new Map(),priorTerminalRuns=this.previousTerminalRuns.slice(-16),currentTerminalRuns=[];let providerHistoryCooledThrough=0,lastOpenAiInputTokens=0;
     const priorContext=preserveCacheHistory||!hasFreshWorkingContext?{messages:this.messages,count:0,savedChars:0,supersededEntries:0,retainedEntries:0}:coolSupersededWorkingContext(this.messages,freshEntries),base=[...priorContext.messages,...(modeNote?[modeNote]:[]),user],projectProviderHistory=preserveCacheHistory?createDirectTerminalStatusProviderHistoryProjector():compactDirectTerminalStatusProviderHistory;
     const coolProviderHistory=messages=>{
       const source=Array.isArray(messages)?messages:[],boundary=Math.min(providerHistoryCooledThrough,source.length),cooled=coolNativeProviderHistorySince(source,boundary);providerHistoryCooledThrough=source.length;return cooled;
@@ -523,11 +580,12 @@ export class NativeAgentSession{
     };
     // A repeated read is answered "already present" from what the conversation holds. Once the provider no longer holds the
     // earlier items (the server compacted them, or a request restarted the chain from a compaction), those answers would be
-    // untrue, so the observations and the exact file contents behind post-edit receipts are forgotten.
+    // untrue, so the observations and the exact file contents behind post-edit receipts are forgotten, and so is how much of
+    // each background process's output the model has read: its next status shows the retained output again.
     let observationsForgotten=false;
     const forgetPresentObservations=reason=>{
       const observations=this.observationCache.size,files=exactWorkspaceContents.size;observationsForgotten=true;
-      this.observationCache.clear();exactWorkspaceContents.clear();postEditExpected.clear();
+      this.observationCache.clear();exactWorkspaceContents.clear();postEditExpected.clear();this.processOutputCursors.clear();
       this.onEvent?.({name:"native.tool.observation_cache_cleared",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{reason,observations,files}});
     };
     if(priorContext.count)this.onEvent?.({name:"native.context.history_cooled",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{count:priorContext.count,savedChars:priorContext.savedChars,supersededEntries:Number(priorContext.supersededEntries||0),retainedEntries:Number(priorContext.retainedEntries||0)}});
@@ -539,6 +597,16 @@ export class NativeAgentSession{
       const internalRecoveryRead=call.namespace==="trebell_workspace"&&call.name==="read_file"&&/^native-recovery-(?:snapshot|restore-check)-/.test(String(call.id||""));
       this.onUpdate({update:{sessionUpdate:"tool_call",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,status:"in_progress"}});
       let output=await rawExecutor(call);
+      // A process record's stream offsets serve the model's read of its output and are no part of the record anyone is shown.
+      // The read moves the process's cursor at once, before anything else waits, so reads finishing together each move it.
+      let processRead=null;
+      if(nativeProcessTool(call)&&output&&typeof output==="object"&&!Array.isArray(output)&&Object.prototype.hasOwnProperty.call(output,"outputOffsets")){
+        const {outputOffsets,...record}=output,offsets=processOutputOffsets(outputOffsets),processId=String(record.processId||"");output=record;
+        if(offsets&&processId&&nativeProcessRead(call)){
+          const read=processOutputRead(record,offsets,this.processOutputCursors.get(processId),{fromStart:String(callArguments(call).since??"").trim().toLowerCase()==="start",call});
+          this.processOutputCursors.set(processId,read.cursor);processRead=read.receipt;
+        }
+      }
       if(call.namespace==="trebell_terminal"&&call.name==="run"&&output?.success!==false&&output?.uncertain!==true&&output?.timedOut!==true&&output?.signal==null&&Number.isFinite(Number(output?.exitCode))){
         let args={};try{args=structuredClone(call.arguments&&typeof call.arguments==="object"?call.arguments:{})}catch{}
         currentTerminalRuns.push({arguments:args,exitCode:Number(output.exitCode)});
@@ -606,6 +674,9 @@ export class NativeAgentSession{
         ?await this.toolOutputStore.virtualize(observed,{namespace:call.namespace||null,name:call.name||null,...(collapseRepeatedLines?{collapseRepeatedLines:true}:{}),...(processView?{modelView:processView}:{})})
         :{value:processView?.(observed)||observed,uiValue:observed,virtualized:false};
       let uiOutput=shaped.uiValue??shaped.value,modelSource=shaped.value;
+      // A read of a process the model has partly seen gives it only the output since then. That receipt goes through the same hot
+      // bound, preview and line collapse as a whole one would.
+      if(processRead)modelSource=this.toolOutputStore?(await this.toolOutputStore.virtualize(processRead,{namespace:call.namespace||null,name:call.name||null,...(collapseRepeatedLines?{collapseRepeatedLines:true}:{}),modelView:view=>view})).value:processRead;
       if(this.toolOutputStore&&!preserveCacheHistory&&outputRetrievalVisible&&terminalRun&&shaped.virtualized!==true&&Number(shaped.totalBytes||0)>=1200&&uiOutput&&typeof uiOutput==="object"&&!Array.isArray(uiOutput)&&!uiOutput._trebell_output){
         // A collapsed output is already stored whole, so the person's archive pointer names that copy and the model keeps the
         // collapsed value.
@@ -692,8 +763,10 @@ export class NativeAgentSession{
       return {stopReason:"end_turn",messageId,providerMessageId:result.lastResponse?.id||null,raw:{usage:result.usage,modelTurns:result.modelTurns,toolCalls:result.toolCalls,provider:result.provider,model:result.model}};
     }catch(error){
       if(draftsOn)this.#withdrawDraft(this.controller.signal.aborted||error?.name==="AbortError"?"cancelled":"failed");
-      // A failed turn's observations are not kept, but a provider context reset seen during it still holds.
+      // A failed turn's observations are not kept, but a provider context reset seen during it still holds. Its process reads
+      // are not kept either: the turn's messages are dropped, so the model never sees the output they showed.
       this.observationCache=observationsForgotten?new Map():observationSnapshot;
+      this.processOutputCursors=observationsForgotten?new Map():processCursorSnapshot;
       this.previousTerminalRuns=[];
       if(error?.nativeUsage){
         const usage=error.nativeUsage;
