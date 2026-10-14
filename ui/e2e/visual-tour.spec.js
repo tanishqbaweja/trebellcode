@@ -98,6 +98,23 @@ function latestCommitChanges(cwd) {
   return { cwd, isGit: true, status, diff: git("show", "--format=", "--patch", "--no-color", "--no-ext-diff", commit), stderr: "" };
 }
 
+// What the Git tab is told of the code host in the tour: GitHub, signed in, with two open pull requests (see the route in the tour).
+const TOUR_CAPABILITIES = { create: true, edit: true, comment: true, editComments: true, review: true, merge: true, autoMerge: true, checkout: true, reviewers: true, publish: true };
+const TOUR_CODE_HOST = {
+  diagnostics: {
+    selectedProvider: "github", detectedProvider: "github", git: { version: "git version 2.47.1" },
+    providers: { github: { label: "GitHub", installed: true, authenticated: true, version: "gh version 2.63.2" }, gitlab: { label: "GitLab", installed: false, authenticated: false, detail: "Install GitLab CLI (`glab`)." } },
+    capabilities: { github: TOUR_CAPABILITIES },
+  },
+  prs: {
+    ok: true, provider: "github", capabilities: TOUR_CAPABILITIES,
+    items: [[42, "Tour fixture: keep the composer draft when a send is refused", "tour-fixture-draft"], [41, "Tour fixture: say what a restored project is missing", "tour-fixture-restore"]].map(([number, title, head]) => ({
+      provider: "github", number, title, state: "OPEN", isDraft: false, url: "https://example.test/pull/" + number, headRefName: head, baseRefName: "main",
+      author: { login: "trebell-tour" }, identity: { provider: "github", host: "github.com", repository: "owner/repo", number },
+    })),
+  },
+};
+
 // Destinations live in the sidebar's "Destinations" nav landmark; a page-wide name match would also hit thread rows
 // whose titles start with the same word (a "Tools reliability fixture" thread opened instead of the Tools page).
 const nav = (page, label) => page.getByRole("navigation", { name: "Destinations" }).getByRole("button", { name: label, exact: true });
@@ -145,6 +162,12 @@ for (const mode of MODES) {
         expect(committed.diff, "the latest commit's patch").toContain("diff --git");
         await page.route("**/api/workspace/diff?**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(committed) }));
       }
+      // The Git tab's code host answers come from this machine, not from Trebell: which CLIs are installed and signed in (gh, glab,
+      // tea, fj and az, each asked its version and sign-in) and the pull requests GitHub lists for this checkout's remote. The tour runs offline, and in
+      // a full run those reads took longer than a capture waits (both still loading after 15 s), so they are answered here, as the
+      // Diff tab's patch is.
+      await page.route("**/api/source-control/diagnostics?**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(TOUR_CODE_HOST.diagnostics) }));
+      await page.route("**/api/source-control/prs?**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(TOUR_CODE_HOST.prs) }));
       await page.getByTestId("right-panel-toggle").click();
       for (const [index, label] of ["Files", "Diff", "Context", "Browser", "Git", "Agents", "Goal", "Runtime"].entries()) {
         const tab = page.getByTestId("right-panel").getByRole("button", { name: label, exact: true });
