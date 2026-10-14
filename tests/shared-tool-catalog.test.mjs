@@ -59,13 +59,16 @@ test("process status takes an optional bounded wait and a since:start read the w
   assert.match(status.description,/ Pass wait_ms to wait for progress instead of re-polling\.$/);
   assert.deepEqual(schema.required,["process_id"],"both new parameters are optional");assert.equal(schema.additionalProperties,false);
   assert.deepEqual({type:schema.properties.wait_ms.type,minimum:schema.properties.wait_ms.minimum,maximum:schema.properties.wait_ms.maximum},{type:"integer",minimum:0,maximum:60000});
-  assert.deepEqual(schema.properties.since.enum,["start"]);assert.equal(schema.properties.since.type,"string");
+  // A model fills every optional field it is offered, so the enum names the default too: offered only "start", gpt-6-luna
+  // passed since:"start" on every status call of the 2026-10-14 smoke run, and every read was a full one.
+  assert.deepEqual(schema.properties.since.enum,["new","start"]);assert.equal(schema.properties.since.type,"string");
+  assert.match(schema.properties.since.description,/^new \(the default\): /);
   for(const property of Object.values(schema.properties))assert.deepEqual(Object.keys(property).filter(key=>!["type","minimum","maximum","enum","description"].includes(key)),[],"only keywords the catalog already sends");
   assert.deepEqual(sharedToolDefinition("trebell_terminal","background_status").inputSchema,schema,"the legacy name shares the schema");
   const context={permissionProfile:"full",workspace:"/repo"},check=args=>authorizeSharedToolCall({namespace:"trebell_process",name:"status",arguments:{process_id:"p1",...args}},context);
-  assert.notEqual(check({wait_ms:30_000,since:"start"}).decision,"REJECT");assert.notEqual(check({wait_ms:0}).decision,"REJECT");
+  assert.notEqual(check({wait_ms:30_000,since:"start"}).decision,"REJECT");assert.notEqual(check({wait_ms:60_000,since:"new"}).decision,"REJECT");assert.notEqual(check({wait_ms:0}).decision,"REJECT");
   assert.match(check({wait_ms:60_001}).reason,/wait_ms must be <= 60000/);assert.match(check({wait_ms:-1}).reason,/wait_ms must be >= 0/);
-  assert.match(check({wait_ms:1.5}).reason,/wait_ms must be an integer/);assert.match(check({since:"end"}).reason,/since must be one of: start/);
+  assert.match(check({wait_ms:1.5}).reason,/wait_ms must be an integer/);assert.match(check({since:"end"}).reason,/since must be one of: new, start/);
   assert.equal(sharedToolDefinition("trebell_process","stop").inputSchema.properties.wait_ms,undefined,"stop does not wait");
 });
 

@@ -2014,7 +2014,7 @@ test("Native process status shows the model only output written since its previo
     const steps=[
       async()=>{await processes.write(child,"line 1\nline 2\n");return [statusCall("s1")]},
       async()=>{await processes.write(child,"line 3\n");await processes.write(child,"warning: slow\n","stderr");return [statusCall("s2")]},
-      async()=>[statusCall("s3")],
+      async()=>[statusCall("s3",{since:"new"})],
       async()=>{await processes.write(child,"line 4\n");return [statusCall("s4",{since:"start"})]},
       async()=>{await processes.write(child,"line 5\n");return [statusCall("s5")]},
     ];
@@ -2026,7 +2026,7 @@ test("Native process status shows the model only output written since its previo
     await session.prompt([{type:"text",text:"Watch the optimizer."}],{maxModelTurns:8,maxToolCalls:8});
     assert.equal(toolView(requests,"s1").stdout,"line 1\nline 2\n","the first read shows everything retained");
     assert.deepEqual([toolView(requests,"s2").stdout,toolView(requests,"s2").stderr],["line 3\n","warning: slow\n"],"a later read shows only what is new, per stream");
-    assert.deepEqual([toolView(requests,"s3").stdout,toolView(requests,"s3").stderr],["",""],"nothing new shows nothing");
+    assert.deepEqual([toolView(requests,"s3").stdout,toolView(requests,"s3").stderr],["",""],"nothing new shows nothing, and since:new reads as an omitted since does");
     assert.equal(toolView(requests,"s4").stdout,"line 1\nline 2\nline 3\nline 4\n","since start shows the whole retained output");
     assert.equal(toolView(requests,"s5").stdout,"line 5\n","since start also moved the cursor");
     for(const id of ["s1","s2","s3","s4","s5"]){
