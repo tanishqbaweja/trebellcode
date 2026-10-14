@@ -7,6 +7,8 @@ import { redactSecretText } from "./secret-redactor.mjs";
 const DEFAULT_OUTPUT_BYTES=512*1024;
 const MAX_OUTPUT_BYTES=2*1024*1024;
 const STOP_BOUND_MS=10_000;
+// A status call may wait this long at most for its process to end.
+export const MAX_PROCESS_WAIT_MS=60_000;
 
 function boundedBytes(value,fallback=DEFAULT_OUTPUT_BYTES){
   const number=Math.trunc(Number(value));return Number.isFinite(number)?Math.max(1024,Math.min(MAX_OUTPUT_BYTES,number)):fallback;
@@ -24,6 +26,11 @@ function cursorOffset(cursor){
 }
 
 function processLabel(command,args=[]){return [String(command||""),...(args||[]).map(String)].join(" ").trim().slice(0,1000)}
+
+function abortError(signal){
+  const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
+  const error=new Error(reason instanceof Error?(reason.message||"Native process wait was cancelled."):String(reason||"Native process wait was cancelled."));error.name="AbortError";return error;
+}
 
 const PROCESS_TOOLS=Object.freeze({trebell_process:new Set(["start","status","stop","list"]),trebell_terminal:new Set(["start_background","background_status","stop_background"])});
 const HANDLE_FIELD=/"(?:handle|process_id)"\s*:\s*"p(\d{1,9})"/gi;
@@ -85,15 +92,22 @@ export class NativeBackgroundProcessManager{
       ...(record.remote?{}:{osPid:record.child?.pid??record.osPid??null}),
     };
     if(includeOutput){
+      // Where each stream's retained text sits in everything the process wrote to it: absolute UTF-8 byte offsets, counted
+      // before redaction. They come before the text so a capped audit record still has them.
+      base.outputOffsets={stdout:this.#offsets(record,"stdout"),stderr:this.#offsets(record,"stderr")};
       base.stdout=redactSecretText(record.stdout||"",{environment:this.environment});base.stderr=redactSecretText(record.stderr||"",{environment:this.environment});base.truncated=Boolean(record.truncated);
     }
     return base;
   }
+  #offsets(record,key){const end=record.written[key];return {start:end-Buffer.byteLength(String(record[key]||""),"utf8"),end}}
   #append(record,key,chunk){
-    const before=String(record[key]||""),next=before+String(chunk),limit=record.maxOutputBytes;
+    const text=String(chunk),before=String(record[key]||""),next=before+text,limit=record.maxOutputBytes;
+    record.written[key]+=Buffer.byteLength(text,"utf8");
     if(Buffer.byteLength(next,"utf8")>limit)record.truncated=true;
     record[key]=trimTail(next,limit);record.updatedAt=Date.now();
   }
+  // Ends every wait on this process (it has exited or failed).
+  #settle(record){const waiters=[...record.waiters];record.waiters.clear();for(const resolve of waiters)resolve()}
   #emit(record,name,status,data={}){try{this.onEvent?.({threadId:record.threadId,name,status,data:{processId:record.id,command:redactSecretText(record.label,{environment:this.environment}),cwd:record.cwd,environmentId:record.environmentId||null,...data,...(data.message?{message:redactSecretText(data.message,{environment:this.environment})}:{})}})}catch{}}
   start({threadId,command,args=[],cwd,environmentId=null,environmentNames=null,maxOutputBytes=null}={}){
     const executable=String(command||"").trim();if(!threadId)throw new Error("Native background process requires a thread");if(!executable)throw new Error("command is required");
@@ -107,14 +121,28 @@ export class NativeBackgroundProcessManager{
       // harness launchers do; on other platforms it is child_process.spawn.
       child=crossSpawn(executable,commandArgs,{cwd,env:buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}),windowsHide:true,stdio:["ignore","pipe","pipe"],detached:this.platform!=="win32"});
     }
-    const id=randomUUID(),handle=this.#nextHandle(String(threadId)),record={id,handle,threadId:String(threadId),command:executable,args:commandArgs,label:processLabel(executable,commandArgs),cwd:String(cwd||""),environmentId:profile?.id||null,environmentType:profile?.type||"local",remote,child,osPid:child.pid??null,running:true,exitCode:null,signal:null,stdout:"",stderr:"",truncated:false,maxOutputBytes:boundedBytes(maxOutputBytes,this.maxOutputBytes),createdAt:Date.now(),updatedAt:Date.now()};
+    const id=randomUUID(),handle=this.#nextHandle(String(threadId)),record={id,handle,threadId:String(threadId),command:executable,args:commandArgs,label:processLabel(executable,commandArgs),cwd:String(cwd||""),environmentId:profile?.id||null,environmentType:profile?.type||"local",remote,child,osPid:child.pid??null,running:true,exitCode:null,signal:null,stdout:"",stderr:"",written:{stdout:0,stderr:0},truncated:false,maxOutputBytes:boundedBytes(maxOutputBytes,this.maxOutputBytes),createdAt:Date.now(),updatedAt:Date.now(),waiters:new Set()};
     this.processes.set(id,record);this.handles.set(record.threadId+"\u0000"+handle,id);child.stdout?.on("data",chunk=>this.#append(record,"stdout",chunk));child.stderr?.on("data",chunk=>this.#append(record,"stderr",chunk));
-    child.once("error",error=>{record.running=false;record.stderr=trimTail(record.stderr+(record.stderr?"\n":"")+String(error?.message||error),record.maxOutputBytes);record.updatedAt=Date.now();this.#emit(record,"native.background.failed","error",{message:String(error?.message||error).slice(0,500)})});
-    child.once("close",(code,signal)=>{record.running=false;record.exitCode=code==null?null:Number(code);record.signal=signal||null;record.updatedAt=Date.now();this.#emit(record,"native.background.exited","completed",{exitCode:record.exitCode,signal:record.signal})});
+    child.once("error",error=>{const text=(record.stderr?"\n":"")+String(error?.message||error);record.running=false;record.written.stderr+=Buffer.byteLength(text,"utf8");record.stderr=trimTail(record.stderr+text,record.maxOutputBytes);record.updatedAt=Date.now();this.#settle(record);this.#emit(record,"native.background.failed","error",{message:String(error?.message||error).slice(0,500)})});
+    child.once("close",(code,signal)=>{record.running=false;record.exitCode=code==null?null:Number(code);record.signal=signal||null;record.updatedAt=Date.now();this.#settle(record);this.#emit(record,"native.background.exited","completed",{exitCode:record.exitCode,signal:record.signal})});
     this.#emit(record,"native.background.started","running",{remote});return this.#public(record,{includeOutput:true});
   }
   status(threadId,processId){
     return this.#public(this.#record(threadId,processId),{includeOutput:true});
+  }
+  // Waits until the process ends or waitMs (at most MAX_PROCESS_WAIT_MS) passes, whichever is first. New output does not end
+  // the wait. An aborted signal ends it with an AbortError.
+  async waitForExit(threadId,processId,{waitMs=0,signal=null}={}){
+    const record=this.#record(threadId,processId),limit=Math.max(0,Math.min(MAX_PROCESS_WAIT_MS,Math.trunc(Number(waitMs))||0));
+    if(signal?.aborted)throw abortError(signal);
+    if(!record.running||limit<=0)return;
+    await new Promise((resolve,reject)=>{
+      let timer=null;
+      const finish=error=>{clearTimeout(timer);record.waiters.delete(done);signal?.removeEventListener?.("abort",onAbort);error?reject(error):resolve()};
+      const done=()=>finish(null),onAbort=()=>finish(abortError(signal));
+      record.waiters.add(done);timer=setTimeout(done,limit);
+      signal?.addEventListener?.("abort",onAbort,{once:true});
+    });
   }
   list(threadId,{cursor=null,limit=50}={}){
     const offset=cursorOffset(cursor),pageSize=Math.max(1,Math.min(200,Number(limit)||50));

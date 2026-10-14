@@ -124,3 +124,85 @@ test("Native process tools accept a short handle for status and stop",async()=>{
     const stopped=await execute({namespace:"trebell_process",name:"stop",arguments:{process_id:"p1"}});assert.equal(stopped.running,false);
   }finally{await manager.closeAll();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
+
+test("a process record gives each stream's retained text its absolute byte offsets, also after the tail is trimmed",async()=>{
+  const {environments,children}=fakeRemoteEnvironment(),manager=new NativeBackgroundProcessManager({environments,environment:{}});
+  try{
+    const started=manager.start({threadId:"thread-o",command:"python3",args:["train.py"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH"],maxOutputBytes:1024});
+    assert.deepEqual(started.outputOffsets,{stdout:{start:0,end:0},stderr:{start:0,end:0}});
+    assert.deepEqual(Object.keys(started).slice(-4),["outputOffsets","stdout","stderr","truncated"],"the offsets come before the text, so a capped audit record keeps them");
+    const child=children[0];child.stdout.write("x".repeat(700));child.stderr.write("warn\n");
+    await new Promise(resolve=>setImmediate(resolve));
+    let status=manager.status("thread-o","p1");
+    assert.deepEqual(status.outputOffsets,{stdout:{start:0,end:700},stderr:{start:0,end:5}});assert.equal(status.truncated,false);
+    child.stdout.write("y".repeat(900));await new Promise(resolve=>setImmediate(resolve));
+    status=manager.status("thread-o","p1");
+    assert.equal(status.truncated,true);assert.equal(status.outputOffsets.stdout.end,1600,"the end counts every byte written");
+    assert.equal(status.outputOffsets.stdout.start,1600-Buffer.byteLength(status.stdout),"the start is where the retained text begins");
+    assert.equal(status.outputOffsets.stdout.start,576);
+    // A trim that cuts a character leaves a replacement character; the offsets still place the text that follows it exactly.
+    child.stdout.write("a"+"é".repeat(600)+"b");await new Promise(resolve=>setImmediate(resolve));
+    status=manager.status("thread-o","p1");const {start,end}=status.outputOffsets.stdout;
+    assert.equal(end,1600+1202);assert.equal(end-start,Buffer.byteLength(status.stdout));assert.ok(status.stdout.endsWith("éb"));
+  }finally{await manager.closeAll()}
+});
+
+test("waitForExit returns when the process exits, not when it writes output",async()=>{
+  const {environments,children}=fakeRemoteEnvironment(),manager=new NativeBackgroundProcessManager({environments,environment:{}});
+  try{
+    manager.start({threadId:"thread-w",command:"python3",args:["run.py"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH"]});
+    const child=children[0],started=Date.now();let settled=false;
+    const waiting=manager.waitForExit("thread-w","p1",{waitMs:5000}).then(()=>{settled=true});
+    child.stdout.write("progress 1\n");await new Promise(resolve=>setTimeout(resolve,60));
+    assert.equal(settled,false,"output does not end the wait");
+    child.emit("close",0,null);await waiting;
+    assert.ok(Date.now()-started<2000,"the exit ends the wait at once");
+    const status=manager.status("thread-w","p1");assert.equal(status.running,false);assert.equal(status.exitCode,0);
+    const again=Date.now();await manager.waitForExit("thread-w","p1",{waitMs:5000});assert.ok(Date.now()-again<100,"an ended process is not waited for");
+  }finally{await manager.closeAll()}
+});
+
+test("waitForExit gives up at its wait_ms, which is capped at 60 seconds",async t=>{
+  const {environments}=fakeRemoteEnvironment(),manager=new NativeBackgroundProcessManager({environments,environment:{}});
+  t.mock.timers.enable({apis:["setTimeout"]});
+  try{
+    manager.start({threadId:"thread-c",command:"python3",args:["run.py"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH"]});
+    let short=false;const shortWait=manager.waitForExit("thread-c","p1",{waitMs:250}).then(()=>{short=true});
+    t.mock.timers.tick(249);await Promise.resolve();assert.equal(short,false);
+    t.mock.timers.tick(1);await shortWait;assert.equal(short,true);
+    let long=false;const longWait=manager.waitForExit("thread-c","p1",{waitMs:10*60_000}).then(()=>{long=true});
+    t.mock.timers.tick(59_999);await Promise.resolve();assert.equal(long,false);
+    t.mock.timers.tick(1);await longWait;assert.equal(long,true,"a longer wait_ms stops at 60 seconds");
+    assert.equal(manager.status("thread-c","p1").running,true);
+    await assert.rejects(()=>manager.waitForExit("thread-c","p9",{waitMs:100}),/not found/i);
+  }finally{t.mock.timers.reset();await manager.closeAll()}
+});
+
+test("waitForExit ends with an AbortError when the turn is cancelled",async()=>{
+  const {environments}=fakeRemoteEnvironment(),manager=new NativeBackgroundProcessManager({environments,environment:{}});
+  try{
+    manager.start({threadId:"thread-a",command:"python3",args:["run.py"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH"]});
+    const controller=new AbortController(),started=Date.now();
+    setTimeout(()=>controller.abort(),50);
+    await assert.rejects(()=>manager.waitForExit("thread-a","p1",{waitMs:30_000,signal:controller.signal}),error=>error?.name==="AbortError");
+    assert.ok(Date.now()-started<2000,"the abort ends the wait at once");
+    await assert.rejects(()=>manager.waitForExit("thread-a","p1",{waitMs:30_000,signal:controller.signal}),error=>error?.name==="AbortError","an already aborted turn does not wait");
+    assert.equal(manager.status("thread-a","p1").running,true,"cancelling the wait leaves the process running");
+  }finally{await manager.closeAll()}
+});
+
+test("status with wait_ms waits for the exit through the built-in tools, on both tool names",async()=>{
+  const {environments,children}=fakeRemoteEnvironment(),manager=new NativeBackgroundProcessManager({environments,environment:{}});
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-bg-wait-"));
+  try{
+    manager.start({threadId:"thread-b",command:"python3",args:["run.py"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH"]});
+    const execute=createNativeBuiltins({root,backgroundProcesses:manager,threadId:"thread-b"});
+    setTimeout(()=>{children[0].stdout.write("done 42\n");children[0].emit("close",0,null)},40);
+    const status=await execute({namespace:"trebell_process",name:"status",arguments:{process_id:"p1",wait_ms:5000}});
+    assert.equal(status.running,false);assert.equal(status.stdout,"done 42\n");
+    const legacy=await execute({namespace:"trebell_terminal",name:"background_status",arguments:{process_id:"p1",wait_ms:5000}});assert.equal(legacy.running,false);
+    manager.start({threadId:"thread-b",command:"python3",args:["serve.py"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH"]});
+    const controller=new AbortController();setTimeout(()=>controller.abort(),40);
+    await assert.rejects(()=>execute({namespace:"trebell_process",name:"status",arguments:{process_id:"p2",wait_ms:60_000},signal:controller.signal}),error=>error?.name==="AbortError");
+  }finally{await manager.closeAll();await rm(root,{recursive:true,force:true})}
+});

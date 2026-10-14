@@ -13,6 +13,7 @@ import { buildRuntimeEnvironment, runtimeEnvironmentKeys } from "./runtime-envir
 import { normalizeNativeCommandArguments } from "./native-command-argv.mjs";
 import { conventionalWorkspaceAlias, conventionalWorkspaceFallback, rootRelativeFallback } from "./native-workspace-path.mjs";
 import { applyReplaceTextHunks, compactReplaceDiff, replaceTextHunks } from "./native-replace-text.mjs";
+import { MAX_PROCESS_WAIT_MS } from "./native-background-processes.mjs";
 
 const DEFAULT_READ_BYTES=256*1024;
 const MAX_EDIT_BYTES=2*1024*1024;
@@ -274,6 +275,13 @@ async function runArgv({root,environments,environmentId,environment,platform,com
 
 function sha256Text(value){return createHash("sha256").update(String(value??""),"utf8").digest("hex")}
 
+// A status call with wait_ms first waits for the process to end, up to that long (the turn's abort ends the wait).
+async function processStatus(backgroundProcesses,threadId,args={},signal=null){
+  const processId=String(args.process_id||""),waitMs=boundedInteger(args.wait_ms,0,0,MAX_PROCESS_WAIT_MS);
+  if(waitMs>0)await backgroundProcesses.waitForExit(threadId,processId,{waitMs,signal});
+  return backgroundProcesses.status(threadId,processId);
+}
+
 export function createNativeBuiltins({root,environments=null,environmentId=null,environment=process.env,platform=process.platform,backgroundProcesses=null,threadId=null,environmentNames=null}={}){
   if(!root)throw new Error("Native built-in tools require an active workspace root");
   return async function execute(call={}){
@@ -327,7 +335,7 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
         return backgroundProcesses.start({threadId,command,args:commandArgs,cwd:located.path,environmentId,maxOutputBytes:boundedInteger(normalized.max_output_bytes,DEFAULT_OUTPUT_BYTES,1024,2*1024*1024),environmentNames});
       }
       if(name==="background_status"){
-        if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return backgroundProcesses.status(threadId,String(args.process_id||""));
+        if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return await processStatus(backgroundProcesses,threadId,args,call.signal||null);
       }
       if(name==="stop_background"){
         if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return await backgroundProcesses.terminate(threadId,String(args.process_id||""));
@@ -343,7 +351,7 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
         return backgroundProcesses.start({threadId,command,args:commandArgs,cwd:located.path,environmentId,maxOutputBytes:boundedInteger(args.max_output_bytes,DEFAULT_OUTPUT_BYTES,1024,2*1024*1024),environmentNames});
       }
       if(name==="status"){
-        if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return backgroundProcesses.status(threadId,String(args.process_id||""));
+        if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return await processStatus(backgroundProcesses,threadId,args,call.signal||null);
       }
       if(name==="stop"){
         if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return await backgroundProcesses.terminate(threadId,String(args.process_id||""));
