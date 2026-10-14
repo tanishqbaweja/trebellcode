@@ -79,7 +79,6 @@ import { configuredReasoningEffort, modelReasoningEffortKey, supportedReasoningE
 import { CODEX_STANDARD_SERVICE_TIER, configuredModelServiceTier, modelServiceTierKey, modelServiceTierLabel, supportedModelServiceTiers } from "../../src/model-service-tier.mjs";
 import { configuredModelOptions, modelOptionSettingsWith, supportedModelOptions } from "../../src/model-options.mjs";
 import { codexReasoningEffortLabel } from "../../src/codex-model-catalog.mjs";
-import { goalAdditionalContext } from "../../src/goal-state.mjs";
 import { codexErrorNotice, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal, parseCodexGoalCommand } from "./codex-turn-options.js";
 import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayHarness, serviceTierPickerTitle } from "./harness-turn-options.js";
 import ReasoningRow from "./components/ReasoningRow.jsx";
@@ -4188,7 +4187,9 @@ export default function App(){
         if(goalActivation)codexGoalActivationRef.current=goalActivation;
         const goalResult=await rpc.request("thread/goal/set",{threadId:thread.id,...goalPatch,...(goalActivation?{status:"paused"}:{})});
         if(activeThreadRef.current?.id===thread.id)setGoal(goalResult?.goal||null);
-        if(goalActivation&&goalResult?.goal)goalContext=goalAdditionalContext({},{...goalResult.goal,status:"active"});
+        // The goal's guidance loads only for this first turn of a Codex goal (goal-context.js); should it not load, the send fails as
+        // any other send does after the goal is set.
+        if(goalActivation&&goalResult?.goal){const {goalAdditionalContext}=await import("./goal-context.js");goalContext=goalAdditionalContext({},{...goalResult.goal,status:"active"})}
       }
       const p=presetFor(permissionModeOverride||permissionMode);
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
