@@ -445,9 +445,12 @@ test.describe("Removing a project",()=>{
     await request.post("/api/projects",{data:{path,name:"Project A",permissionMode:"edits"}});
     await page.reload();
     await expect(page.getByTestId("composer")).toBeVisible();
-    // The save is taken and never answered.
-    let held=0;
-    await page.route(/\/api\/projects$/,route=>{if(route.request().method()!=="POST"||route.request().postDataJSON()?.permissionMode!=="supervised")return route.fallback();held++});
+    // The save is taken and never answered. While lists are held, the page's reads of the project list wait until released.
+    let held=0,holdLists=false,releaseLists=()=>{};const listsHeld=new Promise(resolve=>{releaseLists=resolve});
+    await page.route(/\/api\/projects$/,async route=>{
+      if(route.request().method()==="GET"&&holdLists){await listsHeld;return route.fallback()}
+      if(route.request().method()!=="POST"||route.request().postDataJSON()?.permissionMode!=="supervised")return route.fallback();held++;
+    });
     const toast=page.getByTestId("thread-undo-toast"),restored=async()=>(await listedProjects(request)).filter(project=>project.path===path).map(project=>project.permissionMode).join(",")||"missing";
     const note="Project restored, but a change still saving when it was removed (Permissions) did not answer in time and is not in it.";
     try{
@@ -457,12 +460,17 @@ test.describe("Removing a project",()=>{
       await expect.poll(()=>held,{message:"the save was sent"}).toBe(1);
       await card.getByRole("button",{name:"Remove Project A",exact:true}).click();
       await expect(toast).toContainText("Project “Project A” removed");
+      // The removed card leaves once the page has read the list again; the card checked after Undo is then the restored one.
+      await expect(card).toHaveCount(0);
+      // The list read that follows the restore is held: the card comes back, and says what is missing, without waiting for it.
+      holdLists=true;
       await toast.getByRole("button",{name:"Undo",exact:true}).click();
       const undoneAt=Date.now();
       card=projectCard(page,"Project A");
       await expect(card).toBeVisible({timeout:10_000});
       expect(Date.now()-undoneAt,"Undo went ahead within a few seconds").toBeLessThan(8000);
       await expect(card.getByRole("alert")).toHaveText(note);
+      holdLists=false;releaseLists();
       await expect(card.getByRole("combobox",{name:"Permissions"})).toHaveValue("edits");
       await expect.poll(restored,{message:"the restored project's permission"}).toBe("edits");
       await shootModes(page,"project-undo-save-never-answered",{show:card.getByRole("alert")});
@@ -476,7 +484,7 @@ test.describe("Removing a project",()=>{
       await expect(page.getByTestId("app-action-error")).toContainText("Undo: "+note,{timeout:10_000});
       await expect.poll(restored,{message:"the project is back"}).toBe("edits");
       await page.screenshot({animations:"disabled",path:shots+"project-undo-save-never-answered-elsewhere-dark-1280.png"});
-    }finally{await page.unrouteAll({behavior:"ignoreErrors"})}
+    }finally{releaseLists();await page.unrouteAll({behavior:"ignoreErrors"})}
   });
 
   // The palette shows the project list it read when it was last open until it has read the list again. A project removed on

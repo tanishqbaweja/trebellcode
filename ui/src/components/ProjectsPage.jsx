@@ -391,9 +391,12 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     catch(err){const page=projectsOnScreen?.current;if(!page)throw err;page.showError("Could not restore project: "+(err.message||String(err)));return}
     const page=projectsOnScreen?.current;
     try{(page?.onProjectUpdated||onProjectUpdated)?.(restored)}catch{}
-    await page?.placeRestored(restored,shown,index);
-    if(!note)return;
-    if(page&&restored?.id)page.noteInCard(restored,"remove",note);else return note;
+    // The note shows with the restored card as it is placed, not once the list has been read again: that read waits for every
+    // card's Git state and actions, which takes seconds on a busy machine, with the card back and the change missing unexplained.
+    const placed=page?.placeRestored(restored,shown,index),inCard=Boolean(note&&page&&restored?.id);
+    if(inCard)page.noteInCard(restored,"remove",note);
+    await placed;
+    if(note&&!inCard)return note;
   }
   // The restored card takes the removed one's place (with its new id it would lead the list as a new project) and keeps
   // the removed card's Git state until the refresh reads it again. It is placed again once a refresh that began before the
