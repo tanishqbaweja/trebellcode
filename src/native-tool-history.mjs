@@ -17,6 +17,9 @@ const COLD_TOOL_ARGUMENT_KEYS=Object.freeze({
 });
 const DIRECT_TERMINAL_STATUS_CALL_ID=/^native-direct-terminal-status-\d+$/;
 const OUTPUT_HANDLE=/^out_[a-zA-Z0-9-]{8,80}$/;
+// Results that stay hot after the first look when their repeated lines were collapsed (archived): terminal runs, and process
+// reads, which show only output the model has not seen before, so a cooled one would not come back with the next read.
+const HOT_ARCHIVED_RESULTS=new Set(["trebell_terminal/run","trebell_process/status","trebell_process/stop","trebell_terminal/background_status","trebell_terminal/stop_background"]);
 const COLD_READ_MARKER="_trebell_cold_read";
 const ELIGIBLE_READ_RESULTS=new Set([
   "trebell_workspace/list",
@@ -170,8 +173,8 @@ export function coolVirtualizedToolHistory(messages=[],options={}){
     if(message?.role!=="tool"||typeof message.content!=="string")return message;
     if(skipTerminal){
       const id=String(message.toolCallId||message.tool_call_id||""),call=callById.get(id);
-      const parsed=call?.namespace==="trebell_terminal"&&call?.name==="run"?parsedToolContent(message.content):null;
-      if(call?.namespace==="trebell_terminal"&&call?.name==="run"&&parsed?._trebell_output?.archived===true)return message;
+      const parsed=call&&HOT_ARCHIVED_RESULTS.has(call.namespace+"/"+call.name)?parsedToolContent(message.content):null;
+      if(parsed?._trebell_output?.archived===true)return message;
     }
     const content=coolVirtualizedToolContent(message.content,options);if(content===message.content)return message;
     count++;savedChars+=Math.max(0,message.content.length-content.length);return {...message,content};
