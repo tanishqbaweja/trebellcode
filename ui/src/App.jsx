@@ -5245,7 +5245,10 @@ export default function App(){
   // answers (an answer that comes later never drops a run made meanwhile). A watch socket per running action hears its terminal end
   // (its command exited, or Stop), with none of its output; nothing is polled.
   const actionRunsKey=projectlessMode||!projectPath?"":(workspaceEnvironmentId||"")+"\0"+projectPath;
-  const actionRunKey=script=>actionRunsKey+"\0"+script.id,actionStartsRef=useRef(new Set());
+  const actionRunKey=script=>actionRunsKey+"\0"+script.id,actionStartsRef=useRef(new Set()),scriptButtonRef=useRef(null);
+  // Stop goes with the run it ends (pressed, or the action ended on its own): a keyboard on it goes on from the action's button, not
+  // from the top of the page.
+  const scriptStopRef=useCallback(node=>()=>{if(document.activeElement===node)scriptButtonRef.current?.focus()},[]);
   useEffect(()=>{
     if(!actionRunsKey)return;let live=true;
     api("/api/project-script/runs?"+new URLSearchParams({path:projectPath,environmentId:workspaceEnvironmentId||""})).then(data=>{if(live)setActionRuns(current=>{const next={...current};for(const [scriptId,sessionId] of Object.entries(data?.runs||{}))next[actionRunsKey+"\0"+scriptId]??=sessionId;return next})},()=>{});
@@ -5457,8 +5460,8 @@ export default function App(){
               {/* data-fold names the actions header-fit.js folds into the More actions menu when the title needs their room. */}
               {gitInfo?.isGit&&projectControlsShown&&<button className="header-control branch-control" data-fold="source" onClick={()=>openRightPanel("source")} title={(gitInfo.branch||"detached")+" · Source control"}><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
               {headerOpenInShown&&projectControlsShown&&<OpenInControl openIn={headerOpenIn} fold="open-in"/>}
-              {headerScript&&projectControlsShown&&<button className={"header-control script-control"+(headerRunning?" running":"")} data-fold="script" data-running={headerRunning||undefined} onClick={runHeaderScript} aria-label={headerScript.name} title={headerRunning?headerScript.name+" is running · Show its terminal":headerScript.command}>{headerRunning?<span className="script-running-dot" aria-hidden="true"/>:<Play size={13}/>}<span>{headerScript.name}</span></button>}
-              {headerScript&&projectControlsShown&&headerRunning&&<button className="header-control icon-only script-stop-control" data-fold="script" onClick={()=>runUserAction(stopHeaderScript,"Could not stop the project action")} aria-label={"Stop "+headerScript.name} title={"Stop "+headerScript.name}><CircleStop size={14}/></button>}
+              {headerScript&&projectControlsShown&&<button ref={scriptButtonRef} className={"header-control script-control"+(headerRunning?" running":"")} data-fold="script" data-running={headerRunning||undefined} onClick={runHeaderScript} aria-label={headerScript.name} title={headerRunning?headerScript.name+" is running · Show its terminal":headerScript.command}>{headerRunning?<span className="script-running-dot" aria-hidden="true"/>:<Play size={13}/>}<span>{headerScript.name}</span></button>}
+              {headerScript&&projectControlsShown&&headerRunning&&<button ref={scriptStopRef} className="header-control icon-only script-stop-control" data-fold="script" onClick={()=>runUserAction(stopHeaderScript,"Could not stop the project action")} aria-label={"Stop "+headerScript.name} title={"Stop "+headerScript.name}><CircleStop size={14}/></button>}
               {activeThread?.id&&!openingShown&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} disabled={running} aria-label="Review" title={reviewHint}><ShieldCheck size={14}/><span>Review</span></button>}
               {running&&!openingShown&&<button className={"header-control stop-control"+(stopping?" stopping":"")} disabled={stopping} onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label={stopping?"Stopping":"Stop"} title={stopping?"Stopping the running turn…":"Stop the running turn"}><CircleStop size={14}/><span>{stopping?"Stopping…":"Stop"}</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} data-fold="terminal" onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>

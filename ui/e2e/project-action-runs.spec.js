@@ -142,3 +142,27 @@ test("an action run from its Projects card shows running on the header's button,
     expect(started.length,"the header never started a second run").toBe(1);
   }finally{await cleanup()}
 });
+
+test("Stop pressed from the keyboard leaves the keyboard on the action's button",async({page,request})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {cleanup}=await scriptedActions(page,request,{latencyMs:50});
+  try{
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const {button,stop}=headerAction(page);
+    await button.focus();await page.keyboard.press("Enter");
+    await expect(button).toHaveAttribute("data-running","true");
+    await button.focus();await page.keyboard.press("Tab");
+    await expect(stop,"Tab from the action's button reaches its Stop").toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(stop).toHaveCount(0);
+    await page.waitForTimeout(300);
+    console.log("focus after Stop:",await page.evaluate(()=>document.activeElement===document.body?"body":document.activeElement?.getAttribute("aria-label")||document.activeElement?.tagName));
+    await page.screenshot({animations:"disabled",path:proofShots+"F5-keyboard-stop-focus-on-action.png"});
+    await expect(button,"the keyboard goes on from the action's button").toBeFocused();
+    // And Enter there runs the action again, from the keyboard.
+    await page.keyboard.press("Enter");
+    await expect(button).toHaveAttribute("data-running","true");
+  }finally{await cleanup()}
+});
