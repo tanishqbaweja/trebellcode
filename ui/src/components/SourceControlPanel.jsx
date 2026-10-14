@@ -114,6 +114,22 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     // The repository shows as soon as it answers; Git and the code host are checked after it. The header shows it too, so a branch
     // made or switched here (Initialize Git, a switch) is named there at once instead of at the header's next read.
     setInfo(i);settle("info",{ok:true});onGitInfo?.(i);
+    // The pull requests are read alongside the diagnostics and show as they answer: the diagnostics ask every code host's CLI how it
+    // is (the Azure CLI alone can take seconds), while the list needs only the host chosen or, with none chosen, the one the remote
+    // names, which the server reads from the remote as the diagnostics do.
+    const listed=api("/api/source-control/prs?"+query({path:projectPath,...(providerOverride?{provider:providerOverride}:{})})).then(p=>{
+      if(!stillShown(started))return null;
+      setPrs(p.items||[]);if(p.capabilities)setCapabilities(p.capabilities);
+      // A host whose client could not list them answers ok:false with its reason: that is a failure, not an empty list.
+      settle("prs",p.ok===false?{error:reason(p.error)}:{ok:true});
+      return p;
+    },error=>{
+      refreshFailureRef.current={stage:"prs",message:error.message||String(error)||"Could not refresh pull requests."};
+      const banner=stillShown(started)&&(reportErrors||i?.remotes?.length)?actionError("Could not refresh pull requests",error):"";
+      if(banner)setError(banner);
+      settle("prs",{error:reason(error),banner});
+      return null;
+    });
     let d=null;
     try{d=await api("/api/source-control/diagnostics?"+query({path:projectPath,...(providerOverride?{provider:providerOverride}:{})}))}
     catch(error){
@@ -126,19 +142,10 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     // Nothing chosen yet takes the detected host. The choice is read as it is now: a project switch clears it just before this
     // refresh, while this render's value still names the last project's host (which left every other project on Auto detect).
     if(chosen)setSourceProvider(current=>current||chosen);
-    try{
-      const p=await api("/api/source-control/prs?"+query({path:projectPath,...(chosen?{provider:chosen}:{})}));
-      if(!stillShown(started))return false;
-      setPrs(p.items||[]);if(p.capabilities)setCapabilities(p.capabilities);else if(chosen&&d?.capabilities?.[chosen])setCapabilities(d.capabilities[chosen]);
-      // A host whose client could not list them answers ok:false with its reason: that is a failure, not an empty list.
-      settle("prs",p.ok===false?{error:reason(p.error)}:{ok:true});
-    }catch(error){
-      refreshFailureRef.current={stage:"prs",message:error.message||String(error)||"Could not refresh pull requests."};
-      const banner=stillShown(started)&&(reportErrors||i?.remotes?.length)?actionError("Could not refresh pull requests",error):"";
-      if(banner)setError(banner);
-      settle("prs",{error:reason(error),banner});
-      return false;
-    }
+    const p=await listed;
+    if(!p||!stillShown(started))return false;
+    // A list that came without the host's capabilities takes them from the diagnostics.
+    if(!p.capabilities&&chosen&&d?.capabilities?.[chosen])setCapabilities(d.capabilities[chosen]);
     return true;
   }
   // An action that worked fully says nothing, unless what it did is news to the person (`notice`, as for a merge).

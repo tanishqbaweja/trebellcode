@@ -112,6 +112,45 @@ test("large source control collections mount bounded windows",async({page,reques
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-windowing-dark-1280x800.png",fullPage:true});
 });
 
+// The diagnostics ask every code host's CLI how it is (gh, glab, tea, fj, az: the Azure CLI alone took seconds here), but the list
+// of pull requests needs only the host the remote names. Held diagnostics must not hold the list: it shows while they still check.
+test("the pull requests show while the code host diagnostics are still checking",async({page,request})=>{
+  test.setTimeout(35_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const {project:registered}=await (await request.post("/api/projects",{data:{path:boot.cwd,name:"Source control pull requests first"}})).json();
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  const capabilities={create:true,comment:true,review:true,merge:true};
+  const prs=[1,2].map(number=>({provider:"github",number,title:"Fixture pull request "+number,state:"OPEN",url:"https://example.test/pr/"+number,headRefName:"feature-"+number,baseRefName:"main"}));
+  let releaseDiagnostics=()=>{};const diagnosticsHeld=new Promise(resolve=>{releaseDiagnostics=resolve});
+  const prRequests=[];
+  await page.route("**/api/git/info?**",route=>json(route,{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:"origin/main",status:[],worktrees:[{path:boot.cwd,branch:"main"}],remotes:[{name:"origin",kind:"fetch",url:"https://github.com/owner/repo.git"}]}));
+  await page.route("**/api/source-control/diagnostics?**",async route=>{await diagnosticsHeld;return json(route,{selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:capabilities}})});
+  await page.route("**/api/source-control/prs?**",route=>{prRequests.push(new URL(route.request().url()).searchParams.get("provider"));return json(route,{ok:true,provider:"github",capabilities,items:prs})});
+  try{
+    await page.goto("/");
+    await page.getByRole("button",{name:"Projects",exact:true}).click();
+    const project=page.locator(".project-card").filter({hasText:"Source control pull requests first"});
+    await expect(project).toBeVisible();await project.locator(".project-open").click();
+    await expect(page.getByRole("heading",{name:"What do you want to build?"})).toBeVisible();
+    await page.getByTestId("right-panel-toggle").click();
+    const right=page.getByTestId("right-panel");await right.getByRole("button",{name:"Git",exact:true}).click();
+    await expect(right.getByRole("button",{name:/#1 Fixture pull request 1/})).toBeVisible();
+    await expect(right.getByRole("button",{name:/#2 Fixture pull request 2/})).toBeVisible();
+    await expect(right.getByText("Loading pull requests…")).toHaveCount(0);
+    await expect(right.getByText("Git: checking…",{exact:true})).toBeVisible();
+    await right.screenshot({animations:"disabled",path:auditDir+"source-control-prs-before-diagnostics.png"});
+    // With no host chosen the server lists the remote's own (github here), as the diagnostics would have chosen.
+    expect(prRequests).toEqual([null]);
+    releaseDiagnostics();
+    await expect(right.getByText("Git: git version fixture",{exact:true})).toBeVisible();
+    await expect(right.getByRole("button",{name:/#1 Fixture pull request 1/})).toBeVisible();
+  }finally{
+    releaseDiagnostics();await page.unrouteAll({behavior:"ignoreErrors"});
+    if(registered?.id)await request.delete("/api/projects?id="+encodeURIComponent(registered.id)).catch(()=>{});
+  }
+});
+
 test("source control keeps the last-known Git version visible during diagnostics refresh",async({page,request})=>{
   test.setTimeout(35_000);
   await request.post("/api/settings",{data:{onboardingComplete:true}});
@@ -1054,6 +1093,12 @@ test("each project selects its detected code host every time it is opened",async
     await expect(codeHost).toHaveValue("github");
     await expect(repository).toContainText("GitHub · authenticated");
     await expect(publish).toBeVisible();
+    // The list read on opening goes out with the diagnostics, before they name the host: it leaves the host to the server's reading
+    // of the remote, as the diagnostics do. The host they detect is then the project's choice, which the next read names.
+    expect(prsAskedWith(),name).toBeUndefined();
+    const before=host.calls.filter(call=>call.path==="prs").length;
+    await right.getByRole("button",{name:"Refresh pull requests",exact:true}).click();
+    await expect.poll(()=>host.calls.filter(call=>call.path==="prs").length).toBeGreaterThan(before);
     expect(prsAskedWith(),name).toBe("github");
   }
   await shootBothModes(page,"source-control-host-after-switches");
