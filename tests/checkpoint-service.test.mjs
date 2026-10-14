@@ -391,3 +391,43 @@ test("a file restore taken back puts every file back as it was before it, and on
     assert.deepEqual(await fixture.snapshot(),before);
   }finally{await rm(fixture.root,{recursive:true,force:true})}
 });
+
+// A restore taken back gives every file its own bytes back: the files it changed are kept as they are on disk, not through git's
+// line-ending conversion. core.autocrlf=input (a common global setting) stored a CRLF file with LF endings and wrote it back with
+// LF; autocrlf=true (Git for Windows' default) wrote an LF file back with CRLF.
+async function lineEndingWorktree(autocrlf){
+  const root=await mkdtemp(join(tmpdir(),"trebell-checkpoint-eol-"));
+  const home=join(root,"home"),repo=join(root,"repo"),worktree=join(root,"worktree");
+  await mkdir(repo,{recursive:true});
+  await git(repo,["init"]);await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);
+  await git(repo,["config","core.autocrlf",autocrlf]);
+  await git(repo,["checkout","-b","main"]);
+  await writeFile(join(repo,"edited.txt"),"base\n");
+  await git(repo,["add","."]);await git(repo,["commit","-m","Base"]);
+  await git(repo,["branch","feature"]);await git(repo,["worktree","add",worktree,"feature"]);
+  const env={...process.env,TREBELL_HOME:home};const state=new TrebellStateStore(env);
+  state.touchProject(worktree,{managedWorktree:{root:repo,branch:"feature",baseBranch:"main",submodules:"none",createdAt:Date.now()}});
+  state.updateThreadMeta("thread-owner",{cwd:worktree,archived:false});
+  return {root,worktree,state,env};
+}
+for(const [autocrlf,eol] of [["input","\r\n"],["true","\n"]]){
+  test(`a file restore taken back gives each file its own bytes back (core.autocrlf=${autocrlf}, a file written with ${JSON.stringify(eol)})`,async()=>{
+    const fixture=await lineEndingWorktree(autocrlf);
+    try{
+      const service=new CheckpointService({state:fixture.state,env:fixture.env});
+      const checkpoint=await service.create({cwd:fixture.worktree,threadId:"thread-owner",label:"Before change"});
+      // Work after the checkpoint, in the line endings the person's editor or tool wrote.
+      await writeFile(join(fixture.worktree,"edited.txt"),`later work${eol}second line${eol}`);
+      await writeFile(join(fixture.worktree,"notes.txt"),`new notes${eol}more${eol}`);
+      const bytes=async()=>({edited:await readFile(join(fixture.worktree,"edited.txt"),"latin1").catch(()=>null),notes:await readFile(join(fixture.worktree,"notes.txt"),"latin1").catch(()=>null)});
+      const before=await bytes();
+      const restored=await service.restore(checkpoint.id,{threadId:"thread-owner"});
+      assert.ok(restored.undoId);
+      assert.equal((await bytes()).notes,null,"the restore removed the file the checkpoint lacks");
+      await service.undoRestore(restored.undoId,{threadId:"thread-owner"});
+      const after=await bytes();
+      console.log("before:",JSON.stringify(before),"after:",JSON.stringify(after));
+      assert.deepEqual(after,before,"every file is put back byte for byte");
+    }finally{await rm(fixture.root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+  });
+}

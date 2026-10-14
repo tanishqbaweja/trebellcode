@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
-import { mkdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { chmod, copyFile, lstat, mkdir, readFile, readlink, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { trebellHome } from "./paths.mjs";
 import { git, gitInfo } from "./git-service.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
@@ -44,6 +44,27 @@ function reusableIndex(buffer){
     return offset===buffer.length-hashSize?!blocked:null;
   };
   return walk(20)??walk(32)??false;
+}
+
+// A path in the worktree as a restore may find it: its lstat, or null when nothing is there.
+const lstatOrNull=path=>lstat(path).catch(error=>{if(error?.code==="ENOENT"||error?.code==="ENOTDIR")return null;throw error});
+// One path of a worktree, kept before a restore: a file's own bytes (copied to copyPath) and mode, a symbolic link's target, or that it
+// is absent. A folder (a submodule) is not kept (skip).
+async function keepFile(root,rel,copyPath){
+  const path=join(root,rel),info=await lstatOrNull(path);
+  if(!info)return {rel};
+  if(info.isSymbolicLink())return {rel,link:await readlink(path)};
+  if(!info.isFile())return {rel,skip:true};
+  await copyFile(path,copyPath);
+  return {rel,copy:copyPath,mode:info.mode};
+}
+async function putFileBack(root,file){
+  if(file.skip)return;
+  const path=join(root,file.rel),info=await lstatOrNull(path);
+  // A link or a file that is not to be there goes first: a copy onto a link would write through it.
+  if(info&&(!file.copy||info.isSymbolicLink()))await rm(path,{force:true});
+  if(file.copy){await mkdir(dirname(path),{recursive:true});await copyFile(file.copy,path);await chmod(path,file.mode&0o777).catch(()=>{})}
+  else if(file.link!=null){await mkdir(dirname(path),{recursive:true});await symlink(file.link,path)}
 }
 
 export class CheckpointService{
@@ -294,20 +315,35 @@ export class CheckpointService{
     for(const rel of untracked)if(!tracked.has(rel))await rm(join(root,rel),{recursive:true,force:true}).catch(error=>failed.push(rel+" ("+(error?.code||error?.message||error)+")"));
     if(failed.length)throw new Error("Could not remove "+failed.slice(0,3).join(", ")+(failed.length>3?` and ${failed.length-3} more`:"")+".");
   }
-  // What a restore changes, kept before it so that it can be put back exactly: the worktree as a commit (#captureLocal) and the index's
-  // own bytes. A few are kept, for a while: Edit from here takes one back only when the rewind that follows the restore is refused.
-  async #keepLocal(root,threadId,baseEnv){
-    const captured=await this.#captureLocal(root,"Before the files were restored",baseEnv);
-    if(!captured)throw new Error("Checkpoint repository is unavailable");
-    const index=await readFile(captured.repositoryIndex).catch(error=>{if(error?.code==="ENOENT")return null;throw error});
-    const now=Date.now(),kept={id:captured.id,threadId,root,commit:captured.commit,indexPath:captured.repositoryIndex,index,keptAt:now};
-    for(const [key,entry] of this.#undos)if(now-entry.keptAt>RESTORE_UNDO_KEEP_MS)this.#undos.delete(key);
+  // What a restore to a commit can change, kept before it so that it can be put back exactly: every path whose index entry differs from
+  // the commit's (diff-index --cached), whose file differs from its index entry by stat or content (diff-files, not refreshed, so a
+  // file touched since the index last read it counts too), and every untracked file, each copied as it is on disk (no line-ending
+  // conversion or clean filter, as a commit of them had) or noted as absent; and the index's own bytes. A nested repository (an
+  // untracked folder with its own .git, which ls-files names with a slash) cannot be kept. A few are kept, for a while: Edit from here
+  // takes one back only when the rewind that follows the restore is refused.
+  async #keepLocal(root,commit,threadId,baseEnv){
+    const paths=async args=>String((await this.#captureGit(root,args,{env:baseEnv})).stdout||"").split("\0").filter(Boolean);
+    const [indexPath,staged,changed,untracked]=await Promise.all([
+      this.#captureGit(root,["rev-parse","--git-path","index"],{env:baseEnv}).then(found=>resolve(root,String(found.stdout||"").trim())),
+      paths(["diff-index","--cached","--name-only","-z","--no-renames",commit,"--"]),
+      paths(["diff-files","--name-only","-z","--no-renames","--"]),
+      paths(["ls-files","--others","--exclude-standard","-z","--"]),
+    ]);
+    const index=await readFile(indexPath).catch(error=>{if(error?.code==="ENOENT")return null;throw error});
+    const id=randomUUID(),dir=join(trebellHome(this.env),"checkpoints","undo-"+id),files=[];
+    await mkdir(dir,{recursive:true});
+    try{for(const rel of new Set([...staged,...changed,...untracked]))if(!rel.endsWith("/"))files.push(await keepFile(root,rel,join(dir,String(files.length))))}
+    catch(error){await rm(dir,{recursive:true,force:true}).catch(()=>{});throw error}
+    const now=Date.now(),kept={id,threadId,root,dir,files,indexPath,index,keptAt:now};
+    for(const entry of [...this.#undos.values()])if(now-entry.keptAt>RESTORE_UNDO_KEEP_MS)this.#forget(entry);
     this.#undos.set(kept.id,kept);
-    while(this.#undos.size>RESTORE_UNDO_KEEP_COUNT)this.#undos.delete(this.#undos.keys().next().value);
+    while(this.#undos.size>RESTORE_UNDO_KEEP_COUNT)this.#forget(this.#undos.values().next().value);
     return kept;
   }
-  async #putBack(kept,baseEnv){
-    await this.#restoreLocalTree(kept.root,kept.commit,baseEnv);
+  #forget(kept){this.#undos.delete(kept.id);void rm(kept.dir,{recursive:true,force:true}).catch(()=>{})}
+  // Every kept file as it was (its own bytes and mode, a link, or absent), then the index's own bytes.
+  async #putBack(kept){
+    for(const file of kept.files)await putFileBack(kept.root,file);
     if(kept.index)await writeFile(kept.indexPath,kept.index);else await rm(kept.indexPath,{force:true});
   }
   // The files go back to the checkpoint, or stay exactly as they were: a restore that fails part-way (git restore wrote some files
@@ -320,12 +356,13 @@ export class CheckpointService{
     await this.#assertRestoreIsolation(cp,threadId);
     const baseEnv=this.#localGitEnv(),info=await this.gitInfoFn(cp.root,{env:baseEnv});
     if(!info.isGit) throw new Error("Checkpoint repository is unavailable");
-    const kept=await this.#keepLocal(cp.root,threadId,baseEnv);
+    const kept=await this.#keepLocal(cp.root,cp.commit,threadId,baseEnv);
     try{await this.#restoreLocalTree(cp.root,cp.commit,baseEnv)}
     catch(error){
-      this.#undos.delete(kept.id);const message=error?.message||String(error);
-      try{await this.#putBack(kept,baseEnv)}
-      catch(putBackError){throw Object.assign(new Error(message+" Putting the files back as they were failed too: "+(putBackError?.message||putBackError),{cause:error}),{filesPutBack:false})}
+      const message=error?.message||String(error);
+      try{await this.#putBack(kept)}
+      catch(putBackError){this.#undos.delete(kept.id);throw Object.assign(new Error(message+" Putting the files back as they were failed too: "+(putBackError?.message||putBackError)+" Their bytes are kept in "+kept.dir+".",{cause:error}),{filesPutBack:false})}
+      this.#forget(kept);
       throw Object.assign(new Error(message,{cause:error}),{filesPutBack:true});
     }
     return {ok:true,checkpoint:cp,undoId:kept.id,info:await this.gitInfoFn(cp.root,{env:baseEnv})};
@@ -336,8 +373,8 @@ export class CheckpointService{
     const kept=this.#undos.get(String(undoId||""));
     if(!kept)throw new Error("The files from before this restore are no longer kept.");
     if(!threadId||kept.threadId!==threadId)throw new Error("A restore can be taken back only from the thread that made it.");
-    await this.#putBack(kept,this.#localGitEnv());
-    this.#undos.delete(kept.id);
+    await this.#putBack(kept);
+    this.#forget(kept);
     return {ok:true};
   }
 }
