@@ -641,8 +641,9 @@ test.describe("Adding an environment",()=>{
     await shootModes(page,"environment-codex-executable-empty",{show:codex});
   });
 
-  // Docker Desktop's own WSL distro runs its engine. Host discovery here is real (wsl --list only names the distros), and on a host
-  // that has Docker Desktop its distro is neither listed as a WSL target nor offered in the Distribution picker.
+  // Docker Desktop's own WSL distro runs its engine. Offline, host discovery answers as a fixed host whose wsl --list names one distro
+  // beside Docker Desktop's (src/offline-e2e-host.mjs; with TREBELL_E2E_ALLOW_NETWORK=1 it asks this host), and Docker Desktop's
+  // distro is neither listed as a WSL target nor offered in the Distribution picker.
   test("Docker Desktop's own WSL distro is not offered for agents",async({page,request})=>{
     await open(page,request);
     await nav(page,"Environments").click();

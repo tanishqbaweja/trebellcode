@@ -252,11 +252,14 @@ function validateProfile(input={}){
 }
 
 export class EnvironmentManager {
-  constructor({state,env=process.env,platform=process.platform}={}){
+  // discoveryRun: how host discovery runs ssh -V and wsl --list (offline browser E2E answers them as a fixed host instead,
+  // offline-e2e-host.mjs).
+  constructor({state,env=process.env,platform=process.platform,discoveryRun=runProcess}={}){
     if(!state) throw new Error("EnvironmentManager requires a TrebellStateStore");
     this.state=state;
     this.env=env;
     this.platform=platform;
+    this.discoveryRun=discoveryRun;
   }
 
   list(){ return this.state.environments(); }
@@ -282,7 +285,7 @@ export class EnvironmentManager {
   async capabilities(){
     let ssh={available:false,version:null,error:null};
     try{
-      const result=await runProcess(this.platform==="win32"?"ssh.exe":"ssh",["-V"],{env:this.#transportEnv(),timeoutMs:5000});
+      const result=await this.discoveryRun(this.platform==="win32"?"ssh.exe":"ssh",["-V"],{env:this.#transportEnv(),timeoutMs:5000});
       const version=(result.stderr||result.stdout||"").split("\n")[0]||null;
       ssh={available:result.exitCode===0||Boolean(version),version,error:result.exitCode===0?null:(result.stderr||null)};
     }catch(error){ssh={available:false,version:null,error:error.message};}
@@ -290,7 +293,7 @@ export class EnvironmentManager {
     let wsl={available:false,distros:[],error:null};
     if(this.platform==="win32"){
       try{
-        const result=await runProcess("wsl.exe",["--list","--quiet"],{env:this.#transportEnv(),timeoutMs:8000});
+        const result=await this.discoveryRun("wsl.exe",["--list","--quiet"],{env:this.#transportEnv(),timeoutMs:8000});
         const {distros,dockerOnly}=listedWslDistros(result.stdout);
         wsl={available:result.exitCode===0&&distros.length>0,distros,error:result.exitCode!==0?(result.stderr||"WSL is unavailable"):dockerOnly?"Only Docker Desktop's own distro, which agents do not use":null};
       }catch(error){wsl={available:false,distros:[],error:error.message};}

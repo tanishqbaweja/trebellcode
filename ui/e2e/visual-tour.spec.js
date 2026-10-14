@@ -162,10 +162,10 @@ for (const mode of MODES) {
         expect(committed.diff, "the latest commit's patch").toContain("diff --git");
         await page.route("**/api/workspace/diff?**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(committed) }));
       }
-      // The Git tab's code host answers come from this machine, not from Trebell: which CLIs are installed and signed in (gh, glab,
-      // tea, fj and az, each asked its version and sign-in) and the pull requests GitHub lists for this checkout's remote. The tour runs offline, and in
-      // a full run those reads took longer than a capture waits (both still loading after 15 s), so they are answered here, as the
-      // Diff tab's patch is.
+      // The Git tab's code host is answered here, as the Diff tab's patch is: GitHub, signed in, with two open pull requests. Offline,
+      // the server answers every code-host CLI as not installed (src/offline-e2e-host.mjs); with the network allowed it asks this
+      // machine's gh, glab, tea, fj and az for their version and sign-in and lists GitHub's pull requests for this checkout's remote,
+      // which in a full run took longer than a capture waits (both still loading after 15 s).
       await page.route("**/api/source-control/diagnostics?**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(TOUR_CODE_HOST.diagnostics) }));
       await page.route("**/api/source-control/prs?**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(TOUR_CODE_HOST.prs) }));
       await page.getByTestId("right-panel-toggle").click();

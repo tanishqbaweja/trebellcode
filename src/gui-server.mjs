@@ -49,6 +49,7 @@ import { localHomePath } from "./local-home-path.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { createNativeSourceControlExecutor, sourceControlEnvironmentKeys } from "./native-source-control.mjs";
+import { offlineE2eClaudeCapabilities, offlineE2eDiscoveryRun, offlineE2eHarnessRun, offlineE2eSourceControlExecutor } from "./offline-e2e-host.mjs";
 import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
 import { repositoryContextDeliveryPacket } from "./context-provenance.mjs";
 import { RepositoryKnowledgeService } from "./repository-knowledge-service.mjs";
@@ -582,7 +583,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   removeRetiredProviderData(env,{log:message=>console.error(message)});
   const eventJournal=new EventJournal(env);
   const providers=new ProviderManager({env,fetchFn:fetchImpl});
-  const environments=new EnvironmentManager({state,env});
+  // Offline E2E also runs none of the host programs that would reach the network or answer from this machine's own installs and
+  // sign-ins: host discovery (ssh -V, wsl --list), the harness checks and the code-host CLIs answer from offline-e2e-host.mjs.
+  const environments=new EnvironmentManager({state,env,...(offlineE2E?{discoveryRun:offlineE2eDiscoveryRun}:{})});
   const storedActiveEnvironmentId=state.settings().activeEnvironmentId||null;
   if(storedActiveEnvironmentId&&!environments.get(storedActiveEnvironmentId))state.updateSettings({activeEnvironmentId:null});
   function requestedEnvironmentId(value,{fallback=true}={}){
@@ -611,7 +614,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       enabled:profile?.enabled!==false,
     }:{id:null,name:"Local machine",type:"local"},effectiveSettings:state.projectSettings(project.path,project.environmentId).effective};
   }
-  const agentRuntimes=new AgentRuntimeManager({state,env,environments,fetchImpl});
+  const agentRuntimes=new AgentRuntimeManager({state,env,environments,fetchImpl,...(offlineE2E?{runFn:offlineE2eHarnessRun,claudeCapabilitiesCache:offlineE2eClaudeCapabilities}:{})});
   const codexThreadModels=new Map();
   // As state: one sqlite connection for the agent threads, closed in close(). The server is the only writer of them.
   const agentThreads=new AgentThreadStore(env,{keepConnection:true});
@@ -809,8 +812,11 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       },
     };
   }
+  // Offline E2E answers the code-host CLIs (gh, glab, tea, fj, az) as not installed: they would ask GitHub and the other hosts with
+  // this machine's sign-ins (offline-e2e-host.mjs). Git still runs.
   function inSourceControlEnvironment(environmentId,callback){
-    return withSourceControlExecutor(sourceControlExecutor(environmentId),callback);
+    const executor=sourceControlExecutor(environmentId);
+    return withSourceControlExecutor(offlineE2E?offlineE2eSourceControlExecutor(executor):executor,callback);
   }
   function threadPullRequestAttachments(threadId){
     return (state.threadMeta(threadId)?.attachments||[]).filter(item=>item?.attachmentType==="pull_request");
