@@ -94,6 +94,10 @@ test("manual diagnostics refresh failures preserve the last valid runtime log",a
 
 test("Codex runtime diagnostics show unavailable state instead of assuming readiness",async({page,request})=>{
   test.setTimeout(30_000);
+  // The harness list says Codex is ready and the runtime poll says it is not. The runtime card and the Diagnostics chip take the
+  // poll's answer first (harnessCheck), so they say "not ready" only when Settings hands them the poll. The list is answered here
+  // because the offline E2E server's own list finds no harness CLI (offline-e2e-host.mjs) and would say "not ready" as well.
+  await page.route(/\/api\/agent-runtimes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(fixtureRuntimes)}));
   await page.route(/\/api\/runtime(?:\?.*)?$/,route=>route.fulfill({
     status:200,contentType:"application/json",
     body:JSON.stringify({
@@ -109,6 +113,8 @@ test("Codex runtime diagnostics show unavailable state instead of assuming readi
   await expect(page.getByTestId("composer")).toBeVisible();
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
+  // The list has answered, and says Codex is ready: a "not ready" card from here on comes from the poll.
+  await expect(page.locator('[data-setting-target="agents-harness"]')).toContainText("Codex · ready");
   const runtimeCard=page.locator('[data-setting-target="agents-runtime"]');
   await expect(runtimeCard).toContainText("Agent runtime: not ready");
   await expect(runtimeCard).not.toContainText("Inference:");
