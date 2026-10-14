@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { markdownReply } from "../../scripts/perf/lib/fake-openai.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
 import { gate,live,startStreamingFixture } from "./native-stream-fixture.js";
-import { routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
+import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 
 // Count budgets for the renderer (the perf plan's section 2): what the page does at idle and while a reply streams, measured as
 // counts that do not depend on how busy the machine is. Each budget holds the line its fix reached, or the baseline until then.
@@ -197,5 +197,36 @@ test("B12: a reload posts none of the thread catalogs the server already holds",
     console.log("B12 a reload:",JSON.stringify({firstLoadPosts:posts()-posts(reloadAt),apiRequests:loaded.length,threadMetaPosts:posts(reloadAt),requests:loaded.reduce((counts,row)=>({...counts,[row.path]:(counts[row.path]||0)+1}),{})}));
     expect(posts(reloadAt)).toBeLessThanOrEqual(B12_RELOAD.threadMetaPosts);
     expect(loaded.length).toBeLessThanOrEqual(B12_RELOAD.apiRequests);
+  }finally{await harness.close();await rm(metaHome,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+// B13: the HTTP requests opening a short thread sends the server, from the click until its history shows and the page settles
+// (the thread itself comes over the relay's socket, which is not counted). The idle git poll can fall inside the window, so it is
+// listed apart, and only the git info the open asks for is held to its own line.
+const B13_OPEN={requests:5,gitInfo:2};
+const IDLE_POLLS=new Set(["GET /api/git/info","GET /api/source-control/branch-reviews"]);
+
+test("B13: opening a short thread sends the server at most 5 requests",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startRelayHarness(),metaHome=await mkdtemp(join(tmpdir(),"trebell-b13-meta-")),metaStore=new TrebellStateStore({...process.env,TREBELL_HOME:metaHome});
+  try{
+    for(const name of ["Open budget first","Open budget second"]){
+      const thread=harness.seedThread(name,[{user:"Say how the relay orders turns",items:[replyItem("b13-reply-"+harness.threads.length,name+": each turn in order.")]}]);
+      metaStore.updateThreadMeta(thread.id,{projectless:false,environmentId:null,cwd:harness.repo,runtime:"native",runtimeInstanceId:"native-default"});
+    }
+    await routeRelayApp(page,harness,{metaStore});
+    const requests=[];page.on("request",request=>{const url=new URL(request.url());if(url.pathname.startsWith("/api/"))requests.push({at:Date.now(),path:request.method()+" "+url.pathname})});
+    const row=name=>page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
+    await page.goto("/");await expect(row("Open budget second")).toBeVisible({timeout:15_000});
+    // Settled: the first load's catalog posts are done and nothing has been asked for a second.
+    let last=-1;await expect.poll(()=>{const now=requests.length,steady=now===last;last=now;return steady},{intervals:[1000],timeout:20_000}).toBe(true);
+    const openAt=Date.now();await row("Open budget second").locator(".thread-main").click();
+    await expect(page.locator(".assistant-message-text").filter({hasText:"Open budget second: each turn in order."})).toBeVisible({timeout:15_000});
+    await page.waitForTimeout(1500);
+    const sent=requests.filter(item=>item.at>=openAt),counted=sent.filter(item=>!IDLE_POLLS.has(item.path));
+    const byPath=list=>list.reduce((counts,item)=>({...counts,[item.path]:(counts[item.path]||0)+1}),{});
+    console.log("B13 a thread open:",JSON.stringify({requests:counted.length,counted:byPath(counted),idlePolls:byPath(sent.filter(item=>IDLE_POLLS.has(item.path)))}));
+    expect(counted.length,JSON.stringify(byPath(counted))).toBeLessThanOrEqual(B13_OPEN.requests);
+    expect(sent.filter(item=>item.path==="GET /api/git/info").length,"git/info around the open").toBeLessThanOrEqual(B13_OPEN.gitInfo);
   }finally{await harness.close();await rm(metaHome,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
