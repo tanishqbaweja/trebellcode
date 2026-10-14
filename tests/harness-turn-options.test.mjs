@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {harnessInventory,harnessThreadOptions,harnessTurnOptions,relayHarness,serviceTierPickerTitle} from "../ui/src/harness-turn-options.js";
+import {harnessInventory,harnessThreadOptions,harnessTurnOptions,relayHarness,relayThreadPreferredModel,serviceTierPickerTitle} from "../ui/src/harness-turn-options.js";
 import {agentPermissionModeFromStart,agentPermissionProfilePatch} from "../src/agent-relay.mjs";
 
 test("every relay harness starts its thread in the composer's access level, Auto-accept edits included",()=>{
@@ -16,6 +16,13 @@ test("every relay harness starts its thread in the composer's access level, Auto
     assert.equal(relayHarness(runtime),false,String(runtime));
     assert.deepEqual(harnessThreadOptions(runtime,{permissionMode:"full"}),{},"Codex and Native take the sandbox and approval policy instead");
   }
+});
+
+test("a reopened relay thread keeps its saved model when the catalog lands",()=>{
+  assert.equal(relayThreadPreferredModel("opencode",{model:"opencode/big-pickle"},"nvidia/nemotron"),"opencode/big-pickle");
+  assert.equal(relayThreadPreferredModel("claude",{model:"claude-opus"},"claude-sonnet"),"claude-opus");
+  assert.equal(relayThreadPreferredModel("codex",{model:"thread-model"},"composer-model"),"composer-model");
+  assert.equal(relayThreadPreferredModel("opencode",null,"opencode/default"),"opencode/default");
 });
 
 test("each harness's turn carries the access level and only the composer choices it takes",()=>{

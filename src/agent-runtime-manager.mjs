@@ -10,7 +10,7 @@ import { sharedRuntimeCapabilities } from "./runtime-capabilities.mjs";
 import { withoutSecretEnvironment } from "./secret-redactor.mjs";
 import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 import { installAntigravityRuntime, readAntigravityAuthState, readAntigravityInstall } from "./antigravity-runtime-installer.mjs";
-import { discoverOpenCodeModelCatalog } from "./opencode-agent-session.mjs";
+import { discoverOpenCode2ModelCatalog, discoverOpenCodeModelCatalog } from "./opencode-agent-session.mjs";
 import { resolveWindowsCommandShim, windowsCommandShimTarget } from "./windows-command-shim.mjs";
 import { codexAccountStatus, readCodexAccount } from "./codex-account-probe.mjs";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
@@ -66,16 +66,15 @@ const INSTALLABLE_PACKAGES=Object.freeze({
 // reuses the last read of the same binary and version, and makes one only when there is none.
 const OPENCODE_CATALOG_REUSE_MS=10_000;
 const OPENCODE_STATUS_TIMEOUT_MS=20_000;
-const OPENCODE_2X_MESSAGE="OpenCode 2.x is not supported yet: Trebell Code runs OpenCode 1.x. Use OpenCode 1.x (the opencode-ai npm package), or point this OpenCode profile's binary at a 1.x build.";
 const OPENCODE_NPM_REGISTRY_LATEST="https://registry.npmjs.org/opencode-ai/latest";
 
 const RUNTIME_COMPATIBILITY=Object.freeze({
   opencode:Object.freeze({
-    recommendedRange:">=1.14.19 <2.0.0",
+    recommendedRange:">=1.14.19 <3.0.0",
     ranges:Object.freeze([
       Object.freeze({range:"<1.14.19",status:"broken"}),
-      Object.freeze({range:">=2.0.0",status:"unsupported",message:OPENCODE_2X_MESSAGE}),
-      Object.freeze({range:">=1.14.19 <2.0.0",status:"supported"}),
+      Object.freeze({range:">=3.0.0",status:"unsupported"}),
+      Object.freeze({range:">=1.14.19 <3.0.0",status:"supported"}),
     ]),
   }),
 });
@@ -524,7 +523,7 @@ export class AgentRuntimeManager{
     const instance=instances.find(item=>item.kind==="opencode"&&item.id==="opencode-default")||instances.find(item=>item.kind==="opencode")||defaultInstance("opencode");
     const checked=await this.#run(instance,["--version"],{timeoutMs:6000,environmentId});
     const installed=checked.ok?runtimeCompatibility("opencode",(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null):null;
-    if(installed?.status==="unsupported")throw new Error(`This OpenCode is ${installed.version}. Trebell Code neither updates OpenCode 2.x nor installs 1.x beside it, because OpenCode 2.x converts OpenCode's shared database in place. ${OPENCODE_2X_MESSAGE}`);
+    if(installed?.version?.startsWith("2."))throw new Error(`This OpenCode is ${installed.version}. Trebell Code supports OpenCode 2.x but will not replace it with the separate OpenCode 1.x npm package. Update this 2.x install with opencode upgrade or the package manager that installed it.`);
     const local=checked.ok&&!this.processSpawner(instance,environmentId)?this.#openCodeInstall(instance):null;
     if(local&&!local.owner)throw new Error(`Trebell Code updates an OpenCode installed by npm (opencode-ai) or by OpenCode's own installer, and could not tell how ${local.binary} was installed. Update it the way you installed it.`);
     const holder=local?.owner.method==="npm"?openCodeCommandHolder(local.owner.prefix,{platform:this.platform}):null;
@@ -576,11 +575,13 @@ export class AgentRuntimeManager{
     const command=this.executable(instance),key=[instance.id,command,instance.serverUrl||"",version||""].join("|"),cached=this.#openCodeCatalogs.get(key);
     if(cached?.pending)return await cached.pending;
     if(cached&&Date.now()-cached.at<reuseMs)return cached.value;
-    const pending=discoverOpenCodeModelCatalog({command,cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null});
+    const discover=String(version||"").startsWith("2.")?discoverOpenCode2ModelCatalog:discoverOpenCodeModelCatalog;
+    const pending=discover({command,cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null});
     this.#openCodeCatalogs.set(key,{pending});
     try{
       const value=await pending;
-      this.#openCodeCatalogs.set(key,{at:Date.now(),value});return value;
+      const emptyV2=String(version||"").startsWith("2.")&&!(Array.isArray(value?.models)&&value.models.length);
+      if(emptyV2)this.#openCodeCatalogs.delete(key);else this.#openCodeCatalogs.set(key,{at:Date.now(),value});return value;
     }catch(error){
       if(this.#openCodeCatalogs.get(key)?.pending===pending)this.#openCodeCatalogs.delete(key);
       throw error;
@@ -749,9 +750,8 @@ export class AgentRuntimeManager{
     }else if(instance.kind==="opencode"&&!this.processSpawner(instance,environmentId)){
       const versionLine=(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null,compatibility=runtimeCompatibility("opencode",versionLine);
       const unavailable=message=>({id:instance.id,kind:instance.kind,name:def.name,available:false,installed:true,authenticated:null,protocol:def.protocol,managed:false,binary:command,version:versionLine,account:null,message,...(compatibility?{compatibility}:{})});
-      // OpenCode 2.x serves another API (T3 Code drives it through a separate adapter), so nothing more runs on it.
       if(compatibility?.status==="unsupported")return unavailable(compatibility.message);
-      // T3 Code's status check: the upstream providers OpenCode's own server reports connected (a managed server, or the profile's).
+      // T3 Code's status check: the upstream providers OpenCode's matching 1.x/2.x server adapter reports connected.
       let catalog;
       try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null)}
       catch(error){return unavailable(("OpenCode could not list its providers: "+(error?.message||String(error))).slice(0,500))}

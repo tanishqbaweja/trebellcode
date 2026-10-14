@@ -1,6 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { OpenCodeAgentSession, configureOpenCodeMcpServers, connectedOpenCodeModels, inferOpenCodeDefaultVariant, openCodeChildPermissionRules, openCodeLongRequestFetch, openCodeMessageId, openCodeMessageTime, openCodeModelVariants, openCodePermissionDisposition, openCodePermissionRules, openCodePrimaryAgents, openCodeRulesEndWith, openCodeTrustedDirectories } from "../src/opencode-agent-session.mjs";
+import { OpenCodeAgentSession, configureOpenCodeMcpServers, connectedOpenCodeModels, inferOpenCodeDefaultVariant, openCode2ModelId, openCodeChildPermissionRules, openCodeLongRequestFetch, openCodeMessageId, openCodeMessageTime, openCodeModelVariants, openCodePermissionDisposition, openCodePermissionRules, openCodePrimaryAgents, openCodeRulesEndWith, openCodeTrustedDirectories, waitForOpenCode2Models } from "../src/opencode-agent-session.mjs";
+
+test("OpenCode 2 model ids keep the provider plus the model's native id verbatim",()=>{
+  assert.equal(openCode2ModelId({providerID:"opencode",id:"big-pickle"}),"opencode/big-pickle");
+  assert.equal(openCode2ModelId({providerID:"nvidia",id:"nvidia/nemotron-3.5-super-vl-120b-a12b"}),"nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b");
+  assert.equal(openCode2ModelId({providerID:"huggingface",modelID:"zai-org/GLM-5.3-Flash"}),"huggingface/zai-org/GLM-5.3-Flash");
+});
+
+test("OpenCode 2 waits for a specifically selected model when a cold provider catalog arrives in stages",async()=>{
+  let calls=0;
+  const partial={data:[{providerID:"nvidia",id:"nvidia/nemotron-3.5-super-vl-120b-a12b"}]};
+  const complete={data:[...partial.data,{providerID:"opencode",id:"big-pickle"}]};
+  const client={model:{list:async()=>++calls<3?partial:complete}};
+  const result=await waitForOpenCode2Models(client,{directory:"/repo"},{requiredModel:"opencode/big-pickle",timeoutMs:100,intervalMs:1});
+  assert.equal(calls,3);
+  assert.equal(result.data.some(model=>openCode2ModelId(model)==="opencode/big-pickle"),true);
+});
 
 test("OpenCode model selection stays inside connected providers instead of picking the first global provider",()=>{
   const catalog=connectedOpenCodeModels({

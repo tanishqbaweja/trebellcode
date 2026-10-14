@@ -12,6 +12,7 @@ import { claudeExplainedApiError, claudeResultFailure, claudeSignedOutMessage } 
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexApprovalResponse, isCodexApprovalRequest } from "./codex-policy-adapter.mjs";
 import { checkedOpenCodeProviders, connectedOpenCodeModels, openCodeModelPreferences, startOpenCodeServer } from "./opencode-agent-session.mjs";
+import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
 // One-shot Git text (commit subject, pull request title and body) through the active external harness, using that
@@ -216,10 +217,30 @@ function refuseOpenCodeAsks({client,v2Client,directory,sessionId}){
     async stop(){controller.abort();await within(task,1500)},
   };
 }
+async function openCode2Text(ctx){
+  const {runtimeManager,instance,environmentId}=ctx,cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx),chunks=[];
+  const session=new OpenCode2AgentSession({
+    command:runtimeManager.executable(instance,{environmentId}),cwd,env:runtimeManager.childEnv(instance),serverUrl:instance.serverUrl||null,
+    version:ctx.runtimeStatus?.version||"",permissionMode:"read-only",repositoryMcp:null,
+    onUpdate:event=>{const update=event?.update||{};if(update.sessionUpdate==="agent_message_chunk"&&update.content?.type==="text")chunks.push(String(update.content.text||""))},
+    onPermission:async()=>"decline",
+  });
+  ctx.defer(async()=>{
+    if(session.client&&session.sessionId)await within(session.client.session.delete({sessionID:session.sessionId}),1500);
+    await within(session.close(),1500);
+  });
+  const requested=ctx.models.find(id=>String(id||"").includes("/"))||null;
+  await session.start({model:requested});ctx.check();
+  if(session.client&&session.sessionId)await session.client.session.instructions.entry.put({sessionID:session.sessionId,key:"trebell.git_text",value:HARNESS_TEXT_INSTRUCTIONS});
+  await session.prompt([{type:"text",text:ctx.prompt}]);ctx.check();
+  return {text:chunks.join(""),model:session.model||requested};
+}
+
 // OpenCode: one regular turn (see above) in a fresh SDK session, which is deleted afterwards.
 async function openCodeText(ctx){
   const {runtimeManager,instance,environmentId}=ctx;
   if(runtimeManager.remoteIo?.(ctx.cwd,environmentId))return acpText(ctx,{args:["acp"],environment:{OPENCODE_CONFIG_CONTENT:OPENCODE_GIT_TEXT_CONFIG},mode:OPENCODE_GIT_TEXT_AGENT,deleteSession:true});
+  if(/(?:^|\s)v?2\./i.test(String(ctx.runtimeStatus?.version||"")))return openCode2Text(ctx);
   // Trebell starts its own `opencode serve` in an empty folder, so the repository's .opencode plugins and opencode.json never load (plugin
   // code would run as the user and see the diff). A profile's own server URL keeps the repository as its directory: Trebell does not own
   // that server's working folder, and a local temp path may not exist on its host.
@@ -338,7 +359,7 @@ export async function generateTextWithHarness({runtimeManager,instance=null,prom
   const context={runtimeManager,instance:target,kind,name,prompt:text,cwd,environmentId,models:modelCandidates(models),version,codexAppServer,deps:deps||{},signal:controller.signal,limit,remaining:()=>Math.max(1000,limit-(Date.now()-startedAt)),defer,check};
   const running=(async()=>{
     if(kind!=="codex"&&typeof runtimeManager?.probe==="function"){
-      const status=await runtimeManager.probe(target,{environmentId});check();
+      const status=await runtimeManager.probe(target,{environmentId});context.runtimeStatus=status;check();
       if(!status?.available)throw Object.assign(new Error(status?.message||`${name} is unavailable`),{code:"HARNESS_UNAVAILABLE"});
     }
     return adapter(context);

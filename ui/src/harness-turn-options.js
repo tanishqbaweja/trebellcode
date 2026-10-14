@@ -9,6 +9,7 @@ const TAKES_SPEED=new Set(["claude","cursor"]);
 const TAKES_MODEL_OPTIONS=new Set(["cursor"]);
 
 export function relayHarness(runtime){return RELAY_HARNESSES.has(String(runtime||""))}
+export function relayThreadPreferredModel(runtime,thread,fallback=""){return relayHarness(runtime)&&thread?.model?String(thread.model):String(fallback||"")}
 
 // thread/start: the access level the thread starts in. The relay could otherwise only read it from the Codex-style sandbox and
 // approval policy, which cannot tell Auto-accept edits from Supervised.

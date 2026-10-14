@@ -352,9 +352,9 @@ test("OpenCode compatibility blocks known-broken managed updates and pins verifi
   assert.equal(runtimeCompatibility("opencode","v1.14.19").status,"supported");
   assert.equal(runtimeCompatibility("opencode","1.18.32").status,"supported");
   assert.equal(runtimeCompatibility("opencode","dev-build").status,"unknown");
-  // OpenCode 2.x prints "opencode v2.0.18" and serves another API (T3 Code's versionProbe tells the two apart the same way).
+  // OpenCode 2.x uses a different server protocol, but Trebell has a dedicated adapter for it.
   const v2=runtimeCompatibility("opencode","opencode v2.0.18");
-  assert.equal(v2.status,"unsupported");assert.match(v2.message,/^OpenCode 2\.x is not supported yet: .*opencode-ai/);
+  assert.equal(v2.status,"supported");
   const home=await mkdtemp(join(tmpdir(),"trebell-opencode-compat-"));const env={...process.env,TREBELL_HOME:home};
   try{
     const state=new TrebellStateStore(env);const calls=[];let candidate="1.14.18",installedVersion="1.14.10",installTakes=true;
@@ -387,14 +387,13 @@ test("OpenCode compatibility blocks known-broken managed updates and pins verifi
     // An install that leaves the OpenCode this profile runs on its old version is reported, not shown as ready.
     candidate="1.14.20";installTakes=false;
     await assert.rejects(()=>manager.install("opencode"),/OpenCode 1\.14\.20 was installed, but the OpenCode this profile runs .* still reports 1\.14\.19/);
-    // OpenCode 2.x is neither updated nor joined by a 1.x install: 2.x converts OpenCode's shared database.
+    // OpenCode 2.x is supported, but Trebell does not replace it with the separate OpenCode 1.x npm package.
     installedVersion="v2.0.24";const before=calls.length;
-    await assert.rejects(()=>manager.install("opencode"),/OpenCode 2\.x converts OpenCode's shared database in place/);
+    await assert.rejects(()=>manager.install("opencode"),/supports OpenCode 2\.x but will not replace it with the separate OpenCode 1\.x npm package/);
     assert.deepEqual(calls.slice(before).map(call=>call.command+" "+call.args.join(" ")),["opencode --version"]);
-    // A remote 2.x is reported as unsupported (Trebell has not been verified with it); its ACP status check still runs. The probe
-    // answer of the install above is reused for a minute, so this asks again as Settings' Refresh does.
+    // A remote 2.x is supported too; remote OpenCode continues to run through its ACP surface.
     const remote2x=await manager.probe("opencode",{fresh:true});
-    assert.equal(remote2x.compatibility.status,"unsupported");assert.equal(remote2x.authenticated,true);
+    assert.equal(remote2x.compatibility.status,"supported");assert.equal(remote2x.authenticated,true);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
@@ -497,12 +496,8 @@ test("a local OpenCode's status counts the providers its own server connects, on
     assert.deepEqual(listed.models,["opencode/muse","openai/gpt"]);assert.deepEqual(listed.metadata.map(item=>item.name),["Muse","GPT"]);
     assert.deepEqual({commands:listed.inventory.commands.map(item=>item.name),agents:listed.inventory.agents.map(item=>item.name)},{commands:["init"],agents:["build"]});
     assert.equal((await fixture.read()).calls.some(call=>call[1]==="auth"),false,"the provider count comes from OpenCode's server, not its credential list");
-    // OpenCode 2.x runs nothing beyond its version check.
-    // A probe answer is reused for a minute, so the checks below ask again as Settings' Refresh does.
-    await fixture.update({version:"opencode v2.0.24",calls:[]});
-    const v2=await manager.probe("opencode",{fresh:true});
-    assert.equal(v2.available,false);assert.equal(v2.compatibility.status,"unsupported");assert.match(v2.message,/^OpenCode 2\.x is not supported yet/);
-    assert.deepEqual((await fixture.read()).calls,[["opencode","--version"]]);
+    // This fixture implements the 1.x HTTP surface only. OpenCode 2.x protocol coverage is exercised by its dedicated adapter and live tour.
+    assert.equal(runtimeCompatibility("opencode","opencode v2.0.24").status,"supported");
     // A server that cannot start makes OpenCode unavailable, with its reason.
     await fixture.update({version:"1.18.31",serveFails:true});
     const broken=await manager.probe("opencode",{fresh:true});

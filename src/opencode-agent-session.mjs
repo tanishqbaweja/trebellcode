@@ -1,6 +1,7 @@
 import { createServer as createNetServer } from "node:net";
 import { execFileSync } from "node:child_process";
-import { randomInt } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
+import { OpenCode as OpenCode2 } from "@opencode/client";
 import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -93,6 +94,21 @@ async function startServer({command="opencode",cwd,env=process.env,serverUrl=nul
   }
 }
 export const startOpenCodeServer=startServer;
+
+const OPENCODE2_USERNAME="opencode";
+function openCode2Authorization(password=""){return `Basic ${Buffer.from(`${OPENCODE2_USERNAME}:${String(password)}`,"utf8").toString("base64")}`}
+export async function startOpenCode2Server({command="opencode",cwd,env=process.env,serverUrl=null}={}){
+  if(serverUrl){
+    const password=String(env?.OPENCODE_PASSWORD||env?.OPENCODE_SERVER_PASSWORD||"");
+    return {url:serverUrl,password,close(){}};
+  }
+  const password=randomBytes(32).toString("base64url"),serverEnv={...(env||{})};
+  delete serverEnv.OPENCODE_SERVER_PASSWORD;serverEnv.OPENCODE_PASSWORD=password;
+  const server=await startServer({command,cwd,env:serverEnv});return {...server,password};
+}
+function createOpenCode2Client(server){
+  return OpenCode2.make({baseUrl:server.url,headers:{Authorization:openCode2Authorization(server.password)}});
+}
 
 // OpenCode 1.x answers POST /session/{id}/message (and /summarize) only once the whole turn has finished. Node's fetch (undici) stops
 // waiting for response headers after 300 seconds, so every OpenCode turn longer than five minutes failed in Trebell while OpenCode went
@@ -247,6 +263,49 @@ export async function discoverOpenCodeModelCatalog({command="opencode",cwd=proce
     server.close?.();
     await cleanupWithin(client?.instance?.dispose?.({query:{directory:cwd}}),1500);
   }
+}
+
+export function openCode2ModelId(model){
+  const providerID=String(model?.providerID||"").trim(),modelID=String(model?.modelID||model?.id||"").trim();
+  if(!providerID)return modelID;
+  return modelID?`${providerID}/${modelID}`:"";
+}
+function openCode2Variants(model){return (Array.isArray(model?.variants)?model.variants:[]).map(item=>String(item?.id||"").trim()).filter(value=>OPENCODE_VARIANT.test(value))}
+export async function waitForOpenCode2Models(client,location,{timeoutMs=15_000,intervalMs=250,requiredModel=null}={}){
+  const deadline=Date.now()+timeoutMs,wanted=String(requiredModel||"").trim();let result=await client.model.list({location});
+  const ready=value=>Array.isArray(value?.data)&&value.data.length>0&&(!wanted||value.data.some(model=>openCode2ModelId(model)===wanted));
+  while(!ready(result)&&Date.now()<deadline){
+    await new Promise(resolve=>setTimeout(resolve,intervalMs));result=await client.model.list({location});
+  }
+  return result;
+}
+export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null}={}){
+  const server=await startOpenCode2Server({command,cwd,env,serverUrl}),client=createOpenCode2Client(server),location={directory:cwd};
+  try{
+    await client.server.info();
+    const [modelResult,providerResult,defaultResult,commands,skills,agents]=await Promise.all([
+      waitForOpenCode2Models(client,location),
+      client.provider.list({location}).catch(()=>({data:[]})),
+      client.model.default({location}).catch(()=>({data:null})),
+      client.command.list({location}).then(result=>result?.data||[]).catch(()=>[]),
+      client.skill.list({location}).then(result=>result?.data||[]).catch(()=>[]),
+      client.agent.list({location}).then(result=>result?.data||[]).catch(()=>[]),
+    ]);
+    const providerNames=new Map((providerResult?.data||[]).map(provider=>[String(provider.id),trimmedText(provider.name)||String(provider.id)]));
+    const rows=(Array.isArray(modelResult?.data)?modelResult.data:[]).filter(model=>model?.enabled!==false).map(model=>{
+      const id=openCode2ModelId(model),variants=openCode2Variants(model),providerID=String(model.providerID||"");
+      return {id,providerID,name:trimmedText(model.name)||id,providerName:providerNames.get(providerID)||providerID,context:Number(model.limit?.context)||0,variants};
+    }).filter(item=>item.id);
+    const preferred=openCode2ModelId(defaultResult?.data)||rows[0]?.id||null,ordered=preferred?[rows.find(item=>item.id===preferred),...rows.filter(item=>item.id!==preferred)].filter(Boolean):rows;
+    return {
+      models:ordered.map(item=>item.id),
+      metadata:ordered.map(item=>({id:item.id,name:item.name,provider:"opencode",agent:"OpenCode",upstreamProvider:item.providerName,...(item.context?{contextWindow:item.context}:{}),...(item.variants.length?{reasoningEfforts:item.variants,defaultReasoningEffort:inferOpenCodeDefaultVariant(item.providerID,item.variants)}:{})})),
+      preferred,
+      connectedProviders:[...new Set(ordered.map(item=>item.providerID).filter(Boolean))],
+      inventory:{commands:Array.isArray(commands)?commands:[],skills:Array.isArray(skills)?skills:[],agents:openCodePrimaryAgents((Array.isArray(agents)?agents:[]).map(agent=>({...agent,name:agent?.name||agent?.id})))},
+      source:"live-connected-v2",
+    };
+  }finally{server.close?.()}
 }
 
 function permissionResponse(decision){return decision==="acceptForSession"?"always":decision==="accept"?"once":"reject"}

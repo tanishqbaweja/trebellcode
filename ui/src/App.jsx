@@ -80,7 +80,7 @@ import { CODEX_STANDARD_SERVICE_TIER, configuredModelServiceTier, modelServiceTi
 import { configuredModelOptions, modelOptionSettingsWith, supportedModelOptions } from "../../src/model-options.mjs";
 import { codexReasoningEffortLabel } from "../../src/codex-model-catalog.mjs";
 import { codexErrorNotice, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal, parseCodexGoalCommand } from "./codex-turn-options.js";
-import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayHarness, serviceTierPickerTitle } from "./harness-turn-options.js";
+import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayHarness, relayThreadPreferredModel, serviceTierPickerTitle } from "./harness-turn-options.js";
 import ReasoningRow from "./components/ReasoningRow.jsx";
 import TurnActivityCard from "./components/TurnActivityCard.jsx";
 import { reasoningHistoryMessage } from "./reasoning-text.js";
@@ -1621,7 +1621,7 @@ export default function App(){
     return next;
   }
   function clearModelCatalog(){modelsLoadingRef.current=false;setModelsLoading(false);setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
-  async function refreshProviderModels({provider:expectedProvider=null,agentRuntime:expectedRuntime=null,catalog=null,bootstrap:bootstrapSnapshot=null,refreshBootstrap=true,preferredModel=modelRef.current}={}){
+  async function refreshProviderModels({provider:expectedProvider=null,agentRuntime:expectedRuntime=null,catalog=null,bootstrap:bootstrapSnapshot=null,refreshBootstrap=true,preferredModel=()=>relayThreadPreferredModel(agentRuntimeRef.current,activeThreadRef.current,modelRef.current)}={}){
     const seq=++modelRefreshSeqRef.current;
     // Scope checks read the latest committed runtime and provider, never a render closure: a harness switch may have landed since this refresh was requested.
     const currentRuntime=agentRuntimeRef.current,currentProvider=providerRef.current;
