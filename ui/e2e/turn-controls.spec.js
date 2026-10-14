@@ -624,6 +624,46 @@ test("a new task's file sent while another thread is opened is never in that thr
   }finally{for(const route of heldRoutes)await route.continue().catch(()=>{});await fixture.close()}
 });
 
+// A workspace file the person mentions in another thread while the first thread's send of the same file waits stays attached there
+// once that send's turn starts: the send's own files left the composer when the other thread was opened, so nothing takes this one.
+test("a workspace file mentioned in another thread while a send of the same file waits stays attached there once that turn starts",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const asked=[];
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Sending work",preview:"Sending"},{name:"Other work",preview:"Other"}],providerTurn:async request=>{asked.push(JSON.stringify(request.messages||[]));return reply(request,"Answered.")}});
+  const [sending]=fixture.threads;
+  for(const [thread,text] of [[fixture.threads[0],"The sending thread's own answer."],[fixture.threads[1],"The other thread's own answer."]]){const turn=fixture.threadStore.addTurn(thread.id,{inputText:"What is here?"});fixture.threadStore.addItem(thread.id,turn.id,{id:thread.id+"-answer",type:"agentMessage",text});fixture.threadStore.finishTurn(thread.id,turn.id)}
+  const file=join(fixture.repo,"session.js");
+  await page.route(/\/api\/workspace\/search(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[{path:file,name:"session.js",relativePath:"session.js"}]})}));
+  const held=[];let holding=true;
+  await page.route(/\/api\/checkpoints$/,route=>{if(holding&&route.request().method()==="POST"){held.push(route);return}return route.fallback()});
+  const chips=page.getByTestId("context-chip");
+  const mention=async()=>{await composer(page).fill("@session");await expect(page.getByTestId("file-mention-menu")).toBeVisible({timeout:10_000});await page.getByTestId("file-mention-menu").getByRole("button").first().click();await expect(chips).toHaveCount(1,{timeout:10_000})};
+  const openRow=async(name,answer)=>{await threadRow(page,name).locator(".thread-main").click();await expect(page.locator(".workspace-header")).toContainText(name,{timeout:10_000});await expect(page.getByText(answer,{exact:true})).toBeVisible({timeout:10_000})};
+  try{
+    await openRow("Sending work","The sending thread's own answer.");
+    await mention();
+    await composer(page).fill("Use the session file.");await page.getByTestId("send").click();
+    await expect.poll(()=>held.length,{message:"the send waits for its checkpoint"}).toBe(1);
+    const turnsBefore=fixture.threadStore.get(sending.id).turns.length;
+    await openRow("Other work","The other thread's own answer.");
+    await expect(chips,"the other thread shows none of the sending thread's files").toHaveCount(0);
+    await mention();
+    holding=false;for(const route of held.splice(0))await route.fallback();
+    await expect.poll(()=>fixture.threadStore.get(sending.id).turns.length,{timeout:15_000}).toBe(turnsBefore+1);
+    await expect.poll(()=>fixture.threadStore.get(sending.id).turns.at(-1)?.status,{timeout:15_000}).toBe("completed");
+    await page.waitForTimeout(500);
+    await page.screenshot({animations:"disabled",path:SHOTS+"F4-same-file-stays-in-other-thread.png"});
+    await expect(chips,"the chip the person added in Other work still shows").toHaveCount(1);
+    await composer(page).fill("Explain it.");await page.getByTestId("send").click();
+    await expect.poll(()=>asked.find(text=>text.includes("Explain it."))||"",{timeout:15_000}).not.toBe("");
+    const firstRequest=asked.find(text=>text.includes("Use the session file."))||"",otherRequest=asked.find(text=>text.includes("Explain it."));
+    console.log("first send carried session.js:",firstRequest.includes("session.js"),"other send carried session.js:",otherRequest.includes("session.js"));
+    expect(firstRequest.includes("session.js"),"the first send carries its file").toBe(true);
+    expect(otherRequest.includes("session.js"),"the Other work send carries the file its chip shows").toBe(true);
+  }finally{for(const route of held)await route.fallback().catch(()=>{});await fixture.close()}
+});
+
 // The same for a thread's own send, which waits here for its file checkpoint: the file leaves the composer with the thread left, is
 // back in it (held as Sending) when that thread is opened again while the send still waits, and goes with that thread's turn.
 test("a thread's file sent and left for another thread before its turn starts shows only in its own thread's composer until the turn starts",async({page})=>{
