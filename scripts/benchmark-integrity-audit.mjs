@@ -127,6 +127,8 @@ const BENCHMARK_SOURCE=/\b(?:laude-institute|harbor-framework)\/terminal-bench\b
 const BENCHMARK_PACKAGE=new RegExp(PIP+String.raw`\s+(?:install|download|wheel)\b[^\n;|&]*?\b(?:swe-?bench|terminal-bench)\b`,"i");
 const PROJECT_PACKAGE_FETCH=new RegExp(PIP+String.raw`\s+(?:install|download|wheel)\b([^\n;|&]*)|\b(?:conda|mamba|micromamba)\s+install\b([^\n;|&]*)`,"gi");
 const NATIVE_COMMAND_TOOL=/^trebell_terminal\./;
+// Both start a background process (start_background is the legacy name); its command is recorded by native.background.started.
+const NATIVE_BACKGROUND_START_TOOL=/^(?:trebell_process\.start|trebell_terminal\.start_background)$/;
 const NATIVE_WEB_EVENT=/web|search|brows|fetch|http/i;
 // Findings kept out of the evidence list: unrecorded-command counts and informational tool offers.
 const NON_EVIDENCE_KINDS=new Set(["unlogged-command","unaudited-command","tools-offered"]);
@@ -501,13 +503,16 @@ export function auditCodexExecStreamText(text,{file=null,context=null}={}){
 }
 
 export function auditNativeEventsText(text,{file=null,context=null}={}){
-  const findings=[],byCall=new Map();let auditedCommands=0;
+  // A background start request carries no command: the native.background.started event that follows records it (its first
+  // 1,000 characters), so each such event audits the oldest start still waiting for one. A start whose process never started
+  // stays unlogged.
+  const findings=[],byCall=new Map(),pendingStarts=[];let auditedCommands=0;
   for(const {line,row} of parseLines(text)){
     const data=row?.data||{};
     if(row?.name==="native.tool.requested"){
       const tool=`${data.namespace}.${data.name}`,audit=data.terminalAudit&&typeof data.terminalAudit==="object"?data.terminalAudit:null,callId=data.callId||null;
       if(!/^trebell_(?:repo|workspace|output|terminal|process)\./.test(tool))findings.push({kind:"unknown-tool",tool,file,line,callId,snippet:JSON.stringify(data).slice(0,SNIPPET_CHARS)});
-      if(tool==="trebell_process.start"&&!audit){findings.push({kind:"unlogged-command",tool,file,line,callId,snippet:"process command is not recorded in the event log"});continue}
+      if(NATIVE_BACKGROUND_START_TOOL.test(tool)&&!audit){const unlogged={kind:"unlogged-command",tool,file,line,callId,snippet:"process command is not recorded in the event log"};findings.push(unlogged);pendingStarts.push(unlogged);continue}
       const gate=audit?.gateCommand!=null?String(audit.gateCommand):null,redacted=audit?.redactedCommand!=null?String(audit.redactedCommand):null,command=gate??redacted??"";
       if(gate==null&&redacted==null){if(NATIVE_COMMAND_TOOL.test(tool))findings.push({kind:"unaudited-command",tool,file,line,callId,snippet:"command is not recorded in the event log"});continue}
       auditedCommands++;
@@ -524,6 +529,7 @@ export function auditNativeEventsText(text,{file=null,context=null}={}){
       Object.assign(byCall.get(data.callId),{success:data.success===true,error:data.error?String(data.error).slice(0,OUTPUT_CHARS):null});
     }else if(row?.name==="native.background.started"&&typeof data.command==="string"&&data.command.trim()){
       // trebell_process.start requests carry no command; the background event keeps its first 1,000 characters.
+      const started=pendingStarts.shift();if(started){findings.splice(findings.indexOf(started),1);auditedCommands++}
       if(data.command.length>=BACKGROUND_COMMAND_CAP)findings.push({kind:"partial-command",tool:"trebell_process.start",file,line,commandChars:data.command.length,snippet:`only the first ${BACKGROUND_COMMAND_CAP} characters of the background command are logged`});
       const kinds=classifyCommandText(data.command,{context});
       if(kinds.length)findings.push(commandFinding(kinds,data.command,{file,line,context,source:"background"}));

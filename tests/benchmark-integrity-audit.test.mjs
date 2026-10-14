@@ -393,8 +393,9 @@ test("Native commands the event log does not fully record are counted and keep t
   assert.equal(summary.unauditedCommands,1);
   assert.equal(summary.truncatedCommands,1);
   assert.equal(summary.partialCommands,2);
-  assert.equal(summary.unloggedCommands,1);
-  assert.equal(summary.auditedCommands,5);
+  // The start request (s1) is audited through the background event that records its command.
+  assert.equal(summary.unloggedCommands,0);
+  assert.equal(summary.auditedCommands,6);
   assert.equal(summary.networkCommands,1);
   assert.equal(findings.find(finding=>finding.kind==="command").source,"background");
   assert.equal(summary.status,"review");
@@ -402,6 +403,25 @@ test("Native commands the event log does not fully record are counted and keep t
   assert.equal(summarizeIntegrityFindings(auditNativeEventsText(nativeLog([terminalRun("p",{redactedCommand:"python - <<'PY'\n"+"#".repeat(1184)})]))).status,"review");
   assert.equal(summarizeIntegrityFindings(auditNativeEventsText(nativeLog([terminalRun("t",{gateCommand:"echo "+"x".repeat(23995)})]))).status,"review");
   assert.equal(summarizeIntegrityFindings(auditNativeEventsText(nativeLog([terminalRun("h",{redactedCommand:"cat > /app/a.txt <<'EOF'\n"+"y".repeat(1100)+"\nEOF"})]))).status,"clean");
+});
+
+// B1's wdm-design try 1 (2026-10-14) read "review" only for 17 such starts, all `python -u design_optimize.py ...`, each
+// recorded by its native.background.started event.
+test("a Native background start is audited through the event that records its command, and one that never started stays unlogged",()=>{
+  const start=id=>({name:"native.tool.requested",data:{callId:id,namespace:"trebell_process",name:"start"}});
+  const started=(id,command)=>({name:"native.background.started",data:{processId:id,command}});
+  const clean=summarizeIntegrityFindings(auditNativeEventsText(nativeLog([start("s1"),started("p1","python -u optimize.py --seed 0"),start("s2"),started("p2","python -u optimize.py --seed 1")])));
+  assert.equal(clean.unloggedCommands,0);assert.equal(clean.auditedCommands,2);assert.equal(clean.status,"clean");
+  const network=summarizeIntegrityFindings(auditNativeEventsText(nativeLog([start("s1"),started("p1","curl -fsS https://files.vendor.io/data.csv -o /tmp/d.csv")])));
+  assert.equal(network.unloggedCommands,0);assert.equal(network.networkCommands,1);assert.equal(network.status,"review","a background command is still classified");
+  const neverStarted=summarizeIntegrityFindings(auditNativeEventsText(nativeLog([start("s1"),start("s2"),started("p2","python -u optimize.py")])));
+  assert.equal(neverStarted.unloggedCommands,1);assert.equal(neverStarted.auditedCommands,1);assert.equal(neverStarted.status,"review");
+  // The legacy start_background name pairs with its own event, so it cannot stand in for a process.start that never started.
+  const legacy={name:"native.tool.requested",data:{callId:"t1",namespace:"trebell_terminal",name:"start_background"}};
+  const mixed=summarizeIntegrityFindings(auditNativeEventsText(nativeLog([start("s1"),legacy,started("p1","python -u optimize.py")])));
+  assert.equal(mixed.unloggedCommands,1);assert.equal(mixed.unauditedCommands,0);assert.equal(mixed.auditedCommands,1);
+  const legacyClean=summarizeIntegrityFindings(auditNativeEventsText(nativeLog([legacy,started("p1","python -u optimize.py")])));
+  assert.equal(legacyClean.unloggedCommands,0);assert.equal(legacyClean.unauditedCommands,0);assert.equal(legacyClean.status,"clean");
 });
 
 test("a Native lane whose commands were never recorded is unaudited, not clean",()=>{
