@@ -70,6 +70,8 @@ async function isKept(root,file){
   return current.equals(kept);
 }
 const listed=items=>items.slice(0,3).join(", ")+(items.length>3?` and ${items.length-3} more`:"");
+// A path's state as a write would change it: its kind, size, modification time and file id, or absent.
+const fileState=info=>info?[info.isSymbolicLink()?"link":info.isFile()?"file":"other",info.size,info.mtimeMs,info.ino].join(":"):"absent";
 async function putFileBack(root,file){
   const path=join(root,file.rel),info=await lstatOrNull(path);
   // A link or a file that is not to be there goes first: a copy onto a link would write through it.
@@ -317,14 +319,13 @@ export class CheckpointService{
     return {ok:true,checkpoint:cp,info:await this.#remoteGitInfo(environmentId,root)};
   }
   // The worktree and the index made to match a commit for every path git does not ignore: each file the commit holds is written as it
-  // holds it, and a tracked or untracked file it lacks is removed. A file that could not be removed fails the restore.
-  async #restoreLocalTree(root,commit,baseEnv){
+  // holds it, and a tracked file it lacks is removed, as is each untracked file it lacks that was kept (#keepLocal) before. A file that
+  // appeared since (a turn that started meanwhile wrote it) stays. A file that could not be removed fails the restore.
+  async #restoreLocalTree(root,commit,baseEnv,kept){
     await this.gitFn(root,["restore","--source",commit,"--staged","--worktree","--","."],{env:baseEnv});
-    const paths=value=>String(value||"").split("\0").filter(Boolean);
-    const tracked=new Set(paths((await this.gitFn(root,["ls-tree","-r","--name-only","-z",commit],{env:baseEnv})).stdout));
-    const untracked=paths((await this.gitFn(root,["ls-files","--others","--exclude-standard","-z"],{env:baseEnv})).stdout),failed=[];
-    for(const rel of untracked)if(!tracked.has(rel))await rm(join(root,rel),{recursive:true,force:true}).catch(error=>failed.push(rel+" ("+(error?.code||error?.message||error)+")"));
-    if(failed.length)throw new Error("Could not remove "+failed.slice(0,3).join(", ")+(failed.length>3?` and ${failed.length-3} more`:"")+".");
+    const tracked=new Set(String((await this.gitFn(root,["ls-tree","-r","--name-only","-z",commit],{env:baseEnv})).stdout||"").split("\0").filter(Boolean)),failed=[];
+    for(const file of kept.files)if(file.untracked&&!tracked.has(file.rel))await rm(join(root,file.rel),{force:true}).catch(error=>failed.push(file.rel+" ("+(error?.code||error?.message||error)+")"));
+    if(failed.length)throw new Error("Could not remove "+listed(failed)+".");
   }
   // What a restore to a commit can change, kept before it so that it can be put back exactly: every path whose index entry differs from
   // the commit's (diff-index --cached), whose file differs from its index entry by stat or content (diff-files, not refreshed, so a
@@ -343,7 +344,8 @@ export class CheckpointService{
     const index=await readFile(indexPath).catch(error=>{if(error?.code==="ENOENT")return null;throw error});
     const id=randomUUID(),dir=join(trebellHome(this.env),"checkpoints","undo-"+id),files=[];
     await mkdir(dir,{recursive:true});
-    try{for(const rel of new Set([...staged,...changed,...untracked]))if(!rel.endsWith("/"))files.push(await keepFile(root,rel,join(dir,String(files.length))))}
+    const untrackedFiles=new Set(untracked);
+    try{for(const rel of new Set([...staged,...changed,...untracked]))if(!rel.endsWith("/"))files.push({...await keepFile(root,rel,join(dir,String(files.length))),untracked:untrackedFiles.has(rel)})}
     catch(error){await rm(dir,{recursive:true,force:true}).catch(()=>{});throw error}
     const now=Date.now(),kept={id,threadId,root,dir,files,indexPath,index,keptAt:now};
     for(const entry of [...this.#undos.values()])if(now-entry.keptAt>RESTORE_UNDO_KEEP_MS)this.#forget(entry);
@@ -353,17 +355,20 @@ export class CheckpointService{
   }
   #forget(kept){this.#undos.delete(kept.id);void rm(kept.dir,{recursive:true,force:true}).catch(()=>{})}
   // Every kept file as it was (its own bytes and mode, a link, or absent), then the index's own bytes, going on past one that cannot be
-  // put back (another program holds it); a file that already is as it was (the restore could not replace it) counts as put back.
-  // Answers the ones that are not.
+  // put back (another program holds it); a file that already is as it was (the restore could not replace it) counts as put back. A
+  // restore that went through noted each file as it left it (restored): one changed since then (a turn's own work) is left as it is.
+  // Answers the files that could not be put back (failed) and the ones left (changedSince).
   async #putBack(kept){
-    const failed=[];
+    const failed=[],changedSince=[];
     for(const file of kept.files){
-      try{if(!await isKept(kept.root,file))await putFileBack(kept.root,file)}
-      catch(error){failed.push(file.rel+" ("+(error?.code||error?.message||error)+")")}
+      try{
+        if(kept.restored&&fileState(await lstatOrNull(join(kept.root,file.rel)))!==kept.restored.get(file.rel)){changedSince.push(file.rel);continue}
+        if(!await isKept(kept.root,file))await putFileBack(kept.root,file);
+      }catch(error){failed.push(file.rel+" ("+(error?.code||error?.message||error)+")")}
     }
     try{if(kept.index)await writeFile(kept.indexPath,kept.index);else await rm(kept.indexPath,{force:true})}
     catch(error){failed.push("the index ("+(error?.code||error?.message||error)+")")}
-    return failed;
+    return {failed,changedSince};
   }
   // The files go back to the checkpoint, or stay exactly as they were: a restore that fails part-way (git restore wrote some files
   // and stopped, a file could not be removed) puts back what it changed, and the error says whether that worked (filesPutBack). The
@@ -376,25 +381,28 @@ export class CheckpointService{
     const baseEnv=this.#localGitEnv(),info=await this.gitInfoFn(cp.root,{env:baseEnv});
     if(!info.isGit) throw new Error("Checkpoint repository is unavailable");
     const kept=await this.#keepLocal(cp.root,cp.commit,threadId,baseEnv);
-    try{await this.#restoreLocalTree(cp.root,cp.commit,baseEnv)}
-    catch(error){
-      const message=error?.message||String(error),failed=await this.#putBack(kept);
+    try{
+      await this.#restoreLocalTree(cp.root,cp.commit,baseEnv,kept);
+      kept.restored=new Map();for(const file of kept.files)kept.restored.set(file.rel,fileState(await lstatOrNull(join(cp.root,file.rel))));
+    }catch(error){
+      kept.restored=null;const message=error?.message||String(error),{failed}=await this.#putBack(kept);
       if(failed.length){this.#undos.delete(kept.id);throw Object.assign(new Error(message+" Putting the files back as they were failed too, for "+listed(failed)+"; their bytes are kept in "+kept.dir+".",{cause:error}),{filesPutBack:false})}
       this.#forget(kept);
       throw Object.assign(new Error(message,{cause:error}),{filesPutBack:true});
     }
     return {ok:true,checkpoint:cp,undoId:kept.id,info:await this.gitInfoFn(cp.root,{env:baseEnv})};
   }
-  // Takes a restore back, once: every file as it was before it, the index too. Edit from here does so when the harness refuses the
+  // Takes a restore back, once: every file as it was before it, the index too, except a file changed since the restore (a turn that
+  // started meanwhile), which keeps that change and is named (changedSince). Edit from here does so when the harness refuses the
   // rewind that follows the restore, so the files never stay at the checkpoint with the conversation as it was.
   async undoRestore(undoId,{threadId=null}={}){
     const kept=this.#undos.get(String(undoId||""));
     if(!kept)throw new Error("The files from before this restore are no longer kept.");
     if(!threadId||kept.threadId!==threadId)throw new Error("A restore can be taken back only from the thread that made it.");
     // One that could not put every file back stays kept, so it can be taken back again.
-    const failed=await this.#putBack(kept);
+    const {failed,changedSince}=await this.#putBack(kept);
     if(failed.length)throw new Error("Could not put every file back as it was: "+listed(failed)+".");
     this.#forget(kept);
-    return {ok:true};
+    return {ok:true,...(changedSince.length?{changedSince}:{})};
   }
 }

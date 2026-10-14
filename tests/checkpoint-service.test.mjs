@@ -461,3 +461,31 @@ test("a file restore that stops on a file another program holds puts every file 
     assert.equal(error.filesPutBack,true,"the failure says the files were put back");
   }finally{if(holder)await holder.release();await rm(fixture.root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
+
+// A turn that starts while the files go back (Codex starts a goal's next turn by itself) works on them meanwhile. The restore removes
+// only the untracked files it kept, so the turn's new file stays, and taking the restore back puts back only what the restore changed
+// that nobody changed since: the turn's edit to a file the restore wrote stays too.
+test("a file restore and its undo leave what a turn writes meanwhile as the turn left it",async()=>{
+  const fixture=await rewindWorktree("trebell-checkpoint-turn-work-");
+  try{
+    const plain=new CheckpointService({state:fixture.state,env:fixture.env});
+    const checkpoint=await plain.create({cwd:fixture.worktree,threadId:"thread-owner",label:"Before change"});
+    await fixture.later();const before=await fixture.snapshot();
+    const output=join(fixture.worktree,"turn-output.txt");
+    // The turn writes a file of its own as git restore finishes, before the restore's clean-up.
+    const gitFn=async(cwd,args,options)=>{const result=await git(cwd,args,options);if(gitCommand(args)==="restore"&&args.includes(checkpoint.commit))await writeFile(output,"written by the turn\n");return result};
+    const service=new CheckpointService({state:fixture.state,env:fixture.env,gitFn});
+    const restored=await service.restore(checkpoint.id,{threadId:"thread-owner"});
+    assert.equal(await readFile(join(fixture.worktree,"untracked.txt"),"utf8").catch(()=>null),null,"the restore removed the untracked file it kept");
+    assert.equal(await readFile(output,"utf8").catch(()=>null),"written by the turn\n","the turn's new file is still there after the restore");
+    // The turn then changes a file the restore wrote.
+    await writeFile(join(fixture.worktree,"staged.txt"),"the turn's edit\n");
+    const undone=await service.undoRestore(restored.undoId,{threadId:"thread-owner"});
+    const after=await fixture.snapshot();
+    console.log("undo:",JSON.stringify(undone),"after:",JSON.stringify(after.files));
+    assert.equal(await readFile(output,"utf8").catch(()=>null),"written by the turn\n","the turn's new file is still there after the undo");
+    assert.equal(after.files["staged.txt"],"the turn's edit\n","the file the turn changed since the restore keeps its change");
+    assert.deepEqual({...after.files,"staged.txt":before.files["staged.txt"]},before.files,"every other file is as it was before the restore");
+    assert.deepEqual(undone.changedSince,["staged.txt"],"the undo names the file it left as the turn left it");
+  }finally{await rm(fixture.root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});

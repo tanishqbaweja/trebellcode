@@ -197,3 +197,31 @@ test("a verification turn asked for while Edit from here restores the files is r
     assert.equal(restored.status,200,"and Edit from here's restore goes through: "+JSON.stringify(restored.body));
   }finally{for(const socket of [shown,other])try{socket?.ws.terminate()}catch{}await fixture.close()}
 });
+
+// A turn Codex starts by itself while the files go back writes a file at once: the restore refuses (409) and puts back what it
+// changed, and the turn's new file is still there.
+test("a Codex turn that starts while the files are being restored keeps the file it writes meanwhile",{timeout:240_000},async()=>{
+  const fixture=await restoreFixture("trebell-gui-restore-turn-work-",{many:300});
+  let shown=null;
+  try{
+    shown=await codexSocket(fixture.gui);
+    assert.equal((await shown.ask("thread/read",{threadId:THREAD,includeTurns:false})).result.thread.status.type,"idle");
+    const before=await fixture.files();
+    let restoreSettledAt=null;
+    const restoring=fixture.post("/api/checkpoints/restore",{id:fixture.checkpoint.id,threadId:THREAD}).then(result=>{restoreSettledAt=Date.now();return result});
+    // Codex starts the turn once the restore is writing the checkpoint's files (edited.txt reads the checkpoint's text).
+    for(const deadline=Date.now()+120_000;Date.now()<deadline&&restoreSettledAt==null;await new Promise(resolve=>setTimeout(resolve,5))){
+      if(await readFile(join(fixture.worktree,"edited.txt"),"utf8").catch(()=>null)==="base\n")break;
+    }
+    fixture.codex.startTurn();
+    const wroteAt=Date.now();await writeFile(join(fixture.worktree,"turn-output.txt"),"written by the running turn\n");
+    const restored=await restoring;
+    const output=await readFile(join(fixture.worktree,"turn-output.txt"),"utf8").catch(()=>null);
+    console.log(JSON.stringify({turnWroteBeforeRestoreAnswered:wroteAt<restoreSettledAt,restore:{status:restored.status,body:restored.body},turnOutputAfter:output}));
+    assert.ok(wroteAt<restoreSettledAt,"the turn wrote its file while the restore still ran");
+    assert.equal(restored.status,409,JSON.stringify(restored.body));assert.equal(restored.body.filesPutBack,true);
+    assert.equal(output,"written by the running turn\n","the running turn's file is still there");
+    const {status:_status,...files}=await fixture.files(),{status:_before,...beforeFiles}=before;
+    assert.deepEqual(files,beforeFiles,"and every file the restore changed is as it was");
+  }finally{try{shown?.ws.terminate()}catch{}await fixture.close()}
+});
