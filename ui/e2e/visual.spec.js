@@ -5760,6 +5760,67 @@ test("failed background work restores the draft when stash saving also fails",as
   }
 });
 
+// What comes of a background send loads once it is known (background-send-outcome.js). A failed launch whose outcome cannot load
+// (the UI rebuilt under the page, the link to the server gone) stashes nothing: its draft goes back to the composer, and the app says
+// why the task failed.
+test("failed background work whose outcome cannot load gives the draft back and says why",async({page})=>{
+  test.setTimeout(35_000);
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      if(message.method==="turn/start"){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate background turn failure"}}));return}
+      let result={};
+      if(message.method==="initialize")result={userAgent:"background-outcome-fixture"};
+      else if(message.method==="thread/list")result={data:[],nextCursor:null};
+      else if(message.method==="thread/start")result={thread:{id:"background-outcome-thread",name:"Background outcome fixture",cwd:process.cwd(),createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]}};
+      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const stashPosts=[],outcomeLoads=[];
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/general-workspace$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:process.cwd(),environmentId:null})}));
+    await page.route(/\/api\/stashes$/,route=>{if(route.request().method()==="POST")stashPosts.push(route.request().postDataJSON());return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})})});
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.route(/\/assets\/background-send-outcome-[^/]*\.js$/,route=>{outcomeLoads.push(route.request().url());return route.abort("failed")});
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await page.getByRole("button",{name:"Projects",exact:true}).click();
+    const general=page.locator(".general-chat-card");
+    await expect(general).toBeVisible();
+    await general.click();
+    const composer=page.getByTestId("composer");
+    await expect(composer).toBeVisible();
+    await expect(page.locator(".composer-status")).toContainText("Ctrl/Cmd+Enter background");
+    expect(outcomeLoads,"the outcome's part is not loaded before a background send has an outcome").toEqual([]);
+    const draft="Keep this draft when the background task fails and its outcome cannot load.";
+    await composer.fill(draft);
+    await composer.press("Control+Enter");
+    const failure=page.getByTestId("app-action-error");
+    await expect(failure).toContainText("Background task failed: ");await expect(failure).toContainText("Deliberate background turn failure");
+    await expect(composer).toHaveValue(draft);
+    expect(outcomeLoads.length,"the outcome's part was asked for once the launch failed").toBeGreaterThan(0);
+    expect(stashPosts,"nothing is stashed: the draft is back in the composer").toEqual([]);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+"background-outcome-cannot-load-draft-back-1280x800.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
+});
+
 test("uncertain background work warns before a stashed retry",async({page})=>{
   test.setTimeout(35_000);
   const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
