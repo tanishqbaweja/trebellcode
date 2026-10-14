@@ -9,6 +9,7 @@ import {
   sharedToolOutputProvenance,
   sharedToolResponseContent,
 } from "../src/shared-tool-catalog.mjs";
+import { authorizeSharedToolCall } from "../src/shared-tool-gateway.mjs";
 
 test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   const namespaceNames=SHARED_TOOL_NAMESPACE_CATALOG.map(item=>item.name);
@@ -51,6 +52,21 @@ test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   const push=sharedToolDefinition("trebell_source_control","push");assert.equal(push.policy.riskLevel,"high");assert.equal(push.policy.externalSideEffect,true);assert.equal(push.policy.reversibility,"none");
   assert.equal(sharedToolDefinition("trebell_browser","click").policy.externalSideEffect,true);assert.equal(sharedToolDefinition("trebell_browser","type").policy.externalSideEffect,true);
   assert.equal(sharedToolOutputProvenance("trebell_browser"),"untrusted");assert.equal(sharedToolOutputProvenance("trebell_computer"),"untrusted");assert.equal(sharedToolOutputProvenance("trebell_workspace"),"trusted");
+});
+
+test("process status takes an optional bounded wait and a since:start read the way the catalog's other optional parameters are written",()=>{
+  const status=sharedToolDefinition("trebell_process","status"),schema=status.inputSchema;
+  assert.match(status.description,/ Pass wait_ms to wait for progress instead of re-polling\.$/);
+  assert.deepEqual(schema.required,["process_id"],"both new parameters are optional");assert.equal(schema.additionalProperties,false);
+  assert.deepEqual({type:schema.properties.wait_ms.type,minimum:schema.properties.wait_ms.minimum,maximum:schema.properties.wait_ms.maximum},{type:"integer",minimum:0,maximum:60000});
+  assert.deepEqual(schema.properties.since.enum,["start"]);assert.equal(schema.properties.since.type,"string");
+  for(const property of Object.values(schema.properties))assert.deepEqual(Object.keys(property).filter(key=>!["type","minimum","maximum","enum","description"].includes(key)),[],"only keywords the catalog already sends");
+  assert.deepEqual(sharedToolDefinition("trebell_terminal","background_status").inputSchema,schema,"the legacy name shares the schema");
+  const context={permissionProfile:"full",workspace:"/repo"},check=args=>authorizeSharedToolCall({namespace:"trebell_process",name:"status",arguments:{process_id:"p1",...args}},context);
+  assert.notEqual(check({wait_ms:30_000,since:"start"}).decision,"REJECT");assert.notEqual(check({wait_ms:0}).decision,"REJECT");
+  assert.match(check({wait_ms:60_001}).reason,/wait_ms must be <= 60000/);assert.match(check({wait_ms:-1}).reason,/wait_ms must be >= 0/);
+  assert.match(check({wait_ms:1.5}).reason,/wait_ms must be an integer/);assert.match(check({since:"end"}).reason,/since must be one of: start/);
+  assert.equal(sharedToolDefinition("trebell_process","stop").inputSchema.properties.wait_ms,undefined,"stop does not wait");
 });
 
 test("untrusted desktop tool output carries a compact provenance marker without dropping images",()=>{
