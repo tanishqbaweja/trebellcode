@@ -21,6 +21,8 @@ process.env.TREBELL_E2E_OFFLINE=allowExternalNetwork?"0":"1";
 const localBaseUrl="http://127.0.0.1:"+localPort;
 const localTestHome=e2eHome();
 const localTestUiDist=join(localTestHome,"ui-dist");
+const localCodexHome=join(localTestHome,"codex-home");
+const localClaudeConfigDir=join(localTestHome,"claude-config");
 const workerProcess=process.env.TEST_WORKER_INDEX!=null;
 const repoRoot=fileURLToPath(new URL("../",import.meta.url));
 const viteBin=fileURLToPath(new URL("../node_modules/vite/bin/vite.js",import.meta.url));
@@ -30,6 +32,8 @@ if(!hostedBaseUrl&&!workerProcess){
   execFileSync(process.execPath,[viteBin,"build","--config",viteConfig],{cwd:repoRoot,env:process.env,stdio:"inherit",windowsHide:true});
   rmSync(localTestHome,{recursive:true,force:true,maxRetries:50,retryDelay:100});
   mkdirSync(localTestHome,{recursive:true});
+  mkdirSync(localCodexHome,{recursive:true});
+  mkdirSync(localClaudeConfigDir,{recursive:true});
   cpSync(fileURLToPath(new URL("./dist/",import.meta.url)),localTestUiDist,{recursive:true});
   process.env.TREBELL_E2E_HOME=localTestHome;
 }
@@ -55,6 +59,8 @@ export default defineConfig({
       TREBELL_E2E_OFFLINE:allowExternalNetwork?"0":"1",
       TREBELL_HOME:localTestHome,
       TREBELL_UI_DIST:localTestUiDist,
+      CODEX_HOME:localCodexHome,
+      CLAUDE_CONFIG_DIR:localClaudeConfigDir,
       OPENAI_API_KEY:"",
       ANTHROPIC_API_KEY:"",
       GEMINI_API_KEY:"",
