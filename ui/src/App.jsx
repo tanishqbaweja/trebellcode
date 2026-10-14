@@ -4919,11 +4919,15 @@ export default function App(){
     setEvents(prev=>[...prev,{id:"review-"+Date.now(),kind:"tool",title:"Reviewing uncommitted changes",status:"running",raw:result}]);
     return result;
   }
-  // An action that runs already is not started again: its terminal is shown (the server answers the same for a run it knows of).
+  // An action that runs already is not started again: its terminal is shown (the server answers the same for a run it knows of). A
+  // run on its way (the first click of a double click, or the key pressed twice) is the one a second press waits for.
   async function runProjectAction(script){
     if(!script||!projectPath)return;
-    const key=actionRunKey(script),runningId=actionRuns[key];
-    const result=runningId?{alreadyRunning:true,session:{id:runningId,running:true}}:await api("/api/project-script/run",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,scriptId:script.id}});
+    const key=actionRunKey(script),runningId=actionRuns[key],starting=actionStartsRef.current;
+    if(!runningId&&starting.has(key))return;
+    let result;
+    if(runningId)result={alreadyRunning:true,session:{id:runningId,running:true}};
+    else try{starting.add(key);result=await api("/api/project-script/run",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,scriptId:script.id}})}finally{starting.delete(key)}
     if(result?.session?.running)setActionRuns(current=>({...current,[key]:result.session.id}));
     setSection("chat");setPanel("terminal");
     setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0);
@@ -5236,7 +5240,7 @@ export default function App(){
   // answers (an answer that comes later never drops a run made meanwhile). A watch socket per running action hears its terminal end
   // (its command exited, or Stop), with none of its output; nothing is polled.
   const actionRunsKey=projectlessMode||!projectPath?"":(workspaceEnvironmentId||"")+"\0"+projectPath;
-  const actionRunKey=script=>actionRunsKey+"\0"+script.id;
+  const actionRunKey=script=>actionRunsKey+"\0"+script.id,actionStartsRef=useRef(new Set());
   useEffect(()=>{
     if(!actionRunsKey)return;let live=true;
     api("/api/project-script/runs?"+new URLSearchParams({path:projectPath,environmentId:workspaceEnvironmentId||""})).then(data=>{if(live)setActionRuns(current=>{const next={...current};for(const [scriptId,sessionId] of Object.entries(data?.runs||{}))next[actionRunsKey+"\0"+scriptId]??=sessionId;return next})},()=>{});

@@ -698,8 +698,11 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   const terminals=mock ? null : new TerminalManager({env});
   // Each project action's terminal while it runs, by environment, project and action: a second run of an action that still runs
   // shows its terminal instead of starting it twice (a second dev server only fails on its port).
-  const projectActionSessions=new Map();
+  // A run whose terminal is still starting is kept too (projectActionStarts): a run that comes meanwhile (the second click of a
+  // double click, which leaves before the first answers) waits for it and answers with its terminal, so the action starts once.
+  const projectActionSessions=new Map(),projectActionStarts=new Map();
   const projectActionKey=(projectPath,environmentId,scriptId)=>[environmentId||"",projectPath,String(scriptId||"")].join("\0");
+  const projectActionStarted=async key=>{for(let starting;(starting=projectActionStarts.get(key));)await starting.catch(()=>{})};
   const runningProjectAction=key=>{const session=terminals?.snapshot(projectActionSessions.get(key)||"");if(session?.running)return session;projectActionSessions.delete(key);return null};
   const actionSessionSummary=session=>{const {buffer,...rest}=session||{};return rest};
   // An action runs its command as the terminal's own program, as worktree setup does, so its terminal runs exactly while the action
@@ -2342,10 +2345,12 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           const profile=environmentId?environments.get(environmentId):null;
           return json(res,200,{ok:true,script,session:{id:"mock-project-action",name:script.name,cwd:projectPath,environmentId,environmentName:profile?.name||"Local machine",environmentType:profile?.type||"local",running:true},previewUrl:script.previewUrl||null});
         }
-        const key=projectActionKey(projectPath,environmentId,script.id),running=runningProjectAction(key);
+        const key=projectActionKey(projectPath,environmentId,script.id);await projectActionStarted(key);
+        const running=runningProjectAction(key);
         if(running)return json(res,200,{ok:true,script,session:actionSessionSummary(running),alreadyRunning:true,previewUrl:script.previewUrl||null});
-        const session=await createProjectActionSession(projectPath,environmentId,script);
-        projectActionSessions.set(key,session.id);
+        const starting=createProjectActionSession(projectPath,environmentId,script).then(session=>{projectActionSessions.set(key,session.id);return session});
+        projectActionStarts.set(key,starting);
+        let session;try{session=await starting}finally{if(projectActionStarts.get(key)===starting)projectActionStarts.delete(key)}
         return json(res,200,{ok:true,script,session:terminals.snapshot(session.id),previewUrl:script.previewUrl||null});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }

@@ -63,3 +63,58 @@ test("the header's action button shows its action running, shows its terminal on
     await expect(button,"an action that ended on its own").not.toHaveAttribute("data-running");await expect(stop).toHaveCount(0);
   }finally{await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}})}
 });
+
+// The server side of action runs for the tests below, scripted as above: each run answers after latencyMs (a real run answered in
+// 450-1275 ms on a loaded host) with a terminal of its own, the terminal list holds every terminal started, and a watch socket says
+// whether its terminal runs. Proof screenshots go to TREBELL_PROOF_SHOTS when it is set.
+const proofShots=process.env.TREBELL_PROOF_SHOTS?String(process.env.TREBELL_PROOF_SHOTS).replace(/[\/]*$/,"/"):auditDir+"proof-";
+mkdirSync(proofShots.replace(/[^\/]*$/,""),{recursive:true});
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const devServer={id:"dev-server",name:"Dev server",command:"node server.js",previewUrl:null,autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
+async function scriptedActions(page,request,{latencyMs=500}={}){
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Action Workspace",activate:true,scripts:[devServer],preferredScriptId:devServer.id}});
+  const started=[],sockets=new Map();
+  const session=run=>({id:run.id,name:devServer.name,cwd:boot.cwd,environmentId:null,environmentName:"Local machine",environmentType:"local",cols:120,rows:32,running:run.running,exitCode:run.running?null:1,createdAt:Date.now(),updatedAt:Date.now(),buffer:""});
+  await page.route(/\/api\/project-script\/run$/,async route=>{
+    const run={id:"action-run-"+(started.length+1),running:true};started.push(run);
+    await delay(latencyMs);
+    return json(route,{ok:true,script:devServer,session:session(run),previewUrl:null});
+  });
+  await page.route(/\/api\/project-script\/stop$/,route=>{
+    const run=[...started].reverse().find(item=>item.running);
+    if(run){run.running=false;for(const ws of sockets.get(run.id)||[])ws.send(JSON.stringify({type:"exit",exitCode:1,signal:null}))}
+    return json(route,{ok:true,session:run?session(run):null});
+  });
+  await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>route.request().method()==="GET"?json(route,{sessions:started.map(session)}):route.fallback());
+  await page.route(/\/api\/project-script\/runs(?:\?.*)?$/,route=>json(route,{runs:{}}));
+  await page.routeWebSocket(/\/api\/terminal\/ws\?/,ws=>{
+    const url=new URL(ws.url()),id=url.searchParams.get("session"),run=started.find(item=>item.id===id);
+    if(!sockets.has(id))sockets.set(id,new Set());sockets.get(id).add(ws);ws.onClose(()=>sockets.get(id)?.delete(ws));
+    if(url.searchParams.get("watch")==="1"){ws.send(JSON.stringify({type:"state",running:Boolean(run?.running),exitCode:null}));return}
+    ws.send(JSON.stringify({type:"snapshot",session:{...(run?session(run):{id}),buffer:"DEV SERVER READY on 127.0.0.1:4173\r\n"}}));
+  });
+  return {started,cleanup:()=>request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}})};
+}
+const headerAction=page=>{const header=page.locator(".workspace-header");return {button:header.getByRole("button",{name:"Dev server",exact:true}),stop:header.getByRole("button",{name:"Stop Dev server",exact:true})}};
+
+test("a double click on the header's action button starts the action once",async({page,request})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {started,cleanup}=await scriptedActions(page,request);
+  try{
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const {button,stop}=headerAction(page),tabs=page.getByTestId("drawer").locator(".terminal-tab-list button");
+    // The second click comes 150 ms after the first, while the first run is still on its way.
+    await button.click();await page.waitForTimeout(150);await button.click();
+    await expect(button).toHaveAttribute("data-running","true");await expect(stop).toBeVisible();
+    await expect(tabs.filter({hasText:"Dev server"})).toHaveCount(1,{timeout:15_000});
+    await page.waitForTimeout(800);
+    await page.screenshot({animations:"disabled",path:proofShots+"F1-double-click-one-run.png"});
+    console.log("runs sent:",started.length,"terminal tabs:",JSON.stringify(await tabs.allInnerTexts()));
+    expect(started.length,"one run of the action").toBe(1);
+    await expect(tabs.filter({hasText:"Dev server"}),"one terminal for it").toHaveCount(1);
+  }finally{await cleanup()}
+});
