@@ -9,6 +9,11 @@ const CHECKPOINT_NESTED_REPO_MAX_CANDIDATES=64;
 const NESTED_GIT_ENV_KEYS=["GIT_DIR","GIT_WORK_TREE","GIT_COMMON_DIR","GIT_INDEX_FILE","GIT_OBJECT_DIRECTORY","GIT_ALTERNATE_OBJECT_DIRECTORIES"];
 const CHECKPOINT_GIT_ENV_KEYS=["EMAIL","GIT_AUTHOR_NAME","GIT_AUTHOR_EMAIL","GIT_COMMITTER_NAME","GIT_COMMITTER_EMAIL","GIT_CONFIG_GLOBAL","GIT_CONFIG_SYSTEM","GIT_CONFIG_NOSYSTEM","GIT_CEILING_DIRECTORIES","GIT_DISCOVERY_ACROSS_FILESYSTEM"];
 const CHECKPOINT_DURABLE_WRITE=["-c","core.fsync=objects,reference","-c","core.fsyncMethod=fsync"];
+// With no user.name or user.email and a host name git cannot make an email from, commit-tree refuses, and every turn lost its
+// file checkpoint (live tour, 2026-10-14). A checkpoint is Trebell's own ref, so that commit is made again under this identity;
+// an identity the person has set (git config or GIT_AUTHOR_* / GIT_COMMITTER_*) still names every checkpoint it can.
+const CHECKPOINT_FALLBACK_IDENTITY=["-c","user.name=Trebell Code","-c","user.email=checkpoints@trebell.invalid"];
+const isMissingIdentityError=error=>/identity unknown|unable to auto-detect email address|empty ident name/i.test(String(error?.message||error||""));
 // The restores that can still be taken back (undoRestore), and for how long: Edit from here takes one back within seconds.
 const RESTORE_UNDO_KEEP_COUNT=8,RESTORE_UNDO_KEEP_MS=30*60_000;
 
@@ -98,6 +103,10 @@ export class CheckpointService{
     throw lastError;
   }
   #durable(args){return [...CHECKPOINT_DURABLE_WRITE,...args]}
+  async #commitTree(run,args){
+    try{return await run(this.#durable(args))}
+    catch(error){if(!isMissingIdentityError(error))throw error;return run([...CHECKPOINT_FALLBACK_IDENTITY,...this.#durable(args)])}
+  }
   #localGitEnv(overrides={}){return {...buildRuntimeEnvironment("native",{parent:this.env,approved:CHECKPOINT_GIT_ENV_KEYS}),...overrides}}
   #remoteProfile(environmentId){return environmentId?this.environments?.get?.(environmentId)||null:null}
   #usesRemoteIo(environmentId){return Boolean(environmentId&&this.#remoteProfile(environmentId)?.type!=="local")}
@@ -173,7 +182,7 @@ export class CheckpointService{
       await this.#stageRemoteCheckpoint(environmentId,info.root,indexPath);
       const tree=(await this.#remoteGit(environmentId,info.root,this.#durable(["write-tree"]),{indexPath})).stdout.trim();
       const args=["commit-tree",tree,"-m",label||"Trebell Code checkpoint"];if(head.ok)args.push("-p",head.stdout.trim());
-      const commit=(await this.#remoteGit(environmentId,info.root,this.#durable(args))).stdout.trim(),ref=`refs/trebell/checkpoints/${id}`;
+      const commit=(await this.#commitTree(gitArgs=>this.#remoteGit(environmentId,info.root,gitArgs),args)).stdout.trim(),ref=`refs/trebell/checkpoints/${id}`;
       await this.#remoteGit(environmentId,info.root,this.#durable(["update-ref",ref,commit]));
       const item=this.state.addCheckpoint({id,threadId,root:info.root,commit,ref,label:label||null,environmentId});
       return {supported:true,...item};
@@ -217,7 +226,7 @@ export class CheckpointService{
       const tree=(await this.#captureGit(info.root,this.#durable(["write-tree"]),{env:childEnv})).stdout.trim();
       const args=["commit-tree",tree,"-m",label||"Trebell Code checkpoint"];
       if(head.ok) args.push("-p",head.stdout.trim());
-      const commit=(await this.#captureGit(info.root,this.#durable(args),{env:childEnv})).stdout.trim();
+      const commit=(await this.#commitTree(gitArgs=>this.#captureGit(info.root,gitArgs,{env:childEnv}),args)).stdout.trim();
       return {id,root:info.root,commit,repositoryIndex:source};
     }finally{
       await rm(indexPath,{force:true}).catch(()=>{});

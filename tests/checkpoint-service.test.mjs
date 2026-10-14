@@ -207,6 +207,47 @@ test("checkpoint change inspection compares against the captured tree without bl
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("a repository with no git identity still gets its checkpoint, under Trebell's own identity, and a set identity keeps naming it",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-checkpoint-identity-"));
+  const home=join(root,"home"),repo=join(root,"repo"),globalConfig=join(root,"gitconfig");
+  try{
+    // useConfigOnly makes git refuse to guess an email from the host name, as it does on a host name with no domain.
+    await writeFile(globalConfig,"[user]\n\tuseConfigOnly = true\n");
+    const parent=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(EMAIL|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL))$/.test(key)));
+    const env={...parent,TREBELL_HOME:home,GIT_CONFIG_GLOBAL:globalConfig,GIT_CONFIG_NOSYSTEM:"1"};
+    const repoGit=args=>git(repo,args,{env});
+    await mkdir(repo,{recursive:true});await repoGit(["init"]);
+    await writeFile(join(repo,"tracked.txt"),"base\n");await repoGit(["add","tracked.txt"]);
+    await repoGit(["-c","user.name=Fixture","-c","user.email=fixture@example.test","commit","-m","Base"]);
+    await assert.rejects(()=>repoGit(["commit-tree","HEAD^{tree}","-m","probe"]),/identity unknown|auto-detection is disabled/i);
+    const service=new CheckpointService({state:new TrebellStateStore(env),env});
+    const anonymous=await service.create({cwd:repo,threadId:"thread-identity",label:"Before turn"});
+    assert.equal(anonymous.supported,true);
+    assert.equal((await repoGit(["log","-1","--format=%an <%ae>|%cn <%ce>",anonymous.commit])).stdout.trim(),"Trebell Code <checkpoints@trebell.invalid>|Trebell Code <checkpoints@trebell.invalid>");
+    assert.equal((await repoGit(["rev-parse",anonymous.ref])).stdout.trim(),anonymous.commit);
+    await repoGit(["config","user.name","Person"]);await repoGit(["config","user.email","person@example.test"]);
+    const named=await service.create({cwd:repo,threadId:"thread-identity",label:"Before second turn"});
+    assert.equal((await repoGit(["log","-1","--format=%an <%ae>",named.commit])).stdout.trim(),"Person <person@example.test>");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("a checkpoint commit that fails for any reason but identity is not made again",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-checkpoint-commit-fail-"));
+  const commits=[];
+  const gitFn=async(_cwd,args)=>{
+    const command=gitCommand(args);
+    if(command==="rev-parse")return {ok:true,code:0,stdout:"/repo\n.git/index\nabc123\n",stderr:""};
+    if(command==="write-tree")return {ok:true,code:0,stdout:"tree123\n",stderr:""};
+    if(command==="commit-tree"){commits.push([...args]);throw new Error("fatal: unable to write new object: No space left on device")}
+    return {ok:true,code:0,stdout:"",stderr:""};
+  };
+  try{
+    const service=new CheckpointService({state:{addCheckpoint:item=>item,checkpoints:()=>[],updateCheckpoint:()=>null},env:{TREBELL_HOME:home},gitFn});
+    await assert.rejects(()=>service.create({cwd:"/repo"}),/No space left on device/);
+    assert.equal(commits.length,1);assert.ok(!commits[0].includes("user.name=Trebell Code"));
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("remote checkpoints capture, diff, and restore through the pinned environment without local filesystem access",async()=>{
   const checkpoints=[],calls=[],metas={"thread-remote":{cwd:"/srv/repo",environmentId:"ssh-1"}};
   const state={
