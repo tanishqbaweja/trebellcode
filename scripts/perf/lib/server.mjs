@@ -1,8 +1,8 @@
 // Starts the real Trebell GUI server (src/gui-server.mjs, not mock) with the server tap preloaded, an isolated home and an IPC
-// channel, and talks to the tap. Every child is hidden; TEMP/TMP and the Codex home stay under the run directory.
+// channel, and talks to the tap. Every child is hidden; TEMP/TMP, the user folders and every harness home stay under the run directory.
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -11,11 +11,23 @@ export async function freePort(){
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
 
+// The only variables a measured process takes from the shell that runs it: the system's own. A harness the server starts must
+// never see this machine's real harness homes, credentials or the shell's own session (CLAUDE_CONFIG_DIR, CLAUDECODE and the like).
+const SYSTEM_ENV_KEYS=["PATH","PATHEXT","SystemRoot","SystemDrive","WINDIR","COMSPEC","PROGRAMDATA","ALLUSERSPROFILE","PUBLIC","ProgramFiles","ProgramFiles(x86)",
+  "ProgramW6432","CommonProgramFiles","CommonProgramFiles(x86)","CommonProgramW6432","NUMBER_OF_PROCESSORS","PROCESSOR_ARCHITECTURE","PROCESSOR_IDENTIFIER","OS",
+  "LANG","LC_ALL","LC_CTYPE","TERM","COLORTERM","SHELL","USER","USERNAME","LOGNAME","SSL_CERT_FILE","SSL_CERT_DIR","NODE_EXTRA_CA_CERTS","NO_COLOR","FORCE_COLOR"];
+
 export function isolatedEnv({home,runDir,extra={}}){
-  const temp=join(runDir,"tmp"),codexHome=join(runDir,"codex-home");mkdirSync(temp,{recursive:true});mkdirSync(codexHome,{recursive:true});
-  const env={...process.env,TREBELL_HOME:home,TEMP:temp,TMP:temp,TMPDIR:temp,CODEX_HOME:codexHome,npm_config_cache:join(runDir,"npm-cache"),HARBOR_TELEMETRY:"0",
-    OPENAI_API_KEY:"sk-perf-fake-key-not-a-secret",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:"",AGENTROUTER_API_KEY:"",
-    TREBELL_OPENAI_RESPONSES_WEBSOCKET:"0",TREBELL_GUI_MOCK:"",TREBELL_E2E_OFFLINE:"",NODE_NO_WARNINGS:"1",...extra};
+  const temp=join(runDir,"tmp"),codexHome=join(runDir,"codex-home"),userHome=join(runDir,"user-home");
+  const appData=join(userHome,"AppData","Roaming"),localAppData=join(userHome,"AppData","Local");
+  for(const dir of [temp,codexHome,appData,localAppData])mkdirSync(dir,{recursive:true});
+  // A person's git has a name to commit under, so a checkpoint costs what it costs them and never takes the no-identity path.
+  const gitConfig=join(userHome,".gitconfig");if(!existsSync(gitConfig))writeFileSync(gitConfig,"[user]\n\tname = Trebell Perf\n\temail = perf@trebell.invalid\n");
+  const system=Object.fromEntries(SYSTEM_ENV_KEYS.filter(name=>process.env[name]!=null).map(name=>[name,process.env[name]]));
+  const env={...system,HOME:userHome,USERPROFILE:userHome,APPDATA:appData,LOCALAPPDATA:localAppData,
+    XDG_CONFIG_HOME:join(userHome,".config"),XDG_DATA_HOME:join(userHome,".local","share"),XDG_STATE_HOME:join(userHome,".local","state"),XDG_CACHE_HOME:join(userHome,".cache"),
+    CLAUDE_CONFIG_DIR:join(userHome,".claude"),TREBELL_HOME:home,TEMP:temp,TMP:temp,TMPDIR:temp,CODEX_HOME:codexHome,npm_config_cache:join(runDir,"npm-cache"),HARBOR_TELEMETRY:"0",
+    OPENAI_API_KEY:"sk-perf-fake-key-not-a-secret",TREBELL_OPENAI_RESPONSES_WEBSOCKET:"0",NODE_NO_WARNINGS:"1",...extra};
   return env;
 }
 

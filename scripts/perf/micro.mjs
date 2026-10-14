@@ -18,11 +18,13 @@ import { gitInfo } from "../../src/git-service.mjs";
 import { codingTurn } from "./lib/seed.mjs";
 import { summarize } from "./lib/stats.mjs";
 import { processTable } from "./lib/system.mjs";
+import { isolatedEnv } from "./lib/server.mjs";
 
 const args=Object.fromEntries(process.argv.slice(2).reduce((pairs,value,index,list)=>value.startsWith("--")?[...pairs,[value.slice(2),list[index+1]]]:pairs,[]));
 const home=args.home,repo=args.repo,out=args.out,skipProbes=args["skip-probes"]==="1";
 rmSync(home,{recursive:true,force:true});mkdirSync(home,{recursive:true});
-const env={...process.env,TREBELL_HOME:home};
+// The probes (6) start real harnesses: they get the same isolated user folders and harness homes as the measured server.
+const env=isolatedEnv({home,runDir:join(home,"harness-run")});
 const tap=globalThis.__perfTap;if(!tap)throw new Error("run with --import scripts/perf/lib/server-tap.mjs");
 function load(){let idle=0,total=0;for(const cpu of cpus()){const t=cpu.times;idle+=t.idle;total+=t.user+t.nice+t.sys+t.idle+t.irq}return {idle,total}}
 const loadStart=load();
