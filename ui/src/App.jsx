@@ -1050,9 +1050,18 @@ export default function App(){
   const [projectRecords,setProjectRecords]=useState([]);
   // Counts the project choices applied (a project opened, a General chat started), so the start-up knows one came before it landed.
   const projectChoiceSeqRef=useRef(0);
-  // The settings a save changed (the header's theme button) and the composer's modes the person picked: a start-up that lands after
-  // them read the state before them, so it leaves them as the person set them.
-  const savedSettingKeysRef=useRef(new Set()); const pickedModesRef=useRef({});
+  // The settings each save changed (in Settings, or the header's theme button), numbered in the order the saves answered, and the
+  // composer's modes the person picked. A read of the settings sent before a save answered (the start-up, the refresh after a scoped
+  // change, an environment switch) may hold the state before it, so whenever it lands it leaves what the save set (settingsRead).
+  const settingsSavesRef=useRef({count:0,savedAt:new Map()}); const pickedModesRef=useRef({});
+  function settingsSaved(keys){const saves=settingsSavesRef.current;saves.count++;for(const key of keys)saves.savedAt.set(key,saves.count)}
+  // The update that applies settings read by a request sent when settingsSavesRef.current.count was sentAt.
+  function settingsRead(read,sentAt){
+    const keep=[...settingsSavesRef.current.savedAt].filter(([,at])=>at>sentAt).map(([key])=>key);
+    return prev=>{const next={...prev,...(read||{})};for(const key of keep)next[key]=prev[key];return next};
+  }
+  // Settings applies a save's answer with the keys the save named, and its own view when it puts one back.
+  const settingsPageSettings=useLatestCallback((next,savedKeys)=>{if(savedKeys)settingsSaved(savedKeys);setSettings(next)});
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [actionRuns,setActionRuns]=useState({}); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [cloneRefreshError,setCloneRefreshError]=useState(""); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [questions,setQuestions]=useState([]); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
   const [guardianDenials,setGuardianDenials]=useState([]); const [guardianBusy,setGuardianBusy]=useState("");
@@ -1838,7 +1847,7 @@ export default function App(){
       modelsLoadingRef.current=true;setModelsLoading(true);
       const modelPromise=api("/api/models").then(value=>value||{models:[]},error=>({models:[],error:error?.message||String(error)}));
       const extrasPromise=Promise.allSettled([api("/api/environment/themes"),api("/api/projects")]);
-      let boot,state;
+      let boot,state;const settingsSentAt=settingsSavesRef.current.count;
       try{[boot,state]=await Promise.all([api("/api/bootstrap"),api("/api/state")])}
       catch(error){
         if(!cancelled){settleModels();setInitialLoadError(error?.message||String(error)||"Trebell startup failed.");setInitialLoaded(true)}
@@ -1864,8 +1873,9 @@ export default function App(){
       // One synchronous commit, so the catalog that lands later is checked against the harness and provider this load shows.
       flushSync(()=>{
         setBootstrap(previous=>startup.keepLandedRuntime&&previous?.agentRuntime?previous:boot);
+        const startupSettings=settingsRead(state.settings,settingsSentAt);
         // The startup catalog belongs to the runtime these settings resolve to: record its scope so the scope effect keeps it instead of loading it twice.
-        setSettings(prev=>{const next={...prev,...(state.settings||{})};for(const key of savedSettingKeysRef.current)next[key]=prev[key];if(startup.keepLandedRuntime){next.agentRuntime=prev.agentRuntime;next.agentRuntimeInstanceId=prev.agentRuntimeInstanceId}const runtime=next.agentRuntime||boot.agentRuntime||"codex";if(startup.applyCatalog)modelCatalogScopeRef.current=modelCatalogScope(runtime,next.modelProvider||boot.provider||DEFAULT_MODEL_PROVIDER);return next}); setRuntimeKnown(true); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
+        setSettings(prev=>{const next=startupSettings(prev);if(startup.keepLandedRuntime){next.agentRuntime=prev.agentRuntime;next.agentRuntimeInstanceId=prev.agentRuntimeInstanceId}const runtime=next.agentRuntime||boot.agentRuntime||"codex";if(startup.applyCatalog)modelCatalogScopeRef.current=modelCatalogScope(runtime,next.modelProvider||boot.provider||DEFAULT_MODEL_PROVIDER);return next}); setRuntimeKnown(true); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
         setEnvironmentThemeCatalog(themeCatalog);
         setProjectRecords(listedProjects);
         // A project the person opened (or a General chat they started) while Trebell was starting stays: the state this load read
@@ -4955,8 +4965,8 @@ export default function App(){
         // A switch that fails answers with an error status, which api() throws: one that answers has gone through.
         await api("/api/environment/activate",{method:"POST",body:{id:targetEnvironmentId}});
         switchedEnvironment=true;
-        const [nextSettings,nextBootstrap]=await Promise.all([api("/api/settings"),api("/api/bootstrap")]);
-        setSettings(prev=>({...prev,...nextSettings}));
+        const settingsSentAt=settingsSavesRef.current.count,[nextSettings,nextBootstrap]=await Promise.all([api("/api/settings"),api("/api/bootstrap")]);
+        setSettings(settingsRead(nextSettings,settingsSentAt));
         setBootstrap(nextBootstrap);
         setRuntimeTransportRevision(value=>value+1);
         reloadModels(nextBootstrap);
@@ -4970,8 +4980,8 @@ export default function App(){
       if(switchedEnvironment){
         try{
           await api("/api/environment/activate",{method:"POST",body:{id:currentEnvironmentId}});
-          const [rollbackSettings,rollbackBootstrap]=await Promise.all([api("/api/settings"),api("/api/bootstrap")]);
-          setSettings(prev=>({...prev,...rollbackSettings}));
+          const settingsSentAt=settingsSavesRef.current.count,[rollbackSettings,rollbackBootstrap]=await Promise.all([api("/api/settings"),api("/api/bootstrap")]);
+          setSettings(settingsRead(rollbackSettings,settingsSentAt));
           setBootstrap(rollbackBootstrap);
           setRuntimeTransportRevision(value=>value+1);
           // Reload this environment's catalog too: the forward load is discarded, so a late answer cannot bring the other environment's models back.
@@ -4985,8 +4995,8 @@ export default function App(){
     }
   }
   async function onScopedSettingsChanged(){
-    const [nextSettings,projectData]=await Promise.all([api("/api/settings"),api("/api/projects")]);
-    setSettings(prev=>({...prev,...nextSettings}));
+    const settingsSentAt=settingsSavesRef.current.count,[nextSettings,projectData]=await Promise.all([api("/api/settings"),api("/api/projects")]);
+    setSettings(settingsRead(nextSettings,settingsSentAt));
     const project=(projectData.projects||[]).find(item=>item.id===currentProject?.id)||null;
     if(project){
       setCurrentProject(project);
@@ -4998,7 +5008,7 @@ export default function App(){
   }
   async function finishOnboarding({openSettings=false}={}){
     const next=await api("/api/settings",{method:"POST",body:{onboardingComplete:true,defaultPermissionMode:permissionMode}});
-    setSettings(prev=>({...prev,...next}));
+    settingsSaved(["onboardingComplete","defaultPermissionMode"]);setSettings(prev=>({...prev,...next}));
     if(rpc&&rpcStatus==="connected"){
       try{await loadThreads(rpc,{strict:true})}
       catch(error){showActionError(error,"Onboarding finished, but the thread list could not refresh")}
@@ -5105,7 +5115,7 @@ export default function App(){
       delete selections[environmentThemeCatalog.environmentKey];
       patch={...patch,environmentThemeSelections:selections};
     }
-    const next=await api("/api/settings",{method:"POST",body:patch});for(const key of Object.keys(patch))savedSettingKeysRef.current.add(key);setSettings(prev=>({...prev,...next}));return next;
+    const next=await api("/api/settings",{method:"POST",body:patch});settingsSaved(Object.keys(patch));setSettings(prev=>({...prev,...next}));return next;
   }
   async function cycleTheme(){const themes=["dark","midnight","black",...(settings.customThemes||[]).map(theme=>theme.id)];const next=themes[(themes.indexOf(settings.appearance||"dark")+1)%themes.length];await saveAppSettings({appearance:next})}
   async function cycleAppearance(){const modes=["system","light","dark"];const next=modes[(modes.indexOf(settings.appearanceMode||"system")+1)%modes.length];await saveAppSettings({appearanceMode:next})}
@@ -5533,7 +5543,7 @@ export default function App(){
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage onOfferUndo={offerPageUndo}/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={setSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
           {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert">Could not load thread history: {threadHistory.error}</div>}
           {threadHistory.items.length?threadHistory.items.map(t=>{const owner=threadCatalogRuntime(t,threadMeta[t.id]||{},agentRuntime)||agentRuntime;return <button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><div><strong title={titleOf(t)}>{titleOf(t)}</strong><span title={t.preview||t.cwd||undefined}>{t.preview||t.cwd}</span></div><em className="history-runtime-chip" title={"Owned by "+agentRuntimeName(owner)}>{HISTORY_RUNTIME_LABELS[owner]||owner}</em><time dateTime={isoDateTime(t.updatedAt)} title={fullDateTime(t.updatedAt)}>{compactDateTime(t.updatedAt)}</time></button>}):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button>}</div>}

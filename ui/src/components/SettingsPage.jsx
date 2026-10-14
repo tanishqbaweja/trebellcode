@@ -359,7 +359,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       setSettingsError(error?.message||String(error)||"Could not save settings.");
       throw error;
     }
-    onSettings(next);
+    // With the keys this save named, so a read of the settings sent before it answered (Trebell's start-up among them) leaves them.
+    onSettings(next,Object.keys(patch));
     if("modelProvider" in patch){
       setApiKey("");
       showProviderMessage("");

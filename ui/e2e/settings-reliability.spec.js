@@ -627,6 +627,36 @@ test("the panel animation slider follows a drag and saves once with the final va
   expect(saves).toEqual([dragged,dragged-50,dragged+50]);
 });
 
+test("a setting saved while Trebell is still starting keeps its saved value once the start-up lands",async({page,request})=>{
+  // The start-up reads Trebell's settings with the harness's bootstrap, which a busy machine can take seconds to answer (the server
+  // asks the harness CLI how it is); the person opens Settings meanwhile and saves. The page's first bootstrap is held here until the
+  // save has answered, so the start-up lands with the settings it read before the save: the saved value stays on screen and in
+  // effect. The sidebar names the harness once the start-up has landed ("Starting…" until then).
+  await request.post("/api/settings",{data:{agentRuntime:"codex",modelProvider:"openai"}});
+  const bootstrap=await (await request.get("/api/bootstrap")).text();
+  let releaseBootstrap=()=>{},asked=0;const bootstrapHeld=new Promise(resolve=>{releaseBootstrap=resolve});
+  await page.route(/\/api\/bootstrap$/,async route=>{if(asked++)return route.fallback();await bootstrapHeld;await route.fulfill({status:200,contentType:"application/json",body:bootstrap})});
+  await openSettings(page,request,"Startup Save Workspace",{panelAnimationMs:0});
+  const harness=page.locator(".sidebar-provider strong");
+  await expect(harness).toHaveText("Starting…");
+  await page.getByRole("button",{name:/Appearance/}).click();
+  const slider=page.getByLabel("Panel animations",{exact:true});
+  const label=page.locator(".theme-settings label").filter({has:slider});
+  const saved=page.waitForResponse(response=>response.request().method()==="POST"&&/\/api\/settings$/.test(response.url()));
+  await slider.focus();await slider.press("ArrowRight");await slider.press("ArrowRight");
+  await expect(label).toContainText("50 ms");
+  expect((await (await saved).json()).panelAnimationMs).toBe(50);
+  const panelMs=()=>page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--panel-animation-ms").trim());
+  await expect.poll(panelMs).toBe("50ms");
+  releaseBootstrap();
+  await expect(harness).toHaveText("Codex");
+  await expect(slider).toHaveValue("50");
+  await expect(label).toContainText("50 ms");
+  expect(await panelMs()).toBe("50ms");
+  expect((await savedSettings(request)).panelAnimationMs).toBe(50);
+  await page.locator(".theme-settings").screenshot({animations:"disabled",path:auditDir+"settings-saved-before-startup-lands.png"});
+});
+
 test("deleting a custom theme offers the app's undo toast and Undo puts it back",async({page,request})=>{
   const warm={id:"custom-reliability-warm",name:"Warm paper",appearance:"light",canvas:"#f4efe6",accent:"#b0582f",colors:{}};
   const slate={id:"custom-reliability-slate",name:"Slate night",appearance:"dark",canvas:"#141820",accent:"#5b8cff",colors:{}};
