@@ -4156,6 +4156,8 @@ test("OpenCode multi-model fan-out keeps remote worktrees in the active environm
     expect(projectPosts.filter(body=>body.path!==root).every(body=>body.environmentId===environmentId)).toBe(true);
     expect(rpcCalls.filter(item=>item.method==="thread/start").every(item=>item.params.cwd.startsWith(root+"-trebell-"))).toBe(true);
     await expect(page.getByRole("button",{name:/Remote fan-out 1/})).toBeVisible();await expect(page.getByRole("button",{name:/Remote fan-out 2/})).toBeVisible();
+    // The fan-out's outcome is told once both launches have answered.
+    await expect(page.getByText("Started 2/2 models in isolated worktrees")).toBeVisible();
     await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"opencode-remote-multimodel-fanout-1280x800.png",fullPage:true});
   }finally{for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>wsHttp.close(resolve))}
 });

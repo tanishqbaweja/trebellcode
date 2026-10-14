@@ -4322,27 +4322,9 @@ export default function App(){
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd};
     setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
     const launches=fanout.map(modelId=>startDetachedTurn(draft.text,draft.attachments,modelId,{forceWorktree:true,basePath:draft.projectPath,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips)}).then(result=>({ok:true,modelId,result})).catch(error=>({ok:false,modelId,error})));
-    Promise.all(launches).then(async results=>{
-      const started=results.filter(item=>item.ok);const failed=results.filter(item=>!item.ok);const uncertain=failed.filter(item=>item.error?.trebellUncertain);
-      const summary=[];
-      if(started.length)summary.push({id:"fanout-started-"+Date.now(),kind:"tool",title:`Started ${started.length}/${fanout.length} model${started.length===1?"":"s"} in isolated worktrees`,status:"done",raw:{models:started.map(item=>item.modelId),threads:started.map(item=>item.result?.thread?.id).filter(Boolean)}});
-      let stashSaved=0;const stashErrors=[];
-      for(const item of failed){
-        const guard=item.error?.trebellUncertain;const prefix=guard?`[CHECK EXISTING THREAD BEFORE RETRY · ${item.modelId}] `:`[${item.modelId}] `;
-        const stash=await saveFailureStash({...draft,text:prefix+draft.text});
-        if(stash.ok)stashSaved++;else stashErrors.push(`${item.modelId}: ${stash.error}`);
-      }
-      if(stashErrors.length)restoreFailedDraft(draft);
-      if(failed.length){
-        const detail=failed.map(item=>{const guard=item.error?.trebellUncertain;return `${item.modelId}: ${item.error?.message||item.error}${guard?.threadId?` · possible thread ${guard.threadId}`:guard?" · request may already have started":""}`}).join(" · ");
-        const stashNote=stashErrors.length
-          ?`${stashSaved}/${failed.length} failed draft${failed.length===1?"":"s"} stashed; ${stashErrors.length} restored to the composer because saving failed`
-          :`${stashSaved} failed draft${stashSaved===1?" was":"s were"} stashed for retry`;
-        summary.push({id:"fanout-error-"+Date.now(),kind:"error",title:uncertain.length?`${failed.length} model run${failed.length===1?" needs":"s need"} attention; ${uncertain.length} may already have started · ${stashNote}`:`${failed.length}/${fanout.length} model runs failed · ${stashNote}`,status:"done",raw:{detail,stashErrors}});
-        desktopNotify("Multi-model run needs attention",uncertain.length?`${uncertain.length} request${uncertain.length===1?" may":"s may"} already have started. ${stashNote}.`:`${stashNote}.`);
-      }else desktopNotify("Multi-model run started",`${started.length} background threads are running in isolated worktrees.`);
-      if(summary.length)setEvents(prev=>[...prev,...summary]);
-    });
+    // What came of each launch is told once all have answered, by background-send-outcome.js, which loads then: should it not load,
+    // the draft of a launch that failed goes back to the composer.
+    Promise.all(launches).then(results=>import("./background-send-outcome.js").then(({settleModelFanout})=>settleModelFanout({results,fanout,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),error=>{if(results.some(item=>!item.ok))restoreFailedDraft(draft);showActionError(error,"Could not show how the multi-model run went")}));
     return true;
   }
   // Codex /goal, run like T3 Code's runGoalCommand and the Codex TUI: /goal shows the goal, clear, pause and resume
@@ -4555,26 +4537,9 @@ export default function App(){
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
     setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
-    startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips)}).catch(async error=>{
-      const guard=error?.trebellUncertain;
-      const guardedDraft=guard?{...draft,text:"[CHECK EXISTING THREAD BEFORE RETRY] "+draft.text}:draft;
-      const possibleThread=guard?.threadId?" Possible thread: "+guard.threadId+".":"";
-      const stash=await saveFailureStash(guardedDraft);
-      if(stash.ok){
-        const title=guard
-          ?"Background may already be running."+possibleThread+" Check for an existing thread before retrying; draft stashed with warning."
-          :"Background task failed; draft was stashed: "+(error.message||String(error));
-        setEvents(prev=>[...prev,{id:"background-error-"+Date.now(),kind:"error",title,status:"done",raw:{uncertain:guard||null,error:error?.message||String(error)}}]);
-        desktopNotify(guard?"Background task needs attention":"Background task failed",guard?"Check for an existing background thread before retrying. The draft was stashed with a warning.":"The draft was saved to Trebell stash.");
-      }else{
-        restoreFailedDraft(draft);
-        const title=guard
-          ?"Background may already be running."+possibleThread+" stash save also failed: "+stash.error+". Draft restored; check for an existing thread before retrying."
-          :"Background task failed; stash save also failed, so the draft was restored to the composer: "+(error.message||String(error))+" · Stash error: "+stash.error;
-        setEvents(prev=>[...prev,{id:"background-error-"+Date.now(),kind:"error",title,status:"done",raw:{taskError:error?.message||String(error),stashError:stash.error,uncertain:guard||null}}]);
-        desktopNotify(guard?"Background task needs attention":"Background task failed",guard?"The draft was restored. Check for an existing background thread before retrying.":"The draft could not be saved to Trebell stash, so it was restored to the composer.");
-      }
-    });
+    // A launch that fails is told by background-send-outcome.js, which loads then: should it not load, the draft goes back to the
+    // composer.
+    startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips)}).catch(error=>import("./background-send-outcome.js").then(({settleFailedBackgroundSend})=>settleFailedBackgroundSend({error,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),()=>{restoreFailedDraft(draft);showActionError(error,"Background task failed")}));
   }
   async function sendQueuedNow(item){
     // Send now is the next send, so the composer's note about the last one ends.
