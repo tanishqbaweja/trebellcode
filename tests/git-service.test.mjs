@@ -34,8 +34,8 @@ test("a commit git refuses fails with git's reason, and a commit with nothing to
 
 // git follows a refusal with hint: lines for a person at a terminal (the commands to run next, the setting that turns the hint off).
 // The Git panel shows the error after "Could not …", so it is git's reason alone.
-// A Pull or a Push git refuses gives its reason only in those hints, and a Pull from a branch with no upstream, or from no branch at
-// all, only as commands to type: each of these says it in plain words instead. A refused Push keeps git's other lines after it.
+// A Pull or a Push git refuses because the branch and its upstream have gone both ways gives its reason only in those hints, so each
+// says it in plain words instead. A refused Push keeps git's other lines after it.
 test("a refused branch name, Pull or Push fails with git's reason in plain words, without the hints git adds for a terminal",UNDER_LOAD,async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-git-hints-"));const origin=join(root,"origin.git"),work=join(root,"work"),peer=join(root,"peer");
   try{
@@ -52,7 +52,18 @@ test("a refused branch name, Pull or Push fails with git's reason in plain words
       assert.match(error.message,/^The remote has commits this branch does not have\. Pull them first, then push again\.\nTo .+\n ! \[rejected\] +\S+ -> main \(non-fast-forward\)\nerror: failed to push some refs to '.+'$/);
       return true;
     });
-    // A branch made here has no upstream until it is pushed, and HEAD can be on no branch at all.
+  }finally{await rm(root,RETRY)}
+});
+
+// A branch made in the Git panel has no upstream until its first push, and HEAD can be on no branch at all. git then gives its reason
+// as commands to type ("git pull <remote> <branch>", "git branch --set-upstream-to=…", "git push origin HEAD:<name-of-remote-branch>")
+// with no hint: line to take off, so each of these says it in plain words instead.
+test("a Pull from a branch with no upstream, or a Pull or Push from no branch at all, says why in plain words instead of commands to type",UNDER_LOAD,async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-git-no-upstream-"));const origin=join(root,"origin.git"),work=join(root,"work");
+  try{
+    await git(root,["init","--bare","--initial-branch=main",origin]);
+    await mkdir(work,{recursive:true});await git(work,["init","-b","main"]);await git(work,["config","user.email","trebell@example.test"]);await git(work,["config","user.name","Trebell Test"]);
+    await writeFile(join(work,"a.txt"),"a\n");await git(work,["add","a.txt"]);await git(work,["commit","-m","Base"]);await git(work,["remote","add","origin",origin]);await git(work,["push","-u","origin","main"]);
     await createBranch(work,"feature/no-upstream");
     await assert.rejects(()=>pullRepo(work),{message:"This branch has no upstream yet. Push it first to create one."});
     await git(work,["switch","--detach","HEAD"]);
