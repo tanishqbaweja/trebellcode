@@ -149,13 +149,14 @@ for(const action of ["Delete","Archive"]){
 // does, an interrupt for a turn not started yet is refused ("no active turn to interrupt"). interruptDelayMs holds the interrupt's
 // answer (Codex answers once the turn has stopped), compactError fails thread/compact/start with that message, and holdTurns keeps
 // a turn running after its reply until it is set false. project makes the thread a project thread, whose follow-ups wait in
-// Trebell's own queue (Codex's queue holds only General chats'); settings adds to the app's settings.
+// Trebell's own queue (Codex's queue, codex.queue, holds only General chats'); settings adds to the app's settings.
 // names: several threads, the first opened. Each turn is its thread's; turn.fail refuses its turn/start, and a thread with a started
-// turn still running resumes active, with its turns. modes: the collaboration modes Codex lists.
+// turn still running resumes active, with its turns. modes: the collaboration modes Codex lists. codex.calls: the methods the app
+// asked for, in order.
 async function startCodex(page,{name,names=[name],project=false,settings={},modes=[]}){
   const cwd=project?await mkdtemp(join(tmpdir(),"turn-controls-codex-")):process.cwd(),now=Date.now()/1000;
   const threads=names.map((threadName,index)=>({id:"codex-stop-thread"+(index?"-"+(index+1):""),name:threadName,preview:threadName,cwd,createdAt:now-60+index,updatedAt:now-index,status:{type:"idle"},turns:[]})),[thread]=threads;
-  const codex={thread,threads,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null};
+  const codex={thread,threads,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null,queue:[],calls:[]};
   const live=item=>{const turns=codex.turns.filter(turn=>turn.threadId===item.id&&turn.status!=="refused");return {...item,status:turns.some(turn=>turn.started&&turn.status==="inProgress")?{type:"active",activeFlags:[]}:{type:"idle"},turns:turns.map(turn=>({id:turn.id,status:turn.status,items:[]}))}};
   const upstream=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
   upstream.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
@@ -166,7 +167,7 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
   wss.on("connection",ws=>{
     sockets.add(ws);codex.socket=ws;ws.on("close",()=>sockets.delete(ws));
     ws.on("message",raw=>{
-      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
+      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;codex.calls.push(message.method);
       const params=message.params||{},respond=result=>{if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,result}))};
       if(message.method==="turn/start"){
         const turn={id:"codex-turn-"+(codex.turns.length+1),threadId:params.threadId||thread.id,status:"inProgress",started:false,timer:null};codex.turns.push(turn);
@@ -193,11 +194,21 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
         if(turn&&!turn.started){ws.send(JSON.stringify({id:message.id,error:{code:-32600,message:"no active turn to interrupt"}}));return}
         setTimeout(()=>{if(turn?.status==="inProgress")end(turn,"interrupted");respond({})},codex.interruptDelayMs);return;
       }
+      // Codex's own queue, a General chat's follow-ups: each change is told with thread/queue/changed.
+      if(message.method==="thread/queue/add"){
+        const item={id:"queued-"+codex.calls.length,threadId:params.threadId,input:params.input,clientUserMessageId:params.clientUserMessageId};codex.queue.push(item);
+        respond({queuedSubmission:item});notify("thread/queue/changed",{threadId:params.threadId});return;
+      }
+      if(message.method==="thread/queue/delete"){
+        const before=codex.queue.length;codex.queue=codex.queue.filter(item=>item.id!==params.queuedSubmissionId);
+        respond({deleted:codex.queue.length<before});notify("thread/queue/changed",{threadId:params.threadId});return;
+      }
       let result={};
       if(message.method==="initialize")result={userAgent:"turn-controls-codex"};
       else if(message.method==="thread/list")result={data:threads.map(live),nextCursor:null};
       else if(message.method==="thread/resume")result={thread:live(threads.find(item=>item.id===params.threadId)||thread),itemsBackwardsCursor:null,turnsBackwardsCursor:null};
-      else if(["thread/turns/list","thread/items/list","thread/queue/list","thread/attachment/list","thread/timeline/list"].includes(message.method))result={data:[],nextCursor:null};
+      else if(message.method==="thread/queue/list")result={data:codex.queue.filter(item=>item.threadId===params.threadId),nextCursor:null};
+      else if(["thread/turns/list","thread/items/list","thread/attachment/list","thread/timeline/list"].includes(message.method))result={data:[],nextCursor:null};
       else if(message.method==="collaborationMode/list")result={data:modes};
       else if(["threadSection/list","skills/list"].includes(message.method))result={data:[]};
       else if(message.method==="thread/goal/get")result={goal:null};
@@ -345,6 +356,53 @@ test("the Stop shortcut pressed before and after Codex names the turn sends one 
     await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/);
   }finally{await codex.close()}
 });
+
+// Stop stops the turn and nothing more: the follow-ups queued behind it stay queued as they were, none of them starts, and the
+// composer keeps only the draft typed there, in Trebell's own queue (a project thread's) as in Codex's (a General chat's). Codex
+// sends the stopped turn's turn/completed before it answers the interrupt. Trebell's queue goes on once the thread runs a turn
+// again: the draft, sent, runs first, and the first follow-up starts when it ends. A Stop while that follow-up is on its way, before
+// its turn exists, leaves it queued as it was too, and Send now still sends it.
+for(const kind of ["Trebell","Codex"]){
+  test(`Stop with follow-ups in ${kind}'s queue starts none of them and leaves them queued, and the composer keeps only the draft`,async({page})=>{
+    test.setTimeout(90_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Stop with a queue",project:kind==="Trebell"});
+    try{
+      codex.holdTurns=true;
+      await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+      await expect(stop(page)).toBeVisible();
+      for(const text of ["Queued alpha","Queued beta"]){await sendTyped(page,text);await expect(page.locator(".queued-message").filter({hasText:text})).toHaveCount(1)}
+      await typeInComposer(page,"My unsent draft");
+      await stop(page).click();
+      await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/,{timeout:10_000});
+      await page.waitForTimeout(800);
+      // No turn started after the stopped one, and nothing was started from Codex's queue.
+      expect(codex.turns.map(turn=>turn.id)).toEqual(["codex-turn-1"]);expect(codex.calls).not.toContain("thread/queue/start");
+      await expect(page.locator(".queued-message p")).toHaveText(["Queued alpha","Queued beta"]);
+      await expect(composer(page)).toHaveValue("My unsent draft");
+      await expect(stop(page)).toHaveCount(0);await expect(stopping(page)).toHaveCount(0);
+      await shoot(page,"stop-with-a-"+kind.toLowerCase()+"-queue");
+      if(kind==="Trebell"){
+        // The first follow-up's send waits on its repository context, so the Stop comes before its turn exists.
+        let context=null;await page.route(/\/api\/context\/packet$/,async route=>{await context?.promise;await route.fallback()});
+        codex.holdTurns=false;
+        await composer(page).click();await page.keyboard.press("Enter");
+        await expect.poll(()=>codex.turns.length).toBe(2);context=gate();codex.turns[1].answer();codex.turns[1].start();
+        await expect(page.locator(".user-bubble").filter({hasText:"My unsent draft"})).toBeVisible();
+        const alphaSent=page.locator(".user-bubble").filter({hasText:"Queued alpha"});
+        await expect(alphaSent).toBeVisible({timeout:10_000});
+        await stop(page).click();context.open();
+        await expect(alphaSent).toHaveCount(0);await expect(stop(page)).toHaveCount(0);await expect(stopping(page)).toHaveCount(0);
+        await page.waitForTimeout(800);
+        expect(codex.turns).toHaveLength(2);
+        await expect(page.locator(".queued-message p")).toHaveText(["Queued alpha","Queued beta"]);await expect(composer(page)).toHaveValue("");
+        await page.locator(".queued-message").filter({hasText:"Queued alpha"}).getByRole("button",{name:"Send now"}).click();
+        await expect.poll(()=>codex.turns.length).toBe(3);codex.turns[2].answer();
+        await expect(alphaSent).toBeVisible();await expect(page.locator(".queued-message p")).toHaveText(["Queued beta"]);
+      }
+    }finally{await codex.close()}
+  });
+}
 
 // A Compact the harness refuses ends the one compaction row as failed; nothing is left saying it still compacts.
 test("a Compact that fails ends its row as failed, with no compaction left running",async({page})=>{

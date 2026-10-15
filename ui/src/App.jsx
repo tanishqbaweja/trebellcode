@@ -1027,7 +1027,8 @@ export default function App(){
   // in), landed (its history shows)}. Until it lands the sidebar and the header name it; openingCover turns on once it has taken
   // longer than OPENING_COVER_DELAY_MS.
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [opening,setOpening]=useState(null); const [openingCover,setOpeningCover]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
-  const localQueueStartRef=useRef(null);
+  // The threads whose local queue a Stop holds (stop()): nothing in it starts by itself until the thread runs a turn again (startTurn).
+  const localQueueStartRef=useRef(null),queueHeldRef=useRef(new Set());
   // The composer's draft set aside while a queued follow-up is edited there (editQueued): it comes back once the edit ends.
   const [queueEditDraft,setQueueEditDraft]=useState(null);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
@@ -2685,30 +2686,30 @@ export default function App(){
     setAttachments(current=>restoreQueuedDraft({attachments:current,queued:aside,maxAttachments:MAX_COMPOSER_ATTACHMENTS}).attachments);
     setContextChips(current=>restoreQueuedDraft({contextChips:current,queued:aside,maxAttachments:MAX_COMPOSER_ATTACHMENTS}).contextChips);
   },[queuedEditId,queueEditDraft,queued]);
-  // A follow-up being edited holds the local queue, so it goes as saved.
+  // A follow-up being edited holds the local queue, so it goes as saved, and so does a Stop (queueHeldRef), unless it fails.
   useEffect(()=>{
     if(runtimeCapabilities.nativeQueue&&(queueMode==="native"||queued[0]?.native))return;
-    if(running||!queued.length||queuedEditId)return;
+    const threadId=activeThreadRef.current?.id||null;
+    if(running||!queued.length||queuedEditId||queueHeldRef.current.has(String(threadId)))return;
     const next=queued[0];if(next?.autoStartFailed||localQueueStartRef.current===next.id)return;
     localQueueStartRef.current=next.id;
     (async()=>{
-      const threadId=activeThreadRef.current?.id||null,dispatching=queued.map(item=>item.id===next.id?{...item,dispatchingAt:Date.now(),autoStartFailed:false}:item);
+      const dispatching=queued.map(item=>item.id===next.id?{...item,dispatchingAt:Date.now(),autoStartFailed:false}:item);
       try{
         if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
         await startTurn(next.text,next.attachments,next.model||model,null,null,repositoryFocusPaths(next.attachments,next.contextChips));
         const remaining=dispatching.filter(item=>item.id!==next.id);
         if(threadId)await persistLocalQueue(threadId,remaining);else setQueued(remaining);
       }catch(error){
-        // Stop ended it before its turn existed and put the whole queue, this follow-up too, back into the composer (stop()).
-        if(error?.trebellSendStopped){setEvents([]);return}
-        const failed=dispatching.map(item=>item.id===next.id?{...item,dispatchingAt:null,autoStartFailed:true}:item);
+        // Stop ended it before its turn existed: it stays queued as it was, and the queue waits (stop()).
+        const stopped=error?.trebellSendStopped,failed=dispatching.map(item=>item.id===next.id?{...item,dispatchingAt:null,autoStartFailed:!stopped}:item);
         try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}
         // As a send that fails: no turn exists to show it on, so why goes beside the composer, under the queue that keeps the
         // follow-up, never onto the last turn's card (a worktree that could not be set up says why in its own card).
-        setEvents([]);if(!(error&&typeof error==="object"&&WORKTREE_CARD_ERRORS.has(error)))setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error?.message||String(error)||"the harness refused the turn")});
+        setEvents([]);if(!stopped&&!(error&&typeof error==="object"&&WORKTREE_CARD_ERRORS.has(error)))setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error?.message||String(error)||"the harness refused the turn")});
       }finally{localQueueStartRef.current=null}
     })();
-  },[running,queued,queueMode,runtimeCapabilities.nativeQueue,queuedEditId]);
+  },[running,queued,queueMode,runtimeCapabilities.nativeQueue,queuedEditId,stoppingThreadId]);
   useEffect(()=>{setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null)},[agentRuntime,runtimeCapabilities.nativeQueue,projectlessMode]);
   useEffect(()=>{if(!running){stopKeyRef.current=null;setStoppingThreadId(null)}},[running]);
 
@@ -3794,7 +3795,7 @@ export default function App(){
     if(!send?.stopped||send.interrupted||!turnId||send.threadId!==String(threadId||""))return;send.interrupted=true;
     if(stopKeyRef.current===send)stopKeyRef.current=send.threadId+"\0"+turnId;
     turnNotesRef.current.stopSent(send.threadId,turnId);
-    rpcRef.current?.request("turn/interrupt",{threadId,turnId}).catch(error=>{turnNotesRef.current.stopFailed(send.threadId,turnId);if(String(activeThreadRef.current?.id||"")===send.threadId){stopKeyRef.current=null;setStoppingThreadId(null)}showActionError(error,"Could not stop turn")});
+    rpcRef.current?.request("turn/interrupt",{threadId,turnId}).catch(error=>{turnNotesRef.current.stopFailed(send.threadId,turnId);queueHeldRef.current.delete(send.threadId);if(String(activeThreadRef.current?.id||"")===send.threadId){stopKeyRef.current=null;setStoppingThreadId(null)}showActionError(error,"Could not stop turn")});
   }
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false}={}){
     // The view the send was made from: its composer's hold (send()) and the open count (openThread, newChat). A new task's send keeps
@@ -3857,6 +3858,8 @@ export default function App(){
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
       if(pendingSend.stopped)throw sendStoppedError();pendingSend.requested=true;
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;if(shown())setActiveTurnId(turnId);if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
+      // The thread runs a turn again, so a queue a Stop held goes on once it ends.
+      if(!pendingSend.stopped)queueHeldRef.current.delete(String(thread.id));
       // An answer with no start time names a turn Codex has queued, which it can interrupt only once it has started it (turn/started;
       // T3 Code waits for that too): the send stays until then, through as far as the composer goes. Any other answer ends it.
       const queued=Boolean(turnId)&&result.turn.startedAt===null&&!pendingSend.startedTurnId&&turnStillRuns(result.turn)&&pendingSends.get(pendingSend.threadId)===pendingSend;
@@ -4159,8 +4162,8 @@ export default function App(){
       await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips));
       const remaining=dispatching.filter(q=>q.id!==item.id);if(threadId)await persistLocalQueue(threadId,remaining);else setQueued(remaining);
     }catch(error){
-      if(error?.trebellSendStopped)return;
-      const failed=dispatching.map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:true}:q);try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}throw error;
+      // Stop ended it before its turn existed: it stays queued as it was (stop()).
+      const stopped=error?.trebellSendStopped,failed=dispatching.map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:!stopped}:q);try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}if(!stopped)throw error;
     }
   }
   // A queued follow-up is edited in the composer and stays queued as it was until the edit is saved (dispatchSend) or Escape ends it
@@ -4191,7 +4194,9 @@ export default function App(){
     // One Stop per turn: pressed again while it is on its way (a double click, the shortcut twice), it sends nothing more.
     const stopKey=activeTurnId?threadId+"\0"+activeTurnId:pendingSend;
     if(stopKey&&stopKeyRef.current===stopKey)return;
-    stopKeyRef.current=stopKey;setStoppingThreadId(threadId);
+    // The thread's queue stays as it was, as Codex's does: nothing in it goes to the composer, and nothing in it starts by itself,
+    // also when the stopped turn ends before the interrupt is answered, until the thread runs a turn again (startTurn).
+    stopKeyRef.current=stopKey;setStoppingThreadId(threadId);queueHeldRef.current.add(String(threadId));
     // Stop pauses an active Codex goal first, so Codex starts no further goal turn, then stops the newest turn (T3 Code,
     // the Codex TUI).
     let turnId=activeTurnId;
@@ -4207,18 +4212,10 @@ export default function App(){
     const interruptNow=Boolean(turnId&&(!pendingSend||pendingSend.startedTurnId===String(turnId))||pendingSend?.requested&&agentRuntime!=="codex");if(pendingSend&&interruptNow)pendingSend.interrupted=true;
     const sentKey=rpc&&threadId&&interruptNow&&turnId?threadId+"\0"+turnId:null;if(sentKey)turnNotesRef.current.stopSent(threadId,turnId);
     try{if(rpc&&threadId&&interruptNow)await rpc.request("turn/interrupt",{threadId,...(turnId?{turnId}:{})})}
-    catch(error){if(sentKey)turnNotesRef.current.stopFailed(threadId,turnId);if(stopKeyRef.current===stopKey){stopKeyRef.current=null;setStoppingThreadId(null)}throw error}
+    catch(error){if(sentKey)turnNotesRef.current.stopFailed(threadId,turnId);if(stopKeyRef.current===stopKey){stopKeyRef.current=null;setStoppingThreadId(null);queueHeldRef.current.delete(String(threadId))}throw error}
     // A send stopped before its turn started runs on until it ends: its turn/completed, or the send ending without a turn.
     const ended=!pendingSend;
     if(runtimeCapabilities.nativeQueue&&queueMode==="native"){if(ended){setRunning(false);setActiveTurnId(null)}await loadNativeQueue(rpc,threadId);return}
-    // The queue goes back into the composer beside what it holds by then, which may be the draft of the send just stopped; an edit of
-    // one of its messages ends first, so that message goes back as it was queued.
-    if(queuedEditId)cancelQueuedEdit();
-    const returned=queued;
-    if(threadId)await persistLocalQueue(threadId,[]);else setQueued([]);
-    setPrompt(current=>restoreQueuedDraft({prompt:current,queued:returned}).prompt);
-    setAttachments(current=>restoreQueuedDraft({attachments:current,queued:returned,maxAttachments:MAX_COMPOSER_ATTACHMENTS}).attachments);
-    setContextChips(current=>restoreQueuedDraft({contextChips:current,queued:returned,maxAttachments:MAX_COMPOSER_ATTACHMENTS}).contextChips);
     if(ended)setRunning(false);
   }
   async function editFromHere(message){
