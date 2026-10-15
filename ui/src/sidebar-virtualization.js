@@ -1,8 +1,9 @@
 export const SIDEBAR_VIRTUALIZE_AFTER=80;
 export const SIDEBAR_CHUNK_SIZE=40;
-// A row the browser has not drawn yet is 55 px tall (its contain-intrinsic-size, 48 px, with its padding and margin) and a drawn one a
-// little less, so a chunk's placeholder is never shorter than its rows: rows mounting below the view do not lengthen the list, and End
-// or the scrollbar taken to its end reaches the last thread instead of stopping short of it.
+// A row is 55 px tall, drawn or not: before the browser draws it, its contain-intrinsic-size (48 px) with its padding and margin, and
+// drawn, as tall (its min-height in shell.css). So a chunk's placeholder is as tall as its rows, and a chunk keeps its height as it
+// mounts, is drawn and goes back to its placeholder: End or the scrollbar taken to its end reaches the last thread instead of stopping
+// short of it.
 export const SIDEBAR_ROW_ESTIMATE=55;
 
 export function sidebarVirtualChunks(items=[],{chunkSize=SIDEBAR_CHUNK_SIZE,rowHeight=SIDEBAR_ROW_ESTIMATE}={}){

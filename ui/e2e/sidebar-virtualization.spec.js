@@ -67,10 +67,22 @@ test("End on the thousand-thread list shows the last thread at the bottom with o
   for(const mode of ["dark","light"]){
     // The header's theme button, as a person switches.
     if(await html.getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").first().click();await expect(html).toHaveAttribute("data-mode",mode)}
-    // In light the wheel first goes down the whole list, a frame drawn after each turn, so every row has been drawn and measured.
+    // In light the wheel first goes down the whole list from its top (the dark End left it at its end), a frame drawn after each turn,
+    // so every row has been drawn and measured; it takes some 180 turns. The list keeps its length all the way: chunks mount, their
+    // rows are drawn and they go back to placeholders without the list growing or shrinking (a chunk that grew as it went back to its
+    // placeholder, below the view, left End a few pixels short of the last thread).
     if(mode==="light"){
+      await page.locator(".thread-sections h4").first().click();
+      await page.keyboard.press("Home");await expect.poll(()=>sections.evaluate(list=>list.scrollTop)).toBe(0);
       const box=await sections.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
-      for(let turn=0;turn<800&&await sections.evaluate(list=>list.scrollHeight-list.clientHeight-list.scrollTop>1);turn++){await page.mouse.wheel(0,300);await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))))}
+      const lengths=new Set();let turns=0;
+      for(;turns<800;turns++){
+        const {length,left}=await sections.evaluate(list=>({length:list.scrollHeight,left:list.scrollHeight-list.clientHeight-list.scrollTop}));
+        lengths.add(length);if(left<=1)break;
+        await page.mouse.wheel(0,300);await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+      }
+      expect(turns,"wheel turns down the list").toBeGreaterThan(100);
+      expect(Math.max(...lengths)-Math.min(...lengths),"how much the list's length changed as the wheel went down it").toBeLessThanOrEqual(1);
       await expect(page.locator('.thread-main[title="Thread 0999"]')).toBeInViewport();
     }
     // The list's heading clicked, Home to its top, then End once.
