@@ -690,7 +690,7 @@ test("restart recovery of a lost conversation hands the fresh session the interr
   assert.deepEqual(threadStore.get(saved.id).turns.at(-1).items.map(item=>item.type),["userMessage","sessionHandoff","agentMessage"]);
 });
 
-test("Trebell Native ignores a handoff record and keeps its measured envelope",async t=>{
+test("Trebell Native ignores a handoff record and sends its context in the fenced envelope",async t=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-resume-fallback-native-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   onCleanup(t,()=>rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100}));
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",activeEnvironmentId:null});
@@ -705,7 +705,7 @@ test("Trebell Native ignores a handoff record and keeps its measured envelope",a
   const second=relay.events.next(message=>message.method==="turn/completed");
   await relay.rpc("turn/start",{threadId:started.thread.id,model:"model-a",modelProvider:"openai",input:[{type:"text",text:"Which word?"}],additionalContext:{"trebell.repo_evidence":{kind:"untrusted",value:"evidence"}}});await second;
   const user=requests[1].findLast(message=>message.role==="user");
-  assert.ok(user.content[0].text.startsWith("Trebell supplied the following bounded working context before the user's message."));
+  assert.ok(user.content[0].text.startsWith("<trebell_context>\n")&&user.content[0].text.endsWith("\n</trebell_context>\n\nUser request:\n"));assert.equal(user.content[1].text,"Which word?");
   assert.equal(JSON.stringify(requests[1]).includes("thread_history"),false);
   assert.equal(threadStore.get(started.thread.id).turns.at(-1).items.some(item=>item.type==="sessionHandoff"),false);
   assert.equal(threadStore.get(started.thread.id).providerMeta.historyHandoff.status,"pending");
