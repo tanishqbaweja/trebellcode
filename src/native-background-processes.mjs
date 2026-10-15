@@ -6,6 +6,7 @@ import { redactSecretText } from "./secret-redactor.mjs";
 
 const DEFAULT_OUTPUT_BYTES=512*1024;
 const MAX_OUTPUT_BYTES=2*1024*1024;
+const STOP_BOUND_MS=10_000;
 
 function boundedBytes(value,fallback=DEFAULT_OUTPUT_BYTES){
   const number=Math.trunc(Number(value));return Number.isFinite(number)?Math.max(1024,Math.min(MAX_OUTPUT_BYTES,number)):fallback;
@@ -130,9 +131,11 @@ export class NativeBackgroundProcessManager{
       if(record.remote){try{child.kill("SIGTERM")}catch{done();return}}
       else signalLocalProcessTree(child,{platform:this.platform,force:false});
       forceTimer=setTimeout(()=>{if(!record.running)return;if(record.remote){try{child.kill("SIGKILL")}catch{}}else signalLocalProcessTree(child,{platform:this.platform,force:true})},750);forceTimer.unref?.();
-      doneTimer=setTimeout(done,2000);doneTimer.unref?.();
+      // A stop returns as soon as the process closes. The bound is for one that never does: on a loaded Windows host, taskkill took
+      // 1.2-2.6 s to close a plain node child (2026-10-15), and the old 2 s bound called 3 of 8 stops failed that then closed.
+      doneTimer=setTimeout(done,STOP_BOUND_MS);doneTimer.unref?.();
     });
-    if(record.running)throw new Error("Native background process did not stop within 2 seconds");
+    if(record.running)throw new Error(`Native background process did not stop within ${STOP_BOUND_MS/1000} seconds`);
     record.updatedAt=Date.now();this.#emit(record,"native.background.terminated","completed");return this.#public(record,{includeOutput:true});
   }
   async clean(threadId){
