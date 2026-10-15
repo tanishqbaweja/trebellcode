@@ -61,7 +61,9 @@ test("Trebell Native can create a Git branch directly and the Git panel reflects
 });
 
 test("the Git tab's Changes card shows the file an agent's turn wrote, and reads the repository again only when the open thread's files change",async({page})=>{
-  test.setTimeout(90_000);
+  // Each read of the repository below runs four git processes, which take seconds each on a host that benchmarks load: a list's
+  // wait gets 20 s, where 8 s ran out there while the read was still on its way.
+  test.setTimeout(150_000);
   const root=await mkdtemp(join(tmpdir(),"trebell-native-changes-ui-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(join(repo,"src"),{recursive:true});await git(repo,["init"]);await git(repo,["config","user.email","trebell-test@example.invalid"]);await git(repo,["config","user.name","Trebell Test"]);await writeFile(join(repo,"README.md"),"seed\n","utf8");await writeFile(join(repo,"src","app.js"),"export const answer = 42;\n","utf8");await git(repo,["add","-A"]);await git(repo,["commit","-m","seed"]);
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);
@@ -101,7 +103,7 @@ test("the Git tab's Changes card shows the file an agent's turn wrote, and reads
     await page.getByTestId("composer").click();await page.keyboard.type("Add a small file please",{delay:10});await page.keyboard.press("Enter");
     await expect(page.getByText("Done editing the file.",{exact:true})).toBeVisible({timeout:20_000});
     expect((await git(repo,["status","--porcelain"])).stdout,"the agent's file is on disk and git lists it").toContain("?? src/agent-edit.js");
-    await expect(list).toContainText("src/agent-edit.js",{timeout:8000});
+    await expect(list).toContainText("src/agent-edit.js",{timeout:20_000});
     await expect(count).toHaveText("1");await expect(changes.locator(".sc-clean")).toHaveCount(0);
     await expect(list.locator(":scope > div").filter({hasText:"src/agent-edit.js"}).locator("code")).toHaveText("N");
     for(const mode of ["dark","light"]){
@@ -120,7 +122,7 @@ test("the Git tab's Changes card shows the file an agent's turn wrote, and reads
     await waiting;
     await writeFile(join(repo,"README.md"),"changed on disk\n","utf8");
     await page.evaluate(id=>window.dispatchEvent(new CustomEvent("trebell:rpc-notification",{detail:{method:"item/completed",params:{threadId:id,item:{type:"fileChange",id:"edit-1",status:"completed",changes:[{path:"README.md",kind:"update"}]}}}})),thread.id);
-    await expect(list).toContainText("README.md",{timeout:8000});await expect(count).toHaveText("2");
+    await expect(list).toContainText("README.md",{timeout:20_000});await expect(count).toHaveText("2");
     expect(panelReads.length).toBe(settled+1);
     headerHold=null;release();
     // An edit made outside the app (an editor's save, a terminal, another thread's turn) sends the open thread no notification. The
@@ -128,7 +130,7 @@ test("the Git tab's Changes card shows the file an agent's turn wrote, and reads
     // the polls after it find what the card shows and read nothing more.
     const outside=panelReads.length;
     await writeFile(join(repo,"src","app.js"),"export const answer = 43;\n","utf8");
-    await expect(list).toContainText("src/app.js",{timeout:12_000});await expect(count).toHaveText("3");
+    await expect(list).toContainText("src/app.js",{timeout:20_000});await expect(count).toHaveText("3");
     await expect(list.locator(":scope > div").filter({hasText:"src/app.js"}).locator("code")).toHaveText("M");
     await page.waitForTimeout(4000);
     expect(panelReads.length,"one read for the edit outside the app").toBe(outside+1);
