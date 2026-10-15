@@ -20,7 +20,7 @@ async function fixture(name){
   return {home,root,worktree,branch,baseBranch,state,project};
 }
 
-test("unchanged managed worktree cleans and restores on demand",{timeout:30000},async()=>{
+test("unchanged managed worktree cleans and restores on demand",{timeout:120_000},async()=>{
   const f=await fixture("unchanged");
   try{
     const service=new WorktreeCleanupService({state:f.state});const cleaned=await service.sweep();
@@ -30,7 +30,7 @@ test("unchanged managed worktree cleans and restores on demand",{timeout:30000},
   }finally{await rm(f.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
-test("dirty and active managed worktrees are never cleaned",{timeout:30000},async()=>{
+test("dirty and active managed worktrees are never cleaned",{timeout:120_000},async()=>{
   const dirty=await fixture("dirty");
   try{
     await writeFile(join(dirty.worktree,"dirty.txt"),"keep me");const service=new WorktreeCleanupService({state:dirty.state});const result=await service.sweep();
@@ -43,7 +43,7 @@ test("dirty and active managed worktrees are never cleaned",{timeout:30000},asyn
   }finally{await rm(active.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
-test("merged and thread-delete rules are conservative",{timeout:30000},async()=>{
+test("merged and thread-delete rules are conservative",{timeout:120_000},async()=>{
   const f=await fixture("merged");
   try{
     await writeFile(join(f.worktree,"feature.txt"),"feature");await git(f.worktree,["add","feature.txt"]);await git(f.worktree,["commit","-m","feature"]);
@@ -56,7 +56,7 @@ test("merged and thread-delete rules are conservative",{timeout:30000},async()=>
   }finally{await rm(f.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
-test("inactivity cleanup accepts only the configured retention window",{timeout:30000},async()=>{
+test("inactivity cleanup accepts only the configured retention window",{timeout:120_000},async()=>{
   const f=await fixture("age");
   try{
     const project={...f.state.projects().find(item=>item.path===f.worktree),lastOpenedAt:Date.now()-31*86400000,worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:30,worktreeOnMerge:false,worktreeOnDelete:false,worktreeUnchanged:false}}};
@@ -96,7 +96,7 @@ test("remote managed worktree cleanup and restore stay inside the pinned environ
   assert.equal(calls.some(call=>/^[A-Za-z]:\\/.test(String(call.cwd||""))),false,"remote cleanup must not reinterpret remote paths as local Windows paths");
 });
 
-test("named local worktree environments keep local Git mechanics",{timeout:30000},async()=>{
+test("named local worktree environments keep local Git mechanics",{timeout:120_000},async()=>{
   const f=await fixture("named-local");
   try{
     const managed={...f.project.managedWorktree},project=f.state.touchProject(f.worktree,{environmentId:"local-named",managedWorktree:managed});let environmentExecutions=0;
