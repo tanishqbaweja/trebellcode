@@ -26,7 +26,7 @@ test("Native background processes outlive the tool call, keep bounded output, an
     await assert.rejects(()=>execute({namespace:"trebell_process",name:"status",arguments:{process_id:"missing"}}),/not found/i);
     const stopped=await execute({namespace:"trebell_process",name:"stop",arguments:{process_id:started.processId}});assert.equal(stopped.running,false);assert.equal(manager.list("thread-a").data.length,0);
     assert.ok(events.some(event=>event.name==="native.background.started"));assert.ok(events.some(event=>event.name==="native.background.terminated"));
-  }finally{await manager.closeAll();await rm(root,{recursive:true,force:true})}
+  }finally{await manager.closeAll();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native background processes preserve remote argv isolation metadata instead of exposing the parent environment",async()=>{
@@ -60,7 +60,7 @@ test("Native background process stop terminates local descendants",async()=>{
       catch(error){if(error?.code==="ESRCH")descendantAlive=false;else throw error}
     }
     assert.equal(descendantAlive,false,"stopping a Native background process must not leave descendants running");
-  }finally{await manager.closeAll();await rm(root,{recursive:true,force:true})}
+  }finally{await manager.closeAll();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 function fakeRemoteEnvironment(){
@@ -109,7 +109,7 @@ test("a thread's history sets where a new manager starts its handles, so a handl
     assert.throws(()=>second.status("thread-1","p1"),/not found/,"the dev server's old handle does not reach the watcher");
     assert.equal(second.status("thread-1","p2").processId,watcher.processId);
     assert.equal(second.start({threadId:"thread-2",command:process.execPath,args:idle,cwd:root}).handle,"p1","other threads keep their own count");
-  }finally{await first.closeAll();await second.closeAll();await rm(root,{recursive:true,force:true})}
+  }finally{await first.closeAll();await second.closeAll();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native process tools accept a short handle for status and stop",async()=>{
@@ -122,5 +122,5 @@ test("Native process tools accept a short handle for status and stop",async()=>{
     assert.equal(status.processId,started.processId);assert.equal(status.stdout,"ready");
     const legacy=await execute({namespace:"trebell_terminal",name:"background_status",arguments:{process_id:"p1"}});assert.equal(legacy.processId,started.processId);
     const stopped=await execute({namespace:"trebell_process",name:"stop",arguments:{process_id:"p1"}});assert.equal(stopped.running,false);
-  }finally{await manager.closeAll();await rm(root,{recursive:true,force:true})}
+  }finally{await manager.closeAll();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

@@ -30,5 +30,5 @@ test("replay CLI exports a sanitized filtered bundle and replays it",async()=>{
     const result=JSON.parse(replayed.stdout);
     assert.equal(result.eventCount,1);assert.equal(result.threadCount,1);assert.equal(result.categories.verification,1);
     assert.ok(result.threads["cli-thread"]);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

@@ -26,7 +26,7 @@ test("Native tool output store virtualizes large output, supports targeted retri
     assert.equal(inspectedSearch.matches.length,1);assert.match(inspectedSearch.matches[0].excerpt,/TARGET failure stack/);
     const inspectedRead=await store.execute({name:"inspect",arguments:{handle:shaped.handle,start_line:1,max_chars:48000}});
     assert.match(inspectedRead.content,/line ok/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native tool output store never replaces model-visible image content with a text preview",async()=>{
@@ -38,7 +38,7 @@ test("Native tool output store never replaces model-visible image content with a
     const shaped=await store.virtualize(value,{namespace:"trebell_workspace",name:"read_file"});
     assert.equal(shaped.virtualized,false);assert.equal(shaped.value.contentItems[1].imageUrl,imageUrl);
     assert.doesNotMatch(shaped.value.contentItems[0].text,new RegExp(secret));
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native tool output store keeps the wider hot preview when large output has no failure signal",async()=>{
@@ -47,7 +47,7 @@ test("Native tool output store keeps the wider hot preview when large output has
     const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});
     const shaped=await store.virtualize({exitCode:0,stdout:"ordinary progress line\n".repeat(1600)},{namespace:"trebell_terminal",name:"run"});
     assert.equal(shaped.virtualized,true);assert.ok(shaped.value.preview.length>2200);assert.ok(shaped.value.preview.length<=3600);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native tool output store keeps the wider hot preview for successful output with failure-like vocabulary",async()=>{
@@ -57,7 +57,7 @@ test("Native tool output store keeps the wider hot preview for successful output
     const stdout=("expected 42 tests and received 42 tests successfully\n").repeat(1200);
     const shaped=await store.virtualize({exitCode:0,stdout},{namespace:"trebell_terminal",name:"run"});
     assert.equal(shaped.virtualized,true);assert.ok(shaped.value.preview.length>2200);assert.ok(shaped.value.preview.length<=3600);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native tool output store leaves small redacted results inline without allocating a handle",async()=>{
@@ -67,7 +67,7 @@ test("Native tool output store leaves small redacted results inline without allo
     const shaped=await store.virtualize({success:true,content:"token="+secret});
     assert.equal(shaped.virtualized,false);assert.equal(shaped.handle,undefined);
     assert.doesNotMatch(JSON.stringify(shaped.value),new RegExp(secret));assert.match(JSON.stringify(shaped.value),/\[redacted\]/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native tool output store can archive small hot output without forcing immediate virtualization",async()=>{
@@ -83,7 +83,7 @@ test("Native tool output store can archive small hot output without forcing imme
     assert.match(read.content,/row=42/);assert.doesNotMatch(read.content,new RegExp(secret));assert.match(read.content,/\[redacted\]/);
     const skipped=await store.archive({stdout:"tiny"},{namespace:"trebell_terminal",name:"run",minBytes:1200});
     assert.equal(skipped.archived,false);assert.equal(skipped.handle,undefined);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("consecutive identical output lines collapse to the first line and a harness note only when the note is shorter",()=>{
@@ -115,7 +115,7 @@ test("collapsing command output keeps the raw output retrievable and the user-fa
     assert.equal(read.content.split("\n").filter(line=>line===warning).length,120,"the raw output keeps every repeated line");
     const unchanged=await store.virtualize({exitCode:0,stdout:"one\ntwo\n"},{namespace:"trebell_terminal",name:"run",collapseRepeatedLines:true});
     assert.equal(unchanged.handle,undefined);assert.equal(unchanged.uiValue,undefined);assert.deepEqual(unchanged.value,{exitCode:0,stdout:"one\ntwo\n"});
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a large collapsed output previews the collapsed text and indexes raw line numbers without repeated signal lines",async()=>{
@@ -134,7 +134,7 @@ test("a large collapsed output previews the collapsed text and indexes raw line 
     assert.equal(rawLines[Number(labelled[1])-1],failure,"important-line numbers point into the stored raw output");
     assert.match(shaped.uiValue.preview,/solver failed to converge/);assert.notEqual(shaped.uiValue.preview,preview,"the person's preview is the raw one");
     assert.equal(shaped.uiValue._trebell_output.handle,shaped.handle);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a collapse is used only when the lines it removes outweigh the pointer it adds to the model's view",async()=>{
@@ -152,7 +152,7 @@ test("a collapse is used only when the lines it removes outweigh the pointer it 
     assert.equal(collapsed.value.stdout,"stage beta=48\n"+warning+"\n[Trebell: previous line repeated 5 more times]\nStarting adjoint run...\n");
     assert.ok(collapsed.value._trebell_output?.handle,"the collapsed lines stay retrievable");
     assert.ok(JSON.stringify(collapsed.value).length<JSON.stringify(often).length,"a collapse that is used leaves the model's view smaller, pointer included");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a collapsed output too large for hot context still gives the person the preview it had without the collapse",async()=>{
@@ -165,7 +165,7 @@ test("a collapsed output too large for hot context still gives the person the pr
     assert.equal(shaped.virtualized,true);assert.match(shaped.value.preview,/previous line repeated 399 more times/,"the collapsed text is short enough to be previewed whole");
     assert.equal(Object.hasOwn(shaped.uiValue,"stderr"),false,"the person is not handed the whole 25 KB output");
     assert.equal(shaped.uiValue.preview,before.value.preview);assert.equal(shaped.uiValue._trebell_output.handle,shaped.handle);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("an output over the hot bound that its collapse would bring under is still previewed, never shown whole",async()=>{
@@ -187,7 +187,7 @@ test("an output over the hot bound that its collapse would bring under is still 
       repeats+=page.content.split("\n").filter(line=>line===warning).length;if(page.endLine>=page.totalLines)break;start=page.endLine+1;
     }
     assert.equal(repeats,400,"every raw line stays retrievable");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a model view is what the model is shown and what trebell_output returns, while the person keeps the whole value",async()=>{
@@ -210,5 +210,5 @@ test("a model view is what the model is shown and what trebell_output returns, w
     const collapsed=await store.virtualize(record("waiting for port 8000\n".repeat(50)),{namespace:"trebell_process",name:"status",modelView:view,collapseRepeatedLines:true});
     assert.equal(collapsed.value.process_id,"p1");assert.equal(collapsed.value.stdout,"waiting for port 8000\n[Trebell: previous line repeated 49 more times]\n");
     assert.equal(Object.hasOwn(collapsed.value,"processId"),false);assert.equal(collapsed.uiValue.processId,id);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

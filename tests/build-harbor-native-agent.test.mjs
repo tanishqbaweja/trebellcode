@@ -25,7 +25,7 @@ test("a rebuild leaves a bundle that already has the same bytes untouched, and r
     await buildInto(outfile);
     assert.ok((await readFile(outfile)).equals(bundle));
     assert.deepEqual(await readdir(join(dir,"dist")),["trebell-native-agent.mjs"]);
-  }finally{await rm(dir,{recursive:true,force:true})}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("builds racing in one clone never show a reader a partial bundle",async()=>{
@@ -47,5 +47,5 @@ test("builds racing in one clone never show a reader a partial bundle",async()=>
     assert.deepEqual([...seen].filter(kind=>kind.startsWith("partial")),[]);
     assert.ok((await readFile(outfile)).equals(bundle));
     assert.deepEqual(await readdir(join(dir,"dist")),["trebell-native-agent.mjs"]);
-  }finally{await rm(dir,{recursive:true,force:true})}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

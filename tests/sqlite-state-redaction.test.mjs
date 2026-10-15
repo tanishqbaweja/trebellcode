@@ -42,5 +42,5 @@ test("durable SQLite state redacts known credentials on legacy import and new wr
       ].map(row=>String(row.payload_json||"")).join("\n");
       assert.doesNotMatch(payloads,new RegExp(secret));assert.match(payloads,/\[redacted\]/);
     }finally{db.close()}
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

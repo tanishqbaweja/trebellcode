@@ -274,7 +274,7 @@ docker_image = "registry.example/task-verifier@sha256:def"
       {role:"agent",status:"already-present",attempt:0},
       {role:"verifier",status:"pulled",attempt:1},
     ]);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Terminal-Bench Docker prewarm retries one transient pull serially and then stops",async()=>{
@@ -285,7 +285,7 @@ test("Terminal-Bench Docker prewarm retries one transient pull serially and then
     let calls=0;
     const result=await prewarmTerminalBenchDockerImages({dataset:"terminal-bench/terminal-bench@4.0.0",task:"example-task",cacheRoot:root,maxAttempts:3,captureFn:async()=>{throw new Error("missing")},runFn:async()=>{calls++;if(calls<2)throw new Error("unexpected EOF")}});
     assert.equal(calls,2);assert.deepEqual(result.attempts.map(item=>item.status),["failed","pulled"]);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Terminal-Bench network preflight refuses no-network tasks before inference when Docker cannot enforce them",async()=>{
@@ -307,7 +307,7 @@ test("Terminal-Bench network preflight refuses no-network tasks before inference
     await assert.rejects(preflightTerminalBenchNetworkPolicy({...options,captureFn:async()=>{throw new Error("docker exited with 1")}}),/allow_internet=false[\s\S]*verifier\.environment[\s\S]*Refusing launch/);
     const missing=await preflightTerminalBenchNetworkPolicy({...options,cacheRoot:join(root,"absent"),captureFn:async()=>{throw new Error("must not probe")}});
     assert.equal(missing.taskTomlFound,false);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
   assert.match(source,/networkPolicyPreflight=await preflightTerminalBenchNetworkPolicy\(/);
   assert.ok(source.indexOf("preflightTerminalBenchNetworkPolicy(")<source.indexOf("const runLane=async"),"network preflight must run before any lane starts");
@@ -453,7 +453,7 @@ test("SWE-bench lanes with a reward but no verifier report are infrastructure, n
   assert.equal(isSweBenchDataset("terminal-bench/terminal-bench@4.0.0"),false);
   assert.equal(isSweBenchDataset(""),false);
   const trialDir=await mkdtemp(join(tmpdir(),"trebell-swe-ungraded-"));
-  t.after(()=>rm(trialDir,{recursive:true,force:true}));
+  t.after(()=>rm(trialDir,{recursive:true,force:true,maxRetries:20,retryDelay:250}));
   await mkdir(join(trialDir,"verifier"),{recursive:true});
   await writeFile(join(trialDir,"verifier","reward.txt"),"0\n");
   assert.equal(await sweBenchVerifierReportMissing(trialDir),true);
@@ -516,7 +516,7 @@ test("Terminal-Bench standalone Native rerun lock is shared across worktrees but
 
 test("Terminal-Bench pair lock is shared across worktrees that use one Git common directory",async t=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-global-pair-lock-"));
-  t.after(()=>rm(dir,{recursive:true,force:true}));
+  t.after(()=>rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250}));
   const sourceRoot=join(dir,"source"),worktreeA=join(dir,"worktree-a"),worktreeB=join(dir,"worktree-b"),gitCommon=join(sourceRoot,".git");
   const lockA=sharedTerminalBenchLockPath(worktreeA,gitCommon),lockB=sharedTerminalBenchLockPath(worktreeB,gitCommon);
   assert.equal(lockA,lockB);

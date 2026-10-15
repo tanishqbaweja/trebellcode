@@ -51,5 +51,5 @@ test("Harbor Native summary aggregates prompt-cache comparison diagnostics",asyn
     assert.deepEqual(summary.topOutputTurns[0],{
       turn:2,durationMs:30,toolCallCount:0,finishReason:null,precedingTools:["trebell_terminal/run"],precedingControllerEvents:["native.progress.implementation_pressure"],followingTools:["trebell_workspace/write_file"],inputTokens:2200,cachedInputTokens:2048,cacheWriteInputTokens:0,outputTokens:90,reasoningOutputTokens:80,
     });
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

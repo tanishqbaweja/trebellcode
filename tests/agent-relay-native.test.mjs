@@ -76,7 +76,7 @@ test("Trebell Native relay executes repository tools and switches inference prov
     const afterSecond=(await rpc.request("thread/read",{threadId})).thread;assert.equal(afterSecond.id,threadId);assert.equal(afterSecond.turns.length,2);assert.equal(afterSecond.model,"model-b");assert.equal(afterSecond.providerMeta.modelProvider,"hcnsec");
     assert.deepEqual(providers,["agentrouter","agentrouter","hcnsec"]);assert.deepEqual(contextLookups,[["agentrouter","model-a"],["hcnsec","model-b"]]);
   }finally{
-    try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -280,7 +280,7 @@ test("Trebell Native progressively discovers configured MCP tools inside the sam
     const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Use the configured MCP echo tool"}]})).turn;
     const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed",JSON.stringify(completed.params.turn.error||null));assert.equal(calls,3);
     const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread;assert.deepEqual(persisted.providerMeta.nativeMcp.failures,[]);assert.deepEqual(persisted.providerMeta.nativeMcp.namespaces,[seenNamespace]);assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_mcp"&&item.tool==="call"&&item.arguments?.name==="echo-read"&&item.success===true));
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native reloads changed MCP settings on the next turn of the same thread",async()=>{
@@ -330,7 +330,7 @@ test("Trebell Native enforces the remaining goal tool budget inside an active tu
     await assert.rejects((await import("node:fs/promises")).readFile(join(repo,"two.txt"),"utf8"),error=>error?.code==="ENOENT");
     assert.equal(seenMaxOutputTokens,50);
     const goal=(await rpc.request("thread/goal/get",{threadId:thread.id})).goal;assert.equal(goal.toolCallsUsed,1);assert.equal(goal.toolCallBudgetRemaining,0);assert.equal(goal.tokensUsed,7);
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native applies permission-profile changes to an already cached session",async()=>{
@@ -384,7 +384,7 @@ test("Trebell Native relay can edit workspace files and run bounded terminal com
     assert.ok(persisted.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_workspace"&&item.tool==="replace_text"&&item.success===true));
     assert.ok(persisted.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_terminal"&&item.tool==="run"&&item.success===true));
     assert.ok(persisted.some(item=>item.type==="agentMessage"&&/verified it/.test(item.text)));
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native verification repair reuses the same thread and persisted failed evidence",async()=>{
@@ -407,7 +407,7 @@ test("Trebell Native verification repair reuses the same thread and persisted fa
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===repaired.turn.id);
     assert.equal(providerRequests.length,2);const prompt=JSON.stringify(providerRequests[0].messages.at(-1)?.content||"");assert.match(prompt,/Repair the failed verification/i);assert.match(prompt,/Parser regression failed/);assert.doesNotMatch(prompt,/SHOULD_NOT_BE_IN_REPAIR_CONTEXT/);assert.equal(providerRequests[1].metadata?.completionGate,true);
     const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread;assert.equal(persisted.id,thread.id);assert.equal(persisted.turns.length,1);assert.ok(persisted.turns[0].items.some(item=>item.type==="agentMessage"&&/Repaired and rechecked/.test(item.text)));
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a verification repair's checkpoint is journaled under the selected runtime when the thread names none",async()=>{
@@ -429,7 +429,7 @@ test("a verification repair's checkpoint is journaled under the selected runtime
     const repaired=await rpc.request("thread/verification/repair",{threadId:thread.id});assert.ok(repaired.turn?.id);
     const created=records.find(event=>event.name==="checkpoint.created"),linked=records.find(event=>event.name==="checkpoint.linked");
     assert.equal(created?.runtime,"native");assert.equal(linked?.runtime,"native");assert.equal(linked?.turnId,repaired.turn.id);
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native verification continuation reuses the same thread and only the next missing check",async()=>{
@@ -453,7 +453,7 @@ test("Trebell Native verification continuation reuses the same thread and only t
     assert.equal(providerRequests.length,2);const prompt=JSON.stringify(providerRequests[0].messages.at(-1)?.content||"");assert.match(prompt,/Continue verification/i);assert.match(prompt,/npm test/);assert.match(prompt,/single next required verification step/i);assert.doesNotMatch(prompt,/SHOULD_NOT_BE_IN_VERIFY_CONTEXT/);assert.equal(providerRequests[1].metadata?.completionGate,true);
     const meta=state.threadMeta(thread.id);assert.equal(meta.verificationContinuationChain?.lastContinuationTurnId,continued.turn.id);assert.equal(meta.verificationAutomationChain?.lastAutomaticTurnId,continued.turn.id);assert.equal(meta.verificationAutomationChain?.lastAction,"verify");
     const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread;assert.equal(persisted.id,thread.id);assert.equal(persisted.turns.length,1);assert.ok(persisted.turns[0].items.some(item=>item.type==="agentMessage"&&/requested test only/.test(item.text)));
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native compaction keeps full transcript but restarts from the durable brief boundary",async()=>{
@@ -488,7 +488,7 @@ test("Trebell Native compaction keeps full transcript but restarts from the dura
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);ws2.close();await relay.close();await new Promise(resolve=>restartedServer.close(()=>resolve()));relay=null;
     const finalThread=threadStore.get(threadId);assert.equal(finalThread.turns.length,2);assert.ok(finalThread.turns[1].items.some(item=>item.type==="agentMessage"&&/continued from compacted memory/.test(item.text)));
   }finally{
-    try{ws.close()}catch{}if(relay)await relay.close().catch(()=>{});if(server.listening)await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    try{ws.close()}catch{}if(relay)await relay.close().catch(()=>{});if(server.listening)await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -517,7 +517,7 @@ test("Trebell Native compaction keeps the last two turns hot across restart",asy
     const next=(await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"REQUEST_4"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===next.id);
     const serialized=JSON.stringify(restartRequest.messages);assert.doesNotMatch(serialized,/REQUEST_1/);assert.match(serialized,/PRESERVE THIS EXACT ACTIVE GOAL/);assert.match(serialized,/REQUEST_2/);assert.match(serialized,/ANSWER_2/);assert.match(serialized,/REQUEST_3/);assert.match(serialized,/ANSWER_3/);assert.match(serialized,/REQUEST_4/);
     ws2.close();await relay.close();await new Promise(resolve=>restarted.close(()=>resolve()));relay=null;
-  }finally{try{ws.close()}catch{}if(relay)await relay.close().catch(()=>{});if(server.listening)await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}if(relay)await relay.close().catch(()=>{});if(server.listening)await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native turn steering interrupts inference and persists the redirect inside the active turn",async()=>{
@@ -540,7 +540,7 @@ test("Trebell Native turn steering interrupts inference and persists the redirec
     const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed");assert.equal(calls,2);
     const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread.turns[0];const userItems=persisted.items.filter(item=>item.type==="userMessage");assert.equal(userItems.length,2);assert.match(JSON.stringify(userItems[1].content),/Work on parser\.ts instead/);assert.ok(persisted.items.some(item=>item.type==="agentMessage"&&/parser\.ts/.test(item.text)));
     await assert.rejects(()=>rpc.request("turn/steer",{threadId:thread.id,expectedTurnId:turn.id,input:[{type:"text",text:"too late"}]}),/no active turn/i);
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native delegation preserves parent inference provider, tools, permissions and child budget",async()=>{
@@ -561,7 +561,7 @@ test("Trebell Native delegation preserves parent inference provider, tools, perm
     const parentGoal=(await rpc.request("thread/goal/get",{threadId:parent.id})).goal;assert.equal(parentGoal.childAgentsUsed,1);assert.equal(parentGoal.childAgentBudgetRemaining,0);
     const childGoal=(await rpc.request("thread/goal/get",{threadId:child.id})).goal;assert.equal(childGoal.objective,"Inspect parser behavior and report findings");assert.equal(childGoal.turnBudget,2);
     await assert.rejects(()=>rpc.request("thread/delegate",{threadId:parent.id,task:"Second child must be blocked",permissions:"read-only",isolation:"inherit"}),/child-agent budget exhausted/i);
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native fork clones Trebell history and rewind invalidates crossed compaction memory",async()=>{
@@ -598,7 +598,7 @@ test("Trebell Native fork clones Trebell history and rewind invalidates crossed 
     const emptied=(await rpc.request("thread/revert",{threadId:source.id,beforeTurnId:first.id})).thread;assert.equal(emptied.turns.length,0);assert.equal(Object.prototype.hasOwnProperty.call(emptied.providerMeta||{},"nativeCompaction"),false);
     phase="after-empty-rewind";const emptyTurn=(await rpc.request("turn/start",{threadId:source.id,model:"model-a",modelProvider:"hcnsec",permissionProfile:"auto",input:[{type:"text",text:"AFTER EMPTY"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===emptyTurn.id);
     const forkStillIntact=threadStore.get(forked.id);assert.equal(forkStillIntact.turns.length,2);assert.equal(forkStillIntact.providerMeta.nativeCompaction.throughTurnId,first.id);
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native durable queue edits, reorders and auto-starts after a successful turn",async()=>{
@@ -630,7 +630,7 @@ test("Trebell Native durable queue edits, reorders and auto-starts after a succe
     const final=threadStore.get(thread.id);assert.equal(final.turns.length,3);assert.ok(final.turns.every(turn=>turn.status==="completed"));assert.deepEqual(final.providerMeta.dynamicToolNamespaces,["trebell_browser"]);assert.equal((state.threadMeta(thread.id)?.queuedSubmissions||[]).length,0);assert.equal(prompts.length,3);
     assert.match(prompts[0],/INITIAL TURN/);assert.match(prompts[1],/SECOND QUEUED/);assert.match(prompts[2],/FIRST QUEUED EDITED/);
     assert.equal((await rpc.request("thread/queue/list",{threadId:thread.id,limit:10})).data.length,0);
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native resumes an idle durable queue after restart only when restart continuation is enabled",async()=>{
@@ -651,7 +651,7 @@ test("Trebell Native resumes an idle durable queue after restart only when resta
       }else{
         await new Promise(resolve=>setTimeout(resolve,100));assert.equal(requests.length,0);assert.equal((state.threadMeta(thread.id).queuedSubmissions||[]).length,1);assert.equal(threadStore.get(thread.id).turns.length,0);
       }
-    }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+    }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
   }
 });
 
@@ -674,7 +674,7 @@ test("Trebell Native background processes outlive the turn and stay thread-owned
     const sibling=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
     assert.equal((await rpc.request("thread/backgroundTerminals/list",{threadId:sibling.id,limit:10})).data.length,0);await assert.rejects(()=>rpc.request("thread/backgroundTerminals/terminate",{threadId:sibling.id,processId:processItem.processId}),/not found/i);
     const stopped=await rpc.request("thread/backgroundTerminals/terminate",{threadId:thread.id,processId:processItem.processId});assert.equal(stopped.process.running,false);assert.doesNotMatch(stopped.process.stdout,/must-stay-hidden/);assert.equal((await rpc.request("thread/backgroundTerminals/list",{threadId:thread.id,limit:10})).data.length,0);
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a Native thread restored after a restart gives its new background processes handles its history has not used",async()=>{
@@ -705,7 +705,7 @@ test("a Native thread restored after a restart gives its new background processe
     assert.equal(receipts.length,2);
     assert.match(receipts[0],/"process_id":"p1"/);
     assert.match(receipts[1],/"process_id":"p2"/,"the restored thread's history already names p1, so the new process is p2");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Trebell Native exposes first-class Git status directly to the model loop",async()=>{
@@ -726,7 +726,7 @@ test("Trebell Native exposes first-class Git status directly to the model loop",
     const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Check Git status"}]})).turn;
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(calls,2);
     const persisted=threadStore.get(thread.id);assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_source_control"&&item.tool==="status"));
-  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 async function nativeRelayFixture(prefix,settings={},nativeProviderTurn=async()=>{throw new Error("unexpected provider call")}){

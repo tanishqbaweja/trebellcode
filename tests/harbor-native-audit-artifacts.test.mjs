@@ -32,7 +32,7 @@ test("Native tool-call log records arguments and results, redacts secret environ
     assert.match(rows[1].error,/boom \[redacted\]/);
     assert.ok(!JSON.stringify(rows).includes(secret),"no secret value reaches the log");
   }finally{
-    await rm(root,{recursive:true,force:true});
+    await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -50,7 +50,7 @@ test("Native tool-call log keeps every hunk of a long replace_text edits list",a
     assert.match(rows[0].output,/"beforeSha256":"a{64}","afterSha256":"b{64}"/,"the audit record keeps the hashes the model no longer reads");
     assert.ok(rows[1].arguments.length<16_100,"a single pair keeps the ordinary cap");
   }finally{
-    await rm(root,{recursive:true,force:true});
+    await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -76,7 +76,7 @@ test("Native final diff captures tracked edits and untracked files without touch
     assert.equal(indexAfter,indexBefore,"git does not rewrite the index");
     assert.equal(git(repo,"status","--porcelain"),statusBefore,"the workspace state is unchanged");
   }finally{
-    await rm(root,{recursive:true,force:true});
+    await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -87,7 +87,7 @@ test("Native final diff records why it is unavailable outside a Git workspace",a
     assert.equal(summary.captured,false);
     assert.match(await readFile(path,"utf8"),/^\[final diff unavailable: /);
   }finally{
-    await rm(root,{recursive:true,force:true});
+    await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 

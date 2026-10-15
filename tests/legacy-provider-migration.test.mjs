@@ -50,7 +50,7 @@ test("the retired provider is gone from the registry and resolves to the default
     const manager=new ProviderManager({env:{TREBELL_HOME:home},fetchFn:async()=>{throw new Error("no network")}});
     assert.equal(manager.definitions().some(item=>item.id==="freebuff"),false);assert.equal(manager.get("freebuff").id,"openai");
     assert.deepEqual(await manager.models("freebuff"),{models:[],defaultModel:null,source:"none",error:"API key required"});
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("retired provider account routes are gone from the GUI server",async()=>{
@@ -245,13 +245,13 @@ test("TrebellStateStore keeps the retired provider's preferences when ui-state.j
       assert.deepEqual(settings.modelReasoningEfforts,{"codex:openai:gpt-5.5":"xhigh"},label+": the implicit default was the retired provider, so its value was the one in use");
       assert.deepEqual(settings.modelServiceTiers,{"codex:openai:gpt-6-sol":"fast"},label);
       assert.doesNotMatch(await readFile(file,"utf8"),/freebuff/i,label);
-    }finally{await rm(home,{recursive:true,force:true})}
+    }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
   }
   const home=await mkdtemp(join(tmpdir(),"trebell-legacy-provider-explicit-")),env={...process.env,TREBELL_HOME:home};
   try{
     await writeFile(join(home,"ui-state.json"),JSON.stringify({version:2,projects:[],settings:{onboardingComplete:true,modelProvider:"openai",modelReasoningEfforts:{"codex:openai:gpt-5.5":"low","codex:freebuff:gpt-5.5":"xhigh"}}}));
     assert.deepEqual(new TrebellStateStore(env).settings().modelReasoningEfforts,{"codex:openai:gpt-5.5":"low"},"an explicitly selected provider keeps its own value");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("TrebellStateStore migrates a legacy ui-state.json once and rewrites it without the retired provider",async()=>{
@@ -291,7 +291,7 @@ test("TrebellStateStore migrates a legacy ui-state.json once and rewrites it wit
     assert.equal(raw.trebellQueue[0].model,null,"the queue migration is persisted");assert.equal(raw.trebellQueue[1].model,"gpt-6-luna");
     const again=new TrebellStateStore(env);assert.equal(again.settings().modelProvider,"openai");assert.equal(again.project("/repo",null).defaultModel,null);
     assert.equal(await readFile(file,"utf8"),persisted,"a migrated state file is stable on the next load");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("retired provider data paths are exactly its two leftovers under the Trebell home",()=>{
@@ -312,7 +312,7 @@ test("startup cleanup removes only the retired provider's leftovers and is idemp
     assert.deepEqual(logs,[]);
     await writeFile(join(home,"freebuff-instance-id"),"x");
     assert.deepEqual(removeRetiredProviderData(env,{log:()=>{throw new Error("a failing logger must not break startup")}}),{removed:1});
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("startup cleanup removes a link in place of the retired data directory but never its target",async()=>{
@@ -325,10 +325,10 @@ test("startup cleanup removes a link in place of the retired data directory but 
     assert.deepEqual(removeRetiredProviderData({TREBELL_HOME:home}),{removed:1});
     assert.equal(await exists(link),false,"the link itself is removed");
     assert.equal(await readFile(join(outside,"credentials.json"),"utf8"),"outside data","the link target survives");
-    const dangling=join(root,"gone");await mkdir(dangling);await symlink(dangling,link,process.platform==="win32"?"junction":"dir");await rm(dangling,{recursive:true,force:true});
+    const dangling=join(root,"gone");await mkdir(dangling);await symlink(dangling,link,process.platform==="win32"?"junction":"dir");await rm(dangling,{recursive:true,force:true,maxRetries:20,retryDelay:250});
     assert.deepEqual(removeRetiredProviderData({TREBELL_HOME:home}),{removed:1},"a dangling link is removed too");
     assert.equal(await exists(link),false);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("the GUI server removes the retired provider's leftovers on startup",async()=>{
@@ -360,6 +360,6 @@ test("every CLI command removes the retired provider's leftovers, including logo
     console.error=originalError;process.exitCode=previousExitCode;
     if(previousHome===undefined)delete process.env.TREBELL_HOME;else process.env.TREBELL_HOME=previousHome;
     if(previousBin===undefined)delete process.env.TREBELL_CODEX_BIN;else process.env.TREBELL_CODEX_BIN=previousBin;
-    await rm(home,{recursive:true,force:true});
+    await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });

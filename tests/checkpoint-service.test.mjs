@@ -53,7 +53,7 @@ test("checkpoint capture retries a transient Git failure without restarting the 
     assert.deepEqual(sleeps,[75]);
     assert.equal(calls.filter(args=>gitCommand(args)==="read-tree").length,1);
     assert.equal(calls.filter(args=>gitCommand(args)==="write-tree").length,1);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("local checkpoint Git processes receive a bounded environment instead of unrelated parent secrets",async()=>{
@@ -87,7 +87,7 @@ test("local checkpoint Git processes receive a bounded environment instead of un
     }
     assert.ok(gitEnvironments.some(environment=>typeof environment.GIT_INDEX_FILE==="string"&&environment.GIT_INDEX_FILE.includes("index-")));
     assert.ok(gitEnvironments.some(environment=>environment.GIT_INDEX_FILE===undefined));
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("checkpoint capture does not retry non-transient Git failures",async()=>{
@@ -109,7 +109,7 @@ test("checkpoint capture does not retry non-transient Git failures",async()=>{
     await assert.rejects(()=>service.create({cwd:"/repo"}),/index file corrupt/);
     assert.equal(addAttempts,1);
     assert.equal(sleepCalls,0);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("checkpoint capture skips unborn nested repositories but records committed nested repositories",async()=>{
@@ -136,7 +136,7 @@ test("checkpoint capture skips unborn nested repositories but records committed 
     assert.match((await git(repo,["ls-tree",checkpoint.commit,"--","committed"])).stdout,new RegExp("160000 commit "+nestedHead+"\\s+committed"));
     assert.deepEqual(await readFile(join(repo,".git","index")),originalIndex);
     assert.equal(await readFile(join(emptyNested,"private.txt"),"utf8"),"do not capture\n");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("checkpoint nested-repository recovery refuses excessive candidates before probing them",async()=>{
@@ -159,7 +159,7 @@ test("checkpoint nested-repository recovery refuses excessive candidates before 
   try{
     await assert.rejects(()=>service.create({cwd:"/repo"}),/does not have a commit checked out/);
     assert.equal(nestedProbes,0);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("checkpoint objects and refs request fsync before state publication",async()=>{
@@ -183,7 +183,7 @@ test("checkpoint objects and refs request fsync before state publication",async(
       assert.equal(args[2],"-c");assert.equal(args[3],"core.fsyncMethod=fsync");
       assert.equal(args[4],command);
     }
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("checkpoint change inspection compares against the captured tree without blaming pre-existing untracked files",async()=>{
@@ -204,7 +204,7 @@ test("checkpoint change inspection compares against the captured tree without bl
     await assert.rejects(()=>service.changedPaths(checkpoint.id,{threadId:"wrong-thread"}),/thread that created/i);
     await writeFile(join(repo,"tracked.txt"),"base\n");await rm(join(repo,"new-after-turn.txt"));
     assert.deepEqual((await service.changedPaths(checkpoint.id,{threadId:"thread-diff"})).paths,[]);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a repository with no git identity still gets its checkpoint, under Trebell's own identity, and a set identity keeps naming it",async()=>{
@@ -228,7 +228,7 @@ test("a repository with no git identity still gets its checkpoint, under Trebell
     await repoGit(["config","user.name","Person"]);await repoGit(["config","user.email","person@example.test"]);
     const named=await service.create({cwd:repo,threadId:"thread-identity",label:"Before second turn"});
     assert.equal((await repoGit(["log","-1","--format=%an <%ae>",named.commit])).stdout.trim(),"Person <person@example.test>");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a checkpoint commit that fails for any reason but identity is not made again",async()=>{
@@ -245,7 +245,7 @@ test("a checkpoint commit that fails for any reason but identity is not made aga
     const service=new CheckpointService({state:{addCheckpoint:item=>item,checkpoints:()=>[],updateCheckpoint:()=>null},env:{TREBELL_HOME:home},gitFn});
     await assert.rejects(()=>service.create({cwd:"/repo"}),/No space left on device/);
     assert.equal(commits.length,1);assert.ok(!commits[0].includes("user.name=Trebell Code"));
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("remote checkpoints capture, diff, and restore through the pinned environment without local filesystem access",async()=>{
@@ -344,7 +344,7 @@ test("file rewind restores only an isolated managed worktree and refuses sibling
     state.updateThreadMeta("thread-nested",{cwd:nested,archived:false});
     await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),/another thread|isolated Trebell worktree/i);
     assert.equal(await readFile(join(worktree,"file.txt"),"utf8"),"sibling work\n");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("file rewind refuses ordinary shared project directories and checkpoint cross-thread use",async()=>{
@@ -357,7 +357,7 @@ test("file rewind refuses ordinary shared project directories and checkpoint cro
     const service=new CheckpointService({state,env});const checkpoint=await service.create({cwd:repo,threadId:"thread-owner"});
     await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-other"}),/thread that created/i);
     await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),/isolated Trebell worktree/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // A managed worktree owned by one thread, its checkpoint, and then work done after it: a tracked file changed, one deleted, one
@@ -410,7 +410,7 @@ test("a file restore that fails part-way puts every file back as it was before t
     assert.equal(failed,true,"the restore wrote the files before it failed");
     assert.deepEqual(await fixture.snapshot(),before,"the files, git status and the staged changes are as they were");
     assert.match(String(error?.message),/unable to unlink old 'edited\.txt'/);assert.equal(error.filesPutBack,true,"the failure says the files were put back");
-  }finally{await rm(fixture.root,{recursive:true,force:true})}
+  }finally{await rm(fixture.root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // Edit from here restores the files and then rewinds the conversation. A rewind the harness refuses takes the restore back
@@ -431,7 +431,7 @@ test("a file restore taken back puts every file back as it was before it, and on
     assert.deepEqual(await fixture.snapshot(),before,"the files, git status and the staged changes are as they were");
     await assert.rejects(()=>service.undoRestore(restored.undoId,{threadId:"thread-owner"}),/no longer/i);
     assert.deepEqual(await fixture.snapshot(),before);
-  }finally{await rm(fixture.root,{recursive:true,force:true})}
+  }finally{await rm(fixture.root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // A restore taken back gives every file its own bytes back: the files it changed are kept as they are on disk, not through git's

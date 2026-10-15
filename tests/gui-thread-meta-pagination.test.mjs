@@ -26,5 +26,5 @@ test("GUI bootstrap bounds thread catalog and exposes older catalog pages",async
     const older=await fetch(gui.url+"/api/thread-meta?"+new URLSearchParams({view:"catalog",limit:"100",cursor:initial.threadMetaNextCursor})).then(response=>response.json());
     assert.equal(Object.keys(older.threadMeta).length,25);assert.equal(older.nextCursor,null);assert.equal(older.threadMeta["catalog-274"].threadSnapshot.name,"Catalog 274");
     const overlap=Object.keys(older.threadMeta).filter(id=>Object.prototype.hasOwnProperty.call(initial.threadMeta,id));assert.deepEqual(overlap,[]);
-  }finally{if(gui)await gui.close();await rm(home,{recursive:true,force:true})}
+  }finally{if(gui)await gui.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

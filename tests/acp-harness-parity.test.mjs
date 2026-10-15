@@ -186,7 +186,7 @@ test("tool updates merge into the tool's state and carry each harness's output, 
 });
 
 test("Antigravity unpacks into a Trebell-owned run folder that is removed, and dead runs are swept",async t=>{
-  const root=await mkdtemp(join(tmpdir(),"trebell-acp-runtemp-"));t.after(()=>rm(root,{recursive:true,force:true}));
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-runtemp-"));t.after(()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250}));
   assert.equal(acpRuntimeTempRoot({TEMP:root},"antigravity"),join(root,"trebell-antigravity"));
   const runRoot=join(root,"trebell-antigravity");await mkdir(join(runRoot,"run-999999-dead"),{recursive:true});await mkdir(join(runRoot,"run-1-alive"),{recursive:true});
   assert.deepEqual(await sweepRunTemps(runRoot,{isAlive:pid=>pid===1,ownPid:2}),["run-999999-dead"]);
@@ -612,7 +612,7 @@ test("Cursor's other model settings (context, thinking) are listed per model, ke
   assert.deepEqual(settings.modelOptionValues,{"cursor:openai:claude-opus-5":{context:"1m",thinking:"false"}});
   assert.deepEqual(configuredModelOptions({modelOptionValues:{"cursor:openai:claude-opus-5":{context:"2m",thinking:"false",gone:"x"}}},"cursor","openai","claude-opus-5",catalog.metadata[1]),{thinking:"false"});
   assert.deepEqual(modelOptionSettingsWith(settings,"cursor","openai","claude-opus-5","thinking",""),{"cursor:openai:claude-opus-5":{context:"1m"}});
-  const home=await mkdtemp(join(tmpdir(),"trebell-model-options-"));onCleanup(t,()=>rm(home,{recursive:true,force:true}));
+  const home=await mkdtemp(join(tmpdir(),"trebell-model-options-"));onCleanup(t,()=>rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250}));
   const store=new TrebellStateStore({...process.env,TREBELL_HOME:home});
   assert.deepEqual(store.settings().modelOptionValues,{});
   assert.deepEqual(store.updateSettings({modelOptionValues:{"cursor:openai:claude-opus-5":{context:" 1m ",thinking:false,"bad id":"x",empty:""},"cursor:openai:auto":"fast","cursor:openai:none":{}}}).modelOptionValues,{"cursor:openai:claude-opus-5":{context:"1m",thinking:"false"}});

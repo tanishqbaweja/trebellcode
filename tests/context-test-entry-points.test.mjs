@@ -188,5 +188,5 @@ test("a local repository's runner files reach the untrusted Native seed as one b
     assert.equal(evidence.kind,"untrusted");
     assert.equal(line,"Test entry points (detected from repository files; unverified): python bin/test; python tests/runtests.py");
     assert.ok(Buffer.byteLength(line,"utf8")<=200);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

@@ -31,7 +31,7 @@ test("repository knowledge service remembers verified evidence, ranks relevance,
     assert.equal(recovered.entries.find(item=>item.id===architecture.id)?.status,"verified");
     assert.match(recovered.context,/Runtime requests go through the relay/);
     assert.equal(service.forget(command.id),true);
-  }finally{await rm(root,{recursive:true,force:true});await rm(home,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("repository knowledge service keeps explicit facts without evidence unverified",async()=>{
@@ -42,5 +42,5 @@ test("repository knowledge service keeps explicit facts without evidence unverif
     assert.equal(entry.status,"unverified");assert.equal(entry.evidence.length,0);
     const context=(await service.context({projectPath:"C:/repo",refresh:false})).context;
     assert.match(context,/Prefer explicit migrations/);assert.match(context,/status: unverified/);assert.match(context,/unverified facts may lack supporting evidence/i);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

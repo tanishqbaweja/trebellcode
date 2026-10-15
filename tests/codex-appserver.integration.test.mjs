@@ -92,7 +92,7 @@ test("Trebell owns the Codex repository dynamic-tool namespace", {timeout:45000}
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-repository-tools-"));
   const env={...process.env,TREBELL_HOME:home};
-  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}
+  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});return}
   const gui=await createGuiServer({port,appPort,mock:false,env});
   let ws;
   try{
@@ -128,7 +128,7 @@ test("Codex model catalog comes from the Codex harness instead of Trebell Native
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-native-models-"));
   const env={...process.env,TREBELL_HOME:home};
-  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}
+  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});return}
   const state=new TrebellStateStore(env);state.updateSettings({modelProvider:"agentrouter"});
   const gui=await createGuiServer({port,appPort,mock:false,env});
   try{
@@ -151,7 +151,7 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-relay-integration-"));
   const env={...process.env,TREBELL_HOME:home};
-  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}
+  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});return}
   const gui=await createGuiServer({port,appPort,mock:false,env});
   let ws,rejectUnsupportedServerRequest=null;
   try{
@@ -315,7 +315,7 @@ test("real Codex app-server exposes native project ownership and collaboration m
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-project-integration-"));
   const env={...process.env,TREBELL_HOME:home};
-  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}
+  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});return}
   const gui=await createGuiServer({port,appPort,mock:false,env});
   let ws;
   try{
@@ -372,7 +372,7 @@ test("compatible Codex profiles switch an existing thread through a separate app
   const sourceAuth=join(String(process.env.CODEX_HOME||"").trim()||join(homedir(),".codex"),"auth.json");
   try{
     for(const target of [shared,shadow,isolated]){await mkdir(target,{recursive:true});await copyFile(sourceAuth,join(target,"auth.json"))}
-  }catch{t.skip("Codex login is unavailable for real profile integration");await rm(home,{recursive:true,force:true});return}
+  }catch{t.skip("Codex login is unavailable for real profile integration");await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});return}
   const persisted=new TrebellStateStore(env);
   persisted.updateSettings({
     agentRuntime:"codex",
@@ -437,7 +437,7 @@ test("compatible Codex profiles switch an existing thread through a separate app
 test("native Codex queue persists, edits, reorders, deletes and resumes follow-ups",{timeout:90000},async(t)=>{
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-queue-"));
-  const env={...process.env,TREBELL_HOME:home};const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
+  const env={...process.env,TREBELL_HOME:home};const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});return}const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
   try{
     let boot=null;for(let i=0;i<80;i++){boot=await fetch(gui.url+"/api/bootstrap").then(response=>response.json());if(boot.appServerReady)break;await new Promise(resolve=>setTimeout(resolve,200))}
     assert.equal(boot.appServerReady,true,"Codex app-server did not become ready for queue test");
@@ -484,7 +484,7 @@ test("native Codex queue persists, edits, reorders, deletes and resumes follow-u
 test("native Codex history resumes with bounded item pages and keeps turn pagination compatible",{timeout:60000},async(t)=>{
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-history-page-"));
-  const env={...process.env,TREBELL_HOME:home};const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
+  const env={...process.env,TREBELL_HOME:home};const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});return}const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
   try{
     let boot=null;for(let i=0;i<80;i++){boot=await fetch(gui.url+"/api/bootstrap").then(response=>response.json());if(boot.appServerReady)break;await new Promise(resolve=>setTimeout(resolve,200))}
     assert.equal(boot.appServerReady,true,"Codex app-server did not become ready for history pagination test");

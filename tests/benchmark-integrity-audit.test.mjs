@@ -13,7 +13,7 @@ const execRollout=(command,output,options)=>auditCodexRolloutText(rollout([codex
 const nativeLog=rows=>rows.map(row=>JSON.stringify(row)).join("\n");
 const terminalRun=(callId,terminalAudit)=>({name:"native.tool.requested",data:{callId,namespace:"trebell_terminal",name:"run",...(terminalAudit?{terminalAudit}:{})}});
 const streamItem=(type,item)=>JSON.stringify({type,item});
-async function withJobs(run){const root=await mkdtemp(join(tmpdir(),"trebell-integrity-"));try{await run(root)}finally{await rm(root,{recursive:true,force:true})}}
+async function withJobs(run){const root=await mkdtemp(join(tmpdir(),"trebell-integrity-"));try{await run(root)}finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}}
 async function writeTrialFile(root,parts,text){const path=join(root,...parts);await mkdir(join(path,".."),{recursive:true});await writeFile(path,text)}
 
 test("hosted web.run and ChatGPT connector search inside Codex exec make a lane invalid",()=>{
@@ -106,7 +106,7 @@ test("job audits read every trial's Codex sessions and Native events",async()=>{
     const compact=compactIntegrity(invalid);
     assert.equal(compact.status,"invalid");assert.equal(compact.evidence[0].tool,"web__run");
     assert.equal(await auditJobIntegrity(root,"missing"),null);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // Log discovery.

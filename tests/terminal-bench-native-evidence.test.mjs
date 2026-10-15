@@ -74,7 +74,7 @@ test("Native event evidence locates a Harbor trial journal",async()=>{
     await writeFile(join(agent,"trebell-native-events.jsonl"),JSON.stringify({name:"native.model.completed",data:{usage:{inputTokens:10,cachedInputTokens:8,outputTokens:2}}})+"\n","utf8");
     const recovered=await recoverNativeEventEvidence(root,job);
     assert.equal(recovered.inputTokens,10);assert.equal(recovered.cachedTokens,8);assert.equal(recovered.outputTokens,2);assert.equal(recovered.modelTurns,1);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native event evidence replaces missing or bogus zero counters without overriding positive Harbor metrics",()=>{

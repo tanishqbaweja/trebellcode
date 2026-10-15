@@ -22,7 +22,7 @@ test("Native source control performs bounded local Git actions inside the active
     await writeFile(join(root,"README.md"),"two\n","utf8");const committed=await execute({name:"commit_all",arguments:{message:"Native source-control commit"}});assert.equal(committed.info.status.length,0);
     const body=await readFile(join(root,"README.md"),"utf8");assert.equal(body,"two\n");
     const subject=(await git(root,["log","-1","--pretty=%s"])).stdout.trim();assert.equal(subject,"Native source-control commit");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // Every Native git tool reads the repository's Git info, branch_create twice. Through a local executor it is read from the
@@ -53,7 +53,7 @@ test("Native source-control executor keeps unrelated parent secrets out of Git s
     const script='process.stdout.write(JSON.stringify({secret:process.env.NATIVE_SC_SECRET||null,gh:process.env.GH_TOKEN||null,gitlab:process.env.GITLAB_TOKEN||null,cwd:process.cwd()}))';
     const result=await executor.run(process.execPath,["-e",script],{cwd:root,timeout:5000,maxBuffer:64*1024});assert.equal(result.ok,true);
     const parsed=JSON.parse(result.stdout);assert.equal(parsed.secret,null);assert.equal(parsed.gh,null);assert.equal(parsed.gitlab,null);assert.equal(parsed.cwd,root);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native source-control stdin execution does not expose forge credentials to unrelated executables",async()=>{
@@ -63,7 +63,7 @@ test("Native source-control stdin execution does not expose forge credentials to
     const source='let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify({input:d,secret:process.env.NATIVE_SC_SECRET||null,azure:process.env.AZURE_DEVOPS_EXT_PAT||null})))';
     const result=await executor.runStdin(process.execPath,["-e",source],"payload",{cwd:root,timeout:5000,maxBuffer:64*1024});
     assert.equal(result.ok,true);const parsed=JSON.parse(result.stdout);assert.equal(parsed.input,"payload");assert.equal(parsed.secret,null);assert.equal(parsed.azure,null);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native source-control environments scope forge credentials to their matching CLI",()=>{
@@ -86,7 +86,7 @@ test("Native source-control results redact credential-bearing remote URLs before
     await git(root,["init"]);await git(root,["remote","add","origin","https://alice:super-secret-token@example.invalid/acme/repo.git"]);
     const execute=createNativeSourceControl({root});const status=await execute({name:"status",arguments:{}});const serialized=JSON.stringify(status);
     assert.doesNotMatch(serialized,/alice:super-secret-token/);assert.match(serialized,/\[redacted\]@example\.invalid/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native remote source control forwards only the approved environment-name allowlist",async()=>{

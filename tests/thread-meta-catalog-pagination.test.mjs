@@ -28,5 +28,5 @@ test("thread metadata catalog pages use stable bounded cursors and permanent del
     assert.equal(Object.keys(snapshot.threadMeta).length,25);assert.ok(snapshot.threadMetaNextCursor);
     assert.equal(state.removeThreadMeta("thread-000"),true);assert.deepEqual(state.threadMeta("thread-000"),{});
     const after=state.threadMetaCatalogPage({limit:260});assert.equal(Object.keys(after.threadMeta).length,259);assert.equal(Object.prototype.hasOwnProperty.call(after.threadMeta,"thread-000"),false);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

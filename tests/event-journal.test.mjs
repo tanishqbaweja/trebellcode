@@ -27,7 +27,7 @@ test("event journal persists bounded lifecycle metadata while redacting secrets"
     assert.match(disk,/turn\/completed/);
     assert.equal(journal.status().backend,"sqlite");assert.ok(journal.status().databasePath?.endsWith("trebell.sqlite"));
     await journal.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("event journal leaves a thought's token stream out, as it does a reply's, and keeps the finished thought",async()=>{
@@ -39,7 +39,7 @@ test("event journal leaves a thought's token stream out, as it does a reply's, a
     await journal.flush();
     assert.deepEqual(journal.list({threadId:"thread-1"}).map(item=>item.name),["item/completed"]);
     await journal.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("event journal keeps its in-memory trace ring bounded",async()=>{
@@ -53,7 +53,7 @@ test("event journal keeps its in-memory trace ring bounded",async()=>{
     assert.equal(items[0].name,"event-139");
     assert.equal(items.at(-1).name,"event-40");
     await journal.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("event journal keeps compact tool completion and surfaced error evidence",async()=>{
@@ -68,7 +68,7 @@ test("event journal keeps compact tool completion and surfaced error evidence",a
     assert.equal(items[0].name,"error");assert.equal(items[0].data.message,"Provider command failed visibly");
     assert.equal(items[1].name,"item/completed");assert.equal(items[1].data.item.exitCode,0);assert.equal(items[1].data.item.durationMs,123);assert.equal(items[1].data.item.success,true);assert.equal(items[1].data.checkpointId,"checkpoint-2");
     await journal.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("event journal filters trace evidence by runtime, category, turn and time window",async()=>{
@@ -85,7 +85,7 @@ test("event journal filters trace evidence by runtime, category, turn and time w
     assert.deepEqual(journal.list({threadId:"thread-a",runtime:"codex",category:"checkpoint",after:500,before:1_500}).map(item=>item.id),["old-codex"]);
     await journal.flush();
     await journal.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("event journal migrates legacy JSONL into indexed SQLite once",async()=>{
@@ -100,7 +100,7 @@ test("event journal migrates legacy JSONL into indexed SQLite once",async()=>{
     assert.equal(first.status().backend,"sqlite");assert.deepEqual(first.list({threadId:"thread-legacy"}).map(item=>item.id),["legacy-2","legacy-1"]);await first.close();
     const second=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
     assert.deepEqual(second.list({threadId:"thread-legacy"}).map(item=>item.id),["legacy-2","legacy-1"]);assert.equal(second.status().records,2);await second.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("event journal retains the bounded JSONL fallback when SQLite is unavailable",async()=>{
@@ -112,7 +112,7 @@ test("event journal retains the bounded JSONL fallback when SQLite is unavailabl
     const second=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024,preferSqlite:false});
     assert.deepEqual(second.list({threadId:"thread-fallback"}).map(item=>item.id),["fallback-1"]);assert.equal(second.status().databasePath,null);
     await second.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("event journal reconciles newer JSONL fallback events into an existing SQLite database",async()=>{
@@ -125,7 +125,7 @@ test("event journal reconciles newer JSONL fallback events into an existing SQLi
     const reconciled=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
     assert.deepEqual(reconciled.list({threadId:"thread-reconcile"}).map(item=>item.id),["fallback-newer","sqlite-first"]);
     assert.equal(reconciled.status().records,2);await reconciled.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("event journal never resurrects older mirror records into an authoritative SQLite journal",async()=>{
@@ -143,7 +143,7 @@ test("event journal never resurrects older mirror records into an authoritative 
     assert.deepEqual(reopened.list({threadId:"thread-authoritative"}).map(item=>item.id),["fallback-newer","sqlite-existing"]);
     assert.equal(reopened.list({threadId:"thread-authoritative"}).some(item=>item.id==="mirror-old"),false);
     await reopened.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("JSONL fallback compaction enforces the configured byte bound",async()=>{
@@ -156,7 +156,7 @@ test("JSONL fallback compaction enforces the configured byte bound",async()=>{
     assert.ok(info.size<=256*1024,"expected bounded JSONL, got "+info.size+" bytes");
     assert.ok(journal.list({threadId:"thread-large",limit:100}).length<40);
     await journal.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("event journal exports a sanitized bounded replay fixture from indexed filters",async()=>{
@@ -169,5 +169,5 @@ test("event journal exports a sanitized bounded replay fixture from indexed filt
     assert.equal(bundle.events.length,1);assert.equal(bundle.events[0].id,"replay-a");assert.equal(bundle.filters.threadId,"thread-replay");assert.equal(bundle.diagnostics.replayEvents,1);assert.equal(bundle.diagnostics.outOfOrder,0);
     assert.doesNotMatch(JSON.stringify(bundle),new RegExp(secret));assert.match(JSON.stringify(bundle),/\[redacted\]/);
     await journal.close();
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

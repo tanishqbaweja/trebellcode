@@ -72,7 +72,7 @@ test("Codex verification repair starts the same-thread repair turn with sanitize
     const noRepair=await fetch(gui.url+"/api/verification-records/repair-context",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId})});assert.equal(noRepair.status,400);
     await assert.rejects(rpc("thread/verification/repair",{threadId}),/does not require repair/i);
   }finally{
-    try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true});
+    try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -92,5 +92,5 @@ test("Codex automatic verification repair stops after three chained attempts but
     const manual=await rpc("thread/verification/repair",{threadId,recordId:"repair-limit-4"});assert.equal(manual.turn.id,"repair-turn-4");
     const traces=await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&category=verification&limit=20").then(response=>response.json());
     const automatic=traces.items.filter(item=>item.name==="verification.repair_started"&&item.data?.automatic===true);assert.deepEqual(automatic.map(item=>item.data.attempt).sort((a,b)=>a-b),[1,2,3]);
-  }finally{try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true})}
+  }finally{try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

@@ -18,7 +18,7 @@ test("Trebell UI state persists project, thread metadata and stashes", async()=>
     assert.equal(again.threadMeta("thread-1").pinned,true);
     assert.equal(again.listStashes()[0].text,"hello");
     assert.deepEqual(again.listStashes()[0].contextChips,[{id:"ctx-1",path:"context.txt",kind:"review",label:"Review: context.txt"}]);
-  }finally{await rm(home,{recursive:true,force:true});}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});}
 });
 
 test("legacy implicit System appearance migrates to Dark once",async()=>{
@@ -29,7 +29,7 @@ test("legacy implicit System appearance migrates to Dark once",async()=>{
     const migrated=new TrebellStateStore(env);assert.equal(migrated.settings().appearance,"dark");assert.equal(migrated.settings().appearanceMode,"dark");
     migrated.updateSettings({appearanceMode:"system"});
     const explicit=new TrebellStateStore(env);assert.equal(explicit.settings().appearanceMode,"system");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("retired mobile companion and device-control settings are scrubbed from legacy state",async()=>{
@@ -49,7 +49,7 @@ test("retired mobile companion and device-control settings are scrubbed from leg
     assert.equal(Object.prototype.hasOwnProperty.call(state.environmentDefaults("ssh-a"),"agentDeviceAccess"),false);
     assert.equal(Object.prototype.hasOwnProperty.call(state.projects()[0].settingsOverrides,"agentDeviceAccess"),false);
     const persisted=await readFile(join(home,"ui-state.json"),"utf8");assert.doesNotMatch(persisted,/agentDeviceAccess|remoteAccessEnabled|remoteAccessPort|remoteAccessToken|retired-secret/);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("fresh state defaults the Native provider to OpenAI and saves only known provider ids",async()=>{
@@ -61,7 +61,7 @@ test("fresh state defaults the Native provider to OpenAI and saves only known pr
     assert.equal(state.updateSettings({modelProvider:"unknown-provider"}).modelProvider,"openai");
     assert.equal(state.updateSettings({modelProvider:"agentrouter"}).modelProvider,"agentrouter");
     assert.equal(new TrebellStateStore(env).settings().modelProvider,"agentrouter");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("current provider settings load untouched and are not rewritten",async()=>{
@@ -80,7 +80,7 @@ test("current provider settings load untouched and are not rewritten",async()=>{
     assert.deepEqual(settings.modelServiceTiers,{"native:openai:gpt-6-sol":"fast"});
     assert.equal(state.projects()[0].defaultModel,"gpt-6-luna");assert.equal(state.projectSettings("/repo").effective.sourceControlTextModel,"test/coding-fast");
     assert.equal(await readFile(file,"utf8"),raw);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("pull request auto-settle is opt-in and persists",async()=>{
@@ -89,7 +89,7 @@ test("pull request auto-settle is opt-in and persists",async()=>{
     const state=new TrebellStateStore(env);assert.equal(state.settings().autoSettleMergedThreads,false);
     state.updateSettings({autoSettleMergedThreads:true});
     assert.equal(new TrebellStateStore(env).settings().autoSettleMergedThreads,true);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("automatic context compaction defaults on and persists user preferences",async()=>{
@@ -102,7 +102,7 @@ test("automatic context compaction defaults on and persists user preferences",as
     const again=new TrebellStateStore(env);
     assert.equal(again.settings().autoCompactContext,false);
     assert.equal(again.settings().autoCompactThresholdPercent,90);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("MCP server settings are normalized and persist across supported runtimes",async()=>{
@@ -122,7 +122,7 @@ test("MCP server settings are normalized and persist across supported runtimes",
     assert.deepEqual(saved[1],{id:"claude-local",name:"Claude tools",type:"stdio",runtime:"claude",environmentId:null,enabled:true,command:"claude-mcp",args:["--stdio"],env:[]});
     assert.deepEqual(saved[2],{id:"native-http",name:"HTTP tools",type:"http",runtime:"native",environmentId:null,enabled:true,url:"https://mcp.example.test/mcp",bearerTokenEnv:"MCP_ACCESS_TOKEN"});
     const raw=await readFile(join(home,"ui-state.json"),"utf8");assert.doesNotMatch(raw,new RegExp(credential));assert.doesNotMatch(raw,new RegExp(httpCredential));
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("legacy MCP credentials are scrubbed from UI state during load",async()=>{
@@ -134,7 +134,7 @@ test("legacy MCP credentials are scrubbed from UI state during load",async()=>{
     assert.deepEqual(servers[0].args,["--stdio","--safe","yes"]);
     const persisted=await readFile(join(home,"ui-state.json"),"utf8");
     assert.doesNotMatch(persisted,new RegExp(credential));assert.doesNotMatch(persisted,new RegExp(cliCredential));assert.doesNotMatch(persisted,/ACCESS_TOKEN|--token/);assert.match(persisted,/LOG_LEVEL/);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("runtime profile credentials are scrubbed from new and legacy UI state",async()=>{
@@ -148,7 +148,7 @@ test("runtime profile credentials are scrubbed from new and legacy UI state",asy
     await writeFile(join(home,"ui-state.json"),JSON.stringify({version:2,projects:[],threadMeta:{},settings:{agentRuntimeInstances:[{id:"grok-custom",kind:"grok",displayName:"Grok Custom",environment:{XAI_API_KEY:legacyCredential,LOG_LEVEL:"debug"}}]}}));
     const migrated=new TrebellStateStore(env);assert.deepEqual(migrated.settings().agentRuntimeInstances[0].environment,{LOG_LEVEL:"debug"});
     const disk=await readFile(join(home,"ui-state.json"),"utf8");assert.doesNotMatch(disk,new RegExp(legacyCredential));assert.doesNotMatch(disk,/XAI_API_KEY/);assert.match(disk,/LOG_LEVEL/);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 
@@ -167,7 +167,7 @@ test("an image icon the app cannot show is refused and the project keeps the ico
     const again=new TrebellStateStore(env).projects()[0];
     assert.deepEqual(again.icon,png);assert.equal(again.name,"Icons");
     assert.deepEqual(state.projects()[0].icon,png);assert.equal(state.projects()[0].name,"Icons");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("project actions persist, sanitize, inherit preference, and allow clearing overrides", async()=>{
@@ -222,7 +222,7 @@ test("project actions persist, sanitize, inherit preference, and allow clearing 
     assert.deepEqual(state.updateSettings({modelServiceTiers:{"native:openai:gpt-6-luna":"FAST","native:openai:gpt-6-sol":"priority","bad":"ultrafast"}}).modelServiceTiers,{"native:openai:gpt-6-luna":"fast","native:openai:gpt-6-sol":"fast"});
     const marks={"gitlab:42":{headSha:"abc",files:{"src/a.js":{revision:"abc",viewedAt:123}},updatedAt:123}};
     assert.deepEqual(state.touchProject(projectPath,{pullRequestViewedFiles:marks}).pullRequestViewedFiles,marks);
-  }finally{await rm(home,{recursive:true,force:true});}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});}
 });
 
 test("usage records upsert streaming updates instead of double-counting a turn", async()=>{
@@ -254,7 +254,7 @@ test("usage records upsert streaming updates instead of double-counting a turn",
     assert.equal(again.records.length,2);
     assert.equal(again.total.totalTokens,200);
     assert.equal(new TrebellStateStore(env).clearUsage(),2);
-  }finally{await rm(home,{recursive:true,force:true});}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});}
 });
 
 test("thread usage reconstructs goal token totals from persisted turn usage",async()=>{
@@ -265,7 +265,7 @@ test("thread usage reconstructs goal token totals from persisted turn usage",asy
     state.recordUsage({runtime:"claude",threadId:"thread-a",turnId:"turn-2",at:2000,usage:{totalTokens:230,inputTokens:180,outputTokens:50,reasoningOutputTokens:7},cost:{amount:0.25,currency:"USD"}});
     state.recordUsage({runtime:"claude",threadId:"thread-b",turnId:"turn-3",at:3000,usage:{totalTokens:999}});
     assert.deepEqual(state.threadUsage("thread-a",{since:1500}),{totalTokens:230,inputTokens:180,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:50,reasoningOutputTokens:7,costUsd:0.25,costKnown:1,turns:1,records:1});
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("verification records persist, upsert by turn, and stay filterable",async()=>{
@@ -282,7 +282,7 @@ test("verification records persist, upsert by turn, and stay filterable",async()
     assert.equal(again.verificationRecords({threadId:"thread-1"})[0].status,"verified");
     assert.equal(again.verificationRecords({projectPath:"/srv/app",environmentId:"ssh-a"}).length,1);
     assert.equal(again.verificationRecords({environmentId:null}).length,1);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("legacy high-growth state migrates to SQLite while ui-state JSON stays lean",async()=>{
@@ -294,7 +294,7 @@ test("legacy high-growth state migrates to SQLite while ui-state JSON stays lean
     const disk=JSON.parse(await readFile(join(home,"ui-state.json"),"utf8"));for(const key of ["checkpoints","usageRecords","verificationRecords","repositoryKnowledge"])assert.equal(Object.prototype.hasOwnProperty.call(disk,key),false,key+" should live in SQLite, not ui-state.json");
     const restarted=new TrebellStateStore(env),snapshot=restarted.snapshot();assert.equal(restarted.checkpoints("thread-legacy")[0].turnId,"turn-linked");assert.equal(snapshot.usageRecords.length,1);assert.equal(snapshot.verificationRecords.length,1);assert.equal(snapshot.repositoryKnowledge.length,1);assert.equal(restarted.settings().notifications,false);
     assert.match(await readFile(join(home,"trebell.sqlite"),"latin1"),/state_usage/);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("projects with the same remote path stay distinct across environments",async()=>{
@@ -314,7 +314,7 @@ test("projects with the same remote path stay distinct across environments",asyn
     const again=new TrebellStateStore(env);
     assert.equal(again.project("/srv/app","ssh-a").environmentId,"ssh-a");
     assert.equal(again.project("/srv/app",null).environmentId,null);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("environment enabled state persists without deleting the saved profile",async()=>{
@@ -330,7 +330,7 @@ test("environment enabled state persists without deleting the saved profile",asy
     assert.equal(restarted.environments()[0].enabled,false);
     assert.equal(restarted.setEnvironmentEnabled("ssh-a",true).enabled,true);
     assert.equal(restarted.environments()[0].name,"Remote");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("scoped settings resolve environment defaults and project overrides without leaking between environments",async()=>{
@@ -379,5 +379,5 @@ test("scoped settings resolve environment defaults and project overrides without
     scoped=state.projectSettings(project.path,"ssh-a");
     assert.equal(scoped.overrides.defaultWorkspaceMode,"current");
     assert.equal(scoped.effective.defaultWorkspaceMode,"current");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

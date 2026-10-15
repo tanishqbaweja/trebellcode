@@ -41,7 +41,7 @@ test("B4: the turn listings a thread read prepares use no temporary B-tree and k
     new AgentThreadStore(env);
     const reopened=new DatabaseSync(path);
     try{assert.ok(reopened.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='agent_turns_thread_order_idx'").get())}finally{reopened.close()}
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // What a chunk reads of its thread: the last turn's id and status, the same from the store's parsed copy as from sqlite's turn row
@@ -59,7 +59,7 @@ test("the last turn a chunk reads matches the stored thread whether the store ke
     assert.deepEqual(cold.lastTurn(empty.id),{id:null,status:null});assert.deepEqual(store.lastTurn(empty.id),{id:null,status:null});
     store.delete(thread.id);
     for(const each of [store,cold])assert.equal(each.lastTurn(thread.id),null,"a deleted thread has none");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // The relay end to end on an isolated home, with a scripted ACP agent (the shape of tests/agent-relay.test.mjs's fake) run as a

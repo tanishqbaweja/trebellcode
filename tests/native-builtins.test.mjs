@@ -41,7 +41,7 @@ test("Native workspace built-ins read, list, write, and replace exact text insid
     const rootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/",depth:2,limit:20}});assert.ok(rootList.entries.some(item=>item.name==="src"));
     const virtualRootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/workspace",depth:2,limit:20}});assert.ok(virtualRootList.entries.some(item=>item.name==="src"));
     const appRootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/app",depth:2,limit:20}});assert.ok(appRootList.entries.some(item=>item.name==="src"));
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native internal recovery can snapshot and restore binary workspace bytes without exposing text decoding",async()=>{
@@ -55,7 +55,7 @@ test("Native internal recovery can snapshot and restore binary workspace bytes w
     assert.equal(snapshot.binary,true);assert.equal(Buffer.from(snapshot.contentBase64,"base64").equals(pixel),true);assert.match(snapshot.sha256,/^[a-f0-9]{64}$/);
     const written=await execute({_trebellInternalRecovery:true,id:"native-recovery-restore-test",namespace:"trebell_workspace",name:"write_file",arguments:{path:"src/pixel.png",content_base64:replacement.toString("base64"),_trebell_internal_binary:true}});
     assert.equal(written.binary,true);assert.equal((await readFile(path)).equals(replacement),true);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native internal recovery snapshots cover deliverables beyond the model-facing preview and edit limits",async()=>{
@@ -70,7 +70,7 @@ test("Native internal recovery snapshots cover deliverables beyond the model-fac
     assert.equal(restored.binary,true);assert.equal((await readFile(path)).equals(replacement),true);
     await writeFile(path,Buffer.alloc(32*1024*1024+1,0x63));
     await assert.rejects(execute({_trebellInternalRecovery:true,id:"native-recovery-snapshot-over",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/large.json",max_bytes:64*1024*1024,_trebell_internal_binary:true}}),/too large for an internal recovery snapshot/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native workspace image reads use remote binary streams without decoding bytes as UTF-8",async()=>{
@@ -126,7 +126,7 @@ test("Native workspace image reads preserve the actual pixels for the model with
     assert.equal(text.content,"const value = 1;\n");
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/app.js",as_image:true}}),/supported image/i);
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"..\\outside.png",as_image:true}}),/outside the active workspace/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native exact replacement fails closed and workspace paths cannot escape",async()=>{
@@ -143,7 +143,7 @@ test("Native exact replacement fails closed and workspace paths cannot escape",a
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"../does-not-belong.txt"}}),/outside the active workspace/i);
     await writeFile(outside,"outside","utf8");
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:outside}}),/outside the active workspace/i);
-  }finally{await rm(root,{recursive:true,force:true});await rm(outside,{force:true}).catch(()=>{})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});await rm(outside,{force:true}).catch(()=>{})}
 });
 
 test("Native replace_text applies an edits list to one file in order, all or nothing, and returns the applied diff",async()=>{
@@ -170,7 +170,7 @@ test("Native replace_text applies an edits list to one file in order, all or not
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"const  value = 2;",new_text:"x"}}),
       error=>error.message==="Expected 1 exact replacement in src/app.js, found 0. No changes were written.\nold_text matches line 1 when whitespace is ignored. The exact current text there:\n1| const value = 2;");
     assert.equal(await readFile(join(root,"src","app.js"),"utf8"),"const value = 2;\n");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native workspace tools keep absolute paths that name the workspace root or a path inside it",async()=>{
@@ -205,7 +205,7 @@ test("Native workspace tools keep absolute paths that name the workspace root or
     assert.equal(aliasList.root,join(root,"src"));
     const aliasCwd=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e",cwdScript],cwd:"/workspace",timeout_ms:5000,max_output_bytes:65536}});
     assert.equal(aliasCwd.exitCode,0);assert.equal(aliasCwd.stdout,root);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native workspace tools still reject absolute in-root spellings that a link resolves outside the root",async()=>{
@@ -224,7 +224,7 @@ test("Native workspace tools still reject absolute in-root spellings that a link
     await assert.rejects(execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","0"],cwd:rooted+"/linked",timeout_ms:5000}}),/outside the active workspace/i);
     assert.equal(await readFile(join(outside,"secret.txt"),"utf8"),"outside\n");
     assert.equal(await missing(join(outside,"new.txt")),true);
-  }finally{await rm(parent,{recursive:true,force:true})}
+  }finally{await rm(parent,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native workspace paths outside the root keep their previous handling",async()=>{
@@ -246,7 +246,7 @@ test("Native workspace paths outside the root keep their previous handling",asyn
     await assert.rejects(execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","0"],cwd:"../"+basename(sibling)}}),/outside the active workspace/i);
     if(process.platform==="win32")await assert.rejects(execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:join(sibling,"secret.txt")}}),/outside the active workspace/i);
     assert.equal(await missing(join(sibling,"escape.txt")),true);
-  }finally{await rm(root,{recursive:true,force:true});await rm(sibling,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});await rm(sibling,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native terminal uses a least-privilege environment and workspace cwd",async()=>{
@@ -269,7 +269,7 @@ test("Native terminal uses a least-privilege environment and workspace cwd",asyn
     assert.equal(realWorkspaceDir.exitCode,0);assert.equal(realWorkspaceDir.stdout,join(root,"workspace"));
     await mkdir(join(root,"app","src"),{recursive:true});await writeFile(join(root,"app","src","literal.js"),"literal\n","utf8");
     const realAppDir=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"/app/src/literal.js"}});assert.equal(realAppDir.content,"literal\n");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native terminal rejects cwd escapes and cancellation kills the running process",async()=>{
@@ -279,7 +279,7 @@ test("Native terminal rejects cwd escapes and cancellation kills the running pro
     await assert.rejects(()=>execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","process.exit(0)"],cwd:".."}}),/outside the active workspace/i);
     const controller=new AbortController();const pending=execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","setTimeout(()=>{},5000)"],timeout_ms:10000},signal:controller.signal});setTimeout(()=>controller.abort(),20);
     await assert.rejects(pending,error=>error?.name==="AbortError");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native terminal timeout kills descendant processes that inherit stdio",async()=>{
@@ -306,7 +306,7 @@ test("Native terminal timeout kills descendant processes that inherit stdio",asy
       catch(error){if(error?.code==="ESRCH")descendantAlive=false;else throw error}
     }
     assert.equal(descendantAlive,false,"timed-out terminal command must not leave the descendant process running");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // npm, npx, yarn and pnpm are .cmd launchers on Windows, which child_process.spawn cannot start without a shell ("spawn npm
@@ -321,5 +321,5 @@ test("Native terminal runs Windows .cmd launchers found on PATH with literal arg
     assert.equal(result.exitCode,3);
     assert.match(result.stdout,/ARGS=.*a&b.*x y.*50%/);
     assert.doesNotMatch(String(result.stdout)+String(result.stderr),/is not recognized/i);
-  }finally{await rm(root,{recursive:true,force:true});await rm(bin,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});await rm(bin,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

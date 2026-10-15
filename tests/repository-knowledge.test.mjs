@@ -14,7 +14,7 @@ test("repository knowledge persists explicit facts and filters by repository",as
     state.upsertRepositoryKnowledge({projectPath:"/repo/b",fact:"Other repo fact"});
     assert.equal(state.repositoryKnowledge({projectPath:"/repo/a"}).length,1);assert.equal(state.repositoryKnowledge({projectPath:"/repo/a"})[0].id,saved.id);
     assert.equal(state.removeRepositoryKnowledge(saved.id),true);assert.equal(state.repositoryKnowledge({projectPath:"/repo/a"}).length,0);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("repository knowledge evidence becomes stale when supporting files drift",async()=>{
@@ -28,7 +28,7 @@ test("repository knowledge evidence becomes stale when supporting files drift",a
     await writeFile(file,"relay -> policy -> runtime\n");
     const changed=await captureRepositoryKnowledgeEvidence({root,evidence:verified.evidence}),assessment=assessRepositoryKnowledgeFreshness(verified,changed);
     assert.equal(assessment.status,"stale");assert.deepEqual(assessment.changed,["architecture.txt"]);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("repository knowledge rejects evidence outside the repository and omits stale facts from context",async()=>{
@@ -40,5 +40,5 @@ test("repository knowledge rejects evidence outside the repository and omits sta
       {category:"failure-mode",fact:"Old stale claim.",status:"stale",evidence:[]},
     ]);
     assert.match(context,/Use one relay/);assert.match(context,/status: verified/);assert.doesNotMatch(context,/Old stale claim/);assert.match(context,/verified revision: abcdef123456/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

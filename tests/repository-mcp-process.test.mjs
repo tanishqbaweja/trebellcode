@@ -58,7 +58,7 @@ test("repository MCP stdio server exposes real repository and Git intelligence",
   const config=repositoryMcpProcessConfig({root,env:{...process.env,TREBELL_HOME:home},electron:false});
   const transport=new StdioClientTransport({command:config.command,args:config.args,env:Object.fromEntries(config.env.map(item=>[item.name,item.value])),cwd:process.cwd(),stderr:"pipe"});
   const client=new Client({name:"trebell-repository-mcp-test",version:"1.0.0"},{capabilities:{}});
-  t.after(async()=>{await client.close().catch(()=>{});await rm(root,{recursive:true,force:true})});
+  t.after(async()=>{await client.close().catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})});
   await client.connect(transport);
   const listed=await client.listTools();
   assert.ok(listed.tools.some(tool=>tool.name==="search_files"));

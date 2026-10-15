@@ -15,7 +15,7 @@ test("Codex recovery tracks only unresolved tool-like items with bounded metadat
     let recovery=state.threadMeta("thread-1").restartRecovery;assert.deepEqual(recovery.uncertainTools,[{id:"cmd-1",type:"commandExecution",turnId:"turn-1",status:"inProgress"}]);assert.doesNotMatch(JSON.stringify(recovery),/SECRET SHOULD NOT PERSIST/);
     assert.equal(recordCodexRecoveryItemEvidence(state,{method:"item/completed",params:{threadId:"thread-1",turnId:"turn-1",item:{id:"cmd-1",type:"commandExecution",status:"completed"}}}),true);
     recovery=state.threadMeta("thread-1").restartRecovery;assert.deepEqual(recovery.uncertainTools,[]);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("stale Codex recovery blocks uncertain actions but preserves clean auto-continuation",()=>{

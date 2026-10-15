@@ -49,7 +49,7 @@ test("Native gate snapshotter copies declared deliverables per gate without touc
     assert.equal(await readFile(join(gate1,gateSnapshotRelativePath(join(work,"result.json"))),"utf8"),"{\"v\":1}");
     assert.equal(await readFile(join(work,"result.json"),"utf8"),"{\"v\":2}");
     assert.equal(createGateSnapshotter({artifacts:[],directory:out}).snapshot(),null);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Gate regrade builds exact synthetic trials from snapshots and flags uncaptured deliverables",async()=>{
@@ -87,7 +87,7 @@ test("Gate regrade builds exact synthetic trials from snapshots and flags uncapt
     assert.equal(await readFile(join(destination,"artifacts","app","src","m.py"),"utf8"),"final-src");
     assert.equal(taskPathFromTrialConfig({task:{name:"terminal-bench/example",ref:"sha256:abc123"}},{home:"/home/u"}).replace(/\\/g,"/"),"/home/u/.cache/harbor/tasks/packages/terminal-bench/example/abc123");
     assert.equal(taskPathFromTrialConfig({task:{name:"../x",ref:"sha256:1"}}),null);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Gate snapshot paths reach only the Native lane and are captured at completion gates",async()=>{

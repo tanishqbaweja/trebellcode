@@ -36,6 +36,6 @@ test("context packet API projects Native seed before transport without changing 
     assert.ok(Buffer.byteLength(JSON.stringify(seed))<Buffer.byteLength(JSON.stringify(full)));
   }finally{
     await gui.close();
-    await Promise.all([rm(home,{recursive:true,force:true}),rm(root,{recursive:true,force:true})]);
+    await Promise.all([rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250}),rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})]);
   }
 });

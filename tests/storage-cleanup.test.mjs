@@ -17,7 +17,7 @@ test("storage cleanup settings are opt-in and normalized",async()=>{
     assert.deepEqual(state.settings().storageCleanup,{attachmentsAfterDays:7,terminalHistoryAfterDays:3650});
     state.updateSettings({storageCleanup:{attachmentsAfterDays:0,terminalHistoryAfterDays:"nope"}});
     assert.deepEqual(state.settings().storageCleanup,{attachmentsAfterDays:null,terminalHistoryAfterDays:null});
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // Settings saves each retention field on its own as the person leaves it: a save that names one field keeps the other as saved, so
@@ -30,7 +30,7 @@ test("a storage cleanup save that names one field keeps the other as saved",asyn
     assert.deepEqual(state.updateSettings({storageCleanup:{terminalHistoryAfterDays:99999}}).storageCleanup,{attachmentsAfterDays:14,terminalHistoryAfterDays:3650});
     assert.deepEqual(state.updateSettings({storageCleanup:{attachmentsAfterDays:0}}).storageCleanup,{attachmentsAfterDays:null,terminalHistoryAfterDays:3650},"0 turns that field off and leaves the other");
     assert.deepEqual(new TrebellStateStore({...process.env,TREBELL_HOME:home}).settings().storageCleanup,{attachmentsAfterDays:null,terminalHistoryAfterDays:3650},"as saved for the next start");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("storage cleanup removes only stale unreferenced Trebell attachment blobs",async()=>{
@@ -51,7 +51,7 @@ test("storage cleanup removes only stale unreferenced Trebell attachment blobs",
     assert.equal(await readFile(fresh,"utf8"),"fresh");
     assert.equal(await readFile(saved,"utf8"),"saved");
     const after=await service.snapshot();assert.equal(after.attachments.count,2);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("storage cleanup leaves attachment cache untouched when retention is off",async()=>{
@@ -62,7 +62,7 @@ test("storage cleanup leaves attachment cache untouched when retention is off",a
     const result=await new StorageCleanupService({state,env}).sweep({now:Date.now()});
     assert.equal(result.attachments.enabled,false);assert.equal(result.attachments.removed,0);
     assert.equal(await readFile(file,"utf8"),"old");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("storage cleanup prunes old stopped terminal history and delegates managed worktrees",async()=>{
@@ -78,5 +78,5 @@ test("storage cleanup prunes old stopped terminal history and delegates managed 
     assert.equal(result.terminalHistory.removed,2);assert.equal(result.worktrees.removed,1);
     assert.equal(calls.find(call=>call.type==="terminal").options.before,now-30*DAY_MS);
     assert.deepEqual(calls.find(call=>call.type==="worktree").options,{now,reason:"manual"});
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

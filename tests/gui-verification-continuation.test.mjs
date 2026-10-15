@@ -28,5 +28,5 @@ test("Codex verification continuation starts the same thread with only sanitized
     const context=forwarded.params.additionalContext?.["trebell.verification_continue"]?.value||"";assert.match(context,/npm test/);assert.match(context,/Run affected tests/);assert.doesNotMatch(context,/TOP_SECRET_OUTPUT/);assert.ok(forwarded.params.additionalContext?.["trebell.continuity"]);
     const meta=await fetch(gui.url+"/api/thread-meta?"+new URLSearchParams({threadId})).then(response=>response.json());assert.equal(meta.verificationContinuationChain?.lastContinuationTurnId,"verification-turn");assert.equal(meta.verificationAutomationChain?.lastAutomaticTurnId,"verification-turn");assert.equal(meta.verificationAutomationChain?.lastAction,"verify");
     const traces=await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&category=verification&limit=20").then(response=>response.json());assert.ok(traces.items.some(item=>item.name==="verification.continuation_started"&&item.data?.recordId==="verification-continue-record"&&item.data?.nextStepId==="tests"));
-  }finally{try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true})}
+  }finally{try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

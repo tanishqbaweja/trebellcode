@@ -71,6 +71,6 @@ test("agent relay switches an idle Claude thread only between compatible profile
     await assert.rejects(()=>request("thread/runtimeInstance/set",{threadId:seed.id,instanceId:"claude-router"}),/stop the running turn/i);
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });

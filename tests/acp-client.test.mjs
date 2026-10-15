@@ -72,7 +72,7 @@ setInterval(()=>{},1000);
     await client.stop();
     for(let i=0;i<40&&alive(helperPid);i++)await new Promise(resolve=>setTimeout(resolve,50));
     assert.equal(alive(helperPid),false,"ACP helper must be terminated with its launcher");
-  }finally{await client.stop().catch(()=>{});await rm(root,{recursive:true,force:true})}
+  }finally{await client.stop().catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("session/prompt waits for the agent with no timer while other requests keep their timeout",{timeout:20000},async t=>{

@@ -283,7 +283,7 @@ test("repository commit detection distinguishes an unborn branch from the first 
     await git(root,["init"]);assert.equal(await repositoryHasCommits(root),false);
     await git(root,["config","user.email","trebell@example.test"]);await git(root,["config","user.name","Trebell Test"]);await writeFile(join(root,"README.md"),"hello\n");await git(root,["add","README.md"]);await git(root,["commit","-m","first"]);
     assert.equal(await repositoryHasCommits(root),true);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 
@@ -479,7 +479,7 @@ test("pull request branch context excludes unrelated commits added later to the 
     assert.doesNotMatch(context.diffSummary,/later-main\.txt/);
     assert.match(context.diff,/feature\.txt/);
     assert.doesNotMatch(context.diff,/later-main\.txt/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("source-control branch switching rejects a stale branch name without restoring a same-named dirty file",async()=>{
@@ -494,7 +494,7 @@ test("source-control branch switching rejects a stale branch name without restor
     await assert.rejects(()=>sourceControlGitAction(root,{action:"branch-switch",name:"obsolete-branch"}),/invalid reference|unknown revision|pathspec|branch/i);
     assert.equal(await readFile(join(root,"obsolete-branch"),"utf8"),"uncommitted work\n");
     assert.equal((await git(root,["branch","--show-current"])).stdout.trim(),initial);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Bitbucket REST auth and requests come from the environment executor",async()=>{

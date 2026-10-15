@@ -39,5 +39,5 @@ test("/api/state returns compact thread catalog while per-thread metadata stays 
     const full=await fetch(gui.url+"/api/thread-meta?threadId=thread-heavy").then(response=>response.json());
     assert.equal(full.goal.objective.length,10000);assert.equal(full.trebellQueue[0].id,"queued-1");assert.equal(full.trebellContext.task.length,10000);assert.equal(full.reviewedFiles.length,500);
     assert.ok(JSON.stringify(publicState).length<JSON.stringify(full).length/2,"bootstrap state should remain materially smaller than one deliberately heavy full metadata record");
-  }finally{if(gui)await gui.close();await rm(home,{recursive:true,force:true})}
+  }finally{if(gui)await gui.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

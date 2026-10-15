@@ -291,7 +291,7 @@ test("rejected Claude rewind restores the original provider session and removed 
     assert.equal(again.providerSessionId,source);
     assert.deepEqual(again.providerMeta.claudeFork,earlierFork);
     assert.deepEqual(again.turns.map(turn=>turn.id),["turn-1","turn-2","turn-3"]);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Claude edit-from-here resumes at the newest kept turn's cursor, or starts fresh before the first turn",()=>{
@@ -478,7 +478,7 @@ test("the agent relay keeps thread/section/move's place for every thread, lists 
     const unpinned=await relay.rpc("thread/section/move",{threadId:three,sectionId:null});
     assert.equal(unpinned.thread.section,null);assert.equal(unpinned.thread.sectionEnteredAt,null);
     assert.deepEqual(await section(relay.rpc,null),[one,four,three]);
-  }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
+  }finally{await relay.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250}).catch(()=>{})}
 });
 
 test("on the agent relay a Pin, Snooze or Archive a person undoes gives a thread no place, so its activity still lifts it; a search hit carries its place",async()=>{
@@ -520,7 +520,7 @@ test("on the agent relay a Pin, Snooze or Archive a person undoes gives a thread
     const found=(await rpc("thread/search",{searchTerm:"Undo",limit:50,sortKey:"recency_at",sortDirection:"desc",archived:false})).data.map(entry=>entry.thread);
     const ranks=Object.fromEntries((await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"})).data.map(thread=>[thread.id,[thread.sectionRank,thread.sectionPlaced]]));
     assert.equal(found.length,4);for(const thread of found)assert.deepEqual([thread.sectionRank,thread.sectionPlaced],ranks[thread.id]);
-  }finally{ws.close();await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(home,{recursive:true,force:true}).catch(()=>{})}
+  }finally{ws.close();await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250}).catch(()=>{})}
 });
 
 test("agent global thread search finds persisted visible conversation text beyond titles",()=>{
@@ -547,7 +547,7 @@ test("agent forks persist inherited history while bounded responses omit embedde
     assert.equal(bounded.thread.forkedFromId,source.id);assert.equal(bounded.thread.historyMode,"paginated");assert.deepEqual(bounded.thread.turns,[]);
     const persisted=store.get(bounded.thread.id);assert.equal(persisted.providerSessionId,"fork-session");assert.equal(persisted.forkedFromId,source.id);assert.equal(persisted.turns.length,1);
     assert.deepEqual(paginateAgentThreadItems(persisted,{sortDirection:"desc",limit:10}).data.map(entry=>entry.item.id),["fork-answer","user-"+turn.id]);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("agent queue pagination uses bounded native-compatible offsets",()=>{
@@ -672,7 +672,7 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     assert.ok(traces.some(event=>event.direction==="runtime"&&event.method==="thread/deleted"));
   }finally{
     try{first.close()}catch{}try{second.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(home,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -747,7 +747,7 @@ test("the relay sends an ACP harness fenced context followed by the user's uncha
     assert.equal(threadStore.get(started.thread.id).turns[0].items.find(item=>item.type==="agentMessage")?.text,"TREBELL_TOUR_OK");
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -776,7 +776,7 @@ test("an ACP thread records the model its session runs and starts in the compose
     assert.equal(threadStore.get(started.thread.id).model,"fixture-pro","a turn naming the alias keeps the real model");
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -803,7 +803,7 @@ test("after a harness switch the relay refuses a turn for the previous harness's
     assert.equal((await completed).turn.status,"completed","its own harness continues it");
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -827,7 +827,7 @@ test("a new thread whose harness session cannot start leaves no empty thread beh
     assert.deepEqual(threadStore.list().map(thread=>thread.id),[started.thread.id],"the next start is the only thread");
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -857,7 +857,7 @@ test("the relay starts a new paragraph where a harness goes on with its reply af
     assert.equal(items.length,3,"the message, the tool call and the reply");
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -906,7 +906,7 @@ test("a harness's thinking reaches the client as Codex reasoning items, one per 
     assert.deepEqual(resumed.thread.turns[0].items.filter(item=>item.type==="reasoning").map(item=>item.content[0]),texts,"a reopened thread has its thoughts");
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -946,7 +946,7 @@ test("a reopened ACP harness thread shows its transcript without starting the ha
     assert.equal(thread.turns.length,2);
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -968,7 +968,7 @@ test("the relay fences Trebell Native's working context on the OpenAI Responses 
     assert.ok(user.content[0].text.includes("\n\n[untrusted context · trebell.repo_evidence]\n"),"the evidence is inside the block");
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -997,7 +997,7 @@ test("restart recovery continues an ACP harness turn inside the fenced envelope"
     assert.deepEqual(prompt[1],{type:"text",text:"Continue where you left off."});
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -1028,7 +1028,7 @@ test("restart recovery that cannot resume the harness tells the open window the 
     assert.equal(threadStore.get(thread.id).turns.find(turn=>turn.id===interrupted.id).error.message,stored);
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -1052,7 +1052,7 @@ test("restart recovery fences Trebell Native's working context on the OpenAI Res
     assert.match(user.content[0].text,/\n\[application context · trebell\.continuity\]\nPersistent Trebell continuity state\n/);
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -1090,7 +1090,7 @@ test("the relay fences Trebell Native's working context on new turns and queued 
     assert.match(followUp.content[0].text,/\[application context · trebell\.continuity\]\nPersistent Trebell continuity state\n/);
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -1116,7 +1116,7 @@ test("restart recovery fences Trebell Native's working context for a provider of
     assert.match(user.content[0].text,/\n\[application context · trebell\.continuity\]\nPersistent Trebell continuity state\n/);
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -1214,7 +1214,7 @@ test("the relay runs an OpenCode thread with its mode's rules and the model's va
     assert.equal(fixture.called("POST /session/ses_fork2/message").length,1);assert.equal(fixture.called("POST /session/ses_1/message").length,2);
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -1249,7 +1249,7 @@ test("Stop withdraws an OpenCode thread's waiting approval card and answers Open
     assert.deepEqual(fixture.called("POST /permission/per_fixture/reply").map(call=>call.body.reply),["reject"],"OpenCode is not left waiting for an answer");
   }finally{
     try{ws.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -1289,7 +1289,7 @@ test("an OpenCode approval waiting when the page reloads stays waiting and is as
     assert.deepEqual(fixture.called("POST /permission/per_fixture/reply").map(call=>call.body.reply),["once"],"the person's answer reaches OpenCode");
   }finally{
     for(const ws of [first,second])try{ws?.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -1333,7 +1333,7 @@ async function openCodeApprovalWhenTrebellClosesItsSession(end){
     };
   }finally{
     for(const ws of [first,second])try{ws?.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await fixture.close();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 }
 
@@ -1419,7 +1419,7 @@ test("a Claude Code approval waiting when its thread is deleted leaves the windo
     assert.equal(answers[0].behavior,"deny","nothing the deleted thread asked was allowed");
   }finally{
     for(const ws of [first,second])try{ws?.close()}catch{}
-    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 

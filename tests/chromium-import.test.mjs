@@ -66,7 +66,7 @@ test("Helium profile discovery trusts only safe Local State profile directories 
     await writeFile(join(root,"Local State"),JSON.stringify({profile:{info_cache:{Default:{name:"Personal"},"../escape":{name:"Bad"},"Profile 1":{name:"Empty"}}}}));
     const profiles=discoverHeliumProfiles(root);
     assert.deepEqual(profiles.map(item=>[item.profileDirectory,item.name]),[["Default","Personal"]]);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Helium Local State DPAPI key prefix is validated before unprotecting",async()=>{
@@ -77,7 +77,7 @@ test("Helium Local State DPAPI key prefix is validated before unprotecting",asyn
     let received=null;const expected=Buffer.alloc(32,9);
     const key=await readWindowsChromiumKey(join(root,"Local State"),{unprotect:async data=>{received=Buffer.from(data);return expected}});
     assert.deepEqual(received,wrapped);assert.deepEqual(key,expected);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Windows DPAPI unprotect round-trips under the current user",{skip:process.platform!=="win32"},async()=>{
@@ -92,7 +92,7 @@ test("App-Bound Chromium profiles are rejected before DPAPI unwrapping",async()=
     let called=false;
     await assert.rejects(()=>readWindowsChromiumKey(join(root,"Local State"),{unprotect:async()=>{called=true;return Buffer.alloc(32)}}),/App-Bound Encryption/i);
     assert.equal(called,false);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Windows Chromium v10 AES-GCM cookie decryption enforces schema-24 domain binding",()=>{
@@ -117,5 +117,5 @@ test("Chromium cookie reader imports legacy Helium v10 and skips partitioned and
     assert.equal(result.cookies.length,1);assert.equal(result.skipped,2);
     assert.deepEqual(result.cookies[0],{url:"https://example.com/",name:"sid",value:"secret",domain:".example.com",path:"/",secure:true,httpOnly:true,sameSite:"lax"});
     assert.deepEqual(new Set(result.skippedHosts),new Set(["partitioned.example","appbound.example"]));
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

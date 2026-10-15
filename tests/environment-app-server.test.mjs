@@ -148,7 +148,7 @@ test("remote Codex homes and executables under a named user's home are expanded 
     assert.equal(ran.code,127);
     assert.match(ran.stderr,/^Trebell could not find the home folder of the user trebell_no_such_user on this host, so it cannot use ~trebell_no_such_user\/\.codex\.\r?\n?$/);
     assert.deepEqual(await readdir(work),[],"nothing was made where the shell ran");
-  }finally{await rm(work,{recursive:true,force:true})}
+  }finally{await rm(work,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("an environment's Codex executable is saved and starts its Codex app-server",async()=>{

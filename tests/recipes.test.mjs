@@ -39,7 +39,7 @@ test("project state persists recipes separately from direct terminal actions",as
     const state=new TrebellStateStore({TREBELL_HOME:home}),project=state.touchProject("C:/repo",{scripts:[{name:"Test",command:"npm test"}],recipes:[{name:"add tests",objective:"Add regression coverage.",validation:["Run targeted tests"]}]});
     assert.equal(project.scripts.length,1);assert.equal(project.recipes.length,1);assert.equal(project.recipes[0].name,"/add-tests");assert.ok(project.recipes[0].id);
     const reloaded=new TrebellStateStore({TREBELL_HOME:home}).project("C:/repo",null);assert.equal(reloaded.recipes[0].objective,"Add regression coverage.");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("recipe execution never elevates the active permission profile",()=>{

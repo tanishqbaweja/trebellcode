@@ -55,7 +55,7 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(manager.capabilities("grok").clientTerminal,false);
     assert.equal(manager.capabilities("cursor").nativeSandbox,false);
   }finally{
-    await rm(home,{recursive:true,force:true});
+    await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -194,7 +194,7 @@ test("runtime child environments do not inherit unrelated parent secrets",async(
     assert.equal(env.GITHUB_TOKEN,"github-secret","explicit approval should pass the current parent value without storing it");assert.equal(env.TEAM_PROXY,"http://proxy");assert.equal(env.CUSTOM_MODE,"safe");
     const persisted=await readFile(join(home,"ui-state.json"),"utf8");
     assert.doesNotMatch(persisted,/claude-secret|github-secret|http:\/\/proxy/);assert.match(persisted,/GITHUB_TOKEN/);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("remote runtime process spawning cannot escape the active workspace cwd",()=>{
@@ -254,7 +254,7 @@ test("Claude runtime profiles validate and persist auto-compact thresholds",asyn
     assert.throws(()=>manager.upsertInstance({id:"claude-bad",kind:"claude",autoCompactWindow:"99999"}),/between 100000 and 1000000/);
     const cleared=manager.upsertInstance({...saved,autoCompactWindow:""});
     assert.equal(cleared.autoCompactWindow,null);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Claude models and plan usage come from Claude Code's own capability probe",async()=>{
@@ -286,7 +286,7 @@ test("Claude models and plan usage come from Claude Code's own capability probe"
     failure=new Error("Claude Code did not report its capabilities in time.");
     assert.deepEqual(await manager.models("claude"),{models:[],metadata:[],source:"unavailable",error:"Claude Code could not list its models: Claude Code did not report its capabilities in time."});
     assert.deepEqual((await manager.usageLimits("claude")).unavailable,{reason:"probeFailed",message:"Claude Code could not read usage limits."});
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("runtime profile compatibility follows continuation identity instead of display names",async()=>{
@@ -311,7 +311,7 @@ test("runtime profile compatibility follows continuation identity instead of dis
     manager.upsertInstance({id:"claude-isolated",kind:"claude",displayName:"Claude Isolated",homePath:join(home,"claude-isolated")});
     assert.deepEqual(new Set(manager.compatibleInstanceIds("claude-work")),new Set(["claude-work","claude-personal"]));
     assert.notEqual(manager.continuationKey("claude-work"),manager.continuationKey("claude-isolated"));
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("runtime installer uses only official allowlisted packages in the selected environment", async()=>{
@@ -344,7 +344,7 @@ test("runtime installer uses only official allowlisted packages in the selected 
     assert.match(snapshot.definitions.find(item=>item.id==="opencode").installCommand,/^npm install -g opencode-ai .*opencode upgrade/);
     assert.equal(snapshot.definitions.find(item=>item.id==="claude").installCommand,"npm install -g @anthropic-ai/claude-code");
     assert.equal(snapshot.definitions.find(item=>item.id==="cursor").installable,false);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("OpenCode compatibility blocks known-broken managed updates and pins verified versions",async()=>{
@@ -394,7 +394,7 @@ test("OpenCode compatibility blocks known-broken managed updates and pins verifi
     // A remote 2.x is supported too; remote OpenCode continues to run through its ACP surface.
     const remote2x=await manager.probe("opencode",{fresh:true});
     assert.equal(remote2x.compatibility.status,"supported");assert.equal(remote2x.authenticated,true);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // The Windows command shim npm writes for a package's bin.
@@ -571,7 +571,7 @@ test("remote runtime usage reads the remote login but returns only normalized li
     assert.equal(limits.windows[0].usedPercent,61);
     assert.doesNotMatch(JSON.stringify(limits),/remote-private-token/);
     assert.equal(calls.some(call=>call.command==="sh"),true);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("provider auth probes distinguish authenticated, unauthenticated and unknown CLI states",()=>{
@@ -599,7 +599,7 @@ test("a local harness's version check is kept until its binary changes, and a fr
     await writeFile(binary,"build 2, a newer one");clock+=61_000;await manager.probe("grok");
     await manager.probe("grok",{fresh:true});
     assert.deepEqual(calls,["--version","models","models","--version","models","--version","models"]);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 // npm i -g or the harness's own updater replaces the binary; Settings polls /api/runtime every 5 s, which probes without fresh.
 test("a probe answer is asked again once the local binary changes, so a harness upgraded outside Trebell shows its new version",async()=>{
@@ -616,7 +616,7 @@ test("a probe answer is asked again once the local binary changes, so a harness 
     assert.equal((await manager.probe("grok")).version,"grok 1.3.0");
     clock+=5000;await manager.probe("grok");
     assert.deepEqual(calls,["--version","models","--version","models"],"the new binary's answer is reused in turn");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // The relay probes before it starts a harness session (ensureSession) and refuses the chat on an answer that cannot run, with the
@@ -694,7 +694,7 @@ test("runtime auth commands use the provider's real interactive CLI flow",async(
     assert.equal(codexAuth.runtime,"codex");assert.equal(codexAuth.instanceId,"codex-default");assert.equal(codexAuth.name,"Codex");assert.deepEqual(codexAuth.args,["login"]);assert.ok(codexAuth.command);
     const external=manager.upsertInstance({id:"opencode-external",kind:"opencode",serverUrl:"https://opencode.example.test"});
     assert.throws(()=>manager.authCommand(external),/external server/i);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // Codex's sign-in writes its auth.json into the profile's home: one typed as ~name/... for a user this machine does not have was a
@@ -714,7 +714,7 @@ test("a local Codex sign-in for a profile whose home is under a user this machin
     // Nothing else about the profile fails for it: its continuation key and child environment are read as before.
     assert.equal(typeof manager.continuationKey(shared),"string");
     assert.ok(manager.compatibleInstanceIds(shared).includes(shared.id));
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("remote runtime probes use provider-native auth status without treating unknown as signed out",async()=>{
@@ -747,7 +747,7 @@ test("remote runtime probes use provider-native auth status without treating unk
     claudeAuth={loggedIn:false};const claudeSignedOut=await manager.probe("claude");
     assert.deepEqual([claudeSignedOut.available,claudeSignedOut.authenticated,claudeSignedOut.message],[false,false,"Claude Code is not authenticated. Run `claude auth login` and try again."]);
     claudeAuth={loggedIn:true};assert.equal((await manager.probe("claude")).authenticated,true);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // Antigravity is the one harness offered the client's files (T3 AntigravityAcpSupport); no harness is offered its terminal.
@@ -798,7 +798,7 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     await assert.rejects(()=>session.client.request("fs/read_text_file",{sessionId:"fixture-session",path:join(root,"..","escape.txt")},1000));
   }finally{
     await session.close().catch(()=>{});
-    await rm(root,{recursive:true,force:true});
+    await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -811,7 +811,7 @@ test("external active turns become queued restart recoveries only when enabled",
     assert.deepEqual(recovered.map(item=>item.threadId),[thread.id]);
     const pending=restarted.get(thread.id);assert.equal(pending.recovery?.pending,true);assert.equal(pending.recovery?.turnId,turn.id);assert.equal(pending.turns[0].status,"interrupted");assert.equal(pending.status.type,"idle");
     const resumed=restarted.restartTurn(thread.id,turn.id);assert.equal(resumed.status,"inProgress");assert.equal(restarted.get(thread.id).status.type,"active");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("restart recovery refuses to auto-repeat an unresolved tool action", async()=>{
@@ -822,7 +822,7 @@ test("restart recovery refuses to auto-repeat an unresolved tool action", async(
     first.addItem(thread.id,turn.id,{type:"dynamicToolCall",id:"tool-1",namespace:"trebell_browser",tool:"click",arguments:{ref:"submit"},status:"inProgress"});
     const restarted=new AgentThreadStore(env);assert.deepEqual(restarted.reconcileRestart({continueAfterRestart:true}),[]);
     const blocked=restarted.get(thread.id);assert.equal(blocked.status.type,"systemError");assert.equal(blocked.turns[0].status,"interrupted");assert.equal(blocked.recovery?.pending,false);assert.equal(blocked.recovery?.blocked,true);assert.equal(blocked.recovery?.reason,"uncertain_tool_action");assert.equal(blocked.recovery?.uncertainTools?.[0]?.id,"tool-1");assert.equal(blocked.recovery?.uncertainTools?.[0]?.tool,"click");assert.match(blocked.turns[0].error?.message||"",/Inspect its real-world state before repeating/i);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("restart recovery still auto-resumes when all recorded tool actions are settled", async()=>{
@@ -832,7 +832,7 @@ test("restart recovery still auto-resumes when all recorded tool actions are set
     const first=new AgentThreadStore(env);const thread=first.create({runtime:"opencode",cwd:home,providerSessionId:"ses-settled",model:"fixture/model"});const turn=first.addTurn(thread.id,{inputText:"Continue"});
     first.addItem(thread.id,turn.id,{type:"dynamicToolCall",id:"tool-done",namespace:"trebell_repo",tool:"search_symbols",arguments:{query:"Session"},status:"completed",success:true});
     const restarted=new AgentThreadStore(env);const recovered=restarted.reconcileRestart({continueAfterRestart:true});assert.deepEqual(recovered.map(item=>item.threadId),[thread.id]);assert.equal(restarted.get(thread.id).recovery?.pending,true);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("external active turns settle as interrupted errors when restart recovery is disabled", async()=>{
@@ -842,5 +842,5 @@ test("external active turns settle as interrupted errors when restart recovery i
     const first=new AgentThreadStore(env);const thread=first.create({runtime:"claude",cwd:home,providerSessionId:"claude-session"});first.addTurn(thread.id,{inputText:"Do work"});
     const restarted=new AgentThreadStore(env);assert.deepEqual(restarted.reconcileRestart({continueAfterRestart:false}),[]);
     const settled=restarted.get(thread.id);assert.equal(settled.turns[0].status,"failed");assert.match(settled.turns[0].error?.message||"",/interrupted by a Trebell restart/i);assert.equal(settled.status.type,"systemError");assert.equal(settled.recovery,undefined);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

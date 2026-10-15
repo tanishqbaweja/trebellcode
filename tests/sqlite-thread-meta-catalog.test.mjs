@@ -58,5 +58,5 @@ test("thread metadata catalog backfills old SQLite rows and excludes active-thre
     const updatedCatalog=state.snapshot({includeCollections:false,threadMetaView:"catalog"}).threadMeta["thread-old"];
     assert.equal(updatedCatalog.branch,"feature/catalog-v2");assert.equal(Object.prototype.hasOwnProperty.call(updatedCatalog,"goal"),false);assert.equal(Object.prototype.hasOwnProperty.call(updatedCatalog,"trebellQueue"),false);
     assert.equal(state.threadMeta("thread-old").goal.objective,"Still full only");assert.equal(state.threadMeta("thread-old").trebellQueue[0].id,"queued-2");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

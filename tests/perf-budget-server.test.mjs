@@ -86,7 +86,7 @@ test("B10: re-posting a thread's unchanged catalog fields makes no write transac
     assert.equal(writes-1,0,"write transactions for an unchanged post");assert.deepEqual(again,first);assert.equal(again.updatedAt,first.updatedAt);
     const changed=state.updateThreadMeta("thread-b10",{...patch,threadSnapshot:{...snapshot,name:"Fix the build on main"}});
     assert.equal(writes-1,1,"a changed field is written");assert.ok(changed.updatedAt>first.updatedAt);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // B12b: a reload or a restart fetched the whole bundle again (1,577 KB on the perf home, scripts/perf/reload.mjs), because nothing

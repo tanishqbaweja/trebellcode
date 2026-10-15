@@ -90,7 +90,7 @@ test("Codex goal RPCs run Codex's own goal, with Trebell's guidance and budget g
     assert.ok(await until(()=>rendererMessages.some(message=>message.method==="thread/goal/cleared"&&message.params?.threadId===threadId)));
     const continuityClear=await rpc("thread/continuity/clear",{threadId});assert.equal(continuityClear.ok,true);assert.equal(continuityClear.continuity.completedWork.length,0);
   }finally{
-    try{ws?.close()}catch{}try{observer?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true});
+    try{ws?.close()}catch{}try{observer?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -114,7 +114,7 @@ test("a new Codex goal objective replaces the goal, Codex's own statuses stay, a
     const child=(await rpc("thread/goal/get",{threadId:childId})).goal;assert.equal(child.objective,"Delegated task");assert.equal(child.status,"active");
     assert.equal(upstream.calls("thread/goal/set").filter(call=>call.params.threadId===childId).length,0);
   }finally{
-    try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true});
+    try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -146,6 +146,6 @@ test("a finished Codex goal turn pauses the goal once a budget only Trebell trac
     const quiet=await budgetPaused(quietId);assert.equal(upstream.goals.get(quietId)?.status,"paused");assert.equal(quiet?.data?.interruptedTurnId,null);
     assert.equal(upstream.calls("turn/interrupt").filter(call=>call.params.threadId===quietId).length,0);
   }finally{
-    try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true});
+    try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });

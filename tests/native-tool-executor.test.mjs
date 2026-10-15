@@ -22,7 +22,7 @@ test("Native repository tools execute in-process through Context Engine and shar
     assert.equal(result,"1 definition in 1 file\nsrc/session.js\n  1: export class SessionManager { refresh(){ return true; } }");
     const invalid=await executor({id:"repo-2",namespace:"trebell_repo",name:"search_symbols",arguments:{}});
     assert.equal(invalid.success,false);assert.match(invalid.error,/query/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native repository searches reach the model grouped by file and scoped by path and glob",async()=>{
@@ -46,7 +46,7 @@ test("Native repository searches reach the model grouped by file and scoped by p
     assert.equal(outside.success,false);assert.match(outside.error,/outside the active workspace/i);
     const missing=await executor({namespace:"trebell_repo",name:"search_code",arguments:{query:"SessionManager",path:"lib/missing"}});
     assert.equal(missing.success,false);assert.match(missing.error,/not a file or folder in the repository/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native repository paths accept workspace-root-style leading slashes",async()=>{
@@ -57,7 +57,7 @@ test("Native repository paths accept workspace-root-style leading slashes",async
     assert.equal(result.path,"src/session.js");assert.match(result.content,/SessionManager/);
     const escaped=await executor({namespace:"trebell_repo",name:"read_source",arguments:{path:"../outside.js"}});
     assert.equal(escaped.success,false);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native advanced repository capabilities use the stable discover/invoke interface",async()=>{
@@ -73,7 +73,7 @@ test("Native advanced repository capabilities use the stable discover/invoke int
     assert.ok(invoked&&typeof invoked==="object");
     const invalid=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_history",arguments:{limit:1000}}});
     assert.equal(invalid.success,false);assert.match(invalid.error,/100|less than or equal|too big/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native trebell_repo/invoke runs an advanced capability directly without a prior discover",async()=>{
@@ -89,7 +89,7 @@ test("Native trebell_repo/invoke runs an advanced capability directly without a 
     const references=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"symbol_references",arguments:{name:"SessionManager"}}});
     assert.ok(references.data.some(item=>item.path==="src/session.js"&&item.definition===true));
     assert.equal(discoverCalls,0);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native invoke argument errors keep the validation message and add the capability input schema",async()=>{
@@ -217,7 +217,7 @@ test("Native agent loop receives only the repository observation, not gateway in
       },executeTool:executor,
     });
     assert.equal(result.text,"Found it.");assert.equal(result.toolCalls,1);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native asks no approval for a repository call that cannot run, and asks once for one that can",async()=>{

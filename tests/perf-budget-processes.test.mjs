@@ -121,7 +121,7 @@ test("B6: a warm /api/git/info poll starts one git process",{timeout:30_000},asy
     assert.deepEqual(warm,cold);
     // The UI polls every 3.5 s while a project thread is open; a warm poll remains one status process.
     assert.deepEqual(calls,["status --porcelain=v1 -b"]);
-  }finally{await rm(dir,{recursive:true,force:true})}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // What a warm poll answers equals a full read after each change a person or an agent makes to the repository.
@@ -292,7 +292,7 @@ test("B8: a checkpoint of a project folder starts at most 6 git processes",{time
     // 7 for the root alone and a rev-parse HEAD of its own.
     assert.ok(calls.length<=6,calls.length+" git processes: "+calls.join(", "));
     assert.ok(calls.includes("read-tree --reset HEAD"),"the index was seeded from the repository's own");
-  }finally{await rm(dir,{recursive:true,force:true});await rm(dir+"-home",{recursive:true,force:true})}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250});await rm(dir+"-home",{recursive:true,force:true})}
 });
 
 test("B8: a checkpoint's tree equals a fresh read of HEAD plus add -A, in every index state",{timeout:180_000},async()=>{
@@ -311,7 +311,7 @@ test("B8: a checkpoint's tree equals a fresh read of HEAD plus add -A, in every 
     await same("a nested repository with a commit");
     const empty=join(dir,"empty-nested");await mkdir(empty);await git(empty,["init","-q"]);await writeFile(join(empty,"private.txt"),"not captured\n");
     await same("a nested repository without a commit",[":(exclude,literal)empty-nested/"]);
-    await rm(empty,{recursive:true,force:true});
+    await rm(empty,{recursive:true,force:true,maxRetries:20,retryDelay:250});
     // Flags that keep add -A from reading a file: the checkpoint still records what is on disk.
     await git(dir,["update-index","--assume-unchanged","b.txt"]);await writeFile(join(dir,"b.txt"),"changed under assume-unchanged\n");
     await same("an assume-unchanged file changed on disk",[],{seeded:false});
@@ -352,7 +352,7 @@ test("B8: a checkpoint keeps a same-size edit git tells apart only by its conten
     await utimes(file,at,at);await git(dir,["update-index","-q","--refresh"],{allowFailure:true});await utimes(join(dir,".git","index"),at,at);
     await writeFile(file,"HELLO\n");await utimes(file,at,at);
     await racyCheckpoint(dir);
-  }finally{await rm(dir,{recursive:true,force:true});await rm(dir+"-home",{recursive:true,force:true})}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250});await rm(dir+"-home",{recursive:true,force:true})}
 });
 test("B8: a checkpoint keeps a same-size edit made in the second git refreshed the index",{timeout:60_000},async t=>{
   const dir=await fixtureRepository("trebell-checkpoint-racy-clock-"),file=join(dir,"a.txt");
@@ -369,7 +369,7 @@ test("B8: a checkpoint keeps a same-size edit made in the second git refreshed t
     // The checkpoint comes later, as a send's does, so its copy of the index is written in a later second.
     await new Promise(resolve=>setTimeout(resolve,1200));
     await racyCheckpoint(dir);
-  }finally{await rm(dir,{recursive:true,force:true});await rm(dir+"-home",{recursive:true,force:true})}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250});await rm(dir+"-home",{recursive:true,force:true})}
 });
 
 // Editor discovery runs on Electron's main process each time the chat header's Open-in control shows and again on each Open.

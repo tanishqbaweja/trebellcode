@@ -71,7 +71,7 @@ test("prepareAttachment keeps local files local",async()=>{
     assert.equal(result.path,resolve(file));
     assert.equal(result.copied,false);
     assert.equal(result.size,8);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("prepareAttachment streams remote bytes instead of embedding them in the command",async()=>{
@@ -94,7 +94,7 @@ test("prepareAttachment streams remote bytes instead of embedding them in the co
     assert.deepEqual(Buffer.concat(chunks),bytes);
     assert.equal(command.includes(bytes.toString("base64")),false);
     assert.match(command,/cat > /);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("attachment validation enforces the aggregate 80 MiB image ceiling",async()=>{
@@ -127,7 +127,7 @@ test("local environments publish bounded theme files without shadowing built-ins
     assert.equal(catalog.directory,themes);
     assert.deepEqual(catalog.themes.map(theme=>theme.id),["nightfall"]);
     assert.equal(catalog.themes[0].published,true);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("remote environment themes are read through bounded argv commands",async()=>{
@@ -344,7 +344,7 @@ test("bounded local environment command timeout kills descendants that inherit s
       catch(error){if(error?.code==="ESRCH")alive=false;else throw error}
     }
     assert.equal(alive,false,"timed-out environment command must not leave descendants running");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("bounded stdin environment command timeout kills descendants that inherit stdio",async()=>{
@@ -367,5 +367,5 @@ test("bounded stdin environment command timeout kills descendants that inherit s
       catch(error){if(error?.code==="ESRCH")alive=false;else throw error}
     }
     assert.equal(alive,false,"timed-out stdin environment command must not leave descendants running");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

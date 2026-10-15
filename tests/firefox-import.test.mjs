@@ -15,7 +15,7 @@ test("Firefox profile parser accepts valid relative profiles and rejects travers
     const profiles=parseFirefoxProfiles(ini,root,{requireCookies:false});
     assert.deepEqual(profiles.map(profile=>profile.name),["Good","Absolute"]);
     assert.equal(profiles.some(profile=>profile.name==="Escape"),false);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Firefox cookie helpers preserve SameSite and expiry semantics",()=>{
@@ -39,5 +39,5 @@ test("Firefox cookie reader snapshots SQLite and converts host cookies",async()=
     const cookies=await readFirefoxCookieDatabase(database);
     assert.equal(cookies.length,1);
     assert.deepEqual(cookies[0],{url:"https://example.com/",name:"sid",value:"abc",domain:".example.com",path:"/",secure:true,httpOnly:true,sameSite:"lax",expirationDate:1_800_000_000});
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

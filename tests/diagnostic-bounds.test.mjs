@@ -48,7 +48,7 @@ test("agent thread persistence bounds raw tool diagnostics but preserves convers
     assert.match(JSON.stringify(tool.rawInput),/truncated|omitted/i);
     assert.match(JSON.stringify(tool.rawOutput),/truncated|omitted/i);
     assert.ok(JSON.stringify(saved).length<900_000);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("agent thread persistence redacts credentials from stored messages and tool diagnostics",async()=>{
@@ -64,7 +64,7 @@ test("agent thread persistence redacts credentials from stored messages and tool
     assert.doesNotMatch(savedText,new RegExp(credential));
     assert.match(savedTurn.items.find(item=>item.id===`user-${turn.id}`).content[0].text,/\[redacted\]/);
     assert.match(JSON.stringify(savedTurn.items.find(item=>item.id==="tool-secret")),/\[redacted\]/);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("bounded tool persistence still redacts retained secrets after truncation",async()=>{
@@ -80,5 +80,5 @@ test("bounded tool persistence still redacts retained secrets after truncation",
     });
     const savedText=JSON.stringify(new AgentThreadStore(env).get(thread.id));
     assert.doesNotMatch(savedText,new RegExp(credential));assert.match(savedText,/\[redacted\]/);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

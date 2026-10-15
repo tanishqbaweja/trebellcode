@@ -36,7 +36,7 @@ test("legacy agent thread JSON imports once into normalized SQLite thread and tu
     const created=second.create({runtime:"native",cwd:home,providerSessionId:"native-new"});second.addTurn(created.id,{id:"native-turn",inputText:"Persist me"});second.finishTurn(created.id,"native-turn");
     const third=new AgentThreadStore(env);assert.equal(third.list().find(item=>item.id===created.id)?.turns?.length,0,"startup catalog must not hydrate transcript turns");assert.equal(third.get(created.id).turns[0].status,"completed");
     const retiredAgain=JSON.parse(await readFile(legacyPath,"utf8"));assert.equal(retiredAgain.migratedTo,"trebell.sqlite");assert.equal(Object.prototype.hasOwnProperty.call(retiredAgain,"threads"),false,"a recreated legacy file must be retired instead of becoming a second source of truth");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("SQLite search projection indexes visible conversation only and removes rewound turns",async()=>{
@@ -56,7 +56,7 @@ test("SQLite search projection indexes visible conversation only and removes rew
     assert.deepEqual(store.searchCandidates("native","al").map(item=>item.id),[thread.id],"short substring search falls back without changing semantics");
     store.update(thread.id,{turns:[]});
     assert.deepEqual(store.searchCandidates("native","alpha user"),[],"rewind/removal must remove stale search projection rows");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("AgentThreadStore metadata reads stay transcript-free and current without SQLite hydration",async()=>{
@@ -69,7 +69,7 @@ test("AgentThreadStore metadata reads stay transcript-free and current without S
     const turn=store.addTurn(thread.id,{id:"metadata-turn",inputText:"hello"});assert.equal(turn.status,"inProgress");assert.equal(store.getMetadata(thread.id).status.type,"active");assert.deepEqual(store.getMetadata(thread.id).turns,[]);assert.equal(storageReads,1,"the write may hydrate once, but metadata reads must not add storage reads");
     // The thread the write read stays parsed, and each later write replaces it with what it wrote: no further sqlite read.
     store.finishTurn(thread.id,turn.id);assert.equal(store.getMetadata(thread.id).status.type,"idle");assert.equal(storageReads,1);assert.equal(store.get(thread.id).turns.length,1);assert.equal(storageReads,1);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a thread saved with no title is titled by its first message at startup, and keeps its place in the list",async()=>{
@@ -95,7 +95,7 @@ test("a thread saved with no title is titled by its first message at startup, an
     assert.deepEqual(order(reopened),before,"no thread moves in the list (its updated time is kept)");
     assert.equal(reopened.get(untitled.id).turns.length,2,"the transcript is untouched");
     assert.equal(new AgentThreadStore(env).getMetadata(untitled.id).preview,"Run this shell command and tell me its output: nod...","the title is saved");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a thread keeps a reasoning item's start and end within a bound, and redacts it like other stored text",async()=>{
@@ -109,7 +109,7 @@ test("a thread keeps a reasoning item's start and end within a bound, and redact
     assert.ok(stored.content[0].length<=64*1024,"the stored text is bounded");
     assert.ok(stored.content[0].startsWith("FIRST ")&&stored.content[0].endsWith(" LAST"),"it keeps the thought's start and end");
     assert.deepEqual(redacted.summary,["Using [redacted]"]);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 function deepFreeze(value){if(value&&typeof value==="object"&&!Object.isFrozen(value)){Object.freeze(value);for(const item of Object.values(value))deepFreeze(item)}return value}
@@ -143,7 +143,7 @@ test("the thread a store keeps parsed is what a fresh sqlite read gives after ev
     assert.equal(held.turns.length,1,"a thread peeked before the writes is as it was");assert.equal(held.turns[0].items.length,1);
     assert.doesNotMatch(JSON.stringify(peek(thread.id)),new RegExp(secret),"the kept thread is the redacted one sqlite holds");
     assert.equal(store.delete(thread.id),true);assert.equal(peek(thread.id),null,"a deleted thread is not served");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a store keeps the two threads used last, lets one go after a minute unused, and does not serve a write sqlite refused",async t=>{
@@ -161,7 +161,7 @@ test("a store keeps the two threads used last, lets one go after a minute unused
     store.storage.putThreadAndTurn=()=>{throw new Error("disk full")};
     try{assert.throws(()=>store.addItem(ids[0],turn.id,{type:"agentMessage",id:"lost",text:"lost"}),/disk full/)}finally{store.storage.putThreadAndTurn=put}
     assert.equal(store.peek(ids[0]).turns[0].items.some(item=>item.id==="lost"),false);assert.equal(reads,6,"the refused write dropped the thread, so it is read again");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a store with a kept connection writes on it as durably as on a connection of its own, and after close opens its own again",async()=>{
@@ -177,5 +177,5 @@ test("a store with a kept connection writes on it as durably as on a connection 
     store.close();assert.equal(store.storage.db,null);
     store.update(thread.id,{name:"After close"});assert.equal(opened.length,2,"a read and a write after close open connections of their own");
     assert.equal(reader.get(thread.id).name,"After close");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

@@ -231,7 +231,7 @@ test("context engine ranks task-relevant code, instructions and tests under a ha
     assert.equal(session.parser,"babel");
     assert.ok(session.reasons.some(reason=>/task-related symbol|task terms|path matches/i.test(reason)));
     assert.ok(packet.stats.graphEdges>=3);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("the Native seed's Git line names HEAD and the branch, then a clean tree or the changes, within 200 bytes",()=>{
@@ -291,7 +291,7 @@ test("context packets carry the Git state at turn start, and the Native seed sta
     const outside=await engine.buildPacket({root:plain,task:"Fix the parser",maxTokens:1800,maxFiles:8});
     assert.equal(outside.git,null);
     assert.doesNotMatch(repositoryContextSeed(outside),/Git at turn start/);
-  }finally{await Promise.all([rm(root,{recursive:true,force:true}),rm(plain,{recursive:true,force:true})])}
+  }finally{await Promise.all([rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250}),rm(plain,{recursive:true,force:true,maxRetries:20,retryDelay:250})])}
 });
 
 test("context engine exposes deterministic symbol and file relationship queries",async()=>{
@@ -333,7 +333,7 @@ test("context engine exposes deterministic symbol and file relationship queries"
     const serverCalls=await engine.callHierarchy({root,name:"startServer"});
     assert.ok(serverCalls.callees.some(item=>item.callee==="RefreshSession"&&item.kind==="construct"));
     await assert.rejects(()=>engine.relatedTests({root}),/path or symbol name/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("context engine discovers repository-declared and conventional project commands",async()=>{
@@ -350,7 +350,7 @@ test("context engine discovers repository-declared and conventional project comm
     assert.ok(conventional.includes("cargo test"));assert.ok(conventional.includes("cargo check"));assert.ok(conventional.includes("python -m pytest"));
     assert.equal(commands.conventional.find(item=>item.command==="cargo test").confidence,"convention");
     assert.ok(commands.manifests.includes("package.json"));assert.ok(commands.manifests.includes("Cargo.toml"));
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("context engine builds risk-aware verification plans from repo changes and related tests",async()=>{
@@ -367,7 +367,7 @@ test("context engine builds risk-aware verification plans from repo changes and 
     assert.ok(plan.steps.some(step=>step.id==="targeted_tests"&&step.command==="pnpm run test"));
     assert.ok(plan.steps.some(step=>step.id==="build"&&step.command==="pnpm run build"));
     assert.ok(plan.steps.some(step=>step.id==="integration"&&step.required===true));
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("context engine exposes bounded code search, source ranges, and Git context",async()=>{
@@ -397,7 +397,7 @@ test("context engine exposes bounded code search, source ranges, and Git context
     assert.ok(git.changed.includes("src/auth/session.js"));
     assert.match(git.status,/src\/auth\/session\.js/);
     assert.match(git.diff,/gitContextMarker/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("context engine exposes honest bounded JavaScript TypeScript Python and Go syntax diagnostics",async()=>{
@@ -457,7 +457,7 @@ module.exports={version:"fixture-ts",sys:{fileExists:fs.existsSync,readFile:p=>f
     assert.equal(organized.supported,true);assert.equal(organized.semantic,true);assert.equal(organized.engine,"typescript");assert.equal(organized.editCount,1);
     assert.equal(organized.changes[0].file,"src/typed.ts");assert.equal(organized.changes[0].textChanges[0].newText,"import { helper } from './helper.js';\n");
     await assert.rejects(()=>engine.renamePreview({root,path:"src/typed.ts",line:1,column:14,newName:""}),/requires a new name/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("project-local diagnostic tooling cannot read unrelated Trebell parent secrets",async()=>{
@@ -473,7 +473,7 @@ test("project-local diagnostic tooling cannot read unrelated Trebell parent secr
     assert.equal(result.supported,true);assert.equal(result.semantic,false);
     const leaked=await readFile(leakPath,"utf8").catch(error=>error?.code==="ENOENT"?null:Promise.reject(error));
     assert.equal(leaked,null,"project-local diagnostic code must not inherit unrelated parent secrets");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("context engine exposes bounded Git history and blame",async()=>{
@@ -488,7 +488,7 @@ test("context engine exposes bounded Git history and blame",async()=>{
     const blame=await engine.gitBlame({root,path:"src/auth/session.js",startLine:1,endLine:5,maxLines:5});
     assert.equal(blame.data.length,5);assert.equal(blame.data[0].author,"Trebell Test");assert.equal(blame.data.at(-1).text,"// second revision");assert.equal(blame.data.at(-1).summary,"Update refresh session");
     await assert.rejects(()=>engine.gitHistory({root,path:"../outside.txt"}),/outside or unknown/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("large scoped repository instructions are bounded without dropping nested guidance",async()=>{
@@ -502,7 +502,7 @@ test("large scoped repository instructions are bounded without dropping nested g
     assert.match(packet.injection,/NESTED_SENTINEL/);
     assert.match(packet.injection,/nested files override broader guidance/);
     assert.match(packet.injection,/truncated by Trebell context budget/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("context engine reuses unchanged files and reparses only changed files",async()=>{
@@ -519,7 +519,7 @@ test("context engine reuses unchanged files and reparses only changed files",asy
     const third=await engine.buildPacket({root,task:"refresh session"});
     assert.equal(third.stats.reparsed,1);
     assert.ok(third.stats.reused>=3);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("clean Git workspaces skip per-file metadata scans after the first context packet",async()=>{
@@ -533,7 +533,7 @@ test("clean Git workspaces skip per-file metadata scans after the first context 
     assert.equal(second.stats.inspected,0);
     assert.equal(second.stats.reparsed,0);
     assert.ok(second.stats.reused>=4);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("context cache invalidates clean tracked files when Git HEAD changes",async()=>{
@@ -552,7 +552,7 @@ test("context cache invalidates clean tracked files when Git HEAD changes",async
     assert.equal(second.stats.inspected,1,"a clean one-file revision change should only inspect the changed source path");
     assert.equal(second.stats.reparsed,1);
     assert.match(second.injection,/HEAD_TWO_MARKER/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("context cache rechecks files that were dirty when they become clean at the same HEAD",async()=>{
@@ -569,7 +569,7 @@ test("context cache rechecks files that were dirty when they become clean at the
     assert.equal(restored.stats.revisionChanged,false);
     assert.equal(restored.stats.reparsed,1,"the previously dirty path must be re-read after reset");
     assert.doesNotMatch(restored.injection,/DIRTY_CACHE_MARKER/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("weighted PageRank makes depended-on files more central",()=>{
@@ -782,7 +782,7 @@ test("code search returns docs and configuration after source matches, and read_
     const clean=await engine.searchCode({root,query:"source-read",limit:20});
     assert.equal(clean.complete,true);
     assert.equal(clean.skippedLargeFiles,undefined);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("code search covers a plain directory without Git through git grep --no-index",async()=>{
@@ -802,7 +802,7 @@ test("code search covers a plain directory without Git through git grep --no-ind
     assert.equal(scoped.source,"git-grep");
     assert.deepEqual(scoped.data.map(item=>item.path),["app/[id]/page.py"]);
     assert.equal(scoped.complete,true);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("code search lists every matching line of a file, with no per-file cap",async()=>{
@@ -826,7 +826,7 @@ test("code search lists every matching line of a file, with no per-file cap",asy
     assert.equal(exact.data.length,20);
     assert.equal(exact.complete,true,"exactly the limit is not a cut");
     assert.equal(exact.more,undefined);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("code search lists the hits past the limit as line numbers per file, so no pointer is lost",async()=>{
@@ -843,7 +843,7 @@ test("code search lists the hits past the limit as line numbers per file, so no 
     assert.equal(result.matchedFiles,2);
     assert.equal(result.complete,false);
     assert.equal(result.truncated,true);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("code search keeps a definition hit past the limit with its text",async()=>{
@@ -859,7 +859,7 @@ test("code search keeps a definition hit past the limit with its text",async()=>
     assert.equal(result.data.find(item=>item.line===7).text,"    def write(self, table):");
     assert.deepEqual(result.more,[{path:"pkg/core.py",count:3,lines:[3,4,8]}]);
     assert.equal(result.totalMatches,7);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("code search marks the definition hits it lists by line number",async()=>{
@@ -871,7 +871,7 @@ test("code search marks the definition hits it lists by line number",async()=>{
     const result=await engine.searchCode({root,query:"make_part",limit:1});
     assert.equal(result.data.length,41,"the hit within the limit and 40 definitions past it keep their text");
     assert.deepEqual(result.more,[{path:"pkg/core.py",count:5,lines:[82,84,86,88,90],definitions:[82,84,86,88,90]}]);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("code search reads the file that defines a matching name first, also when more files use it than are read",async()=>{
@@ -888,7 +888,7 @@ test("code search reads the file that defines a matching name first, also when m
     assert.equal((result.unreadFiles||[]).includes("app/widgets.py"),false);
     const usage=await new ContextEngine().searchCode({root,query:"value = make_widget"});
     assert.equal(usage.data[0].path,"app/use_000.py","a query that matches no definition keeps Git's order");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("code search scopes to a folder or a file and filters by glob, and rejects paths outside the repository",async()=>{
@@ -917,7 +917,7 @@ test("code search scopes to a folder or a file and filters by glob, and rejects 
     assert.equal(root2.data.length,everywhere.data.length);assert.equal(root2.path,undefined);
     await assert.rejects(()=>engine.searchCode({root,query:"RefreshSession",path:"../outside"}),/outside the repository/i);
     await assert.rejects(()=>engine.searchCode({root,query:"RefreshSession",path:"missing/folder"}),/not a file or folder in the repository/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("an invalid code search regex falls back to a literal search and says so",async()=>{
@@ -931,7 +931,7 @@ test("an invalid code search regex falls back to a literal search and says so",a
     assert.deepEqual(result.data.map(item=>[item.path,item.line,item.text]),[["main.py",1,"call(foo"]]);
     const valid=await engine.searchCode({root,query:"^fo+$",regex:true,limit:10});
     assert.equal(valid.regex,true);assert.equal(valid.regexFallback,undefined);assert.deepEqual(valid.data.map(item=>item.line),[2]);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("symbol and file search take a path and a glob, and list what the limit cuts",async()=>{
@@ -958,7 +958,7 @@ test("symbol and file search take a path and a glob, and list what the limit cut
     const limited=await engine.searchFiles({root,query:".js",limit:1});
     assert.equal(limited.data.length,1);assert.equal(limited.totalMatches,4);
     await assert.rejects(()=>engine.searchFiles({root,query:"session",path:"nowhere"}),/not a file or folder in the repository/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a scoped remote code search sends the folder to git grep as a literal pathspec",async()=>{
@@ -1008,7 +1008,7 @@ test("read_source reads a file that appeared under an untracked directory after 
     assert.ok(after.data.some(item=>item.path==="notes/second.md"),"git grep searches the live tree");
     const read=await engine.readSourceRange({root,path:"notes/second.md"});
     assert.match(read.content,/second note/,"git status still shows only ?? notes/, so the reused inventory must be rechecked");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("remote listings keep their NUL separators and a plain remote directory falls back to git grep --no-index",async()=>{

@@ -21,7 +21,7 @@ test("Codex shadow home shares state but keeps auth private",async()=>{
     const sessionsPath=join(shadow,"sessions");assert.equal(resolve(dirname(sessionsPath),await readlink(sessionsPath)),resolve(join(shared,"sessions")));
     assert.equal(await readFile(join(shadow,"auth.json"),"utf8"),'{"shadow":true}\n');
     assert.equal(await readFile(join(shadow,"models_cache.json"),"utf8"),"private-cache\n");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Codex shadow home refuses shared/private path conflicts",async()=>{
@@ -33,7 +33,7 @@ test("Codex shadow home refuses shared/private path conflicts",async()=>{
     await rm(join(shadow,"config.toml"),{force:true});
     const authTarget=join(root,"auth-target");await mkdir(authTarget,{recursive:true});await symlink(authTarget,join(shadow,"auth.json"),process.platform==="win32"?"junction":"dir");
     await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shadow}),/auth\.json.*real file/i);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // ~name is the home folder of the user name, as a shell expands it. Trebell took a local Codex home typed as ~name/... as a folder named

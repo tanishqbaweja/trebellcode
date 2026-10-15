@@ -50,7 +50,7 @@ test("thread metadata migrates to SQLite and stays durable without returning to 
     assert.equal(second.threadMeta("thread-1").goal.status,"complete");assert.equal(second.threadMeta("thread-1").delegation.status,"done");assert.match(second.threadMeta("thread-1").delegation.error,/\[redacted\]/);assert.match(second.threadMeta("thread-1").queuedSubmissions[0].input[0].text,/Use \[redacted\] later/);assert.doesNotMatch(JSON.stringify(second.threadMeta("thread-1")),new RegExp(secret));
     assert.equal(second.threadMeta("thread-2").environmentId,"ssh-1");assert.equal(second.listThreadMeta()["thread-2"].goal.objective,"Remote goal");
     const persistedAgain=JSON.parse(await readFile(statePath,"utf8"));assert.equal(Object.prototype.hasOwnProperty.call(persistedAgain,"threadMeta"),false);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // The store keeps the text of the meta it last read or wrote and, when asked, one sqlite connection. The row stays the source of
@@ -89,7 +89,7 @@ test("thread meta reads come from a write-through copy that always matches the r
     // After close, a late write still lands and each call opens and closes its own connection.
     state.close();const opensAfterClose=counts.opens;
     state.updateThreadMeta("thread-late",{cwd:"C:/late"});assert.equal(row("thread-late").cwd,"C:/late");assert.equal(state.collections.db,null);assert.equal(counts.opens,opensAfterClose+2);
-  }finally{state?.close();await rm(home,{recursive:true,force:true})}
+  }finally{state?.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // A patch that changes nothing but the time is not written. Everything else writes as before: a new thread, an empty patch or one of
@@ -116,5 +116,5 @@ test("an unchanged thread meta patch keeps the row and its updatedAt",async()=>{
     const redacted=state.updateThreadMeta("thread-1",{cwd:"C:/repo"});
     assert.equal(writes,1);assert.match(redacted.note,/[redacted]/);assert.doesNotMatch(row("thread-1").payload_json,new RegExp(secret));
     assert.equal(state.updateThreadMeta("thread-1",{note:"uses "+secret}).updatedAt,redacted.updatedAt,"the same secret again stores the same redacted text");assert.equal(writes,1);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

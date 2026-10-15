@@ -27,7 +27,7 @@ test("managed Antigravity installation follows the curated ACP registry entry",a
     await access(join(home,"agent-runtimes","antigravity","current","localharness_external.exe"));
     const metadata=JSON.parse(await readFile(join(home,"agent-runtimes","antigravity","current","install.json"),"utf8"));
     assert.equal(metadata.source,"acp-registry");assert.equal(metadata.target,"windows-x86_64");assert.equal(calls,2);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Antigravity auth configuration preserves unrelated settings and never requires reading the token",async()=>{
@@ -40,5 +40,5 @@ test("Antigravity auth configuration preserves unrelated settings and never requ
     const settings=JSON.parse(await readFile(join(root,"settings.json"),"utf8"));assert.equal(settings.theme,"dark");assert.equal(settings.auth.keep,"yes");assert.equal(settings.auth.type,"oauth-personal");
     await writeFile(join(root,"acp_token.json"),"opaque-token-fixture");state=await readAntigravityAuthState({env});assert.equal(state.tokenPresent,true);
     await assert.rejects(()=>configureAntigravityAuth("not-a-method",{env}),/Unsupported Antigravity authentication method/);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

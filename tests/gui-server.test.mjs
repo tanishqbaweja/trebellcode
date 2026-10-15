@@ -124,7 +124,7 @@ test("runtime install endpoint bundles refresh state only for the active harness
     if(gui)await gui.close();
     AgentRuntimeManager.prototype.install=originalInstall;
     AgentRuntimeManager.prototype.probe=originalProbe;
-    await rm(home,{recursive:true,force:true});
+    await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -180,7 +180,7 @@ test("saving a Native provider key does not refetch the live model catalog durin
     assert.equal(catalog.provider,"openai");assert.deepEqual(catalog.models,["gpt-provider-fixture"]);assert.equal(catalog.defaultModel,"gpt-provider-fixture");
   }finally{
     await gui.close();
-    await rm(home,{recursive:true,force:true});
+    await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 
@@ -212,7 +212,7 @@ test("a refused provider key reads as the provider's message and stays readable 
     assert.doesNotMatch(JSON.stringify(providers),/vy-typed-key|request_id|insufficient_quota|\{"error/);
   }finally{
     await gui.close();
-    await rm(home,{recursive:true,force:true});
+    await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
 });
 

@@ -23,7 +23,7 @@ test("full repository evidence drops only the header line that repeats the visib
     assert.equal(repositoryEvidenceWithoutVisibleTask(evidence,"  "+task+"\n"),stripped,"surrounding whitespace in the visible request is ignored, as the engine trims its task");
     assert.equal(repositoryEvidenceWithoutVisibleTask(evidence,"Reply with exactly TREBELL_TOUR_OK and nothing else."),evidence,"a partial match is kept");
     assert.equal(repositoryEvidenceWithoutVisibleTask(evidence,""),evidence);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("visible-task removal only touches the evidence header's complete task",()=>{

@@ -27,7 +27,7 @@ test("unchanged managed worktree cleans and restores on demand",{timeout:30000},
     assert.equal(cleaned.removed,1);assert.equal((await gitInfo(f.worktree)).isGit,false);
     const persisted=f.state.projects().find(item=>item.path===f.worktree);assert.ok(persisted.managedWorktree.cleanedAt);assert.equal(persisted.managedWorktree.cleanupReason,"unchanged");
     const restored=await service.ensure(f.worktree);assert.equal(restored.restored,true);assert.equal((await gitInfo(f.worktree)).branch,f.branch);assert.equal(f.state.projects().find(item=>item.path===f.worktree).managedWorktree.cleanedAt,null);
-  }finally{await rm(f.home,{recursive:true,force:true})}
+  }finally{await rm(f.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("dirty and active managed worktrees are never cleaned",{timeout:30000},async()=>{
@@ -35,12 +35,12 @@ test("dirty and active managed worktrees are never cleaned",{timeout:30000},asyn
   try{
     await writeFile(join(dirty.worktree,"dirty.txt"),"keep me");const service=new WorktreeCleanupService({state:dirty.state});const result=await service.sweep();
     assert.equal(result.removed,0);assert.equal(result.results[0].reason,"dirty");assert.equal((await gitInfo(dirty.worktree)).isGit,true);
-  }finally{await rm(dirty.home,{recursive:true,force:true})}
+  }finally{await rm(dirty.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
   const active=await fixture("active");
   try{
     const service=new WorktreeCleanupService({state:active.state,getUsage:()=>({activePaths:[active.worktree],referencedPaths:[active.worktree]})});const result=await service.sweep();
     assert.equal(result.removed,0);assert.equal(result.results[0].reason,"active");assert.equal((await gitInfo(active.worktree)).isGit,true);
-  }finally{await rm(active.home,{recursive:true,force:true})}
+  }finally{await rm(active.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("merged and thread-delete rules are conservative",{timeout:30000},async()=>{
@@ -53,7 +53,7 @@ test("merged and thread-delete rules are conservative",{timeout:30000},async()=>
     const deleteProject={...mergedProject,worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:null,worktreeOnMerge:false,worktreeOnDelete:true,worktreeUnchanged:false}}};
     const blocked=await inspectManagedWorktree(deleteProject,{settings:f.state.settings(),reason:"thread-delete",referencedPaths:[f.worktree]});assert.equal(blocked.eligible,false);assert.equal(blocked.reason,"threads_remain");
     const allowed=await inspectManagedWorktree(deleteProject,{settings:f.state.settings(),reason:"thread-delete",referencedPaths:[]});assert.equal(allowed.eligible,true);assert.ok(allowed.triggers.includes("thread_deleted"));
-  }finally{await rm(f.home,{recursive:true,force:true})}
+  }finally{await rm(f.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("inactivity cleanup accepts only the configured retention window",{timeout:30000},async()=>{
@@ -62,7 +62,7 @@ test("inactivity cleanup accepts only the configured retention window",{timeout:
     const project={...f.state.projects().find(item=>item.path===f.worktree),lastOpenedAt:Date.now()-31*86400000,worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:30,worktreeOnMerge:false,worktreeOnDelete:false,worktreeUnchanged:false}}};
     const old=await inspectManagedWorktree(project,{settings:f.state.settings(),now:Date.now()});assert.equal(old.eligible,true);assert.ok(old.triggers.includes("inactive"));
     const recent=await inspectManagedWorktree({...project,lastOpenedAt:Date.now()-5*86400000},{settings:f.state.settings(),now:Date.now()});assert.equal(recent.eligible,false);assert.equal(recent.reason,"no_rule_matched");
-  }finally{await rm(f.home,{recursive:true,force:true})}
+  }finally{await rm(f.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("remote managed worktree cleanup and restore stay inside the pinned environment",async()=>{
@@ -102,7 +102,7 @@ test("named local worktree environments keep local Git mechanics",{timeout:30000
     const managed={...f.project.managedWorktree},project=f.state.touchProject(f.worktree,{environmentId:"local-named",managedWorktree:managed});let environmentExecutions=0;
     const environments={get:id=>id==="local-named"?{id,type:"local",cwd:f.worktree}:null,executeArgv:async()=>{environmentExecutions++;throw new Error("named local worktrees should use local Git")}};
     const inspection=await new WorktreeCleanupService({state:f.state,environments}).inspect(project);assert.equal(inspection.eligible,true);assert.ok(inspection.triggers.includes("unchanged"));assert.equal(environmentExecutions,0);
-  }finally{await rm(f.home,{recursive:true,force:true})}
+  }finally{await rm(f.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("managed worktrees never fall back local when their pinned environment disappeared",async()=>{

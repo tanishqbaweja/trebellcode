@@ -100,7 +100,7 @@ test("offline E2E harness checks find no harness CLI and start none",async()=>{
     assert.deepEqual(usage.windows,[]);
     assert.equal(usage.unavailable.reason,"probeFailed");
     await assert.rejects(offlineE2eClaudeCapabilities.load({command:"claude"}),/^Error: spawn claude ENOENT \(offline browser E2E answers claude as not installed\)$/);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 async function freePort(){
@@ -134,7 +134,7 @@ test("the offline E2E server answers the code hosts, host discovery and the harn
     assert.equal(usage.unavailable?.reason,"probeFailed");
   }finally{
     await gui.close();
-    await Promise.all([rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100}),rm(folder,{recursive:true,force:true})]);
+    await Promise.all([rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100}),rm(folder,{recursive:true,force:true,maxRetries:20,retryDelay:250})]);
   }
 });
 

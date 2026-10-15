@@ -37,7 +37,7 @@ test("Codex history scan is bounded to existing workspaces and excludes Trebell'
     assert.equal(found.length,1);
     assert.equal(found[0].cwd,workspace);
     assert.equal((await scanCodexHistory({env,sourceHome:join(ownHome,"codex")})).length,0);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Claude history is converted into completed user/assistant turns",()=>{

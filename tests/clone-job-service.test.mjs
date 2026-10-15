@@ -33,7 +33,7 @@ test("background clone materializes atomically and persists project completion",
     assert.equal((await stat(join(destination,"README.md"))).isFile(),true);
     const project=state.project(destination,null);assert.equal(project.cloneJob.status,"completed");assert.equal(project.cloneJob.progress,100);
     await assert.rejects(stat(project.cloneJob.tempPath));
-  }finally{await Promise.all([rm(home,{recursive:true,force:true}),rm(source,{recursive:true,force:true}),rm(parent,{recursive:true,force:true})])}
+  }finally{await Promise.all([rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250}),rm(source,{recursive:true,force:true,maxRetries:20,retryDelay:250}),rm(parent,{recursive:true,force:true,maxRetries:20,retryDelay:250})])}
 });
 
 test("cancelling a clone job transitions to cancelled and clears its temp path",async()=>{
@@ -49,7 +49,7 @@ test("cancelling a clone job transitions to cancelled and clears its temp path",
     child.stderr.write("Receiving objects: 12% (12/100)\r");
     await service.cancel(started.id);const finished=await service.wait(started.id,{timeoutMs:2000});
     assert.equal(finished.status,"cancelled");assert.equal(state.project(join(parent,"widget"),null).cloneJob.status,"cancelled");
-  }finally{await Promise.all([rm(home,{recursive:true,force:true}),rm(parent,{recursive:true,force:true})])}
+  }finally{await Promise.all([rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250}),rm(parent,{recursive:true,force:true,maxRetries:20,retryDelay:250})])}
 });
 
 test("clone jobs never persist or surface credentials embedded in repository URLs",async()=>{
@@ -69,7 +69,7 @@ test("clone jobs never persist or surface credentials embedded in repository URL
       assert.doesNotMatch(value,new RegExp(password));assert.doesNotMatch(value,new RegExp(queryCredential));
     }
     assert.equal(state.project(destination,null).cloneJob.url,"https://example.test/acme/widget.git");
-  }finally{await Promise.all([rm(home,{recursive:true,force:true}),rm(parent,{recursive:true,force:true})])}
+  }finally{await Promise.all([rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250}),rm(parent,{recursive:true,force:true,maxRetries:20,retryDelay:250})])}
 });
 
 test("remote clone jobs run Git and finalization inside the selected environment",async()=>{
@@ -96,7 +96,7 @@ test("remote clone jobs run Git and finalization inside the selected environment
     const spawned=calls.find(call=>call.kind==="spawn");assert.equal(spawned.id,"ssh-a");assert.equal(spawned.command,"git");assert.equal(spawned.cwd,"/srv/projects");assert.equal(spawned.args[0],"clone");
     assert.equal(calls.some(call=>call.kind==="exec"&&call.command==="mv"&&call.args.at(-1)==="/srv/projects/widget"),true);
     assert.equal(state.project("/srv/projects/widget","ssh-a").cloneJob.status,"completed");
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // A remote that takes the request and never answers holds git on the transfer, through its HTTP helper (git-remote-http, a child of

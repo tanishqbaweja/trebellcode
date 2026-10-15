@@ -65,7 +65,7 @@ test("Native salvage derives static task artifacts, copies them from retained se
       {source:"/app/output/model.safetensors",destination:"artifacts/app/output/model.safetensors",type:"file",status:"ok",service:null,exclude:[]},
     ]);
     assert.deepEqual(JSON.parse(await (await import("node:fs/promises")).readFile(join(trialDir,"artifacts","manifest.json"),"utf8")),result.manifest);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native salvage plan refuses task structures it cannot replay faithfully",async()=>{
@@ -108,7 +108,7 @@ test("Native salvage preserves explicit destinations and sidecar service provena
     assert.deepEqual(result.manifest[1],{
       source:"/var/export/data.json",destination:"artifacts/snapshot/data.json",type:"file",status:"ok",service:"redis",exclude:[],
     });
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native salvage mirrors Windows container artifact drives using Harbor's host layout",async()=>{
@@ -146,7 +146,7 @@ test("Native salvage reconstructs only the missing source result from durable me
     assert.equal(recovered.result?.verifier_result,null);
     assert.match(recovered.result?.task_checksum,/^recovered-unsealed:/);
     const second=await ensureRegradableNativeResult(root);assert.equal(second.created,false);assert.equal(second.result?.id,recovered.result?.id);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native dropped-run recovery waits for completion, salvages the artifact, and regrades without model inference",async()=>{
@@ -182,7 +182,7 @@ test("Native dropped-run recovery waits for completion, salvages the artifact, a
     assert.equal(recovered.regrade?.result?.verifier_result?.rewards?.reward,0);
     assert.ok(commands.some(([command,args])=>command==="docker"&&args[0]==="cp"));
     assert.ok(commands.some(([command,args])=>command==="harbor"&&args[0]==="trial"&&args[1]==="regrade"));
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native salvage does not call an ungraded regrade a recovered benchmark",async()=>{
@@ -207,5 +207,5 @@ test("Native salvage does not call an ungraded regrade a recovered benchmark",as
     });
     assert.equal(noVerifier.ok,false);
     assert.match(noVerifier.reason,/did not produce a verifier result/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

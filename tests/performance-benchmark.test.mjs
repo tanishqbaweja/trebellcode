@@ -43,7 +43,7 @@ test("durable state benchmark measures indexed writes queries and lean general-s
     const result=await benchmarkDurableState({env:{TREBELL_HOME:home,HOME:home},recordCount:40,queryCount:5});
     assert.equal(result.records,40);assert.equal(result.queries,5);assert.equal(result.persisted.usage,40);assert.equal(result.persisted.verification,4);assert.equal(result.persisted.knowledge,2);assert.equal(result.persisted.checkpoints,2);
     assert.ok(result.writeMs>=0);assert.ok(result.queryMs>=0);assert.ok(result.avgWriteUs>=0);assert.ok(result.avgQueryBatchUs>=0);assert.ok(result.compatSnapshotBytes>result.leanSnapshotBytes);assert.ok(result.uiStateFileBytes<result.compatSnapshotBytes);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("agent thread benchmark measures SQLite conversation search without hydrating full histories",async()=>{
@@ -52,7 +52,7 @@ test("agent thread benchmark measures SQLite conversation search without hydrati
     const result=benchmarkAgentThreadSearch({env:{TREBELL_HOME:home,HOME:home},threadCount:60,queryCount:5});
     assert.equal(result.threads,60);assert.equal(result.catalogThreads,60);assert.equal(result.catalogHydratedTurns,0);assert.equal(result.queries,5);assert.ok(result.returned>0);assert.equal(result.hydratedTurns,result.returned);
     assert.ok(result.restartMs>=0);assert.ok(result.writeMs>=0);assert.ok(result.queryMs>=0);assert.ok(result.avgWriteUs>=0);assert.ok(result.avgQueryUs>=0);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("core benchmark exercises SQLite event storage without a hard machine-speed threshold",async()=>{
@@ -65,5 +65,5 @@ test("core benchmark exercises SQLite event storage without a hard machine-speed
     assert.equal(result.agentThreadSearch.threads,30);assert.equal(result.agentThreadSearch.catalogHydratedTurns,0);assert.ok(result.agentThreadSearch.returned>0);assert.equal(result.agentThreadSearch.hydratedTurns,result.agentThreadSearch.returned);
     assert.equal(result.repositoryIndex.files,30);assert.equal(result.repositoryIndex.unchanged.reparsed,0);assert.equal(result.repositoryIndex.incremental.reparsed,1);
     assert.ok(result.durationMs>=0);assert.ok(result.eventStore.avgInsertUs>=0);assert.ok(result.eventStore.avgQueryUs>=0);
-  }finally{await rm(home,{recursive:true,force:true})}
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

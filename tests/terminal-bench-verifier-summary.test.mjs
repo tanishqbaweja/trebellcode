@@ -22,7 +22,7 @@ test("Terminal-Bench verifier summary reads official reward and scorer diagnosti
     await writeFile(join(verifier,"reward.json"),JSON.stringify({reward:0}));
     await writeFile(join(verifier,"test-stdout.txt"),"Scoring: 60/116 lines correct = 51.72%\nCases: 6/10 perfect = 60.00%\nPASSED\n");
     assert.deepEqual(await readTrialVerifierSummary(root),{trials:1,tests:1,passed:1,failed:0,pending:0,skipped:0,other:0,officialReward:0,diagnostic:{correct:60,total:116,percent:51.72},cases:{correct:6,total:10,percent:60}});
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Terminal-Bench verifier summary reads the official reward from reward.txt when reward.json is absent",async()=>{
@@ -39,7 +39,7 @@ test("Terminal-Bench verifier summary reads the official reward from reward.txt 
       await writeFile(join(verifier,"reward.txt"),text);
       assert.equal(Object.hasOwn(await readTrialVerifierSummary(root),"officialReward"),false);
     }
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Terminal-Bench verifier summary normalizes trace-results counts",()=>{
@@ -57,7 +57,7 @@ test("Terminal-Bench verifier summary aggregates completed trial CTRF files",asy
     const traceVerifier=join(root,job,"trial-trace","verifier");await mkdir(traceVerifier,{recursive:true});await writeFile(join(traceVerifier,"trace_results.json"),JSON.stringify({total_cases:20,passed_cases:15,partial_score:.75}));
     await mkdir(join(root,job,"trial-without-verifier-summary"),{recursive:true});
     assert.deepEqual(await readJobVerifierSummary(root,job),{trials:3,tests:30,passed:23,failed:6,pending:1,skipped:0,other:0});
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Terminal-Bench verifier summary reads a trace-results trial directly when CTRF is absent",async()=>{
@@ -66,7 +66,7 @@ test("Terminal-Bench verifier summary reads a trace-results trial directly when 
     const verifier=join(root,"verifier");await mkdir(verifier,{recursive:true});
     await writeFile(join(verifier,"trace_results.json"),JSON.stringify({total_cases:20,passed_cases:19,partial_score:.95}));
     assert.deepEqual(await readTrialVerifierSummary(root),{trials:1,tests:20,passed:19,failed:1,pending:0,skipped:0,other:0});
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Terminal-Bench verifier summary reads one regraded trial directly",async()=>{
@@ -75,5 +75,5 @@ test("Terminal-Bench verifier summary reads one regraded trial directly",async()
     const verifier=join(root,"verifier");await mkdir(verifier,{recursive:true});
     await writeFile(join(verifier,"ctrf.json"),JSON.stringify({results:{summary:{tests:4,passed:3,failed:1,pending:0,skipped:0,other:0}}}));
     assert.deepEqual(await readTrialVerifierSummary(root),{trials:1,tests:4,passed:3,failed:1,pending:0,skipped:0,other:0});
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

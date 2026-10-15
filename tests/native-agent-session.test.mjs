@@ -251,7 +251,7 @@ test("Native session keeps virtualized direct-status evidence persisted but coll
     const exposedReceipt=requests[0].messages.find(message=>message.role==="assistant"&&String(message.content||"").includes("CRITICAL_ASSERTION"))?.content||"";
     assert.match(exposedReceipt,new RegExp(handle));assert.match(exposedReceipt,/trebell_output\/inspect/);
     assert.ok(events.some(event=>event.name==="native.context.provider_view_compacted"&&event.data?.count===1&&event.data?.savedChars>0));
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session gives cache providers a stable compact direct-status prefix before first exposure",async()=>{
@@ -269,7 +269,7 @@ test("Native session gives cache providers a stable compact direct-status prefix
     const firstReceipt=requests[0].messages.find(message=>message.role==="assistant"&&String(message.content||"").includes(handle))?.content||"";assert.match(firstReceipt,/trebell_output\/inspect/);
     await session.prompt([{type:"text",text:"continue again"}]);
     const secondReceipt=requests[1].messages.find(message=>message.role==="assistant"&&String(message.content||"").includes(handle))?.content||"";assert.equal(secondReceipt,firstReceipt);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session leaves non-virtualized direct-status tool history intact for later provider reasoning",async()=>{
@@ -613,7 +613,7 @@ test("Native session keeps large tool output outside hot provider history behind
     const read=await store.read({handle:persisted._trebell_output.handle,start_line:1,max_chars:48000});assert.match(read.content,/x{1000}/);
     await session.prompt([{type:"text",text:"continue from the prior failure"}]);
     const nextTurnObservation=requests[2].messages.find(message=>message.role==="tool");assert.ok(nextTurnObservation);assert.match(nextTurnObservation.content,new RegExp(persisted._trebell_output.handle));assert.match(nextTurnObservation.content,/FAIL important/);assert.ok(nextTurnObservation.content.length<observation.content.length/2);assert.doesNotMatch(nextTurnObservation.content,/x{3000}/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session does not echo terminal command metadata back into model tool context",async()=>{
@@ -655,7 +655,7 @@ test("Native session cools virtualized output after one hot same-turn model read
     const fresh=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="read")?.content||"";
     assert.match(hot,/CRITICAL_ASSERTION/);assert.match(hot,/out_[a-zA-Z0-9-]+/);assert.ok(cooled.length<hot.length);assert.match(cooled,/CRITICAL_ASSERTION/);assert.match(cooled,/out_[a-zA-Z0-9-]+/);assert.match(fresh,/legacy/);
     assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn"&&event.data?.savedChars>400));
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session preserves already-sent virtualized history for cache-capable providers",async()=>{
@@ -684,7 +684,7 @@ test("Native session preserves already-sent virtualized history for cache-capabl
     const persisted=session.messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"";
     assert.ok(hot.length>3000);assert.equal(later,hot);assert.equal(persisted,hot);
     assert.equal(events.filter(event=>event.name==="native.tool.history_cooled").length,0);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session delays OpenAI historical read cooling until provider input is near the context budget",async()=>{
@@ -740,7 +740,7 @@ test("Native session archives small terminal probes hot, then cools older succes
     const history=events.find(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn");assert.ok(history);assert.ok(history.data.savedChars>10_000);
     assert.ok(cooled.length<1800);assert.match(cooled,/out_[a-zA-Z0-9-]+/);assert.match(cooled,/"preview"/);
     assert.ok(recent.length>4500);assert.match(recent,/probe-probe-11/);assert.match(recent,/x{1000}/,"the configured recent probe window should remain exact");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session does not create archive-backed receipts when output retrieval is excluded by the active tool allowlist",async()=>{
@@ -760,7 +760,7 @@ test("Native session does not create archive-backed receipts when output retriev
     const observation=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="probe")?.content||"";
     assert.ok(observation.length>4500);assert.doesNotMatch(observation,/"_trebell_output"/);
     assert.equal(events.some(event=>event.name==="native.tool.output_archived"),false);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session keeps small terminal probe history byte-stable on prompt-cache providers",async()=>{
@@ -780,7 +780,7 @@ test("Native session keeps small terminal probe history byte-stable on prompt-ca
     const observation=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="probe")?.content||"";
     assert.ok(observation.length>4500);assert.doesNotMatch(observation,/"_trebell_output"/);
     assert.equal(events.some(event=>event.name==="native.tool.output_archived"),false);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session uses the conservative 160k OpenAI cooling trigger when the context window is unknown",async()=>{
@@ -1095,7 +1095,7 @@ test("Native session does not let provider-supplied recovery-like ids bypass pos
     const snapshot=requests[3].messages.find(message=>message.role==="tool"&&message.toolCallId==="native-recovery-snapshot-3-1");assert.ok(snapshot);
     assert.match(snapshot.content,/postEditVerified/);assert.match(snapshot.content,/byte-match the exact successful edit/i);assert.doesNotMatch(snapshot.content,/suffix line\nsuffix line\nsuffix line/);
     assert.equal(events.filter(item=>item.name==="native.tool.post_edit_read_compacted").length,1);
-  }finally{await rm(directory,{recursive:true,force:true})}
+  }finally{await rm(directory,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session keeps a post-edit reread in full when the workspace changed after the edit",async()=>{
@@ -1715,7 +1715,7 @@ test("Native session collapses repeated command-output lines for the model and k
     assert.equal(raw._trebell_output,undefined,"as for an uncollapsed output, a prompt-caching provider's history is not archived");assert.equal(events.some(event=>event.name==="native.tool.output_archived"),false);
     const fileObservation=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="data")?.content||"";
     assert.equal(fileObservation.split("same line of a data file").length-1,50,"file reads are never collapsed");assert.doesNotMatch(fileObservation,/previous line repeated/);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a collapsed command output gives the person the archive pointer an uncollapsed one of its size gets",async()=>{
@@ -1739,7 +1739,7 @@ test("a collapsed command output gives the person the archive pointer an uncolla
     assert.equal(raw.stderr,(warning+"\n").repeat(150));assert.equal(raw._trebell_output?.archived,true);assert.equal(raw._trebell_output.handle,handle,"the pointer names the copy the collapse stored");assert.match(raw._trebell_output.note,/archived by Trebell/);
     assert.equal(events.filter(event=>event.name==="native.tool.output_archived"&&event.data?.handle===handle).length,1);
     assert.equal((await store.read({handle,start_line:1,max_chars:48_000})).content.split(warning).length-1,150);
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session collapses repeated background-process output lines and leaves them whole when output retrieval is unavailable",async()=>{
@@ -1767,7 +1767,7 @@ test("Native session collapses repeated background-process output lines and leav
     assert.equal(noOutputTool.split(line).length-1,60,"without trebell_output the raw lines could not be retrieved, so they stay");assert.doesNotMatch(noOutputTool,/previous line repeated/);
     const excluded=await run({allowlist:["trebell_process/status"]});
     assert.equal(excluded.split(line).length-1,60,"an allowlist that excludes trebell_output keeps the lines whole");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session gives the model a short process receipt with its handle and keeps the full record for the person",async()=>{
@@ -1816,7 +1816,7 @@ test("Native session gives the model a short process receipt with its handle and
     assert.deepEqual(seen("missing"),{success:false,error:"Native background process not found"});
     const raw=updates.find(entry=>entry.update?.sessionUpdate==="tool_call_update"&&entry.update.toolCallId==="start")?.update?.rawOutput;
     assert.equal(raw.processId,processId);assert.equal(raw.osPid,4242);assert.equal(raw.environmentId,"7c9e6679-7425-40de-944b-e07fc1f90ae7");assert.equal(raw.command,longCommand);assert.equal(raw.handle,"p1");
-  }finally{await rm(root,{recursive:true,force:true})}
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native session still answers a running-state question about a full process id directly",async()=>{

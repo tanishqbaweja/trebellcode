@@ -117,7 +117,7 @@ test("terminal history pruning removes only stopped sessions older than the cuto
     assert.equal(manager.snapshot("old"),null);
     assert.equal(manager.snapshot("fresh").running,false);
     assert.equal(manager.snapshot("live").running,true);
-  }finally{await manager.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true})}
+  }finally{await manager.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("shutdown preserves the age of already-stopped terminal history",async()=>{
@@ -128,7 +128,7 @@ test("shutdown preserves the age of already-stopped terminal history",async()=>{
     await manager.shutdown();
     const stored=JSON.parse(await import("node:fs/promises").then(fs=>fs.readFile(join(home,"terminal-history.json"),"utf8")));
     assert.equal(stored.sessions.find(item=>item.id==="old").updatedAt,1234);
-  }finally{await manager.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true})}
+  }finally{await manager.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a long run of output leaves the terminal manager's event loop free and its history bounded",{timeout:120000},async()=>{

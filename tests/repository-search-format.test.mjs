@@ -127,7 +127,7 @@ test("a broad code search of a real repository stays within the hot-context boun
       assert.equal(shaped.virtualized,false,`${query}: the model reads the whole result`);
       assert.equal(shaped.value,text);
     }
-  }finally{await Promise.all([rm(root,{recursive:true,force:true}),rm(store,{recursive:true,force:true})])}
+  }finally{await Promise.all([rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250}),rm(store,{recursive:true,force:true,maxRetries:20,retryDelay:250})])}
 });
 
 test("definition hits past the limit keep their text only while the result stays in hot context, and the rest are listed by line number",async()=>{
@@ -148,7 +148,7 @@ test("definition hits past the limit keep their text only while the result stays
     assert.ok(text.includes(`${listed[0]}\n  +1 more at 1\n`),"the first definition left without text is listed by its line number");
     const shaped=await new NativeToolOutputStore({directory:store}).virtualize(text,{namespace:"trebell_repo",name:"search_code"});
     assert.equal(shaped.virtualized,false,"the model reads the whole result");
-  }finally{await Promise.all([rm(root,{recursive:true,force:true}),rm(store,{recursive:true,force:true})])}
+  }finally{await Promise.all([rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250}),rm(store,{recursive:true,force:true,maxRetries:20,retryDelay:250})])}
 });
 
 test("code search without git grep says that only indexed source was searched",()=>{

@@ -31,7 +31,7 @@ test("a folder without Git lists and finds files by forward-slash relative paths
     assert.equal(result.items[0].path,join(dir,"src","components","UserCard.jsx"));
     const tree=await environmentWorkspaceTree(dir,{depth:3,limit:20});
     assert.deepEqual(tree.entries.map(item=>item.relativePath),["src","src/components","src/components/UserCard.jsx"]);
-  }finally{await rm(dir,{recursive:true,force:true});}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250});}
 });
 
 test("workspace search and write are backed by real files",async()=>{
@@ -44,7 +44,7 @@ test("workspace search and write are backed by real files",async()=>{
     assert.equal(result.items[0].path,path);
     const fuzzy=await workspaceSearch(dir,"exjs");
     assert.equal(fuzzy.items[0].path,path);
-  }finally{await rm(dir,{recursive:true,force:true});}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250});}
 });
 
 test("workspace search uses Git discovery and fuzzy ranking beyond the old tree depth",async()=>{
@@ -60,7 +60,7 @@ test("workspace search uses Git discovery and fuzzy ranking beyond the old tree 
     assert.equal(userCard.items[0].path,deep);
     const users=await workspaceSearch(dir,"cmpusr",{limit:10});
     assert.equal(users.items[0].path,compare);
-  }finally{await rm(dir,{recursive:true,force:true});}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250});}
 });
 
 function remoteEnvironment(){
@@ -134,7 +134,7 @@ test("the Files editor reads bytes that are not UTF-8 text as binary, and never 
     assert.equal(text.binary,false);assert.equal(text.content,"﻿naïve “text”\r\nline two\r\n");
     assert.equal((await environmentWorkspaceEditorSave(join(dir,"bom.txt"),text.content,{root:dir,version:text.version})).version,text.version);
     assert.ok((await readFile(join(dir,"bom.txt"))).equals(bom),"saving what was read writes the same bytes back");
-  }finally{await rm(dir,{recursive:true,force:true});}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250});}
 });
 
 test("a remote file reaches the Files editor byte for byte, binary ones as binary",async()=>{
@@ -181,7 +181,7 @@ test("a Files editor save names the version it edited, and a file that changed o
     await assert.rejects(()=>readFile(path),{code:"ENOENT"});
     await environmentWorkspaceEditorSave(path,"again\n",{root:dir,version:null});
     assert.equal(await readFile(path,"utf8"),"again\n");
-  }finally{await rm(dir,{recursive:true,force:true});}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250});}
   // On a remote environment too.
   const files=new Map([["/srv/app/notes.txt",Buffer.from("one\n")]]),options={environments:remoteFiles(files),environmentId:"ssh-a",root:"/srv/app"};
   const opened=await environmentWorkspaceEditorFile("/srv/app/notes.txt",options);
@@ -224,5 +224,5 @@ test("the Files editor reads and saves a local file only inside the project's fo
     assert.equal(await readFile(join(dir,"docs","new","notes.md"),"utf8"),"new\n");
     await symlink(dir,join(base,"project-link"),"junction");
     assert.equal((await environmentWorkspaceEditorFile(join(base,"project-link","src","a.js"),{root:join(base,"project-link")})).content,"b\n");
-  }finally{await rm(base,{recursive:true,force:true})}
+  }finally{await rm(base,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
