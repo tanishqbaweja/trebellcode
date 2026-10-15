@@ -1950,6 +1950,21 @@ test("a Native turn after the user changed the permission profile starts with a 
   assert.deepEqual(notes(requests.at(-1)),[toReadOnly,"Permission profile changed from read-only to supervised. A call refused under the earlier profile is not refused for that reason any more: call the tool you need, and Trebell asks the user where this profile needs approval."]);
 });
 
+// Read only refuses every change, so the session runs its turns with changesRefused. Live (2026-10-15), a Read only "create this
+// file" turn took 5 model calls (a falsification pass of the profile's own refusal, then the completion gate) where 1 was right.
+test("a Native turn under Read only answers a request for a change with the model's first answer",async()=>{
+  let calls=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",permissionMode:"read-only",tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{calls++;return {id:"r"+calls,text:"I can't create notes.txt: this thread is in Read only mode, so file writes are refused.",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({model:"model-a"});
+  const result=await session.prompt([{type:"text",text:"Create a file named notes.txt in the current folder containing the word hello."}]);
+  assert.equal(calls,1,"no blocker challenge and no completion gate under Read only");
+  assert.equal(result.stopReason,"end_turn");
+});
+
 // The working context goes in front of the request with its own copy of the user's parts (for measuring), which the session used to
 // add to the request's own parts: the request was counted, and read by the controller's checks, twice.
 test("a Native request sent with working context counts the user's request once",async()=>{

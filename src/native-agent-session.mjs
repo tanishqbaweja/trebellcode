@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileUriPath } from "./file-uri.mjs";
 import { requestsTaskMutation, runNativeAgentTurn } from "./native-agent-loop.mjs";
 import { platformToolDefinition, platformToolParallelSafe } from "./platform-tool-catalog.mjs";
+import { normalizePolicyProfile } from "./policy-engine.mjs";
 import { attachNativePromptProvenance, NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { compactDirectTerminalStatusProviderHistory, createDirectTerminalStatusProviderHistoryProjector, coolHistoricalReadToolResults, coolNativeProviderHistory, coolNativeProviderHistorySince } from "./native-tool-history.mjs";
 import { providerFeatureEnabled } from "./provider-capabilities.mjs";
@@ -627,12 +628,14 @@ export class NativeAgentSession{
       :this.onEvent;
     // A prompt the completion gate judges is only answered once the gate accepts, and one that names a tool to call is rejected
     // without that call, so neither shows drafts; both are decided on the exact messages the loop starts from.
+    // Read only refuses every change, so the loop answers a request for one instead of pushing toward it, and the gate never judges it.
+    const changesRefused=normalizePolicyProfile(statedMode)==="read-only";
     let draftsOn=false;
-    if(this.streamDrafts===true)try{draftsOn=!(this.semanticCompletionGate===true&&requestsTaskMutation(base))&&!explicitToolNamed(base,this.tools)}catch{}
+    if(this.streamDrafts===true)try{draftsOn=!(this.semanticCompletionGate===true&&!changesRefused&&requestsTaskMutation(base))&&!explicitToolNamed(base,this.tools)}catch{}
     try{
       const result=await runNativeAgentTurn({
         provider:this.provider,model:this.model,messages:base,tools:this.tools,reasoningEffort:this.reasoningEffort,maxModelTurns,maxToolCalls,maxOutputTokens,maxWallTimeMs,signal:this.controller.signal,onEvent:loopOnEvent,
-        autoRerunVerification:true,semanticCompletionGate:this.semanticCompletionGate,priorTerminalRuns,synthesizeTerminalReports:true,directTerminalStatusCommands:true,directExactReplacementStatus:true,directExactWriteStatus:true,directExactReadStatus:true,directExactListStatus:true,directGitStatus:true,directProcessRunningStatus:true,directBrowserRuntimeStatus:true,directBrowserScreenshot:true,
+        autoRerunVerification:true,semanticCompletionGate:this.semanticCompletionGate,changesRefused,priorTerminalRuns,synthesizeTerminalReports:true,directTerminalStatusCommands:true,directExactReplacementStatus:true,directExactWriteStatus:true,directExactReadStatus:true,directExactListStatus:true,directGitStatus:true,directProcessRunningStatus:true,directBrowserRuntimeStatus:true,directBrowserScreenshot:true,
         metadata:{contextWindow:this.contextWindow,sessionId:this.sessionId},
         toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null,
         coolReadToolHistory:this.provider==="openai"?(this.openAiServerCompactionThreshold?null:coolOpenAiLongTurnHistory):preserveCacheHistory?null:coolProviderHistory,

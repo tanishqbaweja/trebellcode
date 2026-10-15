@@ -7059,6 +7059,26 @@ test("native does not turn a read-only admitted limitation into completion recov
   assert.equal(events.filter(event=>event.name==="native.completion.self_admitted_gap").length,0);
 });
 
+test("native answers a request for a change at once when the profile refuses every change: no blocker challenge, no completion gate",async()=>{
+  const run=async({changesRefused,semanticCompletionGate})=>{
+    let providerCalls=0;const events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:"Create a file named notes.txt in the current folder containing the word hello."}],maxModelTurns:6,maxToolCalls:8,onEvent:event=>events.push(event.name),
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],changesRefused,semanticCompletionGate,
+      providerTurn:async()=>{providerCalls++;return {text:"I can't create notes.txt: this thread is in Read only mode, so file writes are refused.",toolCalls:[],usage:{}}},
+      executeTool:async()=>({exitCode:0}),
+    });
+    return {providerCalls,text:result.text,events};
+  };
+  const refused=await run({changesRefused:true,semanticCompletionGate:true});
+  assert.equal(refused.providerCalls,1,"the first answer is the answer");
+  assert.match(refused.text,/Read only mode/);
+  assert.equal(refused.events.includes("native.completion.self_admitted_gap"),false);
+  assert.equal(refused.events.includes("native.completion.gate_requested"),false);
+  const allowed=await run({changesRefused:false,semanticCompletionGate:false});
+  assert.ok(allowed.providerCalls>1&&allowed.events.includes("native.completion.self_admitted_gap"),"the same answer is challenged where changes are allowed");
+});
+
 test("native pre-edit blocker challenge is one-shot when exact reconstruction remains impossible",async()=>{
   let providerCalls=0;const events=[];
   const result=await runNativeAgentTurn({
