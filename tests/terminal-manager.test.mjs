@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -206,6 +208,31 @@ test("when the terminal worker dies its terminals end: an open socket hears the 
     await assert.rejects(()=>terminals.write(session.id,"echo after\r"),/stopped/i,"input to it is refused");
     assert.ok(Date.now()-asked<1000,"at once, not after the worker's timeout");
   }finally{try{socket?.terminate()}catch{}attached.close();await new Promise(resolve=>server.close(resolve));await terminals.shutdown()}
+});
+
+// Each write of the history redacts and rewrites every terminal's scrollback (8 MB each at most) on the server's event loop, which in
+// the desktop app is its main process. A worker that dies ends all of its terminals at once, so their history is written once, not
+// once for each of them. The writes are counted where the manager makes them, through node:fs's renameSync.
+test("when the terminal worker dies under several terminals, their history is written once",{timeout:90000},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-terminal-worker-history-")),history=join(home,"terminal-history.json"),writes=[];
+  const renameSync=fs.renameSync;
+  fs.renameSync=(from,to)=>{if(String(to)===history)writes.push(String(from));return renameSync(from,to)};syncBuiltinESMExports();
+  const terminals=new TerminalManager({env:{...process.env,TREBELL_HOME:home}});
+  try{
+    const sessions=[];for(let index=0;index<3;index++)sessions.push(await terminals.create({cwd:process.cwd(),name:"Terminal "+(index+1)}));
+    // Each shell's prompt is in and its own save is done, so the writes counted below are the worker's death's.
+    assert.ok(await until(()=>sessions.every(session=>terminals.snapshot(session.id).buffer.length>0),20000),"each shell shows its prompt");
+    assert.ok(await until(()=>terminals.saveTimer===null,5000),"no save is waiting");
+    const worker=terminals.child;writes.length=0;
+    // The manager's own exit listener came first, so this one counts what it wrote.
+    const written=new Promise(resolve=>worker.once("exit",()=>resolve(writes.length)));
+    worker.kill();
+    assert.equal(await written,1,"one write for the three terminals that ended");
+    for(const session of sessions)assert.equal(terminals.snapshot(session.id).running,false);
+    const saved=JSON.parse(fs.readFileSync(history,"utf8")).sessions;
+    assert.deepEqual(saved.map(item=>item.id).sort(),sessions.map(session=>session.id).sort(),"the one write holds all of them");
+    assert.ok(saved.every(item=>item.running===false&&item.exitCode===null));
+  }finally{fs.renameSync=renameSync;syncBuiltinESMExports();await terminals.shutdown();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
 });
 
 test("after the terminal worker dies, the next terminal starts a new worker and runs commands",{timeout:90000},async()=>{

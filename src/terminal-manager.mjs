@@ -91,13 +91,18 @@ export class TerminalManager extends EventEmitter{
     child.on("exit",()=>{
       if(this.child===child)this.child=null;
       for(const p of this.pending.values())p.reject(new Error("Terminal worker exited"));this.pending.clear();
-      for(const session of this.sessions.values())if(session.running)this.#exited(session.id,null,null);
+      // Its terminals all end at once, so their history is written once: each write redacts and rewrites every terminal's scrollback
+      // (8 MB each at most) on the server's event loop, in the desktop app its main process, which a write for each terminal held
+      // that many times over.
+      let ended=0;
+      for(const session of this.sessions.values())if(session.running){this.#exited(session.id,null,null,{save:false});ended++}
+      if(ended)this.#saveHistory();
     });
   }
   // A session's program ended: the session stays as stopped history, and its waiters and open sockets hear the exit.
-  #exited(id,exitCode,signal){
+  #exited(id,exitCode,signal,{save=true}={}){
     const session=this.sessions.get(id); if(session){session.running=false;session.exitCode=exitCode;session.updatedAt=Date.now();}
-    this.#saveHistory();
+    if(save)this.#saveHistory();
     const waiters=this.exitWaiters.get(id)||[];
     this.exitWaiters.delete(id);
     for(const resolve of waiters)resolve({exitCode,signal});
