@@ -884,3 +884,40 @@ test("Edit on another queued follow-up waits while one is being edited, so the u
     await expect(betaEdit).toBeEnabled();await betaEdit.click();await expect(composer(page)).toHaveValue("Queued beta");
   }finally{await codex.close()}
 });
+
+// A double click on a queued follow-up's Remove takes out that follow-up only. The first click removes it once the queue has answered,
+// and the next follow-up comes up in its place under the pointer, where the second click lands: the rest of the press does nothing,
+// as on a thread's menu. Enter held on Remove takes out one follow-up too, and a click of its own still removes. In Codex's queue (a
+// General chat's) and Trebell's own (a project thread's) alike.
+for(const kind of ["Codex","Trebell"]){
+  test(`a double click or Enter held on Remove in ${kind}'s queue removes only the follow-up it was aimed at`,async({page})=>{
+    test.setTimeout(90_000);
+    await page.setViewportSize({width:1280,height:1100});
+    const codex=await startCodex(page,{name:"Queue double remove",project:kind==="Trebell"});
+    try{
+      codex.holdTurns=true;
+      await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+      await expect(stop(page)).toBeVisible();
+      for(const text of ["Queued alpha","Queued beta","Queued gamma","Queued delta"]){await sendTyped(page,text);await expect(page.locator(".queued-message").filter({hasText:text})).toHaveCount(1)}
+      const remove=text=>page.locator(".queued-message").filter({hasText:text}).getByRole("button",{name:"Remove",exact:true});
+      const box=await remove("Queued alpha").boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+      const under=()=>page.evaluate(([x,y])=>{const node=document.elementFromPoint(x,y);return node?.closest(".queued-message")?.querySelector("p")?.textContent+" · "+node?.textContent},[x,y]);
+      // The double click's first click, and its second once alpha has gone and beta's Remove is under the pointer.
+      await page.mouse.move(x,y);await page.mouse.down();await page.mouse.up();
+      await expect(page.locator(".queued-message p")).toHaveText(["Queued beta","Queued gamma","Queued delta"]);
+      expect(await under()).toBe("Queued beta · Remove");
+      await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+      await page.waitForTimeout(600);
+      await expect(page.locator(".queued-message p")).toHaveText(["Queued beta","Queued gamma","Queued delta"]);
+      if(kind==="Codex")expect(codex.calls.filter(method=>method==="thread/queue/delete")).toHaveLength(1);
+      await remove("Queued beta").focus();await page.keyboard.down("Enter");
+      for(let repeat=0;repeat<6;repeat++)await page.keyboard.down("Enter");
+      await page.keyboard.up("Enter");
+      await expect(page.locator(".queued-message p")).toHaveText(["Queued gamma","Queued delta"]);
+      if(kind==="Codex")expect(codex.calls.filter(method=>method==="thread/queue/delete")).toHaveLength(2);
+      await shoot(page,"queue-double-remove-"+kind.toLowerCase());
+      await remove("Queued gamma").click();
+      await expect(page.locator(".queued-message p")).toHaveText(["Queued delta"]);
+    }finally{await codex.close()}
+  });
+}
