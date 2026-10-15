@@ -199,6 +199,22 @@ function focusTerminalDrawer(){
   requestAnimationFrame(attempt);
 }
 
+// Focus for a person who asked for a new task (Ctrl+N, New thread or New task in the sidebar, the palette, History, a General chat
+// from Projects): its composer, once it takes typing and the palette has gone, so what they type next lands there instead of on the
+// button they clicked, or nowhere. Focus they put somewhere else meanwhile stays.
+function focusNewTask(){
+  const started=performance.now();let from;
+  const attempt=()=>{
+    if(!document.querySelector('[data-testid="command-palette"]')){
+      const focused=document.activeElement,composer=document.querySelector('[data-testid="composer"]');
+      if(from===undefined)from=focused;else if(focused!==from&&focused!==document.body)return;
+      if(composer&&!composer.disabled){composer.focus({preventScroll:true});if(document.activeElement===composer)return}
+    }
+    if(performance.now()-started<4000)requestAnimationFrame(attempt);
+  };
+  attempt();
+}
+
 // In a browser tab the app's pages are entries of the tab's history too (see the navigation history in App). The desktop window
 // (window.trebellDesktop) has no browser Back or Forward and keeps that history in memory only.
 const BROWSER_NAVIGATION=typeof window!=="undefined"&&!window.trebellDesktop&&typeof window.history?.pushState==="function";
@@ -2613,7 +2629,7 @@ export default function App(){
       const command=resolveKeybinding(event,settings,context,{scripts:projectlessMode?[]:currentProject?.scripts||[]});
       if(!command){desktopWindowZoomKey(event);return}
       event.preventDefault();
-      if(command==="newChat")runUserAction(newChat,"Could not start a new thread");
+      if(command==="newChat")runUserAction(newTask,"Could not start a new thread");
       // The palette's key opens and closes it over anything but one of the app's own questions: the question stays on top, so the
       // palette would open, or close, unseen behind it.
       else if(command==="commandPalette"){if(!document.querySelector("dialog[open]"))setPaletteOpen(value=>!value)}
@@ -3484,6 +3500,8 @@ export default function App(){
   }
   // A new task is asked for after any thread still opening, so it replaces that open (and a harness switch's reopen of it).
   async function newChat(){openSeqRef.current++;openingThreadRef.current=null;pendingRuntimeThreadRef.current=null;setOpening(null);showNewTask();releaseThreadNotifications(heldNotificationsRef.current?.token)}
+  // A new task the person asks for has the keyboard in its composer (focusNewTask).
+  async function newTask(){await newChat();focusNewTask()}
   // After the thread shown is archived or deleted: a new task, as newChat; under another thread still opening, only the view under
   // that open becomes the new task, and the open goes on (one that fails then comes back to the new task, not to a thread gone).
   async function leaveRemovedThread(threadId){
@@ -3500,7 +3518,7 @@ export default function App(){
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
-    await newChat();
+    await newTask();
     projectChoiceSeqRef.current++;setProjectlessMode(true);setGeneralEnvironmentId(scratch.environmentId||null);setCurrentProject(null);setProjectPath(scratch.path);setGitInfo(null);setWorkspaceMode("current");
     if(["files","diff","source"].includes(rightPanelTab)){setRightPanelTab("runtime");setRightPanelOpen(false);setRightPanelMaximized(false)}
     return scratch;
@@ -5269,7 +5287,7 @@ export default function App(){
   });
   const sidebarNavigate=useLatestCallback(navigateSection);
   const sidebarOpenThread=useLatestCallback(openThread);
-  const sidebarNewThread=useLatestCallback(newChat);
+  const sidebarNewThread=useLatestCallback(newTask);
   const sidebarOpenPalette=useCallback(()=>setPaletteOpen(true),[]);
   const closePalette=useCallback(()=>setPaletteOpen(false),[]);
   // The sidebar and the command palette show the user's own keybindings (Settings > Shortcuts), not the defaults. A command whose
@@ -5372,7 +5390,7 @@ export default function App(){
   // It replaces the draft as an edit does, so a note about the draft it replaces goes.
   function suggestPrompt(text){composerPromptEdit();setPrompt(text);requestAnimationFrame(()=>{const node=document.querySelector('[data-testid="composer"]');if(!node)return;node.focus();node.setSelectionRange(text.length,text.length)})}
   const paletteActions=paletteOpen?[
-    {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:shortcutHint(commandKey("newChat")),onRun:newChat},
+    {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:shortcutHint(commandKey("newChat")),onRun:newTask},
     {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
     ...(window.trebellDesktop?.pickDirectory?[{id:"folder",label:"Open workspace folder",detail:projectPath||"Choose a local folder",onRun:pickWorkspace}]:[]),
     {id:"projects",label:"Recent projects",detail:"Switch checkouts or clone a repository",onRun:()=>setSection("projects")},
@@ -5593,7 +5611,7 @@ export default function App(){
       {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
           {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert">Could not load thread history: {threadHistory.error}</div>}
-          {threadHistory.items.length?threadHistory.items.map(t=>{const owner=threadCatalogRuntime(t,threadMeta[t.id]||{},agentRuntime)||agentRuntime;return <button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><div><strong title={titleOf(t)}>{titleOf(t)}</strong><span title={t.preview||t.cwd||undefined}>{t.preview||t.cwd}</span></div><em className="history-runtime-chip" title={"Owned by "+agentRuntimeName(owner)}>{HISTORY_RUNTIME_LABELS[owner]||owner}</em><time dateTime={isoDateTime(t.updatedAt)} title={fullDateTime(t.updatedAt)}>{compactDateTime(t.updatedAt)}</time></button>}):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button>}</div>}
+          {threadHistory.items.length?threadHistory.items.map(t=>{const owner=threadCatalogRuntime(t,threadMeta[t.id]||{},agentRuntime)||agentRuntime;return <button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><div><strong title={titleOf(t)}>{titleOf(t)}</strong><span title={t.preview||t.cwd||undefined}>{t.preview||t.cwd}</span></div><em className="history-runtime-chip" title={"Owned by "+agentRuntimeName(owner)}>{HISTORY_RUNTIME_LABELS[owner]||owner}</em><time dateTime={isoDateTime(t.updatedAt)} title={fullDateTime(t.updatedAt)}>{compactDateTime(t.updatedAt)}</time></button>}):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newTask,"Could not start a new thread")}>Start a new task</button>}</div>}
           {threadHistory.olderError&&!threadHistory.loading&&<div className="history-load-error provider-status-error" role="alert">Could not load older threads: {threadHistory.olderError}</div>}{(threadHistory.nextCursor||threadCatalogCursor)&&<div className="history-page-control history-load-more"><button type="button" aria-disabled={threadHistory.loading||undefined} onClick={()=>loadOlderThreadHistory()}>{threadHistory.loading?"Loading older threads…":"Load older threads"}</button></div>}
         </div></div>}
       </main>

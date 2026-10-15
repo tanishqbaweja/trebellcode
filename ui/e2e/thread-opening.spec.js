@@ -450,6 +450,63 @@ test("of two threads opening at once the last one asked for wins, whichever answ
   }finally{await harness.close()}
 });
 
+// A new task is asked for to be typed: from an open thread, from one still opening and in a narrow window, Ctrl+N, the sidebar's
+// New thread and New task and the palette's New thread and New general chat each leave the keyboard in its composer, so what the
+// person types next lands there instead of nowhere or on the button they clicked.
+test("a new task asked for with Ctrl+N, the sidebar's New thread or New task, or the palette has the keyboard in its composer",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
+  const composer=page.getByTestId("composer"),palette=page.getByTestId("command-palette");
+  const newThread=page.getByRole("button",{name:"New thread",exact:true}),newTask=page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true});
+  // The new task shows with the keyboard in its composer, and the text typed next is its draft.
+  const typeInNewTask=async text=>{
+    await expect(headerTitle(page)).toHaveText("New Trebell task");await expect(page.locator(".thread-row.active")).toHaveCount(0);
+    await expect(composer).toBeFocused();
+    await page.keyboard.type(text,{delay:15});await expect(composer).toHaveValue(text);
+  };
+  try{
+    await start(page,harness);
+    // Ctrl+N from an open thread, after a click in its conversation took the keyboard off the controls.
+    await openRow(page,ALPHA);
+    await page.locator(".conversation-column").click({position:{x:5,y:5}});await expect(composer).not.toBeFocused();
+    await page.keyboard.press("Control+n");
+    await typeInNewTask("Plan the export fix");
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      for(const [width,height] of [[1280,800],[900,800]]){await page.setViewportSize({width,height});await frames(page,3);await expect(composer).toBeFocused();await page.screenshot({animations:"disabled",path:`${auditDir}new-task-keyboard-in-composer-${mode}-${width}x${height}.png`})}
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1600,height:980});
+    // The sidebar's New thread, then its New task, each clicked from another open thread.
+    for(const [saved,button] of [[BETA,newThread],[GAMMA,newTask]]){
+      await openRow(page,saved);await button.click();
+      await typeInNewTask("Write the "+saved.thread.name.toLowerCase()+" notes");
+    }
+    // The palette's New thread and New general chat, with the palette opened from the sidebar's search button.
+    for(const [saved,command] of [[DELTA,"New thread"],[ALPHA,"New general chat"]]){
+      await openRow(page,saved);
+      await page.getByRole("button",{name:"Search or jump to",exact:true}).click();await expect(palette.locator(".command-palette-item").first()).toBeVisible();
+      await page.keyboard.type(">"+command.toLowerCase(),{delay:15});
+      await expect(palette.locator(".command-palette-item.selected strong")).toHaveText(command);
+      await page.keyboard.press("Enter");await expect(palette).toHaveCount(0);
+      await typeInNewTask("Sketch the "+command.toLowerCase()+" plan");
+    }
+    // Ctrl+N while a thread opened from another one is still opening, its composer held: the new task replaces the open and takes
+    // the keyboard.
+    await openRow(page,GAMMA);
+    const release=harness.hold(BETA.thread.id);
+    await row(page,BETA).locator(".thread-main").click();await expect(composer).toBeDisabled();
+    await page.keyboard.press("Control+n");
+    await typeInNewTask("Check the release notes");
+    release();
+    // In a window too narrow for the sidebar beside the conversation: New thread in the sidebar opened from the header.
+    await openRow(page,ALPHA);
+    await page.setViewportSize({width:700,height:800});await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
+    await page.getByRole("button",{name:"Open sidebar",exact:true}).first().click();await newThread.click();
+    await typeInNewTask("Fix the narrow layout");
+    await page.screenshot({animations:"disabled",path:auditDir+"new-task-keyboard-in-composer-narrow-dark-700x800.png"});
+  }finally{await harness.close()}
+});
+
 test("while a thread opens, the thread shortcuts follow the thread the header names",async({page})=>{
   test.setTimeout(60_000);
   const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
