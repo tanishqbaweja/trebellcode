@@ -180,3 +180,46 @@ test("stop ends a session's program and keeps its history, and a watch socket he
     assert.equal((await terminals.stop(session.id)).running,false,"stopping it again changes nothing");
   }finally{try{watch?.terminate()}catch{}attached.close();await new Promise(resolve=>server.close(resolve));await terminals.shutdown()}
 });
+
+// The worker can die under open terminals (it crashed, or something ended it), and their shells end with it. Each of its terminals
+// then ends as on its program's own exit, and the next terminal starts a new worker: an open command line used to take input that
+// vanished, and the next terminal waited for the dead worker until it timed out after 15 s, so no terminal worked again until the app
+// restarted. These tests end only the worker their own manager started.
+const until=async(check,timeoutMs)=>{for(const end=Date.now()+timeoutMs;Date.now()<end;await new Promise(resolve=>setTimeout(resolve,50)))if(check())return true;return check()};
+test("when the terminal worker dies its terminals end: an open socket hears the exit, waiting for it ends, and input is refused at once",{timeout:90000},async()=>{
+  const { createServer } = await import("node:http");
+  const { WebSocket } = await import("ws");
+  const terminals=new TerminalManager({persist:false}),server=createServer((_req,res)=>{res.writeHead(404);res.end()});
+  const attached=terminals.attachWebSocket(server);
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  let socket=null;
+  try{
+    const session=await terminals.create({cwd:process.cwd()}),worker=terminals.child,heard=[];
+    socket=new WebSocket(`ws://127.0.0.1:${server.address().port}/api/terminal/ws?session=${encodeURIComponent(session.id)}`);socket.on("message",raw=>heard.push(JSON.parse(String(raw))));
+    assert.ok(await until(()=>heard.some(message=>message.type==="snapshot"),10000),"the socket opens on the terminal");
+    const ended=terminals.waitForExit(session.id,{timeoutMs:20000});
+    worker.kill();
+    assert.ok(await until(()=>heard.some(message=>message.type==="exit"),5000),"the open socket hears that its terminal ended: "+JSON.stringify(heard.map(message=>message.type)));
+    assert.equal(terminals.snapshot(session.id).running,false,"the terminal is stopped history");
+    assert.equal((await ended).timeout,undefined,"waiting for its exit ends with it");
+    const asked=Date.now();
+    await assert.rejects(()=>terminals.write(session.id,"echo after\r"),/stopped/i,"input to it is refused");
+    assert.ok(Date.now()-asked<1000,"at once, not after the worker's timeout");
+  }finally{try{socket?.terminate()}catch{}attached.close();await new Promise(resolve=>server.close(resolve));await terminals.shutdown()}
+});
+
+test("after the terminal worker dies, the next terminal starts a new worker and runs commands",{timeout:90000},async()=>{
+  const terminals=new TerminalManager({persist:false});
+  try{
+    const first=await terminals.create({cwd:process.cwd()}),worker=terminals.child;
+    const gone=new Promise(resolve=>worker.once("exit",resolve));worker.kill();await gone;
+    // The command prints the marker only when the shell runs it: the typed line holds the variable's name, not its value.
+    const marker="trebell-new-worker-"+Date.now(),asked=Date.now();
+    const next=await terminals.create({cwd:process.cwd(),env:{TREBELL_TEST_MARK:marker}});
+    assert.ok(Date.now()-asked<10000,"the new terminal opens without waiting for the dead worker ("+(Date.now()-asked)+" ms)");
+    assert.notEqual(terminals.child,worker,"a new worker runs it");assert.ok(terminals.child?.pid);
+    await terminals.write(next.id,process.platform==="win32"?"echo %TREBELL_TEST_MARK%\r":"echo \"$TREBELL_TEST_MARK\"\n");
+    assert.ok(await until(()=>terminals.snapshot(next.id).buffer.includes(marker),10000),"the command runs: "+JSON.stringify(terminals.snapshot(next.id).buffer.slice(-300)));
+    assert.equal(terminals.snapshot(first.id).running,false,"the first terminal ended with its worker");
+  }finally{await terminals.shutdown()}
+});

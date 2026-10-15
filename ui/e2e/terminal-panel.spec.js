@@ -430,3 +430,30 @@ test("Ctrl+` with the drawer closed puts the keyboard on New beside a stopped te
     expect(shell.terminals.list(null)).toHaveLength(2);
   }finally{await shell.close()}
 });
+
+// The terminal worker can die under an open terminal (it crashed, or something ended it), and the terminal's shell ends with it. The
+// terminal then shows it stopped, and New starts a new worker: the command line used to take input that vanished, and New failed
+// after 15 s with "Terminal worker timed out" until the app restarted. The test ends only the worker its own manager started.
+test("after the terminal worker dies its terminal shows it stopped, and New opens a terminal that runs commands",async({page,request})=>{
+  test.setTimeout(90_000);
+  const shell=await realTerminals(page);
+  try{
+    const {drawer,pane,input}=await openTerminal(page,request);
+    const worker=shell.terminals.child;
+    worker.kill();
+    await expect(input,"the ended terminal's command line takes no input").toBeDisabled();
+    await expect(input).toHaveAttribute("placeholder","Stopped terminal history");
+    await expect(pane.getByRole("button",{name:"Send",exact:true})).toBeDisabled();
+    await shots(page,"terminal-worker-died");
+    await drawer.getByRole("button",{name:"New",exact:true}).click();
+    await expect(drawer.locator(".terminal-tab")).toHaveCount(2);
+    const next=drawer.locator(".terminal-pane.active");
+    await expect(next.locator(".terminal-screen")).toHaveText(PROMPT,{timeout:20_000});
+    await next.locator(".terminal-command-line input").click();
+    await run(page,"echo new-worker-runs");
+    await expect(next.locator(".terminal-screen")).toContainText(/^new-worker-runs$/m);
+    await expect(drawer.locator(".terminal-error")).toHaveCount(0);
+    expect(shell.terminals.child,"a new worker runs it").not.toBe(worker);
+    await shots(page,"terminal-new-worker");
+  }finally{await shell.close()}
+});

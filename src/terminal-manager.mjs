@@ -78,17 +78,30 @@ export class TerminalManager extends EventEmitter{
         this.#scheduleSave();
         this.emit("output",msg.id,msg.data);
         for(const ws of this.clients.get(msg.id)||[]) if(ws.readyState===ws.OPEN&&!ws.watchOnly) ws.send(JSON.stringify({type:"output",data:msg.data}));
-      }else if(msg.type==="exit"){
-        const session=this.sessions.get(msg.id); if(session){session.running=false;session.exitCode=msg.exitCode;session.updatedAt=Date.now();}
-        this.#saveHistory();
-        const waiters=this.exitWaiters.get(msg.id)||[];
-        this.exitWaiters.delete(msg.id);
-        for(const resolve of waiters)resolve({exitCode:msg.exitCode,signal:msg.signal});
-        for(const ws of this.clients.get(msg.id)||[]) if(ws.readyState===ws.OPEN) ws.send(JSON.stringify({type:"exit",exitCode:msg.exitCode,signal:msg.signal}));
-      }
+      }else if(msg.type==="exit")this.#exited(msg.id,msg.exitCode,msg.signal);
     });
     this.child.stderr?.on("data",chunk=>this.emit("workerError",String(chunk)));
-    this.child.on("exit",()=>{for(const p of this.pending.values())p.reject(new Error("Terminal worker exited"));this.pending.clear();});
+    const child=this.child;
+    // A write to a worker that has just died can fail on its closed pipe: the call fails with the worker's exit below, and the pipe's
+    // error, which nothing else handles, would end the server.
+    child.stdin.on("error",()=>{});
+    // A worker that dies (it crashed, or something ended it) takes its shells with it: its calls fail, its terminals end as on their
+    // program's own exit, and the next call starts a new worker. It used to stay the worker, so its terminals took input that went
+    // nowhere and every later call waited for it until it timed out.
+    child.on("exit",()=>{
+      if(this.child===child)this.child=null;
+      for(const p of this.pending.values())p.reject(new Error("Terminal worker exited"));this.pending.clear();
+      for(const session of this.sessions.values())if(session.running)this.#exited(session.id,null,null);
+    });
+  }
+  // A session's program ended: the session stays as stopped history, and its waiters and open sockets hear the exit.
+  #exited(id,exitCode,signal){
+    const session=this.sessions.get(id); if(session){session.running=false;session.exitCode=exitCode;session.updatedAt=Date.now();}
+    this.#saveHistory();
+    const waiters=this.exitWaiters.get(id)||[];
+    this.exitWaiters.delete(id);
+    for(const resolve of waiters)resolve({exitCode,signal});
+    for(const ws of this.clients.get(id)||[]) if(ws.readyState===ws.OPEN) ws.send(JSON.stringify({type:"exit",exitCode,signal}));
   }
   #rpc(action,payload={}){
     if(!this.child){if(this.closed)return Promise.reject(new Error("Terminal worker is shut down"));this.#startWorker()}
