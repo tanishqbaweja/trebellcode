@@ -25,6 +25,26 @@ function useModalFocus(ref,active,focusOnOpen=true){
   },[ref,active,focusOnOpen]);
 }
 
+// Escape answers the dialog as its Cancel does, with the keyboard in it or on the page behind it, but not in another open modal (the
+// app's own <dialog> questions keep their Escape). Only a press of its own counts, so the next question, which comes up in its place,
+// waits for the person: a held key's repeats, and a press within the double-click time (500 ms) of the Escape before it, answer nothing.
+let lastEscape=-1e9;
+function useEscapeToCancel(ref,active,cancelRef){
+  useEffect(()=>{
+    const node=ref.current;if(!active||!node)return;
+    const onKey=event=>{
+      if(event.key!=="Escape"||event.defaultPrevented)return;
+      const owner=document.activeElement?.closest?.('[aria-modal="true"],dialog[open]');
+      if(owner&&owner!==node)return;
+      event.preventDefault();
+      const again=event.repeat||event.timeStamp-lastEscape<500;lastEscape=event.timeStamp;
+      if(!again)cancelRef.current?.(event);
+    };
+    document.addEventListener("keydown",onKey,true);
+    return()=>document.removeEventListener("keydown",onKey,true);
+  },[ref,active,cancelRef]);
+}
+
 // Browser uploads are stored as "<timestamp>-<hash>-<name>"; show the original name, like the composer shelf does.
 function attachmentName(path){
   const name=String(path||"").split(/[\\/]/).pop()||"attachment";
@@ -45,12 +65,13 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
   const [busy,setBusy]=useState("");
   const [submitError,setSubmitError]=useState("");
   const [attachError,setAttachError]=useState("");
-  const dialogRef=useRef(null);
+  const dialogRef=useRef(null),cancelRef=useRef(null);
   // Each question gets a modal of its own (App keys it by the request), so the next one starts from a clean slate and with the focus
   // on the dialog, not on the button that answered the one before: a second Enter, or the second click of a double click
   // (answeringClick), answers nothing.
   useEffect(()=>{if(submitError||attachError)dialogRef.current?.querySelector(".inline-error")?.scrollIntoView?.({block:"nearest"})},[submitError,attachError]);
   useModalFocus(dialogRef,Boolean(request));
+  useEscapeToCancel(dialogRef,Boolean(request),cancelRef);
   if(!request)return null;
   const fileCount=Object.values(filesByQuestion).reduce((sum,items)=>sum+(items?.length||0),0);
   // A part is answered by a choice, words of the person's own or a file. Submit waits for every part (one the harness marks optional
@@ -80,6 +101,7 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
     catch(error){setSubmitError(error?.message||String(error))}
     finally{setBusy("")}
   }
+  cancelRef.current=cancel;
   function chooseOption(q,label){
     setAnswers(prev=>{
       const current=prev[q.id]||[];

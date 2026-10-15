@@ -308,3 +308,111 @@ test("a double click or Enter pressed twice on a question's Cancel dismisses onl
     await expect(modal).toHaveCount(0);
   }finally{await harness.close()}
 });
+
+// Escape dismisses a question as Cancel does, with the keyboard on the dialog, in one of its fields or on the page behind it; in a
+// question the app asks over it (Rename) Escape is that question's. Only a press of its own counts: pressed twice, or held down, it
+// dismisses the question shown, and the next, which comes up in its place, waits for the person.
+test("Escape dismisses an agent question as Cancel does, and pressed twice or held down dismisses only the question shown",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const modal=page.locator(".question-modal");
+    const question=(threadId,itemId,id,text)=>harness.ask("item/tool/requestUserInput",{threadId,turnId:"turn-"+threadId,itemId,questions:[{id,header:id,question:text,options:[{label:"yes"},{label:"no"}],allowMultiple:false}]});
+    // A person reads a question before pressing Escape on it: a press within 500 ms of the Escape before it is that one's second.
+    const read=()=>page.waitForTimeout(600);
+    for(const [pass,width] of [["dark",1280],["light",900]]){
+      if(pass==="light")await toggleMode(page);
+      await page.setViewportSize({width,height:800});
+      const first=question(RELEASE.id,"q-region-"+pass,"region","Which region should I deploy to?");
+      await expect(modal).toContainText("Which region should I deploy to?");await expect(modal).toBeFocused();
+      await read();await page.keyboard.press("Escape");
+      await expect(modal).toHaveCount(0);expect(await first.answered).toEqual({answers:{}});
+      // From its field, with another question waiting: Escape pressed twice dismisses this one only.
+      const second=question(RELEASE.id,"q-env-"+pass,"env","Which environment should I deploy to?"),third=question(DEPLOY.id,"q-port-"+pass,"port","Which port should the server use?");
+      await expect(modal).toContainText("1 more waiting");
+      await modal.getByPlaceholder("Custom answer…").click();await page.keyboard.type("staging",{delay:8});
+      await read();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
+      expect(await second.answered).toEqual({answers:{}});
+      await expect(modal).toContainText("Which port should the server use?");await expect(modal.getByTestId("question-thread")).toHaveText("Waiting in Deploy notes");
+      await page.waitForTimeout(600);
+      expect(harness.answersTo(third),"the second Escape dismissed the next question unseen").toHaveLength(0);
+      await shoot(page,"question-after-escape-twice");await page.setViewportSize({width,height:800});
+      // Held down, it dismisses the question shown, and its repeats leave the next one waiting.
+      const fourth=question(RELEASE.id,"q-notes-"+pass,"notes","Anything to add to the release notes?");
+      await expect(modal).toContainText("1 more waiting");
+      await page.keyboard.down("Escape");
+      expect(await third.answered).toEqual({answers:{}});
+      await expect(modal).toContainText("Anything to add to the release notes?");
+      await page.keyboard.down("Escape");await page.keyboard.down("Escape");await page.keyboard.up("Escape");
+      await page.waitForTimeout(600);
+      expect(harness.answersTo(fourth),"the held Escape's repeats dismissed the next question unseen").toHaveLength(0);
+      // With the keyboard on the page behind it, where a click on the dimmed area leaves it.
+      await page.mouse.click(12,400);expect(await page.evaluate(()=>document.activeElement===document.body)).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect(modal).toHaveCount(0);expect(await fourth.answered).toEqual({answers:{}});
+      for(const request of [first,second,third,fourth])expect(harness.answersTo(request)).toHaveLength(1);
+    }
+    // A question the app asks over it keeps its own Escape: it closes Rename, and the agent's question waits for the next.
+    await page.setViewportSize({width:1280,height:800});
+    await page.locator(".workspace-header .thread-title-button").click();
+    const rename=page.locator("dialog.inspector-text-prompt");await expect(rename).toContainText("Rename thread");
+    const fifth=question(RELEASE.id,"q-owner","owner","Who signs off on the release?");
+    await expect(modal).toContainText("Who signs off on the release?");
+    await page.keyboard.press("Escape");
+    await expect(rename).toHaveCount(0);await page.waitForTimeout(600);
+    expect(harness.answersTo(fifth),"Escape in Rename dismissed the agent's question too").toHaveLength(0);
+    await page.keyboard.press("Escape");
+    await expect(modal).toHaveCount(0);expect(await fifth.answered).toEqual({answers:{}});
+  }finally{await harness.close()}
+});
+
+// Escape cancels an app request as its X does, with the keyboard on the dialog, in a field of its form or on the page behind it. Only
+// a press of its own counts: pressed twice, or held down, it cancels the request shown, and the next waits for the person.
+test("Escape cancels an app request as its X does, and pressed twice or held down cancels only the request shown",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const modal=page.getByTestId("mcp-elicitation"),dialog=modal.getByRole("dialog"),cancelled={action:"cancel",content:null,_meta:null};
+    const ask=params=>harness.ask("mcpServer/elicitation/request",{threadId:RELEASE.id,serverName:"fixture_app",...params});
+    const approval=title=>ask({mode:"form",message:"Approve the fixture change?",requestedSchema:{type:"object",properties:{}},_meta:{codex_approval_kind:"mcp_tool_call",connector_name:"Fixture App",tool_title:title,tool_name:"fixture_action"}});
+    // A person reads a request before pressing Escape on it: a press within 500 ms of the Escape before it is that one's second.
+    const read=()=>page.waitForTimeout(600);
+    for(const [pass,width] of [["dark",1280],["light",900]]){
+      if(pass==="light")await toggleMode(page);
+      await page.setViewportSize({width,height:800});
+      const write=approval("Write fixture");
+      await expect(modal).toContainText("Write fixture");await expect(dialog).toBeFocused();
+      await read();await page.keyboard.press("Escape");
+      await expect(modal).toHaveCount(0);expect(await write.answered).toEqual(cancelled);
+      // A form, from the field being filled in.
+      const form=ask({mode:"form",message:"Name the deployment",requestedSchema:{type:"object",required:["label"],properties:{label:{type:"string",title:"Deployment name"}}}});
+      await expect(modal).toContainText("Name the deployment");
+      await modal.locator(".mcp-field").filter({hasText:"Deployment name"}).locator("input").click();await page.keyboard.type("canary",{delay:8});
+      await read();await page.keyboard.press("Escape");
+      await expect(modal).toHaveCount(0);expect(await form.answered).toEqual(cancelled);
+      // Pressed twice with two more waiting, it cancels the request shown only; held down, its repeats leave the next one waiting.
+      const remove=approval("Delete fixture"),rename=approval("Rename fixture"),link=ask({mode:"url",elicitationId:"sign-in-"+pass,url:"https://auth.example.test/connect",message:"Sign in to the fixture service."});
+      await expect(modal).toContainText("Delete fixture");await expect(dialog).toBeFocused();
+      await read();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
+      expect(await remove.answered).toEqual(cancelled);
+      await expect(modal).toContainText("Rename fixture");await page.waitForTimeout(600);
+      expect(harness.answersTo(rename),"the second Escape cancelled the next request unseen").toHaveLength(0);
+      await shoot(page,"app-request-after-escape-twice");await page.setViewportSize({width,height:800});
+      await page.keyboard.down("Escape");
+      expect(await rename.answered).toEqual(cancelled);
+      await expect(modal).toContainText("Sign in to the fixture service.");
+      await page.keyboard.down("Escape");await page.keyboard.down("Escape");await page.keyboard.up("Escape");
+      await page.waitForTimeout(600);
+      expect(harness.answersTo(link),"the held Escape's repeats cancelled the next request unseen").toHaveLength(0);
+      // With the keyboard on the page behind it, where a click on the dimmed area leaves it.
+      await page.mouse.click(12,400);expect(await page.evaluate(()=>document.activeElement===document.body)).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect(modal).toHaveCount(0);expect(await link.answered).toEqual(cancelled);
+      for(const request of [write,form,remove,rename,link])expect(harness.answersTo(request)).toHaveLength(1);
+    }
+  }finally{await harness.close()}
+});

@@ -55,6 +55,26 @@ function useModalFocus(ref,active,focusOnOpen=true){
   },[ref,active,focusOnOpen]);
 }
 
+// Escape answers the dialog as its X does, with the keyboard in it or on the page behind it, but not in another open modal (the app's
+// own <dialog> questions keep their Escape). Only a press of its own counts, so the next request, which comes up in its place, waits
+// for the person: a held key's repeats, and a press within the double-click time (500 ms) of the Escape before it, answer nothing.
+let lastEscape=-1e9;
+function useEscapeToCancel(ref,active,cancelRef){
+  useEffect(()=>{
+    const node=ref.current;if(!active||!node)return;
+    const onKey=event=>{
+      if(event.key!=="Escape"||event.defaultPrevented)return;
+      const owner=document.activeElement?.closest?.('[aria-modal="true"],dialog[open]');
+      if(owner&&owner!==node)return;
+      event.preventDefault();
+      const again=event.repeat||event.timeStamp-lastEscape<500;lastEscape=event.timeStamp;
+      if(!again)cancelRef.current?.(event);
+    };
+    document.addEventListener("keydown",onKey,true);
+    return()=>document.removeEventListener("keydown",onKey,true);
+  },[ref,active,cancelRef]);
+}
+
 export default function McpElicitationModal({request,onResolve,onVerify,verificationAvailable=true,verificationUnavailableReason=""}){
   const kind=mcpElicitationKind(request);
   const params=request?.params||{};
@@ -66,9 +86,10 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
   const [invalidField,setInvalidField]=useState(null);
   const [verificationBusy,setVerificationBusy]=useState(false);
   const [resolveBusy,setResolveBusy]=useState(false);
-  const dialogRef=useRef(null);
+  const dialogRef=useRef(null),cancelRef=useRef(null);
   const errorRef=useRef(null);
   useModalFocus(dialogRef,Boolean(request));
+  useEscapeToCancel(dialogRef,Boolean(request),cancelRef);
   // The error sits under the header; bring it into view when it appears after submitting from a scrolled-down form.
   useEffect(()=>{if(error)errorRef.current?.scrollIntoView?.({block:"nearest"})},[error]);
   if(!request)return null;
@@ -80,6 +101,9 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
     catch(err){setError("Could not answer app request: "+(err?.message||String(err)));return false}
     finally{setResolveBusy(false)}
   }
+  // The X, and Escape, cancel the request whatever its kind; neither does while it is being answered or verified.
+  function cancelRequest(){if(!verificationBusy)resolve(acp?buildElicitationResponse(request,"cancel"):buildMcpApprovalResponse("cancel"))}
+  cancelRef.current=cancelRequest;
   // Editing a field clears the previous validation error, which otherwise stayed on screen after the field was fixed.
   function edit(update){setValues(update);setError("");setInvalidField(null)}
   async function submitForm(){
@@ -109,7 +133,7 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
   const message=String(params.message||"").trim();
   const title=kind==="approval"?"Approve app action":kind==="url"?"App needs browser input":kind==="verification"?"Verification required":"App needs input";
   return <div className="modal-backdrop" data-testid="mcp-elicitation"><div className={"mcp-elicitation-modal kind-"+kind} role="dialog" aria-modal="true" aria-labelledby="mcp-elicitation-title" ref={dialogRef} tabIndex={-1}>
-    <div className="modal-head"><div><span className="modal-head-icon">{kind==="approval"?<ShieldCheck size={16}/>:<PlugZap size={16}/>}</span><strong id="mcp-elicitation-title">{title}</strong></div><button className="modal-close" disabled={resolveBusy||verificationBusy} onClick={()=>resolve(acp?buildElicitationResponse(request,"cancel"):buildMcpApprovalResponse("cancel"))} aria-label="Cancel app request"><X size={16}/></button></div>
+    <div className="modal-head"><div><span className="modal-head-icon">{kind==="approval"?<ShieldCheck size={16}/>:<PlugZap size={16}/>}</span><strong id="mcp-elicitation-title">{title}</strong></div><button className="modal-close" disabled={resolveBusy||verificationBusy} onClick={cancelRequest} aria-label="Cancel app request"><X size={16}/></button></div>
     {error&&<div className="inline-error" role="alert" ref={errorRef}>{error}</div>}
 
     {kind==="approval"&&<>
