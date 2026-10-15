@@ -205,9 +205,11 @@ test("closing the Snooze dialog with Cancel, Escape or its close button gives fo
 
 // Six digits typed into the Until field's year, as a slip of the keyboard gives them (the year, then the next part's digits), leave a
 // four-digit year and go on to the next part: the hint names the date the field shows and Snooze snoozes the thread until then. The
-// year part used to take all six, a date shown that the dialog read as none ("Choose a date and time."). The dates are next year's,
-// from mid-June, whatever the day the test runs on: no ArrowUp below crosses the end of a month, and the hint always names the year.
-test("six digits typed into Snooze's Until year leave a four-digit year that the wake time names, and Snooze snoozes the thread until then",async({page})=>{
+// year part used to take all six, a date shown that the dialog read as none ("Choose a date and time."). A date the field shows but
+// gives no value for (a day its month does not have) is named as one, where the hint used to ask for a date as if none were shown.
+// The dates are next year's, from mid-June, whatever the day the test runs on: no ArrowUp below crosses the end of a month, and the
+// hint always names the year.
+test("six digits typed into Snooze's Until year leave a four-digit year that the wake time names, the hint names a day the month does not have, and Snooze snoozes the thread until then",async({page})=>{
   test.setTimeout(90_000);
   const {harness,meta,id}=await openSidebarApp(page);
   const dialog=snoozeDialog(page),hint=dialog.locator(".snooze-hint"),submit=dialog.getByRole("button",{name:"Snooze",exact:true}),until=dialog.getByLabel("Snooze until");
@@ -236,6 +238,22 @@ test("six digits typed into Snooze's Until year leave a four-digit year that the
         await page.screenshot({animations:"disabled",path:auditDir+"sidebar-snooze-year-"+(digits===next+"12"?"next-year-12":digits)+"-typed-"+mode+"-1280x800.png"});
       }
       await shoot(page,"sidebar-snooze-six-digit-year");
+      // June 30, then ArrowUp on the day: the field shows June 31, a date it gives no value for. The hint says so and Snooze waits;
+      // one more ArrowUp (the 1st) wakes it again.
+      const shown=await until.inputValue();
+      await until.fill(next+"-06-30T10:00");await toPart(part.day);await page.keyboard.press("ArrowUp");
+      await expect(until).toHaveValue("");
+      await expect(hint).toHaveText("That date is incomplete or does not exist. Choose another date and time.");await expect(hint).toHaveClass(/invalid/);await expect(submit).toBeDisabled();
+      await page.screenshot({animations:"disabled",path:auditDir+"sidebar-snooze-day-past-month-end-"+mode+"-1280x800.png"});
+      await page.keyboard.press("ArrowUp");await expect(until).toHaveValue(next+"-06-01T10:00");
+      await expect(hint).toHaveText(new RegExp("^Wakes .*\\b"+next+"\\b.*\\.$"));await expect(submit).toBeEnabled();
+      // June 31 again, then For a duration and back: the field comes back blank and asks for a date and time.
+      await until.fill(next+"-06-30T10:00");await toPart(part.day);await page.keyboard.press("ArrowUp");
+      await expect(hint).toHaveText("That date is incomplete or does not exist. Choose another date and time.");
+      await dialog.getByRole("button",{name:"For a duration",exact:true}).click();await expect(hint).toHaveText(/^Wakes /);
+      await dialog.getByRole("button",{name:"Until date & time",exact:true}).click();await expect(until).toBeFocused();await expect(until).toHaveValue("");
+      await expect(hint).toHaveText("Choose a date and time.");await expect(hint).toHaveClass(/invalid/);await expect(submit).toBeDisabled();
+      await until.fill(shown);await expect(hint).toHaveText(/^Wakes .*\b2757\b.*\.$/);
       await page.setViewportSize({width:700,height:800});await expect(hint).toBeInViewport();
       await page.screenshot({animations:"disabled",path:auditDir+"sidebar-snooze-six-digit-year-"+mode+"-700x800.png"});
       await page.setViewportSize({width:1280,height:800});

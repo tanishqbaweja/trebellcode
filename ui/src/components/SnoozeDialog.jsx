@@ -37,6 +37,10 @@ export default function SnoozeDialog({request,onSubmit,onCancel,focusFallback}){
   const [amount,setAmount]=useState(1);
   const [unit,setUnit]=useState("hours");
   const [dateTime,setDateTime]=useState(()=>localDateTimeValue(Date.now()+3_600_000));
+  // The field shows a date it gives no value for: a day its month does not have (31-11, 29-02 in a year that is not a leap year), or
+  // a part left empty. The page cannot tell the two apart (validity.badInput is true for both), so the hint names both. The field
+  // comes back blank after For a duration, so leaving it ends this.
+  const [badInput,setBadInput]=useState(false);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
   const amountRef=useRef(null);
@@ -72,7 +76,7 @@ export default function SnoozeDialog({request,onSubmit,onCancel,focusFallback}){
   // A wake time past the JavaScript date range would be stored but shown as "Invalid Date" in the sidebar.
   const outOfRange=Boolean(until)&&Number.isNaN(new Date(until).getTime());
   const invalid=!until||until<=Date.now()||outOfRange;
-  const hint=outOfRange?"That is too far in the future. Choose an earlier time.":!until?(mode==="duration"?"Enter a duration greater than zero.":"Choose a date and time."):until<=Date.now()?"Choose a time in the future.":"Wakes "+wakeLabel(until)+".";
+  const hint=outOfRange?"That is too far in the future. Choose an earlier time.":!until?(mode==="duration"?"Enter a duration greater than zero.":badInput?"That date is incomplete or does not exist. Choose another date and time.":"Choose a date and time."):until<=Date.now()?"Choose a time in the future.":"Wakes "+wakeLabel(until)+".";
   async function submit(event){
     event?.preventDefault?.();
     if(invalid||busy)return;
@@ -88,8 +92,8 @@ export default function SnoozeDialog({request,onSubmit,onCancel,focusFallback}){
     <form className="modal-card snooze-dialog" role="dialog" aria-modal="true" aria-labelledby="snooze-dialog-title" onSubmit={submit} noValidate ref={formRef} tabIndex={-1}>
       <div className="modal-head"><div><span className="modal-head-icon"><Clock3 size={16}/></span><strong id="snooze-dialog-title">Snooze {count>1?count+" threads":"thread"}</strong></div><button type="button" className="modal-close" onClick={onCancel} aria-label="Close snooze dialog"><X size={16}/></button></div>
       <p>Move {count>1?"these threads":"this thread"} out of Active until a specific time. You can wake {count>1?"them":"it"} early from the sidebar.</p>
-      <div className="snooze-mode-tabs"><button type="button" className={mode==="duration"?"active":""} aria-pressed={mode==="duration"} onClick={()=>setMode("duration")}>For a duration</button><button type="button" className={mode==="datetime"?"active":""} aria-pressed={mode==="datetime"} onClick={()=>setMode("datetime")}>Until date & time</button></div>
-      {mode==="duration"?<div className="snooze-duration"><label>Duration<input ref={amountRef} className="tb-input" aria-label="Snooze duration" type="number" min="1" step="1" value={amount} onChange={event=>setAmount(event.target.value)}/></label><label>Unit<select className="tb-select" aria-label="Snooze unit" value={unit} onChange={event=>setUnit(event.target.value)}><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></select></label></div>:<label>Wake at<input ref={dateRef} className="tb-input" aria-label="Snooze until" type="datetime-local" value={dateTime} min={localDateTimeValue(Date.now()+60_000)} max="9999-12-31T23:59" onChange={event=>setDateTime(event.target.value)}/></label>}
+      <div className="snooze-mode-tabs"><button type="button" className={mode==="duration"?"active":""} aria-pressed={mode==="duration"} onClick={()=>{setMode("duration");setBadInput(false)}}>For a duration</button><button type="button" className={mode==="datetime"?"active":""} aria-pressed={mode==="datetime"} onClick={()=>setMode("datetime")}>Until date & time</button></div>
+      {mode==="duration"?<div className="snooze-duration"><label>Duration<input ref={amountRef} className="tb-input" aria-label="Snooze duration" type="number" min="1" step="1" value={amount} onChange={event=>setAmount(event.target.value)}/></label><label>Unit<select className="tb-select" aria-label="Snooze unit" value={unit} onChange={event=>setUnit(event.target.value)}><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></select></label></div>:<label>Wake at<input ref={dateRef} className="tb-input" aria-label="Snooze until" type="datetime-local" value={dateTime} min={localDateTimeValue(Date.now()+60_000)} max="9999-12-31T23:59" onChange={event=>{setDateTime(event.target.value);setBadInput(event.target.validity.badInput)}}/></label>}
       <p className={"snooze-hint"+(invalid?" invalid":"")} role="status" aria-live="polite">{hint}</p>
       {error&&<div className="inline-error" role="alert">{error}</div>}
       <div className="modal-actions"><button type="button" className="tb-btn" onClick={onCancel}>Cancel</button><button type="submit" className="tb-btn tb-btn--primary primary" disabled={invalid||busy}>{busy?"Snoozing…":"Snooze"}</button></div>
