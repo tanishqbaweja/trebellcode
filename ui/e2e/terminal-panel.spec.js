@@ -1,4 +1,5 @@
 import { test,expect } from "@playwright/test";
+import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { mkdtemp,rm } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -14,15 +15,19 @@ const PROMPT=/[A-Z]:\\[^\n]*>\s*$/;
 
 // The mock server has no terminals, so these tests run the real TerminalManager (the shell through node-pty) in the test process:
 // the page's terminal requests are answered by it and the terminal WebSocket is pointed at it. listDelay (ms) holds each answer to
-// the page's list of terminals that long, as a slow server does.
+// the page's list of terminals that long, as a slow server does. drop() ends every open terminal socket from the server's side, and
+// while down is set the server refuses new ones (counted in refused), as one restarting does; the page counts the terminal sockets
+// it saw close in window.__terminalSocketsClosed.
 async function realTerminals(page){
   const home=await mkdtemp(join(tmpdir(),"trebell-terminal-e2e-"));
   const terminals=new TerminalManager({env:{...process.env,TREBELL_HOME:home,GH_TOKEN:"",GITHUB_TOKEN:""},persist:false});
-  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});
-  terminals.attachWebSocket(server);
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),upgrades=new EventEmitter();
+  const control={down:false,refused:0,drop(){for(const set of terminals.clients.values())for(const ws of set)ws.terminate()}};
+  server.on("upgrade",(req,socket,head)=>{if(control.down){control.refused++;socket.destroy()}else upgrades.emit("upgrade",req,socket,head)});
+  terminals.attachWebSocket(upgrades);
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   const port=server.address().port;
-  const shell={terminals,listDelay:0,async close(){await terminals.shutdown().catch(()=>{});server.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100}).catch(()=>{})}};
+  const shell=Object.assign(control,{terminals,listDelay:0,async close(){await terminals.shutdown().catch(()=>{});server.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100}).catch(()=>{})}});
   await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,async route=>{
     const request=route.request(),url=new URL(request.url()),answer=(status,body)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(body)});
     try{
@@ -33,9 +38,12 @@ async function realTerminals(page){
     return route.continue();
   });
   await page.addInitScript(port=>{
+    window.__terminalSocketsClosed=0;
     window.WebSocket=new Proxy(window.WebSocket,{construct(target,[url,...rest]){
       const address=String(url),at=address.indexOf("/api/terminal/ws");
-      return Reflect.construct(target,[at>=0?"ws://127.0.0.1:"+port+address.slice(at):address,...rest]);
+      const socket=Reflect.construct(target,[at>=0?"ws://127.0.0.1:"+port+address.slice(at):address,...rest]);
+      if(at>=0)socket.addEventListener("close",()=>window.__terminalSocketsClosed++);
+      return socket;
     }});
   },port);
   return shell;
@@ -455,5 +463,42 @@ test("after the terminal worker dies its terminal shows it stopped, and New open
     await expect(drawer.locator(".terminal-error")).toHaveCount(0);
     expect(shell.terminals.child,"a new worker runs it").not.toBe(worker);
     await shots(page,"terminal-new-worker");
+  }finally{await shell.close()}
+});
+
+// A terminal's socket can drop under it (the server restarted, the machine slept). Input while it is away is refused with a notice
+// that it is reconnecting, and the socket comes back by itself, trying less and less often while the server stays away: it never
+// came back, so every later paste or command was refused the same way until the drawer was closed and opened again.
+test("a terminal whose socket drops reconnects by itself, so a paste refused while it was away runs once it is back, and the screen shows what was printed meanwhile",async({page,request})=>{
+  test.setTimeout(90_000);
+  const shell=await realTerminals(page);
+  try{
+    const clipboard=await pageClipboard(page);
+    const {drawer,screen,input}=await openTerminal(page,request);
+    const notice=drawer.locator(".terminal-error"),closed=()=>page.evaluate(()=>window.__terminalSocketsClosed);
+    await input.click();
+    // A program that prints a line a few seconds after it starts, so the line comes while the socket is away.
+    await run(page,"node -e \"setTimeout(()=>console.log('printed-'+'while-away'),4000)\"");
+    await expect(screen).toContainText("console.log('printed-'+'while-away')");
+    const before=await closed();shell.down=true;shell.drop();
+    await expect.poll(closed,{message:"the page sees its terminal socket close"}).toBeGreaterThan(before);
+    await clipboard.copy("echo pasted-one\r\necho pasted-two\r\nkeep-this");
+    await page.keyboard.press("Control+V");
+    await expect(notice).toHaveText("Terminal is reconnecting. Try again in a moment.");
+    await shots(page,"terminal-socket-away");
+    await expect.poll(()=>shell.terminals.list(null)[0]?.buffer||"",{message:"the program prints while the socket is away",timeout:20_000}).toContain("printed-while-away");
+    // The server is back: the terminal reconnects by itself, its screen shows the line printed meanwhile, and its notice goes.
+    const tries=shell.refused;shell.down=false;
+    await expect(screen,"the terminal reconnects and shows what was printed while it was away").toContainText(/^printed-while-away$/m,{timeout:15_000});
+    await expect(notice,"the reconnecting notice goes once the terminal is back").toBeHidden();
+    expect(tries,"the page tried again by itself while the server was away").toBeGreaterThan(0);
+    expect(tries,"less and less often, not in a loop").toBeLessThanOrEqual(8);
+    await input.click();
+    await page.keyboard.press("Control+V");
+    await expect(screen).toContainText(/^pasted-one$/m);
+    await expect(screen).toContainText(/^pasted-two$/m);
+    await expect(input).toHaveValue("keep-this");
+    expect((await screen.textContent()).match(/^pasted-one$/gm),"one socket writes to the screen").toHaveLength(1);
+    await shots(page,"terminal-socket-back");
   }finally{await shell.close()}
 });

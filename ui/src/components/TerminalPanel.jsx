@@ -4,6 +4,7 @@ import { api,wsUrl } from "../api.js";
 import { createTerminalScreen,TERMINAL_SCROLLBACK_CHARS,TERMINAL_SCROLLBACK_LINES } from "../terminal-screen.js";
 
 const MAX_SPLIT_PANES=4;
+const RECONNECTING="Terminal is reconnecting. Try again in a moment.";
 const nextTerminalName=(taken)=>{
   const used=new Set(taken.map(session=>session?.name));
   let number=1;while(used.has("Terminal "+number))number+=1;
@@ -31,6 +32,8 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   const creatingRef=useRef(false);
   const tabListRef=useRef(null);
   const sockets=useRef(new Map());
+  // The sessions whose socket dropped by itself, each with the timer that opens it again.
+  const reconnects=useRef(new Map());
   const outputRefs=useRef(new Map());
   const inputRefs=useRef(new Map());
   const environmentQuery=()=>"?"+new URLSearchParams({environmentId:environmentId||""}).toString();
@@ -53,21 +56,26 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     return list;
   }
 
+  // A socket closed here is taken from its session first, so its close opens nothing again, and a reconnect still waiting is dropped.
+  const closeSocket=id=>{clearTimeout(reconnects.current.get(id));reconnects.current.delete(id);const socket=sockets.current.get(id);sockets.current.delete(id);socket?.close()};
+  const closeSockets=(kept=[])=>{for(const id of new Set([...sockets.current.keys(),...reconnects.current.keys()]))if(!kept.includes(id))closeSocket(id)};
   useEffect(()=>{
-    for(const socket of sockets.current.values())socket.close();
-    sockets.current.clear();setActiveId(null);setPaneIds([]);screens.current.clear();setLines({});setListed(false);refresh();
+    closeSockets();setActiveId(null);setPaneIds([]);screens.current.clear();setLines({});setListed(false);refresh();
   },[environmentId]);
-  useEffect(()=>()=>{for(const socket of sockets.current.values())socket.close();sockets.current.clear();cancelAnimationFrame(screenFrame.current)},[]);
+  useEffect(()=>()=>{closeSockets();cancelAnimationFrame(screenFrame.current)},[]);
 
+  // A socket that drops by itself (the server restarted, the machine slept) opens again while its pane is shown, half a second later
+  // and then twice as long after each try that fails, up to 5 s, as the agent's transport does: it stayed closed, and every command
+  // was refused until the drawer was opened again.
   useEffect(()=>{
-    const visible=new Set(paneIds);
-    for(const [id,socket] of sockets.current.entries())if(!visible.has(id)){socket.close();sockets.current.delete(id)}
-    for(const id of paneIds){
-      if(sockets.current.has(id))continue;
+    closeSockets(paneIds);
+    const connect=(id,attempt=0)=>{
       const ws=new WebSocket(wsUrl("/api/terminal/ws?session="+encodeURIComponent(id)));sockets.current.set(id,ws);
       ws.onmessage=(event)=>{
         let msg;try{msg=JSON.parse(event.data)}catch{return}
         if(msg.type==="snapshot"){
+          // The snapshot a socket opens with brings the screen up to date, and the notice that refused input while it was away goes.
+          attempt=0;setError(current=>current===RECONNECTING?"":current);
           screenOf(id).reset(msg.session?.buffer||"");drawScreens();
           // A session that exited while its tab was not shown gets its real state (and exit badge) when it is shown.
           if(typeof msg.session?.running==="boolean")setSessions(previous=>previous.map(session=>session.id===id?{...session,running:msg.session.running,exitCode:msg.session.exitCode??session.exitCode}:session));
@@ -75,8 +83,12 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
         else if(msg.type==="output"){screenOf(id).write(msg.data);drawScreens()}
         else if(msg.type==="exit")setSessions(previous=>previous.map(session=>session.id===id?{...session,running:false,exitCode:msg.exitCode}:session));
       };
-      ws.onclose=()=>{if(sockets.current.get(id)===ws)sockets.current.delete(id)};
-    }
+      ws.onclose=()=>{
+        if(sockets.current.get(id)!==ws)return;sockets.current.delete(id);
+        reconnects.current.set(id,setTimeout(()=>{reconnects.current.delete(id);connect(id,attempt+1)},Math.min(5000,500*2**attempt)));
+      };
+    };
+    for(const id of paneIds)if(!sockets.current.has(id)&&!reconnects.current.has(id))connect(id);
   },[paneIds.join("|")]);
 
   // New output is followed only on a screen that shows the latest output: one the person scrolled up in stays where it is until
@@ -140,7 +152,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   async function close(id){
     try{await api("/api/terminal/sessions?id="+encodeURIComponent(id),{method:"DELETE"});setError("")}
     catch(cause){setError(cause?.message||String(cause)||"Could not close terminal.");return false}
-    sockets.current.get(id)?.close();sockets.current.delete(id);
+    closeSocket(id);
     const remainingSessions=sessions.filter(session=>session.id!==id);setSessions(remainingSessions);
     let remainingPanes=paneIds.filter(paneId=>paneId!==id);
     if(!remainingPanes.length&&remainingSessions[0])remainingPanes=[remainingSessions[0].id];
@@ -159,7 +171,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   }
   function write(id,data){
     const socket=sockets.current.get(id);
-    if(socket?.readyState!==WebSocket.OPEN){setError("Terminal is reconnecting. Try again in a moment.");return false}
+    if(socket?.readyState!==WebSocket.OPEN){setError(RECONNECTING);return false}
     setError("");socket.send(JSON.stringify({type:"input",data}));
     // What the person sends takes its screen back to the latest output, as typing in a terminal does, so the answer shows.
     const node=outputRefs.current.get(id);if(node){node.dataset.stick="true";node.scrollTo({top:node.scrollHeight})}
