@@ -757,6 +757,38 @@ test("a picture or text file reached through a link out of the project is refuse
   await shootBothModes(page,"workspace-linked-picture-refused");
 });
 
+// An HTML file's preview never runs its scripts, whatever was in view before it. The PDF and HTML previews are the same iframe, so
+// React kept the PDF's frame and gave it the HTML file's address before its sandbox: the page loaded under the PDF frame's policy,
+// with the app's origin, and its script could read the app and call its local API (UI lane D, 2026-10-15).
+test("an HTML file previewed after a PDF stays sandboxed: its script never runs, and its raw address is served sandboxed",async({page,request})=>{
+  test.setTimeout(60_000);
+  const pdf=Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 200 200]/Parent 2 0 R>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
+  // The script comes before the text, so once the text shows, the script has run or been refused.
+  const html="<!doctype html><title>Page</title><body><script>document.body.append('SCRIPT RAN');try{parent.document.title='Changed by the page'}catch{}</script><p>Static page text</p></body>\n";
+  const svg="<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'><script>parent.document.title='Changed by the picture'</script></svg>\n";
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace sandboxed preview",{"page.html":html,"document.pdf":pdf,"notes.md":"# Notes\n","icon.svg":svg});
+  const head=right.locator(".file-head strong"),frame=right.locator(".document-preview iframe"),body=page.frameLocator(".document-preview iframe").locator("body");
+  const title=await page.title();
+  for(const before of ["document.pdf","notes.md"]){
+    await row(before).click();await expect(head).toHaveText(before);
+    if(before==="document.pdf")expect(await frame.evaluate(node=>node.hasAttribute("sandbox")),"the PDF's own frame").toBe(false);
+    await row("page.html").click();await expect(head).toHaveText("page.html");
+    await expect(frame).toHaveAttribute("sandbox","");
+    await expect(body,"after "+before).toContainText("Static page text");
+    await expect(body,"after "+before).not.toContainText("SCRIPT RAN");
+    expect(await page.title(),"after "+before).toBe(title);
+  }
+  await shootBothModes(page,"workspace-html-preview-sandboxed");
+  // The raw address serves an HTML or SVG file sandboxed as well, so it never runs with the app's origin wherever it is opened. A PDF
+  // is served without that, so the browser's PDF viewer still shows it.
+  const raw=path=>request.get("/api/workspace/raw?"+new URLSearchParams({root:dir,path:join(dir,path)}));
+  for(const [path,sandboxed] of [["page.html",true],["icon.svg",true],["document.pdf",false]]){
+    const headers=(await raw(path)).headers();
+    expect(headers["content-security-policy"],path).toBe(sandboxed?"sandbox":undefined);
+    expect(headers["x-content-type-options"],path).toBe("nosniff");
+  }
+});
+
 test("a file the system will not let Trebell read says so plainly, without the system's error or the folder's full path",async({page,request})=>{
   test.skip(process.platform!=="win32","icacls denies the read here");
   test.setTimeout(60_000);

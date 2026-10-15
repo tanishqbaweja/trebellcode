@@ -349,8 +349,10 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     if(file.kind==="image")return <div className="media-preview image"><img src={rawUrl} alt={file.name}/></div>;
     if(file.kind==="video")return <div className="media-preview"><video src={rawUrl} controls preload="metadata"/></div>;
     if(file.kind==="audio")return <div className="media-preview audio"><Music2 size={34}/><audio src={rawUrl} controls preload="metadata"/></div>;
-    if(file.kind==="pdf")return <div className="document-preview"><iframe title={file.name} src={rawUrl}/></div>;
-    if(file.kind==="html")return <div className="document-preview"><iframe title={file.name} src={rawUrl} sandbox="" referrerPolicy="no-referrer"/></div>;
+    // Each preview gets a frame of its own (the key). Kept from a PDF, the frame took the HTML file's address before its sandbox, and
+    // a sandbox only applies to the frame's next load: the page ran its scripts with the app's origin.
+    if(file.kind==="pdf")return <div className="document-preview"><iframe key={"pdf:"+rawUrl} title={file.name} src={rawUrl}/></div>;
+    if(file.kind==="html")return <div className="document-preview"><iframe key={"html:"+rawUrl} sandbox="" referrerPolicy="no-referrer" title={file.name} src={rawUrl}/></div>;
     if(file.kind==="markdown")return <MarkdownPreview content={file.content}/>;
     if(file.kind==="table")return <div className="table-preview"><table><tbody>{table.map((row,rowIndex)=><tr key={rowIndex}>{row.map((cell,colIndex)=>rowIndex===0?<th key={colIndex}>{cell}</th>:<td key={colIndex}>{cell}</td>)}</tr>)}</tbody></table>{table.length>=300&&<p>Preview limited to 300 rows.</p>}</div>;
     if(file.kind==="binary")return <div className="file-empty"><strong>Binary file</strong><span>{formatBytes(file.size)} · not shown as text</span></div>;

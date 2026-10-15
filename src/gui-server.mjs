@@ -2848,7 +2848,10 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         else info={size:(await localWorkspaceFileInfo(located)).size};
         const type=MIME[extname(requested).toLowerCase()]||"application/octet-stream";
         const range=String(req.headers.range||"").match(/^bytes=(\d*)-(\d*)$/);
-        const common={"content-type":type,"accept-ranges":"bytes","cache-control":"no-store","content-disposition":`inline; filename="${basename(requested).replace(/"/g,"")}"`};
+        // A workspace file is the repository's content, not the app's: one that can run scripts (HTML, SVG) is served sandboxed, so it
+        // never runs with the app's origin however it is opened, and no file is read as a type it was not served as.
+        const active=/^(?:text\/html|image\/svg\+xml)\b/.test(type);
+        const common={"content-type":type,"accept-ranges":"bytes","cache-control":"no-store","content-disposition":`inline; filename="${basename(requested).replace(/"/g,"")}"`,"x-content-type-options":"nosniff",...(active?{"content-security-policy":"sandbox"}:{})};
         if(info.size===0){
           res.writeHead(200,{...common,"content-length":"0"});
           return res.end();
