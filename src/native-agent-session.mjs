@@ -389,13 +389,20 @@ function coolRestartProviderHistory(messages=[],provider=null){
   return {...cooled,messages:[...cooled.messages,...source.slice(boundary)]};
 }
 
+// The system prompt states the permission profile the session started with. A turn after the user changed it starts with a note of
+// the change (Codex sends one too), so the model neither keeps avoiding what a stricter profile refused nor tries what one now refuses.
+function nativePermissionModeMessage(from,to){
+  const now=to==="read-only"?"Edits, commands and other actions that change something are now refused; reads still run.":"A call refused under the earlier profile is not refused for that reason any more: call the tool you need, and Trebell asks the user where this profile needs approval.";
+  return {role:"developer",content:`Permission profile changed from ${from} to ${to}. ${now}`};
+}
+
 export class NativeAgentSession{
   constructor({cwd=process.cwd(),providerTurn,executeTool,toolOutputStore=null,provider=null,model=null,contextWindow=null,openAiServerCompactionThreshold=null,semanticCompletionGate=true,reasoningEffort=null,serviceTier=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[],streamDrafts=false}={}){
     // Drafts (reply text shown while a provider call streams) are off unless the app asks for them; the benchmark runner never does.
     this.streamDrafts=streamDrafts===true;this.draft=null;
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.reasoningEffort=reasoningEffort?String(reasoningEffort):null;this.serviceTier=serviceTier?String(serviceTier):null;this.semanticCompletionGate=semanticCompletionGate!==false;this.contextWindow=null;this.setContextWindow(contextWindow);const compactThreshold=Math.trunc(Number(openAiServerCompactionThreshold));this.openAiServerCompactionThreshold=Number.isFinite(compactThreshold)&&compactThreshold>0?compactThreshold:null;this.openAiServerCompactionArmed=false;this.maxOpenAiInputTokens=0;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;const reconstructed=[...(Array.isArray(initialMessages)?initialMessages:[])],restartCooling=coolRestartProviderHistory(reconstructed,provider);this.messages=restartCooling.messages;this.restartHistoryCooling=restartCooling.count?restartCooling:null;this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.reasoningEffort=reasoningEffort?String(reasoningEffort):null;this.serviceTier=serviceTier?String(serviceTier):null;this.semanticCompletionGate=semanticCompletionGate!==false;this.contextWindow=null;this.setContextWindow(contextWindow);const compactThreshold=Math.trunc(Number(openAiServerCompactionThreshold));this.openAiServerCompactionThreshold=Number.isFinite(compactThreshold)&&compactThreshold>0?compactThreshold:null;this.openAiServerCompactionArmed=false;this.maxOpenAiInputTokens=0;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.statedPermissionMode=String(permissionMode||"supervised")||"supervised";this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;const reconstructed=[...(Array.isArray(initialMessages)?initialMessages:[])],restartCooling=coolRestartProviderHistory(reconstructed,provider);this.messages=restartCooling.messages;this.restartHistoryCooling=restartCooling.count?restartCooling:null;this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
@@ -490,8 +497,8 @@ export class NativeAgentSession{
   async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null,maxWallTimeMs=null,toolAllowlist=null}={}){
     if(this.closed)throw new Error("Native session is closed");if(!this.model)throw new Error("Trebell Native requires a model");
     if(this.turnActive)throw new Error("Trebell Native already has a running turn");
-    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),observationSnapshot=new Map(this.observationCache),preserveCacheHistory=preserveCacheableProviderHistory(this.provider),userMeta=user[NATIVE_PROMPT_PROVENANCE],freshEntries=Array.isArray(userMeta?.contextEntries)?userMeta.contextEntries:[],hasFreshWorkingContext=Boolean(String(userMeta?.contextText||"").trim()&&freshEntries.length),exactWorkspaceContents=new Map(),postEditExpected=new Map(),priorTerminalRuns=this.previousTerminalRuns.slice(-16),currentTerminalRuns=[];let providerHistoryCooledThrough=0,lastOpenAiInputTokens=0;
-    const priorContext=preserveCacheHistory||!hasFreshWorkingContext?{messages:this.messages,count:0,savedChars:0,supersededEntries:0,retainedEntries:0}:coolSupersededWorkingContext(this.messages,freshEntries),base=[...priorContext.messages,user],projectProviderHistory=preserveCacheHistory?createDirectTerminalStatusProviderHistoryProjector():compactDirectTerminalStatusProviderHistory;
+    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),statedMode=this.permissionMode,modeNote=statedMode!==this.statedPermissionMode?nativePermissionModeMessage(this.statedPermissionMode,statedMode):null,observationSnapshot=new Map(this.observationCache),preserveCacheHistory=preserveCacheableProviderHistory(this.provider),userMeta=user[NATIVE_PROMPT_PROVENANCE],freshEntries=Array.isArray(userMeta?.contextEntries)?userMeta.contextEntries:[],hasFreshWorkingContext=Boolean(String(userMeta?.contextText||"").trim()&&freshEntries.length),exactWorkspaceContents=new Map(),postEditExpected=new Map(),priorTerminalRuns=this.previousTerminalRuns.slice(-16),currentTerminalRuns=[];let providerHistoryCooledThrough=0,lastOpenAiInputTokens=0;
+    const priorContext=preserveCacheHistory||!hasFreshWorkingContext?{messages:this.messages,count:0,savedChars:0,supersededEntries:0,retainedEntries:0}:coolSupersededWorkingContext(this.messages,freshEntries),base=[...priorContext.messages,...(modeNote?[modeNote]:[]),user],projectProviderHistory=preserveCacheHistory?createDirectTerminalStatusProviderHistoryProjector():compactDirectTerminalStatusProviderHistory;
     const coolProviderHistory=messages=>{
       const source=Array.isArray(messages)?messages:[],boundary=Math.min(providerHistoryCooledThrough,source.length),cooled=coolNativeProviderHistorySince(source,boundary);providerHistoryCooledThrough=source.length;return cooled;
     };
@@ -666,6 +673,8 @@ export class NativeAgentSession{
           }finally{if(draftCall)draftCall.end();if(this.modelController===modelController)this.modelController=null}
         },executeTool:wrappedExecutor,executeInternalTool:call=>rawExecutor({...call,_trebellInternalRecovery:true}),
       });
+      // The kept history now holds the note, so the model knows the profile this turn started with.
+      if(modeNote)this.statedPermissionMode=statedMode;
       if(preserveCacheHistory){
         this.messages=result.messages;
       }else{

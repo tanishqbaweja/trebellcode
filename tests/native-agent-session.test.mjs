@@ -1919,6 +1919,37 @@ test("Native session forgets present observations when a request restarted the p
   assert.equal(rejected.events.some(event=>event.name==="native.tool.observation_cache_cleared"),false);
 });
 
+// The system prompt states the permission profile a session started with. Live (2026-10-15), after a Read only turn refused a write
+// and the user switched back to Supervised, gpt-5-mini went on treating writes as blocked: nothing had told it the profile changed.
+test("a Native turn after the user changed the permission profile starts with a note of the change, kept in history and sent once",async()=>{
+  const requests=[];let failNext=false;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",permissionMode:"supervised",initialMessages:[{role:"system",content:"system"}],
+    providerTurn:async request=>{
+      requests.push(request.messages.map(message=>({role:message.role,content:message.content})));
+      if(failNext){failNext=false;throw new Error("provider unavailable")}
+      return {id:"r"+requests.length,text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({model:"model-a"});
+  const notes=messages=>messages.filter(message=>message.role==="developer"&&/^Permission profile changed/.test(String(message.content))).map(message=>message.content);
+  const toReadOnly="Permission profile changed from supervised to read-only. Edits, commands and other actions that change something are now refused; reads still run.";
+  await session.prompt([{type:"text",text:"one"}]);
+  assert.deepEqual(notes(requests.at(-1)),[],"an unchanged profile adds nothing");
+  session.setPermissionMode("read-only");
+  failNext=true;await assert.rejects(session.prompt([{type:"text",text:"two"}]),/provider unavailable/);
+  assert.deepEqual(notes(requests.at(-1)),[toReadOnly]);
+  await session.prompt([{type:"text",text:"two again"}]);
+  assert.deepEqual(requests.at(-1).slice(-2).map(message=>message.role),["developer","user"],"the note comes right before the request");
+  assert.deepEqual(notes(requests.at(-1)),[toReadOnly],"a turn that failed kept nothing, so the next one carries the note");
+  await session.prompt([{type:"text",text:"three"}]);
+  assert.deepEqual(notes(requests.at(-1)),[toReadOnly],"kept in the history, not sent again");
+  session.setPermissionMode("supervised");
+  await session.prompt([{type:"text",text:"four"}]);
+  assert.deepEqual(notes(requests.at(-1)),[toReadOnly,"Permission profile changed from read-only to supervised. A call refused under the earlier profile is not refused for that reason any more: call the tool you need, and Trebell asks the user where this profile needs approval."]);
+});
+
 // The working context goes in front of the request with its own copy of the user's parts (for measuring), which the session used to
 // add to the request's own parts: the request was counted, and read by the controller's checks, twice.
 test("a Native request sent with working context counts the user's request once",async()=>{
