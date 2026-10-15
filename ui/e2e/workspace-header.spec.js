@@ -377,6 +377,44 @@ test("a double click on Review, or Enter pressed twice on it, starts one review:
   }finally{answer.open();for(const reply of done)reply.open();await harness.close()}
 });
 
+test("a Review started at the end of the thread shows its running step above the composer, in a narrow window with the terminal and Git open",async({page})=>{
+  test.setTimeout(90_000);
+  const {harness,proxy,header}=await openHeaderApp(page,{branch:"main"});
+  const scroll=page.locator(".conversation-scroll"),composer=page.locator(".composer-wrap"),stop=header.getByRole("button",{name:"Stop",exact:true});
+  const steps=page.locator(".tool-event").filter({hasText:"Reviewing uncommitted changes"}),panel=page.getByTestId("right-panel");
+  // The harness answers review/start with the turn it started and sends nothing else of it, so the review's step is the first
+  // thing of its turn to show; the test ends the turn.
+  const turns=[];proxy.answer=message=>{if(message.method!=="review/start")return undefined;const turn={id:"review-turn-"+(turns.length+1),status:"inProgress",items:[]};turns.push(turn);return {turn}};
+  const endReview=turn=>proxy.sockets.at(-1).send(JSON.stringify({method:"turn/completed",params:{threadId:harness.threads[0].id,turn:{...turn,status:"completed"}}}));
+  const distanceFromEnd=()=>scroll.evaluate(node=>Math.round(node.scrollHeight-node.clientHeight-node.scrollTop));
+  // Wholly on screen: inside the view and above the composer floating over its foot.
+  const inView=async locator=>{
+    const row=await locator.boundingBox(),view=await scroll.boundingBox(),compose=await composer.boundingBox();
+    return Boolean(row&&view&&compose)&&row.y>=view.y-1&&row.y+row.height<=Math.min(view.y+view.height,compose.y)+1;
+  };
+  try{
+    // The terminal and the Git inspector open, in a narrow window: the conversation is a short strip with the composer over its foot.
+    await page.getByTestId("terminal-toggle").click();await expect(page.getByTestId("drawer")).toBeVisible();
+    await header.locator(".branch-control").click();await expect(panel.getByRole("button",{name:"Git",exact:true})).toHaveClass(/active/);
+    await page.setViewportSize({width:1120,height:760});
+    await expect.poll(()=>scroll.evaluate(node=>node.scrollHeight-node.clientHeight)).toBeGreaterThan(20);
+    await expect.poll(distanceFromEnd).toBeLessThanOrEqual(1);
+    for(const [index,mode] of ["dark","light"].entries()){
+      // The header this narrow has set the theme button aside, so the mode is switched wider.
+      await page.setViewportSize({width:1280,height:760});await switchMode(page,mode);await page.setViewportSize({width:1120,height:760});
+      await expect.poll(distanceFromEnd).toBeLessThanOrEqual(1);
+      // Review from the header in dark mode, /review typed in the composer in light.
+      if(mode==="dark")await header.getByRole("button",{name:"Review",exact:true}).click();
+      else{await page.getByTestId("composer").click();await page.keyboard.type("/review",{delay:25});await page.keyboard.press("Enter")}
+      await expect(stop).toBeVisible();await expect(steps.last()).toContainText("running");
+      await expect.poll(()=>inView(steps.last()),{message:"the running review step shows above the composer"}).toBe(true);
+      await page.screenshot({animations:"disabled",path:auditDir+"header-review-step-in-view-"+mode+"-1120x760.png"});
+      endReview(turns[index]);await expect(stop).toHaveCount(0);await expect(steps.last()).toContainText("done");
+    }
+    expect(turns).toHaveLength(2);
+  }finally{await harness.close()}
+});
+
 test("the header gives the whole thread title and branch name on hover when it cuts them",async({page})=>{
   test.setTimeout(60_000);
   const name="Release checklist for the payments service and the refund flow, with every step the on-call engineer has to run before the Friday deploy window closes",branch="feature/lane-b-sidebar-and-header-exploration-with-a-long-branch-name";

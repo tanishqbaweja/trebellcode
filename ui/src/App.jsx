@@ -1388,8 +1388,10 @@ export default function App(){
       pendingThreadScrollRestoreRef.current=null;
       return;
     }
+    // The live card takes its new turn a commit after its first row shows (cardTurnId), when the turn before's reply moves back
+    // above it, and the browser's scroll anchoring keeps that reply where it was on screen: a view that follows the end goes back.
     if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight);
-  },[activeThread?.id,messages.length,events.length]);
+  },[activeThread?.id,messages.length,events.length,cardTurnId]);
   useEffect(()=>{
     const node=conversationScrollRef.current;if(!node||typeof ResizeObserver==="undefined")return;
     const content=node.firstElementChild;if(!content)return;
@@ -4953,9 +4955,10 @@ export default function App(){
     if(running)throw new Error("Wait for the running turn to finish before reviewing.");
     const threadId=activeThread.id,starting=reviewStartsRef.current;if(starting.has(threadId))return;
     let result;try{starting.add(threadId);result=await rpc.request("review/start",{threadId,target:{type:"uncommittedChanges"}})}finally{starting.delete(threadId)}
-    // A review runs only as the turn the harness started for it: an answer without one started nothing.
+    // A review runs only as the turn the harness started for it: an answer without one started nothing. Its step comes into view
+    // as a sent message does.
     if(!result?.turn?.id)throw new Error(agentRuntimeLabel+" did not start a review.");
-    setRunning(true);setActiveTurnId(result.turn.id);
+    followConversationEnd();setRunning(true);setActiveTurnId(result.turn.id);
     setEvents(prev=>[...prev,{id:"review-"+Date.now(),kind:"tool",title:"Reviewing uncommitted changes",status:"running",raw:result}]);
     return result;
   }
