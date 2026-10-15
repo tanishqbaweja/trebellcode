@@ -51,6 +51,8 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
     (rows[at+1]||rows[at-1])?.querySelector(".thread-main")?.focus({preventScroll:true});
   },[]);
   // One row menu is open at a time, and it closes like other menus: Escape (focus returns to its button) or a click outside it.
+  // Focus on an item (or on nothing) goes to the button before the menu closes: the item hides with the menu, and then the button,
+  // shown only while its row has focus or the pointer, could not take it. Focus a person moved out of the menu stays there.
   useEffect(()=>{
     const menu=menuRef.current;if(!menuOpen||!menu)return;
     for(const other of document.querySelectorAll("details.thread-menu[open]"))if(other!==menu)closeRowMenu(other);
@@ -58,7 +60,8 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
     const keyDown=event=>{
       if(event.key!=="Escape"||!menu.open)return;
       event.preventDefault();event.stopPropagation();
-      closeRowMenu(menu);menu.querySelector("summary")?.focus();
+      const focused=document.activeElement;if(menu.contains(focused)||focused===document.body)menu.querySelector("summary")?.focus();
+      closeRowMenu(menu);
     };
     document.addEventListener("pointerdown",pointerDown,true);
     document.addEventListener("keydown",keyDown,true);

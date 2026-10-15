@@ -432,6 +432,31 @@ test("Enter held on Pin or Settle in a row's menu runs it once, and its repeats 
   }finally{await harness.close()}
 });
 
+test("Escape on an item of a row's menu closes the menu with the keyboard back on its Thread actions button",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness}=await openSidebarApp(page);
+  try{
+    const row=threadRow(page,"Bulk two"),button=row.locator(".thread-menu summary"),menu=row.locator(".thread-menu");
+    for(const [mode,item] of [["dark","Pin"],["dark","Archive"],["light","Pin"]]){
+      await switchMode(page,mode);
+      // Tab from the row to its menu button, Enter opens the menu, Tab goes down to the item, and Escape closes the menu.
+      await row.locator(".thread-main").focus();await page.keyboard.press("Tab");await expect(button).toBeFocused();
+      await page.keyboard.press("Enter");await expect(menu).toHaveAttribute("open","");
+      const target=row.getByRole("button",{name:item,exact:true});
+      for(let step=0;step<14&&!await target.evaluate(node=>node===document.activeElement);step++)await page.keyboard.press("Tab");
+      await expect(target).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(menu).not.toHaveAttribute("open","");await expect(row.locator(".thread-menu-popover")).toBeHidden();
+      await expect(button).toBeFocused();await expect(button).toBeVisible();
+      if(item==="Pin")await shoot(page,"sidebar-row-menu-escape-from-item");
+      // The keyboard carries on from the button: Enter opens the menu again, and Escape closes it there.
+      await page.keyboard.press("Enter");await expect(menu).toHaveAttribute("open","");
+      await page.keyboard.press("Escape");await expect(menu).not.toHaveAttribute("open","");await expect(button).toBeFocused();
+    }
+    await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+  }finally{await harness.close()}
+});
+
 test("with the harness away, Delete says Trebell Native is not connected before it asks, and the open thread stays open and listed",async({page})=>{
   test.setTimeout(90_000);
   const {harness,proxy,id}=await openSidebarApp(page);
