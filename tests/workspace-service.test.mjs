@@ -246,6 +246,8 @@ async function agentWorkRepository(prefix){
   return {dir,run,added:Object.keys(added)};
 }
 const countingGit=()=>{const calls=[];return {calls,gitFn:(cwd,args,options)=>{calls.push(args.join(" "));return execFileAsync("git",args,{cwd,windowsHide:true,...options})}}};
+// The folders the Files view leaves out, which a new folder's listing leaves out too.
+const SKIPPED="-x node_modules/ -x target/ -x dist/ -x build/ -x .next/ -x .cache/ -x desktop-dist/";
 
 test("the Diff tab's read shows staged changes and each new file's lines as git diff shows a file added with git add -N, in two git processes",{timeout:60_000},async()=>{
   const {dir,added}=await agentWorkRepository("trebell-workspace-diff-");
@@ -275,7 +277,7 @@ test("the Diff tab's read shows staged changes and each new file's lines as git 
     await mkdir(join(dir,"docs","guide"),{recursive:true});await writeFile(join(dir,"docs","guide","intro.md"),"# Intro\n");await writeFile(join(dir,"docs","trace.log"),"left out\n");
     calls.length=0;
     const folder=await workspaceDiff(dir,{gitFn});
-    assert.deepEqual(calls,["status --short","diff --no-ext-diff --no-color HEAD --","--literal-pathspecs ls-files --others --exclude-standard -z -- docs/"]);
+    assert.deepEqual(calls,["status --short","diff --no-ext-diff --no-color HEAD --","--literal-pathspecs ls-files --others --exclude-standard "+SKIPPED+" -z -- docs/"]);
     assert.match(folder.diff,/\ndiff --git a\/docs\/guide\/intro\.md b\/docs\/guide\/intro\.md\nnew file mode 100644\n--- \/dev\/null\n\+\+\+ b\/docs\/guide\/intro\.md\n@@ -0,0 \+1 @@\n\+# Intro\n/);
     assert.doesNotMatch(folder.diff,/trace\.log/);
     assert.ok(folder.diff.indexOf("a/docs/guide/intro.md")<folder.diff.indexOf("a/empty.txt"),"the folder's files take its place in git status's order");
@@ -310,13 +312,64 @@ test("the Diff tab's read shows 200 new files at most and counts the rest on a n
   }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
+// git diff can write more than the 4 MB the read keeps: here a large file is staged beside an unstaged edit and a new file. What
+// git wrote by then shows, up to its last whole line, with a note that the rest does not, and the list and the new file beside it.
+// The whole read used to fail: the Diff tab said "Could not load changes" and lost its list too, and Generate's commit text got an
+// empty status and an empty diff.
+test("a diff over the 4 MB the Diff tab's read keeps shows what fits with a note, beside the whole list and the new files",{timeout:60_000},async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-big-diff-")),run=args=>execFileAsync("git",args,{cwd:dir,windowsHide:true});
+  try{
+    await run(["init","-q","-b","main"]);await run(["config","user.email","diff@example.test"]);await run(["config","user.name","Diff Test"]);await run(["config","core.autocrlf","false"]);
+    await writeFile(join(dir,"app.js"),"export const answer = 42;\n");await run(["add","-A"]);await run(["commit","-qm","seed"]);
+    await writeFile(join(dir,"app.js"),"export const answer = 43;\n");
+    const data=JSON.stringify({rows:Array.from({length:150_000},(_,index)=>({id:index,name:"row "+index}))},null,1);
+    assert.ok(Buffer.byteLength(data)>5*1024*1024);
+    await writeFile(join(dir,"data.json"),data);await run(["add","data.json"]);await writeFile(join(dir,"notes.md"),"# Notes\n");
+    const read=await workspaceDiff(dir);
+    assert.equal(read.isGit,true);assert.equal(read.error,undefined);
+    assert.equal(read.status," M app.js\nA  data.json\n?? notes.md\n","the whole list");
+    assert.match(read.diff,/^diff --git a\/app\.js b\/app\.js\n[^]*?\n-export const answer = 42;\n\+export const answer = 43;\n/);
+    assert.match(read.diff,/\ndiff --git a\/data\.json b\/data\.json\nnew file mode 100644\n/);
+    const note="\\ The rest of the diff is not shown: it is over 4 MB.\n",at=read.diff.indexOf(note);
+    assert.ok(at>0,"a note says the rest is not shown");
+    // Up to its last whole line: the line before the note is one of the file's own.
+    const shown=read.diff.slice(0,at),last=shown.slice(shown.lastIndexOf("\n",shown.length-2)+1,-1);
+    assert.ok(Buffer.byteLength(shown)<=4*1024*1024);
+    assert.ok(last.startsWith("+")&&data.split("\n").includes(last.slice(1)),"a whole line of data.json: "+JSON.stringify(last));
+    assert.equal(read.diff.slice(at+note.length),"diff --git a/notes.md b/notes.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1 @@\n+# Notes\n","the new file after it");
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// A node_modules/ git does not ignore (packages an agent installed before it wrote a .gitignore) sorts before package.json and src/:
+// its files took the 200 new files shown, and the agent's own were only counted on the note line. A new folder the Files view leaves
+// out is named on a note line instead and not listed, and one inside a new folder is not listed either.
+test("new files in a folder the Files view leaves out are named, not shown, so they never crowd out the agent's own",{timeout:120_000},async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-skipped-")),run=args=>execFileAsync("git",args,{cwd:dir,windowsHide:true});
+  try{
+    await run(["init","-q","-b","main"]);await run(["config","user.email","diff@example.test"]);await run(["config","user.name","Diff Test"]);await run(["config","core.autocrlf","false"]);
+    await writeFile(join(dir,"README.md"),"# Seed\n");await run(["add","-A"]);await run(["commit","-qm","seed"]);
+    for(let index=0;index<300;index++){await mkdir(join(dir,"node_modules","pkg-"+index),{recursive:true});await writeFile(join(dir,"node_modules","pkg-"+index,"index.js"),"module.exports = "+index+";\n")}
+    await writeFile(join(dir,"package.json"),"{\"name\":\"app\"}\n");await mkdir(join(dir,"src"));await writeFile(join(dir,"src","index.js"),"console.log(\"app\");\n");
+    await mkdir(join(dir,"web","node_modules","dep"),{recursive:true});await mkdir(join(dir,"web","src"));
+    await writeFile(join(dir,"web","node_modules","dep","index.js"),"module.exports = 1;\n");await writeFile(join(dir,"web","src","app.js"),"export default 1;\n");
+    const {calls,gitFn}=countingGit();
+    const read=await workspaceDiff(dir,{gitFn});
+    assert.equal(read.status,"?? node_modules/\n?? package.json\n?? src/\n?? web/\n");
+    assert.deepEqual(read.diff.match(/^diff --git a\/\S+/gm),["diff --git a/package.json","diff --git a/src/index.js","diff --git a/web/src/app.js"],"the agent's files, none of the packages'");
+    assert.ok(read.diff.endsWith("+export default 1;\n\\ New files in node_modules/ are not shown.\n"),read.diff.slice(-200));
+    assert.deepEqual(calls,["status --short","diff --no-ext-diff --no-color HEAD --","--literal-pathspecs ls-files --others --exclude-standard "+SKIPPED+" -z -- src/ web/"],"node_modules/ is never listed");
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
 // The shell a remote environment runs its commands in: sh, or on Windows the one Git for Windows ships.
 async function posixShell(){
   if(process.platform!=="win32")return "sh";
   const sh=join(dirname(dirname(dirname((await execFileAsync("git",["--exec-path"],{windowsHide:true})).stdout.trim()))),"bin","sh.exe");
   return existsSync(sh)?sh:null;
 }
-test("a remote environment's Diff tab read shows its staged changes and new files from one session's git diff, and leaves its index as it was",{timeout:60_000},async t=>{
+// The read's script now runs about twenty commands where it ran eight (the caps below), each of which sh on Windows starts slowly on
+// a loaded host: two reads and the repository's setup took over the 60 s this test had there, as they take under 40 s alone.
+test("a remote environment's Diff tab read shows its staged changes and new files from one session's git diff, and leaves its index as it was",{timeout:180_000},async t=>{
   const shell=await posixShell();if(!shell){t.skip("no POSIX shell to run the remote script in");return}
   const {dir,run,added}=await agentWorkRepository("trebell-workspace-remote-diff-"),unborn=await mkdtemp(join(tmpdir(),"trebell-workspace-remote-unborn-"));
   try{
@@ -340,4 +393,42 @@ test("a remote environment's Diff tab read shows its staged changes and new file
     const first=await environmentWorkspaceDiff(unborn,{environments,environmentId:"ssh-a"});
     assert.match(first.diff,/^diff --git a\/first\.txt b\/first\.txt\nnew file mode 100644\n[^]*?\n\+first\n/);
   }finally{for(const folder of [dir,unborn])await rm(folder,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// A remote environment's read keeps the local one's order and caps. A session keeps 2 MB of output unless told more and drops the rest
+// without a word (runProcess), and the new files used to come in path order with the rest: a 3 MB new data/run.csv, which sorts
+// before src/, filled it and the edit to src/app.js was gone. Now the tracked changes come first, a new file over 512 KB is named
+// with its size, 200 new files at most are shown with the rest counted, and node_modules/ is named, not listed.
+test("a remote environment's Diff tab read shows the tracked changes first and caps the new files as the local read does",{timeout:180_000},async t=>{
+  const shell=await posixShell();if(!shell){t.skip("no POSIX shell to run the remote script in");return}
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-remote-caps-")),run=args=>execFileAsync("git",args,{cwd:dir,windowsHide:true});
+  try{
+    await run(["init","-q","-b","main"]);await run(["config","user.email","diff@example.test"]);await run(["config","user.name","Diff Test"]);await run(["config","core.autocrlf","false"]);
+    await mkdir(join(dir,"src"));await writeFile(join(dir,"src","app.js"),"export const answer = 42;\n");await run(["add","-A"]);await run(["commit","-qm","seed"]);
+    await writeFile(join(dir,"src","app.js"),"export const answer = 43;\n");
+    await mkdir(join(dir,"data"));await writeFile(join(dir,"data","run.csv"),"a,b\n".repeat(750_000));
+    await mkdir(join(dir,"notes"));for(let index=0;index<203;index++)await writeFile(join(dir,"notes","note-"+String(index).padStart(3,"0")+".txt"),"note "+index+"\n");
+    await mkdir(join(dir,"node_modules","left-pad"),{recursive:true});await writeFile(join(dir,"node_modules","left-pad","index.js"),"module.exports = 1;\n");
+    // An environment whose commands run here through the shell a host would run them in, keeping as much output as runProcess does.
+    const kept={},environments={
+      get:id=>id==="ssh-a"?{id:"ssh-a",name:"Build box",type:"ssh",cwd:dir}:null,
+      executeArgv:async(_id,{command,args,cwd,maxOutput=2*1024*1024})=>{
+        const result=await execFileAsync(command==="sh"?shell:command,args,{cwd,windowsHide:true,maxBuffer:64*1024*1024}).then(done=>({exitCode:0,...done}),error=>({exitCode:error.code,stdout:error.stdout||"",stderr:error.stderr||""}));
+        const keep=text=>Buffer.from(String(text||"")).subarray(0,maxOutput).toString("utf8").replace(/\r/g,"").trimEnd();
+        kept[command]=Buffer.byteLength(String(result.stdout||""));
+        return {...result,stdout:keep(result.stdout),stderr:keep(result.stderr)};
+      },
+    };
+    const before=(await run(["status","--porcelain"])).stdout;
+    const read=await environmentWorkspaceDiff(dir,{environments,environmentId:"ssh-a"});
+    assert.equal(read.isGit,true);
+    assert.match(read.diff,/^diff --git a\/src\/app\.js b\/src\/app\.js\n[^]*?\n-export const answer = 42;\n\+export const answer = 43;\n/,"the edit first");
+    assert.match(read.diff,/\ndiff --git a\/data\/run\.csv b\/data\/run\.csv\nnew file mode 100644\nFile is too large to preview \(2930 KB\)\n/);
+    assert.match(read.diff,/\ndiff --git a\/notes\/note-000\.txt b\/notes\/note-000\.txt\nnew file mode 100644\n[^]*?\n\+note 0\n/);
+    assert.equal((read.diff.match(/^diff --git a\/notes\//gm)||[]).length,199,"200 new files with data/run.csv");
+    assert.doesNotMatch(read.diff,/note-199\.txt|node_modules\/left-pad/);
+    assert.ok(read.diff.endsWith("\\ 4 more new files are not shown.\n\\ New files in node_modules/ are not shown.\n"),read.diff.slice(-300));
+    assert.ok(kept.sh<2*1024*1024,"all of it is under what a session keeps ("+kept.sh+" bytes)");
+    assert.equal((await run(["status","--porcelain"])).stdout,before,"the repository's own index is left as it was");
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

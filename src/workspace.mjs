@@ -183,11 +183,27 @@ function statusPath(text){
   }
   return Buffer.from(bytes).toString("utf8");
 }
+// git diff writes more than the 4 MB the read keeps when a large file is staged or a change is big: what it wrote by then is shown,
+// up to its last whole line, with a note line, and the list and the new files beside it. The whole read used to fail, and the Diff
+// tab lost its list with it (Generate's commit text got no status and no diff either).
+const DIFF_BYTES=4*1024*1024;
+function cutDiff(text){return text.slice(0,text.lastIndexOf("\n")+1)+"\\ The rest of the diff is not shown: it is over 4 MB.\n"}
 // git diff leaves out the files git does not track yet, which git status lists ("?? path", a new folder as "?? folder/"), so each one
 // is shown here as git diff shows a file added with git add -N: its lines added, a binary file (a NUL byte in its first 8000 bytes,
 // as git counts one, and only those are read) or a link by its target, which is not followed. Only a new folder's files take a git
 // process to list; the files are read directly, and no more text than the Files view's 512 KB each, 4 MB and 200 files in all.
 const NEW_FILE_BYTES=512_000,NEW_FILES_BYTES=4*1024*1024,NEW_FILES_MAX=200;
+// New files in a folder the Files view leaves out (SKIP: node_modules, dist, build, ...) are named by their folder on a note line,
+// and a new folder's own such folders are not even listed (-x), so a node_modules/ git does not ignore (packages installed before
+// a .gitignore was written) no longer takes the 200 files before the agent's own files.
+const SKIP_EXCLUDES=[...SKIP].filter(name=>name!==".git").flatMap(name=>["-x",name+"/"]);
+function skippedFolder(path){
+  const parts=path.split("/"),at=parts.findIndex((part,index)=>index<parts.length-1&&SKIP.has(part));
+  return at<0?null:parts.slice(0,at+1).join("/")+"/";
+}
+function untrackedEntries(status){return String(status||"").split(/\r?\n/).filter(line=>line.startsWith("?? ")).map(line=>statusPath(line.slice(3)))}
+function skippedNotes(status){return [...new Set(untrackedEntries(status).map(skippedFolder).filter(Boolean))].map(folder=>"\\ New files in "+folder+" are not shown.\n").join("")}
+function restNote(rest){return rest>0?"\\ "+rest+" more new file"+(rest===1?" is":"s are")+" not shown.\n":""}
 async function readNewFile(path,size){
   const handle=await open(path,"r");
   try{
@@ -205,8 +221,8 @@ function newFileDiff(path,{mode="100644",bytes=null,binary=false,size=0}){
   return head+"--- /dev/null\n+++ b/"+path+"\n@@ -0,0 +1"+(lines.length===1?"":","+lines.length)+" @@\n"+lines.map(line=>"+"+line+"\n").join("")+(ends?"":"\\ No newline at end of file\n");
 }
 async function newFilesDiff(cwd,status,listFolders){
-  const entries=String(status||"").split(/\r?\n/).filter(line=>line.startsWith("?? ")).map(line=>statusPath(line.slice(3)));
-  if(!entries.length)return "";
+  const entries=untrackedEntries(status).filter(path=>!skippedFolder(path));
+  if(!entries.length)return skippedNotes(status);
   // A new folder's files take its place in git status's order.
   const folders=entries.filter(path=>path.endsWith("/")),listed=folders.length?String(await listFolders(folders)).split("\0").filter(path=>path&&!path.endsWith("/")):[];
   const inside=folder=>{const base=resolve(cwd,folder)+sep;return listed.filter(path=>resolve(cwd,path).startsWith(base))};
@@ -220,9 +236,9 @@ async function newFilesDiff(cwd,status,listFolders){
     out+=newFileDiff(path,{mode:process.platform!=="win32"&&info.mode&0o111?"100755":"100644",...read});shown++;budget-=read.bytes?.length||0;
   }
   // The rest are counted on a note line, as git notes "\ No newline at end of file".
-  const rest=paths.length-index;
-  return out+(rest>0?"\\ "+rest+" more new file"+(rest===1?" is":"s are")+" not shown.\n":"");
+  return out+restNote(paths.length-index)+skippedNotes(status);
 }
+const OVER=error=>error?.code==="ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
 
 export async function workspaceDiff(root,{gitFn=null}={}) {
   const cwd = resolve(root || process.cwd());
@@ -230,9 +246,13 @@ export async function workspaceDiff(root,{gitFn=null}={}) {
   const git=(args,maxBuffer)=>gitFn?gitFn(cwd,args,{maxBuffer}):execFileAsync("git",args,{cwd,windowsHide:true,maxBuffer});
   try {
     const statusRead=git(["status","--short"],512*1024).catch(()=>({stdout:""}));
-    const { stdout, stderr } = await diffAgainstHead(base=>git(["diff","--no-ext-diff","--no-color",base,"--"],4*1024*1024));
+    const { stdout, stderr } = await diffAgainstHead(base=>git(["diff","--no-ext-diff","--no-color",base,"--"],DIFF_BYTES).catch(error=>{
+      if(!OVER(error))throw error;
+      return {stdout:cutDiff(String(error.stdout||"")),stderr:String(error.stderr||"")};
+    }));
     const { stdout: statusOut } = await statusRead;
-    const added=await newFilesDiff(cwd,statusOut,folders=>git(["--literal-pathspecs","ls-files","--others","--exclude-standard","-z","--",...folders],4*1024*1024).then(result=>result.stdout,()=>""));
+    // A listing over its 4 MB keeps the paths it wrote whole.
+    const added=await newFilesDiff(cwd,statusOut,folders=>git(["--literal-pathspecs","ls-files","--others","--exclude-standard",...SKIP_EXCLUDES,"-z","--",...folders],4*1024*1024).then(result=>result.stdout,error=>OVER(error)?String(error.stdout||"").replace(/[^\0]*$/,""):""));
     return { cwd, isGit: true, status: statusOut, diff: stdout+added, stderr };
   } catch (error) {
     // Outside a Git repository git diff takes its arguments as two paths to compare and, given none, prints its whole usage and
@@ -242,16 +262,72 @@ export async function workspaceDiff(root,{gitFn=null}={}) {
   }
 }
 
-// A remote environment's new files are added to a copy of its index with git add -N, so git diff shows them in the same session, with
-// the staged and unstaged changes against HEAD (the empty tree on a branch with no commit yet); the copy is removed after.
+// A remote environment's read has the local one's order and caps, in one session: first the staged and unstaged changes against
+// HEAD (the empty tree on a branch with no commit yet), 4 MB of them at most, then the new files git does not track yet, in path
+// order, as git diff shows them once added with git add -N to a copy of the index (removed after): 200 at most, one over 512 KB
+// named with its size, 4 MB of text in all, none from a folder the Files view leaves out. The new files used to come in path order
+// with the rest, so a large one could push the tracked edits out of the 2 MB a session kept. The lines between the parts ("\ <…>")
+// are ones git diff never writes: its only line starting "\ " is "\ No newline at end of file".
+const REMOTE_CUT="\\ <trebell: diff cut>",REMOTE_NEW="\\ <trebell: new files>",REMOTE_LEFT="\\ <trebell: new files left out>";
 const REMOTE_DIFF_SCRIPT=[
-  "i=$(mktemp) || exit 1; trap 'rm -f \"$i\"' EXIT",
+  "cd \"./$(git rev-parse --show-cdup)\" || exit 1",
+  "o=$(mktemp -d) || exit 1; trap 'rm -rf \"$o\"' EXIT; i=$o/index t=$o/diff l=$o/large c=$o/new w=$o/sizes; : >\"$l\"; : >\"$c\"; : >\"$w\"",
   "x=$(git rev-parse --git-path index) || exit 1",
   "if [ -f \"$x\" ]; then cp \"$x\" \"$i\" || exit 1; else rm -f \"$i\"; fi",
-  "GIT_INDEX_FILE=\"$i\" git add --intent-to-add -- :/ >/dev/null 2>&1",
   "b=HEAD; git rev-parse -q --verify HEAD >/dev/null || b=$(git hash-object -t tree /dev/null)",
-  "GIT_INDEX_FILE=\"$i\" git diff --no-ext-diff --no-color \"$b\" --",
+  // One byte more than the read keeps says that the diff was cut.
+  "git diff --no-ext-diff --no-color \"$b\" -- | head -c "+(DIFF_BYTES+1)+" >\"$t\"",
+  "d=$(wc -c <\"$t\"); d=${d##* }",
+  "if [ \"$d\" -gt "+DIFF_BYTES+" ]; then head -c "+DIFF_BYTES+" \"$t\"; printf '\\n%s\\n' '"+REMOTE_CUT+"'; else cat \"$t\"; fi",
+  "printf '%s\\n' '"+REMOTE_NEW+"'",
+  // The first 200 new files, the rest counted, and the sizes of the regular ones among them from one wc, matched by name (one that
+  // wc cannot read has no line): a process for each file took minutes where starting one is slow (sh on Windows, a loaded host).
+  "git --literal-pathspecs ls-files --others --exclude-standard "+SKIP_EXCLUDES.map(word=>"'"+word+"'").join(" ")+" -z | tr '\\0' '\\n' | {",
+  "  n=0; r=0; set --",
+  "  while IFS= read -r f; do",
+  "    if [ \"$n\" -ge "+NEW_FILES_MAX+" ]; then r=$((r+1)); continue; fi",
+  "    if [ -L \"$f\" ]; then :; elif [ -f \"$f\" ]; then set -- \"$@\" \"./$f\"; else continue; fi",
+  "    printf '%s\\n' \"$f\" >>\"$c\"; n=$((n+1))",
+  "  done",
+  "  if [ \"$#\" -gt 0 ]; then wc -c \"$@\" >\"$w\" 2>/dev/null; fi",
+  "  set --; k=0; p=",
+  "  exec 3<\"$w\"",
+  "  while IFS= read -r f; do",
+  "    if [ \"$k\" -ge "+NEW_FILES_BYTES+" ]; then r=$((r+1)); continue; fi",
+  "    if [ ! -L \"$f\" ]; then",
+  "      if [ -z \"$p\" ]; then IFS= read -r p <&3; p=${p#\"${p%%[! ]*}\"}; fi",
+  "      [ \"${p#* }\" = \"./$f\" ] || continue",
+  "      s=${p%% *}; p=",
+  "      if [ \"$s\" -gt "+NEW_FILE_BYTES+" ]; then",
+  "        if [ -x \"$f\" ]; then m=100755; else m=100644; fi",
+  "        printf '%s %s %s\\n' \"$s\" \"$m\" \"$f\" >>\"$l\"; continue",
+  "      fi",
+  "      k=$((k+s))",
+  "    fi",
+  "    set -- \"$@\" \"$f\"",
+  "  done <\"$c\"",
+  "  exec 3<&-",
+  "  if [ \"$#\" -gt 0 ]; then",
+  "    GIT_INDEX_FILE=\"$i\" git --literal-pathspecs add --intent-to-add -- \"$@\" >/dev/null 2>&1",
+  "    GIT_INDEX_FILE=\"$i\" git --literal-pathspecs diff --no-ext-diff --no-color \"$b\" -- \"$@\"",
+  "  fi",
+  "  printf '%s\\n' '"+REMOTE_LEFT+"'; cat \"$l\"; printf '%s\\n' \"$r\"",
+  "}",
 ].join("\n");
+// The script's output as the Diff tab shows it, its parts' lines read away: the cut diff ends at its last whole line with the local
+// note, a file over 512 KB and the files left out are named as the local read names them, and so are the folders the Files view
+// leaves out, from the session's git status. An output without the parts (the script stopped early) is shown as it came.
+const lineAt=(text,line)=>{for(let at=text.indexOf(line);at>=0;at=text.indexOf(line,at+1))if((at===0||text[at-1]==="\n")&&(at+line.length===text.length||text[at+line.length]==="\n"))return at;return -1};
+function remoteDiffText(out,status){
+  const text=String(out||""),start=lineAt(text,REMOTE_NEW);
+  if(start<0)return text;
+  const cut=lineAt(text.slice(0,start),REMOTE_CUT),tracked=cut<0?text.slice(0,start):cutDiff(text.slice(0,Math.max(0,cut-1)));
+  const rest=text.slice(start+REMOTE_NEW.length+1),left=lineAt(rest,REMOTE_LEFT);
+  if(left<0)return tracked+rest;
+  const meta=rest.slice(left+REMOTE_LEFT.length+1).split("\n").filter(Boolean),count=Number(meta.pop())||0;
+  const large=meta.map(line=>/^(\d+) (\d+) (.+)$/.exec(line)).filter(Boolean).map(([,size,mode,path])=>newFileDiff(path,{mode,size:Number(size)})).join("");
+  return tracked+rest.slice(0,left)+large+restNote(count)+skippedNotes(status);
+}
 
 export async function environmentWorkspaceDiff(root,{environments=null,environmentId=null}={}){
   const profile=remoteProfile(environments,environmentId);
@@ -259,11 +335,12 @@ export async function environmentWorkspaceDiff(root,{environments=null,environme
   const cwd=posix.normalize(String(root||profile.cwd||"/"));
   const inside=await environments.executeArgv(environmentId,{command:"git",args:["rev-parse","--show-toplevel"],cwd,timeoutMs:12000});
   if(inside.exitCode!==0)return {cwd,isGit:false,status:"",diff:"",error:(inside.stderr||inside.stdout||"Not a Git repository").trim(),environmentId};
+  // Up to 4 MB of the diff and 4 MB of new files' text, with the + git puts before each line: the session keeps 2 MB unless told more.
   const [diff,status]=await Promise.all([
-    environments.executeArgv(environmentId,{command:"sh",args:["-c",REMOTE_DIFF_SCRIPT],cwd,timeoutMs:20000}),
+    environments.executeArgv(environmentId,{command:"sh",args:["-c",REMOTE_DIFF_SCRIPT],cwd,timeoutMs:20000,maxOutput:16*1024*1024}),
     environments.executeArgv(environmentId,{command:"git",args:["status","--short"],cwd,timeoutMs:12000}),
   ]);
-  return {cwd,isGit:true,status:status.stdout||"",diff:diff.stdout||"",stderr:[diff.stderr,status.stderr].filter(Boolean).join("\n"),environmentId};
+  return {cwd,isGit:true,status:status.stdout||"",diff:remoteDiffText(diff.stdout||"",status.stdout||""),stderr:[diff.stderr,status.stderr].filter(Boolean).join("\n"),environmentId};
 }
 
 export async function workspaceFile(filePath, maxBytes = 512_000) {
