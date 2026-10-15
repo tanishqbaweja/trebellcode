@@ -33,7 +33,7 @@ function copyAsWritten(event){
   event.clipboardData.setData("text/plain",parts.join(" "));event.preventDefault();
 }
 
-export default function SourceControlPanel({projectPath,environmentId=null,remote=false,environmentName="Local machine",model,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="native",agentRuntimeInstanceId=null,agentRuntimeLabel="",threadId=null,sourceControlSettings={},onProjectChange,onAttachPr,onLinkPr,onLinkPrUrl,onOpenLinkedThread,onSelectedPrChange,onLinkedPullRequestsChanged,onGitInfo,linkedPullRequests=[]}){
+export default function SourceControlPanel({projectPath,environmentId=null,remote=false,environmentName="Local machine",model,provider=DEFAULT_MODEL_PROVIDER,agentRuntime="native",agentRuntimeInstanceId=null,agentRuntimeLabel="",threadId=null,sourceControlSettings={},onProjectChange,onAttachPr,onLinkPr,onLinkPrUrl,onOpenLinkedThread,onSelectedPrChange,onLinkedPullRequestsChanged,onGitInfo,gitInfo=null,linkedPullRequests=[]}){
   const [info,setInfo]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [sourceProvider,setSourceProvider]=useState("");
@@ -157,10 +157,10 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   // An agent's file change in the thread open, or the end of its turn, reads the repository again as the Files and Diff tabs read
   // theirs: one git status while its parts are unchanged, and the pull requests and the code host are left as they are. A read that
   // fails keeps the last view; the next change or refresh reads again.
-  async function refreshChanges(){
+  async function refreshChanges({toHeader=true}={}){
     if(!projectPath)return;
     const started=contextRef.current,lands=infoRead();
-    try{const i=await api("/api/git/info?"+query({path:projectPath}));if(stillShown(started)&&lands()){setInfo(i);setReads(current=>({...current,info:{ok:true}}));onGitInfo?.(i)}}catch{}
+    try{const i=await api("/api/git/info?"+query({path:projectPath}));if(stillShown(started)&&lands()){setInfo(i);setReads(current=>({...current,info:{ok:true}}));if(toHeader)onGitInfo?.(i)}}catch{}
   }
   useEffect(()=>{
     let timer=null;
@@ -168,6 +168,17 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     window.addEventListener("trebell:rpc-notification",changed);
     return()=>{clearTimeout(timer);window.removeEventListener("trebell:rpc-notification",changed)};
   },[threadId,projectPath,environmentId]);
+  // A change made outside the open thread's notifications (an editor's save, a terminal, another thread's turn) reaches the header's
+  // poll of the same repository (App.jsx: every 3.5 s while the window has focus). When what it read differs from what the panel
+  // shows, the panel reads again itself, as for a notification: its own reads are numbered, so a poll that answered late never puts
+  // an older list back, and a change costs one read. That read is not handed to the header, which has just read the repository
+  // itself: a header that reads it otherwise than the panel does (its environment left to the server's choice) then keeps its own
+  // answer, which starts no other read, instead of taking the panel's until its next poll and the panel reading again after each.
+  useEffect(()=>{
+    const shown=infoRef.current;
+    if(!gitInfo||!shown||gitInfo.cwd!==shown.cwd||(gitInfo.environmentId||null)!==(shown.environmentId||null))return;
+    if(JSON.stringify(gitInfo)!==JSON.stringify(shown))refreshChanges({toHeader:false});
+  },[gitInfo]);
   // An action that worked fully says nothing, unless what it did is news to the person (`notice`, as for a merge).
   function partialSuccess(label,issues=[],started=contextRef.current,notice=false){
     const details=(Array.isArray(issues)?issues:[]).map(item=>String(item||"").trim()).filter(Boolean);

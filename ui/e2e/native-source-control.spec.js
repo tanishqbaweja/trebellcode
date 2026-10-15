@@ -71,8 +71,9 @@ test("the Git tab's Changes card shows the file an agent's turn wrote, and reads
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"visual-fixture"});const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const project={id:"native-changes-project",name:"Native Changes Project",path:repo,environmentId:null,effectiveSettings:{}};let uiMeta={projectless:false,environmentId:null,cwd:repo,runtime:"native",runtimeInstanceId:"native-default"};
   // The Git panel's reads name the environment (environmentId=), as the thread's context save does when the thread opens; the
-  // header's poll of a local project does not.
-  const panelReads=[];
+  // header's poll of a local project does not. headerHold, while set, holds the header's next poll until it settles (headerHeld
+  // says one is waiting).
+  const panelReads=[];let headerHold=null,headerHeld=null;
   // The appearance toggle saves the settings, which the fixture keeps, so the screenshots in both modes show the window as it was.
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"auto",defaultWorkspaceMode:"current",followUpMode:"queue"};
   try{
@@ -87,7 +88,7 @@ test("the Git tab's Changes card shows the file an agent's turn wrote, and reads
     await page.route(/\/api\/checkpoints\/link$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
     await page.route(/\/api\/context\/packet$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"changes-ui-context",skipped:true,budget:{reserveTokens:1024}})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-    await page.route(/\/api\/git\/info(?:\?.*)?$/,async route=>{if(new URL(route.request().url()).searchParams.has("environmentId"))panelReads.push(Date.now());const info=await gitInfo(repo).catch(()=>null);return route.fulfill(info?{status:200,contentType:"application/json",body:JSON.stringify(info)}:{status:404,contentType:"application/json",body:JSON.stringify({error:"The fixture repository was removed."})}).catch(()=>{})});
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,async route=>{if(new URL(route.request().url()).searchParams.has("environmentId"))panelReads.push(Date.now());else if(headerHold){headerHeld?.();await headerHold}const info=await gitInfo(repo).catch(()=>null);return route.fulfill(info?{status:200,contentType:"application/json",body:JSON.stringify(info)}:{status:404,contentType:"application/json",body:JSON.stringify({error:"The fixture repository was removed."})}).catch(()=>{})});
     await page.route(/\/api\/source-control\/diagnostics(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedProvider:"",detectedProvider:"unknown",git:{version:"git version fixture"},capabilities:{}})}));
     await page.route(/\/api\/source-control\/prs(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[],capabilities:{create:true,comment:true,review:true,merge:true,updateBranch:true}})}));
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
@@ -113,10 +114,28 @@ test("the Git tab's Changes card shows the file an agent's turn wrote, and reads
     await page.evaluate(id=>{for(const detail of [{method:"turn/completed",params:{threadId:"another-thread",turn:{id:"other-turn",status:"completed"}}},{method:"item/agentMessage/delta",params:{threadId:id,itemId:"reply",delta:"More text."}}])window.dispatchEvent(new CustomEvent("trebell:rpc-notification",{detail}))},thread.id);
     await page.waitForTimeout(1500);
     expect(panelReads.length,"the Git panel read nothing while nothing of the open thread's changed").toBe(settled);
-    // A file change of the open thread's, here to a file an editor also changed on disk, is read at once, in one read.
+    // A file change of the open thread's, here to a file an editor also changed on disk, is read at once, in one read. The header's
+    // poll, which would see the edit too (below), is held from before the edit until that read is counted.
+    let release=()=>{};const waiting=new Promise(resolve=>{headerHeld=resolve});headerHold=new Promise(resolve=>{release=resolve});
+    await waiting;
     await writeFile(join(repo,"README.md"),"changed on disk\n","utf8");
     await page.evaluate(id=>window.dispatchEvent(new CustomEvent("trebell:rpc-notification",{detail:{method:"item/completed",params:{threadId:id,item:{type:"fileChange",id:"edit-1",status:"completed",changes:[{path:"README.md",kind:"update"}]}}}})),thread.id);
     await expect(list).toContainText("README.md",{timeout:8000});await expect(count).toHaveText("2");
     expect(panelReads.length).toBe(settled+1);
+    headerHold=null;release();
+    // An edit made outside the app (an editor's save, a terminal, another thread's turn) sends the open thread no notification. The
+    // header's poll of the repository (every 3.5 s while the window has focus) sees it, and the card reads the repository then, once:
+    // the polls after it find what the card shows and read nothing more.
+    const outside=panelReads.length;
+    await writeFile(join(repo,"src","app.js"),"export const answer = 43;\n","utf8");
+    await expect(list).toContainText("src/app.js",{timeout:12_000});await expect(count).toHaveText("3");
+    await expect(list.locator(":scope > div").filter({hasText:"src/app.js"}).locator("code")).toHaveText("M");
+    await page.waitForTimeout(4000);
+    expect(panelReads.length,"one read for the edit outside the app").toBe(outside+1);
+    for(const mode of ["dark","light"]){
+      if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(list).toContainText("src/app.js");await page.screenshot({animations:"disabled",path:auditDir+"native-git-changes-outside-edit-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+    }
   }finally{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
