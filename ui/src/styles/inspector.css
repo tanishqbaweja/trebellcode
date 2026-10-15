@@ -1111,7 +1111,10 @@
 :root:root .context-panel .open-in-picker.compact>select:hover{background-color:var(--bg4)!important}
 :root:root .context-panel .open-in-picker.compact>select:focus-visible{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--ac) 55%,transparent)}
 :root:root .context-panel .open-in-picker.compact>select option{color:var(--tx0);background:var(--bg2)}
-:root:root .context-panel .open-in-error{position:absolute;right:0;top:calc(100% + 6px);z-index:30;width:max-content;max-width:min(280px,70vw);padding:7px 10px;border:1px solid var(--errb)!important;border-radius:9px;background:var(--panel)!important;color:var(--err)!important;font-size:11.5px;line-height:1.4;box-shadow:var(--shadow)}
+:root:root .context-panel .open-in-error{position:absolute;right:0;top:calc(100% + 6px);z-index:30;display:flex;align-items:flex-start;gap:6px;width:max-content;max-width:min(280px,70vw);padding:5px 5px 5px 10px;border:1px solid var(--errb)!important;border-radius:9px;background:var(--panel)!important;color:var(--err)!important;font-size:11.5px;line-height:1.4;box-shadow:var(--shadow)}
+:root:root .context-panel .open-in-error>span{flex:1;min-width:0;padding-top:2px}
+:root:root .context-panel .open-in-error>button{flex:none;width:20px;height:20px;display:grid;place-items:center;padding:0;border:0!important;border-radius:6px;background:transparent!important;color:inherit!important;opacity:.75;cursor:pointer}
+:root:root .context-panel .open-in-error>button:hover{opacity:1;background:color-mix(in srgb,var(--err) 14%,transparent)!important}
 
 /* ------------------------------------------- Text question (askText in RightPanel.jsx) */
 /* Every text question and confirmation in the app, in place of the browser's prompt and confirm: one field, Cancel and OK. Enter

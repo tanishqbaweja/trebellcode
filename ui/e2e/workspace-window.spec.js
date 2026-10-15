@@ -1027,6 +1027,61 @@ test("a folder in the Files tree is a label the keyboard passes by: Tab goes thr
   await shootBothModes(page,"workspace-folder-label");
 });
 
+// The desktop app's compact Open in, in the open file's head. A failed Open is about the file it was for: it shows under the head
+// only while that file is open, so another file opened (clicked or from the keyboard) puts it away, it does not come back with its
+// file, and one that fails only after another file opened is not shown; its Dismiss puts it away, clicked, from the keyboard and in
+// a narrow window. The desktop bridge records each Open in window.__opens, answers it once window.__openHold (a promise, when set)
+// settles, and fails it with window.__openFail while that is set.
+test("a failed Open in goes when another file opens, and its Dismiss puts it away",async({page,request})=>{
+  test.setTimeout(60_000);
+  await page.addInitScript(()=>{window.__opens=[];window.__openFail="";Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors:[{id:"vscode",label:"Visual Studio Code"},{id:"notepad",label:"Notepad"}]}),open:async(path,id)=>{window.__opens.push({path,id});await window.__openHold;if(window.__openFail)throw new Error(window.__openFail)}}}})});
+  const {right,row}=await openFilesFolder(page,request,"Workspace Open in failure",{"data/people.csv":"name,city\nAda,London\n","data/people.tsv":"name\tcity\nGrace\tArlington\n"});
+  const head=right.locator(".file-head"),name=head.locator("strong"),alert=head.getByRole("alert"),editor=head.getByLabel("Choose external editor");
+  const open=head.getByRole("button",{name:"Open in Notepad",exact:true}),dismiss=head.getByRole("button",{name:"Dismiss open error",exact:true});
+  const failure="Notepad could not be started: the program was not found";
+  const openFile=async file=>{await row(file).click();await expect(name).toHaveText(file)};
+  const failOpen=async()=>{await page.evaluate(failure=>{window.__openFail=failure},failure);await open.click();await expect(alert).toHaveText(failure)};
+  await openFile("people.csv");
+  await editor.selectOption("notepad");
+  await failOpen();
+  // Another file opened puts it away, and the file it was for, opened again, does not bring it back.
+  await openFile("people.tsv");await expect(alert).toHaveCount(0);
+  await openFile("people.csv");await expect(alert).toHaveCount(0);
+  // Likewise another file opened from the keyboard: Tab from the search field to its row in the tree, and Enter.
+  await failOpen();
+  await right.getByPlaceholder("Search files…").click();
+  for(let step=0;step<3;step++)await page.keyboard.press("Tab");
+  await expect(row("people.tsv")).toBeFocused();await page.keyboard.press("Enter");
+  await expect(name).toHaveText("people.tsv");await expect(alert).toHaveCount(0);
+  // Dismiss puts it away, clicked, or from the keyboard after an Open pressed there: Tab goes from Open past the editor to Dismiss.
+  await openFile("people.csv");
+  await failOpen();await dismiss.click();await expect(alert).toHaveCount(0);
+  await page.evaluate(failure=>{window.__openFail=failure},failure);
+  await open.focus();await page.keyboard.press("Enter");await expect(alert).toHaveText(failure);
+  await page.keyboard.press("Tab");await expect(editor).toBeFocused();
+  await page.keyboard.press("Tab");await expect(dismiss).toBeFocused();
+  await page.keyboard.press("Enter");await expect(alert).toHaveCount(0);
+  // An Open that fails only after another file opened is not shown, there or on the file it was for.
+  await page.evaluate(()=>{window.__openHold=new Promise(resolve=>{window.__releaseOpen=resolve})});
+  await open.click();await expect(open).toBeDisabled();
+  await openFile("people.tsv");
+  await page.evaluate(()=>window.__releaseOpen());
+  await expect(open).toBeEnabled();await expect(alert).toHaveCount(0);
+  await openFile("people.csv");await expect(alert).toHaveCount(0);
+  await page.evaluate(()=>{window.__openHold=null});
+  // The failure and its Dismiss sit under the head, inside the inspector, at 1280 and 900 wide, and Dismiss works at 900.
+  await failOpen();
+  await shootBothModes(page,"workspace-open-in-failed");
+  await page.setViewportSize({width:900,height:800});
+  const [box,button,panel]=await Promise.all([alert.boundingBox(),dismiss.boundingBox(),right.boundingBox()]);
+  expect(box.x).toBeGreaterThanOrEqual(panel.x);expect(box.x+box.width).toBeLessThanOrEqual(panel.x+panel.width);
+  expect(button.x).toBeGreaterThanOrEqual(box.x);expect(button.x+button.width).toBeLessThanOrEqual(box.x+box.width);
+  await dismiss.click();await expect(alert).toHaveCount(0);
+  const opens=await page.evaluate(()=>window.__opens);
+  expect(opens.map(open=>open.id)).toEqual(Array(6).fill("notepad"));
+  expect(opens.every(open=>/people\.csv$/.test(open.path))).toBe(true);
+});
+
 // A Codex app server holding the given threads: enough for the sidebar to list them and for the app to open them.
 async function startThreadHarness(threads){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
