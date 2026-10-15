@@ -48,7 +48,7 @@ async function sendTyped(page,text){await typeInComposer(page,text);await page.k
 async function toggleMode(page){
   const before=await page.locator("html").getAttribute("data-mode"),direct=page.locator("[data-testid=appearance-toggle]:visible").first();
   if(await direct.count())await direct.click();
-  else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByRole("menuitem",{name:/Switch to (light|dark) mode/}).first().click()}
+  else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:/^Switch to (light|dark) mode$/}).click()}
   await expect(page.locator("html")).not.toHaveAttribute("data-mode",before||"");
 }
 // Dark and light screenshots at 1280x800 and 900 wide, each mode switched with the header toggle, ending where it began.

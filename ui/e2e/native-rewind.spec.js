@@ -112,7 +112,7 @@ async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,
 // The light and dark toggle in the header, or its row in More actions where the header folded it away.
 async function toggleMode(page){
   const mode=await page.locator("html").getAttribute("data-mode"),direct=page.locator("[data-testid=appearance-toggle]:visible").first();
-  if(await direct.count())await direct.click();else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByRole("menuitem",{name:/Switch to (light|dark) mode/}).first().click()}
+  if(await direct.count())await direct.click();else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:/^Switch to (light|dark) mode$/}).click()}
   await expect(page.locator("html")).not.toHaveAttribute("data-mode",mode||"");
 }
 // Screenshots at 1280x800 and 900 wide in the mode shown; with both, each mode in turn, switched with the header toggle. before(),

@@ -119,7 +119,7 @@ async function shootModes(page,name){
       const mode=await page.locator("html").getAttribute("data-mode");
       await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${width}x800.png`});
       const direct=page.locator("[data-testid=appearance-toggle]:visible").first();
-      if(await direct.count())await direct.click();else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByRole("menuitem",{name:/Switch to (light|dark) mode/}).first().click()}
+      if(await direct.count())await direct.click();else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:/^Switch to (light|dark) mode$/}).click()}
       await expect(page.locator("html")).not.toHaveAttribute("data-mode",mode||"");
     }
   }

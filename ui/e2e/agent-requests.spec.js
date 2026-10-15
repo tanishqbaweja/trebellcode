@@ -70,7 +70,7 @@ async function openThread(page,name){
 async function toggleMode(page){
   const before=await page.locator("html").getAttribute("data-mode"),direct=page.locator("[data-testid=appearance-toggle]:visible").first();
   if(await direct.count())await direct.click();
-  else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByRole("menuitem",{name:/Switch to (light|dark) mode/}).first().click()}
+  else{await page.getByRole("button",{name:/More actions/}).first().click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:/^Switch to (light|dark) mode$/}).click()}
   await expect(page.locator("html")).not.toHaveAttribute("data-mode",before||"");
 }
 // Screenshots at 1280x800 and 900 wide in the mode the page is in. A modal covers the header's light and dark toggle, so a test runs
