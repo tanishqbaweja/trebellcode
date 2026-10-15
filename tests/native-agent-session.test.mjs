@@ -1918,3 +1918,19 @@ test("Native session forgets present observations when a request restarted the p
   assert.match(rejected.observation,/byte-identical/i,"a rejected compacted resend fell back to the whole transcript, which still holds the read");
   assert.equal(rejected.events.some(event=>event.name==="native.tool.observation_cache_cleared"),false);
 });
+
+// The working context goes in front of the request with its own copy of the user's parts (for measuring), which the session used to
+// add to the request's own parts: the request was counted, and read by the controller's checks, twice.
+test("a Native request sent with working context counts the user's request once",async()=>{
+  const events=[],provenance=[];
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",onEvent:event=>events.push(event),
+    providerTurn:async request=>{provenance.push(request.messages.at(-1)[Symbol.for("trebell.native.prompt.provenance")]);return {id:"r",text:"ok",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({model:"model-a"});
+  await session.prompt(await contextualAgentPrompt([{type:"text",text:"Run the tests"}],{"trebell.repo_evidence":{kind:"untrusted",value:"seed"}}));
+  assert.deepEqual(provenance[0].userParts,["Run the tests"]);
+  const requested=events.find(event=>event.name==="native.model.requested");
+  assert.equal(requested.data.requestMetrics.currentUser.bytes,Buffer.byteLength(JSON.stringify(["Run the tests"])));
+});
