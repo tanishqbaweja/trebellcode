@@ -174,9 +174,10 @@ input::placeholder,textarea::placeholder{color:var(--tx3)}
 *::-webkit-scrollbar-thumb{background:var(--thumb);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
 *::-webkit-scrollbar-thumb:hover{background:var(--thumb2);background-clip:padding-box;border:2px solid transparent}
 *::-webkit-scrollbar-track,*::-webkit-scrollbar-corner{background:transparent}
-:focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 55%,transparent);outline-offset:2px}
+/* [data-ring]: focus a script moved for a keyboard shortcut, which the browser may draw no ring for (focusTerminalDrawer in App). */
+:focus-visible,[data-ring]:focus{outline:2px solid color-mix(in srgb,var(--ac) 55%,transparent);outline-offset:2px}
 /* On light surfaces a half-transparent ring fades into the page: use the full accent. */
-:root[data-mode="light"]:not([data-custom-theme="true"]) :focus-visible{outline-color:var(--ac)}
+:root[data-mode="light"]:not([data-custom-theme="true"]) :focus-visible,:root[data-mode="light"]:not([data-custom-theme="true"]) [data-ring]:focus{outline-color:var(--ac)}
 /* Film grain keeps the large dark gradients from banding. Fixed, click-through and above everything. */
 body::after{content:"";position:fixed;inset:0;z-index:999;pointer-events:none;opacity:var(--grain);background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E")}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}

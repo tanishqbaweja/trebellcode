@@ -327,9 +327,13 @@ test("a terminal's close button is reached with Tab and named for it, and Enter,
   }finally{await shell.close()}
 });
 
+// Whether a focused control shows its focus ring, as a person sees it: an outline drawn around it.
+const ringShown=locator=>locator.evaluate(node=>{const style=getComputedStyle(node);return node===document.activeElement&&style.outlineStyle!=="none"&&parseFloat(style.outlineWidth)>0});
+
 // Focus terminal (Ctrl+`) with no terminal running opens the drawer with the keyboard on what starts one, as the palette's Terminal
-// does: Create terminal when there is none, New beside a stopped one. Enter there starts a terminal with the keyboard on its command
-// line, and Ctrl+` goes back to the composer and into the terminal again.
+// does: Create terminal when there is none, New beside a stopped one, with its focus ring showing (the browser draws none for focus
+// a script moves after a click in the composer and a shortcut with Ctrl). Enter there starts a terminal with the keyboard on its
+// command line, and Ctrl+` goes back to the composer and into the terminal again.
 test("Ctrl+` with no terminal running puts the keyboard on Create terminal, or on New beside a stopped one, and Enter starts a terminal to type in",async({page,request})=>{
   test.setTimeout(90_000);
   const shell=await realTerminals(page);
@@ -343,15 +347,17 @@ test("Ctrl+` with no terminal running puts the keyboard on Create terminal, or o
     const composer=page.getByTestId("composer"),drawer=page.getByTestId("drawer");
     const create=drawer.getByRole("button",{name:"Create terminal",exact:true}),screen=drawer.locator(".terminal-pane.active .terminal-screen"),input=drawer.locator(".terminal-pane.active .terminal-command-line input");
     await expect(composer).toBeVisible();
-    // None yet: from a click on the new-task screen, which leaves the keyboard on the page, and from the composer, in each mode.
-    for(const [mode,from] of [["dark","page"],["light","composer"]]){
+    // None yet: from a click on the new-task screen, which leaves the keyboard on the page, and from the composer in each mode.
+    const ways=[["dark","page"],["dark","composer"],["light","composer"]];
+    for(const [index,[mode,from]] of ways.entries()){
       if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
       if(from==="page"){await page.getByRole("heading",{name:"What do you want to build?"}).click();await expect(composer).not.toBeFocused()}else await composer.click();
       await page.keyboard.press("Control+Backquote");
       await expect(drawer.getByText("No terminal session")).toBeVisible();await expect(create).toBeFocused();
-      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(create).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"terminal-ctrl-backquote-create-"+mode+"-"+width+".png"})}
+      await expect.poll(()=>ringShown(create),{message:"Create terminal shows its focus ring ("+mode+", from the "+from+")"}).toBe(true);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(create).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"terminal-ctrl-backquote-create-"+from+"-"+mode+"-"+width+".png"})}
       await page.setViewportSize({width:1280,height:800});
-      if(mode==="dark"){await drawer.getByRole("button",{name:"Close terminal"}).click();await expect(drawer).toHaveCount(0)}
+      if(index<ways.length-1){await drawer.getByRole("button",{name:"Close terminal"}).click();await expect(drawer).toHaveCount(0)}
     }
     // Enter starts one with the keyboard on its command line; Ctrl+` goes to the composer and back into the terminal.
     await page.keyboard.press("Enter");
@@ -365,6 +371,7 @@ test("Ctrl+` with no terminal running puts the keyboard on Create terminal, or o
     await run(page,"exit");await expect(input).toBeDisabled({timeout:20_000});
     await composer.click();await page.keyboard.press("Control+Backquote");
     const newButton=drawer.locator(".terminal-new");await expect(newButton).toBeFocused();
+    await expect.poll(()=>ringShown(newButton),{message:"New shows its focus ring"}).toBe(true);
     await page.screenshot({animations:"disabled",path:auditDir+"terminal-ctrl-backquote-new-light-1280.png"});
     await page.keyboard.press("Enter");
     await expect(drawer.locator(".terminal-tab")).toHaveCount(2);
