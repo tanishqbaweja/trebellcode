@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { readdirSync, statSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 
 const execFileAsync=promisify(execFile);
 
@@ -28,7 +29,8 @@ export async function git(cwd,args,opts={}){ return run("git",args,{cwd,...opts}
 // (--ref-format=reftable, the default planned for Git 3) keeps every ref, HEAD among them, in a reftable folder instead, where git
 // replaces tables.list on each update: the common dir's holds the branches and the main worktree's HEAD, and each linked
 // worktree's folder has its own for its HEAD; .git/HEAD and refs/heads are stubs that never change. A warm poll then runs only git
-// status, which is read every time.
+// status, which is read every time. The stats run in parallel off the event loop (about 900 of them with 300 worktrees), and a
+// linked worktree's reftable only where the common dir has one.
 // A caller's own env (a checkpoint's) can point git elsewhere, so only calls without one are kept.
 const GIT_INFO_REUSE_MS=30_000;
 const STATUS_ARGS=["status","--porcelain=v1","-b"];
@@ -40,23 +42,23 @@ function foldersBelowRoot(base,root){
   for(let folder=base;!same(folder,top);){folders.push(folder);const parent=dirname(folder);if(parent===folder)break;folder=parent}
   return folders;
 }
-function repositorySignature(gitDir,commonDir,base,root){
-  const parts=[];
-  const add=(path,depth=0)=>{
-    let info;try{info=statSync(path)}catch{parts.push("-");return}
-    parts.push(info.mtimeMs+":"+info.size+":"+info.ino);
-    if(depth>0&&info.isDirectory()){let entries=[];try{entries=readdirSync(path,{withFileTypes:true})}catch{}for(const entry of entries)if(entry.isDirectory())add(join(path,entry.name),depth-1)}
+async function repositorySignature(gitDir,commonDir,base,root){
+  const add=async(path,depth=0)=>{
+    let info;try{info=await stat(path)}catch{return "-"}
+    const part=info.mtimeMs+":"+info.size+":"+info.ino;if(depth<=0||!info.isDirectory())return part;
+    let entries=[];try{entries=await readdir(path,{withFileTypes:true})}catch{}
+    return [part,...await Promise.all(entries.filter(entry=>entry.isDirectory()).map(entry=>add(join(path,entry.name),depth-1)))].join("|");
   };
-  add(join(gitDir,"HEAD"));add(join(gitDir,"config.worktree"));add(join(commonDir,"config"));add(join(commonDir,"packed-refs"));
-  add(join(commonDir,"refs","heads"),16);add(join(commonDir,"refs","remotes"),16);
-  const worktrees=join(commonDir,"worktrees");add(join(commonDir,"HEAD"));add(worktrees);
-  let linked=[];try{linked=readdirSync(worktrees,{withFileTypes:true}).filter(entry=>entry.isDirectory())}catch{}
-  for(const entry of linked){
-    parts.push(entry.name);add(join(worktrees,entry.name,"HEAD"));add(join(worktrees,entry.name,"gitdir"));add(join(worktrees,entry.name,"reftable","tables.list"));
-  }
-  add(join(gitDir,"reftable","tables.list"));add(join(commonDir,"reftable","tables.list"));
-  for(const folder of foldersBelowRoot(base,root)){add(join(folder,".git"));add(join(folder,"HEAD"))}
-  return parts.join("|");
+  const all=(...parts)=>Promise.all(parts).then(list=>list.join("|"));
+  const worktrees=join(commonDir,"worktrees"),commonTables=await add(join(commonDir,"reftable","tables.list"));
+  let linked=[];try{linked=(await readdir(worktrees,{withFileTypes:true})).filter(entry=>entry.isDirectory())}catch{}
+  return all(
+    add(join(gitDir,"HEAD")),add(join(gitDir,"config.worktree")),add(join(commonDir,"config")),add(join(commonDir,"packed-refs")),
+    add(join(commonDir,"refs","heads"),16),add(join(commonDir,"refs","remotes"),16),add(join(commonDir,"HEAD")),add(worktrees),
+    ...linked.map(entry=>all(entry.name,add(join(worktrees,entry.name,"HEAD")),add(join(worktrees,entry.name,"gitdir")),commonTables==="-"?"":add(join(worktrees,entry.name,"reftable","tables.list")))),
+    add(join(gitDir,"reftable","tables.list")),commonTables,
+    ...foldersBelowRoot(base,root).map(folder=>all(add(join(folder,".git")),add(join(folder,"HEAD")))),
+  );
 }
 // A warm poll's status never takes git's optional index lock, so a poll every 3.5 s does not hold the lock an agent's git add or
 // commit needs (git fails at once when it is held) or rewrite the index and wake file watchers. The full read, at most 30 s apart,
@@ -75,40 +77,252 @@ function gitInfoResult(base,part,statusRes){
   };
 }
 
+// A cold read takes the repository part from the git dir's own files, read the way git reads them, and asks git only for what the
+// files leave open: reftable refs, config this strict reading does not take (an include, URL rewriting, an unusual line, config from
+// outside the repository that names remotes or branches), an upstream whose short name git would spell otherwise, a worktree
+// whose gitdir is relative, a symbolic-ref chain longer than three, and a read during which packed-refs changed. A field left
+// undefined below is git's to answer. Every read is asynchronous: a repository with 300 worktrees has 600 admin files.
+const readText=path=>readFile(path,"utf8").catch(()=>null);
+const byteOrder=(a,b)=>Buffer.compare(Buffer.from(a),Buffer.from(b));
+const gitBool=value=>value===null||(value!==undefined&&/^(true|yes|on|[1-9]\d*)$/i.test(String(value).trim()));
+const symref=text=>text!==null&&text.startsWith("ref:")?text.slice(4).trim():null;
+// git's check_refname_format: no component starting with ".", no "..", control characters, space, ~ ^ : ? * [ \ or "@{", no component
+// ending in ".lock", no empty component, no trailing "/" or ".".
+const BAD_REF=/(^|\/)\.|\.\.|[\x00-\x20\x7f~^:?*[\\]|@\{|\.lock(\/|$)|\/\/|^\/|[/.]$/;
+// git's value syntax: quotes toggle, \\ \" \n \t \b are escapes, an unquoted # or ; starts a comment, and unquoted blanks are kept
+// inside the value and dropped at its ends. undefined where git reports an error or the value continues on the next line.
+function configValue(raw){
+  let out="",blank="",quote=false;
+  for(let i=0;i<raw.length;i++){
+    const c=raw[i];
+    if(!quote&&(c==="#"||c===";"))break;
+    if(!quote&&(c===" "||c==="\t"||c==="\r")){if(out)blank+=c;continue}
+    out+=blank;blank="";
+    if(c==="\\"){const escaped={"\\":"\\",'"':'"',n:"\n",t:"\t",b:"\b"}[raw[++i]];if(escaped===undefined)return undefined;out+=escaped}
+    else if(c==='"')quote=!quote;
+    else out+=c;
+  }
+  return quote?undefined:out;
+}
+// [section] and [section "subsection"] headers, key = value entries (a key alone is git's true) and comments. A legacy
+// [section.sub] header, a key after a header on its line, a value git rejects or continues, a valueless remote, branch or url key,
+// or an include makes the file odd.
+function parseGitConfig(text){
+  const entries=[];let section=null,subsection="",odd=false;
+  for(const line of (text||"").replace(/^\uFEFF/,"").split(/\r?\n/)){
+    const m=line.match(/^[ \t]*(?:\[([A-Za-z0-9-]+)(?:[ \t]+"((?:[^"\\]|\\.)*)")?\][ \t]*(?:[#;].*)?|([A-Za-z][A-Za-z0-9-]*)[ \t]*(?:=(.*))?|[#;].*)?$/);
+    if(!m){odd=true;continue}
+    if(m[1]){section=m[1].toLowerCase();subsection=(m[2]??"").replace(/\\(.)/g,"$1");odd||=section==="include"||section==="includeif";continue}
+    if(!m[3])continue;
+    const value=m[4]===undefined?null:configValue(m[4]);
+    if(section===null||value===undefined||(value===null&&/^(remote|branch|url)$/.test(section))){odd=true;continue}
+    entries.push({section,subsection,key:m[3].toLowerCase(),value});
+  }
+  return {entries,odd};
+}
+function configView(entries){
+  const values=(section,subsection,key)=>entries.filter(e=>e.section===section&&e.subsection===subsection&&e.key===key).map(e=>e.value);
+  return {entries,values,last:(...key)=>values(...key).at(-1)};
+}
+let systemConfig;
+// The system config of the git on PATH: <prefix>/etc/gitconfig (Git for Windows: <install>/etc/gitconfig), /etc/gitconfig for /usr.
+function systemConfigPath(){
+  if(systemConfig!==undefined)return systemConfig;systemConfig="/etc/gitconfig";
+  for(const dir of String(process.env.PATH||"").split(delimiter)){
+    if(!dir||!existsSync(join(dir,process.platform==="win32"?"git.exe":"git")))continue;
+    let prefix=dirname(dir);if(/^(mingw32|mingw64|clangarm64)$/i.test(basename(prefix)))prefix=dirname(prefix);
+    if(process.platform==="win32"||prefix!=="/usr")systemConfig=join(prefix,"etc","gitconfig");break;
+  }
+  return systemConfig;
+}
+// git's home folder: HOME, or where HOME is unset on Windows, HOMEDRIVE plus HOMEPATH while that folder exists and USERPROFILE
+// otherwise, as Git for Windows sets it at startup (a server not started from Git Bash has no HOME).
+async function gitHome(env){
+  if(env.HOME)return env.HOME;
+  if(process.platform==="win32"){
+    if(env.HOMEDRIVE&&env.HOMEPATH&&await stat(env.HOMEDRIVE+env.HOMEPATH).then(info=>info.isDirectory(),()=>false))return env.HOMEDRIVE+env.HOMEPATH;
+    if(env.USERPROFILE)return env.USERPROFILE;
+  }
+  return homedir();
+}
+// Config from outside the repository (git -c, the global and system files) that configures a remote or a branch, rewrites URLs or
+// includes other files leaves remotes and the upstream to git; branch.sort and the like do not.
+async function outsideConfig(env){
+  if(env.GIT_CONFIG_PARAMETERS||Number(env.GIT_CONFIG_COUNT)>0)return true;
+  const home=await gitHome(env),files=env.GIT_CONFIG_GLOBAL!==undefined?[env.GIT_CONFIG_GLOBAL]:[env.XDG_CONFIG_HOME?join(env.XDG_CONFIG_HOME,"git","config"):join(home,".config","git","config"),join(home,".gitconfig")];
+  if(!gitBool(env.GIT_CONFIG_NOSYSTEM))files.push(env.GIT_CONFIG_SYSTEM??systemConfigPath(),process.platform==="win32"&&env.PROGRAMDATA?join(env.PROGRAMDATA,"Git","config"):"");
+  const texts=await Promise.all(files.filter(Boolean).map(readText));
+  return texts.some(text=>{if(!text)return false;const {entries,odd}=parseGitConfig(text);return odd||entries.some(e=>e.section==="url"||((e.section==="remote"||e.section==="branch")&&e.subsection))});
+}
+// The loose refs below a folder as git lists them: entries starting with "." and lock files are not refs.
+async function looseRefNames(dir,prefix=""){
+  let entries=[];try{entries=await readdir(dir,{withFileTypes:true})}catch{}
+  const lists=await Promise.all(entries.filter(entry=>!entry.name.startsWith(".")&&!entry.name.endsWith(".lock")).map(entry=>entry.isDirectory()?looseRefNames(join(dir,entry.name),prefix+entry.name+"/"):entry.isFile()?[prefix+entry.name]:[]));
+  return lists.flat();
+}
+function mapFetchRef(source,fetchSpecs){
+  for(let spec of fetchSpecs){spec=spec.replace(/^\+/,"");const [from,to]=spec.split(":");if(!from||!to)continue;
+    const star=from.indexOf("*");if(star<0){if(from===source)return to;continue}
+    const before=from.slice(0,star),after=from.slice(star+1);if(!source.startsWith(before)||!source.endsWith(after))continue;
+    const middle=source.slice(before.length,source.length-after.length);return to.replace("*",middle);
+  }
+  return null;
+}
+// git remote -v: remotes by name, each with its first url to fetch from and every pushurl (or else every url) to push to; a remote
+// with no url is its bare name, as git prints it. An empty url (which resets the list) is git's to read.
+function directRemotes(config){
+  const names=[...new Set(config.entries.filter(e=>e.section==="remote"&&e.subsection).map(e=>e.subsection))].sort(byteOrder),out=[];
+  for(const name of names){
+    const urls=config.values("remote",name,"url"),push=config.values("remote",name,"pushurl");if([...urls,...push].includes(""))return undefined;
+    out.push(urls.length?{name,url:urls[0],kind:"fetch"}:{raw:name+"\t"});for(const url of push.length?push:urls)out.push({name,url,kind:"push"});
+  }
+  return out;
+}
+const parseRemotes=text=>text.split(/\r?\n/).filter(Boolean).map(line=>{const m=line.match(/^(\S+)\t(.*) \((fetch|push)\)(?: \[[^\]]*\])?$/);return m?{name:m[1],url:m[2],kind:m[3]}:{raw:line}});
+// packed-refs holds "<id> <ref>" lines (a "^<id>" line peels the tag above it). Only branches and remote-tracking refs are read
+// whole: tags are most of a big file (50,000 of them took about 30 ms of the event loop as one parse), and the few other names the
+// upstream check asks about are found by name.
+const HEX=/^[0-9a-fA-F]+$/;
+function packedBranchesAndRemotes(text,size){
+  const refs=new Map();
+  for(let start=0;start<text.length;){
+    let end=text.indexOf("\n",start);if(end<0)end=text.length;
+    const name=start+size+1;
+    if(text.charCodeAt(start+size)===32&&(text.startsWith("refs/heads/",name)||text.startsWith("refs/remotes/",name))){
+      const id=text.slice(start,start+size);if(HEX.test(id))refs.set(text.slice(name,text[end-1]==="\r"?end-1:end),id.toLowerCase());
+    }
+    start=end+1;
+  }
+  return refs;
+}
+function packedLine(text,ref,size){
+  for(let at=text.indexOf(" "+ref);at>=0;at=text.indexOf(" "+ref,at+1)){
+    const start=at-size,end=at+1+ref.length;
+    if(start<0||(start>0&&text[start-1]!=="\n")||(end<text.length&&text[end]!=="\n"&&text[end]!=="\r"))continue;
+    const id=text.slice(start,at);if(HEX.test(id))return id.toLowerCase();
+  }
+  return null;
+}
+const fileStamp=path=>stat(path).then(info=>info.mtimeMs+":"+info.size+":"+info.ino,()=>"-");
+// git's @{upstream}: branch.<name>.remote (the last) and .merge (the first), the merge ref mapped through that remote's fetch
+// refspecs (taken as it is for remote "."), and only while that ref exists; named as rev-parse --abbrev-ref names it.
+async function directUpstream(config,branch,resolveRef){
+  if(!branch)return null;
+  const remote=config.last("branch",branch,"remote"),merge=config.values("branch",branch,"merge")[0];if(!remote||!merge)return null;
+  const specs=remote==="."?[]:config.values("remote",remote,"fetch");
+  if(specs.some(spec=>spec.startsWith("^"))||(remote==="."&&!merge.startsWith("refs/")))return undefined;
+  const ref=remote==="."?merge:mapFetchRef(merge,specs);if(!ref||!await resolveRef(ref))return null;
+  const start=["refs/remotes/","refs/heads/"].find(prefix=>ref.startsWith(prefix));if(!start)return undefined;
+  const short=ref.slice(start.length),others=["refs/","refs/tags/","refs/heads/","refs/remotes/"].map(prefix=>prefix+short).concat("refs/remotes/"+short+"/HEAD").filter(name=>name!==ref);
+  return (await Promise.all(others.map(name=>resolveRef(name)))).some(Boolean)?undefined:short;
+}
+// git's fspathcmp as a sort key: bytes, ASCII case folded under core.ignoreCase, and on Windows a directory separator (either one)
+// before any other character, as Git for Windows compares paths.
+function pathSortKey(path,lower){
+  const bytes=Buffer.from(lower?path.replace(/[A-Z]/g,c=>c.toLowerCase()):path);
+  if(process.platform==="win32")for(let i=0;i<bytes.length;i++)if(bytes[i]===47||bytes[i]===92)bytes[i]=0;
+  return bytes;
+}
+// git worktree list: the main worktree first, at the common dir's real path without its /.git (git's own spelling, which is how the
+// root is spelled; a bare repository lists only that), then each worktrees/<id> whose gitdir file names a folder, by path as git
+// sorts them. A relative gitdir (worktree.useRelativePaths) is git's to resolve.
+async function directWorktrees(commonDir,commonPath,config,headOf){
+  const bare=gitBool(config.last("core","","bare")),lower=gitBool(config.last("core","","ignorecase"));
+  const mainState=bare?{bare:true}:await headOf(join(commonDir,"HEAD"));if(!mainState)return undefined;
+  const main={path:commonPath.replace(/\/\.git$/,"").replace(/\/\.$/,""),...mainState};
+  const admin=join(commonDir,"worktrees");let ids=[];try{ids=(await readdir(admin,{withFileTypes:true})).filter(entry=>entry.isDirectory()).map(entry=>entry.name)}catch{}
+  const linked=await Promise.all(ids.map(async id=>{
+    const [gitdir,state]=await Promise.all([readText(join(admin,id,"gitdir")),headOf(join(admin,id,"HEAD"))]);
+    const path=(gitdir||"").replace(/\s+$/,"").replace(/\/\.git$/,"");
+    return !path?null:isAbsolute(path)&&state?{key:pathSortKey(path,lower),entry:{path,...state}}:undefined;
+  }));
+  if(linked.includes(undefined))return undefined;
+  return [main,...linked.filter(Boolean).sort((a,b)=>Buffer.compare(a.key,b.key)).map(item=>item.entry)];
+}
+// git reads loose refs before packed-refs, so a git pack-refs (gc --auto and maintenance run one) never hides a ref: it writes the
+// new packed-refs before it deletes the loose files. These reads go the other way, so a read during which packed-refs changed is
+// git's to answer.
+async function directRepository(gitDir,commonDir,commonPath,env){
+  const packedPath=join(commonDir,"packed-refs"),packedStamp=await fileStamp(packedPath);
+  const [configText,headText,packedText,ownTables,commonTables,outside,legacy]=await Promise.all([
+    readText(join(commonDir,"config")),readText(join(gitDir,"HEAD")),readText(packedPath),
+    readText(join(gitDir,"reftable","tables.list")),readText(join(commonDir,"reftable","tables.list")),outsideConfig(env),
+    Promise.all(["remotes","branches"].map(name=>readdir(join(commonDir,name)).then(list=>list.length>0,()=>false))).then(list=>list.some(Boolean)),
+  ]);
+  // config.worktree counts only with extensions.worktreeConfig, as in git.
+  let {entries,odd}=parseGitConfig(configText);
+  if(gitBool(configView(entries).last("extensions","","worktreeconfig"))){const own=parseGitConfig(await readText(join(gitDir,"config.worktree")));entries=[...entries,...own.entries];odd||=own.odd}
+  const config=configView(entries),out={},ownRules=!odd&&!outside&&!legacy;
+  if(ownRules&&!entries.some(e=>e.section==="url"))out.remotes=directRemotes(config);
+  if(ownTables!==null||commonTables!==null)return out;
+  const size=/^sha256$/i.test(config.last("extensions","","objectformat")??"")?64:40,zero="0".repeat(size),idPattern=new RegExp(`^[0-9a-fA-F]{${size}}(?!\\S)`);
+  const packed=packedBranchesAndRemotes(packedText||"",size),packedId=name=>name.startsWith("refs/heads/")||name.startsWith("refs/remotes/")?packed.get(name)||null:packedText?packedLine(packedText,name,size):null;
+  const loose=new Map(),looseHeads=new Set(await looseRefNames(join(commonDir,"refs","heads"))),idOf=text=>{const id=idPattern.exec(text)?.[0].toLowerCase();return id&&id!==zero?id:null};
+  const looseText=name=>{if(!loose.has(name))loose.set(name,readText(join(commonDir,...name.split("/"))));return loose.get(name)};
+  // A loose ref (an object id, or ref: another ref) hides its packed-refs line; null where git's reading finds no object id. A branch
+  // with no loose file is not opened.
+  const resolveRef=async(name,depth=0)=>{
+    if(depth>5||BAD_REF.test(name))return null;
+    if(name.startsWith("refs/heads/")&&!looseHeads.has(name.slice(11)))return packedId(name);
+    const text=await looseText(name),target=symref(text);
+    return text===null?packedId(name):target!==null?resolveRef(target,depth+1):idOf(text);
+  };
+  // The ref a symbolic ref ends at, as git follows it: HEAD naming refs/heads/master, which holds "ref: refs/heads/main" (a branch
+  // alias made with git symbolic-ref), is on main. packed-refs holds no symbolic refs. A chain longer than three, or a name git
+  // rejects, is git's to answer (undefined).
+  const finalRef=async(name,depth=0)=>{
+    if(depth>3||BAD_REF.test(name))return undefined;
+    if(name.startsWith("refs/heads/")&&!looseHeads.has(name.slice(11)))return name;
+    const target=symref(await looseText(name));
+    return target===null?name:finalRef(target,depth+1);
+  };
+  // A worktree's HEAD as git worktree list prints it: its commit (all zeros on an unborn branch) and the ref it ends at, without
+  // refs/heads/.
+  const headOf=async file=>{
+    const text=await readText(file),ref=symref(text);if(ref===null)return {head:(text!==null&&idOf(text))||zero};
+    const end=await finalRef(ref);return end===undefined?undefined:{head:await resolveRef(ref)||zero,branch:end.replace(/^refs\/heads\//,"")};
+  };
+  const headRef=symref(headText),headEnd=headRef===null?null:await finalRef(headRef);
+  if(headEnd!==undefined)out.branch=headEnd?.startsWith("refs/heads/")?headEnd.slice(11):null;
+  const names=new Set([...looseHeads,...[...packed.keys()].filter(ref=>ref.startsWith("refs/heads/")).map(ref=>ref.slice(11))]);
+  out.branches=(await Promise.all([...names].map(async name=>await resolveRef("refs/heads/"+name)?name:null))).filter(Boolean).sort(byteOrder);
+  if(ownRules&&out.branch!==undefined)out.upstream=await directUpstream(config,out.branch,resolveRef);
+  if(!odd)out.worktrees=await directWorktrees(commonDir,commonPath,config,headOf);
+  return await fileStamp(packedPath)===packedStamp?out:{};
+}
+function parseWorktrees(text){
+  const worktrees=[];let current=null;
+  for(const line of text.split(/\r?\n/)){if(line.startsWith("worktree ")){if(current)worktrees.push(current);current={path:line.slice(9)}}else if(current&&line.startsWith("HEAD "))current.head=line.slice(5);else if(current&&line.startsWith("branch "))current.branch=line.slice(7).replace(/^refs\/heads\//,"");else if(current&&line==="bare")current.bare=true}
+  if(current)worktrees.push(current);
+  return worktrees;
+}
+
 // gitFn runs each git command (tests count them through it); fresh reads the repository part again.
 export async function gitInfo(cwd,{gitFn=git,fresh=false,...opts}={}){
   const base=resolve(cwd),cacheable=!opts.env,known=cacheable?repositoryParts.get(base):null;
-  if(known&&!fresh&&Date.now()-known.at<GIT_INFO_REUSE_MS&&repositorySignature(known.gitDir,known.commonDir,base,known.root)===known.signature){
+  if(known&&!fresh&&Date.now()-known.at<GIT_INFO_REUSE_MS&&await repositorySignature(known.gitDir,known.commonDir,base,known.root)===known.signature){
     const statusRes=await gitFn(known.root,STATUS_ARGS,statusOptions(opts));
     if(statusRes.ok)return gitInfoResult(base,known,statusRes);
   }
   const rootRes=await gitFn(base,["rev-parse","--show-toplevel","--absolute-git-dir","--git-common-dir"],{...opts,allowFailure:true});
   if(!rootRes.ok){repositoryParts.delete(base);return {isGit:false,cwd:base,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]}}
   const [root,gitDir="",commonLine=""]=rootRes.stdout.split(/\r?\n/).map(line=>line.trim());
-  // Read before the commands below, so a change while they run makes the next poll read everything again.
-  const commonDir=commonLine?resolve(base,commonLine):"",signature=cacheable&&isAbsolute(gitDir)&&commonDir?repositorySignature(gitDir,commonDir,base,root):null;
-  const [branchRes,branchesRes,statusRes,remoteRes,worktreeRes,upstreamRes]=await Promise.all([
-    gitFn(root,["branch","--show-current"],{...opts,allowFailure:true}),
-    gitFn(root,["for-each-ref","--format=%(refname:short)","refs/heads"],{...opts,allowFailure:true}),
-    gitFn(root,STATUS_ARGS,{...opts,allowFailure:true}),
-    gitFn(root,["remote","-v"],{...opts,allowFailure:true}),
-    gitFn(root,["worktree","list","--porcelain"],{...opts,allowFailure:true}),
-    gitFn(root,["rev-parse","--abbrev-ref","--symbolic-full-name","@{u}"],{...opts,allowFailure:true}),
+  const commonDir=commonLine?resolve(base,commonLine):"",direct=isAbsolute(gitDir)&&!!commonDir,ask=args=>gitFn(root,args,{...opts,allowFailure:true});
+  const statusPromise=ask(STATUS_ARGS);
+  // Read before the repository part, so a change while it is read makes the next poll read everything again.
+  const signature=cacheable&&direct?await repositorySignature(gitDir,commonDir,base,root):null;
+  // git prints the common dir relative to the folder only in the main worktree, where it is the git dir.
+  const read=direct?await directRepository(gitDir,commonDir,isAbsolute(commonLine)?commonLine:gitDir,opts.env||process.env):{};
+  const [branchRes,branchesRes,remoteRes,worktreeRes,upstreamRes]=await Promise.all([
+    read.branch===undefined&&ask(["branch","--show-current"]),
+    !read.branches&&ask(["for-each-ref","--format=%(refname:short)","refs/heads"]),
+    !read.remotes&&ask(["remote","-v"]),
+    !read.worktrees&&ask(["worktree","list","--porcelain"]),
+    read.upstream===undefined&&ask(["rev-parse","--abbrev-ref","--symbolic-full-name","@{u}"]),
   ]);
-  const remotes=remoteRes.stdout.split(/\r?\n/).filter(Boolean).map(line=>{
-    const m=line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
-    return m?{name:m[1],url:m[2],kind:m[3]}:{raw:line};
-  });
-  const worktrees=[];
-  let current=null;
-  for(const line of worktreeRes.stdout.split(/\r?\n/)){
-    if(line.startsWith("worktree ")){ if(current) worktrees.push(current); current={path:line.slice(9)}; }
-    else if(current&&line.startsWith("HEAD ")) current.head=line.slice(5);
-    else if(current&&line.startsWith("branch ")) current.branch=line.slice(7).replace(/^refs\/heads\//,"");
-    else if(current&&line==="bare") current.bare=true;
-  }
-  if(current) worktrees.push(current);
-  const part={root,branch:branchRes.stdout.trim()||null,upstream:upstreamRes.ok?upstreamRes.stdout.trim():null,branches:branchesRes.stdout.split(/\r?\n/).filter(Boolean),remotes,worktrees};
+  const part={root,branch:branchRes?branchRes.stdout.trim()||null:read.branch,upstream:upstreamRes?(upstreamRes.ok?upstreamRes.stdout.trim():null):read.upstream,
+    branches:branchesRes?branchesRes.stdout.split(/\r?\n/).filter(Boolean):read.branches,remotes:remoteRes?parseRemotes(remoteRes.stdout):read.remotes,worktrees:worktreeRes?parseWorktrees(worktreeRes.stdout):read.worktrees};
+  const statusRes=await statusPromise;
   if(signature)repositoryParts.set(base,{...part,at:Date.now(),gitDir,commonDir,signature});else repositoryParts.delete(base);
   return gitInfoResult(base,part,statusRes);
 }

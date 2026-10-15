@@ -115,11 +115,11 @@ test("B6: a warm /api/git/info poll starts one git process",{timeout:30_000},asy
   try{
     const {calls,gitFn}=countingGit();
     const cold=await gitInfo(dir,{gitFn});assert.equal(cold.isGit,true);assert.equal(cold.branch,"main");
-    assert.equal(calls.length,7,"a cold read runs what every poll ran before");
+    assert.deepEqual(calls,["rev-parse --show-toplevel --absolute-git-dir --git-common-dir","status --porcelain=v1 -b"],"a cold read starts only root discovery and status; repository metadata is read directly");
     calls.length=0;
     const warm=await gitInfo(dir,{gitFn});
     assert.deepEqual(warm,cold);
-    // The UI polls every 3.5 s while a project thread is open: 7 processes each poll was about 120 a minute.
+    // The UI polls every 3.5 s while a project thread is open; a warm poll remains one status process.
     assert.deepEqual(calls,["status --porcelain=v1 -b"]);
   }finally{await rm(dir,{recursive:true,force:true})}
 });
@@ -233,7 +233,7 @@ test("B6: a warm poll of a linked worktree starts one git process and leaves the
       await gitInfo(linked,{gitFn:(cwd,args,options)=>{calls.push(args[0]!=="status"?args.join(" "):options.env?.GIT_OPTIONAL_LOCKS==="0"?"status, no lock":"status, may lock");return git(cwd,args,options)}});
       polls.push(calls);
     }
-    assert.equal(polls[0].length,7,"the first poll reads everything");assert.ok(polls[0].includes("status, may lock"));
+    assert.equal(polls[0].length,2,"the first poll starts root discovery and status only");assert.ok(polls[0].includes("status, may lock"));
     assert.deepEqual(polls.slice(1),[["status, no lock"],["status, no lock"],["status, no lock"]]);
   }finally{await rm(linked,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
