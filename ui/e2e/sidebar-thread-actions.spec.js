@@ -477,3 +477,34 @@ test("with the harness away, Delete says Trebell Native is not connected before 
     expect(harness.threadStore.get(id("Bulk one"))).toBeTruthy();
   }finally{await harness.close()}
 });
+
+test("a Delete the harness refuses names the thread with its reason, from the mouse and from the keyboard, and keeps it listed",async({page})=>{
+  test.setTimeout(90_000);
+  const {harness,proxy,id}=await openSidebarApp(page);
+  const question=page.locator("dialog.inspector-text-prompt"),row=threadRow(page,"Bulk three"),remove=row.getByRole("button",{name:"Delete",exact:true});
+  const confirm=question.getByRole("button",{name:"Delete thread",exact:true});
+  try{
+    proxy.refuse=message=>message.method==="thread/delete"?"Thread store is read-only":null;
+    // Clicked in dark. In light the keyboard goes from the row to its menu button, Enter, down to Delete, Enter, then from Cancel
+    // to Delete thread, Enter.
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      if(mode==="dark"){await rowMenu(page,"Bulk three");await remove.click()}
+      else{
+        await row.locator(".thread-main").focus();await page.keyboard.press("Tab");await page.keyboard.press("Enter");
+        await expect(row.locator(".thread-menu")).toHaveAttribute("open","");
+        for(let step=0;step<14&&!await remove.evaluate(node=>node===document.activeElement);step++)await page.keyboard.press("Tab");
+        await expect(remove).toBeFocused();await page.keyboard.press("Enter");
+      }
+      // The question is open, and the last refusal's message went as the Delete was chosen.
+      await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();await expect(sidebarAlert(page)).toHaveCount(0);
+      if(mode==="dark")await confirm.click();else{await page.keyboard.press("Tab");await expect(confirm).toBeFocused();await page.keyboard.press("Enter")}
+      await expect(question).toHaveCount(0);
+      await expect(sidebarAlert(page)).toHaveText("Could not delete “Bulk three”: Thread store is read-only.");
+      await expect(row).toBeVisible();await expect(threadRow(page,"Bulk one")).toHaveClass(/active/);
+      await shoot(page,"sidebar-delete-refused");
+    }
+    await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+    expect(harness.threadStore.get(id("Bulk three"))).toBeTruthy();
+  }finally{await harness.close()}
+});

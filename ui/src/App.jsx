@@ -3345,7 +3345,8 @@ export default function App(){
       if(!rpc||rpcStatus!=="connected")throw new Error(agentRuntimeLabel+" is not connected");
       if(!await askConfirm("Delete “"+titleOf(thread)+"” permanently? This cannot be undone.",{confirm:"Delete thread"}))return;
       if(openingThreadRef.current===String(thread.id))await newChat();
-      await rpc.request("thread/delete",{threadId:thread.id});
+      // A delete the harness refuses names the thread with its reason, as a bulk action's refusal does.
+      try{await rpc.request("thread/delete",{threadId:thread.id})}catch(error){throw new Error(bulkActionFailure("delete",[{title:titleOf(thread),error}]))}
       setThreads(prev=>prev.filter(t=>t.id!==thread.id));
       await leaveRemovedThread(thread.id);
       return;
