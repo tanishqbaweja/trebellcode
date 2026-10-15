@@ -185,8 +185,9 @@ function focusShownView(){
 }
 
 // Focus for a person who opened the terminal from the palette, which would otherwise give it back to where the palette was opened
-// from: the open terminal's command line, else Create terminal (or New, beside a stopped one), once the drawer's content shows and
-// the palette has gone. Focus already in the drawer (the terminal panel's own, as a running terminal comes up) stays.
+// from, or with Focus terminal (Ctrl+`): the open terminal's command line, else Create terminal (or New, beside a stopped one), once
+// the drawer's content shows and the palette has gone. Focus already in the drawer (the terminal panel's own, as a running terminal
+// comes up) stays.
 function focusTerminalDrawer(){
   const started=performance.now();
   const attempt=()=>{
@@ -2636,7 +2637,7 @@ export default function App(){
       }
       else if(command==="stash")runUserAction(stashPrompt,"Could not stash or restore draft");
       else if(command==="terminal")setPanel(value=>value==="terminal"?null:"terminal");
-      else if(command==="terminalFocus"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-focus")),0)}
+      else if(command==="terminalFocus"){setPanel("terminal");focusTerminalDrawer()}
       else if(command==="composerFocus"){document.querySelector('[data-testid="composer"]')?.focus()}
       else if(command==="terminalSplit"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-split",{detail:{direction:"horizontal"}})),0)}
       else if(command==="terminalSplitVertical"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-split",{detail:{direction:"vertical"}})),0)}

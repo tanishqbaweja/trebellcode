@@ -326,3 +326,50 @@ test("a terminal's close button is reached with Tab and named for it, and Enter,
     expect(shell.terminals.list(null)).toHaveLength(0);
   }finally{await shell.close()}
 });
+
+// Focus terminal (Ctrl+`) with no terminal running opens the drawer with the keyboard on what starts one, as the palette's Terminal
+// does: Create terminal when there is none, New beside a stopped one. Enter there starts a terminal with the keyboard on its command
+// line, and Ctrl+` goes back to the composer and into the terminal again.
+test("Ctrl+` with no terminal running puts the keyboard on Create terminal, or on New beside a stopped one, and Enter starts a terminal to type in",async({page,request})=>{
+  test.setTimeout(90_000);
+  const shell=await realTerminals(page);
+  try{
+    await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{},panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
+    const boot=await (await request.get("/api/bootstrap")).json();
+    await request.post("/api/projects",{data:{path:boot.cwd,name:"Terminal Workspace",activate:true}});
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const composer=page.getByTestId("composer"),drawer=page.getByTestId("drawer");
+    const create=drawer.getByRole("button",{name:"Create terminal",exact:true}),screen=drawer.locator(".terminal-pane.active .terminal-screen"),input=drawer.locator(".terminal-pane.active .terminal-command-line input");
+    await expect(composer).toBeVisible();
+    // None yet: from a click on the new-task screen, which leaves the keyboard on the page, and from the composer, in each mode.
+    for(const [mode,from] of [["dark","page"],["light","composer"]]){
+      if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+      if(from==="page"){await page.getByRole("heading",{name:"What do you want to build?"}).click();await expect(composer).not.toBeFocused()}else await composer.click();
+      await page.keyboard.press("Control+Backquote");
+      await expect(drawer.getByText("No terminal session")).toBeVisible();await expect(create).toBeFocused();
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(create).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"terminal-ctrl-backquote-create-"+mode+"-"+width+".png"})}
+      await page.setViewportSize({width:1280,height:800});
+      if(mode==="dark"){await drawer.getByRole("button",{name:"Close terminal"}).click();await expect(drawer).toHaveCount(0)}
+    }
+    // Enter starts one with the keyboard on its command line; Ctrl+` goes to the composer and back into the terminal.
+    await page.keyboard.press("Enter");
+    await expect(screen).toHaveText(PROMPT,{timeout:20_000});await expect(input).toBeFocused();
+    expect(shell.terminals.list(null)).toHaveLength(1);
+    await run(page,"echo typed-after-ctrl-backquote");
+    await expect(screen).toContainText(/^typed-after-ctrl-backquote$/m);
+    await page.keyboard.press("Control+Backquote");await expect(composer).toBeFocused();
+    await page.keyboard.press("Control+Backquote");await expect(input).toBeFocused();
+    // Beside a stopped terminal the keyboard goes to New, and Enter starts another to type in.
+    await run(page,"exit");await expect(input).toBeDisabled({timeout:20_000});
+    await composer.click();await page.keyboard.press("Control+Backquote");
+    const newButton=drawer.locator(".terminal-new");await expect(newButton).toBeFocused();
+    await page.screenshot({animations:"disabled",path:auditDir+"terminal-ctrl-backquote-new-light-1280.png"});
+    await page.keyboard.press("Enter");
+    await expect(drawer.locator(".terminal-tab")).toHaveCount(2);
+    await expect(screen).toHaveText(PROMPT,{timeout:20_000});await expect(input).toBeEnabled();await expect(input).toBeFocused();
+    await run(page,"echo second-after-ctrl-backquote");
+    await expect(screen).toContainText(/^second-after-ctrl-backquote$/m);
+  }finally{await shell.close()}
+});
