@@ -2660,7 +2660,7 @@ export default function App(){
       else if(command==="projects")setSection("projects");
       else if(command==="settings")setSection("settings");
       else if(command==="environments")setSection("environments");
-      else if(command==="steerQueued"&&queued.length)sendQueuedNow(queued[0]);
+      else if(command==="steerQueued"&&queued.length)runUserAction(()=>sendQueuedNow(queued[0]),"Could not send queued follow-up");
       else if(command==="undoThreadAction")undoThreadAction();
       else if(command==="copyReference")runUserAction(copyActiveReference,"Copy failed");
       else if(command==="copyPullRequestNumber")runUserAction(copyActivePullRequestNumber,"Copy failed");
@@ -4119,6 +4119,7 @@ export default function App(){
     // The follow-up being edited waits for its edit (its Send now is disabled, and the keyboard's steer skips it): sending it now
     // would send the text the composer is changing.
     if(item?.id&&item.id===queuedEditId)return;
+    if(running&&!runtimeCapabilities.steering)throw new Error(cannotSteerReason);
     // Send now is the next send, so the composer's note about the last one ends.
     setComposerAlert(null);
     if(item?.native&&runtimeCapabilities.nativeQueue&&rpc&&activeThread?.id){
@@ -4718,6 +4719,8 @@ export default function App(){
   const projectControlsShown=!(openingShown&&(crumbProjectless!==projectlessMode||!sameWorkspacePath(crumbPath,projectPath)));
   const providerLabel=modelProviderLabel(provider);
   const agentRuntimeLabel=AGENT_RUNTIME_LABELS[agentRuntime]||agentRuntime;
+  // Why a follow-up cannot go now on a harness that cannot steer: Send now's title, and the shortcut's note (sendQueuedNow).
+  const cannotSteerReason=agentRuntimeLabel+" cannot steer a running turn, so this follow-up waits for the turn to end";
   // Git text is written by the runtime the server runs (bootstrap), so the Source Control label names that harness.
   const sourceControlRuntime=bootstrap.agentRuntime||agentRuntime;
   const sourceControlRuntimeInstanceId=bootstrap.agentRuntimeInstanceId||(settings.agentRuntime===sourceControlRuntime?settings.agentRuntimeInstanceId:null)||null;
@@ -5076,7 +5079,7 @@ export default function App(){
               {/* A follow-up's button runs once for a double click or Enter held on it, as a thread's menu item does: the rest of the press
                   does nothing, so the second click never lands on the next follow-up's button, which comes up in its place once the first
                   takes this one out or moves it. */}
-              {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?`Queued in ${agentRuntimeLabel}`:item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing"+(queueEditDraft?" · your draft returns after":""):""}</span><p>{item.text}</p><div className="queued-message-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}><button disabled={(running&&!runtimeCapabilities.steering)||queuedEditId===item.id} title={queuedEditId===item.id?"Save the edit with Enter, or press Escape, before sending it":undefined} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>runUserAction(()=>editQueued(item),"Could not edit queued follow-up")} disabled={Boolean(queuedEditId)||item.editable===false} title={queuedEditId&&queuedEditId!==item.id?"Save the follow-up you are editing, or press Escape, first":undefined}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
+              {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?`Queued in ${agentRuntimeLabel}`:item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing"+(queueEditDraft?" · your draft returns after":""):""}</span><p>{item.text}</p><div className="queued-message-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}><button disabled={(running&&!runtimeCapabilities.steering)||queuedEditId===item.id} title={queuedEditId===item.id?"Save the edit with Enter, or press Escape, before sending it":running&&!runtimeCapabilities.steering?cannotSteerReason:undefined} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>runUserAction(()=>editQueued(item),"Could not edit queued follow-up")} disabled={Boolean(queuedEditId)||item.editable===false} title={queuedEditId&&queuedEditId!==item.id?"Save the follow-up you are editing, or press Escape, first":undefined}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
               {!messages.length&&!events.length&&!storeCardTurnIds(shownTurnActivity).length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>
