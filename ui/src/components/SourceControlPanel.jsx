@@ -368,9 +368,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     if(stack.length<1||!selectedPr?.stack)return;
     const selectedPosition=Number(selectedPr.stack?.position)||stack.find(layer=>layer.number===selectedPr.number)?.position||stack.length;
     const mergeScope=stack.filter(layer=>layer.state==="OPEN"&&Number(layer.position)<=selectedPosition);
-    const label=stack.map(pr=>"#"+pr.number).join(" → ");
+    const label=stack.map(pr=>"#"+pr.number).join(" → "),through=mergeScope.map(pr=>"#"+pr.number).join(" → ");
     const promptText=kind==="merge"
-      ?"Merge "+mergeScope.map(pr=>"#"+pr.number).join(" → ")+" using "+stackMergeMethod+" as one GitHub stack operation? GitHub will enforce branch rules and merge queues."
+      ?"Merge "+through+" using "+stackMergeMethod+" as one GitHub stack operation? GitHub will enforce branch rules and merge queues."
       :"Rebase stack "+label+"? This rewrites the remote stack branches bottom-to-top with force-with-lease and restarts checks. Your current checkout is not changed.";
     // A merge goes as one stack's single merge does (mergePr); a rebase rewrites the remote branches, so its button is red.
     if(!await askConfirm(promptText,kind==="merge"?{confirm:"Merge through #"+selectedPr.number,tone:"primary"}:{confirm:"Rebase stack"}))return;
@@ -385,7 +385,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       if(!stillShown(started))return;
       const issues=[];const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
       if(selectedPr&&openPrRequestRef.current?.number===selectedPr.number){const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
-      partialSuccess("Stack "+kind+" succeeded",issues,started);
+      // Either says that it worked, as a merged pull request does, naming the layers as its question did; GitHub merges a stack after
+      // it answers, so the merge is said to be under way.
+      partialSuccess(kind==="merge"?"GitHub is merging "+through:"Stack "+label+" was rebased",issues,started,true);
     }catch(e){reportError(started,actionError(kind==="merge"?"Could not merge the stack":"Could not rebase the stack",e))}
     finally{setBusy("")}
   }

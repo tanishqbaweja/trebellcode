@@ -834,6 +834,42 @@ test("Merge and Auto-merge ask first, naming the pull request, the method and th
   await shootBothModes(page,"source-control-merged-notice");
 });
 
+// A GitHub stack's actions say that they worked in the notice a merged pull request shows, naming the layers as their question did:
+// Rebase stack clicked, and Merge through from the keyboard in a narrow window (GitHub merges a stack after it answers).
+test("Rebase stack and Merge through say they worked, as a merged pull request does",async({page,request})=>{
+  test.setTimeout(60_000);
+  await asInDesktopApp(page);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const layers=[{position:1,number:21,title:"Stack layer one",state:"OPEN",isDraft:false,url:"https://example.test/pr/21",headRefName:"stack-one",baseRefName:"main"},{position:2,number:22,title:"Stack layer two",state:"OPEN",isDraft:false,url:"https://example.test/pr/22",headRefName:"stack-two",baseRefName:"stack-one"}];
+  const stack=position=>({number:42,size:2,position,baseRefName:"main",layers});
+  const host=await scriptCodeHost(page,{boot,prs:[samplePr(21,{title:"Stack layer one",headRefName:"stack-one",stack:stack(1)}),samplePr(22,{title:"Stack layer two",headRefName:"stack-two",baseRefName:"stack-one",stack:stack(2)})]});
+  const {right,pulls}=await openGitPanel(page,request,"Source control stack notices");
+  const dialog=page.locator("dialog.inspector-text-prompt"),detail=pulls.locator(".pr-detail"),notice=right.locator(".source-control-notice");
+  await pulls.locator(".pr-list").getByRole("button",{name:/#22 Stack layer two/}).click();
+  await expect(detail.locator(".pr-stack-head")).toContainText("GitHub stack #42");
+  // Rebase stack, clicked and said yes to.
+  await detail.getByRole("button",{name:"Rebase stack",exact:true}).click();
+  await expect(dialog.locator("p")).toHaveText(/^Rebase stack #21 → #22\?/);
+  await dialog.getByRole("button",{name:"Rebase stack",exact:true}).click();await expect(dialog).toHaveCount(0);
+  await expect(notice).toHaveText("Stack #21 → #22 was rebased.");
+  await expect(notice).toHaveAttribute("role","status");
+  expect(host.actions()).toEqual([{action:"rebase-stack",number:22,cwd:boot.cwd,provider:"github",environmentId:null}]);
+  await shootBothModes(page,"source-control-stack-rebased-notice");
+  // Merge through, at 900 wide: Enter on it, Tab from Cancel to Merge through #22, Enter. Its notice takes the rebase's place.
+  await page.setViewportSize({width:900,height:800});
+  await detail.getByLabel("Stack merge method").selectOption("merge");
+  const mergeThrough=detail.getByRole("button",{name:"Merge through #22",exact:true});
+  await mergeThrough.focus();await page.keyboard.press("Enter");
+  await expect(dialog.locator("p")).toHaveText(/^Merge #21 → #22 using merge as one GitHub stack operation\?/);
+  await expect(dialog.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+  await page.keyboard.press("Tab");await expect(dialog.getByRole("button",{name:"Merge through #22",exact:true})).toBeFocused();
+  await page.keyboard.press("Enter");await expect(dialog).toHaveCount(0);
+  await expect(notice).toHaveText("GitHub is merging #21 → #22.");
+  await expect(notice).toBeInViewport();
+  expect(host.actions()[1]).toEqual({action:"merge",number:22,method:"merge",cwd:boot.cwd,provider:"github",environmentId:null});
+  await shootBothModes(page,"source-control-stack-merging-notice");
+});
+
 // In a browser too, where window.prompt and window.confirm would work, the panel asks in the app's own dialog.
 test("Revert PR asks in the app's own dialog, never the browser's: Escape opens nothing, and the keyboard opens the revert",async({page,request})=>{
   test.setTimeout(60_000);
