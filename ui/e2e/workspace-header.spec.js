@@ -528,3 +528,28 @@ test("a rename whose dialog outlives the harness says Trebell Native is not conn
     expect(harness.threadStore.get(harness.threads[0].id).name).toBe("Release checklist");
   }finally{await harness.close()}
 });
+
+test("Stop pressed while the harness is away says Trebell Native is not connected, as the composer does",async({page})=>{
+  test.setTimeout(90_000);
+  const held=gate();
+  const {harness,proxy,header}=await openHeaderApp(page,{replies:[async()=>{await held.promise;return {text:"Long task done."}}]});
+  const composer=page.getByTestId("composer"),stop=header.getByRole("button",{name:"Stop",exact:true}),alert=page.getByTestId("app-action-error");
+  try{
+    await composer.click();await page.keyboard.type("Run the long task",{delay:20});await page.keyboard.press("Enter");
+    // The turn runs once the composer offers to queue a follow-up (Trebell Native took the send) and the provider is asked; then the
+    // harness goes.
+    await expect(composer).toHaveAttribute("placeholder","Queue a follow-up…",{timeout:15_000});
+    await expect(stop).toBeVisible();await expect.poll(()=>harness.providerCalls()).toBe(1);
+    proxy.stop();
+    await expect(composer).toHaveAttribute("placeholder","Reconnecting to Trebell Native…");
+    // Stop is clicked in dark, and pressed with Enter in light once the first message has gone.
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      if(mode==="dark")await stop.click();else{await stop.focus();await page.keyboard.press("Enter")}
+      await expect(alert).toHaveText("Could not stop turn: Trebell Native is not connected");
+      await expect(stop).toBeVisible();await expect(stop).toBeEnabled();
+      await shoot(page,"header-stop-harness-away");
+      await expect(alert).toHaveCount(0,{timeout:10_000});
+    }
+  }finally{held.open();await harness.close()}
+});

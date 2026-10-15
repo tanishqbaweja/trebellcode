@@ -2350,7 +2350,7 @@ export default function App(){
     };
     const connect=async(attempt=0)=>{
       let ready=false,refused=false,reopenRefused=null;
-      const current=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:status=>{
+      const current=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",name:agentRuntimeName(agentRuntime),onStatus:status=>{
         // A replaced client's late close must not overwrite the status of the transport that replaced it, nor a refused one's the
         // status its refusal set (an initialize or a reopen of the thread shown that the harness refused).
         if(current!==rpcRef.current||refused||reopenRefused)return;

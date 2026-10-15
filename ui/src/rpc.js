@@ -6,9 +6,11 @@ const HARNESS_START_METHODS = new Set(["turn/start", "thread/start", "thread/res
 export const requestTimeoutMs = method => HARNESS_START_METHODS.has(method) ? 10 * 60_000 : 60_000;
 
 export class CodexRpcClient {
-  constructor(url, { onNotification, onServerRequest, onStatus, clientVersion = "0.0.0" } = {}) {
+  // name: the harness the socket reaches, as the app names it, for a request that finds no socket or loses it.
+  constructor(url, { onNotification, onServerRequest, onStatus, clientVersion = "0.0.0", name = "Agent harness" } = {}) {
     this.url = url;
     this.clientVersion = clientVersion;
+    this.name = name;
     this.onNotification = onNotification;
     this.onServerRequest = onServerRequest;
     this.onStatus = onStatus;
@@ -43,7 +45,7 @@ export class CodexRpcClient {
       this.onStatus?.("disconnected");
       for (const [, pending] of this.pending) {
         clearTimeout(pending.timer);
-        pending.reject(new Error("App-server disconnected"));
+        pending.reject(new Error(`${this.name} disconnected`));
       }
       this.pending.clear();
     });
@@ -65,7 +67,7 @@ export class CodexRpcClient {
 
   request(method, params = {}) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error("App-server is not connected"));
+      return Promise.reject(new Error(`${this.name} is not connected`));
     }
     const id = this.nextId++;
     return new Promise((resolve, reject) => {

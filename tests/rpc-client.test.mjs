@@ -93,6 +93,19 @@ test("Codex RPC waits for a request that may start the thread's harness as long 
   }finally{globalThis.WebSocket=original}
 });
 
+// What a person reads of a Stop, or any action, made while the harness is away: the harness by its name, as the composer gives it.
+test("Codex RPC names the harness it reaches when its socket closes under a request, and for a request made with no socket",async()=>{
+  const original=globalThis.WebSocket;globalThis.WebSocket=MockWebSocket;
+  try{
+    const client=new CodexRpcClient("ws://test",{name:"Trebell Native"});await client.connect();
+    const pending=client.request("turn/interrupt",{threadId:"thread-1",turnId:"turn-1"});
+    client.close();
+    await assert.rejects(pending,{message:"Trebell Native disconnected"});
+    await assert.rejects(client.request("turn/interrupt",{threadId:"thread-1",turnId:"turn-1"}),{message:"Trebell Native is not connected"});
+    await assert.rejects(new CodexRpcClient("ws://test").request("thread/list"),{message:"Agent harness is not connected"});
+  }finally{globalThis.WebSocket=original}
+});
+
 // The relay starts a thread's harness session (ensureSession) inside these requests' handlers, where a start can take minutes. A
 // send waits for it through what lets Stop end it first (sessionUnlessStopped), so a call counts however it is awaited.
 test("every relay request that may start the thread's harness session waits longer than a minute",()=>{

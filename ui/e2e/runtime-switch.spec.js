@@ -32,7 +32,7 @@ async function startAgentRelay(activeRuntime,{turnDelayMs=0,reconnectInitializeD
       if(message.id==null||!message.method)return;
       const runtime=activeRuntime(),params=message.params||{};requests.push({connection,runtime,method:message.method,params});
       if(message.method==="turn/start"){
-        // The turn stays in flight for turnDelayMs, so a transport reconnect during that window loses it like the live "App-server disconnected".
+        // The turn stays in flight for turnDelayMs, so a transport reconnect during that window loses it like the live "<harness> disconnected".
         const threadId=params.threadId,turnId="switch-turn-"+requests.length;if(turnDelayMs)await delay(turnDelayMs);
         send({id:message.id,result:{turn:{id:turnId,status:"inProgress",items:[]}}});
         send({method:"turn/started",params:{threadId,turn:{id:turnId,status:"inProgress",startedAt:Date.now()/1000}}});
@@ -215,7 +215,7 @@ test("a harness switch reconnects the transport once and a send right after it r
     expect(turnStart.runtime).toBe("opencode");
     expectCatalogModels(relay);
     await expect(composer).toHaveValue("");
-    await expect(page.getByText(/App-server disconnected/)).toHaveCount(0);
+    await expect(page.getByText(/(Claude Code|OpenCode) disconnected/)).toHaveCount(0);
     expect(server.counts.select).toBe(1);
     expect(server.counts.direct).toBe(0);
   }finally{await close()}
