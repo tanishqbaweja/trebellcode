@@ -10,6 +10,7 @@ import { DEFAULT_SNAPSHOT_CONFIG, normalizeSnapshotConfig } from "./snapshot-con
 import { listEditors, startEditor } from "./editor-discovery.mjs";
 import { createUpdaterController } from "./updater-controller.mjs";
 import { decodePowerShellJsonBase64, decodePowerShellStderr } from "./powershell-output.mjs";
+import { externalUrl, isAppUrl } from "./navigation-policy.mjs";
 
 const require=createRequire(import.meta.url);
 const { autoUpdater }=require("electron-updater");
@@ -19,7 +20,11 @@ if(explicitTrebellHome)app.setPath("userData",join(explicitTrebellHome,"desktop"
 
 let windowRef=null;
 let gui=null;
+// quitting: windows now close for real instead of hiding to the tray. shutdownCleaned: the shutdown cleanup (agent browser,
+// tray, shortcut, GUI server with its terminals and app-servers) has run, so before-quit lets the quit through. They are
+// separate because the tray's Quit sets quitting first, and the cleanup must still run for it.
 let quitting=false;
+let shutdownCleaned=false;
 let agentBrowser=null;
 let agentBrowserRuntime={startedAt:Date.now(),consoleErrors:[],networkFailures:[],viewports:[]};
 let tray=null;
@@ -54,7 +59,7 @@ function configureUpdater(){
     app,autoUpdater,
     onState:state=>{try{if(windowRef&&!windowRef.isDestroyed())windowRef.webContents.send("desktop:update:state",state)}catch{}},
     beforeInstall:async()=>{
-      quitting=true;
+      quitting=true;shutdownCleaned=true;
       disposeAgentBrowser({destroy:true});
       try{tray?.destroy();tray=null}catch{}
       try{if(registeredSnapshotShortcut)globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}catch{}
@@ -146,16 +151,21 @@ function appIcon(){
 function trayIcon(){
   return appIcon().resize({width:16,height:16});
 }
-function ensureTray(){
-  if(tray)return tray;
-  tray=new Tray(trayIcon());
-  tray.setToolTip("Trebell Code");
-  tray.setContextMenu(Menu.buildFromTemplate([
+function trayMenuTemplate(){
+  return [
     {label:"Show Trebell Code",click:()=>{windowRef?.show();windowRef?.focus()}},
     {label:"Open Agent Browser",click:()=>ensureAgentBrowser({show:true})},
     {type:"separator"},
     {label:"Quit Trebell Code",click:()=>{quitting=true;app.quit()}},
-  ]));
+  ];
+}
+// Hidden test runs reach the tray's items through this, since no API reads a tray's menu back, without an icon in the taskbar.
+if(process.env.TREBELL_TEST_HIDDEN==="1")globalThis.__trebellTrayMenuTemplate=trayMenuTemplate;
+function ensureTray(){
+  if(tray)return tray;
+  tray=new Tray(trayIcon());
+  tray.setToolTip("Trebell Code");
+  tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate()));
   tray.on("double-click",()=>{windowRef?.show();windowRef?.focus()});
   return tray;
 }
@@ -189,11 +199,10 @@ async function openWorkspaceIn(targetPath,editorId){
   const absolute=String(targetPath||"").trim();
   if(!absolute)throw new Error("Path is required");
   if(editorId==="file-manager"){
-    try{
-      const info=statSync(absolute);
-      if(info.isDirectory())await shell.openPath(absolute);
-      else shell.showItemInFolder(absolute);
-    }catch{shell.showItemInFolder(absolute)}
+    let info=null;try{info=statSync(absolute)}catch{}
+    // shell.openPath resolves to an error message rather than rejecting, so a folder that did not open is reported.
+    if(info?.isDirectory()){const failure=await shell.openPath(absolute);if(failure)throw new Error(`Could not open the folder: ${failure}`)}
+    else shell.showItemInFolder(absolute);
     return {ok:true,editorId,path:absolute};
   }
   const editors=await availableEditors();
@@ -745,7 +754,7 @@ async function startGuiServer(){
 }
 
 async function recoverAfterFailedUpdateInstall(){
-  quitting=false;
+  quitting=false;shutdownCleaned=false;
   try{
     const server=await startGuiServer();
     if(windowRef&&!windowRef.isDestroyed())await windowRef.loadURL(server.url);
@@ -787,9 +796,12 @@ async function createWindow(){
   });
   installMainZoomControls(windowRef);
   windowRef.webContents.setWindowOpenHandler(({url})=>{
-    shell.openExternal(url);
+    const external=externalUrl(url);if(external)shell.openExternal(external).catch(()=>{});
     return {action:"deny"};
   });
+  // The app window only ever shows the app: a file or link dropped outside the composer, or a link without a new-window
+  // target, would otherwise replace the app and hand that page the desktop bridge. Reloads and the app's own routes pass.
+  windowRef.webContents.on("will-navigate",(event,url)=>{if(!isAppUrl(url,gui?.url))event.preventDefault()});
   await windowRef.loadURL(gui.url);
   setMainZoomFactor(loadDesktopPrefs().zoomFactor||1,{persist:false});
   windowRef.once("ready-to-show",()=>{
@@ -803,37 +815,47 @@ async function createWindow(){
   windowRef.on("closed",()=>{windowRef=null;});
 }
 
+// The bridge answers only the app's own pages (defence in depth next to the window's navigation guard): a call from any other
+// page is refused, and a message from one is dropped.
+function fromApp(event){return isAppUrl(event?.senderFrame?.url,gui?.url)}
+function handle(channel,listener){ipcMain.handle(channel,(event,...args)=>{if(!fromApp(event))throw new Error(`${channel} is only available to Trebell Code itself`);return listener(event,...args)})}
+function listen(channel,listener){ipcMain.on(channel,(event,...args)=>{if(fromApp(event))listener(event,...args)})}
+
 const lock=app.requestSingleInstanceLock();
 if(!lock){
   app.quit();
 }else{
+  // A second launch brings the window back, also from the tray (close to tray, or a --background start), as the tray's Show does.
   app.on("second-instance",()=>{
     if(windowRef){
       if(windowRef.isMinimized()) windowRef.restore();
+      windowRef.show();
       windowRef.focus();
     }
   });
 
-  ipcMain.on("window:minimize",()=>windowRef?.minimize());
-  ipcMain.on("window:maximize",()=>{
+  listen("window:minimize",()=>windowRef?.minimize());
+  listen("window:maximize",()=>{
     if(!windowRef) return;
     windowRef.isMaximized() ? windowRef.unmaximize() : windowRef.maximize();
   });
-  ipcMain.on("window:close",()=>windowRef?.close());
-  ipcMain.handle("desktop:background:get",()=>({enabled:backgroundEnabled,...backgroundLoginSettings()}));
-  ipcMain.handle("desktop:background:set",(_event,value)=>({enabled:setBackgroundEnabled(value)}));
-  ipcMain.handle("desktop:update:get",()=>configureUpdater());
-  ipcMain.handle("desktop:update:check",()=>checkDesktopUpdate());
-  ipcMain.handle("desktop:update:download",()=>downloadDesktopUpdate());
-  ipcMain.handle("desktop:update:install",()=>installDesktopUpdate());
-  ipcMain.handle("snapshot:get",()=>({...snapshotConfig,registered:Boolean(registeredSnapshotShortcut),platform:process.platform,pending:pendingSnapshots().length}));
-  ipcMain.handle("snapshot:configure",(_event,config={})=>applySnapshotConfig(config));
-  ipcMain.handle("snapshot:pending",()=>pendingSnapshots());
-  ipcMain.handle("snapshot:read",(_event,id)=>readSnapshot(id));
-  ipcMain.handle("snapshot:ack",(_event,id)=>ackSnapshot(id));
-  ipcMain.handle("snapshot:capture",()=>captureActiveSnapshot());
-  ipcMain.on("desktop:notify",(_event,payload={})=>{
+  listen("window:close",()=>windowRef?.close());
+  handle("desktop:background:get",()=>({enabled:backgroundEnabled,...backgroundLoginSettings()}));
+  handle("desktop:background:set",(_event,value)=>({enabled:setBackgroundEnabled(value)}));
+  handle("desktop:update:get",()=>configureUpdater());
+  handle("desktop:update:check",()=>checkDesktopUpdate());
+  handle("desktop:update:download",()=>downloadDesktopUpdate());
+  handle("desktop:update:install",()=>installDesktopUpdate());
+  handle("snapshot:get",()=>({...snapshotConfig,registered:Boolean(registeredSnapshotShortcut),platform:process.platform,pending:pendingSnapshots().length}));
+  handle("snapshot:configure",(_event,config={})=>applySnapshotConfig(config));
+  handle("snapshot:pending",()=>pendingSnapshots());
+  handle("snapshot:read",(_event,id)=>readSnapshot(id));
+  handle("snapshot:ack",(_event,id)=>ackSnapshot(id));
+  handle("snapshot:capture",()=>captureActiveSnapshot());
+  listen("desktop:notify",(_event,payload={})=>{
     if(!Notification.isSupported()) return;
+    // The window in front already shows what the notification would say (a question, an approval, a finished task).
+    if(windowRef&&!windowRef.isDestroyed()&&windowRef.isVisible()&&windowRef.isFocused()) return;
     const title=String(payload.title||"Trebell Code").slice(0,120);
     const body=String(payload.body||"").slice(0,600);
     const notification=new Notification({title,body,silent:Boolean(payload.silent),icon:appIcon()});
@@ -845,35 +867,35 @@ if(!lock){
     });
     notification.show();
   });
-  ipcMain.handle("workspace:pickDirectory",async()=>{
+  handle("workspace:pickDirectory",async()=>{
     const result=await dialog.showOpenDialog(windowRef,{properties:["openDirectory","createDirectory"]});
     return result.canceled ? null : result.filePaths[0] || null;
   });
-  ipcMain.handle("workspace:pickFiles",async()=>{
+  handle("workspace:pickFiles",async()=>{
     const result=await dialog.showOpenDialog(windowRef,{properties:["openFile","multiSelections"]});
     return result.canceled ? [] : result.filePaths;
   });
-  ipcMain.handle("workspace:editors",async()=>({editors:await availableEditors()}));
-  ipcMain.handle("workspace:openIn",async(_event,payload={})=>openWorkspaceIn(payload.path,payload.editorId));
-  ipcMain.handle("browser:navigate",async(_event,url)=>{
+  handle("workspace:editors",async()=>({editors:await availableEditors()}));
+  handle("workspace:openIn",async(_event,payload={})=>openWorkspaceIn(payload.path,payload.editorId));
+  handle("browser:navigate",async(_event,url)=>{
     const browser=await ensureAgentBrowser();
     resetBrowserRuntime();
     await browser.loadURL(normalizeBrowserUrl(url));
     return {ok:true,url:browser.webContents.getURL(),title:browser.webContents.getTitle()};
   });
-  ipcMain.handle("browser:show",async()=>{
+  handle("browser:show",async()=>{
     const browser=await ensureAgentBrowser({show:true});
     return {ok:true,url:browser.webContents.getURL(),title:browser.webContents.getTitle()};
   });
-  ipcMain.handle("browser:snapshot",async()=>browserSnapshot());
-  ipcMain.handle("browser:click",async(_event,ref)=>browserClick(ref));
-  ipcMain.handle("browser:type",async(_event,payload)=>browserType(payload?.ref,payload?.text));
-  ipcMain.handle("browser:screenshot",async()=>browserScreenshot());
-  ipcMain.handle("browser:runtime",async()=>browserRuntime());
-  ipcMain.handle("browser:state",async()=>browserState());
-  ipcMain.handle("browser:history",async(_event,direction)=>browserNavigateHistory(direction));
-  ipcMain.handle("browser:viewport",async(_event,payload)=>browserViewport(payload));
-  ipcMain.handle("browser:recording:arm",async()=>{
+  handle("browser:snapshot",async()=>browserSnapshot());
+  handle("browser:click",async(_event,ref)=>browserClick(ref));
+  handle("browser:type",async(_event,payload)=>browserType(payload?.ref,payload?.text));
+  handle("browser:screenshot",async()=>browserScreenshot());
+  handle("browser:runtime",async()=>browserRuntime());
+  handle("browser:state",async()=>browserState());
+  handle("browser:history",async(_event,direction)=>browserNavigateHistory(direction));
+  handle("browser:viewport",async(_event,payload)=>browserViewport(payload));
+  handle("browser:recording:arm",async()=>{
     const browser=await ensureAgentBrowser({show:true});
     if(process.env.TREBELL_TEST_HIDDEN==="1"&&!browser.isVisible()){
       browser.showInactive();
@@ -883,21 +905,21 @@ if(!lock){
     browserRecordingGrantUntil=Date.now()+5000;
     return {ok:true,expiresAt:browserRecordingGrantUntil,sourceId:browser.getMediaSourceId()};
   });
-  ipcMain.handle("desktop:screenshot",async()=>desktopScreenshot());
-  ipcMain.handle("desktop:window:screenshot",async()=>mainWindowScreenshot());
-  ipcMain.handle("computer:screenshot",async()=>desktopScreenshot());
-  ipcMain.handle("computer:move",async(_event,payload={})=>computerMove(payload.x,payload.y));
-  ipcMain.handle("computer:click",async(_event,payload={})=>computerClick(payload));
-  ipcMain.handle("computer:scroll",async(_event,payload={})=>computerScroll(payload.delta));
-  ipcMain.handle("computer:type",async(_event,payload={})=>computerType(payload.text));
-  ipcMain.handle("computer:key",async(_event,payload={})=>computerKey(payload.key));
-  ipcMain.handle("desktop:zoom:get",()=>({factor:windowRef?.webContents?.getZoomFactor?.()||1}));
-  ipcMain.handle("desktop:zoom:set",(_event,value)=>({factor:setMainZoomFactor(value)}));
-  ipcMain.handle("desktop:zoom:reset",()=>({factor:setMainZoomFactor(1)}));
-  ipcMain.handle("browser:importCookies",async(_event,payload)=>importBrowserCookies(payload));
-  ipcMain.handle("browser:importSources",async()=>browserImportSources());
-  ipcMain.handle("browser:importProfile",async(_event,payload)=>importBrowserProfile(payload||{}));
-  ipcMain.handle("browser:close",async()=>{disposeAgentBrowser();return {ok:true};});
+  handle("desktop:screenshot",async()=>desktopScreenshot());
+  handle("desktop:window:screenshot",async()=>mainWindowScreenshot());
+  handle("computer:screenshot",async()=>desktopScreenshot());
+  handle("computer:move",async(_event,payload={})=>computerMove(payload.x,payload.y));
+  handle("computer:click",async(_event,payload={})=>computerClick(payload));
+  handle("computer:scroll",async(_event,payload={})=>computerScroll(payload.delta));
+  handle("computer:type",async(_event,payload={})=>computerType(payload.text));
+  handle("computer:key",async(_event,payload={})=>computerKey(payload.key));
+  handle("desktop:zoom:get",()=>({factor:windowRef?.webContents?.getZoomFactor?.()||1}));
+  handle("desktop:zoom:set",(_event,value)=>({factor:setMainZoomFactor(value)}));
+  handle("desktop:zoom:reset",()=>({factor:setMainZoomFactor(1)}));
+  handle("browser:importCookies",async(_event,payload)=>importBrowserCookies(payload));
+  handle("browser:importSources",async()=>browserImportSources());
+  handle("browser:importProfile",async(_event,payload)=>importBrowserProfile(payload||{}));
+  handle("browser:close",async()=>{disposeAgentBrowser();return {ok:true};});
 
   app.whenReady().then(async()=>{
     if(process.platform==="win32")app.setAppUserModelId("com.trebell.code");
@@ -922,10 +944,13 @@ if(!lock){
     if(BrowserWindow.getAllWindows().length===0) createWindow();
   });
 
+  // Every quit runs the shutdown cleanup once: the tray's Quit (which sets quitting first, so its window closes instead of hiding)
+  // and the window's own close alike. The updater's install has already run it (beforeInstall), so its quit goes straight through.
   app.on("before-quit",(event)=>{
-    if(quitting) return;
-    event.preventDefault();
     quitting=true;
+    if(shutdownCleaned) return;
+    event.preventDefault();
+    shutdownCleaned=true;
     disposeAgentBrowser({destroy:true});
     try{tray?.destroy();tray=null}catch{}
     try{if(registeredSnapshotShortcut)globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}catch{}
