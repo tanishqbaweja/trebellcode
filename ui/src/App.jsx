@@ -46,6 +46,7 @@ import { startupRuntimeOutcome } from "./startup-runtime.js";
 import { collaborationModePayload, normalizeCollaborationModes } from "./collaboration-mode.js";
 import { ensureRuntimeProject, sameWorkspacePath } from "./codex-projects.js";
 import { writeClipboardText } from "./clipboard.js";
+import { openWebLink } from "./web-link.js";
 import { requestPreview } from "./preview-open.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
 import { EMPTY_ASSISTANT_STREAM, assistantStreamDelta } from "./assistant-stream-sync.js";
@@ -5465,7 +5466,7 @@ export default function App(){
               {headerThread?.id?<button className="thread-title-button" onDoubleClick={renameFromHeader} onClick={renameFromHeader} disabled={Boolean(openingView)||!renameReady} title={openingView?undefined:activeTitle+" · "+(renameReady?"Rename thread":"Renaming needs "+agentRuntimeLabel+" to be connected")}><strong>{activeTitle}</strong><ChevronDown size={13}/></button>:<span className="thread-title-button is-static"><strong>{activeTitle}</strong></span>}
               {/* In a narrow header the first chip stands for every linked pull request ("#482 +1", then the icon and a count); its
                   tooltip names the others. */}
-              {activeThread?.id&&!openingShown&&linkedPullRequests.map((pr,index,all)=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")} aria-label={"Pull request #"+pr.number} title={"Open pull request #"+pr.number+(index===0&&all.length>1?" · also linked: "+all.slice(1).map(other=>"#"+other.number).join(", "):"")}><GitBranch size={11} aria-hidden="true"/><span className="header-pr-number">#{pr.number}</span>{index===0&&all.length>1&&<><span className="header-pr-more" aria-hidden="true">+{all.length-1}</span><span className="header-pr-count" aria-hidden="true">{all.length}</span></>}</button>)}
+              {activeThread?.id&&!openingShown&&linkedPullRequests.map((pr,index,all)=><button className="header-pr" key={pr.url||pr.number} onClick={()=>openWebLink(pr.url)} aria-label={"Pull request #"+pr.number} title={"Open pull request #"+pr.number+(index===0&&all.length>1?" · also linked: "+all.slice(1).map(other=>"#"+other.number).join(", "):"")}><GitBranch size={11} aria-hidden="true"/><span className="header-pr-number">#{pr.number}</span>{index===0&&all.length>1&&<><span className="header-pr-more" aria-hidden="true">+{all.length-1}</span><span className="header-pr-count" aria-hidden="true">{all.length}</span></>}</button>)}
             </div>
             <div className="workspace-header-actions">
               {/* data-fold names the actions header-fit.js folds into the More actions menu when the title needs their room. */}

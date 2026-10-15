@@ -473,6 +473,34 @@ for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(
   }finally{await harness.close()}
 });
 
+// A linked pull request's chip opens its page in a new tab that cannot reach back into the app; a link that is not a web address
+// (saved metadata carrying a javascript: URL) opens nothing. Pressed like a person, shot before and after in both modes.
+for(const mode of ["dark","light"])test(`a linked pull request opens its web page and a link that is not a web address opens nothing, in ${mode} mode`,async({page})=>{
+  test.setTimeout(35_000);
+  const project={id:"header-project",name:"Billing reconciliation",path:process.cwd(),environmentId:null,branch:"main"};
+  const thread={id:"header-thread",name:"Refunds counted twice",preview:"Refunds",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Why are refunds counted twice?"}]},{type:"agentMessage",id:"assistant-1",text:"Looking."}]}]};
+  const prs=[{url:"https://github.com/acme/billing/pull/12345",number:12345,title:"Refund fix",state:"open"},{url:"javascript:document.title='opened'",number:12346,title:"Tampered link",state:"open"}];
+  const harness=await startHarness([thread]);
+  try{
+    await page.addInitScript(()=>{window.__opened=[];window.open=(...args)=>{window.__opened.push(args.map(String));return null}});
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:false,environmentId:null,linkedPullRequests:prs}},project,settings:{appearanceMode:mode},layout:{sidebarWidth:258,rightPanelWidth:520,terminalHeight:330}});
+    await openThread(page,thread.name);
+    if(await page.getByTestId("right-panel").isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(page.getByTestId("right-panel")).toBeHidden()}
+    const header=page.locator(".chat-workspace .workspace-header");
+    const web=header.getByRole("button",{name:"Pull request #12345"}),tampered=header.getByRole("button",{name:"Pull request #12346"});
+    await expect(web).toBeVisible();await expect(tampered).toBeVisible();await settle(page);
+    await page.screenshot({path:join(shotsDir,`header-pr-open-before-${mode}-1280x800.png`),animations:"disabled"});
+    await web.click();
+    await expect.poll(()=>page.evaluate(()=>window.__opened)).toEqual([["https://github.com/acme/billing/pull/12345","_blank","noopener,noreferrer"]]);
+    await tampered.click();await page.waitForTimeout(300);
+    expect(await page.evaluate(()=>window.__opened),"the tampered link opened nothing").toHaveLength(1);
+    expect(await page.title()).not.toBe("opened");
+    await expect(header).toBeVisible();
+    await page.screenshot({path:join(shotsDir,`header-pr-open-after-${mode}-1280x800.png`),animations:"disabled"});
+  }finally{await harness.close()}
+});
+
 // The header fixture for the narrow-window tests below: every header action there is (the branch, the desktop app's Open-in
 // picker, a project action, Review, the terminal and goal toggles), long names, prCount linked pull requests, and Stop while a
 // turn runs. The desktop bridge records each Open in window.__opens, answers it once window.__openHold (a promise, when set)
