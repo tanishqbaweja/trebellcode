@@ -1119,6 +1119,33 @@ test("a refused Pull keeps git's reason on screen when the refresh after it cann
   await shootBothModes(page,"source-control-pull-refused-host-down-card");
 });
 
+test("a branch name of spaces is refused in the app as an empty one is, and a name typed with spaces around it is made without them",async({page,request})=>{
+  test.setTimeout(120_000);
+  const {root,git}=await realRepository();const tree=root+"-tree";repositories.push(tree);
+  // The desktop app's folder picker, which Add worktree opens once it has the branch: it answers a folder beside the repository.
+  await page.addInitScript(folder=>{window.trebellDesktop={pickDirectory:async()=>{window.__folderPicks=(window.__folderPicks||0)+1;return folder}}},tree);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await scriptCodeHost(page,{boot,info:false});
+  const sent=[];page.on("request",item=>{if(new URL(item.url()).pathname==="/api/git/action")sent.push(item.postDataJSON())});
+  const {right,repository}=await openGitPanel(page,request,"Source control blank branch",root);
+  const question=page.locator("dialog.inspector-text-prompt"),field=question.getByRole("textbox"),picker=right.getByRole("combobox",{name:"Current branch"}),alert=right.locator(".source-control-error");
+  const answer=async(button,text)=>{await button.click();await expect(field).toBeFocused();await page.keyboard.type(text,{delay:15});await page.keyboard.press("Enter");await expect(question).toHaveCount(0)};
+  await expect(picker).toHaveValue("main",GIT_WAIT);
+  // Three spaces name no branch: OK sends nothing, as with the box left empty. A name typed with spaces around it is made without them.
+  const create=right.getByRole("button",{name:"Create branch",exact:true});
+  await answer(create,"   ");await answer(create,"  feature/padded  ");
+  await expect.poll(()=>sent.map(body=>body.action+":"+body.name)).toEqual(["branch-create:feature/padded"]);
+  await expect(picker).toHaveValue("feature/padded",GIT_WAIT);await expect(alert).toHaveCount(0);
+  expect(await git(["branch","--format=%(refname:short)"])).toBe("feature/padded\nmain");
+  await shootBothModes(page,"source-control-branch-name-trimmed");
+  // Add worktree asks for its branch the same way: spaces open no folder picker, and the name is made without the spaces around it.
+  const add=repository.getByRole("button",{name:"Add worktree",exact:true});
+  await answer(add,"   ");await answer(add,"  feature/tree  ");
+  await expect.poll(()=>sent.filter(body=>body.action==="worktree-create").map(body=>body.branch)).toEqual(["feature/tree"]);
+  expect(await page.evaluate(()=>window.__folderPicks)).toBe(1);
+  await expect.poll(()=>git(["worktree","list","--porcelain"]),GIT_WAIT).toContain("branch refs/heads/feature/tree");
+});
+
 test("each project selects its detected code host every time it is opened",async({page,request})=>{
   test.setTimeout(90_000);
   const first=await mkdtemp(join(tmpdir(),"trebell-host-first-")),second=await mkdtemp(join(tmpdir(),"trebell-host-second-"));repositories.push(first,second);

@@ -336,8 +336,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     catch(error){setError(actionError("Could not open the worktree",error));return false}
     finally{setBusy("")}
   }
+  // A branch name of spaces is no name, as an empty one is, and the spaces typed around a name are not part of it.
   async function addWorktree(){
-    const branch=await askText("New worktree branch");if(!branch)return;
+    const branch=(await askText("New worktree branch"))?.trim();if(!branch)return;
     let path="";
     try{
       path=remote
@@ -455,7 +456,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
 
   return <div className="source-control">
     <div className="sc-toolbar">
-      <div className="sc-branch"><GitBranch size={16}/><select aria-label="Current branch" title={branchTitle} value={info?.branch||""} disabled={!info} aria-busy={infoLoading||undefined} onChange={e=>action("branch-switch",{name:e.target.value})}>{!info&&<option value="">{infoLoading?"Loading branches…":"Branches unavailable"}</option>}{info&&!info.branch&&<option value="" disabled>detached</option>}{unborn&&<option value={info.branch}>{info.branch}</option>}{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button aria-label="Create branch" title="Create branch" onClick={async()=>{const n=await askText("New branch name");if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
+      <div className="sc-branch"><GitBranch size={16}/><select aria-label="Current branch" title={branchTitle} value={info?.branch||""} disabled={!info} aria-busy={infoLoading||undefined} onChange={e=>action("branch-switch",{name:e.target.value})}>{!info&&<option value="">{infoLoading?"Loading branches…":"Branches unavailable"}</option>}{info&&!info.branch&&<option value="" disabled>detached</option>}{unborn&&<option value={info.branch}>{info.branch}</option>}{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button aria-label="Create branch" title="Create branch" onClick={async()=>{const n=(await askText("New branch name"))?.trim();if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
       <div><button onClick={()=>action("fetch")} disabled={!!busy}><RefreshCw size={13}/> Fetch</button><button onClick={()=>action("pull")} disabled={!!busy}><Download size={13}/> Pull</button><button onClick={()=>action("push",{setUpstream:!info?.upstream})} disabled={!!busy}><Upload size={13}/> Push</button></div>
     </div>
     {error&&<div className="inline-error source-control-error" role="alert">{error}</div>}{notice&&<div className="source-control-notice" role="status">{notice}</div>}
