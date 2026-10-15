@@ -599,11 +599,34 @@ test("an OpenCode permission request the app never answered is refused, and the 
   try{
     fixture.emit({type:"permission.asked",properties:{id:"per_1",sessionID:"ses_fixture",permission:"external_directory",patterns:["/outside/*"],metadata:{},always:[]}});
     await eventually(()=>fixture.called("POST /permission/per_1/reply").length,{message:"OpenCode was left waiting for an answer"});
-    assert.deepEqual(fixture.called("POST /permission/per_1/reply")[0].body,{reply:"reject"});
+    assert.deepEqual(fixture.called("POST /permission/per_1/reply")[0].body,{reply:"reject",message:"The external_directory request (/outside/*) was declined. Do not retry it; continue without it, and tell the user what it would need."});
     fixture.emit({type:"permission.asked",properties:{id:"per_2",sessionID:"ses_fixture",permission:"bash",patterns:["npm test"],metadata:{},always:[]}});
     await eventually(()=>fixture.called("POST /permission/per_2/reply").length,{message:"the session stopped reading OpenCode's events"});
     assert.deepEqual(fixture.called("POST /permission/per_2/reply")[0].body,{reply:"once"});
   }finally{await session.close();await fixture.close()}
+});
+
+// A reject without a message is OpenCode's stop: it ends the whole run, and the person sees the turn stopped with no answer. So a
+// refusal by the thread's mode or by the user carries its reason, which OpenCode hands the model as the tool's answer; only a Stop
+// (the approval card's cancel) is sent bare.
+test("an OpenCode refusal carries its reason so the model answers instead of OpenCode ending the run, and only a Stop is sent bare",async()=>{
+  const quiet=await fakeOpenCode();
+  const readOnly=await startedSession(quiet,{permissionMode:"read-only",onPermission:async()=>{throw new Error("Read only refuses without asking")}});
+  try{
+    quiet.emit({type:"permission.asked",properties:{id:"per_ro",sessionID:"ses_fixture",permission:"bash",patterns:["node -e \"console.log('hi')\""],metadata:{},always:[]}});
+    await eventually(()=>quiet.called("POST /permission/per_ro/reply").length);
+    assert.deepEqual(quiet.called("POST /permission/per_ro/reply")[0].body,{reply:"reject",message:"The bash request (node -e \"console.log('hi')\") was refused: this thread is in Trebell's Read only mode. Do not retry it; continue without it, and tell the user what it would need."});
+  }finally{await readOnly.session.close();await quiet.close()}
+  const fixture=await fakeOpenCode(),answers=["decline","cancel"];
+  const supervised=await startedSession(fixture,{permissionMode:"supervised",onPermission:async()=>answers.shift()});
+  try{
+    fixture.emit({type:"permission.asked",properties:{id:"per_deny",sessionID:"ses_fixture",permission:"edit",patterns:["src/app.js"],metadata:{filepath:"src/app.js"},always:["*"]}});
+    await eventually(()=>fixture.called("POST /permission/per_deny/reply").length);
+    assert.deepEqual(fixture.called("POST /permission/per_deny/reply")[0].body,{reply:"reject",message:"The edit request (src/app.js) was declined. Do not retry it; continue without it, and tell the user what it would need."});
+    fixture.emit({type:"permission.asked",properties:{id:"per_stop",sessionID:"ses_fixture",permission:"bash",patterns:["npm test"],metadata:{},always:[]}});
+    await eventually(()=>fixture.called("POST /permission/per_stop/reply").length);
+    assert.deepEqual(fixture.called("POST /permission/per_stop/reply")[0].body,{reply:"reject"},"a Stop ends OpenCode's run");
+  }finally{await supervised.session.close();await fixture.close()}
 });
 
 test("a subagent's permission requests, questions and far-off retries (OpenCode runs it in a child session) never hold the turn",async()=>{

@@ -1,6 +1,6 @@
 import { OpenCode } from "@opencode/client";
 import { randomUUID } from "node:crypto";
-import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2ModelId, openCodePermissionDisposition, openCodePermissionRules, openCodePrimaryAgents, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
+import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2ModelId, openCodePermissionDisposition, openCodePermissionRules, openCodePrimaryAgents, openCodeRefusal, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
@@ -240,7 +240,11 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
       for(const resource of resources.map(String).filter(Boolean))if(!this.sessionGrants.some(grant=>grant.action===kind&&grant.resource===resource))this.sessionGrants.push({action:kind,resource,effect:"allow"});
       await this.#applyPermissionRules().catch(()=>{});
     }
-    await this.client.permission.reply({sessionID:String(data.sessionID),requestID:String(data.id),decision:permissionDecision(decision)}).catch(()=>{});
+    const refusal=openCodeRefusal(decision,{disposition,mode:this.permissionMode,action:kind,resources:data?.resources});
+    // A refused shell call reaches the model only as "Unable to execute command", which it retries, so the reason is steered into the
+    // session before the refusal (as T3 Code does); the refusal stands without it.
+    if(refusal)await this.client.session.synthetic({sessionID:String(data.sessionID),text:refusal.note,delivery:"steer",resume:false}).catch(()=>{});
+    await this.client.permission.reply({sessionID:String(data.sessionID),requestID:String(data.id),decision:permissionDecision(decision),...(refusal?{message:refusal.reason}:{})}).catch(()=>{});
   }
   #startEvents(){
     this.eventTask=(async()=>{

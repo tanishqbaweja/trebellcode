@@ -309,6 +309,15 @@ export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=proc
 }
 
 function permissionResponse(decision){return decision==="acceptForSession"?"always":decision==="accept"?"once":"reject"}
+const PERMISSION_MODE_NAMES=Object.freeze({"read-only":"Read only",supervised:"Supervised",edits:"Auto-accept edits",auto:"Auto",full:"Full access"});
+// A reject without a message is OpenCode's stop: it ends the whole run, which only a Stop (cancel) means. Any other refusal goes with
+// its reason, which OpenCode hands the model as the tool's answer, so the turn carries on and the model can say what it could not do.
+export function openCodeRefusal(decision,{disposition=null,mode=null,action="",resources=[]}={}){
+  if(["accept","acceptForSession","cancel"].includes(decision))return null;
+  const shown=(Array.isArray(resources)?resources:[]).map(String).filter(Boolean).slice(0,3),what=`The ${String(action||"tool")} request`+(shown.length?` (${shown.join(", ")})`:"");
+  const reason=disposition==="deny"?`${what} was refused: this thread is in Trebell's ${PERMISSION_MODE_NAMES[normalizePermissionMode(mode)]} mode.`:`${what} was declined.`;
+  return {reason,note:reason+" Do not retry it; continue without it, and tell the user what it would need."};
+}
 
 export async function configureOpenCodeMcpServers(client,{cwd,servers=[]}={}){
   if(!client?.mcp?.add)return [];
@@ -820,10 +829,10 @@ export class OpenCodeAgentSession{
       // A request that never got an answer (the approval timed out, or the app disconnected) is refused: OpenCode still needs a reply.
       decision=await Promise.resolve().then(()=>this.onPermission({method:"permission",params:{toolCall,permissionType:kind,options}})).then(value=>value||"decline",()=>"decline");
     }
-    const response=permissionResponse(decision);
+    const response=permissionResponse(decision),refusal=openCodeRefusal(decision,{disposition,mode:this.permissionMode,action:kind,resources:p.patterns});
     // OpenCode waits for this reply before the tool runs, so an unanswered request would hold the turn forever.
     if(asked){
-      const replied=await Promise.resolve(this.v2Client?.permission?.reply?.({requestID,directory:this.cwd,reply:response})).then(result=>Boolean(result)&&!result.error,()=>false);
+      const replied=await Promise.resolve(this.v2Client?.permission?.reply?.({requestID,directory:this.cwd,reply:response,...(refusal?{message:refusal.note}:{})})).then(result=>Boolean(result)&&!result.error,()=>false);
       if(replied)return;
     }
     await this.client.postSessionIdPermissionsPermissionId({path:{id:String(p.sessionID||this.sessionId),permissionID:requestID},query:{directory:this.cwd},body:{response}}).catch(()=>{});
