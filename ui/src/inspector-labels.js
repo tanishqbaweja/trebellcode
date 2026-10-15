@@ -1,4 +1,5 @@
-// Display text for the inspector's Files, Diff and Git panels: error banners, git status badges and file paths.
+// Display text for the inspector's Files, Diff and Git panels: error banners, git status badges and file paths, and the notifications
+// that change what they show.
 
 // A banner names the action that failed before the reason the server gave ("Could not open notes.txt: EPERM …"), so a bare
 // "EPERM" or "HTTP 500" never arrives without context.
@@ -83,6 +84,14 @@ export function gitUpstreamSync(header=""){
   const part=name=>Number(new RegExp("\\b"+name+" (\\d+)").exec(match[1]||"")?.[1]||0),ahead=part("ahead"),behind=part("behind"),gone=match[1]==="gone";
   const commits=(count,word)=>count+(count===1?" commit ":" commits ")+word;
   return {ahead,behind,gone,label:gone?"upstream branch is gone":ahead&&behind?ahead+" ahead, "+behind+" behind":ahead?commits(ahead,"ahead"):behind?commits(behind,"behind"):"up to date"};
+}
+
+// Whether an app-server notification changed the open thread's files: a file change streaming in or done, the turn's diff or its end.
+// One naming another thread, or any thread while none is open, did not. The Files, Diff and Git tabs read the workspace again on one.
+export function workspaceChanged(message,threadId=null){
+  const method=message?.method,params=message?.params||{};
+  const changed=method==="item/fileChange/outputDelta"||method==="item/fileChange/patchUpdated"||(method==="item/completed"&&params.item?.type==="fileChange")||method==="turn/diff/updated"||method==="turn/completed";
+  return changed&&(!params.threadId||params.threadId===threadId);
 }
 
 // One line of git status --short: its two-letter code and its path, unquoted.

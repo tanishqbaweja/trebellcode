@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useRef,useState} from "react";
 import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, Eye, EyeOff, Pencil, ShieldCheck, Layers3, LoaderCircle } from "lucide-react";
 import { api } from "../api.js";
 import { openWebLink } from "../web-link.js";
-import { actionError, actionErrorUnlessNamed, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusPath, gitUpstreamSync, pullRequestChecks } from "../inspector-labels.js";
+import { actionError, actionErrorUnlessNamed, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusPath, gitUpstreamSync, pullRequestChecks, workspaceChanged } from "../inspector-labels.js";
 import { SOURCE_CONTROL_PAGE_SIZE, sourceControlWindow } from "../source-control-window.js";
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
 import { createGitTextRequests, sourceControlContext, sourceControlContextCurrent, sourceControlErrorAfterContextChange } from "../source-control-context.js";
@@ -58,6 +58,10 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   // A failure the banner reports keeps the banner's text (`banner`), so the part does not repeat the reason while the banner shows it.
   const [reads,setReads]=useState({info:null,diagnostics:null,prs:null});
   const infoRef=useRef(info);infoRef.current=info;
+  // Reads of the repository are numbered, and an answer lands unless a later one has already landed, so a read an agent's file change
+  // started (refreshChanges) never brings an older Changes list back; an action's answer counts as landed for every read before it.
+  const infoReadsRef=useRef({started:0,landed:0});
+  function infoRead(){const read=++infoReadsRef.current.started;return ()=>{if(read<=infoReadsRef.current.landed)return false;infoReadsRef.current.landed=read;return true}}
   const [statusLimit,setStatusLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [prLimit,setPrLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
   const [fileLimit,setFileLimit]=useState(SOURCE_CONTROL_PAGE_SIZE);
@@ -102,6 +106,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     refreshFailureRef.current=null;
     const reason=error=>String(error?.message??error??"").trim()||"No reason was given.";
     const settle=(part,outcome)=>{if(stillShown(started))setReads(current=>({...current,[part]:outcome}))};
+    const lands=infoRead();
     let i;
     try{i=await api("/api/git/info?"+query({path:projectPath}))}
     catch(error){
@@ -114,7 +119,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     if(!stillShown(started))return false;
     // The repository shows as soon as it answers; Git and the code host are checked after it. The header shows it too, so a branch
     // made or switched here (Initialize Git, a switch) is named there at once instead of at the header's next read.
-    setInfo(i);settle("info",{ok:true});onGitInfo?.(i);
+    if(lands()){setInfo(i);settle("info",{ok:true});onGitInfo?.(i)}
     // The pull requests are read alongside the diagnostics and show as they answer: the diagnostics ask every code host's CLI how it
     // is (the Azure CLI alone can take seconds), while the list needs only the host chosen or, with none chosen, the one the remote
     // names, which the server reads from the remote as the diagnostics do.
@@ -149,6 +154,20 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     if(!p.capabilities&&chosen&&d?.capabilities?.[chosen])setCapabilities(d.capabilities[chosen]);
     return true;
   }
+  // An agent's file change in the thread open, or the end of its turn, reads the repository again as the Files and Diff tabs read
+  // theirs: one git status while its parts are unchanged, and the pull requests and the code host are left as they are. A read that
+  // fails keeps the last view; the next change or refresh reads again.
+  async function refreshChanges(){
+    if(!projectPath)return;
+    const started=contextRef.current,lands=infoRead();
+    try{const i=await api("/api/git/info?"+query({path:projectPath}));if(stillShown(started)&&lands()){setInfo(i);setReads(current=>({...current,info:{ok:true}}));onGitInfo?.(i)}}catch{}
+  }
+  useEffect(()=>{
+    let timer=null;
+    const changed=event=>{if(!workspaceChanged(event.detail,threadId))return;clearTimeout(timer);timer=setTimeout(refreshChanges,120)};
+    window.addEventListener("trebell:rpc-notification",changed);
+    return()=>{clearTimeout(timer);window.removeEventListener("trebell:rpc-notification",changed)};
+  },[threadId,projectPath,environmentId]);
   // An action that worked fully says nothing, unless what it did is news to the person (`notice`, as for a merge).
   function partialSuccess(label,issues=[],started=contextRef.current,notice=false){
     const details=(Array.isArray(issues)?issues:[]).map(item=>String(item||"").trim()).filter(Boolean);
@@ -186,6 +205,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     try{
       const data=await api("/api/git/action",{method:"POST",body:environmentBody({action,cwd:projectPath,...extra})});
       if(!stillShown(started))return null;
+      infoReadsRef.current.landed=infoReadsRef.current.started;
       setInfo(data.result?.info||data.result||info);await refreshAfterSuccess(gitActionSuccessLabel(action),sourceProvider,started);return data;
     }catch(e){
       // A refused action can find the repository changed under it (a pull refused over a local edit, a commit with nothing left to

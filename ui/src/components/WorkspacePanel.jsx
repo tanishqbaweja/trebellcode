@@ -2,7 +2,7 @@ import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { Check, FileCode2, FileDiff, FileImage, FileText, Folder, LoaderCircle, Music2, Paperclip, RefreshCw, Save, Search, Video, WrapText, X } from "lucide-react";
 import { api } from "../api.js";
 import { formatBytes } from "../format-bytes.js";
-import { actionError, actionErrorUnlessNamed, gitStatusBadge, gitStatusEntry } from "../inspector-labels.js";
+import { actionError, actionErrorUnlessNamed, gitStatusBadge, gitStatusEntry, workspaceChanged } from "../inspector-labels.js";
 import { changedPathPlans, fitGlyphs, glyphRuns } from "../changed-name-fit.js";
 import { highlightSyntax } from "../syntax-language.js";
 import { WORKSPACE_CHANGED_PAGE_SIZE, WORKSPACE_DIFF_CHUNK_CHARS, WORKSPACE_TREE_PAGE_SIZE, workspaceListWindow, workspaceTextWindow } from "../workspace-view-window.js";
@@ -233,12 +233,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   useEffect(()=>{
     let timer=null;
     const changed=event=>{
-      const message=event.detail||{},params=message.params||{};
-      const fileChange=message.method==="item/fileChange/outputDelta"||message.method==="item/fileChange/patchUpdated"||(message.method==="item/completed"&&params.item?.type==="fileChange");
-      const settled=message.method==="turn/diff/updated"||message.method==="turn/completed";
-      if(!fileChange&&!settled)return;
-      if(activeThreadId&&params.threadId&&params.threadId!==activeThreadId)return;
-      if(!activeThreadId&&params.threadId)return;
+      if(!workspaceChanged(event.detail,activeThreadId))return;
       if(timer)clearTimeout(timer);
       timer=setTimeout(()=>{
         refreshTree();

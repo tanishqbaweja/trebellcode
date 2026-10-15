@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionError, actionErrorUnlessNamed, asSentence, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusEntry, gitStatusPath, gitUpstreamSync, pullRequestChecks, splitPath } from "../ui/src/inspector-labels.js";
+import { actionError, actionErrorUnlessNamed, asSentence, distinctPathParts, distinctTextParts, gitStatusBadge, gitStatusEntry, gitStatusPath, gitUpstreamSync, pullRequestChecks, splitPath, workspaceChanged } from "../ui/src/inspector-labels.js";
 
 test("the branch header of git status reads as how far the branch is from its upstream",()=>{
   assert.deepEqual(gitUpstreamSync("## main...origin/main"),{ahead:0,behind:0,gone:false,label:"up to date"});
@@ -167,4 +167,25 @@ test("sibling paths lead with the segments that tell them apart",()=>{
   assert.deepEqual(distinctPathParts(["/srv/app"]),[{dir:"/srv",sep:"/",name:"app"}]);
   for(const part of distinctPathParts(["/same/path","/same/path"]))assert.equal(part.dir+part.sep+part.name,"/same/path");
   assert.deepEqual(distinctPathParts(),[]);
+});
+
+test("a file change, the turn's diff or its end changes the open thread's workspace, and nothing else does",()=>{
+  const open="thread-open";
+  for(const [message,threadId] of [
+    [{method:"item/fileChange/outputDelta",params:{threadId:open,itemId:"edit-1",delta:"+line"}},open],
+    [{method:"item/fileChange/patchUpdated",params:{threadId:open,itemId:"edit-1"}},open],
+    [{method:"item/completed",params:{threadId:open,item:{type:"fileChange",id:"edit-1"}}},open],
+    [{method:"turn/diff/updated",params:{threadId:open,diff:""}},open],
+    [{method:"turn/completed",params:{threadId:open,turn:{id:"turn-1"}}},open],
+    // A notification that names no thread is the workspace's, with a thread open or none.
+    [{method:"turn/completed",params:{}},open],[{method:"turn/diff/updated",params:{}},null],
+  ])assert.equal(workspaceChanged(message,threadId),true,JSON.stringify(message));
+  for(const [message,threadId] of [
+    [{method:"turn/completed",params:{threadId:"another-thread"}},open],
+    [{method:"item/completed",params:{threadId:open,item:{type:"fileChange"}}},null],
+    [{method:"item/completed",params:{threadId:open,item:{type:"agentMessage",id:"reply"}}},open],
+    [{method:"item/agentMessage/delta",params:{threadId:open,delta:"More text."}},open],
+    [{method:"turn/started",params:{threadId:open}},open],
+    [null,open],[{},open],
+  ])assert.equal(workspaceChanged(message,threadId),false,JSON.stringify(message));
 });
