@@ -735,6 +735,38 @@ test("a description or a comment keeps its line breaks, and a field left as it w
   expect(host.calls.find(call=>call.path==="pr").body).toMatchObject({title:"Add the scratch change",body:written});
 });
 
+test("Enter held from the PR title gives that box OK and adds no lines to the description box it opens; Enter held in the description adds one a repeat",async({page,request})=>{
+  test.setTimeout(60_000);
+  await asInDesktopApp(page);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,prs:[samplePr(11,{title:"Feature one",body:"First paragraph of the description."})]});
+  const {pulls}=await openGitPanel(page,request,"Source control held Enter");
+  const dialog=page.locator("dialog.inspector-text-prompt"),box=dialog.locator("textarea"),detail=pulls.locator(".pr-detail");
+  await pulls.getByRole("button",{name:/#11 Feature one/}).click();
+  await expect(detail.locator("h3")).toHaveText("#11 Feature one");
+  const edit=detail.getByRole("button",{name:"Edit",exact:true});
+  let body="First paragraph of the description.";
+  for(const [index,mode] of ["dark","light"].entries()){
+    if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+    const title="Feature one, pass "+(index+1);
+    await edit.click();await expect(dialog).toContainText("PR title");await page.keyboard.type(title,{delay:15});
+    // Enter gives the title box OK and opens the description box, where the key, still held, goes on repeating.
+    await page.keyboard.down("Enter");await expect(dialog).toContainText("PR description");await expect(box).toBeFocused();
+    await page.keyboard.down("Enter");await page.keyboard.down("Enter");await page.keyboard.up("Enter");
+    await expect(box).toHaveValue(body);
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+"source-control-held-enter-description-"+mode+"-"+width+"x800.png"})}
+    await page.setViewportSize({width:1280,height:800});
+    // Enter pressed and held in the box adds a line for the press and one for each repeat.
+    await page.keyboard.down("Enter");await page.keyboard.down("Enter");await page.keyboard.down("Enter");await page.keyboard.up("Enter");
+    await expect(box).toHaveValue(body+"\n\n\n");
+    await page.keyboard.type("- pass "+(index+1),{delay:15});await page.keyboard.press("Control+Enter");await expect(dialog).toHaveCount(0);
+    body+="\n\n\n- pass "+(index+1);
+    await expect.poll(()=>host.actions().length).toBe(index+1);
+    expect(host.actions()[index]).toEqual({action:"edit",number:11,title,body,cwd:boot.cwd,provider:"github",environmentId:null});
+    await expect(detail.locator("h3")).toHaveText("#11 "+title);
+  }
+});
+
 test("Publish asks public, private or cancel, and Cancel or Escape publishes nothing",async({page,request})=>{
   test.setTimeout(60_000);
   await asInDesktopApp(page);

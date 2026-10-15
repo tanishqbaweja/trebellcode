@@ -45,8 +45,14 @@ export function askText(message,defaultValue="",{multiline=false}={}){
     // The box reads Windows line ends as "\n": text left as it was comes back exactly as given, so a caller can tell it is unchanged.
     const original=String(defaultValue??"");
     form.addEventListener("submit",event=>{event.preventDefault();finish(input.value===original.replace(/\r\n?/g,"\n")?original:input.value)});
+    // What carries on from the press that opened it answers nothing, as in askChoice: the second click of a double click, and a key
+    // held down since before the box opened, whose repeats would give OK with the text unread or add a line each. A key pressed in
+    // the box repeats as usual.
+    const pressed=new Set();
+    dialog.addEventListener("keydown",event=>{if(!event.repeat)pressed.add(event.key);else if(!pressed.has(event.key)){event.preventDefault();event.stopPropagation()}},true);
+    ok.addEventListener("click",event=>{if(event.detail>1)event.preventDefault()});
     if(multiline)input.addEventListener("keydown",event=>{if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)){event.preventDefault();form.requestSubmit()}});
-    cancel.addEventListener("click",()=>finish(null));
+    cancel.addEventListener("click",event=>{if(event.detail>1)return;finish(null)});
     dialog.addEventListener("cancel",event=>{event.preventDefault();finish(null)});
     document.body.append(dialog);
     // A long text opens with the caret after it, ready to add to; one line opens selected, as window.prompt does.

@@ -145,6 +145,38 @@ test("Rename asks in the app's own dialog in the browser too, never the browser'
   }finally{await harness.close()}
 });
 
+test("Enter held on the title asks once and its repeats do not rename; Enter pressed in the question renames, and a double click's second click answers nothing",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,proxy,nativeDialogs,header}=await openHeaderApp(page);
+  const title=header.locator(".thread-title-button"),question=dialog(page),field=question.getByRole("textbox",{name:"Rename thread"});
+  const sent=[];proxy.answer=message=>{if(message.method==="thread/name/set")sent.push(message.params?.name);return undefined};
+  try{
+    let current="Release checklist";
+    for(const [mode,name] of [["dark","Ship the release"],["light","Release day"]]){
+      await switchMode(page,mode);
+      // The press that asks goes on repeating in the question, where it would give OK with the name unread.
+      await title.focus();await page.keyboard.down("Enter");await expect(field).toBeFocused();
+      await page.keyboard.down("Enter");await page.keyboard.down("Enter");await page.keyboard.up("Enter");
+      await expect(question).toHaveCount(1);await expect(field).toBeFocused();await expect(field).toHaveValue(current);
+      expect(sent).toEqual(mode==="dark"?[]:["Ship the release"]);
+      await shoot(page,"header-rename-held-enter");
+      // A press of its own in the question renames.
+      await page.keyboard.type(name,{delay:20});await page.keyboard.press("Enter");
+      await expect(question).toHaveCount(0);await expect(title).toHaveText(name);await expect(title).toBeFocused();
+      current=name;
+    }
+    expect(sent).toEqual(["Ship the release","Release day"]);
+    // The second click of a double click that lands on OK or Cancel answers nothing; a click of its own does.
+    await title.click();await expect(field).toBeFocused();
+    for(const name of ["OK","Cancel"])await question.getByRole("button",{name,exact:true}).dispatchEvent("click",{detail:2});
+    await expect(question).toHaveCount(1);await expect(field).toHaveValue("Release day");
+    await question.getByRole("button",{name:"Cancel",exact:true}).click();await expect(question).toHaveCount(0);
+    expect(sent).toEqual(["Ship the release","Release day"]);
+    expect(harness.threadStore.get(harness.threads[0].id).name).toBe("Release day");
+    expect(nativeDialogs).toEqual([]);
+  }finally{await harness.close()}
+});
+
 test("app shortcuts wait while the rename question is open, so the new name lands on the thread it was asked for",async({page})=>{
   test.setTimeout(60_000);
   const {harness,nativeDialogs,header}=await openHeaderApp(page,{replies:[{text:"Renamed and ready."}]});
