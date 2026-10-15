@@ -157,7 +157,9 @@ const SidebarVirtualChunk=memo(function SidebarVirtualChunk({chunk,rootRef,force
     const target=[...(ref.current?.querySelectorAll?.("[data-thread-id]")||[])].find(element=>String(element.dataset.threadId)===String(activeThreadId));
     target?.scrollIntoView?.({block:"nearest",behavior:"auto"});
   },[forceMount,mounted,activeThreadId,chunk.key]);
-  return <div ref={ref} className={"sidebar-virtual-chunk"+(mounted?" mounted":" placeholder")} data-sidebar-chunk={chunk.key} style={mounted?undefined:{height:placeholderHeight}}>{mounted?chunk.items.map(renderRow):null}</div>;
+  // A placeholder keeps at least its estimate, the height of its rows before they are drawn: one measured after they were drawn is
+  // shorter than the chunk mounting again, which below the view lengthens the list and leaves End that much short of the last thread.
+  return <div ref={ref} className={"sidebar-virtual-chunk"+(mounted?" mounted":" placeholder")} data-sidebar-chunk={chunk.key} style={mounted?undefined:{height:Math.max(placeholderHeight,chunk.estimatedHeight)}}>{mounted?chunk.items.map(renderRow):null}</div>;
 });
 
 const MAC_PLATFORM=typeof navigator!=="undefined"&&/Mac|iPhone|iPad/i.test(navigator.userAgentData?.platform||navigator.platform||"");

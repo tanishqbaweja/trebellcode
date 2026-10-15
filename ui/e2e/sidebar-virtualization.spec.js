@@ -8,11 +8,9 @@ function catalogThreads(count,cwd){
   }
   return meta;
 }
-
-test("thousand-thread sidebar mounts bounded rows while search and active-thread navigation stay reachable",async({page})=>{
-  test.setTimeout(30_000);
-  const cwd=process.cwd(),threadMeta=catalogThreads(1000,cwd);
-  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+// The page opened on the saved threads in threadMeta, Codex ready and nothing else to load.
+async function openCatalog(page,threadMeta,cwd){
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:true,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,cwd,platform:process.platform,version:"sidebar-virtualization-fixture"}));
   await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta}));
   await page.route(/\/api\/models$/,route=>json(route,{provider:"openai",agentRuntime:"codex",ready:true,models:["test/coding-fast"],metadata:{provider:"openai",agentRuntime:"codex",models:[{id:"test/coding-fast",name:"Coding Fast",agent:"Codex"}]}}));
@@ -22,6 +20,12 @@ test("thousand-thread sidebar mounts bounded rows while search and active-thread
     const body=route.request().postDataJSON();threadMeta[body.threadId]={...(threadMeta[body.threadId]||{}),...(body.patch||{})};return json(route,threadMeta[body.threadId]);
   });
   await page.goto("/");
+}
+
+test("thousand-thread sidebar mounts bounded rows while search and active-thread navigation stay reachable",async({page})=>{
+  test.setTimeout(30_000);
+  const cwd=process.cwd();
+  await openCatalog(page,catalogThreads(1000,cwd),cwd);
 
   const rows=page.locator(".thread-row"),chunks=page.locator("[data-sidebar-chunk]"),sections=page.locator(".thread-sections");
   await expect(chunks).toHaveCount(25);
@@ -44,4 +48,39 @@ test("thousand-thread sidebar mounts bounded rows while search and active-thread
   expect(await rows.count()).toBeLessThan(180);
 
   await page.screenshot({animations:"disabled",path:"visual-audit/thousand-thread-sidebar-dark-1280x800.png",fullPage:true});
+});
+
+test("End on the thousand-thread list shows the last thread at the bottom with one press, in dark and in light",async({page})=>{
+  test.setTimeout(60_000);
+  const cwd=process.cwd();
+  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
+  await page.setViewportSize({width:1280,height:800});
+  await openCatalog(page,catalogThreads(1000,cwd),cwd);
+  const sections=page.locator(".thread-sections"),html=page.locator("html");
+  await expect(page.locator('.thread-main[title="Thread 0000"]')).toBeVisible();
+  // Where Thread 0999 is: whole in the list's view with the list scrolled to its end, below the end, or not mounted at all.
+  const lastThread=()=>sections.evaluate(list=>{
+    const row=[...list.querySelectorAll(".thread-main")].find(node=>node.title==="Thread 0999");if(!row)return "not in the list";
+    const box=row.getBoundingClientRect(),view=list.getBoundingClientRect(),below=Math.round(box.bottom-view.bottom);
+    return below<=1&&box.top>=view.top-1&&list.scrollHeight-list.clientHeight-list.scrollTop<=1?"at the bottom":below+" px below the list's end";
+  });
+  for(const mode of ["dark","light"]){
+    // The header's theme button, as a person switches.
+    if(await html.getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").first().click();await expect(html).toHaveAttribute("data-mode",mode)}
+    // In light the wheel first goes down the whole list, a frame drawn after each turn, so every row has been drawn and measured.
+    if(mode==="light"){
+      const box=await sections.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+      for(let turn=0;turn<800&&await sections.evaluate(list=>list.scrollHeight-list.clientHeight-list.scrollTop>1);turn++){await page.mouse.wheel(0,300);await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))))}
+      await expect(page.locator('.thread-main[title="Thread 0999"]')).toBeInViewport();
+    }
+    // The list's heading clicked, Home to its top, then End once.
+    await page.locator(".thread-sections h4").first().click();
+    await page.keyboard.press("Home");await expect.poll(()=>sections.evaluate(list=>list.scrollTop)).toBe(0);
+    await page.keyboard.press("End");
+    await expect.poll(lastThread,{message:"Thread 0999 after End ("+mode+")"}).toBe("at the bottom");
+    // It stays there once the rows the scroll passed have gone back to placeholders.
+    await expect.poll(()=>page.locator("[data-sidebar-chunk].mounted").count()).toBeLessThanOrEqual(3);
+    expect(await lastThread()).toBe("at the bottom");
+    await page.screenshot({animations:"disabled",path:"visual-audit/thousand-thread-sidebar-end-"+mode+"-1280x800.png"});
+  }
 });
