@@ -1,4 +1,4 @@
-import { REPOSITORY_DISCOVERY_TOOL, REPOSITORY_INVOKE_TOOL, REPOSITORY_TOOL_DEFINITIONS, repositoryDynamicToolNamespace } from "./repository-tool-catalog.mjs";
+import { REPOSITORY_DISCOVERY_TOOL, REPOSITORY_INVOKE_TOOL, REPOSITORY_TOOL_DEFINITIONS, repositoryDynamicToolNamespace, searchRepositoryToolDefinitions } from "./repository-tool-catalog.mjs";
 import { sharedDynamicToolNamespaces, sharedToolDefinition, sharedToolNamespace } from "./shared-tool-catalog.mjs";
 
 function mergedRequirements(namespaceRequirements={},toolRequirements={}){
@@ -75,4 +75,34 @@ export function platformToolCatalog({repository=true,progressiveRepository=false
     ...namespace,
     tools:(namespace.tools||[]).map(tool=>({...tool,platform:platformToolDefinition(namespace.name,tool.name)})),
   }));
+}
+
+// The tools a session offers directly, outside trebell_repo's progressive namespace. A model sometimes asks trebell_repo/invoke or
+// trebell_repo/discover for one of them ("trebell_terminal__run", "terminal"); it is pointed at the tool instead of being told that
+// nothing matches, which reads as "this session cannot run commands".
+function directTools(namespaces=[]){
+  return (Array.isArray(namespaces)?namespaces:[]).filter(entry=>entry?.type==="namespace"&&entry.name&&entry.name!=="trebell_repo").flatMap(entry=>(Array.isArray(entry.tools)?entry.tools:[]).filter(tool=>tool?.name)
+    .map(tool=>({id:String(entry.name)+"/"+String(tool.name),namespace:String(entry.name),name:String(tool.name),text:[entry.name,tool.name,tool.description,entry.description].join(" ").toLowerCase()})));
+}
+// The exposed tool a name means, written as the provider shows it (namespace__name), with a slash or dot, or as a bare name that only
+// one namespace has; null when it names none.
+export function exposedToolNamed(namespaces=[],requested=""){
+  const raw=String(requested||"").trim();if(!raw)return null;
+  const tools=directTools(namespaces),split=raw.match(/^(.+?)(?:__|\/|\.)([^/.]+)$/);
+  const named=split&&tools.find(tool=>tool.namespace===split[1]&&tool.name===split[2]);if(named)return named.id;
+  const bare=tools.filter(tool=>tool.name===raw);return bare.length===1?bare[0].id:null;
+}
+// What trebell_repo/discover answers: the advanced repository capabilities matching the query that trebell_repo does not offer
+// already, or, when none match, the exposed tools that do.
+export function discoverRepositoryCapabilities(namespaces=[],{query="",limit=8}={}){
+  const requested=String(query||"").trim();if(!requested)throw new Error("Repository discovery query is required.");
+  const offered=(namespaces.find?.(item=>item?.name==="trebell_repo")?.tools||[]).map(item=>String(item?.name||""));
+  const capabilities=searchRepositoryToolDefinitions({query:requested,limit,exclude:offered}).map(item=>{
+    const [namespace]=repositoryDynamicToolNamespace({names:[item.name],includeDiscovery:false}),tool=namespace?.tools?.[0]||null;
+    return {name:item.name,description:item.description,inputSchema:tool?.inputSchema||{type:"object",properties:{}}};
+  });
+  if(capabilities.length)return {success:true,query:requested,capabilities,instruction:"Call trebell_repo/invoke with one returned capability name and matching arguments."};
+  const terms=requested.toLowerCase().split(/[^a-z0-9]+/).filter(term=>term.length>2);
+  const direct=terms.length?directTools(namespaces).filter(tool=>terms.some(term=>tool.text.includes(term))).slice(0,4).map(tool=>tool.id):[];
+  return {success:true,query:requested,capabilities,instruction:direct.length?"No matching advanced repository capability. These tools are already available; call them directly: "+direct.join(", ")+".":"No matching advanced repository capability."};
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { platformDynamicToolNamespaces, platformToolCatalog, platformToolDefinition, platformToolParallelSafe } from "../src/platform-tool-catalog.mjs";
+import { discoverRepositoryCapabilities, exposedToolNamed, platformDynamicToolNamespaces, platformToolCatalog, platformToolDefinition, platformToolParallelSafe } from "../src/platform-tool-catalog.mjs";
 
 test("platform tool catalog adapts repository policy without duplicating repository definitions",()=>{
   const search=platformToolDefinition("trebell_repo","search_symbols");
@@ -29,4 +29,19 @@ test("platform parallel-safety is stricter than generic async safety",()=>{
   assert.equal(platformToolParallelSafe("trebell_browser","set_viewport"),false,"shared browser state must not race structural reads");
   assert.equal(platformToolParallelSafe("trebell_workspace","write_file"),false);
   assert.equal(platformToolParallelSafe("trebell_delegate","delegate"),false,"child-agent budgeting and workspace creation stay serialized");
+});
+
+// A model looking in trebell_repo for a tool the session offers on its own ("terminal") is pointed at it, as in the app so in the
+// benchmark runner, instead of being told that nothing matches.
+test("trebell_repo/discover points a search for a tool the session offers on its own at that tool",()=>{
+  const tools=platformDynamicToolNamespaces({repository:true,progressiveRepository:true,workspaceTools:true,terminal:true});
+  const terminal=discoverRepositoryCapabilities(tools,{query:"terminal"});
+  assert.deepEqual(terminal.capabilities,[]);
+  assert.equal(terminal.instruction,"No matching advanced repository capability. These tools are already available; call them directly: trebell_terminal/run.");
+  const history=discoverRepositoryCapabilities(tools,{query:"git history"});
+  assert.ok(history.capabilities.some(item=>item.name==="git_history"));
+  assert.equal(history.instruction,"Call trebell_repo/invoke with one returned capability name and matching arguments.");
+  assert.equal(discoverRepositoryCapabilities(tools,{query:"zzzz qqqq"}).instruction,"No matching advanced repository capability.");
+  assert.throws(()=>discoverRepositoryCapabilities(tools,{query:" "}),/query is required/);
+  for(const [name,tool] of [["trebell_terminal__run","trebell_terminal/run"],["trebell_workspace.read_file","trebell_workspace/read_file"],["read_file","trebell_workspace/read_file"],["search_files",null],["git_history",null]])assert.equal(exposedToolNamed(tools,name),tool,name);
 });

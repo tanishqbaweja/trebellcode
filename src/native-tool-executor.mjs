@@ -17,7 +17,7 @@ function repositoryArguments(root,value={}){
 
 export function createNativeToolExecutor({
   contextEngine=null,root=null,io=null,knowledgeService=null,environmentId=null,
-  repository=true,discoverRepositoryTools=null,outputStore=null,mcpBroker=null,executeShared=null,confirm=null,environment=process.env,onEvent=null,policyContext={},projectAvailable=null,
+  repository=true,discoverRepositoryTools=null,directTool=null,outputStore=null,mcpBroker=null,executeShared=null,confirm=null,environment=process.env,onEvent=null,policyContext={},projectAvailable=null,
 }={}){
   const repositoryHandlers=repository&&contextEngine&&root?repositoryToolHandlers({contextEngine,root,io,knowledgeService,environmentId}):null;
   // A repository call's capability and arguments, checked against its input schema, or null for another tool. The gateway runs it before
@@ -31,6 +31,8 @@ export function createNativeToolExecutor({
     if(call.definition?.source==="repository-invoke"){
       if(!repositoryHandlers)throw new Error("Repository intelligence is unavailable without an active Context Engine workspace.");
       const requested=String(call.arguments?.name||"").trim(),definition=advancedRepositoryToolDefinition(requested);
+      // A tool the session offers on its own (directTool names it) is pointed at, so the model calls it instead of giving up on it.
+      const direct=definition?null:directTool?.(requested);if(direct)throw new Error(requested+" is not a repository capability: it is the "+direct+" tool, which is already available. Call "+direct+" directly with its own arguments.");
       if(!definition)throw new Error("Unknown or non-advanced repository capability: "+(requested||"missing")+". Valid capabilities: "+ADVANCED_REPOSITORY_TOOL_NAMES.join(", ")+".");
       const requestedArguments=repositoryArguments(root,call.arguments?.arguments||{});
       // Return the full input schema with the validation error so a wrong direct invoke self-corrects in one

@@ -10,13 +10,9 @@ import { attachNativePromptProvenance, nativeCacheCarryover } from "../../src/na
 import { nativeSystemPrompt } from "../../src/native-system-prompt.mjs";
 import { NativeToolOutputStore } from "../../src/native-tool-output-store.mjs";
 import { createNativeToolExecutor } from "../../src/native-tool-executor.mjs";
-import { platformDynamicToolNamespaces } from "../../src/platform-tool-catalog.mjs";
+import { discoverRepositoryCapabilities, exposedToolNamed, platformDynamicToolNamespaces } from "../../src/platform-tool-catalog.mjs";
 import { ProviderManager } from "../../src/provider-manager.mjs";
 import { providerTurnToResponses } from "../../src/provider-turn.mjs";
-import {
-  repositoryDynamicToolNamespace,
-  searchRepositoryToolDefinitions,
-} from "../../src/repository-tool-catalog.mjs";
 import { repositoryContextEntries } from "../../ui/src/context-provenance.js";
 import { createNativeStrategyMetrics, observeNativeStrategyEvent } from "./native-strategy-metrics.mjs";
 import { createGateSnapshotter, parseGateSnapshotArtifacts } from "./native-gate-snapshots.mjs";
@@ -93,28 +89,14 @@ const onEvent=event=>{
 };
 const backgroundProcesses=new NativeBackgroundProcessManager({environment:process.env,onEvent});
 const builtins=createNativeBuiltins({root,environment:process.env,backgroundProcesses,threadId:"trebell-harbor"});
-const discoverRepositoryTools=({query,limit=8}={})=>{
-  const exposed=(tools.find(item=>item?.name==="trebell_repo")?.tools||[]).map(item=>item.name);
-  const matches=searchRepositoryToolDefinitions({query,limit,exclude:exposed});
-  const capabilities=matches.map(item=>{
-    const [namespace]=repositoryDynamicToolNamespace({names:[item.name],includeDiscovery:false});
-    const tool=namespace?.tools?.[0]||null;
-    return {name:item.name,description:item.description,inputSchema:tool?.inputSchema||{type:"object",properties:{}}};
-  });
-  return {
-    success:true,
-    query:String(query||""),
-    capabilities,
-    instruction:capabilities.length
-      ?"Call trebell_repo/invoke with one returned capability name and matching arguments."
-      :"No matching advanced repository capability.",
-  };
-};
+// trebell_repo/discover answers as in the app (platform-tool-catalog.mjs).
+const discoverRepositoryTools=({query,limit=8}={})=>discoverRepositoryCapabilities(tools,{query,limit});
 const executor=createNativeToolExecutor({
   contextEngine,
   root,
   repository:true,
   discoverRepositoryTools,
+  directTool:requested=>exposedToolNamed(tools,requested),
   outputStore,
   environment:process.env,
   policyContext:{

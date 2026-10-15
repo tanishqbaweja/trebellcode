@@ -24,8 +24,7 @@ import { nativeSystemPrompt } from "./native-system-prompt.mjs";
 import { attachNativePromptProvenance } from "./native-request-metrics.mjs";
 import { configuredReasoningEffort } from "./model-reasoning-effort.mjs";
 import { configuredModelServiceTier } from "./model-service-tier.mjs";
-import { repositoryDynamicToolNamespace, searchRepositoryToolDefinitions } from "./repository-tool-catalog.mjs";
-import { platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
+import { discoverRepositoryCapabilities, exposedToolNamed, platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
 import { acpMcpServersForSession, claudeMcpServersForSession, nativeMcpServersForSession } from "./mcp-registry.mjs";
 import { createRemoteContextIo } from "./context-engine.mjs";
 import { repositoryEvidenceWithoutVisibleTask } from "./context-provenance.mjs";
@@ -1095,20 +1094,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform,environmentNames:runtimeManager.childEnvironmentKeys(instance),
       }):null;
       const discoverRepositoryTools=!projectless?({query,limit=8}={})=>{
-        const requested=String(query||"").trim();if(!requested)throw new Error("Repository discovery query is required.");
-        const current=tools.find(item=>item?.name==="trebell_repo"),available=new Set((current?.tools||[]).map(item=>String(item?.name||"")));
-        const matches=searchRepositoryToolDefinitions({query:requested,limit,exclude:[...available]});
-        const exposed=matches.map(item=>{
-          const [namespace]=repositoryDynamicToolNamespace({names:[item.name],includeDiscovery:false}),tool=namespace?.tools?.[0]||null;
-          return {name:item.name,description:item.description,inputSchema:tool?.inputSchema||{type:"object",properties:{}}};
-        });
-        journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"tool",name:"native.repository.discovered",status:"completed",data:{query:requested.slice(0,300),count:exposed.length,tools:exposed.map(item=>item.name)}});
-        return {success:true,query:requested,capabilities:exposed,instruction:exposed.length?"Call trebell_repo/invoke with one returned capability name and arguments matching its inputSchema. The provider-visible tool manifest remains stable.":"No matching advanced repository capability was found; use the currently exposed core repository/workspace tools."};
+        const result=discoverRepositoryCapabilities(tools,{query,limit});
+        journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"tool",name:"native.repository.discovered",status:"completed",data:{query:result.query.slice(0,300),count:result.capabilities.length,tools:result.capabilities.map(item=>item.name)}});
+        return result;
       }:null;
       const nativeSessionGrants=new Set();
       const executeTool=createNativeToolExecutor({
         contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,mcpBroker,
-        discoverRepositoryTools,outputStore,
+        discoverRepositoryTools,directTool:requested=>exposedToolNamed(tools,requested),outputStore,
         projectAvailable:!projectless,
         policyContext:()=>({
           permissionProfile:normalizePermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||effectivePermissionMode),runtime:"native",workspace:runtimeCwd,projectAvailable:!projectless,

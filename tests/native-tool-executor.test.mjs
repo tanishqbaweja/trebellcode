@@ -122,6 +122,24 @@ test("Native invoke names every valid advanced capability when the requested one
   }
 });
 
+// Live (2026-10-15): gpt-5-mini asked trebell_repo/invoke for "trebell_terminal__run", was told only which repository capabilities
+// exist, and answered that it could not run commands. A tool the session offers on its own is named instead, and nothing runs.
+test("Native invoke points a call for a tool the session offers on its own at that tool",async()=>{
+  const confirms=[],directTool=requested=>["trebell_terminal__run","trebell_terminal/run","run"].includes(requested)?"trebell_terminal/run":null;
+  const executor=createNativeToolExecutor({
+    contextEngine:{},root:"/repo",policyContext:{permissionProfile:"supervised",runtime:"native"},directTool,
+    confirm:async()=>{confirms.push(true);return true},executeShared:()=>{throw new Error("nothing runs")},
+  });
+  for(const name of ["trebell_terminal__run","trebell_terminal/run","run"]){
+    const result=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name,arguments:{command:"node",args:["-v"]}}});
+    assert.equal(result.success,false);
+    assert.equal(result.error,name+" is not a repository capability: it is the trebell_terminal/run tool, which is already available. Call trebell_terminal/run directly with its own arguments.");
+  }
+  const unknown=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_log",arguments:{}}});
+  assert.match(unknown.error,/^Unknown or non-advanced repository capability: git_log\./,"a name no tool has still lists the capabilities");
+  assert.deepEqual(confirms,[],"nothing is put to the person");
+});
+
 test("Native invoke leaves capability failures after validation unchanged",async()=>{
   const executor=createNativeToolExecutor({
     contextEngine:{gitHistory(){throw new Error("git history is unavailable in this workspace")}},root:"/repo",
