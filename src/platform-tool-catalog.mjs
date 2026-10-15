@@ -79,18 +79,19 @@ export function platformToolCatalog({repository=true,progressiveRepository=false
 
 // The tools a session offers directly, outside trebell_repo's progressive namespace. A model sometimes asks trebell_repo/invoke or
 // trebell_repo/discover for one of them ("trebell_terminal__run", "terminal"); it is pointed at the tool instead of being told that
-// nothing matches, which reads as "this session cannot run commands".
+// nothing matches, which reads as "this session cannot run commands". shown is the name the model sees: every provider path flattens
+// a namespaced tool to namespace__name (provider-turn.mjs).
 function directTools(namespaces=[]){
   return (Array.isArray(namespaces)?namespaces:[]).filter(entry=>entry?.type==="namespace"&&entry.name&&entry.name!=="trebell_repo").flatMap(entry=>(Array.isArray(entry.tools)?entry.tools:[]).filter(tool=>tool?.name)
-    .map(tool=>({id:String(entry.name)+"/"+String(tool.name),namespace:String(entry.name),name:String(tool.name),text:[entry.name,tool.name,tool.description,entry.description].join(" ").toLowerCase()})));
+    .map(tool=>({namespace:String(entry.name),name:String(tool.name),shown:String(entry.name)+"__"+String(tool.name),text:[entry.name,tool.name,tool.description,entry.description].join(" ").toLowerCase()})));
 }
-// The exposed tool a name means, written as the provider shows it (namespace__name), with a slash or dot, or as a bare name that only
-// one namespace has; null when it names none.
+// The exposed tool ({namespace, name, shown}) a name means, written as the model sees it (namespace__name), with a slash or dot, or as a
+// bare name that only one namespace has; null when it names none.
 export function exposedToolNamed(namespaces=[],requested=""){
   const raw=String(requested||"").trim();if(!raw)return null;
-  const tools=directTools(namespaces),split=raw.match(/^(.+?)(?:__|\/|\.)([^/.]+)$/);
-  const named=split&&tools.find(tool=>tool.namespace===split[1]&&tool.name===split[2]);if(named)return named.id;
-  const bare=tools.filter(tool=>tool.name===raw);return bare.length===1?bare[0].id:null;
+  const tools=directTools(namespaces),split=raw.match(/^(.+?)(?:__|\/|\.)([^/.]+)$/),found=tool=>tool?{namespace:tool.namespace,name:tool.name,shown:tool.shown}:null;
+  const named=split&&tools.find(tool=>tool.namespace===split[1]&&tool.name===split[2]);if(named)return found(named);
+  const bare=tools.filter(tool=>tool.name===raw);return bare.length===1?found(bare[0]):null;
 }
 // What trebell_repo/discover answers: the advanced repository capabilities matching the query that trebell_repo does not offer
 // already, or, when none match, the exposed tools that do.
@@ -103,6 +104,6 @@ export function discoverRepositoryCapabilities(namespaces=[],{query="",limit=8}=
   });
   if(capabilities.length)return {success:true,query:requested,capabilities,instruction:"Call trebell_repo/invoke with one returned capability name and matching arguments."};
   const terms=requested.toLowerCase().split(/[^a-z0-9]+/).filter(term=>term.length>2);
-  const direct=terms.length?directTools(namespaces).filter(tool=>terms.some(term=>tool.text.includes(term))).slice(0,4).map(tool=>tool.id):[];
-  return {success:true,query:requested,capabilities,instruction:direct.length?"No matching advanced repository capability. These tools are already available; call them directly: "+direct.join(", ")+".":"No matching advanced repository capability."};
+  const direct=terms.length?directTools(namespaces).filter(tool=>terms.some(term=>tool.text.includes(term))).slice(0,4).map(tool=>tool.shown):[];
+  return {success:true,query:requested,capabilities,instruction:direct.length?"No matching advanced repository capability. These tools are already available as tool calls of their own, not through trebell_repo/invoke: "+direct.join(", ")+".":"No matching advanced repository capability."};
 }

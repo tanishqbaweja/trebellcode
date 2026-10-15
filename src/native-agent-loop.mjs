@@ -8,6 +8,7 @@ import { coolHistoricalReadToolResults, coolVirtualizedToolContent } from "./nat
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "./openai-response-continuation.mjs";
 import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "./provider-turn.mjs";
 import { replaceTextHunks } from "./native-replace-text.mjs";
+import { exposedToolNamed } from "./platform-tool-catalog.mjs";
 
 const NATIVE_TOOL_OBSERVATION_OUTPUT=Symbol("trebell.native.tool-observation-output");
 const DIRECT_EXACT_READ_MAX_BYTES=12*1024;
@@ -226,6 +227,17 @@ function repairRepeatedTerminalCommand(call,successfulTerminalRuns=[]){
   if(commands.length!==1)return {call,repaired:false};
   const repairedArgs={...args,command:commands[0]},serialized=typeof call.arguments==="string"?JSON.stringify(repairedArgs):repairedArgs;
   return {call:{...call,arguments:serialized},repaired:true,command:commands[0],reason:"repeated_terminal_command"};
+}
+
+// trebell_repo/invoke runs advanced repository capabilities only. A model sometimes passes it a tool it was offered on its own
+// ({name:"trebell_terminal__run",arguments:{command:...}}): live (2026-10-15), gpt-5-mini did three times in one turn, then said it
+// could not run commands. The call is made as the tool it names, with the arguments meant for it, so policy and approval treat it as
+// that tool. The arguments are the nested object, or else the fields beside the name.
+function repairInvokedExposedTool(call,tools=[]){
+  if(call?.namespace!=="trebell_repo"||call?.name!=="invoke")return {call,repaired:false};
+  const args=safeArguments(call.arguments),target=exposedToolNamed(tools,args.name);if(!target)return {call,repaired:false};
+  const {name:_requested,arguments:nested,...beside}=args,inner=nested!=null?safeArguments(nested):beside;
+  return {call:{...call,namespace:target.namespace,name:target.name,arguments:typeof call.arguments==="string"?JSON.stringify(inner):inner},repaired:true,originalName:String(args.name),reason:"invoked_exposed_tool"};
 }
 
 function messageText(message){
@@ -2127,7 +2139,9 @@ export async function runNativeAgentTurn({
     const rawCalls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[],repairPairs=rawCalls.length?exposedToolPairs(requestTools):null,calls=rawCalls.map(call=>{
       const normalized=repairCorruptedToolCall(call,requestTools,repairPairs);
       if(normalized.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:String(call?.namespace||""),repairedNamespace:String(normalized.call?.namespace||""),malformedNameLength:String(normalized.originalName||"").length,name:String(normalized.call?.name||""),reason:normalized.reason||"corruption"}});
-      const repairedArgs=repairRepeatedTerminalCommand(normalized.call,successfulTerminalRuns);
+      const invoked=repairInvokedExposedTool(normalized.call,requestTools);
+      if(invoked.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:"trebell_repo",repairedNamespace:invoked.call.namespace,malformedNameLength:invoked.originalName.length,name:invoked.call.name,reason:invoked.reason}});
+      const repairedArgs=repairRepeatedTerminalCommand(invoked.call,successfulTerminalRuns);
       if(repairedArgs.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:"trebell_terminal",repairedNamespace:"trebell_terminal",malformedNameLength:0,name:"run",reason:repairedArgs.reason}});
       return repairedArgs.call;
     });

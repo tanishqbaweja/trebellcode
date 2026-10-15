@@ -32,7 +32,7 @@ export function createNativeToolExecutor({
       if(!repositoryHandlers)throw new Error("Repository intelligence is unavailable without an active Context Engine workspace.");
       const requested=String(call.arguments?.name||"").trim(),definition=advancedRepositoryToolDefinition(requested);
       // A tool the session offers on its own (directTool names it) is pointed at, so the model calls it instead of giving up on it.
-      const direct=definition?null:directTool?.(requested);if(direct)throw new Error(requested+" is not a repository capability: it is the "+direct+" tool, which is already available. Call "+direct+" directly with its own arguments.");
+      const direct=definition?null:directTool?.(requested);if(direct)throw new Error(requested+" is not a repository capability: it is a tool of its own, "+direct.shown+", which is already available. Call "+direct.shown+" itself with these arguments, not through trebell_repo/invoke.");
       if(!definition)throw new Error("Unknown or non-advanced repository capability: "+(requested||"missing")+". Valid capabilities: "+ADVANCED_REPOSITORY_TOOL_NAMES.join(", ")+".");
       const requestedArguments=repositoryArguments(root,call.arguments?.arguments||{});
       // Return the full input schema with the validation error so a wrong direct invoke self-corrects in one

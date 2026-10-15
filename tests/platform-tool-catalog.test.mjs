@@ -37,11 +37,12 @@ test("trebell_repo/discover points a search for a tool the session offers on its
   const tools=platformDynamicToolNamespaces({repository:true,progressiveRepository:true,workspaceTools:true,terminal:true});
   const terminal=discoverRepositoryCapabilities(tools,{query:"terminal"});
   assert.deepEqual(terminal.capabilities,[]);
-  assert.equal(terminal.instruction,"No matching advanced repository capability. These tools are already available; call them directly: trebell_terminal/run.");
+  assert.equal(terminal.instruction,"No matching advanced repository capability. These tools are already available as tool calls of their own, not through trebell_repo/invoke: trebell_terminal__run.");
   const history=discoverRepositoryCapabilities(tools,{query:"git history"});
   assert.ok(history.capabilities.some(item=>item.name==="git_history"));
   assert.equal(history.instruction,"Call trebell_repo/invoke with one returned capability name and matching arguments.");
   assert.equal(discoverRepositoryCapabilities(tools,{query:"zzzz qqqq"}).instruction,"No matching advanced repository capability.");
   assert.throws(()=>discoverRepositoryCapabilities(tools,{query:" "}),/query is required/);
-  for(const [name,tool] of [["trebell_terminal__run","trebell_terminal/run"],["trebell_workspace.read_file","trebell_workspace/read_file"],["read_file","trebell_workspace/read_file"],["search_files",null],["git_history",null]])assert.equal(exposedToolNamed(tools,name),tool,name);
+  const terminalRun={namespace:"trebell_terminal",name:"run",shown:"trebell_terminal__run"},readFile={namespace:"trebell_workspace",name:"read_file",shown:"trebell_workspace__read_file"};
+  for(const [name,tool] of [["trebell_terminal__run",terminalRun],["trebell_terminal/run",terminalRun],["trebell_workspace.read_file",readFile],["read_file",readFile],["search_files",null],["git_history",null]])assert.deepEqual(exposedToolNamed(tools,name),tool,name);
 });

@@ -7079,6 +7079,35 @@ test("native answers a request for a change at once when the profile refuses eve
   assert.ok(allowed.providerCalls>1&&allowed.events.includes("native.completion.self_admitted_gap"),"the same answer is challenged where changes are allowed");
 });
 
+test("native makes a trebell_repo/invoke call that names a tool offered on its own as that tool, so it runs and is approved as that tool",async()=>{
+  const executed=[],repaired=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run the command node -v and tell me its output."}],maxModelTurns:4,maxToolCalls:6,
+    onEvent:event=>{if(event.name==="native.tool.call_repaired")repaired.push(event.data)},
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"discover"},{name:"invoke"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[
+        {id:"nested",namespace:"trebell_repo",name:"invoke",arguments:JSON.stringify({name:"trebell_terminal__run",arguments:{command:"node",args:["-v"]}})},
+        {id:"beside",namespace:"trebell_repo",name:"invoke",arguments:{name:"trebell_terminal/run",command:"node",args:["--version"]}},
+        {id:"capability",namespace:"trebell_repo",name:"invoke",arguments:{name:"git_history",arguments:{limit:1}}},
+      ],usage:{}};
+      return {text:"node -v printed v24.7.0.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      executed.push({id:call.id,tool:call.namespace+"/"+call.name,arguments:typeof call.arguments==="string"?JSON.parse(call.arguments):call.arguments});
+      return call.namespace==="trebell_terminal"?{exitCode:0,stdout:"v24.7.0"}:{success:true,data:[]};
+    },
+  });
+  assert.equal(result.text,"node -v printed v24.7.0.");
+  assert.deepEqual(executed,[
+    {id:"nested",tool:"trebell_terminal/run",arguments:{command:"node",args:["-v"]}},
+    {id:"beside",tool:"trebell_terminal/run",arguments:{command:"node",args:["--version"]}},
+    {id:"capability",tool:"trebell_repo/invoke",arguments:{name:"git_history",arguments:{limit:1}}},
+  ]);
+  assert.deepEqual(repaired.map(data=>[data.repairedNamespace,data.name,data.reason]),[["trebell_terminal","run","invoked_exposed_tool"],["trebell_terminal","run","invoked_exposed_tool"]]);
+});
+
 test("native pre-edit blocker challenge is one-shot when exact reconstruction remains impossible",async()=>{
   let providerCalls=0;const events=[];
   const result=await runNativeAgentTurn({
