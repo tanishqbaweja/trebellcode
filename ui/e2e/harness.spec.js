@@ -2,6 +2,17 @@ import { test, expect } from "@playwright/test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { e2eHome } from "./test-home.js";
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+// Saves the page in visual-audit in dark and light, switched with the header's theme button as a person switches it.
+async function shootBothModes(page,name){
+  for(const mode of ["dark","light"]){
+    if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+".png",fullPage:true});
+  }
+}
 
 // The mock server keeps its state for the whole run: put back what the first test adds (the SSH environment, its project and its
 // defaults, the published and the custom theme, slower panels, the project's icon), so the specs after this one start as they expect.
@@ -36,7 +47,7 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await writeFile(join(publishedThemes,"e2e-published.json"),JSON.stringify({name:"E2E Published",appearance:"dark",canvas:"#111827",accent:"#35c98b"}));
   await page.addInitScript(()=>{
     const snapshot={url:"http://fixture.local",title:"Preview fixture",text:"Checkout",elements:[{ref:"e7",tag:"button",text:"Submit order",href:""}]};
-    window.__trebellZoomFactor=1;
+    window.__trebellZoomFactor=1;window.__previewZoomKeys=[];
     window.__updateState={supported:true,status:"available",currentVersion:"1.2.0",availableVersion:"1.3.0",percent:null,error:null};
     window.__updateListeners=[];window.__updateInstalled=false;
     const publishUpdate=patch=>{window.__updateState={...window.__updateState,...patch};for(const listener of window.__updateListeners)listener(window.__updateState);return window.__updateState};
@@ -45,6 +56,7 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
         get:async()=>({factor:window.__trebellZoomFactor}),
         set:async factor=>({factor:window.__trebellZoomFactor=Number(factor)}),
         reset:async()=>({factor:window.__trebellZoomFactor=1}),
+        previewKeys:open=>{window.__previewZoomKeys.push(Boolean(open))},
       },
       updates:{
         get:async()=>window.__updateState,
@@ -252,9 +264,21 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await expect(page.getByTestId("right-panel")).toBeVisible();
   const previewUrl=page.locator(".preview-bar input");
   await expect(previewUrl).toHaveAttribute("title","Preview zoom 100%");
-  await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"=",ctrlKey:true,bubbles:true,cancelable:true})));
+  // The open preview tells the desktop shell its zoom keys are the page's (desktop/main.mjs leaves them to it), and Ctrl+= and
+  // Ctrl+0 zoom the preview, not the window.
+  await expect.poll(()=>page.evaluate(()=>window.__previewZoomKeys.at(-1))).toBe(true);
+  await page.keyboard.press("Control+Equal");
   await expect(previewUrl).toHaveAttribute("title","Preview zoom 110%");
-  await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"0",ctrlKey:true,bubbles:true,cancelable:true})));
+  await page.keyboard.press("Control+Digit0");
+  await expect(previewUrl).toHaveAttribute("title","Preview zoom 100%");
+  expect(await page.evaluate(()=>window.__trebellZoomFactor)).toBe(1);
+  // With the palette open the preview's binding does not apply: the keys zoom the window, as they do away from the preview.
+  await page.keyboard.press("Control+k");await expect(page.getByTestId("command-palette")).toBeVisible();
+  await page.keyboard.press("Control+Equal");
+  await expect.poll(()=>page.evaluate(()=>window.__trebellZoomFactor)).toBeCloseTo(1.1,5);
+  await page.keyboard.press("Control+Digit0");
+  await expect.poll(()=>page.evaluate(()=>window.__trebellZoomFactor)).toBe(1);
+  await page.keyboard.press("Escape");await expect(page.getByTestId("command-palette")).toHaveCount(0);
   await expect(previewUrl).toHaveAttribute("title","Preview zoom 100%");
   await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"l",ctrlKey:true,bubbles:true,cancelable:true})));
   await expect.poll(()=>page.evaluate(()=>document.activeElement?.matches?.(".preview-bar input"))).toBe(true);
@@ -437,7 +461,7 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await expectModelCatalog(page,["test/coding-fast","test/coding-large"]);
   await expect(page.locator(".sidebar-provider")).toContainText("OpenAI API inference");
 
-  await page.screenshot({animations:"disabled",path:"test-results/trebell-code-ui.png",fullPage:true});
+  await shootBothModes(page,"trebell-code-ui");
 });
 
 test("onboarding can import matching local conversation history",async({page,request})=>{

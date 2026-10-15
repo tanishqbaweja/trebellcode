@@ -108,6 +108,31 @@ test("the desktop shell keeps its window and bridge to the app, and its notifica
       assert.deepEqual(await app.evaluate(()=>globalThis.__windowCalls),["show","focus"]);
     });
 
+    // The preview's zoom keys are the window's: the shell zooms the window with them, unless the page says its preview is open,
+    // when they go to the page (which zooms the preview). The page's own shortcut handling is held off here (the keys are recorded
+    // and stopped before it), so only the shell's part is measured.
+    await t.test("Ctrl+= and Ctrl+0 zoom the window, and go to the page while it says its preview is open",async()=>{
+      // Each key goes in through the window's input, as a key pressed there does (a key event made up in the page never reaches the shell).
+      const press=code=>app.evaluate(({BrowserWindow},{origin,code})=>{const main=BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&item.webContents.getURL().startsWith(origin));for(const type of ["keyDown","keyUp"])main.webContents.sendInputEvent({type,keyCode:code,modifiers:["control"]})},{origin,code});
+      const zoom=async()=>Math.round(await app.evaluate(({BrowserWindow},origin)=>BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&item.webContents.getURL().startsWith(origin)).webContents.getZoomFactor(),origin)*100);
+      await window.evaluate(()=>{window.__zoomKeys=[];window.addEventListener("keydown",event=>{if(event.ctrlKey&&["=","0"].includes(event.key)){window.__zoomKeys.push(event.key);event.stopImmediatePropagation()}},true)});
+      await window.evaluate(()=>window.trebellDesktop.zoom.reset());
+      await window.evaluate(()=>window.trebellDesktop.zoom.previewKeys(false));await sleep(200);
+      await press("=");await sleep(300);
+      assert.equal(await zoom(),110,"Ctrl+= zooms the window in");
+      await press("0");await sleep(300);
+      assert.equal(await zoom(),100,"Ctrl+0 resets it");
+      assert.deepEqual(await window.evaluate(()=>window.__zoomKeys),[],"the shell keeps the keys from the page");
+      await window.evaluate(()=>window.trebellDesktop.zoom.previewKeys(true));await sleep(200);
+      await press("=");await press("0");await sleep(300);
+      assert.equal(await zoom(),100,"the window keeps its zoom while the preview is open");
+      assert.deepEqual(await window.evaluate(()=>window.__zoomKeys),["=","0"],"the page gets the keys");
+      await window.evaluate(()=>window.trebellDesktop.zoom.previewKeys(false));await sleep(200);
+      await press("=");await sleep(300);
+      assert.equal(await zoom(),110,"closed again, the shell zooms the window");
+      await window.evaluate(()=>window.trebellDesktop.zoom.reset());
+    });
+
     // Last: it runs the shutdown cleanup. Both quits are recorded instead of performed, and each before-quit listener gets a
     // stand-in event.
     await t.test("the tray's Quit runs the shutdown cleanup and then quits",async()=>{

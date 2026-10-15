@@ -36,6 +36,9 @@ let updaterController=null;
 const MIN_ZOOM_FACTOR=0.7;
 const MAX_ZOOM_FACTOR=2.5;
 const ZOOM_STEP=0.1;
+// The preview's zoom keys are the window's (Ctrl+=, Ctrl+- and Ctrl+0): while the page says its preview is open they go to the page,
+// which zooms the preview, or the window where the preview's binding does not apply. A page load starts without the preview.
+let previewZoomKeys=false;
 
 function liveWindowWebContents(win){
   try{
@@ -89,9 +92,11 @@ function setMainZoomFactor(value,{persist=true}={}){
 
 function installMainZoomControls(win){
   const wc=win.webContents;
+  wc.on("did-navigate",()=>{previewZoomKeys=false});
   wc.on("before-input-event",(event,input)=>{
     if(input.type!=="keyDown"||(!input.control&&!input.meta)) return;
     const key=String(input.key||"").toLowerCase();
+    if(previewZoomKeys&&(key==="0"||key==="+"||key==="="||key==="-")) return;
     if(key==="0"){
       event.preventDefault();
       setMainZoomFactor(1);
@@ -916,6 +921,7 @@ if(!lock){
   handle("desktop:zoom:get",()=>({factor:windowRef?.webContents?.getZoomFactor?.()||1}));
   handle("desktop:zoom:set",(_event,value)=>({factor:setMainZoomFactor(value)}));
   handle("desktop:zoom:reset",()=>({factor:setMainZoomFactor(1)}));
+  listen("desktop:zoom:preview-keys",(_event,open)=>{previewZoomKeys=Boolean(open)});
   handle("browser:importCookies",async(_event,payload)=>importBrowserCookies(payload));
   handle("browser:importSources",async()=>browserImportSources());
   handle("browser:importProfile",async(_event,payload)=>importBrowserProfile(payload||{}));

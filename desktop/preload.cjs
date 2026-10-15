@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
     get: () => ipcRenderer.invoke("desktop:zoom:get"),
     set: (factor) => ipcRenderer.invoke("desktop:zoom:set", factor),
     reset: () => ipcRenderer.invoke("desktop:zoom:reset"),
+    previewKeys: (open) => ipcRenderer.send("desktop:zoom:preview-keys", Boolean(open)),
   },
   background: {
     get: () => ipcRenderer.invoke("desktop:background:get"),

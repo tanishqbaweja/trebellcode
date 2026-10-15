@@ -623,6 +623,54 @@ for(const [width,height] of [[1180,800],[1280,800]])for(const mode of ["dark","l
   }finally{await harness.close()}
 });
 
+// A project action that runs while the header has folded it away keeps its Stop in reach: More actions holds a Stop item for it,
+// beside the action's own item (which says it is running and shows its terminal), as the row does with its Stop button.
+test("a running project action folded into More actions is stopped from there, where its Stop sits beside it",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,project,header,more,menu}=await openHeaderFixture(page,{width:1180,running:false});
+  const script=project.scripts[0],runs=[],sockets=new Set();
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  const session=run=>({id:run.id,name:script.name,cwd:project.path,environmentId:null,environmentName:"Local machine",environmentType:"local",cols:120,rows:32,running:run.running,exitCode:run.running?null:1,createdAt:Date.now(),updatedAt:Date.now(),buffer:""});
+  try{
+    // The server's side of a run: it answers with the terminal it started, which runs until Stop.
+    await page.route(/\/api\/project-script\/run$/,route=>{const run={id:"folded-run-"+(runs.length+1),running:true};runs.push(run);return json(route,{ok:true,script,session:session(run),previewUrl:null})});
+    await page.route(/\/api\/project-script\/stop$/,route=>{
+      const run=runs.find(item=>item.running);
+      if(run){run.running=false;for(const ws of sockets)ws.send(JSON.stringify({type:"exit",exitCode:1,signal:null}))}
+      return json(route,{ok:true,session:run?session(run):null});
+    });
+    await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>route.request().method()==="GET"?json(route,{sessions:runs.map(session)}):route.fallback());
+    await page.route(/\/api\/project-script\/runs(?:\?.*)?$/,route=>json(route,{runs:{}}));
+    await page.routeWebSocket(/\/api\/terminal\/ws\?/,ws=>{
+      const url=new URL(ws.url()),run=runs.find(item=>item.id===url.searchParams.get("session"));sockets.add(ws);ws.onClose(()=>sockets.delete(ws));
+      if(url.searchParams.get("watch")==="1"){ws.send(JSON.stringify({type:"state",running:Boolean(run?.running),exitCode:null}));return}
+      ws.send(JSON.stringify({type:"snapshot",session:{...(run?session(run):{}),buffer:"DEV SERVER READY\r\n"}}));
+    });
+    // The window narrows until the header folds the action into More actions.
+    const control=header.locator(".workspace-header-actions>.script-control");
+    let width=1180;
+    while(width>760&&await control.getAttribute("data-folded")==null){width-=40;await page.setViewportSize({width,height:800});await settle(page)}
+    await expect(control).toHaveAttribute("data-folded",/.*/);
+    const runItem=menu.getByRole("button",{name:new RegExp("^"+script.name)}),stopItem=menu.getByRole("button",{name:"Stop "+script.name});
+    await more.click();await expect(stopItem).toHaveCount(0);await runItem.click();
+    await expect(control).toHaveAttribute("data-running","true");
+    await expect(header.getByRole("button",{name:"Stop "+script.name,exact:true})).toBeHidden();
+    for(const mode of ["dark","light"]){
+      if(await page.locator("html").getAttribute("data-mode")!==mode){await more.click();await menu.getByRole("button",{name:/^Switch to (light|dark) mode$/}).click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+      await more.click();
+      await expect(runItem).toContainText("Running");await expect(runItem).toHaveAttribute("title",script.name+" is running · Show its terminal");
+      await expect(stopItem).toBeVisible();
+      await page.screenshot({path:join(shotsDir,"header-overflow-action-stop-"+mode+"-"+width+"x800.png"),animations:"disabled"});
+      await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    }
+    await more.click();await stopItem.click();
+    await expect(control).not.toHaveAttribute("data-running","true");
+    expect(runs.map(run=>run.running)).toEqual([false]);
+    // Stopped, the menu offers the action again and no Stop.
+    await more.click();await expect(stopItem).toHaveCount(0);await expect(runItem).toBeVisible();await expect(runItem).not.toContainText("Running");
+  }finally{await harness.close()}
+});
+
 // A turn's Stop button is one more control in the row. At 1280x800 with the 520px inspector the idle header has room for every
 // action, so when a turn starts the row folds only what Stop displaces (an action or two, the actions still in the row stay put),
 // and the turn ending gives them back. Before, the last fit level folded every action at once, so each turn moved six actions

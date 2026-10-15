@@ -218,7 +218,6 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .command-palette-error{b
 .terminal-drawer-head>span{display:flex;align-items:center;gap:6px}
 .terminal-drawer-head button{width:27px;height:27px;border:0;background:transparent;color:#747a82;border-radius:5px}
 .terminal-drawer-head button:hover{background:#1a1c1f;color:#d2d5d8}
-.terminal-head-spacer{display:none!important}
 .terminal-drawer .real-terminal{height:100%;min-height:0}
 .terminal-drawer .terminal-tabs{border-radius:0;border:0;border-bottom:1px solid #1e2125;background:#0d0f11}
 .terminal-drawer .terminal-screen{border-radius:0;border:0;background:#090a0c}

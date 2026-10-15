@@ -1,4 +1,15 @@
 import { test, expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+// Saves the page in visual-audit in dark and light, switched with the header's theme button as a person switches it.
+async function shootBothModes(page,name){
+  for(const mode of ["dark","light"]){
+    if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+    await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+".png",fullPage:true});
+  }
+}
 
 test("Trebell Native exposes and persists OpenAI Fast independently from Max thinking",async({page,request})=>{
   await request.post("/api/settings",{data:{
@@ -37,5 +48,5 @@ test("Trebell Native exposes and persists OpenAI Fast independently from Max thi
   }).toBe("fast");
   await expect(thinking).toHaveValue("max");
   await expect(modelPicker).toContainText("GPT-6 Luna");
-  await page.screenshot({animations:"disabled",path:"test-results/native-fast-tier.png",fullPage:true});
+  await shootBothModes(page,"native-fast-tier");
 });

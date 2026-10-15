@@ -1506,6 +1506,17 @@ export default function App(){
   // pick in them does nothing.
   function leavingThread(){return Boolean(openingThreadRef.current)&&openingThreadRef.current!==String(activeThreadRef.current?.id||"")}
 
+  // With the preview open the desktop shell leaves Ctrl+=, Ctrl+- and Ctrl+0 to the page (desktop/main.mjs), for the preview's zoom
+  // keys. Where the preview's binding does not apply (a question open, the terminal focused), they zoom the window, as elsewhere.
+  const previewZoomKeys=Boolean(rightPanelOpen&&rightPanelTab==="preview");
+  useEffect(()=>{window.trebellDesktop?.zoom?.previewKeys?.(previewZoomKeys)},[previewZoomKeys]);
+  function desktopWindowZoomKey(event){
+    const zoom=window.trebellDesktop?.zoom;if(!zoom||(!event.ctrlKey&&!event.metaKey)||event.altKey)return;
+    const key=String(event.key||"").toLowerCase(),step=key==="+"||key==="="?0.1:key==="-"?-0.1:key==="0"?0:null;if(step==null)return;
+    event.preventDefault();
+    (step===0?zoom.reset():zoom.get().then(result=>zoom.set((Number(result?.factor)||1)+step))).catch(error=>showActionError(error,"Could not change desktop zoom"));
+  }
+
   useEffect(()=>{
     if(!window.trebellDesktop?.zoom)return;
     let disposed=false;
@@ -2585,7 +2596,7 @@ export default function App(){
         desktop:Boolean(window.trebellDesktop),
       };
       const command=resolveKeybinding(event,settings,context,{scripts:projectlessMode?[]:currentProject?.scripts||[]});
-      if(!command)return;
+      if(!command){desktopWindowZoomKey(event);return}
       event.preventDefault();
       if(command==="newChat")runUserAction(newChat,"Could not start a new thread");
       // The palette's key opens and closes it over anything but one of the app's own questions: the question stays on top, so the
@@ -5491,7 +5502,9 @@ export default function App(){
               <HeaderOverflowMenu items={[
                 gitInfo?.isGit&&projectControlsShown&&{id:"source",fold:"source",Icon:GitBranch,label:"Source control",detail:gitInfo.branch||"detached",onSelect:()=>openRightPanel("source")},
                 headerOpenInShown&&projectControlsShown&&{id:"open-in",fold:"open-in",render:close=><OpenInControl openIn={headerOpenIn} onOpen={()=>{close();openProjectFromMenu()}}/>},
-                headerScript&&projectControlsShown&&{id:"script",fold:"script",Icon:Play,label:headerScript.name,title:headerScript.command,onSelect:runHeaderScript},
+                headerScript&&projectControlsShown&&{id:"script",fold:"script",Icon:Play,label:headerScript.name,detail:headerRunning?"Running":undefined,title:headerRunning?headerScript.name+" is running · Show its terminal":headerScript.command,onSelect:runHeaderScript},
+                // The row folds its Stop with the action button, so the menu holds it too while the action runs.
+                headerScript&&projectControlsShown&&headerRunning&&{id:"script-stop",fold:"script",Icon:CircleStop,label:"Stop "+headerScript.name,onSelect:()=>runUserAction(stopHeaderScript,"Could not stop the project action")},
                 activeThread?.id&&!openingShown&&gitInfo?.isGit&&{id:"review",fold:"review",Icon:ShieldCheck,label:"Review",title:reviewHint,disabled:running,onSelect:reviewFromHeader},
                 {id:"terminal",fold:"terminal",Icon:PanelBottom,label:"Terminal",pressed:panel==="terminal",onSelect:toggleTerminalPanel},
                 activeThread?.id&&!openingShown&&{id:"goal",fold:"goal",Icon:Target,label:"Thread goal",title:goal?.objective||"Set thread goal",pressed:rightPanelOpen&&rightPanelTab==="goal",onSelect:()=>openRightPanel("goal")},
@@ -5527,7 +5540,7 @@ export default function App(){
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" {...layoutSeparatorProps("terminal")} onPointerDown={event=>beginLayoutResize("terminal",event)}/>
-            <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
+            <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
             <DeferredSurface label="Loading terminal…" compact><TerminalPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} onAttachExcerpt={attachExcerpt}/></DeferredSurface>
           </div>}
         </div>}
