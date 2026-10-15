@@ -1064,14 +1064,16 @@ test("command palette refresh failures preserve the last valid project catalog",
 test("thread message search reports degraded reads and retries without caching failure",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"thread-search-retry",name:"Hidden message thread",preview:"No title match here",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
-  let itemReads=0;
+  // The thread's item reads fail until the test has seen the failure reported, then succeed. A search runs again whenever what it
+  // searches changes (startup data landing after the typing, on a busy machine), so the failure is not tied to the first read.
+  let itemReads=0,failReads=true;
   const harness=await startCodexRequestHarness(thread,{onRequest:(message,ws)=>{
     if(message.method==="thread/search"){
       ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate native thread search failure"}}));return true;
     }
     if(message.method==="thread/items/list"){
       itemReads++;
-      if(itemReads===1)ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate thread item read failure"}}));
+      if(failReads)ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate thread item read failure"}}));
       else ws.send(JSON.stringify({id:message.id,result:{data:[{type:"userMessage",text:"The retryable needle lives in this message."}],nextCursor:null}}));
       return true;
     }
@@ -1088,14 +1090,16 @@ test("thread message search reports degraded reads and retries without caching f
     await expect(searchError).toContainText("Full thread search unavailable: Deliberate native thread search failure");
     await expect(searchError).toContainText("1 loaded thread could not be searched: Deliberate thread item read failure");
     await expect(page.locator(".sidebar-empty")).toContainText("No matching threads.");
-    expect(itemReads).toBe(1);
+    const failedReads=itemReads;expect(failedReads).toBeGreaterThanOrEqual(1);
     await page.setViewportSize({width:1280,height:800});
     await page.screenshot({animations:"disabled",path:auditDir+"thread-search-degraded-error-1280x800.png",fullPage:true});
 
+    // The reads recover. The failed read was not cached, so the next search reads the thread again and finds the message.
+    failReads=false;
     await search.fill("");
     await expect(page.locator(".sidebar-action-error")).toHaveCount(0);
     await search.fill("needle");
-    await expect.poll(()=>itemReads).toBe(2);
+    await expect.poll(()=>itemReads).toBeGreaterThan(failedReads);
     await expect(page.locator(".thread-row .thread-main").filter({hasText:"Hidden message thread"})).toBeVisible();
     await expect(searchError).toContainText("Full thread search unavailable: Deliberate native thread search failure");
     await expect(searchError).not.toContainText("thread item read failure");
