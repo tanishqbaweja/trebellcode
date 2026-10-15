@@ -362,7 +362,7 @@ test("the Stop shortcut pressed before and after Codex names the turn sends one 
 // composer keeps only the draft typed there, in Trebell's own queue (a project thread's) as in Codex's (a General chat's). Codex
 // sends the stopped turn's turn/completed before it answers the interrupt. Trebell's queue goes on once the thread runs a turn
 // again: the draft, sent, runs first, and the first follow-up starts when it ends. A Stop while that follow-up is on its way, before
-// its turn exists, leaves it queued as it was too, and Send now still sends it.
+// its turn exists, leaves it queued as it was too, with a follow-up queued meanwhile, and Send now still sends it.
 for(const kind of ["Trebell","Codex"]){
   test(`Stop with follow-ups in ${kind}'s queue starts none of them and leaves them queued, and the composer keeps only the draft`,async({page})=>{
     test.setTimeout(90_000);
@@ -392,14 +392,16 @@ for(const kind of ["Trebell","Codex"]){
         await expect(page.locator(".user-bubble").filter({hasText:"My unsent draft"})).toBeVisible();
         const alphaSent=page.locator(".user-bubble").filter({hasText:"Queued alpha"});
         await expect(alphaSent).toBeVisible({timeout:10_000});
+        // A follow-up queued while the first one is on its way stays queued with the others.
+        await sendTyped(page,"Queued gamma");await expect(page.locator(".queued-message").filter({hasText:"Queued gamma"})).toHaveCount(1);
         await stop(page).click();context.open();
         await expect(alphaSent).toHaveCount(0);await expect(stop(page)).toHaveCount(0);await expect(stopping(page)).toHaveCount(0);
         await page.waitForTimeout(800);
         expect(codex.turns).toHaveLength(2);
-        await expect(page.locator(".queued-message p")).toHaveText(["Queued alpha","Queued beta"]);await expect(composer(page)).toHaveValue("");
+        await expect(page.locator(".queued-message p")).toHaveText(["Queued alpha","Queued beta","Queued gamma"]);await expect(composer(page)).toHaveValue("");
         await page.locator(".queued-message").filter({hasText:"Queued alpha"}).getByRole("button",{name:"Send now"}).click();
         await expect.poll(()=>codex.turns.length).toBe(3);codex.turns[2].answer();
-        await expect(alphaSent).toBeVisible();await expect(page.locator(".queued-message p")).toHaveText(["Queued beta"]);
+        await expect(alphaSent).toBeVisible();await expect(page.locator(".queued-message p")).toHaveText(["Queued beta","Queued gamma"]);
       }
     }finally{await codex.close()}
   });

@@ -2701,12 +2701,14 @@ export default function App(){
         const remaining=dispatching.filter(item=>item.id!==next.id);
         if(threadId)await persistLocalQueue(threadId,remaining);else setQueued(remaining);
       }catch(error){
-        // Stop ended it before its turn existed: it stays queued as it was, and the queue waits (stop()).
-        const stopped=error?.trebellSendStopped,failed=dispatching.map(item=>item.id===next.id?{...item,dispatchingAt:null,autoStartFailed:!stopped}:item);
+        // Stop ended it before its turn existed: the queue is left as it is, this follow-up first, held (stop()). Writing it back from
+        // this send's copy would drop a follow-up queued meanwhile; after a reload its dispatch mark asks for a retry.
+        if(error?.trebellSendStopped){setEvents([]);return}
+        const failed=dispatching.map(item=>item.id===next.id?{...item,dispatchingAt:null,autoStartFailed:true}:item);
         try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}
         // As a send that fails: no turn exists to show it on, so why goes beside the composer, under the queue that keeps the
         // follow-up, never onto the last turn's card (a worktree that could not be set up says why in its own card).
-        setEvents([]);if(!stopped&&!(error&&typeof error==="object"&&WORKTREE_CARD_ERRORS.has(error)))setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error?.message||String(error)||"the harness refused the turn")});
+        setEvents([]);if(!(error&&typeof error==="object"&&WORKTREE_CARD_ERRORS.has(error)))setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error?.message||String(error)||"the harness refused the turn")});
       }finally{localQueueStartRef.current=null}
     })();
   },[running,queued,queueMode,runtimeCapabilities.nativeQueue,queuedEditId,stoppingThreadId]);
@@ -4163,8 +4165,9 @@ export default function App(){
       await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips));
       const remaining=dispatching.filter(q=>q.id!==item.id);if(threadId)await persistLocalQueue(threadId,remaining);else setQueued(remaining);
     }catch(error){
-      // Stop ended it before its turn existed: it stays queued as it was (stop()).
-      const stopped=error?.trebellSendStopped,failed=dispatching.map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:!stopped}:q);try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}if(!stopped)throw error;
+      // Stop ended it before its turn existed: it stays in its place in the queue, which is left as it is, as when the queue starts it.
+      if(error?.trebellSendStopped)return;
+      const failed=dispatching.map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:true}:q);try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}throw error;
     }
   }
   // A queued follow-up is edited in the composer and stays queued as it was until the edit is saved (dispatchSend) or Escape ends it
