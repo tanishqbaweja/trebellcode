@@ -454,7 +454,9 @@ test("after the terminal worker dies its terminal shows it stopped, and New open
     await expect(pane.getByRole("button",{name:"Send",exact:true})).toBeDisabled();
     await shots(page,"terminal-worker-died");
     await drawer.getByRole("button",{name:"New",exact:true}).click();
-    await expect(drawer.locator(".terminal-tab")).toHaveCount(2);
+    // Its tab shows once a new worker has started (Node, node-pty, a console host), which gets the 20 s the first terminal's start
+    // gets: on a loaded host the 5 s default can run out while the terminal is on its way.
+    await expect(drawer.locator(".terminal-tab")).toHaveCount(2,{timeout:20_000});
     const next=drawer.locator(".terminal-pane.active");
     await expect(next.locator(".terminal-screen")).toHaveText(PROMPT,{timeout:20_000});
     await next.locator(".terminal-command-line input").click();
