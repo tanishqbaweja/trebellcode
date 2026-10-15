@@ -391,6 +391,9 @@ for(const kind of ["native","local"]){
       await beta.getByRole("button",{name:"Edit",exact:true}).click();
       await expect(composer(page)).toHaveValue("Queued beta");await expect(beta).toContainText("editing · your draft returns after");await expect(page.locator(".queued-message")).toHaveCount(2);
       await expect(page.locator(".composer-hints")).toHaveText("Save editEnter · CancelEsc");
+      // Its Send now waits for the edit, so it never sends the queued text the composer is changing.
+      await expect(beta.getByRole("button",{name:"Send now"})).toBeDisabled();
+      await expect(beta.getByRole("button",{name:"Send now"})).toHaveAttribute("title","Save the edit with Enter, or press Escape, before sending it");
       if(kind==="native")await shoot(page,"queue-edit-with-draft");
       // Saved, the edit replaces the queued message in its place, and the draft is back in the composer.
       await composer(page).click();await page.keyboard.press("End");await page.keyboard.type(" (edited)",{delay:8});await page.keyboard.press("Enter");

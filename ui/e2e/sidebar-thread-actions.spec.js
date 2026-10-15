@@ -346,3 +346,24 @@ test("Delete asks in the app's own dialog, never the browser's: Escape and Cance
     expect(nativeDialogs).toEqual([]);
   }finally{await harness.close()}
 });
+
+test("with the harness away, Delete says Trebell Native is not connected before it asks, and the open thread stays open and listed",async({page})=>{
+  test.setTimeout(90_000);
+  const {harness,proxy,id}=await openSidebarApp(page);
+  const question=page.locator("dialog.inspector-text-prompt");
+  try{
+    proxy.stop();
+    await expect(page.getByTestId("composer-transport")).toContainText("Trebell Native");
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      const row=await rowMenu(page,"Bulk one");
+      await row.getByRole("button",{name:"Delete",exact:true}).click();
+      await expect(sidebarAlert(page)).toHaveText("Trebell Native is not connected");
+      await expect(question).toHaveCount(0);
+      await expect(threadRow(page,"Bulk one")).toHaveClass(/active/);
+      await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+      await shoot(page,"sidebar-delete-harness-away");
+    }
+    expect(harness.threadStore.get(id("Bulk one"))).toBeTruthy();
+  }finally{await harness.close()}
+});
