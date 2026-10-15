@@ -4943,12 +4943,16 @@ export default function App(){
   // harness, as the title's tooltip does. It names the thread it was asked for, even when another view is open by then.
   async function renameThread(){if(!rpc||!activeThread)return;const name=await askText("Rename thread",titleOf(activeThread));if(!name?.trim())return;const client=rpcRef.current;if(!client?.isConnected())throw new Error(agentRuntimeLabel+" is not connected.");await client.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>prev?.id===activeThread.id?{...prev,name:name.trim()}:prev);setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
   async function shareThread(){const text=messages.filter(m=>m.role==="user"||m.role==="assistant").map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
+  // A review on its way (the first click of a double click, or Enter pressed twice) is the one a second press waits for, as an
+  // action's run is: the second starts nothing.
+  const reviewStartsRef=useRef(new Set());
   async function startReview(){
     if(!rpc||!activeThread?.id)throw new Error("Start or open a thread before reviewing.");
     // A review is a turn, and no turn starts while a thread opens (sends wait the same way) or while another one runs.
     if(openingThreadRef.current)throw new Error("Wait for the thread to finish opening before reviewing.");
     if(running)throw new Error("Wait for the running turn to finish before reviewing.");
-    const result=await rpc.request("review/start",{threadId:activeThread.id,target:{type:"uncommittedChanges"}});
+    const threadId=activeThread.id,starting=reviewStartsRef.current;if(starting.has(threadId))return;
+    let result;try{starting.add(threadId);result=await rpc.request("review/start",{threadId,target:{type:"uncommittedChanges"}})}finally{starting.delete(threadId)}
     // A review runs only as the turn the harness started for it: an answer without one started nothing.
     if(!result?.turn?.id)throw new Error(agentRuntimeLabel+" did not start a review.");
     setRunning(true);setActiveTurnId(result.turn.id);

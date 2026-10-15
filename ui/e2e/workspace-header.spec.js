@@ -10,18 +10,19 @@ const json=(route,value)=>route.fulfill({status:200,contentType:"application/jso
 function gate(){let open=()=>{};const promise=new Promise(resolve=>{open=resolve});return {promise,open}}
 
 // The page's socket to the relay goes through this proxy: refuse(message) names an error to answer a request with instead of the
-// relay, and answer(message) a result. stop() stops the harness as far as the page can tell (its socket closes and every reconnect
-// is turned away) until start().
+// relay, answer(message) a result, and hold(message) a promise the request waits for before it goes on to the relay (a harness slow
+// to answer). stop() stops the harness as far as the page can tell (its socket closes and every reconnect is turned away) until start().
 async function proxyRelay(page,harness){
-  const proxy={refuse:()=>null,answer:()=>undefined,stopped:false,sockets:[]};
+  const proxy={refuse:()=>null,answer:()=>undefined,hold:()=>null,stopped:false,sockets:[]};
   await page.routeWebSocket(harness.wsUrl,ws=>{
     if(proxy.stopped){ws.close({code:1011,reason:"harness stopped"});return}
     const server=ws.connectToServer();proxy.sockets.push(ws);
-    ws.onMessage(message=>{
+    ws.onMessage(async message=>{
       let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
       if(parsed?.id!=null&&parsed.method){
         const refusal=proxy.refuse(parsed);if(refusal){ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:refusal}}));return}
         const result=proxy.answer(parsed);if(result!==undefined){ws.send(JSON.stringify({id:parsed.id,result}));return}
+        const held=proxy.hold(parsed);if(held)await held;
       }
       server.send(message);
     });
@@ -340,6 +341,40 @@ test("Review waits while a turn runs, and a review the harness does not start ad
     await expect(page.getByText("Reviewing uncommitted changes")).toHaveCount(0);
     await expect(stop).toHaveCount(0);await expect(review).toBeEnabled();
   }finally{held.open();await harness.close()}
+});
+
+// Each review's reply waits for its gate, so the review runs until the test lets it end.
+const reviewReplies=done=>done.map((reply,index)=>async()=>{await reply.promise;return {text:"Review "+(index+1)+" found nothing to fix."}});
+
+test("a double click on Review, or Enter pressed twice on it, starts one review: the second press finds the first on its way",async({page})=>{
+  test.setTimeout(90_000);
+  const done=[gate(),gate()];
+  const {proxy,harness,header}=await openHeaderApp(page,{branch:"main",replies:reviewReplies(done)});
+  const review=header.getByRole("button",{name:"Review",exact:true}),stop=header.getByRole("button",{name:"Stop",exact:true});
+  const steps=page.locator(".tool-event").filter({hasText:"Reviewing uncommitted changes"}),alert=page.getByTestId("app-action-error");
+  // The harness answers review/start once both presses are in, as one slow to answer does.
+  const starts=[];let answer=gate();
+  proxy.hold=message=>{if(message.method!=="review/start")return null;starts.push(message.params);return answer.promise};
+  try{
+    for(const [index,mode] of ["dark","light"].entries()){
+      await switchMode(page,mode);
+      await expect(review).toBeEnabled();answer=gate();
+      if(mode==="dark")await review.dblclick();
+      else{await review.focus();await page.keyboard.press("Enter");await page.keyboard.press("Enter")}
+      await expect.poll(()=>starts.length).toBeGreaterThan(index);
+      answer.open();
+      await expect(stop).toBeVisible();await expect(review).toBeDisabled();await expect(steps.last()).toContainText("running");
+      expect(starts,"review/start requests sent").toHaveLength(index+1);
+      await expect(alert).toHaveCount(0);
+      await shoot(page,"header-review-double-press");
+      // The review ends; Review can start the next one.
+      done[index].open();
+      await expect(page.getByText("Review "+(index+1)+" found nothing to fix.")).toBeVisible({timeout:15_000});
+      await expect(stop).toHaveCount(0);
+    }
+    expect(starts.map(params=>params.target)).toEqual([{type:"uncommittedChanges"},{type:"uncommittedChanges"}]);
+    expect(harness.turns(harness.threads[0])).toHaveLength(3);
+  }finally{answer.open();for(const reply of done)reply.open();await harness.close()}
 });
 
 test("the header gives the whole thread title and branch name on hover when it cuts them",async({page})=>{
