@@ -416,3 +416,42 @@ test("Escape cancels an app request as its X does, and pressed twice or held dow
     }
   }finally{await harness.close()}
 });
+
+// A required multi-select left empty is refused as an empty required field is, by its name, from the mouse and from the keyboard;
+// once an option is chosen the form goes with it.
+test("an app form refuses a required multi-select left empty, saying it is required as it does for an empty required field",async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const modal=page.getByTestId("mcp-elicitation"),targets=modal.getByRole("group",{name:"Targets"}),submit=modal.getByRole("button",{name:"Submit",exact:true}),alert=modal.getByRole("alert");
+    const focused=()=>page.evaluate(()=>{const node=document.activeElement;return (node?.type==="checkbox"?node.closest("label"):node)?.textContent?.trim()});
+    const tabTo=async name=>{for(let index=0;index<12&&await focused()!==name;index++)await page.keyboard.press("Tab");expect(await focused()).toBe(name)};
+    for(const [pass,width] of [["dark",1280],["light",900]]){
+      if(pass==="light")await toggleMode(page);
+      await page.setViewportSize({width,height:800});
+      const form=harness.ask("mcpServer/elicitation/request",{threadId:RELEASE.id,serverName:"fixture_app",mode:"form",message:"Pick the targets",requestedSchema:{type:"object",required:["targets"],properties:{targets:{type:"array",title:"Targets",items:{type:"string",enum:["web","api"]}}}}});
+      await expect(modal).toContainText("Pick the targets");
+      if(pass==="dark"){
+        await submit.click();
+        await expect(alert).toHaveText("Targets is required");await expect(modal.locator(".mcp-field.invalid")).toContainText("Targets");
+        expect(harness.answersTo(form)).toHaveLength(0);
+        await shoot(page,"app-form-required-multiselect");
+        // Chosen and taken back, it is refused again; chosen, the form goes.
+        await targets.getByText("api",{exact:true}).click();await expect(alert).toHaveCount(0);
+        await targets.getByText("api",{exact:true}).click();await submit.click();await expect(alert).toHaveText("Targets is required");
+        await targets.getByText("web",{exact:true}).click();await submit.click();
+      }else{
+        // From the keyboard: Enter on Submit, then Space on an option and Enter on Submit again.
+        await tabTo("Submit");await page.keyboard.press("Enter");
+        await expect(alert).toHaveText("Targets is required");expect(harness.answersTo(form)).toHaveLength(0);
+        await shoot(page,"app-form-required-multiselect");await page.setViewportSize({width,height:800});
+        await tabTo("web");await page.keyboard.press("Space");await expect(targets.getByRole("checkbox",{name:"web"})).toBeChecked();
+        await tabTo("Submit");await page.keyboard.press("Enter");
+      }
+      expect(await form.answered).toEqual({action:"accept",content:{targets:["web"]},_meta:null});
+      await expect(modal).toHaveCount(0);expect(harness.answersTo(form)).toHaveLength(1);
+    }
+  }finally{await harness.close()}
+});

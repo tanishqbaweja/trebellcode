@@ -137,10 +137,12 @@ export function coerceElicitationFormContent(fields,values){
       content[field.id]=number;
     }else if(field.type==="boolean")content[field.id]=Boolean(value);
     else if(field.type==="multiselect"){
+      // Nothing chosen is a required multi-select left empty, as "" is a required text field left empty.
       const values=Array.isArray(value)?value:[];
+      if(field.required&&!values.length)throw new Error(`${field.label} is required`);
       if(field.minItems!=null&&values.length<Number(field.minItems))throw new Error(`${field.label} needs at least ${field.minItems} selection${Number(field.minItems)===1?"":"s"}`);
       if(field.maxItems!=null&&values.length>Number(field.maxItems))throw new Error(`${field.label} allows at most ${field.maxItems} selection${Number(field.maxItems)===1?"":"s"}`);
-      if(values.length||field.required)content[field.id]=values;
+      if(values.length)content[field.id]=values;
     }else{
       const text=String(value??"");
       if(field.minLength!=null&&text.length<Number(field.minLength))throw new Error(`${field.label} must be at least ${field.minLength} characters`);

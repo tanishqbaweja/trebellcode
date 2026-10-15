@@ -97,6 +97,16 @@ test("generic MCP form elicitations expose typed fields and validated content",(
   assert.throws(()=>coerceElicitationFormContent(fields,{email:"me@example.test",count:"3",scopes:[]}),/Scopes needs at least 1 selection/);
 });
 
+test("a required multi-select left empty is refused as an empty required field is, and an optional one is left out",()=>{
+  const fields=elicitationFormFields({params:{mode:"form",requestedSchema:{type:"object",required:["targets"],properties:{
+    targets:{type:"array",title:"Targets",items:{type:"string",enum:["web","api"]}},
+    tags:{type:"array",title:"Tags",items:{type:"string",enum:["urgent","later"]}},
+  }}}});
+  assert.throws(()=>coerceElicitationFormContent(fields,{targets:[],tags:[]}),/^Error: Targets is required$/);
+  assert.throws(()=>coerceElicitationFormContent(fields,{tags:["urgent"]}),/^Error: Targets is required$/);
+  assert.deepEqual(coerceElicitationFormContent(fields,{targets:["api"],tags:[]}),{targets:["api"]});
+});
+
 test("MCP elicitation kinds keep device verification distinct from ordinary URL handoffs",()=>{
   assert.equal(mcpElicitationKind({params:{mode:"url"}}),"url");
   assert.equal(mcpElicitationKind({params:{mode:"openai/userVerification"}}),"verification");
