@@ -4,6 +4,7 @@ import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, gitInfo, commitAll, createBranch, createWorktree, pullRepo, pushRepo, removeWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
+import { withGermanColoredGit } from "./fixtures/git-catalog.mjs";
 
 // Each test runs up to two dozen git commands, which take seconds each on a host that benchmarks load: the 20 s and 30 s bounds these
 // tests had ran out there (on one CPU at idle priority every one did), though alone they pass in 3 to 25 s. The bound is a generous
@@ -33,7 +34,9 @@ test("a commit git refuses fails with git's reason, and a commit with nothing to
 
 // git follows a refusal with hint: lines for a person at a terminal (the commands to run next, the setting that turns the hint off).
 // The Git panel shows the error after "Could not …", so it is git's reason alone.
-test("a refused branch name, Pull or Push fails with git's reason, without the hints git adds for a terminal",UNDER_LOAD,async()=>{
+// A Pull or a Push git refuses gives its reason only in those hints, and a Pull from a branch with no upstream, or from no branch at
+// all, only as commands to type: each of these says it in plain words instead. A refused Push keeps git's other lines after it.
+test("a refused branch name, Pull or Push fails with git's reason in plain words, without the hints git adds for a terminal",UNDER_LOAD,async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-git-hints-"));const origin=join(root,"origin.git"),work=join(root,"work"),peer=join(root,"peer");
   try{
     await git(root,["init","--bare","--initial-branch=main",origin]);
@@ -44,10 +47,31 @@ test("a refused branch name, Pull or Push fails with git's reason, without the h
     // Committed on both sides, so the branch and origin/main have gone both ways.
     await writeFile(join(work,"shared.txt"),"base\nmine\n");await git(work,["commit","-am","Mine"]);await git(work,["fetch"]);
     await assert.rejects(()=>createBranch(work,"bad..name"),{message:"fatal: 'bad..name' is not a valid branch name"});
-    await assert.rejects(()=>pullRepo(work),{message:"fatal: Not possible to fast-forward, aborting."});
+    await assert.rejects(()=>pullRepo(work),{message:"This branch and its upstream have diverged, each with commits the other does not have."});
     await assert.rejects(()=>pushRepo(work),error=>{
-      assert.match(error.message,/^To .+\n ! \[rejected\] +\S+ -> main \(non-fast-forward\)\nerror: failed to push some refs to '.+'$/);
+      assert.match(error.message,/^The remote has commits this branch does not have\. Pull them first, then push again\.\nTo .+\n ! \[rejected\] +\S+ -> main \(non-fast-forward\)\nerror: failed to push some refs to '.+'$/);
       return true;
+    });
+    // A branch made here has no upstream until it is pushed, and HEAD can be on no branch at all.
+    await createBranch(work,"feature/no-upstream");
+    await assert.rejects(()=>pullRepo(work),{message:"This branch has no upstream yet. Push it first to create one."});
+    await git(work,["switch","--detach","HEAD"]);
+    await assert.rejects(()=>pullRepo(work),{message:"Not on a branch: switch to a branch first."});
+    await assert.rejects(()=>pushRepo(work),{message:"Not on a branch: switch to a branch first."});
+  }finally{await rm(root,RETRY)}
+});
+
+// git translates its messages, "hint:" among them, and colors its hints when its config says so: the person's own locale and config
+// reach it. gitReason reads git's English, and the panel is in English, so git answers in English whatever the locale says; a hint
+// in color is still a hint.
+test("a refusal reads the same under a German locale and with hints in color",UNDER_LOAD,async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-git-locale-"));const work=join(root,"work");
+  try{
+    await mkdir(work,{recursive:true});await git(work,["init","-b","main"]);await git(work,["config","user.email","trebell@example.test"]);await git(work,["config","user.name","Trebell Test"]);
+    await writeFile(join(work,"a.txt"),"a\n");await git(work,["add","a.txt"]);await git(work,["commit","-m","Base"]);
+    await withGermanColoredGit(join(root,"locale"),async()=>{
+      await assert.rejects(()=>createBranch(work,"bad..name"),{message:"fatal: 'bad..name' is not a valid branch name"});
+      await assert.rejects(()=>pullRepo(work),{message:"This branch has no upstream yet. Push it first to create one."});
     });
   }finally{await rm(root,RETRY)}
 });

@@ -8,14 +8,35 @@ import { homedir } from "node:os";
 const execFileAsync=promisify(execFile);
 
 // git follows a refusal with hint: lines for a person at a terminal: the commands to run next and the setting that turns the hint
-// off ("Disable this message with …"). A failure says git's reason without them; one that is all hints keeps them.
+// off ("Disable this message with …"). A failure says git's reason without them; one that is all hints keeps them. A color git was
+// set to give its hints (color.advice=always) is taken off first, so they are known as hints too.
+// Some refusals the Git panel meets often give their reason only in those hints, or only as commands to type, so these say it in
+// plain words instead: a Pull from a branch that has diverged or has no upstream, and anything from no branch at all. A Push the
+// remote refused for its newer commits says it before git's other lines, which name the branch and the remote.
+const PLAIN_REASONS=[
+  {test:/^ ! \[rejected\] .*\((?:fetch first|non-fast-forward)\)$/m,reason:"The remote has commits this branch does not have. Pull them first, then push again.",before:true},
+  {test:/^fatal: Not possible to fast-forward, aborting\.$/m,reason:"This branch and its upstream have diverged, each with commits the other does not have."},
+  {test:/^There is no tracking information for the current branch\.$/m,reason:"This branch has no upstream yet. Push it first to create one."},
+  {test:/^(?:fatal: )?You are not currently on a branch\.$/m,reason:"Not on a branch: switch to a branch first."},
+];
 export function gitReason(text){
-  const all=String(text??"").trim();
-  return all.split(/\r?\n/).filter(line=>!line.startsWith("hint:")).join("\n").trim()||all;
+  const all=String(text??"").replace(/\x1b\[[0-9;]*[A-Za-z]/g,"").replace(/\r\n?/g,"\n").trim();
+  const reason=all.split("\n").filter(line=>!line.startsWith("hint:")).join("\n").trim()||all;
+  const plain=PLAIN_REASONS.find(item=>item.test.test(all));
+  return plain?(plain.before?plain.reason+"\n"+reason:plain.reason):reason;
+}
+// git writes its messages in English, the C locale's, whatever locale the person's own is: the Git panel is in English, and
+// gitReason reads git's English, "hint:" among it (git translates that too). Only the messages change: an LC_ALL, which would
+// override LC_MESSAGES, gives its value to the other categories instead, so file names, sorting and dates in a hook stay as they were.
+export function gitEnvironment(env=process.env){
+  const next={...env};
+  if(next.LC_ALL){for(const name of ["LC_CTYPE","LC_COLLATE","LC_NUMERIC","LC_TIME","LC_MONETARY"])if(!next[name])next[name]=next.LC_ALL;delete next.LC_ALL}
+  next.LC_MESSAGES="C";
+  return next;
 }
 async function run(command,args,{cwd,env=process.env,timeout=120000,maxBuffer=8*1024*1024,allowFailure=false}={}){
   try{
-    const result=await execFileAsync(command,args,{cwd,env,windowsHide:true,timeout,maxBuffer});
+    const result=await execFileAsync(command,args,{cwd,env:command==="git"?gitEnvironment(env):env,windowsHide:true,timeout,maxBuffer});
     return {ok:true,stdout:result.stdout||"",stderr:result.stderr||""};
   }catch(error){
     if(!allowFailure) throw new Error(gitReason(error.stderr||error.stdout||error.message||String(error)));

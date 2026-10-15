@@ -27,8 +27,10 @@ import {
   sourceControlReviewRangeContext,
   sourceControlDiagnostics,
   withSourceControlExecutor,
+  checkoutPullRequest,
 } from "../src/source-control-service.mjs";
 import { git } from "../src/git-service.mjs";
+import { withGermanColoredGit } from "./fixtures/git-catalog.mjs";
 
 test("source control provider detection covers supported forges",()=>{
   assert.equal(detectSourceControlProvider("https://github.com/acme/widget.git"),"github");
@@ -521,7 +523,61 @@ test("a Git action git refuses fails with git's reason, without the hints git ad
       return {ok:false,code:1,stdout:"",stderr:"unexpected git "+args.join(" ")};
     },
   };
-  await assert.rejects(()=>withSourceControlExecutor(executor,()=>sourceControlGitAction("/srv/app",{action:"pull"})),{message:"fatal: Not possible to fast-forward, aborting."});
+  await assert.rejects(()=>withSourceControlExecutor(executor,()=>sourceControlGitAction("/srv/app",{action:"pull"})),{message:"This branch and its upstream have diverged, each with commits the other does not have."});
+});
+
+// Without an executor too, git answers in English whatever the person's locale (and a hint in color is still a hint).
+test("a Git action git refuses says the same under a German locale and with hints in color",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-git-locale-"));const work=join(root,"work");
+  try{
+    await git(root,["init","-b","main","work"]);await git(work,["config","user.email","trebell@example.test"]);await git(work,["config","user.name","Trebell Test"]);
+    await writeFile(join(work,"base.txt"),"base\n");await git(work,["add","."]);await git(work,["commit","-m","Base"]);
+    await withGermanColoredGit(join(root,"locale"),async()=>{
+      await assert.rejects(()=>sourceControlGitAction(work,{action:"branch-create",name:"bad..name"}),{message:"fatal: 'bad..name' is not a valid branch name"});
+      await assert.rejects(()=>sourceControlGitAction(work,{action:"pull"}),{message:"This branch has no upstream yet. Push it first to create one."});
+    });
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// A revert or a stack rebase stops on a conflict in a temporary worktree that is removed before the panel shows why, so the hints'
+// commands (git revert --continue, git rebase --continue) cannot be followed: the error is git's reason with the conflicts it
+// reported, as every Git refusal in the panel reads. A checkout gh passes git's refusal through reads the same way.
+const githubRepository=(answer,head="main")=>({
+  run:async(command,args,options={})=>{
+    if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+    if(command==="git"&&args[0]==="branch"&&args[1]==="--show-current")return {ok:true,code:0,stdout:head+"\n",stderr:""};
+    if(command==="git"&&args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\nlayer-one\nlayer-two\n",stderr:""};
+    if(command==="git"&&args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/"+head+"\n",stderr:""};
+    if(command==="git"&&args[0]==="status")return {ok:true,code:0,stdout:"## "+head+"...origin/"+head+"\n",stderr:""};
+    if(command==="git"&&args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+    if(command==="git"&&args[0]==="worktree"&&args[1]==="list")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/"+head+"\n",stderr:""};
+    return answer(command,args,options)||{ok:true,code:0,stdout:"",stderr:""};
+  },
+});
+const hinted=(lines,disable)=>[...lines.map(line=>"hint: "+line),"hint: Disable this message with \"git config set advice."+disable+" false\""].join("\n")+"\n";
+test("a revert, a stack rebase or a checkout git refuses fails with git's reason and its conflicts, without the hints for a terminal",async()=>{
+  const conflict="Auto-merging src/payments.js\nCONFLICT (content): Merge conflict in src/payments.js\n";
+  const revert=githubRepository((command,args)=>{
+    if(command==="gh"&&args[0]==="pr"&&args[1]==="view")return {ok:true,code:0,stdout:JSON.stringify({number:7,title:"Feature",state:"MERGED",mergedAt:"2026-09-20T10:00:00Z",mergeCommit:{oid:"merge123"},baseRefName:"main"}),stderr:""};
+    if(command==="git"&&args[0]==="rev-list")return {ok:true,code:0,stdout:"merge123 parent1\n",stderr:""};
+    if(command==="git"&&args[0]==="revert")return {ok:false,code:1,stdout:conflict,stderr:"error: could not revert merge123... Feature\n"+hinted(["After resolving the conflicts, mark them with","\"git add/rm <pathspec>\", then run","\"git revert --continue\".","You can instead skip this commit with \"git revert --skip\".","To abort and get back to the state before \"git revert\",","run \"git revert --abort\"."],"mergeConflict")};
+  });
+  await assert.rejects(()=>withSourceControlExecutor(revert,()=>revertPullRequest("/srv/app",7,{provider:"github"})),{message:"error: could not revert merge123... Feature\nCONFLICT (content): Merge conflict in src/payments.js"});
+  const stack={id:900,number:42,open:true,base:{ref:"main"},pull_requests:[{number:1,title:"Layer one",state:"open",head:{ref:"layer-one",sha:"old1"},base:{ref:"main",sha:"base0"},html_url:"https://github.com/acme/widget/pull/1"},{number:2,title:"Layer two",state:"open",head:{ref:"layer-two",sha:"old2"},base:{ref:"layer-one",sha:"old1"},html_url:"https://github.com/acme/widget/pull/2"}]};
+  const rebase=githubRepository((command,args)=>{
+    if(command==="gh"&&args[0]==="api"){
+      const path=args.find(value=>String(value).startsWith("repos/acme/widget/"))||"";
+      if(path==="repos/acme/widget/pulls/2")return {ok:true,code:0,stdout:JSON.stringify({number:2,state:"open",head:{ref:"layer-two",sha:"old2"},base:{ref:"layer-one",sha:"old1"},stack:{number:42,size:2,position:2,base:{ref:"main",sha:"base0"}}}),stderr:""};
+      if(path==="repos/acme/widget/stacks/42")return {ok:true,code:0,stdout:JSON.stringify(stack),stderr:""};
+    }
+    if(command==="git"&&args[0]==="rev-parse"&&args[1]==="refs/remotes/origin/main")return {ok:true,code:0,stdout:"base-new\n",stderr:""};
+    if(command==="git"&&args[0]==="rebase"&&args[1]==="--onto")return {ok:false,code:1,stdout:conflict,stderr:"error: could not apply old1... Layer one\n"+hinted(["Resolve all conflicts manually, mark them as resolved with","\"git add/rm <conflicted_files>\", then run \"git rebase --continue\".","You can instead skip this commit: run \"git rebase --skip\".","To abort and get back to the state before \"git rebase\", run \"git rebase --abort\"."],"mergeConflict")+"Could not apply old1... Layer one\n"};
+  },"layer-two");
+  await assert.rejects(()=>withSourceControlExecutor(rebase,()=>rebasePullRequestStack("/srv/app",2,{provider:"github"})),{message:"Stack rebase stopped at PR #1: error: could not apply old1... Layer one\nCould not apply old1... Layer one\nCONFLICT (content): Merge conflict in src/payments.js"});
+  const checkout=githubRepository((command,args)=>{
+    if(command==="gh"&&args[0]==="pr"&&args[1]==="checkout")return {ok:false,code:1,stdout:"",stderr:"fatal: 'feature/x' is not a valid branch name\n"+hinted(["See `man git check-ref-format`"],"refSyntax")+"failed to run git: exit status 128\n"};
+  });
+  await assert.rejects(()=>withSourceControlExecutor(checkout,()=>checkoutPullRequest("/srv/app",9,{provider:"github"})),{message:"fatal: 'feature/x' is not a valid branch name\nfailed to run git: exit status 128"});
 });
 
 test("Bitbucket REST auth and requests come from the environment executor",async()=>{

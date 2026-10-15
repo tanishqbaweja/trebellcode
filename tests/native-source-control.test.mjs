@@ -100,6 +100,30 @@ test("Native remote source control forwards only the approved environment-name a
   assert.equal(launch.id,"ssh-1");assert.deepEqual(launch.options.environmentNames,["PATH","HOME"]);assert.equal(Object.prototype.hasOwnProperty.call(launch.options,"environment"),false);
 });
 
+// git translates its messages ("hint:" among them) under the person's locale, and the Git panel and Native read git's English: git
+// runs with its messages in English, here through its environment, on a remote host through env inside the host's isolation. Only the
+// messages change: an LC_ALL here gives its value to the other categories, and the other commands keep the locale as it is.
+test("Native source control runs git with its messages in English, here and on a remote host",async()=>{
+  const environment={PATH:"/usr/bin",LANG:"de_DE.UTF-8",LC_ALL:"de_DE.UTF-8"};
+  const local=sourceControlEnvironment(environment,{platform:"linux",command:"git"});
+  assert.equal(local.LC_MESSAGES,"C");assert.equal(local.LC_ALL,undefined);assert.equal(local.LC_CTYPE,"de_DE.UTF-8");assert.equal(local.LANG,"de_DE.UTF-8");
+  const github=sourceControlEnvironment(environment,{platform:"linux",command:"gh"});
+  assert.equal(github.LC_MESSAGES,undefined);assert.equal(github.LC_ALL,"de_DE.UTF-8");
+  const calls=[];
+  const environments={
+    get:id=>id==="ssh-1"?{id:"ssh-1",name:"Build",type:"ssh",cwd:"/srv/app"}:null,
+    executeArgv:async(id,options)=>{calls.push(options);return {exitCode:0,stdout:"ok",stderr:""}},
+    executeArgvInput:async(id,options)=>{calls.push(options);return {exitCode:0,stdout:"ok",stderr:""}},
+  };
+  const executor=createNativeSourceControlExecutor({environments,environmentId:"ssh-1",environment});
+  await executor.run("git",["pull","--ff-only"],{cwd:"/srv/app"});await executor.run("gh",["pr","list"],{cwd:"/srv/app"});await executor.runStdin("git",["hash-object","--stdin"],"x",{cwd:"/srv/app"});
+  assert.deepEqual([calls[0].command,calls[0].args],["env",["LC_ALL=","LC_MESSAGES=C","git","pull","--ff-only"]]);
+  assert.deepEqual(calls[0].environmentNames,sourceControlEnvironmentKeys("git"),"the names git is given, as before");
+  assert.equal(Object.prototype.hasOwnProperty.call(calls[0],"environment"),false,"no value of this machine's goes with it");
+  assert.deepEqual([calls[1].command,calls[1].args],["gh",["pr","list"]]);
+  assert.deepEqual([calls[2].command,calls[2].args,calls[2].input],["env",["LC_ALL=","LC_MESSAGES=C","git","hash-object","--stdin"],"x"]);
+});
+
 test("Native remote source-control scopes forge credentials by executable",async()=>{
   const calls=[];
   const environments={

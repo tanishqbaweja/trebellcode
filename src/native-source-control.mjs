@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { buildRuntimeEnvironment, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
+import { gitEnvironment } from "./git-service.mjs";
 import { sourceControlGitAction, sourceControlGitInfo, withSourceControlExecutor } from "./source-control-service.mjs";
 import { boundDiagnosticValue } from "./diagnostic-bounds.mjs";
 import { redactSecretValue } from "./secret-redactor.mjs";
@@ -31,8 +32,13 @@ export function sourceControlEnvironmentKeys(command=null){
 }
 export function sourceControlEnvironment(environment=process.env,{platform=process.platform,command=null,environmentNames=null}={}){
   const approved=Array.isArray(environmentNames)&&environmentNames.length?environmentNames:[...SOURCE_CONTROL_GIT_ENV_KEYS,...(SOURCE_CONTROL_PROVIDER_ENV_KEYS[executableName(command)]||[])];
-  return buildRuntimeEnvironment("native",{parent:environment,approved,platform});
+  const built=buildRuntimeEnvironment("native",{parent:environment,approved,platform});
+  // git writes its messages in English, whatever the locale (gitEnvironment): the Git panel and Native read them.
+  return executableName(command)==="git"?gitEnvironment(built):built;
 }
+// On a remote host, env sets the same for git alone, inside the isolation the host already runs it in: an LC_ALL there is set empty,
+// which leaves the other categories to LANG and LC_*.
+const remoteArgv=(executable,argv)=>executableName(executable)==="git"?{command:"env",args:["LC_ALL=","LC_MESSAGES=C",executable,...argv]}:{command:executable,args:argv};
 
 async function runLocalStdin(command,args,input,{cwd,environment,platform,environmentNames=null,timeout,maxBuffer}={}){
   return await new Promise(resolve=>{
@@ -58,7 +64,7 @@ export function createNativeSourceControlExecutor({environments=null,environment
     async run(command,args,{cwd,timeout=120000,maxBuffer=8*1024*1024}={}){
       const executable=String(command||"").trim(),argv=Array.isArray(args)?args.map(String):[],limit=boundedOutput(maxBuffer),timeoutMs=boundedTimeout(timeout);
       if(profile&&profile.type!=="local"){
-        const result=await environments.executeArgv(profile.id,{command:executable,args:argv,cwd,timeoutMs,maxOutput:limit,environmentNames:safeNames(executable)});
+        const result=await environments.executeArgv(profile.id,{...remoteArgv(executable,argv),cwd,timeoutMs,maxOutput:limit,environmentNames:safeNames(executable)});
         return {ok:Number(result.exitCode??1)===0,code:Number(result.exitCode??1),stdout:String(result.stdout||""),stderr:String(result.stderr||"")};
       }
       try{
@@ -71,7 +77,7 @@ export function createNativeSourceControlExecutor({environments=null,environment
     async runStdin(command,args,input,{cwd,timeout=120000,maxBuffer=8*1024*1024}={}){
       const executable=String(command||"").trim(),argv=Array.isArray(args)?args.map(String):[],limit=boundedOutput(maxBuffer),timeoutMs=boundedTimeout(timeout);
       if(profile&&profile.type!=="local"){
-        const result=await environments.executeArgvInput(profile.id,{command:executable,args:argv,input:String(input??""),cwd,timeoutMs,maxOutput:limit,environmentNames:safeNames(executable)});
+        const result=await environments.executeArgvInput(profile.id,{...remoteArgv(executable,argv),input:String(input??""),cwd,timeoutMs,maxOutput:limit,environmentNames:safeNames(executable)});
         return {ok:Number(result.exitCode??1)===0&&!result.timedOut,code:Number(result.exitCode??1),stdout:String(result.stdout||""),stderr:String(result.stderr||""),timedOut:Boolean(result.timedOut)};
       }
       return runLocalStdin(executable,argv,input,{cwd,environment,platform,environmentNames:explicitNames,timeout:timeoutMs,maxBuffer:limit});

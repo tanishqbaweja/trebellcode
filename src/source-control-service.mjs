@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
-import { gitInfo as localGitInfo, gitReason } from "./git-service.mjs";
+import { gitEnvironment, gitInfo as localGitInfo, gitReason } from "./git-service.mjs";
 
 const execFileAsync=promisify(execFile);
 const executionContext=new AsyncLocalStorage();
@@ -26,19 +26,28 @@ export async function withSourceControlExecutor(executor,callback){
   return executionContext.run({executor},callback);
 }
 
+// A command that fails says why as git would to the Git panel: git's reason without the hints it adds for a terminal (gitReason),
+// with the conflicts a revert or a rebase stopped on, which git writes to its output instead. The panel used to show the hints'
+// commands too, for a temporary worktree already removed by then. git runs with its messages in English (gitEnvironment).
+function refusal(result,fallback){
+  const stderr=String(result?.stderr||"").trim(),stdout=String(result?.stdout||"").trim();
+  if(!stderr)return gitReason(stdout||fallback);
+  return gitReason([stderr,...stdout.split(/\r?\n/).filter(line=>line.startsWith("CONFLICT ("))].join("\n"));
+}
+const commandEnvironment=command=>command==="git"?gitEnvironment(process.env):process.env;
 async function run(command,args,{cwd,timeout=120000,maxBuffer=8*1024*1024,allowFailure=false}={}){
   const executor=currentExecutor();
   if(executor?.run){
     const result=await executor.run(command,args,{cwd,timeout,maxBuffer});
     const normalized={ok:result?.ok!==false&&Number(result?.code??result?.exitCode??0)===0,stdout:result?.stdout||"",stderr:result?.stderr||"",code:Number(result?.code??result?.exitCode??0)};
     if(normalized.ok||allowFailure)return normalized;
-    throw new Error((normalized.stderr||normalized.stdout||`${command} failed`).trim());
+    throw new Error(refusal(normalized,`${command} failed`));
   }
   try{
-    const result=await execFileAsync(command,args,{cwd,windowsHide:true,timeout,maxBuffer});
+    const result=await execFileAsync(command,args,{cwd,env:commandEnvironment(command),windowsHide:true,timeout,maxBuffer});
     return {ok:true,stdout:result.stdout||"",stderr:result.stderr||""};
   }catch(error){
-    if(!allowFailure) throw new Error((error.stderr||error.stdout||error.message||String(error)).trim());
+    if(!allowFailure) throw new Error(refusal(error,error.message||String(error)));
     return {ok:false,stdout:error.stdout||"",stderr:error.stderr||error.message||"",code:error.code??1};
   }
 }
@@ -49,17 +58,17 @@ async function runStdin(command,args,input,{cwd,timeout=120000,maxBuffer=8*1024*
     const result=await executor.runStdin(command,args,input,{cwd,timeout,maxBuffer});
     const normalized={ok:result?.ok!==false&&Number(result?.code??result?.exitCode??0)===0,stdout:result?.stdout||"",stderr:result?.stderr||"",code:Number(result?.code??result?.exitCode??0)};
     if(normalized.ok||allowFailure)return normalized;
-    throw new Error((normalized.stderr||normalized.stdout||`${command} failed`).trim());
+    throw new Error(refusal(normalized,`${command} failed`));
   }
   return await new Promise((resolve,reject)=>{
     let stdout="",stderr="",settled=false;
-    const child=spawn(command,args,{cwd,windowsHide:true,stdio:["pipe","pipe","pipe"]});
+    const child=spawn(command,args,{cwd,env:commandEnvironment(command),windowsHide:true,stdio:["pipe","pipe","pipe"]});
     const timer=setTimeout(()=>{try{child.kill("SIGKILL")}catch{}},timeout);
     const append=(current,chunk)=>{const next=current+String(chunk);return Buffer.byteLength(next,"utf8")>maxBuffer?Buffer.from(next).subarray(0,maxBuffer).toString("utf8"):next};
     child.stdout.on("data",chunk=>{stdout=append(stdout,chunk)});
     child.stderr.on("data",chunk=>{stderr=append(stderr,chunk)});
     child.once("error",error=>{if(settled)return;settled=true;clearTimeout(timer);if(allowFailure)resolve({ok:false,stdout,stderr:error.message,code:1});else reject(error)});
-    child.once("close",code=>{if(settled)return;settled=true;clearTimeout(timer);const result={ok:code===0,stdout,stderr,code};if(code===0||allowFailure)resolve(result);else reject(new Error((stderr||stdout||`${command} failed`).trim()))});
+    child.once("close",code=>{if(settled)return;settled=true;clearTimeout(timer);const result={ok:code===0,stdout,stderr,code};if(code===0||allowFailure)resolve(result);else reject(new Error(refusal(result,`${command} failed`)))});
     child.stdin.end(input??"");
   });
 }
@@ -231,8 +240,8 @@ export async function sourceControlPullRequestTemplate(cwd,{treeish="HEAD"}={}){
   return null;
 }
 
-// A Git action git refuses fails with git's reason, without the hints it adds for a terminal (gitReason), as the local ones do.
-const gitFailure=(result,fallback)=>new Error(gitReason(result.stderr||result.stdout||fallback));
+// A Git action git refuses fails with git's reason, without the hints it adds for a terminal (refusal), as the local ones do.
+const gitFailure=(result,fallback)=>new Error(refusal(result,fallback));
 export async function sourceControlGitAction(cwd,{action,name=null,message=null,setUpstream=false,startPoint=null,path=null,force=false}={}){
   const base=String(cwd||"").trim();
   if(!base)throw new Error("Repository path is required");
@@ -782,12 +791,12 @@ export async function checkoutPullRequest(cwd,number,{provider=null}={}){
   const ctx=await sourceContext(cwd,provider);
   if(ctx.provider==="github"){
     const result=await run("gh",["pr","checkout",String(number)],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
-    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not check out pull request").trim());
+    if(!result.ok)throw new Error(refusal(result,"Could not check out pull request"));
     return {ok:true,provider:ctx.provider,info:await serviceGitInfo(ctx.info.root),output:(result.stdout||result.stderr).trim()};
   }
   if(ctx.provider==="gitlab"){
     const result=await run("glab",["mr","checkout",String(number)],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
-    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not check out merge request").trim());
+    if(!result.ok)throw new Error(refusal(result,"Could not check out merge request"));
     return {ok:true,provider:ctx.provider,info:await serviceGitInfo(ctx.info.root),output:(result.stdout||result.stderr).trim()};
   }
   throw new Error(`${ctx.provider} pull-request checkout is not safely supported by the configured client.`);
@@ -989,21 +998,21 @@ export async function revertPullRequest(cwd,number,{provider=null}={}){
   let worktreeAdded=false,pushed=false,createdUrl=null;
   try{
     const fetched=await run("git",["fetch","origin",base],{cwd:ctx.info.root,allowFailure:true,timeout:120000});
-    if(!fetched.ok)throw new Error((fetched.stderr||fetched.stdout||"Could not fetch the base branch").trim());
+    if(!fetched.ok)throw new Error(refusal(fetched,"Could not fetch the base branch"));
     const added=await run("git",["worktree","add","-b",branch,worktree,"origin/"+base],{cwd:ctx.info.root,allowFailure:true,timeout:120000});
-    if(!added.ok)throw new Error((added.stderr||added.stdout||"Could not create the revert worktree").trim());worktreeAdded=true;
+    if(!added.ok)throw new Error(refusal(added,"Could not create the revert worktree"));worktreeAdded=true;
     const parents=await run("git",["rev-list","--parents","-n","1",mergeSha],{cwd:worktree,allowFailure:true,maxBuffer:128*1024});
-    if(!parents.ok)throw new Error((parents.stderr||parents.stdout||"Could not inspect the merge commit").trim());
+    if(!parents.ok)throw new Error(refusal(parents,"Could not inspect the merge commit"));
     const isMergeCommit=parents.stdout.trim().split(/\s+/).filter(Boolean).length>2;
     const revertArgs=["revert"];if(isMergeCommit)revertArgs.push("-m","1");revertArgs.push("--no-edit",mergeSha);
     const reverted=await run("git",revertArgs,{cwd:worktree,allowFailure:true,timeout:120000,maxBuffer:4*1024*1024});
-    if(!reverted.ok)throw new Error((reverted.stderr||reverted.stdout||"Could not revert the merged change").trim());
+    if(!reverted.ok)throw new Error(refusal(reverted,"Could not revert the merged change"));
     const pushedResult=await run("git",["push","-u","origin",branch],{cwd:worktree,allowFailure:true,timeout:180000,maxBuffer:4*1024*1024});
-    if(!pushedResult.ok)throw new Error((pushedResult.stderr||pushedResult.stdout||"Could not push the revert branch").trim());pushed=true;
+    if(!pushedResult.ok)throw new Error(refusal(pushedResult,"Could not push the revert branch"));pushed=true;
     const title=`Revert "${String(pr.title||("PR #"+number)).replace(/"/g,"'")}"`;
     const body=`Reverts #${Number(number)}.\n\nGenerated by Trebell Code.`;
     const created=await run("gh",["pr","create","--base",base,"--head",branch,"--title",title,"--body",body],{cwd:worktree,allowFailure:true,maxBuffer:4*1024*1024});
-    if(!created.ok)throw new Error((created.stderr||created.stdout||"Could not open the revert pull request").trim());
+    if(!created.ok)throw new Error(refusal(created,"Could not open the revert pull request"));
     createdUrl=(created.stdout.match(/https?:\/\/\S+/)||[])[0]||created.stdout.trim()||null;
     return {ok:true,provider:"github",url:createdUrl,branch,revertedPullRequest:Number(number),mergeSha};
   }finally{
@@ -1071,29 +1080,29 @@ export async function rebasePullRequestStack(cwd,number,{provider=null}={}){
   try{
     const fetchRef=async ref=>{
       const result=await run("git",["fetch",remoteName,"+refs/heads/"+ref+":refs/remotes/"+remoteName+"/"+ref],{cwd:root,allowFailure:true,timeout:120000,maxBuffer:4*1024*1024});
-      if(!result.ok)throw new Error((result.stderr||result.stdout||("Could not fetch "+ref)).trim());
+      if(!result.ok)throw new Error(refusal(result,"Could not fetch "+ref));
     };
     await fetchRef(base);for(const layer of layers)await fetchRef(layer.headRefName);
     const baseShaResult=await run("git",["rev-parse","refs/remotes/"+remoteName+"/"+base],{cwd:root,allowFailure:true,maxBuffer:128*1024});
-    if(!baseShaResult.ok)throw new Error((baseShaResult.stderr||"Could not resolve the latest stack base").trim());
+    if(!baseShaResult.ok)throw new Error(refusal({stderr:baseShaResult.stderr},"Could not resolve the latest stack base"));
     let newParentSha=baseShaResult.stdout.trim();
     const added=await run("git",["worktree","add","--detach",worktree,newParentSha],{cwd:root,allowFailure:true,timeout:120000,maxBuffer:4*1024*1024});
-    if(!added.ok)throw new Error((added.stderr||added.stdout||"Could not create temporary stack worktree").trim());worktreeAdded=true;
+    if(!added.ok)throw new Error(refusal(added,"Could not create temporary stack worktree"));worktreeAdded=true;
     for(const layer of layers){
       const oldHead=String(layer.headSha||"").trim();if(!oldHead)throw new Error("GitHub did not return a head SHA for PR #"+layer.number);
       const oldBase=String(layer.baseSha||"").trim();if(!oldBase)throw new Error("GitHub did not return the original base SHA for PR #"+layer.number);
       const checkout=await run("git",["checkout","--detach",oldHead],{cwd:worktree,allowFailure:true,maxBuffer:2*1024*1024});
-      if(!checkout.ok)throw new Error((checkout.stderr||checkout.stdout||("Could not prepare PR #"+layer.number)).trim());
+      if(!checkout.ok)throw new Error(refusal(checkout,"Could not prepare PR #"+layer.number));
       const rebased=await run("git",["rebase","--onto",newParentSha,oldBase],{cwd:worktree,allowFailure:true,timeout:180000,maxBuffer:6*1024*1024});
       if(!rebased.ok){
         await run("git",["rebase","--abort"],{cwd:worktree,allowFailure:true}).catch(()=>{});
-        const error=new Error("Stack rebase stopped at PR #"+layer.number+": "+(rebased.stderr||rebased.stdout||"rebase conflict").trim());error.updated=updated;throw error;
+        const error=new Error("Stack rebase stopped at PR #"+layer.number+": "+refusal(rebased,"rebase conflict"));error.updated=updated;throw error;
       }
       const head=await run("git",["rev-parse","HEAD"],{cwd:worktree,allowFailure:true,maxBuffer:128*1024});
       if(!head.ok)throw new Error("Could not read the rebased head for PR #"+layer.number);
       const newHead=head.stdout.trim();
       const pushed=await run("git",["push",remoteName,"--force-with-lease=refs/heads/"+layer.headRefName+":"+oldHead,"HEAD:refs/heads/"+layer.headRefName],{cwd:worktree,allowFailure:true,timeout:180000,maxBuffer:6*1024*1024});
-      if(!pushed.ok)throw new Error("Stack rebase stopped while pushing PR #"+layer.number+": "+(pushed.stderr||pushed.stdout||"push rejected").trim());
+      if(!pushed.ok)throw new Error("Stack rebase stopped while pushing PR #"+layer.number+": "+refusal(pushed,"push rejected"));
       updated.push({number:layer.number,headRefName:layer.headRefName,oldHead,newHead});newParentSha=newHead;
     }
     return {ok:true,provider:"github",stack,updated};
