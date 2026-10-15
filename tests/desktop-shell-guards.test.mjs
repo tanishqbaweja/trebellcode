@@ -134,7 +134,7 @@ test("the desktop shell keeps its window and bridge to the app, and its notifica
     });
 
     // Last: it runs the shutdown cleanup. Both quits are recorded instead of performed, and each before-quit listener gets a
-    // stand-in event.
+    // stand-in event. The cleanup gets up to a minute: on a busy machine stopping the server's processes takes longer than 15 s.
     await t.test("the tray's Quit runs the shutdown cleanup and then quits",async()=>{
       const quit=await app.evaluate(async({app})=>{
         const item=globalThis.__trebellTrayMenuTemplate().find(entry=>entry.label==="Quit Trebell Code");
@@ -143,7 +143,7 @@ test("the desktop shell keeps its window and bridge to the app, and its notifica
           item.click();
           const event={held:false,preventDefault(){this.held=true}};
           for(const listener of app.listeners("before-quit"))try{listener(event)}catch{}
-          for(let i=0;i<60&&quits<2;i++)await new Promise(resolve=>setTimeout(resolve,250));
+          for(let i=0;i<240&&quits<2;i++)await new Promise(resolve=>setTimeout(resolve,250));
           return {held:event.held,quits};
         }finally{app.quit=realQuit}
       });

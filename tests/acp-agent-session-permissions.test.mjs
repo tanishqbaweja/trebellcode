@@ -73,7 +73,7 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     const started=await session.start();
     assert.equal(started.initialize.agentInfo.version,runtimeDir);
     assert.equal(started.session.meta.requestedCwd,workspace);
-  }finally{await session.close().catch(()=>{});await rm(root,{recursive:true,force:true})}
+  }finally{await session.close().catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // No harness is offered the client's terminal (T3: ACP agents run their own shell behind their own permission requests),
@@ -108,5 +108,5 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     assert.equal(approvals.length,0,"a request for a service the harness was not offered never reaches the user");
     assert.ok(updates.some(item=>item.update?.content?.text==="DENIED"));
     await assert.rejects(()=>access(marker));
-  }finally{await session.close().catch(()=>{});await rm(root,{recursive:true,force:true})}
+  }finally{await session.close().catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

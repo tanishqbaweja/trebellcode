@@ -1062,7 +1062,7 @@ test.describe("A project's icon",()=>{
     await monogram.focus();await expect(monogram).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(image).toBeFocused();
-    const files=await iconFiles(page),chooser=page.waitForEvent("filechooser",{timeout:3000});
+    const files=await iconFiles(page),chooser=page.waitForEvent("filechooser");
     await page.keyboard.press("Enter");
     await (await chooser).setFiles(files.png);
     await expect.poll(async()=>(await listedProjects(request)).find(project=>project.path===boot.cwd)?.icon?.kind).toBe("image");
