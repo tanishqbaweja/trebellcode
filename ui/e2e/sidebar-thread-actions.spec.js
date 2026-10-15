@@ -367,6 +367,71 @@ test("a double click on Delete asks once with the keyboard on Cancel, so Enter k
   }finally{await harness.close()}
 });
 
+test("a double click on Pin or Archive in another thread's menu runs it once, and its second click opens nothing that lay under the menu",async({page})=>{
+  test.setTimeout(90_000);
+  const list=["Alpha task","Beta task","Gamma task","Delta task","Epsilon task"];
+  const {harness,proxy,id}=await openSidebarApp(page,list);
+  const title=page.locator(".chat-workspace .workspace-header .thread-title-button"),opened=[];
+  try{
+    const gamma=threadRow(page,"Gamma task");await gamma.locator(".thread-main").click();
+    await expect(gamma).toHaveClass(/active/);await expect(title).toContainText("Gamma task");
+    // A thread the second click opened would be resumed on the harness.
+    proxy.refuse=message=>{if(message.method==="thread/resume"&&message.params?.threadId!==id("Gamma task"))opened.push(message.params?.threadId);return null};
+    // Gamma stays open: its row, its conversation, no other page or panel and no bulk mode.
+    const gammaStaysOpen=async()=>{
+      await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Gamma task");
+      await expect(title).toContainText("Gamma task");await expect(page.getByTestId("composer")).toBeVisible();
+      await expect(page.locator(".sidebar-utility[aria-current=page],.sidebar-utility[aria-pressed=true]")).toHaveCount(0);
+      await expect(bulkBar(page)).toHaveCount(0);expect(opened).toEqual([]);
+    };
+    // The first click runs the item and closes the menu, so the second lands where the item was: on the row below for Pin, on
+    // the sidebar's destinations for Archive.
+    for(const [mode,pin,archive] of [["dark","Delta task","Alpha task"],["light","Epsilon task","Beta task"]]){
+      await switchMode(page,mode);
+      let row=await rowMenu(page,pin);
+      await row.getByRole("button",{name:"Pin",exact:true}).dblclick();
+      await expect(undoToast(page).locator("span").first()).toHaveText("Thread pinned");
+      await expect.poll(async()=>(await groups(page)).find(([name])=>name==="Pinned")?.[1]||[]).toContain(pin);
+      await gammaStaysOpen();
+      row=await rowMenu(page,archive);
+      await row.getByRole("button",{name:"Archive",exact:true}).dblclick();
+      await expect(undoToast(page).locator("span").first()).toHaveText("Thread archived");
+      await expect(threadRow(page,archive)).toHaveCount(0);
+      await gammaStaysOpen();
+      await shoot(page,"sidebar-row-menu-double-click");
+    }
+    await expect.poll(async()=>(await groups(page)).find(([name])=>name==="Active")?.[1]).toEqual(["Gamma task"]);
+    expect(harness.threadStore.list("native").filter(thread=>thread.archived).map(thread=>thread.name).sort()).toEqual(["Alpha task","Beta task"]);
+  }finally{await harness.close()}
+});
+
+test("Enter held on Pin or Settle in a row's menu runs it once, and its repeats open nothing that took the keyboard",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,proxy,id}=await openSidebarApp(page);
+  const title=page.locator(".chat-workspace .workspace-header .thread-title-button"),opened=[];
+  proxy.refuse=message=>{if(message.method==="thread/resume"&&message.params?.threadId!==id("Bulk one"))opened.push(message.params?.threadId);return null};
+  const frames=()=>page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+  try{
+    for(const [mode,name,item,group] of [["dark","Bulk two","Pin","Pinned"],["light","Bulk three","Settle","Settled"]]){
+      await switchMode(page,mode);
+      // Tab from the row to its menu button, Enter opens the menu, Tab goes down to the item, and Enter is held on it.
+      const row=threadRow(page,name),target=row.getByRole("button",{name:item,exact:true});
+      await row.locator(".thread-main").focus();await page.keyboard.press("Tab");await page.keyboard.press("Enter");
+      await expect(row.locator(".thread-menu")).toHaveAttribute("open","");
+      for(let step=0;step<14&&!await target.evaluate(node=>node===document.activeElement);step++)await page.keyboard.press("Tab");
+      await expect(target).toBeFocused();
+      await page.keyboard.down("Enter");
+      await expect.poll(async()=>(await groups(page)).find(([section])=>section===group)?.[1]||[]).toContain(name);
+      // The thread went to its group and the keyboard to the row after it, where the repeats land.
+      for(let repeat=0;repeat<6;repeat++)await page.keyboard.down("Enter");
+      await page.keyboard.up("Enter");await frames();
+      await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Bulk one");
+      await expect(title).toContainText("Bulk one");expect(opened).toEqual([]);
+      await shoot(page,"sidebar-row-menu-held-enter");
+    }
+  }finally{await harness.close()}
+});
+
 test("with the harness away, Delete says Trebell Native is not connected before it asks, and the open thread stays open and listed",async({page})=>{
   test.setTimeout(90_000);
   const {harness,proxy,id}=await openSidebarApp(page);

@@ -25,6 +25,14 @@ function showRowMenu(menu,open){
   try{if(open!==popover.matches(":popover-open"))open?popover.showPopover():popover.hidePopover()}catch{}
 }
 function closeRowMenu(menu){if(!menu)return;menu.open=false;showRowMenu(menu,false)}
+// The rest of the press that ran an item does nothing, until a press of its own: the second (or a third) click of a double click,
+// which lands on what was under the item once its menu closed (another row, a destination), and the repeats of Enter held on it,
+// which go to what took the focus (the menu's button, or the next row when the thread moved to another group). Either would open it.
+function ignorePressRest(keyboard){
+  const types=keyboard?["keydown","keyup"]:["mousedown","mouseup","click","dblclick"],off=()=>{for(const type of types)window.removeEventListener(type,stop,true)};
+  const stop=event=>{if(keyboard?event.repeat&&event.key==="Enter":event.detail>1){event.preventDefault();event.stopPropagation()}else if(event.type===(keyboard?"keyup":"mousedown"))off()};
+  for(const type of types)window.addEventListener(type,stop,true);
+}
 
 function threadCanFork(thread,runtimeCapabilities={}){
   if(runtimeCapabilities.fork===true)return true;
@@ -93,7 +101,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
       {/* The button opens the menu itself, so it is in the top layer and Escape closes it as it opens: the toggle event can come after the
           next key. */}
       <summary title="Thread actions" onClick={event=>{const menu=menuRef.current;if(!menu)return;event.preventDefault();menu.open=!menu.open;showRowMenu(menu,menu.open);setMenuOpen(menu.open)}}><MoreHorizontal size={13}/></summary>
-      <div className="thread-menu-popover" popover={ROW_MENU_TOP_LAYER?"manual":undefined}>
+      <div className="thread-menu-popover" popover={ROW_MENU_TOP_LAYER?"manual":undefined} onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}>
         {foreignRuntime?<button onClick={()=>runMenuAction(()=>onOpen(thread))}>Open in {rowRuntimeLabel}</button>:<>
           <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Pinned"?"active":"pin"))}>{section==="Pinned"?"Unpin":"Pin"}</button>
           <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Snoozed"?"active":"snooze"))}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
