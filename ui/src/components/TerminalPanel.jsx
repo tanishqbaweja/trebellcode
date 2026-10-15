@@ -215,7 +215,15 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   return <div className="real-terminal">
     <div className="terminal-tabs">
       {/* Session tabs scroll on their own so New and the split buttons stay in reach however many terminals are open. */}
-      <div className="terminal-tab-list" ref={tabListRef} onWheel={event=>{if(event.deltaY&&!event.deltaX)event.currentTarget.scrollLeft+=event.deltaY}}>{sessions.map(session=><button key={session.id} className={session.id===activeId?"active":""} onClick={()=>selectSession(session.id)} onKeyDown={event=>{if(event.key==="Delete"){event.preventDefault();close(session.id).then(closed=>closed&&setFocusTick(value=>value+1))}}} aria-keyshortcuts="Delete"><SquareTerminal size={13}/><bdi title={session.name||"Terminal"}>{session.name||"Terminal"}</bdi>{!session.running&&<em className={session.exitCode===0?"exit-ok":"exit-failed"}>{session.exitCode}</em>}<span onClick={(event)=>{event.stopPropagation();close(session.id)}}><X size={11}/></span></button>)}</div>
+      {/* A tab's close button stands beside the button that selects it (a button cannot hold another), so the keyboard reaches it and
+          it has a name. Closing from either hands focus to the terminal that is then active, as the gone button cannot keep it. */}
+      <div className="terminal-tab-list" ref={tabListRef} onWheel={event=>{if(event.deltaY&&!event.deltaX)event.currentTarget.scrollLeft+=event.deltaY}}>{sessions.map(session=>{
+        const name=session.name||"Terminal",closeTab=()=>close(session.id).then(closed=>closed&&setFocusTick(value=>value+1));
+        return <div key={session.id} className={"terminal-tab"+(session.id===activeId?" active":"")}>
+          <button className="terminal-tab-select" onClick={()=>selectSession(session.id)} onKeyDown={event=>{if(event.key==="Delete"){event.preventDefault();closeTab()}}} aria-keyshortcuts="Delete" aria-current={session.id===activeId||undefined}><SquareTerminal size={13}/><bdi title={name}>{name}</bdi>{!session.running&&<em className={session.exitCode===0?"exit-ok":"exit-failed"}>{session.exitCode}</em>}</button>
+          <button type="button" className="terminal-tab-close" onClick={closeTab} aria-label={"Close "+name} title={"Close "+name}><X size={11}/></button>
+        </div>;
+      })}</div>
       <button className="terminal-new" onClick={create} data-busy={creating||undefined}><Plus size={14}/> New</button>
       <button title="Split horizontally" onClick={()=>split("horizontal")} disabled={paneSessions.length>=MAX_SPLIT_PANES} data-busy={creating||undefined}><Columns2 size={13}/></button>
       <button title="Split vertically" onClick={()=>split("vertical")} disabled={paneSessions.length>=MAX_SPLIT_PANES} data-busy={creating||undefined}><Rows2 size={13}/></button>

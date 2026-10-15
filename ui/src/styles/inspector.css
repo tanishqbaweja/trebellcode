@@ -199,10 +199,14 @@
 :root:root .context-panel .tree-list>.workspace-window-footer span{text-align:center}
 :root:root .context-panel .tree-list button.active{background:var(--acsoft)!important;color:var(--tx0)!important}
 :root:root .context-panel .tree-list button>svg{color:var(--tx3)}
-/* Folder rows are labels in an always-expanded listing: clicking one does nothing, so they do not look clickable. */
-:root:root .context-panel .tree-list button.tree-dir{color:var(--tx1)!important;font-weight:550;cursor:default}
-:root:root .context-panel .tree-list button.tree-dir:hover{background:transparent!important;color:var(--tx1)!important}
-:root:root .context-panel .tree-list button.tree-dir>svg,:root:root .context-panel .tree-list button.active>svg{color:var(--ac)}
+/* Folder rows are labels in an always-expanded listing, not buttons: they do nothing, so Tab passes them by and they do not look
+   clickable. They line up with the file rows. */
+:root:root .context-panel .tree-list div.tree-dir{
+  width:100%;min-height:28px;display:grid;grid-template-columns:16px minmax(0,1fr);align-items:center;gap:7px;padding-right:6px;
+  border-radius:7px;color:var(--tx1);font:550 12px/1.2 var(--font);cursor:default;
+}
+:root:root .context-panel .tree-list div.tree-dir span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:root:root .context-panel .tree-list div.tree-dir>svg,:root:root .context-panel .tree-list button.active>svg{color:var(--ac)}
 :root:root .context-panel .tree-list button span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* A file row's attach control is a button of its own beside the row's button (not inside it), so Tab reaches it; it shows on the
    row's hover or focus and on the open file's row. */
@@ -967,23 +971,29 @@
 }
 :root:root .terminal-drawer .real-terminal .terminal-tab-list{flex:1;min-width:0;height:100%;display:flex;align-items:center;gap:4px;padding:0 8px 0 0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain}
 :root:root .terminal-drawer .terminal-tab-list::-webkit-scrollbar{display:none}
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button{
-  flex:none;max-width:220px;height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 4px 0 9px;
+/* A tab is the button that selects it and its close button side by side, in one box. */
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>.terminal-tab{
+  flex:none;max-width:220px;height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 4px 0 0;
   border:1px solid transparent!important;border-radius:var(--r-s);background:transparent!important;color:var(--tx2)!important;
-  font:550 12px/1 var(--font);white-space:nowrap;cursor:pointer;transition:background .14s,color .14s,border-color .14s;
+  transition:background .14s,color .14s,border-color .14s;
 }
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>svg{flex:none}
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>bdi{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button:hover{background:var(--bg2)!important;color:var(--tx0)!important}
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button.active{border-color:var(--line2)!important;background:var(--bg3)!important;color:var(--tx0)!important}
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button.active>svg{color:var(--ac)}
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button:focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 55%,transparent);outline-offset:-2px}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>.terminal-tab:hover{background:var(--bg2)!important;color:var(--tx0)!important}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>.terminal-tab.active{border-color:var(--line2)!important;background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>.terminal-tab>button{margin:0;border:0!important;background:transparent!important;color:inherit!important;cursor:pointer}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>.terminal-tab>button:focus-visible{outline:2px solid color-mix(in srgb,var(--ac) 55%,transparent);outline-offset:-2px}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list .terminal-tab-select{
+  flex:0 1 auto;min-width:0;height:100%;display:inline-flex;align-items:center;gap:6px;padding:0 0 0 9px;border-radius:var(--r-s);
+  font:550 12px/1 var(--font);white-space:nowrap;
+}
+:root:root .terminal-drawer .real-terminal .terminal-tab-select>svg{flex:none}
+:root:root .terminal-drawer .real-terminal .terminal-tab-select>bdi{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+:root:root .terminal-drawer .real-terminal .terminal-tab.active .terminal-tab-select>svg{color:var(--ac)}
 /* Exit status of a stopped session: 0 reads as success, anything else as a failure. */
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>em{flex:none;padding:1px 5px;border-radius:5px;background:var(--errt)!important;color:var(--err)!important;font:600 10px/1.2 var(--mono);font-style:normal}
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>em.exit-ok{background:var(--okt)!important;color:var(--ok)!important}
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>em:empty{display:none}
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>span{flex:none;width:20px;height:20px;display:grid;place-items:center;margin-left:auto;border-radius:5px;color:var(--tx3);cursor:pointer;transition:background .12s,color .12s}
-:root:root .terminal-drawer .real-terminal .terminal-tab-list>button>span:hover{background:var(--bg4);color:var(--tx0)}
+:root:root .terminal-drawer .real-terminal .terminal-tab-select>em{flex:none;padding:1px 5px;border-radius:5px;background:var(--errt)!important;color:var(--err)!important;font:600 10px/1.2 var(--mono);font-style:normal}
+:root:root .terminal-drawer .real-terminal .terminal-tab-select>em.exit-ok{background:var(--okt)!important;color:var(--ok)!important}
+:root:root .terminal-drawer .real-terminal .terminal-tab-select>em:empty{display:none}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>.terminal-tab>.terminal-tab-close{flex:none;width:20px;height:20px;display:grid;place-items:center;margin-left:auto;padding:0;border-radius:5px;color:var(--tx3)!important;transition:background .12s,color .12s}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list>.terminal-tab>.terminal-tab-close:hover{background:var(--bg4)!important;color:var(--tx0)!important}
 :root:root .terminal-drawer .real-terminal>.terminal-tabs>button{
   flex:none;height:28px;display:inline-flex;align-items:center;justify-content:center;gap:6px;margin:0;padding:0 10px;
   border:1px solid transparent!important;border-radius:var(--r-s);background:transparent!important;color:var(--tx2)!important;

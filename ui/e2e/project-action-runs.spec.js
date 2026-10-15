@@ -34,7 +34,7 @@ test("the header's action button shows its action running, shows its terminal on
     await page.goto("/");
     await expect(page.getByTestId("composer")).toBeVisible();
     const header=page.locator(".workspace-header"),button=header.getByRole("button",{name:"Dev server",exact:true}),stop=header.getByRole("button",{name:"Stop Dev server",exact:true});
-    const drawer=page.getByTestId("drawer"),tab=drawer.locator(".terminal-tab-list button.active");
+    const drawer=page.getByTestId("drawer"),tab=drawer.locator(".terminal-tab-list .terminal-tab.active");
     await expect(button).toBeVisible();await expect(stop).toHaveCount(0);
     await button.click();
     await expect(button,"the button shows its action running").toHaveAttribute("data-running","true");
@@ -106,7 +106,7 @@ test("a double click on the header's action button starts the action once",async
   try{
     await page.goto("/");
     await expect(page.getByTestId("composer")).toBeVisible();
-    const {button,stop}=headerAction(page),tabs=page.getByTestId("drawer").locator(".terminal-tab-list button");
+    const {button,stop}=headerAction(page),tabs=page.getByTestId("drawer").locator(".terminal-tab-list .terminal-tab-select");
     // The second click comes 150 ms after the first, while the first run is still on its way.
     await button.click();await page.waitForTimeout(150);await button.click();
     await expect(button).toHaveAttribute("data-running","true");await expect(stop).toBeVisible();

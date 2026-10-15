@@ -933,6 +933,24 @@ test("the tree's attach control and the attachment's remove button are named con
   await expect(chip).toHaveCount(0);
 });
 
+test("a folder in the Files tree is a label the keyboard passes by: Tab goes through the files and their attach controls only",async({page,request})=>{
+  test.setTimeout(45_000);
+  const {right,row}=await openFilesFolder(page,request,"Workspace folder labels",{"docs/guide.md":"# Guide\n","notes.txt":"notes\n"});
+  await expect(row("docs")).toBeVisible();await expect(row("docs")).toHaveAttribute("title","docs");
+  await expect(right.getByRole("button",{name:"docs",exact:true})).toHaveCount(0);
+  // Four Tabs from the search field reach the two files and their attach controls, in the tree's order, and never the folder.
+  await right.getByPlaceholder("Search files…").click();
+  const stops=[];
+  for(let step=0;step<4;step++){await page.keyboard.press("Tab");stops.push(await page.evaluate(()=>document.activeElement?.getAttribute("aria-label")||document.activeElement?.textContent||""))}
+  expect(stops).not.toContain("docs");
+  expect(stops.filter(stop=>stop==="guide.md"||stop==="notes.txt").sort()).toEqual(["guide.md","notes.txt"]);
+  expect(stops.filter(stop=>/^Attach .*(guide\.md|notes\.txt) to chat$/.test(stop))).toHaveLength(2);
+  // The folder's label opens nothing when clicked; a file's row still opens the file.
+  await row("docs").click();await expect(right.locator(".file-head strong")).toHaveCount(0);
+  await row("guide.md").click();await expect(right.locator(".file-head strong")).toHaveText("guide.md");
+  await shootBothModes(page,"workspace-folder-label");
+});
+
 // A Codex app server holding the given threads: enough for the sidebar to list them and for the app to open them.
 async function startThreadHarness(threads){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();

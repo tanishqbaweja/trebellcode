@@ -2715,7 +2715,7 @@ test("terminal failures keep backend and visible session state in sync",async({p
     if(route.request().method()==="DELETE")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate terminal close failure"})});
     return route.continue();
   });
-  await drawer.locator(".terminal-tabs button.active span").click();
+  await drawer.locator(".terminal-tab.active").getByRole("button",{name:/^Close /}).click();
   await expect(drawer.getByRole("alert")).toContainText("Deliberate terminal close failure");
   await expect(drawer.locator(".terminal-pane")).toHaveCount(1);
   await page.unroute("**/api/terminal/sessions*");

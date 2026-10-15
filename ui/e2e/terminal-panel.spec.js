@@ -291,3 +291,38 @@ test("four side-by-side panes keep a usable command line in a 700 px window, and
     await shots(page,"terminal-four-panes-narrow",[1280,900,700]);
   }finally{await shell.close()}
 });
+
+test("a terminal's close button is reached with Tab and named for it, and Enter, a click or Delete on the tab closes that terminal, with focus on the one left",async({page,request})=>{
+  test.setTimeout(90_000);
+  const shell=await realTerminals(page);
+  try{
+    const {drawer}=await openTerminal(page,request);
+    const tabs=drawer.locator(".terminal-tab"),activeInput=drawer.locator(".terminal-pane.active .terminal-command-line input");
+    // A tab's name, as its select button shows it (the app numbers new terminals).
+    const nameOf=async tab=>(await tab.locator(".terminal-tab-select bdi").textContent()).trim();
+    const second=async()=>{await drawer.locator(".terminal-new").click();await expect(tabs).toHaveCount(2);await expect(drawer.locator(".terminal-pane.active .terminal-screen")).toHaveText(PROMPT,{timeout:20_000})};
+    await second();
+    // From the keyboard: Tab goes from the tab to its close button, which says what it closes.
+    const first=tabs.nth(0),firstName=await nameOf(first),close=first.getByRole("button",{name:"Close "+firstName,exact:true});
+    expect(firstName).toMatch(/^Terminal \d+$/);
+    for(const mode of ["dark","light"]){
+      if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+      await first.getByRole("button",{name:firstName,exact:true}).focus();await page.keyboard.press("Tab");
+      await expect(close).toBeFocused();await expect(close).toHaveAttribute("title","Close "+firstName);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+"terminal-tab-close-focused-"+mode+"-"+width+".png"})}
+      await page.setViewportSize({width:1280,height:800});
+    }
+    await page.keyboard.press("Enter");
+    await expect(tabs).toHaveCount(1);await expect(activeInput).toBeFocused();
+    expect(shell.terminals.list(null)).toHaveLength(1);
+    // By mouse, the active tab's close button.
+    await second();
+    await tabs.nth(1).getByRole("button",{name:"Close "+await nameOf(tabs.nth(1)),exact:true}).click();
+    await expect(tabs).toHaveCount(1);await expect(activeInput).toBeFocused();
+    expect(shell.terminals.list(null)).toHaveLength(1);
+    // Delete on the tab itself still closes it, the last one too.
+    await tabs.nth(0).getByRole("button",{name:await nameOf(tabs.nth(0)),exact:true}).focus();await page.keyboard.press("Delete");
+    await expect(tabs).toHaveCount(0);await expect(drawer.getByText("No terminal session")).toBeVisible();
+    expect(shell.terminals.list(null)).toHaveLength(0);
+  }finally{await shell.close()}
+});
