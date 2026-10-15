@@ -13,7 +13,8 @@ mkdirSync(auditDir,{recursive:true});
 const PROMPT=/[A-Z]:\\[^\n]*>\s*$/;
 
 // The mock server has no terminals, so these tests run the real TerminalManager (the shell through node-pty) in the test process:
-// the page's terminal requests are answered by it and the terminal WebSocket is pointed at it.
+// the page's terminal requests are answered by it and the terminal WebSocket is pointed at it. listDelay (ms) holds each answer to
+// the page's list of terminals that long, as a slow server does.
 async function realTerminals(page){
   const home=await mkdtemp(join(tmpdir(),"trebell-terminal-e2e-"));
   const terminals=new TerminalManager({env:{...process.env,TREBELL_HOME:home,GH_TOKEN:"",GITHUB_TOKEN:""},persist:false});
@@ -21,10 +22,11 @@ async function realTerminals(page){
   terminals.attachWebSocket(server);
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   const port=server.address().port;
+  const shell={terminals,listDelay:0,async close(){await terminals.shutdown().catch(()=>{});server.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100}).catch(()=>{})}};
   await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,async route=>{
     const request=route.request(),url=new URL(request.url()),answer=(status,body)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(body)});
     try{
-      if(request.method()==="GET")return answer(200,{sessions:terminals.list(url.searchParams.get("environmentId")||null)});
+      if(request.method()==="GET"){if(shell.listDelay)await new Promise(resolve=>setTimeout(resolve,shell.listDelay));return answer(200,{sessions:terminals.list(url.searchParams.get("environmentId")||null)})}
       if(request.method()==="POST"){const body=request.postDataJSON()||{};return answer(200,{session:await terminals.create({cwd:body.cwd||process.cwd(),cols:body.cols||120,rows:body.rows||32,name:body.name||null})})}
       if(request.method()==="DELETE"){await terminals.close(url.searchParams.get("id"));return answer(200,{ok:true})}
     }catch(error){return answer(400,{error:error.message})}
@@ -36,7 +38,7 @@ async function realTerminals(page){
       return Reflect.construct(target,[at>=0?"ws://127.0.0.1:"+port+address.slice(at):address,...rest]);
     }});
   },port);
-  return {terminals,async close(){await terminals.shutdown().catch(()=>{});server.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100}).catch(()=>{})}};
+  return shell;
 }
 
 async function openTerminal(page,request){
@@ -378,5 +380,53 @@ test("Ctrl+` with no terminal running puts the keyboard on Create terminal, or o
     await expect(screen).toHaveText(PROMPT,{timeout:20_000});await expect(input).toBeEnabled();await expect(input).toBeFocused();
     await run(page,"echo second-after-ctrl-backquote");
     await expect(screen).toContainText(/^second-after-ctrl-backquote$/m);
+  }finally{await shell.close()}
+});
+
+// Ctrl+` with the drawer closed opens it on terminals still to be listed (here the list answers slowly): the keyboard goes to what
+// the list shows, never to Create terminal on the way, which would go as the terminals show (and an Enter typed meanwhile would start
+// one more). Beside a stopped terminal that is New, as after a restart (saved terminals come back stopped) or a reload; with one
+// running, its command line.
+test("Ctrl+` with the drawer closed puts the keyboard on New beside a stopped terminal, or on a running one's command line, once the terminals are listed",async({page,request})=>{
+  test.setTimeout(120_000);
+  const shell=await realTerminals(page);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    const {drawer,screen,input}=await openTerminal(page,request);
+    const composer=page.getByTestId("composer"),newButton=drawer.locator(".terminal-new"),closeDrawer=drawer.getByRole("button",{name:"Close terminal",exact:true});
+    // The controls the keyboard went to since watchFocus, by their text.
+    const watchFocus=()=>page.evaluate(()=>{window.__focused=[];document.addEventListener("focusin",event=>window.__focused.push((event.target.textContent||"").trim()||event.target.tagName),true)});
+    const focused=()=>page.evaluate(()=>window.__focused||[]);
+    await input.click();await run(page,"exit");await expect(input).toBeDisabled({timeout:20_000});
+    for(const mode of ["dark","light"]){
+      if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+      await closeDrawer.click();await expect(drawer).toHaveCount(0);
+      shell.listDelay=600;await watchFocus();
+      await composer.click();await page.keyboard.press("Control+Backquote");
+      await expect(newButton).toBeFocused();await expect(input).toBeDisabled();
+      await page.waitForTimeout(400);await expect(newButton).toBeFocused();
+      expect(await focused(),"Create terminal never took the keyboard").not.toContain("Create terminal");
+      await expect.poll(()=>ringShown(newButton)).toBe(true);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(newButton).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"terminal-ctrl-backquote-closed-stopped-"+mode+"-"+width+".png"})}
+      await page.setViewportSize({width:1280,height:800});
+    }
+    // Reloaded, the stopped terminal is listed again when the drawer opens.
+    await page.reload();await expect(composer).toBeVisible();await expect(drawer).toHaveCount(0);await watchFocus();
+    await composer.click();await page.keyboard.press("Control+Backquote");
+    await expect(newButton).toBeFocused();await page.waitForTimeout(400);await expect(newButton).toBeFocused();
+    expect(await focused(),"Create terminal never took the keyboard").not.toContain("Create terminal");
+    // Enter starts a terminal to type in. With it running and the drawer closed, Ctrl+` lands on its command line.
+    shell.listDelay=0;
+    await page.keyboard.press("Enter");
+    await expect(drawer.locator(".terminal-tab")).toHaveCount(2);
+    await expect(screen).toHaveText(PROMPT,{timeout:20_000});await expect(input).toBeEnabled();await expect(input).toBeFocused();
+    await closeDrawer.click();await expect(drawer).toHaveCount(0);
+    shell.listDelay=600;await watchFocus();
+    await composer.click();await page.keyboard.press("Control+Backquote");
+    await expect(input).toBeFocused();await expect(drawer.locator(".terminal-tab")).toHaveCount(2);
+    expect(await focused(),"Create terminal never took the keyboard").not.toContain("Create terminal");
+    await run(page,"echo typed-after-closed-drawer");
+    await expect(screen).toContainText(/^typed-after-closed-drawer$/m);
+    expect(shell.terminals.list(null)).toHaveLength(2);
   }finally{await shell.close()}
 });

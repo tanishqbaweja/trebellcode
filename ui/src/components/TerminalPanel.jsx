@@ -22,6 +22,10 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   const drawScreens=()=>{if(!screenFrame.current)screenFrame.current=requestAnimationFrame(()=>{screenFrame.current=0;setScreenTick(tick=>tick+1)})};
   const [focusTick,setFocusTick]=useState(0);
   const [error,setError]=useState("");
+  // Until the environment's sessions are first listed the drawer says it is loading, rather than "No terminal session" with Create
+  // terminal: with sessions to come that button would go as they show (dropping the keyboard Focus terminal put there, or starting
+  // one more terminal for an Enter pressed meanwhile), and Focus terminal waits for what the list shows (focusTerminalDrawer in App).
+  const [listed,setListed]=useState(false);
   const [attachBusy,setAttachBusy]=useState("");
   const [creating,setCreating]=useState(false);
   const creatingRef=useRef(false);
@@ -34,8 +38,9 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   async function refresh(preferredId=null){
     let data;
     try{data=await api("/api/terminal/sessions"+environmentQuery());setError("")}
-    catch(cause){setError(cause?.message||String(cause)||"Could not load terminal sessions.");return sessions}
-    const list=data.sessions||[];setSessions(list);
+    catch(cause){setError(cause?.message||String(cause)||"Could not load terminal sessions.");setListed(true);return sessions}
+    // Listed in the same render as the sessions it shows.
+    const list=data?.sessions||[];setSessions(list);setListed(true);
     // With nothing selected yet the newest live terminal is shown instead of the oldest entry (often stopped history): the
     // worktree-setup and project-action terminals open this drawer, and their refresh event can fire before it has mounted.
     const newestLive=list.filter(session=>session.running).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))[0];
@@ -50,7 +55,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
 
   useEffect(()=>{
     for(const socket of sockets.current.values())socket.close();
-    sockets.current.clear();setActiveId(null);setPaneIds([]);screens.current.clear();setLines({});refresh();
+    sockets.current.clear();setActiveId(null);setPaneIds([]);screens.current.clear();setLines({});setListed(false);refresh();
   },[environmentId]);
   useEffect(()=>()=>{for(const socket of sockets.current.values())socket.close();sockets.current.clear();cancelAnimationFrame(screenFrame.current)},[]);
 
@@ -92,11 +97,12 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   useEffect(()=>{if(activeId)setTimeout(()=>inputRefs.current.get(activeId)?.focus(),0)},[activeId,focusTick]);
   // The active session tab stays in view when more tabs are open than the header row can show.
   useEffect(()=>{tabListRef.current?.querySelector("button.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"})},[activeId,sessions.length]);
+  // The tab list shows once the sessions are listed.
   useEffect(()=>{
     const list=tabListRef.current;if(!list||typeof ResizeObserver==="undefined")return;
     const observer=new ResizeObserver(()=>list.querySelector("button.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"}));
     observer.observe(list);return()=>observer.disconnect();
-  },[]);
+  },[listed]);
 
   // Names take the lowest free number ("Terminal 2" again after it was closed) instead of the session count, which repeated
   // names once a middle terminal was closed; `created` covers sessions made earlier in the same action.
@@ -209,6 +215,8 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   // when four do not fit the drawer the panes scroll instead of squeezing every pane until its input covers the output or its
   // command field shows three characters.
   const paneStyle=paneSessions.length>1?(splitDirection==="vertical"?{gridTemplateRows:"repeat("+paneSessions.length+",minmax(170px,1fr))"}:{gridTemplateColumns:"repeat("+paneSessions.length+",minmax(250px,1fr))"}):{};
+  // As the drawer reads while this panel's code loads (App's DeferredSurface).
+  if(!listed)return <div className="surface-loading compact" role="status">Loading terminal…</div>;
   return <div className="real-terminal">
     <div className="terminal-tabs">
       {/* Session tabs scroll on their own so New and the split buttons stay in reach however many terminals are open. */}

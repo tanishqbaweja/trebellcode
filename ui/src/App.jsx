@@ -186,9 +186,9 @@ function focusShownView(){
 
 // Focus for a person who opened the terminal from the palette, which would otherwise give it back to where the palette was opened
 // from, or with Focus terminal (Ctrl+`): the open terminal's command line, else Create terminal (or New, beside a stopped one), once
-// the drawer's content shows and the palette has gone. Focus already in the drawer (the terminal panel's own, as a running terminal
-// comes up) stays. The ring shows where the keyboard went (data-ring, until it leaves): the browser draws none for focus a script
-// moves after a mouse click and a shortcut with Ctrl.
+// the drawer's content shows (its sessions listed: TerminalPanel reads as loading until then) and the palette has gone. Focus
+// already in the drawer (the terminal panel's own, as a running terminal comes up) stays. The ring shows where the keyboard went
+// (data-ring, until it leaves): the browser draws none for focus a script moves after a mouse click and a shortcut with Ctrl.
 function focusTerminalDrawer(){
   const started=performance.now();
   const attempt=()=>{
