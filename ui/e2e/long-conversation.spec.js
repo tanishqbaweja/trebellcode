@@ -171,6 +171,111 @@ test("the newest message stays in view when the view shrinks, and a view scrolle
   }finally{await harness.close()}
 });
 
+// A thread whose turns each ran a command, so a closed activity card sits between each message and its reply; the newest turn's
+// card is open with 48 steps, taller than the view.
+function workedThread(id,name,count){
+  const cwd=process.cwd(),now=Date.now()/1000,command=(turn,step)=>({id:`command-${turn}-${step}`,type:"commandExecution",command:"npm run check -- --part "+(step+1),cwd,status:"completed",aggregatedOutput:"ok\n",exitCode:0});
+  const turns=makeTurns(count).map((turn,index)=>({...turn,items:[turn.items[0],...Array.from({length:index===count-1?48:1},(_,step)=>command(index,step)),turn.items[1]]}));
+  const thread={id,name,preview:count*2+" messages",cwd,model:"test/coding-fast",status:{type:"idle"},createdAt:now-600,updatedAt:now,turns};
+  const meta={[thread.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id:thread.id,name:thread.name,preview:thread.preview,cwd,model:thread.model,createdAt:thread.createdAt,updatedAt:thread.updatedAt,status:{type:"idle"},runtime:"codex",provider:"openai"}}};
+  return {thread,meta,cwd};
+}
+// Opens it at its end. The appearance toggle saves the mode, and the settings saved come back as they were sent.
+async function openWorkedThread(page,{thread,meta,harness,cwd}){
+  await installFixtureRoutes(page,{thread,meta,harness,cwd});
+  await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().postDataJSON()||{})}):route.fallback());
+  await page.goto("/");
+  await page.locator(`.thread-main[title="${thread.name}"]`).click();
+  await expect(page.locator(`[data-message-id="assistant-${thread.turns.length-1}"]`)).toBeVisible();
+  await expect(page.locator(".turn-card [data-testid=activity-card][data-state=open] .tool-event")).toHaveCount(48);
+}
+// What the person sees: every message, card and step on screen ends inside the conversation's column, its text wrapped to it
+// and its bubble whole, and nothing scrolls sideways.
+function columnMisfits(page){
+  return page.locator(".conversation-scroll").evaluate(node=>{
+    const view=node.getBoundingClientRect(),edge=node.querySelector(".conversation-column").getBoundingClientRect().right,problems=[];
+    if(node.scrollWidth>node.clientWidth+1)problems.push(`the conversation scrolls sideways (${node.scrollWidth} > ${node.clientWidth})`);
+    for(const row of node.querySelectorAll(".conversation-column :is(.user-row,.history-assistant,.turn-card,.tool-event)")){
+      const rect=row.getBoundingClientRect();if(!rect.height||rect.bottom<=view.top||rect.top>=view.bottom)continue;
+      const name=row.dataset.messageId||row.querySelector(":scope>summary strong")?.textContent||row.className.split(" ")[0]+" "+(row.dataset.turnId||"");
+      if(rect.right>edge+1)problems.push(`${name} ends at ${Math.round(rect.right)}, past the column's edge at ${Math.round(edge)}`);
+    }
+    return problems;
+  });
+}
+const columnFits=(page,message)=>expect.poll(()=>columnMisfits(page),{message,timeout:2000}).toEqual([]);
+const columnWidth=page=>page.locator(".conversation-column").evaluate(node=>Math.round(node.getBoundingClientRect().width));
+// The wheel to the end, then back up: by up px, or with none until the open card spans the view.
+async function wheelBackFromEnd(page,up=0){
+  const scroll=page.locator(".conversation-scroll"),fromEnd=()=>scroll.evaluate(node=>Math.round(node.scrollHeight-node.clientHeight-node.scrollTop));
+  await scroll.hover();await page.mouse.wheel(0,30000);await expect.poll(fromEnd).toBeLessThanOrEqual(1);
+  if(up){await page.mouse.wheel(0,-up);await expect.poll(fromEnd).toBeGreaterThan(up-600);return}
+  const card=page.locator(".turn-card [data-testid=activity-card][data-state=open]"),box=await card.boundingBox(),view=await scroll.boundingBox();
+  await page.mouse.wheel(0,Math.round(box.y+box.height/2-view.y-view.height/2));
+  await expect.poll(async()=>{const now=await card.boundingBox();return now.y<view.y&&now.y+now.height>view.y+view.height}).toBe(true);
+}
+
+test("the rows being read take the narrower column at once when the inspector opens or is dragged wider, or the window narrows",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {thread,meta,cwd}=workedThread("narrowing-thread","Narrowing column",40),harness=await startHarness(thread);
+  try{
+    await openWorkedThread(page,{thread,meta,harness,cwd});
+    await expect(page.locator(".turn-card")).toHaveCount(40);
+    const inspector=page.getByTestId("right-panel"),toggle=page.getByTestId("right-panel-toggle"),panelKey=process.platform==="darwin"?"Meta+Alt+B":"Control+Alt+B";
+    for(const mode of ["dark","light"]){
+      if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+      // A click on the header's toggle opens the inspector beside the middle of the conversation.
+      await wheelBackFromEnd(page,2600);let width=await columnWidth(page);
+      await toggle.click();await expect(inspector).toBeVisible();await expect.poll(()=>columnWidth(page)).toBeLessThan(width-150);
+      await columnFits(page,`the rows in view follow the column when the inspector opens (${mode})`);
+      await page.screenshot({animations:"disabled",path:`${auditDir}conversation-rows-fit-inspector-opened-${mode}-1280x800.png`});
+      // Its edge dragged to the left, the inspector grows and the column narrows again.
+      if(mode==="dark"){
+        const grip=await page.getByTestId("right-panel-resizer").boundingBox();width=await columnWidth(page);
+        await page.mouse.move(grip.x+grip.width/2,grip.y+grip.height/2);await page.mouse.down();await page.mouse.move(grip.x-120,grip.y+grip.height/2,{steps:6});await page.mouse.up();
+        await expect.poll(()=>columnWidth(page)).toBeLessThan(width-40);
+        await columnFits(page,`the rows in view follow the column when the inspector is dragged wider (${mode})`);
+      }
+      // Ctrl+Alt+B closes it, and opens it again beside the open card's steps.
+      await page.keyboard.press(panelKey);await expect(inspector).toBeHidden();
+      await columnFits(page,`the rows in view follow the column when the inspector closes (${mode})`);
+      await wheelBackFromEnd(page);width=await columnWidth(page);
+      await page.keyboard.press(panelKey);await expect(inspector).toBeVisible();await expect.poll(()=>columnWidth(page)).toBeLessThan(width-150);
+      await columnFits(page,`the open card's steps follow the column when the inspector opens (${mode})`);
+      await page.screenshot({animations:"disabled",path:`${auditDir}conversation-steps-fit-inspector-opened-${mode}-1280x800.png`});
+      // With the inspector closed, the window narrows to 700 px while the middle is read.
+      await toggle.click();await expect(inspector).toBeHidden();
+      await wheelBackFromEnd(page,2600);width=await columnWidth(page);
+      await page.setViewportSize({width:700,height:800});await expect.poll(()=>columnWidth(page)).toBeLessThan(width-50);
+      await columnFits(page,`the rows in view follow the column when the window narrows (${mode})`);
+      await page.screenshot({animations:"disabled",path:`${auditDir}conversation-rows-fit-narrowed-${mode}-700x800.png`});
+      await page.setViewportSize({width:1280,height:800});
+    }
+  }finally{await harness.close()}
+});
+
+test("in a thread long enough to mount its messages in chunks, the rows and steps being read take the narrower column at once",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {thread,meta,cwd}=workedThread("narrowing-chunked-thread","Narrowing chunked column",100),harness=await startHarness(thread);
+  try{
+    await openWorkedThread(page,{thread,meta,harness,cwd});
+    await expect.poll(()=>page.locator("[data-virtual-chunk]").count()).toBeGreaterThan(1);
+    const inspector=page.getByTestId("right-panel"),toggle=page.getByTestId("right-panel-toggle");
+    // The open card's steps, a little above the end, share their chunk with cards laid out at the wider column.
+    await wheelBackFromEnd(page);let width=await columnWidth(page);
+    await toggle.click();await expect(inspector).toBeVisible();await expect.poll(()=>columnWidth(page)).toBeLessThan(width-150);
+    await columnFits(page,"the rows and steps in view follow the column when the inspector opens");
+    await page.screenshot({animations:"disabled",path:auditDir+"conversation-chunked-fit-inspector-opened-dark-1280x800.png"});
+    await toggle.click();await expect(inspector).toBeHidden();
+    await wheelBackFromEnd(page,1200);width=await columnWidth(page);
+    await page.setViewportSize({width:700,height:800});await expect.poll(()=>columnWidth(page)).toBeLessThan(width-50);
+    await columnFits(page,"the rows and steps in view follow the column when the window narrows");
+    await page.screenshot({animations:"disabled",path:auditDir+"conversation-chunked-fit-narrowed-dark-700x800.png"});
+  }finally{await harness.close()}
+});
+
 test("loading earlier virtualized history preserves the visible anchor",async({page})=>{
   test.setTimeout(30_000);
   await page.setViewportSize({width:1280,height:800});
