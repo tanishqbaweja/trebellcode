@@ -1,6 +1,11 @@
 // The app's own question dialogs: a line of text (askText), a yes or no (askConfirm) and one of a few answers (askChoice). They
 // are not needed for the first paint, so the app loads this module at idle after it (B11); the right panel's pages import it directly.
 
+// The second click of the double click that opened a dialog (or a third) lands on it or on its backdrop, where the dialog would take
+// the keyboard from the field or button that has it, or the field's caret would move: it does nothing there. The person's own
+// presses in the dialog work as usual, a double click in the field among them.
+function ignoreOpeningPresses(dialog){let own=false;dialog.addEventListener("mousedown",event=>{if(own||event.detail<2)own=true;else event.preventDefault()},true)}
+
 // Asks for one line of text in the app's own dialog: resolves to the text (possibly empty) on OK and to null on Cancel or Escape.
 // The browser's window.prompt is not used: Electron's renderer throws on it ("prompt() is not supported"), and in a browser it
 // opens the browser's own box instead of the app's. A click outside the dialog does not cancel it, so a double click on the opening
@@ -43,6 +48,7 @@ export function askText(message,defaultValue="",{multiline=false}={}){
     if(multiline)input.addEventListener("keydown",event=>{if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)){event.preventDefault();form.requestSubmit()}});
     cancel.addEventListener("click",event=>{if(event.detail>1)return;finish(null)});
     dialog.addEventListener("cancel",event=>{event.preventDefault();finish(null)});
+    ignoreOpeningPresses(dialog);
     document.body.append(dialog);
     // A long text opens with the caret after it, ready to add to; one line opens selected, as window.prompt does.
     dialog.showModal();input.focus();if(multiline)input.setSelectionRange(input.value.length,input.value.length);else input.select();
@@ -83,6 +89,7 @@ export function askChoice(message,{choices,cancel="Cancel"}){
     dialog.addEventListener("keydown",event=>{if(event.repeat&&(event.key==="Enter"||event.key===" "))event.preventDefault()});
     dialog.addEventListener("cancel",event=>{event.preventDefault();finish(null)});
     dialog.addEventListener("close",()=>finish(null));
+    ignoreOpeningPresses(dialog);
     document.body.append(dialog);
     dialog.showModal();keep.focus();
   });

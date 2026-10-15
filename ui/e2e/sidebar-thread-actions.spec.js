@@ -347,6 +347,26 @@ test("Delete asks in the app's own dialog, never the browser's: Escape and Cance
   }finally{await harness.close()}
 });
 
+test("a double click on Delete asks once with the keyboard on Cancel, so Enter keeps the thread",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,id}=await openSidebarApp(page);
+  const question=page.locator("dialog.inspector-text-prompt"),cancel=question.getByRole("button",{name:"Cancel",exact:true});
+  try{
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      const row=await rowMenu(page,"Bulk three");
+      // The question opens on the first click, so the second lands on its backdrop, where Delete was.
+      await row.getByRole("button",{name:"Delete",exact:true}).dblclick();
+      await expect(question).toHaveCount(1);await expect(cancel).toBeFocused();
+      await shoot(page,"sidebar-delete-double-click");
+      await page.keyboard.press("Enter");
+      await expect(question).toHaveCount(0);await expect(row).toBeVisible();
+    }
+    await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+    expect(harness.threadStore.get(id("Bulk three"))).toBeTruthy();
+  }finally{await harness.close()}
+});
+
 test("with the harness away, Delete says Trebell Native is not connected before it asks, and the open thread stays open and listed",async({page})=>{
   test.setTimeout(90_000);
   const {harness,proxy,id}=await openSidebarApp(page);

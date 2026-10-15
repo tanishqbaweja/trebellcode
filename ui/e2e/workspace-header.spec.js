@@ -178,6 +178,40 @@ test("Enter held on the title asks once and its repeats do not rename; Enter pre
   }finally{await harness.close()}
 });
 
+test("a double click on the title asks once with the keyboard in the field and the name selected, so the name typed replaces it",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,proxy,nativeDialogs,header}=await openHeaderApp(page);
+  const title=header.locator(".thread-title-button"),question=dialog(page),field=question.getByRole("textbox",{name:"Rename thread"});
+  const sent=[];proxy.answer=message=>{if(message.method==="thread/name/set")sent.push(message.params?.name);return undefined};
+  const selected=()=>field.evaluate(node=>node.value.slice(node.selectionStart,node.selectionEnd));
+  try{
+    let current="Release checklist";
+    for(const [mode,name] of [["dark","Ship the release"],["light","Release day"]]){
+      await switchMode(page,mode);
+      // The question opens on the first click, so the second lands on its backdrop, where the title was. In light mode the clicks
+      // come at a person's pace, the second once the question shows.
+      if(mode==="dark")await title.dblclick();
+      else{
+        const box=await title.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+        await page.mouse.down({clickCount:1});await page.mouse.up({clickCount:1});await expect(question).toBeVisible();
+        await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+      }
+      await expect(question).toHaveCount(1);await expect(field).toBeFocused();await expect(field).toHaveValue(current);
+      expect(await selected()).toBe(current);
+      await shoot(page,"header-rename-double-click");
+      await page.keyboard.type(name,{delay:20});await expect(field).toHaveValue(name);
+      // A double click of the person's own in the field still selects the word under it (Windows takes the space after it too).
+      if(mode==="light"){const box=await field.boundingBox();await page.mouse.dblclick(box.x+18,box.y+box.height/2);expect((await selected()).trim()).toBe("Release");await page.keyboard.press("End")}
+      await page.keyboard.press("Enter");
+      await expect(question).toHaveCount(0);await expect(title).toHaveText(name);await expect(title).toBeFocused();
+      current=name;
+    }
+    expect(sent).toEqual(["Ship the release","Release day"]);
+    expect(harness.threadStore.get(harness.threads[0].id).name).toBe("Release day");
+    expect(nativeDialogs).toEqual([]);
+  }finally{await harness.close()}
+});
+
 test("app shortcuts wait while the rename question is open, so the new name lands on the thread it was asked for",async({page})=>{
   test.setTimeout(60_000);
   const {harness,nativeDialogs,header}=await openHeaderApp(page,{replies:[{text:"Renamed and ready."}]});
