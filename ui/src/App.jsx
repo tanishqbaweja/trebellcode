@@ -13,7 +13,7 @@ import { api, wsUrl } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
 import ChatMarkdown,{ StreamingMarkdown } from "./components/LazyChatMarkdown.jsx";
-import RightPanel, { askConfirm, askText } from "./components/RightPanel.jsx";
+import RightPanel from "./components/RightPanel.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx";
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
@@ -121,7 +121,15 @@ let sharedToolCatalogLoad=null;
 const loadSharedToolCatalog=()=>sharedToolCatalogLoad||=import("../../src/shared-tool-catalog.mjs").catch(error=>{
   sharedToolCatalogLoad=null;throw Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
 });
-if(typeof window!=="undefined")requestAnimationFrame(()=>setTimeout(()=>(window.requestIdleCallback||(callback=>setTimeout(callback,200)))(()=>loadSharedToolCatalog().catch(()=>{}),{timeout:2000})));
+// The app's question dialogs (ask-dialog.js) load the same way: nothing on the first screen asks anything. Every question is awaited
+// already, so one asked before the load waits for it, and once loaded the dialog opens before the next click or key is handled.
+let askDialogLoad=null;
+const loadAskDialog=()=>askDialogLoad||=import("./ask-dialog.js").catch(error=>{
+  askDialogLoad=null;throw Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+});
+const askConfirm=(...args)=>loadAskDialog().then(dialog=>dialog.askConfirm(...args));
+const askText=(...args)=>loadAskDialog().then(dialog=>dialog.askText(...args));
+if(typeof window!=="undefined")requestAnimationFrame(()=>setTimeout(()=>(window.requestIdleCallback||(callback=>setTimeout(callback,200)))(()=>{loadSharedToolCatalog().catch(()=>{});loadAskDialog().catch(()=>{})},{timeout:2000})));
 
 // The command palette as it first appears while its code loads (on the first open only): its search box takes focus and the keys
 // typed straight after Ctrl+K, which would otherwise go into the composer it was opened from. seed hands the palette what was typed,

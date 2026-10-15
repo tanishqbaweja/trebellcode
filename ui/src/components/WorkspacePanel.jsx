@@ -7,7 +7,7 @@ import { changedPathPlans, fitGlyphs, glyphRuns } from "../changed-name-fit.js";
 import { highlightSyntax } from "../syntax-language.js";
 import { WORKSPACE_CHANGED_PAGE_SIZE, WORKSPACE_DIFF_CHUNK_CHARS, WORKSPACE_TREE_PAGE_SIZE, workspaceListWindow, workspaceTextWindow } from "../workspace-view-window.js";
 import OpenInPicker from "./OpenInPicker.jsx";
-import { askConfirm, askText } from "./RightPanel.jsx";
+import { askConfirm, askText } from "../ask-dialog.js";
 
 const IMAGE_EXT=new Set(["png","jpg","jpeg","gif","webp","bmp","svg","ico"]);
 const VIDEO_EXT=new Set(["mp4","webm","mov"]);

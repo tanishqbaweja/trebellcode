@@ -4,7 +4,7 @@ import { startSameThreadVerificationRepair } from "../verification-repair.js";
 import { verificationEvidenceMeta, verificationEvidenceSummary, verificationEvidenceView } from "../verification-evidence-view.js";
 import { codexGoalStatusLabel } from "../codex-turn-options.js";
 import { workspaceLabel } from "../workspace-label.js";
-import { askConfirm } from "./RightPanel.jsx";
+import { askConfirm } from "../ask-dialog.js";
 
 function lines(value){return (Array.isArray(value)?value:[]).join("\n")}
 function parseLines(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean)}

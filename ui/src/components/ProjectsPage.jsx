@@ -6,7 +6,7 @@ import { PROJECT_PAGE_SIZE, projectGroupCounts, projectGroupKey, projectWindow }
 import { projectRemovalQuestion, projectRestoreBlocker, projectRestoreBody } from "../project-restore.js";
 import { inkOn } from "../theme-utils.js";
 import { startVisibilityPoll } from "../visibility-poll.js";
-import { askConfirm } from "./RightPanel.jsx";
+import { askConfirm } from "../ask-dialog.js";
 
 // The Projects page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves on,
 // or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.

@@ -14,7 +14,7 @@ import { harnessCheck, harnessStateText, harnessStateTitle } from "../harness-ch
 import { agentName } from "../display-labels.js";
 import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, MODEL_PROVIDER_LABELS, modelProviderLabel } from "../provider-labels.js";
 import ScopedSettingsCard from "./ScopedSettingsCard.jsx";
-import { askConfirm } from "./RightPanel.jsx";
+import { askConfirm } from "../ask-dialog.js";
 
 const PROVIDER_NOTES={
   openai:"Models are loaded live from the official OpenAI /v1/models API for this key.",

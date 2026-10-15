@@ -4,7 +4,7 @@ import { api } from "../api.js";
 import { failureText } from "../display-labels.js";
 import { codexRateLimitEntries,formatRateReset,microsToCurrency,rateLimitReachedLabel,rateLimitRemainingPercent } from "../usage-account.js";
 import { estimateUsageCost } from "../usage-pricing.js";
-import { askConfirm } from "./RightPanel.jsx";
+import { askConfirm } from "../ask-dialog.js";
 
 function formatTokens(value){const n=Number(value||0);if(n>=1_000_000)return (n/1_000_000).toFixed(n>=10_000_000?1:2)+"M";if(n>=1_000)return (n/1_000).toFixed(n>=100_000?0:1)+"K";return n.toLocaleString()}
 function runtimeLabel(value){return ({native:"Trebell Native",codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"}[value]||value||"Unknown")}

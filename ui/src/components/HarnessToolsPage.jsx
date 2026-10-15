@@ -5,7 +5,7 @@ import { openWebLink } from "../web-link.js";
 import { agentName, countLabel, failureText, humanizeIdentifier, importFailures, importResultSummary, listCount, mcpAuthLabel } from "../display-labels.js";
 import { formatBytes } from "../format-bytes.js";
 import { allowedWindowsSetupModes, windowsSandboxStatus, worldWritableWarningText } from "../windows-sandbox.js";
-import { askConfirm } from "./RightPanel.jsx";
+import { askConfirm } from "../ask-dialog.js";
 
 // What each runtime read on this page loads, so its error line names what could not be loaded before the reason Codex gave.
 const LOAD_FAILURES={

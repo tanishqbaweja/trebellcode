@@ -7,7 +7,7 @@ import { SOURCE_CONTROL_PAGE_SIZE, sourceControlWindow } from "../source-control
 import { DEFAULT_MODEL_PROVIDER, modelProviderLabel } from "../provider-labels.js";
 import { createGitTextRequests, sourceControlContext, sourceControlContextCurrent, sourceControlErrorAfterContextChange } from "../source-control-context.js";
 import PullRequestComposer from "./PullRequestComposer.jsx";
-import { askChoice, askConfirm, askText } from "./RightPanel.jsx";
+import { askChoice, askConfirm, askText } from "../ask-dialog.js";
 
 // Errors that already say what failed: a harness writer names the Git text it could not write, and opening a linked thread can fail
 // with "Could not restore archived thread: …", "Could not load linked thread: …" or "Linked thread was not found."; a commit with
