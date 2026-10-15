@@ -3352,11 +3352,13 @@ export default function App(){
     const result={label,undo,threadId:thread.id,title:titleOf(thread),anchorThreadId:snapshot.anchorThreadId,beforeThreadId:snapshot.beforeThreadId};if(offerUndo&&undo)offerThreadUndo(label,()=>undoThreadActions([result]));return result;
   }
   // An undo of several threads puts each back after the thread it goes before, when that one is put back too (thread-order.js). It
-  // tries every thread, as the action did, and the error names the ones the harness would not put back, each with its reason.
+  // tries every thread, as the action did, and the error names the ones the harness would not put back, each with its reason
+  // ("Could not put back “X”: …"). The verb is the Undo's for every action: an Un-settle's Undo toast reads "Thread restored", so
+  // "restore" would name the opposite of what failed there.
   async function undoThreadActions(results){
     const restored=new Map(),failed=[];
     for(const result of undoOrder(results)){try{await result.undo?.(restored)}catch(error){failed.push({title:result.title,error})}}
-    if(failed.length)throw new Error(bulkActionFailure("restore",failed));
+    if(failed.length)throw new Error(bulkActionFailure("put back",failed));
   }
   async function threadAction(thread,action){
     if(action==="pin"||action==="settle"||action==="active"||action==="archive"){await reversibleThreadAction(thread,action);return}

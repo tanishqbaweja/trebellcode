@@ -561,7 +561,7 @@ test("an Undo the harness refuses says so where the Undo was, naming the thread 
   const toast=page.getByTestId("app-action-error"),conversation=page.locator(".conversation-column");
   try{
     // Bulk one stays open while another thread is archived from its row's menu and the harness refuses to bring it back: Undo is
-    // clicked on the toast in dark, and Ctrl+Z pressed in light.
+    // clicked on the toast in dark, and Ctrl+Z pressed in light. The message names the Undo ("put back"), whatever it undid.
     for(const [mode,name] of [["dark","Bulk two"],["light","Bulk three"]]){
       await switchMode(page,mode);
       const row=await rowMenu(page,name);
@@ -569,7 +569,7 @@ test("an Undo the harness refuses says so where the Undo was, naming the thread 
       await expect(threadRow(page,name)).toHaveCount(0);await expect(undoToast(page).locator("span").first()).toHaveText("Thread archived");
       proxy.refuse=message=>message.method==="thread/unarchive"?"Archive store is read-only":null;
       if(mode==="dark")await undoToast(page).getByRole("button",{name:"Undo",exact:true}).click();else await page.keyboard.press("Control+z");
-      await expect(toast).toHaveText("Could not restore “"+name+"”: Archive store is read-only.");
+      await expect(toast).toHaveText("Could not put back “"+name+"”: Archive store is read-only.");
       await expect(undoToast(page)).toHaveCount(0);await expect(threadRow(page,name)).toHaveCount(0);
       await expect(conversation).toContainText("Done with bulk one.");await expect(conversation.getByText("Archive store is read-only")).toHaveCount(0);
       await shoot(page,"sidebar-archive-undo-refused");
@@ -583,9 +583,24 @@ test("an Undo the harness refuses says so where the Undo was, naming the thread 
     await expect(undoToast(page)).toContainText("2 threads archived");await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk six"]]]);
     proxy.refuse=message=>message.method==="thread/unarchive"&&message.params?.threadId===id("Bulk four")?"Archive store is read-only":null;
     await undoToast(page).getByRole("button",{name:"Undo",exact:true}).click();
-    await expect(toast).toHaveText("Could not restore “Bulk four”: Archive store is read-only.");
+    await expect(toast).toHaveText("Could not put back “Bulk four”: Archive store is read-only.");
     await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk five","Bulk six"]]]);
     await expect(conversation.getByText("Archive store is read-only")).toHaveCount(0);
     expect(harness.threadStore.get(id("Bulk four")).archived).toBe(true);expect(harness.threadStore.get(id("Bulk five")).archived).toBeFalsy();
+    // An Un-settle's Undo reads "Thread restored": refused, its message names the Undo that failed (Bulk six stays out of Settled)
+    // instead of saying the thread just restored could not be restored. In light, Undo clicked on the toast.
+    proxy.refuse=()=>null;await switchMode(page,"light");
+    await (await rowMenu(page,"Bulk six")).getByRole("button",{name:"Settle",exact:true}).click();
+    await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk five"]],["Settled",["Bulk six"]]]);
+    await (await rowMenu(page,"Bulk six")).getByRole("button",{name:"Un-settle",exact:true}).click();
+    await expect(undoToast(page).locator("span").first()).toHaveText("Thread restored");
+    await expect.poll(async()=>(await groups(page)).map(([group])=>group)).toEqual(["Active"]);
+    proxy.refuse=message=>message.method==="thread/section/move"?"Sections are read-only":null;
+    await undoToast(page).getByRole("button",{name:"Undo",exact:true}).click();
+    await expect(toast).toHaveText("Could not put back “Bulk six”: Sections are read-only.");
+    await expect(undoToast(page)).toHaveCount(0);
+    expect((await groups(page)).find(([group])=>group==="Active")?.[1]).toContain("Bulk six");
+    await expect(conversation.getByText("Sections are read-only")).toHaveCount(0);
+    await shoot(page,"sidebar-unsettle-undo-refused");
   }finally{await harness.close()}
 });
