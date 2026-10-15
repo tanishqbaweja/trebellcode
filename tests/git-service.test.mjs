@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, gitInfo, commitAll, createBranch, createWorktree, removeWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
+import { git, gitInfo, commitAll, createBranch, createWorktree, pullRepo, pushRepo, removeWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
 
 // Each test runs up to two dozen git commands, which take seconds each on a host that benchmarks load: the 20 s and 30 s bounds these
 // tests had ran out there (on one CPU at idle priority every one did), though alone they pass in 3 to 25 s. The bound is a generous
@@ -29,6 +29,27 @@ test("a commit git refuses fails with git's reason, and a commit with nothing to
     assert.equal(committed.status.length,0);assert.equal((await git(dir,["log","-1","--format=%s"])).stdout.trim(),"Accepted");
     await assert.rejects(()=>commitAll(dir,"Nothing here"),{message:"Nothing to commit: the working tree has no changes."});
   }finally{await rm(dir,RETRY)}
+});
+
+// git follows a refusal with hint: lines for a person at a terminal (the commands to run next, the setting that turns the hint off).
+// The Git panel shows the error after "Could not …", so it is git's reason alone.
+test("a refused branch name, Pull or Push fails with git's reason, without the hints git adds for a terminal",UNDER_LOAD,async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-git-hints-"));const origin=join(root,"origin.git"),work=join(root,"work"),peer=join(root,"peer");
+  try{
+    await git(root,["init","--bare","--initial-branch=main",origin]);
+    await mkdir(work,{recursive:true});await git(work,["init","-b","main"]);await git(work,["config","user.email","trebell@example.test"]);await git(work,["config","user.name","Trebell Test"]);
+    await writeFile(join(work,"shared.txt"),"base\n");await git(work,["add","shared.txt"]);await git(work,["commit","-m","Base"]);await git(work,["remote","add","origin",origin]);await git(work,["push","-u","origin","main"]);
+    await git(root,["clone",origin,peer]);await git(peer,["config","user.email","peer@example.test"]);await git(peer,["config","user.name","Peer"]);
+    await writeFile(join(peer,"shared.txt"),"base\npeer\n");await git(peer,["commit","-am","Peer"]);await git(peer,["push"]);
+    // Committed on both sides, so the branch and origin/main have gone both ways.
+    await writeFile(join(work,"shared.txt"),"base\nmine\n");await git(work,["commit","-am","Mine"]);await git(work,["fetch"]);
+    await assert.rejects(()=>createBranch(work,"bad..name"),{message:"fatal: 'bad..name' is not a valid branch name"});
+    await assert.rejects(()=>pullRepo(work),{message:"fatal: Not possible to fast-forward, aborting."});
+    await assert.rejects(()=>pushRepo(work),error=>{
+      assert.match(error.message,/^To .+\n ! \[rejected\] +\S+ -> main \(non-fast-forward\)\nerror: failed to push some refs to '.+'$/);
+      return true;
+    });
+  }finally{await rm(root,RETRY)}
 });
 
 // The Git panel's Commit in a merge stopped on a conflict that the person resolved by keeping this branch's side: the index then

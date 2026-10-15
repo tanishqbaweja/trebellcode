@@ -1031,8 +1031,8 @@ test("after Initialize Git the branch picker and the header show the new branch,
   await expect(picker).toHaveValue(branch);
 });
 
-test("Fetch shows how far the branch is behind or ahead, and a refused Pull or Push shows git's lines and the changes as they are",async({page,request})=>{
-  test.setTimeout(90_000);
+test("Fetch shows how far the branch is behind or ahead, and a refused Pull, Push or branch name shows git's reason without its hints, and the changes as they are",async({page,request})=>{
+  test.setTimeout(150_000);
   // A repository with a local bare remote, and a second clone that pushes to it.
   const base=await mkdtemp(join(tmpdir(),"trebell-git-sync-"));repositories.push(base);
   const run=(cwd,args)=>execFileAsync("git",args,{cwd,windowsHide:true,encoding:"utf8"}).then(result=>result.stdout.trim());
@@ -1058,15 +1058,27 @@ test("Fetch shows how far the branch is behind or ahead, and a refused Pull or P
   await expect(changes.getByRole("heading")).toHaveText("Changes 1");
   await expect(changes.locator(".status-list > div")).toHaveText(/shared\.txt/);
   await shootBothModes(page,"source-control-pull-refused");
-  // Committed locally, the branch has gone both ways; a refused Push keeps each of git's hints on its own line.
+  // Committed locally, the branch has gone both ways. A refused Pull or Push says git's reason, each of its lines on a line of its
+  // own, without the hints git adds for a terminal (the commands to run next, the setting that turns the hint off).
   await run(work,["commit","-am","My change"]);
+  await right.getByRole("button",{name:"Pull",exact:true}).click();
+  await expect(alert).toHaveText("Could not pull: fatal: Not possible to fast-forward, aborting.",GIT_WAIT);
+  await expect(upstream).toHaveText("Upstream: origin/main 1 ahead, 1 behind");
+  await shootBothModes(page,"source-control-pull-diverged");
   await right.getByRole("button",{name:"Push",exact:true}).click();
   await expect(alert).toContainText("Could not push:",GIT_WAIT);
-  await expect(upstream).toHaveText("Upstream: origin/main 1 ahead, 1 behind");
   const lines=(await alert.innerText()).split("\n");
-  expect(lines.filter(line=>/^hint: /.test(line)).length).toBeGreaterThan(1);
-  expect(lines.some(line=>/^\s*! \[rejected\]/.test(line))).toBe(true);
+  expect(lines.filter(line=>/hint:/.test(line))).toEqual([]);
+  expect(lines.some(line=>/^\s*! \[rejected\]\s+main -> main \(non-fast-forward\)$/.test(line))).toBe(true);
+  expect(lines.some(line=>/^error: failed to push some refs to /.test(line))).toBe(true);
   await shootBothModes(page,"source-control-push-rejected");
+  // A branch name git refuses says why the same way.
+  await right.getByRole("button",{name:"Create branch",exact:true}).click();
+  await expect(page.locator("dialog.inspector-text-prompt").getByRole("textbox",{name:"New branch name"})).toBeFocused();
+  await page.keyboard.type("bad..name",{delay:15});await page.keyboard.press("Enter");
+  await expect(alert).toHaveText("Could not create the branch: fatal: 'bad..name' is not a valid branch name",GIT_WAIT);
+  await expect(right.getByRole("combobox",{name:"Current branch"})).toHaveValue("main");
+  await shootBothModes(page,"source-control-branch-name-refused");
 });
 
 test("a refused Pull keeps git's reason on screen when the refresh after it cannot list the pull requests",async({page,request})=>{

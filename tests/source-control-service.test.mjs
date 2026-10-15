@@ -497,6 +497,33 @@ test("source-control branch switching rejects a stale branch name without restor
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
+// git follows a refusal with hint: lines for a person at a terminal (the commands to run next, the setting that turns the hint off);
+// an environment's Git actions fail with git's reason alone, as the local ones do.
+test("a Git action git refuses fails with git's reason, without the hints git adds for a terminal",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-git-hints-"));
+  try{
+    await git(root,["init","-b","main"]);await git(root,["config","user.email","trebell@example.test"]);await git(root,["config","user.name","Trebell Test"]);
+    await writeFile(join(root,"base.txt"),"base\n");await git(root,["add","."]);await git(root,["commit","-m","Base"]);
+    await assert.rejects(()=>sourceControlGitAction(root,{action:"branch-create",name:"bad..name"}),{message:"fatal: 'bad..name' is not a valid branch name"});
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+  const diverged="hint: Diverging branches can't be fast-forwarded, you need to either:\nhint:\nhint: \tgit merge --no-ff\nhint:\nhint: or:\nhint:\nhint: \tgit rebase\nhint:\nhint: Disable this message with \"git config set advice.diverging false\"\nfatal: Not possible to fast-forward, aborting.\n";
+  const executor={
+    run:async(command,args)=>{
+      if(command!=="git")return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+      if(args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+      if(args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+      if(args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main [ahead 1, behind 1]\n",stderr:""};
+      if(args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+      if(args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+      if(args[0]==="pull")return {ok:false,code:128,stdout:"",stderr:diverged};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected git "+args.join(" ")};
+    },
+  };
+  await assert.rejects(()=>withSourceControlExecutor(executor,()=>sourceControlGitAction("/srv/app",{action:"pull"})),{message:"fatal: Not possible to fast-forward, aborting."});
+});
+
 test("Bitbucket REST auth and requests come from the environment executor",async()=>{
   const requests=[];
   const executor={

@@ -7,12 +7,18 @@ import { homedir } from "node:os";
 
 const execFileAsync=promisify(execFile);
 
+// git follows a refusal with hint: lines for a person at a terminal: the commands to run next and the setting that turns the hint
+// off ("Disable this message with …"). A failure says git's reason without them; one that is all hints keeps them.
+export function gitReason(text){
+  const all=String(text??"").trim();
+  return all.split(/\r?\n/).filter(line=>!line.startsWith("hint:")).join("\n").trim()||all;
+}
 async function run(command,args,{cwd,env=process.env,timeout=120000,maxBuffer=8*1024*1024,allowFailure=false}={}){
   try{
     const result=await execFileAsync(command,args,{cwd,env,windowsHide:true,timeout,maxBuffer});
     return {ok:true,stdout:result.stdout||"",stderr:result.stderr||""};
   }catch(error){
-    if(!allowFailure) throw new Error((error.stderr||error.stdout||error.message||String(error)).trim());
+    if(!allowFailure) throw new Error(gitReason(error.stderr||error.stdout||error.message||String(error)));
     return {ok:false,stdout:error.stdout||"",stderr:error.stderr||error.message||"",code:error.code??1};
   }
 }

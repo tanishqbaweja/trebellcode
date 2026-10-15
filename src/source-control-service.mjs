@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
-import { gitInfo as localGitInfo } from "./git-service.mjs";
+import { gitInfo as localGitInfo, gitReason } from "./git-service.mjs";
 
 const execFileAsync=promisify(execFile);
 const executionContext=new AsyncLocalStorage();
@@ -231,12 +231,14 @@ export async function sourceControlPullRequestTemplate(cwd,{treeish="HEAD"}={}){
   return null;
 }
 
+// A Git action git refuses fails with git's reason, without the hints it adds for a terminal (gitReason), as the local ones do.
+const gitFailure=(result,fallback)=>new Error(gitReason(result.stderr||result.stdout||fallback));
 export async function sourceControlGitAction(cwd,{action,name=null,message=null,setUpstream=false,startPoint=null,path=null,force=false}={}){
   const base=String(cwd||"").trim();
   if(!base)throw new Error("Repository path is required");
   if(action==="init"){
     const result=await run("git",["init"],{cwd:base,allowFailure:true});
-    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not initialize Git").trim());
+    if(!result.ok)throw gitFailure(result,"Could not initialize Git");
     return serviceGitInfo(base);
   }
   const info=await serviceGitInfo(base);
@@ -253,7 +255,7 @@ export async function sourceControlGitAction(cwd,{action,name=null,message=null,
   }else if(action==="commit"){
     const subject=String(message||"").trim();if(!subject)throw new Error("Commit message is required");
     const add=await run("git",["add","-A"],{cwd:root,allowFailure:true});
-    if(!add.ok)throw new Error((add.stderr||add.stdout||"Could not stage changes").trim());
+    if(!add.ok)throw gitFailure(add,"Could not stage changes");
     result=await run("git",["commit","-m",subject],{cwd:root,allowFailure:true});
   }else if(action==="fetch"){
     result=await run("git",["fetch","--all","--prune"],{cwd:root,allowFailure:true,timeout:120000});
@@ -284,7 +286,7 @@ export async function sourceControlGitAction(cwd,{action,name=null,message=null,
     if(ahead>0)return {ok:false,reason:"local_commits",ahead,behind,defaultBranch,info:refreshed};
     if(behind===0)return {ok:true,changed:false,ahead,behind,defaultBranch,info:refreshed};
     result=await run("git",["pull","--ff-only"],{cwd:root,allowFailure:true,timeout:120000});
-    if(result&&!result.ok)throw new Error((result.stderr||result.stdout||"Git auto-pull failed").trim());
+    if(result&&!result.ok)throw gitFailure(result,"Git auto-pull failed");
     return {ok:true,changed:true,ahead:0,behind,defaultBranch,info:await serviceGitInfo(root),output:(result?.stdout||result?.stderr||"").trim()};
   }else if(action==="push"){
     const args=["push"];
@@ -306,7 +308,7 @@ export async function sourceControlGitAction(cwd,{action,name=null,message=null,
   }else{
     throw new Error("Unsupported source-control Git action");
   }
-  if(result&&!result.ok)throw new Error((result.stderr||result.stdout||("Git "+action+" failed")).trim());
+  if(result&&!result.ok)throw gitFailure(result,"Git "+action+" failed");
   return {info:await serviceGitInfo(root),output:(result?.stdout||result?.stderr||"").trim()};
 }
 
